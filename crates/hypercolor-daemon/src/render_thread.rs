@@ -96,9 +96,6 @@ pub struct RenderThreadState {
 
     /// Target render canvas height.
     pub canvas_height: u32,
-
-    /// Whether screen capture input is enabled in daemon configuration.
-    pub screen_capture_enabled: bool,
 }
 
 impl RenderThread {
@@ -218,6 +215,7 @@ const AUDIO_LEVEL_EVENT_INTERVAL_MS: u32 = 100;
 struct FrameInputs {
     audio: AudioData,
     interaction: InteractionData,
+    screen_data: Option<ScreenData>,
     screen_canvas: Option<Canvas>,
 }
 
@@ -225,6 +223,7 @@ struct FrameInputs {
 struct EffectDemand {
     effect_running: bool,
     audio_capture_active: bool,
+    screen_capture_active: bool,
 }
 
 impl FrameInputs {
@@ -232,6 +231,7 @@ impl FrameInputs {
         Self {
             audio: AudioData::silence(),
             interaction: InteractionData::default(),
+            screen_data: None,
             screen_canvas: None,
         }
     }
@@ -380,8 +380,13 @@ async fn execute_frame(
         return frame;
     }
 
-    if let Some(frame) =
-        maybe_idle_throttle(state, effect_demand.effect_running, idle_black_pushed).await
+    if let Some(frame) = maybe_idle_throttle(
+        state,
+        effect_demand.effect_running,
+        effect_demand.screen_capture_active,
+        idle_black_pushed,
+    )
+    .await
     {
         return frame;
     }
@@ -398,8 +403,15 @@ async fn execute_frame(
     let input_us = micros_u32(input_start.elapsed());
 
     // ── Stage 2: Effect render → Canvas ─────────────────────────
-    let (mut canvas, render_us) =
-        resolve_frame_canvas(state, skip_decision, inputs, cached_canvas, delta_secs).await;
+    let (mut canvas, render_us) = resolve_frame_canvas(
+        state,
+        skip_decision,
+        effect_demand.effect_running,
+        inputs,
+        cached_canvas,
+        delta_secs,
+    )
+    .await;
 
     // ── Stage 3: Spatial sampling → ZoneColors ──────────────────
     let sample_start = Instant::now();
@@ -534,6 +546,7 @@ async fn execute_frame(
 async fn resolve_frame_canvas(
     state: &RenderThreadState,
     skip_decision: SkipDecision,
+    effect_running: bool,
     inputs: &FrameInputs,
     cached_canvas: &mut Option<Canvas>,
     delta_secs: f32,
@@ -543,11 +556,18 @@ async fn resolve_frame_canvas(
         (skip_decision, cached_canvas.as_ref())
     {
         previous.clone()
-    } else if let Some(screen_canvas) = inputs.screen_canvas.clone() {
+    } else if !effect_running && let Some(screen_canvas) = inputs.screen_canvas.clone() {
         *cached_canvas = Some(screen_canvas.clone());
         screen_canvas
     } else {
-        let rendered = render_effect(state, delta_secs, &inputs.audio, &inputs.interaction).await;
+        let rendered = render_effect(
+            state,
+            delta_secs,
+            &inputs.audio,
+            &inputs.interaction,
+            inputs.screen_data.as_ref(),
+        )
+        .await;
         *cached_canvas = Some(rendered.clone());
         rendered
     };
@@ -561,9 +581,14 @@ async fn current_effect_demand(state: &RenderThreadState) -> EffectDemand {
         && engine
             .active_metadata()
             .is_some_and(|meta| meta.audio_reactive);
+    let screen_capture_active = effect_running
+        && engine
+            .active_metadata()
+            .is_some_and(|meta| meta.screen_reactive);
     EffectDemand {
         effect_running,
         audio_capture_active,
+        screen_capture_active,
     }
 }
 
@@ -598,9 +623,10 @@ async fn reconcile_audio_capture(
 async fn maybe_idle_throttle(
     state: &RenderThreadState,
     effect_running: bool,
+    screen_capture_active: bool,
     idle_black_pushed: &mut bool,
 ) -> Option<FrameExecution> {
-    let can_idle_throttle = should_idle_throttle(effect_running, state.screen_capture_enabled);
+    let can_idle_throttle = should_idle_throttle(effect_running, screen_capture_active);
 
     if effect_running {
         *idle_black_pushed = false;
@@ -784,8 +810,8 @@ fn static_hold_canvas(width: u32, height: u32, color: [u8; 3]) -> Canvas {
     canvas
 }
 
-fn should_idle_throttle(effect_running: bool, screen_capture_enabled: bool) -> bool {
-    if effect_running || screen_capture_enabled {
+fn should_idle_throttle(effect_running: bool, screen_capture_active: bool) -> bool {
+    if effect_running || screen_capture_active {
         return false;
     }
 
@@ -857,6 +883,7 @@ async fn sample_inputs(state: &RenderThreadState, delta_secs: f32) -> FrameInput
     FrameInputs {
         audio,
         interaction,
+        screen_data,
         screen_canvas,
     }
 }
@@ -958,6 +985,13 @@ fn screen_data_to_canvas(
     canvas_width: u32,
     canvas_height: u32,
 ) -> Option<Canvas> {
+    if let Some(canvas) = &screen_data.canvas_downscale
+        && canvas.width() == canvas_width
+        && canvas.height() == canvas_height
+    {
+        return Some(canvas.clone());
+    }
+
     if canvas_width == 0 || canvas_height == 0 {
         return None;
     }
@@ -1044,10 +1078,11 @@ async fn render_effect(
     delta_secs: f32,
     audio: &AudioData,
     interaction: &InteractionData,
+    screen: Option<&ScreenData>,
 ) -> Canvas {
     let mut engine = state.effect_engine.lock().await;
 
-    match engine.tick_with_interaction(delta_secs, audio, interaction) {
+    match engine.tick_with_inputs(delta_secs, audio, interaction, screen) {
         Ok(canvas) => canvas,
         Err(e) => {
             warn!(error = %e, "effect render failed, producing black canvas");
@@ -1159,8 +1194,8 @@ mod tests {
 
     #[test]
     fn screen_data_to_canvas_maps_sector_colors() {
-        let screen_data = ScreenData {
-            zone_colors: vec![
+        let screen_data = ScreenData::from_zones(
+            vec![
                 ZoneColors {
                     zone_id: "screen:sector_0_0".to_owned(),
                     colors: vec![[255, 0, 0]],
@@ -1178,7 +1213,9 @@ mod tests {
                     colors: vec![[255, 255, 255]],
                 },
             ],
-        };
+            2,
+            2,
+        );
 
         let canvas = screen_data_to_canvas(&screen_data, 4, 4).expect("canvas should build");
         assert_eq!(canvas.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));

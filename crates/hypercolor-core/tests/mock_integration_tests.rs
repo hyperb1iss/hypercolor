@@ -483,6 +483,7 @@ fn effect_renderer_lifecycle_tracking() {
         frame_number: 0,
         audio: &audio,
         interaction: &interaction,
+        screen: None,
         canvas_width: 10,
         canvas_height: 10,
     };

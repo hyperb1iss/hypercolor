@@ -120,7 +120,6 @@ nusb = { version = "0.2.2", features = ["tokio"] }
 zbus = { version = "=5.13.0", default-features = false, features = ["tokio"] }
 
 # Screen capture
-xcap = "0.7"
 
 # HTTP / API
 axum = { version = "0.8", features = ["ws"] }

@@ -157,6 +157,7 @@ pub fn register_html_effects(
                 controls,
                 presets,
                 audio_reactive: parsed.audio_reactive,
+                screen_reactive: false,
                 source: EffectSource::Html {
                     path: source_path.clone(),
                 },

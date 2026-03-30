@@ -225,6 +225,7 @@ fn effect_metadata_matches_display_name_and_native_source_alias() {
         controls: Vec::new(),
         presets: Vec::new(),
         audio_reactive: false,
+        screen_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from("builtin/solid_color"),
         },
@@ -636,6 +637,7 @@ fn sample_metadata() -> EffectMetadata {
         controls: vec![sample_slider_control(), sample_dropdown_control()],
         presets: Vec::new(),
         audio_reactive: true,
+        screen_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from("native/aurora.wgsl"),
         },

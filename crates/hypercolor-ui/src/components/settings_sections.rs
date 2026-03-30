@@ -283,7 +283,6 @@ pub fn CaptureSection(
     let source_options = vec![
         ("auto".to_string(), "Auto".to_string()),
         ("pipewire".to_string(), "PipeWire".to_string()),
-        ("x11".to_string(), "X11".to_string()),
     ];
 
     view! {

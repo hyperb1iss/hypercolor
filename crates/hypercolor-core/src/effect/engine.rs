@@ -13,7 +13,7 @@ use hypercolor_types::effect::{ControlValidationError, ControlValue, EffectMetad
 
 use super::factory::create_renderer_for_metadata;
 use super::traits::{EffectRenderer, FrameInput};
-use crate::input::InteractionData;
+use crate::input::{InteractionData, ScreenData};
 
 // ── EffectEngine ─────────────────────────────────────────────────────────────
 
@@ -296,7 +296,7 @@ impl EffectEngine {
     ///
     /// Returns an error if the renderer's `tick` call fails.
     pub fn tick(&mut self, delta_secs: f32, audio: &AudioData) -> anyhow::Result<Canvas> {
-        self.tick_with_interaction(delta_secs, audio, &InteractionData::default())
+        self.tick_with_inputs(delta_secs, audio, &InteractionData::default(), None)
     }
 
     /// Produce a single frame with host interaction state.
@@ -312,6 +312,25 @@ impl EffectEngine {
         delta_secs: f32,
         audio: &AudioData,
         interaction: &InteractionData,
+    ) -> anyhow::Result<Canvas> {
+        self.tick_with_inputs(delta_secs, audio, interaction, None)
+    }
+
+    /// Produce a single frame with host interaction state and optional screen input.
+    ///
+    /// Native screen-reactive effects use `screen` to render from the latest
+    /// capture snapshot while HTML effects can safely ignore it until a binary
+    /// screen transport exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the renderer's `tick` call fails.
+    pub fn tick_with_inputs(
+        &mut self,
+        delta_secs: f32,
+        audio: &AudioData,
+        interaction: &InteractionData,
+        screen: Option<&ScreenData>,
     ) -> anyhow::Result<Canvas> {
         // If not running, return a blank canvas
         if self.state != EffectState::Running {
@@ -330,6 +349,7 @@ impl EffectEngine {
             frame_number: self.frame_number,
             audio,
             interaction,
+            screen,
             canvas_width: self.canvas_width,
             canvas_height: self.canvas_height,
         };

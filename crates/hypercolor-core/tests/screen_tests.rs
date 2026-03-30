@@ -523,6 +523,20 @@ fn screen_capture_input_produces_screen_data() {
     match data {
         InputData::Screen(screen) => {
             assert_eq!(screen.zone_colors.len(), 4, "2x2 grid = 4 zones");
+            assert_eq!(screen.grid_width, 2);
+            assert_eq!(screen.grid_height, 2);
+            assert_eq!(screen.source_width, 40);
+            assert_eq!(screen.source_height, 40);
+            let downscale = screen
+                .canvas_downscale
+                .as_ref()
+                .expect("screen data should include downscaled canvas");
+            assert_eq!(downscale.width(), 320);
+            assert_eq!(downscale.height(), 200);
+            assert_eq!(
+                downscale.get_pixel(0, 0),
+                hypercolor_core::types::canvas::Rgba::new(200, 100, 50, 255)
+            );
             for zc in &screen.zone_colors {
                 assert_eq!(zc.colors.len(), 1, "one color per zone");
                 assert_eq!(zc.colors[0], [200, 100, 50]);

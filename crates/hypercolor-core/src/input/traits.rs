@@ -5,6 +5,7 @@
 //! the render loop consumes per frame.
 
 use crate::types::audio::{AudioData, AudioPipelineConfig};
+use crate::types::canvas::Canvas;
 use crate::types::event::{InputEvent, ZoneColors};
 
 // ── InputData ──────────────────────────────────────────────────────────────
@@ -68,6 +69,31 @@ pub struct MouseData {
 pub struct ScreenData {
     /// Per-zone color data extracted from screen regions.
     pub zone_colors: Vec<ZoneColors>,
+    /// Grid width used when deriving `zone_colors`.
+    pub grid_width: u32,
+    /// Grid height used when deriving `zone_colors`.
+    pub grid_height: u32,
+    /// Downscaled screen image suitable for screen-reactive effects.
+    pub canvas_downscale: Option<Canvas>,
+    /// Source frame width in pixels.
+    pub source_width: u32,
+    /// Source frame height in pixels.
+    pub source_height: u32,
+}
+
+impl ScreenData {
+    /// Build screen data from zone colors only.
+    #[must_use]
+    pub fn from_zones(zone_colors: Vec<ZoneColors>, grid_width: u32, grid_height: u32) -> Self {
+        Self {
+            zone_colors,
+            grid_width,
+            grid_height,
+            canvas_downscale: None,
+            source_width: 0,
+            source_height: 0,
+        }
+    }
 }
 
 // ── InputSource ────────────────────────────────────────────────────────────

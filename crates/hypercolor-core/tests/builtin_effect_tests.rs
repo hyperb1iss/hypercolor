@@ -8,10 +8,11 @@ use std::sync::LazyLock;
 
 use hypercolor_core::effect::builtin::{
     AudioPulseRenderer, BreathingRenderer, ColorWaveRenderer, ColorZonesRenderer, GradientRenderer,
-    RainbowRenderer, SolidColorRenderer, create_builtin_renderer, register_builtin_effects,
+    RainbowRenderer, ScreenCastRenderer, SolidColorRenderer, create_builtin_renderer,
+    register_builtin_effects,
 };
 use hypercolor_core::effect::{EffectRegistry, EffectRenderer, FrameInput};
-use hypercolor_core::input::InteractionData;
+use hypercolor_core::input::{InteractionData, ScreenData};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::effect::{
@@ -38,6 +39,7 @@ fn make_metadata(name: &str) -> EffectMetadata {
         controls: Vec::new(),
         presets: Vec::new(),
         audio_reactive: false,
+        screen_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from(format!("builtin/{name}")),
         },
@@ -52,6 +54,7 @@ fn frame(time_secs: f32, frame_number: u64) -> FrameInput<'static> {
         frame_number,
         audio: &SILENCE,
         interaction: &DEFAULT_INTERACTION,
+        screen: None,
         canvas_width: W,
         canvas_height: H,
     }
@@ -64,8 +67,45 @@ fn frame_with_audio(time_secs: f32, audio: &AudioData) -> FrameInput<'_> {
         frame_number: 0,
         audio,
         interaction: &DEFAULT_INTERACTION,
+        screen: None,
         canvas_width: W,
         canvas_height: H,
+    }
+}
+
+fn frame_with_screen<'a>(time_secs: f32, screen: &'a ScreenData) -> FrameInput<'a> {
+    FrameInput {
+        time_secs,
+        delta_secs: 1.0 / 60.0,
+        frame_number: 0,
+        audio: &SILENCE,
+        interaction: &DEFAULT_INTERACTION,
+        screen: Some(screen),
+        canvas_width: W,
+        canvas_height: H,
+    }
+}
+
+fn make_screen_data() -> ScreenData {
+    let mut canvas = Canvas::new(4, 2);
+    for y in 0..2 {
+        for x in 0..4 {
+            let color = if x < 2 {
+                Rgba::new(255, 0, 0, 255)
+            } else {
+                Rgba::new(0, 0, 255, 255)
+            };
+            canvas.set_pixel(x, y, color);
+        }
+    }
+
+    ScreenData {
+        zone_colors: Vec::new(),
+        grid_width: 0,
+        grid_height: 0,
+        canvas_downscale: Some(canvas),
+        source_width: 4,
+        source_height: 2,
     }
 }
 
@@ -674,6 +714,7 @@ fn audio_pulse_full_lifecycle() {
             frame_number: i,
             audio: &audio,
             interaction: &DEFAULT_INTERACTION,
+            screen: None,
             canvas_width: W,
             canvas_height: H,
         };
@@ -778,6 +819,40 @@ fn color_wave_direction_accepts_vertical_pass() {
     );
 }
 
+#[test]
+fn screen_cast_initializes() {
+    let mut r = ScreenCastRenderer::new();
+    r.init(&make_metadata("screen_cast"))
+        .expect("init should succeed");
+}
+
+#[test]
+fn screen_cast_renders_capture_frame() {
+    let mut r = ScreenCastRenderer::new();
+    r.init(&make_metadata("screen_cast")).expect("init");
+    let screen = make_screen_data();
+
+    let canvas = r.tick(&frame_with_screen(0.0, &screen)).expect("tick");
+
+    assert_eq!(canvas.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
+    assert_eq!(canvas.get_pixel(W - 1, 0), Rgba::new(0, 0, 255, 255));
+}
+
+#[test]
+fn screen_cast_frame_controls_crop_region() {
+    let mut r = ScreenCastRenderer::new();
+    r.init(&make_metadata("screen_cast")).expect("init");
+    r.set_control("frame_x", &ControlValue::Float(0.5));
+    r.set_control("frame_width", &ControlValue::Float(0.5));
+    r.set_control("fit_mode", &ControlValue::Enum("Stretch".into()));
+    let screen = make_screen_data();
+
+    let canvas = r.tick(&frame_with_screen(0.0, &screen)).expect("tick");
+
+    assert_eq!(canvas.get_pixel(0, 0), Rgba::new(0, 0, 255, 255));
+    assert_eq!(canvas.get_pixel(W - 1, H - 1), Rgba::new(0, 0, 255, 255));
+}
+
 // ── Factory & Registry Tests ────────────────────────────────────────────────
 
 #[test]
@@ -790,6 +865,7 @@ fn factory_creates_all_builtins() {
         "audio_pulse",
         "color_wave",
         "color_zones",
+        "screen_cast",
     ];
 
     for name in &names {
@@ -814,7 +890,7 @@ fn register_builtin_effects_populates_registry() {
     let mut registry = EffectRegistry::default();
     register_builtin_effects(&mut registry);
 
-    assert_eq!(registry.len(), 7, "should register all 7 built-in effects");
+    assert_eq!(registry.len(), 8, "should register all 8 built-in effects");
 
     // Verify category filtering works
     let ambient = registry.by_category(EffectCategory::Ambient);
@@ -822,6 +898,9 @@ fn register_builtin_effects_populates_registry() {
 
     let audio = registry.by_category(EffectCategory::Audio);
     assert_eq!(audio.len(), 1, "1 audio effect expected");
+
+    let utility = registry.by_category(EffectCategory::Utility);
+    assert_eq!(utility.len(), 1, "1 utility effect expected");
 }
 
 #[test]
@@ -837,6 +916,7 @@ fn registered_builtins_use_human_readable_names_and_stable_native_keys() {
         ("Audio Pulse", "audio_pulse"),
         ("Color Wave", "color_wave"),
         ("Color Zones", "color_zones"),
+        ("Screen Cast", "screen_cast"),
     ];
 
     for (display_name, source_key) in expected {
@@ -1249,4 +1329,31 @@ fn color_zones_metadata_includes_zone_controls() {
     assert!(ids.contains(&"blend"), "should have blend control");
     assert!(ids.contains(&"zone_1"), "should have zone_1 control");
     assert!(ids.contains(&"zone_9"), "should have zone_9 control");
+}
+
+#[test]
+fn screen_cast_metadata_exposes_frame_controls() {
+    let mut registry = EffectRegistry::default();
+    register_builtin_effects(&mut registry);
+
+    let (_, entry) = registry
+        .iter()
+        .find(|(_, entry)| entry.metadata.source.source_stem() == Some("screen_cast"))
+        .expect("Screen Cast should be registered");
+    let ids: Vec<&str> = entry
+        .metadata
+        .controls
+        .iter()
+        .map(hypercolor_types::effect::ControlDefinition::control_id)
+        .collect();
+
+    assert!(
+        entry.metadata.screen_reactive,
+        "screen cast should request screen input"
+    );
+    assert!(ids.contains(&"frame_x"), "should expose frame_x");
+    assert!(ids.contains(&"frame_y"), "should expose frame_y");
+    assert!(ids.contains(&"frame_width"), "should expose frame_width");
+    assert!(ids.contains(&"frame_height"), "should expose frame_height");
+    assert!(ids.contains(&"fit_mode"), "should expose fit_mode");
 }

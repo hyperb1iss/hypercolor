@@ -8,7 +8,7 @@ use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 
-use crate::input::InteractionData;
+use crate::input::{InteractionData, ScreenData};
 
 // ── FrameInput ───────────────────────────────────────────────────────────────
 
@@ -34,6 +34,9 @@ pub struct FrameInput<'a> {
 
     /// Host keyboard and mouse state for interactive HTML effects.
     pub interaction: &'a InteractionData,
+
+    /// Latest screen-capture snapshot for screen-reactive effects.
+    pub screen: Option<&'a ScreenData>,
 
     /// Target canvas width in pixels.
     pub canvas_width: u32,

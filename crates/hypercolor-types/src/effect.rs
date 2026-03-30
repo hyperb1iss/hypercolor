@@ -538,6 +538,9 @@ pub struct EffectMetadata {
     /// Indicates whether the effect expects audio payload injection.
     #[serde(default)]
     pub audio_reactive: bool,
+    /// Indicates whether the effect expects screen capture payload injection.
+    #[serde(default)]
+    pub screen_reactive: bool,
     /// How this effect is rendered. Determines the renderer path.
     pub source: EffectSource,
     /// SPDX license identifier (e.g. `"MIT"`, `"Apache-2.0"`).

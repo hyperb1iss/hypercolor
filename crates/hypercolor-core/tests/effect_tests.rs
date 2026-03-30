@@ -94,6 +94,7 @@ fn sample_metadata() -> EffectMetadata {
         controls: Vec::new(),
         presets: Vec::new(),
         audio_reactive: false,
+        screen_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from("native/test-aurora.wgsl"),
         },
@@ -146,6 +147,7 @@ fn builtin_metadata(name: &str) -> EffectMetadata {
         controls: Vec::new(),
         presets: Vec::new(),
         audio_reactive: false,
+        screen_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from(format!("builtin/{name}")),
         },
@@ -166,6 +168,7 @@ fn sample_entry(name: &str, category: EffectCategory, tags: Vec<&str>) -> Effect
             controls: Vec::new(),
             presets: Vec::new(),
             audio_reactive: false,
+            screen_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from(format!("native/{name}.wgsl")),
             },
@@ -189,6 +192,7 @@ fn frame_input_construction() {
         frame_number: 90,
         audio: &audio,
         interaction: &interaction,
+        screen: None,
         canvas_width: DEFAULT_CANVAS_WIDTH,
         canvas_height: DEFAULT_CANVAS_HEIGHT,
     };
@@ -210,6 +214,7 @@ fn frame_input_clone() {
         frame_number: 60,
         audio: &audio,
         interaction: &interaction,
+        screen: None,
         canvas_width: 320,
         canvas_height: 200,
     };
@@ -506,6 +511,7 @@ fn engine_activate_metadata_html_requires_servo_feature() {
         controls: Vec::new(),
         presets: Vec::new(),
         audio_reactive: false,
+        screen_reactive: false,
         source: EffectSource::Html {
             path: PathBuf::from("community/test.html"),
         },
@@ -565,6 +571,7 @@ fn registry_register_replaces_existing() {
             controls: Vec::new(),
             presets: Vec::new(),
             audio_reactive: false,
+            screen_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("native/aurora.wgsl"),
             },
@@ -587,6 +594,7 @@ fn registry_register_replaces_existing() {
             controls: Vec::new(),
             presets: Vec::new(),
             audio_reactive: false,
+            screen_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("native/aurora.wgsl"),
             },

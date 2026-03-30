@@ -145,6 +145,11 @@ impl InputSource for MockScreenSource {
 
         Ok(InputData::Screen(ScreenData {
             zone_colors: self.zone_colors.clone(),
+            grid_width: 0,
+            grid_height: 0,
+            canvas_downscale: None,
+            source_width: 0,
+            source_height: 0,
         }))
     }
 
@@ -336,7 +341,6 @@ fn make_render_state(
         )))),
         canvas_width: 320,
         canvas_height: 200,
-        screen_capture_enabled: false,
     }
 }
 
@@ -809,7 +813,6 @@ async fn pipeline_renders_active_effect_to_devices() {
         )))),
         canvas_width: 320,
         canvas_height: 200,
-        screen_capture_enabled: false,
     };
 
     // Start.
@@ -959,7 +962,6 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         )))),
         canvas_width: 320,
         canvas_height: 200,
-        screen_capture_enabled: false,
     };
 
     {
@@ -1179,7 +1181,6 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         )))),
         canvas_width: 320,
         canvas_height: 200,
-        screen_capture_enabled: false,
     };
 
     let mut frame_rx = state.event_bus.frame_receiver();

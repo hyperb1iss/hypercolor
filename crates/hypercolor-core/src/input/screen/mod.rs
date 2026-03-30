@@ -22,6 +22,7 @@ pub use sector::{LetterboxBars, SectorGrid};
 pub use smooth::TemporalSmoother;
 
 use crate::input::traits::{InputData, InputSource, ScreenData};
+use crate::types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use crate::types::event::ZoneColors;
 
 // ── CaptureConfig ─────────────────────────────────────────────────────────
@@ -113,6 +114,9 @@ pub struct ScreenCaptureInput {
     /// Latest zone IDs corresponding to `latest_colors`.
     latest_zone_ids: Vec<String>,
 
+    /// Latest downscaled capture frame for screen-reactive effects.
+    latest_canvas_downscale: Option<Canvas>,
+
     /// Whether the source is actively capturing.
     running: bool,
 
@@ -135,6 +139,7 @@ impl ScreenCaptureInput {
             smoother,
             latest_colors: None,
             latest_zone_ids: Vec::new(),
+            latest_canvas_downscale: None,
             running: false,
             frame_width: 0,
             frame_height: 0,
@@ -155,6 +160,13 @@ impl ScreenCaptureInput {
     pub fn push_frame(&mut self, frame: &[u8], width: u32, height: u32) {
         self.frame_width = width;
         self.frame_height = height;
+        self.latest_canvas_downscale = downscale_frame(
+            frame,
+            width,
+            height,
+            DEFAULT_CANVAS_WIDTH,
+            DEFAULT_CANVAS_HEIGHT,
+        );
 
         // 1. Compute sector grid from raw pixels.
         let grid = SectorGrid::compute(
@@ -216,12 +228,14 @@ impl InputSource for ScreenCaptureInput {
         self.running = true;
         self.smoother.reset();
         self.latest_colors = None;
+        self.latest_canvas_downscale = None;
         Ok(())
     }
 
     fn stop(&mut self) {
         self.running = false;
         self.latest_colors = None;
+        self.latest_canvas_downscale = None;
         self.smoother.reset();
     }
 
@@ -240,10 +254,75 @@ impl InputSource for ScreenCaptureInput {
             })
             .collect();
 
-        Ok(InputData::Screen(ScreenData { zone_colors }))
+        Ok(InputData::Screen(ScreenData {
+            zone_colors,
+            grid_width: self.config.grid_cols,
+            grid_height: self.config.grid_rows,
+            canvas_downscale: self.latest_canvas_downscale.clone(),
+            source_width: self.frame_width,
+            source_height: self.frame_height,
+        }))
     }
 
     fn is_running(&self) -> bool {
         self.running
     }
+}
+
+fn downscale_frame(
+    frame: &[u8],
+    width: u32,
+    height: u32,
+    target_width: u32,
+    target_height: u32,
+) -> Option<Canvas> {
+    if width == 0 || height == 0 || target_width == 0 || target_height == 0 {
+        return None;
+    }
+
+    let expected_len = usize::try_from(width)
+        .ok()
+        .and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h)))
+        .and_then(|pixels| pixels.checked_mul(4))?;
+    if frame.len() < expected_len {
+        return None;
+    }
+
+    let mut canvas = Canvas::new(target_width, target_height);
+    let bytes = canvas.as_rgba_bytes_mut();
+    let src_width = usize::try_from(width).ok()?;
+    let target_width_usize = usize::try_from(target_width).ok()?;
+
+    for y in 0..target_height {
+        let src_y = u32::min(
+            (u64::from(y) * u64::from(height) / u64::from(target_height))
+                .try_into()
+                .ok()
+                .unwrap_or_default(),
+            height.saturating_sub(1),
+        );
+        let src_y_usize = usize::try_from(src_y).ok()?;
+        for x in 0..target_width {
+            let src_x = u32::min(
+                (u64::from(x) * u64::from(width) / u64::from(target_width))
+                    .try_into()
+                    .ok()
+                    .unwrap_or_default(),
+                width.saturating_sub(1),
+            );
+            let src_x_usize = usize::try_from(src_x).ok()?;
+            let src_idx = src_y_usize
+                .checked_mul(src_width)?
+                .checked_add(src_x_usize)?
+                .checked_mul(4)?;
+            let dst_idx = usize::try_from(y)
+                .ok()?
+                .checked_mul(target_width_usize)?
+                .checked_add(usize::try_from(x).ok()?)?
+                .checked_mul(4)?;
+            bytes[dst_idx..dst_idx + 4].copy_from_slice(&frame[src_idx..src_idx + 4]);
+        }
+    }
+
+    Some(canvas)
 }

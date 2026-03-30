@@ -152,7 +152,7 @@ impl InputSource for MockScreenSource {
                 colors: vec![[128, 64, 32]; 10],
             })
             .collect();
-        Ok(InputData::Screen(ScreenData { zone_colors: zones }))
+        Ok(InputData::Screen(ScreenData::from_zones(zones, 0, 0)))
     }
 
     fn is_running(&self) -> bool {

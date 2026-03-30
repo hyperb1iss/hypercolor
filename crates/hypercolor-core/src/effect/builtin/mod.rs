@@ -15,6 +15,7 @@
 //! | `audio_pulse`   | Audio          | RMS + beat-reactive color modulation             |
 //! | `color_wave`    | Ambient        | Traveling wavefront bands with fade trails       |
 //! | `color_zones`   | Ambient        | Multi-zone color grid with per-zone control      |
+//! | `screen_cast`   | Utility        | Live screen crop with aspect-fit controls        |
 
 mod audio_pulse;
 mod breathing;
@@ -22,6 +23,7 @@ mod color_wave;
 mod color_zones;
 mod gradient;
 mod rainbow;
+mod screen_cast;
 mod solid_color;
 
 use std::path::PathBuf;
@@ -35,6 +37,7 @@ pub use self::color_wave::ColorWaveRenderer;
 pub use self::color_zones::ColorZonesRenderer;
 pub use self::gradient::GradientRenderer;
 pub use self::rainbow::RainbowRenderer;
+pub use self::screen_cast::ScreenCastRenderer;
 pub use self::solid_color::SolidColorRenderer;
 use super::registry::{EffectEntry, EffectRegistry};
 use super::traits::EffectRenderer;
@@ -139,6 +142,69 @@ fn dropdown_control(
         group: Some(group.to_owned()),
         tooltip: Some(tooltip.to_owned()),
     }
+}
+
+fn screen_cast_controls() -> Vec<ControlDefinition> {
+    vec![
+        slider_control(
+            "frame_x",
+            "Frame X",
+            0.0,
+            0.0,
+            1.0,
+            0.01,
+            "Frame",
+            "Normalized left edge of the capture frame.",
+        ),
+        slider_control(
+            "frame_y",
+            "Frame Y",
+            0.0,
+            0.0,
+            1.0,
+            0.01,
+            "Frame",
+            "Normalized top edge of the capture frame.",
+        ),
+        slider_control(
+            "frame_width",
+            "Frame Width",
+            1.0,
+            0.05,
+            1.0,
+            0.01,
+            "Frame",
+            "Normalized width of the captured region.",
+        ),
+        slider_control(
+            "frame_height",
+            "Frame Height",
+            1.0,
+            0.05,
+            1.0,
+            0.01,
+            "Frame",
+            "Normalized height of the captured region.",
+        ),
+        dropdown_control(
+            "fit_mode",
+            "Fit Mode",
+            "Contain",
+            &["Contain", "Cover", "Stretch"],
+            "Frame",
+            "How the selected capture frame maps onto the effect canvas.",
+        ),
+        slider_control(
+            "brightness",
+            "Brightness",
+            1.0,
+            0.0,
+            1.0,
+            0.01,
+            "Output",
+            "Master output brightness for the sampled screen image.",
+        ),
+    ]
 }
 
 fn solid_color_controls() -> Vec<ControlDefinition> {
@@ -1490,6 +1556,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             controls: solid_color_controls(),
             presets: Vec::new(),
             audio_reactive: false,
+            screen_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/solid_color"),
             },
@@ -1513,6 +1580,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             controls: gradient_controls(),
             presets: gradient_presets(),
             audio_reactive: false,
+            screen_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/gradient"),
             },
@@ -1529,6 +1597,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             controls: rainbow_controls(),
             presets: Vec::new(),
             audio_reactive: false,
+            screen_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/rainbow"),
             },
@@ -1545,6 +1614,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             controls: breathing_controls(),
             presets: breathing_presets(),
             audio_reactive: false,
+            screen_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/breathing"),
             },
@@ -1566,6 +1636,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             controls: audio_pulse_controls(),
             presets: audio_pulse_presets(),
             audio_reactive: true,
+            screen_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/audio_pulse"),
             },
@@ -1584,6 +1655,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             controls: color_wave_controls(),
             presets: color_wave_presets(),
             audio_reactive: false,
+            screen_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/color_wave"),
             },
@@ -1607,8 +1679,32 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             controls: color_zones_controls(),
             presets: color_zones_presets(),
             audio_reactive: false,
+            screen_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/color_zones"),
+            },
+            license: Some("Apache-2.0".into()),
+        },
+        EffectMetadata {
+            id: builtin_effect_id("screen_cast"),
+            name: "Screen Cast".into(),
+            author: "Hypercolor".into(),
+            version: "0.1.0".into(),
+            description: "Live Wayland screen crop with contain, cover, and stretch fit modes"
+                .into(),
+            category: EffectCategory::Utility,
+            tags: vec![
+                "screen".into(),
+                "capture".into(),
+                "utility".into(),
+                "wayland".into(),
+            ],
+            controls: screen_cast_controls(),
+            presets: Vec::new(),
+            audio_reactive: false,
+            screen_reactive: true,
+            source: EffectSource::Native {
+                path: PathBuf::from("builtin/screen_cast"),
             },
             license: Some("Apache-2.0".into()),
         },
@@ -1666,6 +1762,7 @@ pub fn create_builtin_renderer(name: &str) -> Option<Box<dyn EffectRenderer>> {
         "audio_pulse" => Some(Box::new(AudioPulseRenderer::new())),
         "color_wave" => Some(Box::new(ColorWaveRenderer::new())),
         "color_zones" => Some(Box::new(ColorZonesRenderer::new())),
+        "screen_cast" => Some(Box::new(ScreenCastRenderer::new())),
         _ => None,
     }
 }
