@@ -1,10 +1,14 @@
 //! Composite USB MIDI + bulk transport used by Ableton Push 2-class devices.
 
 use std::fmt::Write as _;
+#[cfg(target_os = "linux")]
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
+use alsa::seq::Seq;
 use async_trait::async_trait;
 use midir::{
     ConnectError, Ignore, InitError, MidiIO, MidiInput, MidiInputConnection, MidiOutput,
@@ -24,6 +28,30 @@ const SYSEX_QUEUE_DEPTH: usize = 32;
 enum Push2MidiPortRole {
     Live,
     User,
+}
+
+trait Push2PortIdentity {
+    fn push2_port_id(&self) -> String;
+}
+
+impl Push2PortIdentity for midir::MidiInputPort {
+    fn push2_port_id(&self) -> String {
+        self.id()
+    }
+}
+
+impl Push2PortIdentity for midir::MidiOutputPort {
+    fn push2_port_id(&self) -> String {
+        self.id()
+    }
+}
+
+#[derive(Clone)]
+struct Push2PortMatch<P> {
+    port: P,
+    name: String,
+    port_id: String,
+    usb_path: Option<String>,
 }
 
 /// Composite transport that routes `Primary` traffic over MIDI and `Bulk`
@@ -354,7 +382,10 @@ fn find_push2_port<T: MidiIO>(
     product_id: u16,
     serial: Option<&str>,
     usb_path: Option<&str>,
-) -> Result<T::Port, TransportError> {
+) -> Result<T::Port, TransportError>
+where
+    T::Port: Push2PortIdentity,
+{
     let identity = format_device_identity(vendor_id, product_id, serial, usb_path);
     let matches = io
         .ports()
@@ -362,12 +393,23 @@ fn find_push2_port<T: MidiIO>(
         .filter_map(|port| {
             let name = io.port_name(&port).ok()?;
             let role = classify_push2_port(&name)?;
-            (role == expected_role).then_some((port, name))
+            if role != expected_role {
+                return None;
+            }
+
+            let port_id = port.push2_port_id();
+            Some(Push2PortMatch {
+                usb_path: resolve_midi_port_usb_path(&port_id),
+                port,
+                name,
+                port_id,
+            })
         })
         .collect::<Vec<_>>();
 
+    let matches = filter_push2_port_matches(matches, usb_path);
     match matches.as_slice() {
-        [(port, _name)] => Ok(port.clone()),
+        [port] => Ok(port.port.clone()),
         [] => Err(TransportError::NotFound {
             detail: format!(
                 "no Push 2 {direction} MIDI port found for {identity} ({expected_role:?})"
@@ -378,7 +420,7 @@ fn find_push2_port<T: MidiIO>(
                 "multiple Push 2 {direction} MIDI ports matched for {identity} ({expected_role:?}): {}",
                 matches
                     .iter()
-                    .map(|(_port, name)| name.as_str())
+                    .map(describe_push2_port_match)
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -404,6 +446,153 @@ fn classify_push2_port(name: &str) -> Option<Push2MidiPortRole> {
         0 => Some(Push2MidiPortRole::Live),
         1 => Some(Push2MidiPortRole::User),
         _ => None,
+    }
+}
+
+fn filter_push2_port_matches<P>(
+    mut matches: Vec<Push2PortMatch<P>>,
+    requested_usb_path: Option<&str>,
+) -> Vec<Push2PortMatch<P>> {
+    let Some(requested_usb_path) = requested_usb_path else {
+        return matches;
+    };
+
+    let any_usb_paths = matches.iter().any(|candidate| candidate.usb_path.is_some());
+    if any_usb_paths {
+        matches.retain(|candidate| {
+            candidate
+                .usb_path
+                .as_deref()
+                .is_some_and(|candidate_path| usb_paths_match(candidate_path, requested_usb_path))
+        });
+    }
+
+    matches
+}
+
+fn describe_push2_port_match<P>(candidate: &Push2PortMatch<P>) -> String {
+    format!(
+        "{}(id={}, usb_path={})",
+        candidate.name,
+        candidate.port_id,
+        candidate.usb_path.as_deref().unwrap_or("<unknown>")
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_midi_port_usb_path(port_id: &str) -> Option<String> {
+    let (client, _port) = port_id.split_once(':')?;
+    let client = client.parse::<i32>().ok()?;
+    let seq = Seq::open(None, None, true).ok()?;
+    let client_info = seq.get_any_client_info(client).ok()?;
+    let card = client_info.get_card().ok()?;
+    sound_card_usb_path(card)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn resolve_midi_port_usb_path(_port_id: &str) -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn sound_card_usb_path(card: i32) -> Option<String> {
+    let card_path = Path::new("/sys/class/sound").join(format!("card{card}"));
+    let canonical = std::fs::canonicalize(card_path).ok()?;
+    usb_path_from_sysfs_path(&canonical)
+}
+
+#[cfg(target_os = "linux")]
+fn usb_path_from_sysfs_path(path: &Path) -> Option<String> {
+    for component in path.components() {
+        let value = component.as_os_str().to_string_lossy();
+        let Some((usb_path, _interface_suffix)) = value.split_once(':') else {
+            continue;
+        };
+        if usb_path.contains('-') {
+            return Some(usb_path.to_owned());
+        }
+    }
+
+    None
+}
+
+fn usb_paths_match(candidate: &str, requested: &str) -> bool {
+    if candidate == requested {
+        return true;
+    }
+
+    match (normalize_usb_path(candidate), normalize_usb_path(requested)) {
+        (Some(candidate), Some(requested)) => candidate == requested,
+        _ => false,
+    }
+}
+
+fn normalize_usb_path(path: &str) -> Option<String> {
+    let (bus, ports) = path.split_once('-')?;
+    let bus = bus.parse::<u16>().ok()?;
+    Some(format!("{bus}-{ports}"))
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn classify_push2_port_for_testing(name: &str) -> Option<&'static str> {
+    match classify_push2_port(name)? {
+        Push2MidiPortRole::Live => Some("live"),
+        Push2MidiPortRole::User => Some("user"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+#[must_use]
+pub fn midi_usb_path_from_sound_card_sysfs_for_testing(path: &str) -> Option<String> {
+    usb_path_from_sysfs_path(Path::new(path))
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn midi_usb_paths_match_for_testing(candidate: &str, requested: &str) -> bool {
+    usb_paths_match(candidate, requested)
+}
+
+#[doc(hidden)]
+pub fn select_push2_port_identity_for_testing(
+    candidates: &[(&str, &str, Option<&str>)],
+    expected_role: &str,
+    requested_usb_path: Option<&str>,
+) -> Result<String, String> {
+    let expected_role = match expected_role {
+        "live" => Push2MidiPortRole::Live,
+        "user" => Push2MidiPortRole::User,
+        other => return Err(format!("unknown expected role '{other}'")),
+    };
+
+    let matches = candidates
+        .iter()
+        .filter_map(|(name, port_id, usb_path)| {
+            let role = classify_push2_port(name)?;
+            if role != expected_role {
+                return None;
+            }
+
+            Some(Push2PortMatch {
+                port: (*port_id).to_owned(),
+                name: (*name).to_owned(),
+                port_id: (*port_id).to_owned(),
+                usb_path: usb_path.map(ToOwned::to_owned),
+            })
+        })
+        .collect::<Vec<_>>();
+    let matches = filter_push2_port_matches(matches, requested_usb_path);
+
+    match matches.as_slice() {
+        [port] => Ok(port.port.clone()),
+        [] => Err("no matching Push 2 test port".to_owned()),
+        _ => Err(matches
+            .iter()
+            .map(describe_push2_port_match)
+            .collect::<Vec<_>>()
+            .join(", ")),
     }
 }
 

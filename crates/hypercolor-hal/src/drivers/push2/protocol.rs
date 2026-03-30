@@ -31,6 +31,7 @@ const PUSH2_WHITE_SLOT_COUNT: u8 = 31;
 const PUSH2_DISPLAY_WIDTH: usize = 960;
 const PUSH2_DISPLAY_HEIGHT: usize = 160;
 const PUSH2_DISPLAY_PACKET_SIZE: usize = 512;
+const PUSH2_DISPLAY_TRANSFER_CHUNK: usize = 16 * 1024;
 const PUSH2_DISPLAY_LINE_PIXELS: usize = PUSH2_DISPLAY_WIDTH * 2;
 const PUSH2_DISPLAY_LINE_PADDING: usize = 128;
 const PUSH2_DISPLAY_LINE_SIZE: usize = PUSH2_DISPLAY_LINE_PIXELS + PUSH2_DISPLAY_LINE_PADDING;
@@ -38,6 +39,16 @@ const PUSH2_DEFAULT_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const PUSH2_IDENTITY_REQUEST: [u8; 6] = [0xF0, 0x7E, 0x01, 0x06, 0x01, 0xF7];
 const PUSH2_MANUFACTURER_PREFIX: [u8; 6] = [0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01];
 const PUSH2_DISPLAY_XOR_MASK: [u8; 4] = [0xE7, 0xF3, 0xE7, 0xFF];
+const PUSH2_REAPPLY_PALETTE_MESSAGE: [u8; 8] = [
+    0xF0,
+    0x00,
+    0x21,
+    0x1D,
+    0x01,
+    0x01,
+    PUSH2_CMD_REAPPLY_PALETTE,
+    0xF7,
+];
 const PUSH2_CMD_SET_PALETTE_ENTRY: u8 = 0x03;
 const PUSH2_CMD_GET_PALETTE_ENTRY: u8 = 0x04;
 const PUSH2_CMD_REAPPLY_PALETTE: u8 = 0x05;
@@ -68,6 +79,10 @@ const WHITE_BUTTON_CC_MAP: [u8; PUSH2_WHITE_BUTTON_COUNT] = [
     90, 110, 111, 112, 113, 116, 117, 118, 119, 56, 57, 58, 60,
 ];
 
+const _: () = assert!(
+    PUSH2_DISPLAY_TRANSFER_CHUNK.is_multiple_of(PUSH2_DISPLAY_PACKET_SIZE),
+    "Push2 display transfer chunk size must align to the USB packet size"
+);
 const _: () = assert!(
     std::mem::size_of::<Push2DisplayHeader>() == 16,
     "Push2DisplayHeader must be exactly 16 bytes"
@@ -167,19 +182,15 @@ impl Push2Protocol {
                 continue;
             }
 
-            commands.push(primary_command(
-                set_palette_entry_message(u8::try_from(index).unwrap_or(u8::MAX), factory),
-                false,
-            ));
+            let message =
+                set_palette_entry_message(u8::try_from(index).unwrap_or(u8::MAX), factory);
+            commands.push(primary_command_slice(&message, false));
             state.palette[index] = factory;
             restored_any = true;
         }
 
         if restored_any {
-            commands.push(primary_command(
-                push2_sysex(PUSH2_CMD_REAPPLY_PALETTE, &[]),
-                false,
-            ));
+            commands.push(primary_command_slice(&PUSH2_REAPPLY_PALETTE_MESSAGE, false));
         }
 
         commands
@@ -191,6 +202,7 @@ impl Push2Protocol {
     )]
     fn build_display_commands(&self, rgb_bytes: &[u8], commands: &mut Vec<ProtocolCommand>) {
         let mut buffer = CommandBuffer::new(commands);
+        let mut transfer_chunk = Vec::with_capacity(PUSH2_DISPLAY_TRANSFER_CHUNK);
         buffer.push_struct(
             &DISPLAY_HEADER,
             false,
@@ -216,15 +228,30 @@ impl Push2Protocol {
 
             xor_shape_line(&mut line);
 
-            for chunk in line.as_bytes().chunks(PUSH2_DISPLAY_PACKET_SIZE) {
+            if transfer_chunk.len() + PUSH2_DISPLAY_LINE_SIZE > PUSH2_DISPLAY_TRANSFER_CHUNK
+                && !transfer_chunk.is_empty()
+            {
                 buffer.push_slice(
-                    chunk,
+                    &transfer_chunk,
                     false,
                     Duration::ZERO,
                     Duration::ZERO,
                     TransferType::Bulk,
                 );
+                transfer_chunk.clear();
             }
+
+            transfer_chunk.extend_from_slice(line.as_bytes());
+        }
+
+        if !transfer_chunk.is_empty() {
+            buffer.push_slice(
+                &transfer_chunk,
+                false,
+                Duration::ZERO,
+                Duration::ZERO,
+                TransferType::Bulk,
+            );
         }
 
         buffer.finish();
@@ -284,11 +311,12 @@ impl Protocol for Push2Protocol {
     }
 
     fn shutdown_sequence(&self) -> Vec<ProtocolCommand> {
+        let mut commands = all_leds_off_commands();
         let mut state = self
             .state
             .write()
             .expect("Push 2 state lock should not be poisoned");
-        let mut commands = Self::restore_factory_palette_commands(&mut state);
+        commands.extend(Self::restore_factory_palette_commands(&mut state));
         state.prev_led_indices = [0; PUSH2_MIDI_LED_COUNT];
         state.prev_touch_strip = [0; PUSH2_TOUCH_STRIP_LED_COUNT];
         drop(state);
@@ -349,8 +377,9 @@ impl Protocol for Push2Protocol {
                 let free_slot = next_free_slot(&assigned_slots)
                     .expect("Push 2 RGB zones use at most 92 unique colors");
                 if state.palette[usize::from(free_slot)] != entry {
+                    let message = set_palette_entry_message(free_slot, entry);
                     command_buffer.push_slice(
-                        &set_palette_entry_message(free_slot, entry),
+                        &message,
                         false,
                         Duration::ZERO,
                         Duration::ZERO,
@@ -369,8 +398,9 @@ impl Protocol for Push2Protocol {
             let (slot, entry) = white_button_palette_slot(*color);
             white_button_slots[index] = slot;
             if slot != 0 && state.palette[usize::from(slot)] != entry {
+                let message = set_palette_entry_message(slot, entry);
                 command_buffer.push_slice(
-                    &set_palette_entry_message(slot, entry),
+                    &message,
                     false,
                     Duration::ZERO,
                     Duration::ZERO,
@@ -383,7 +413,7 @@ impl Protocol for Push2Protocol {
 
         if palette_dirty {
             command_buffer.push_slice(
-                &push2_sysex(PUSH2_CMD_REAPPLY_PALETTE, &[]),
+                &PUSH2_REAPPLY_PALETTE_MESSAGE,
                 false,
                 Duration::ZERO,
                 Duration::ZERO,
@@ -447,8 +477,9 @@ impl Protocol for Push2Protocol {
         let strip_levels = quantize_touch_strip(touch_strip_colors);
         if strip_levels != state.prev_touch_strip {
             let packed = encode_touch_strip(&strip_levels);
+            let message = touch_strip_message(&packed);
             command_buffer.push_slice(
-                &push2_sysex(PUSH2_CMD_SET_TOUCH_STRIP_LEDS, &packed),
+                &message,
                 false,
                 Duration::ZERO,
                 Duration::ZERO,
@@ -500,7 +531,7 @@ impl Protocol for Push2Protocol {
             });
         }
 
-        if data.len() < 8 || data[1..7] != [0x00, 0x21, 0x1D, 0x01, 0x01, data[6]] {
+        if data.len() < 8 || data[1..6] != [0x00, 0x21, 0x1D, 0x01, 0x01] {
             return Err(ProtocolError::MalformedResponse {
                 detail: "response did not include the Push 2 manufacturer header".to_owned(),
             });
@@ -630,6 +661,16 @@ fn primary_command(data: Vec<u8>, expects_response: bool) -> ProtocolCommand {
     }
 }
 
+fn primary_command_slice(data: &[u8], expects_response: bool) -> ProtocolCommand {
+    ProtocolCommand {
+        data: data.to_vec(),
+        expects_response,
+        response_delay: Duration::ZERO,
+        post_delay: Duration::ZERO,
+        transfer_type: TransferType::Primary,
+    }
+}
+
 fn push2_sysex(command: u8, args: &[u8]) -> Vec<u8> {
     let mut message = Vec::with_capacity(PUSH2_MANUFACTURER_PREFIX.len() + args.len() + 2);
     message.extend_from_slice(&PUSH2_MANUFACTURER_PREFIX);
@@ -663,16 +704,26 @@ fn palette_entry(rgb: [u8; 3]) -> [u8; 4] {
     [rgb[0], rgb[1], rgb[2], derive_white_channel(rgb)]
 }
 
-fn set_palette_entry_message(index: u8, entry: [u8; 4]) -> Vec<u8> {
-    let mut args = [0_u8; 9];
-    args[0] = index;
+fn set_palette_entry_message(index: u8, entry: [u8; 4]) -> [u8; 17] {
+    let mut message = [0_u8; 17];
+    message[..7].copy_from_slice(&[
+        0xF0,
+        0x00,
+        0x21,
+        0x1D,
+        0x01,
+        0x01,
+        PUSH2_CMD_SET_PALETTE_ENTRY,
+    ]);
+    message[7] = index;
     for (channel_index, value) in entry.iter().copied().enumerate() {
         let (lsb, msb) = encode_sysex_byte(value);
-        let arg_offset = 1 + channel_index * 2;
-        args[arg_offset] = lsb;
-        args[arg_offset + 1] = msb;
+        let arg_offset = 8 + channel_index * 2;
+        message[arg_offset] = lsb;
+        message[arg_offset + 1] = msb;
     }
-    push2_sysex(PUSH2_CMD_SET_PALETTE_ENTRY, &args)
+    message[16] = 0xF7;
+    message
 }
 
 fn parse_palette_entry_response(
@@ -689,6 +740,12 @@ fn parse_palette_entry_response(
     }
 
     let index = usize::from(args[0]);
+    if index >= PUSH2_PALETTE_SIZE {
+        return Err(ProtocolError::MalformedResponse {
+            detail: format!("palette reply index out of range: {}", args[0]),
+        });
+    }
+
     let mut entry = [0_u8; 4];
     for channel in 0..4 {
         entry[channel] = decode_sysex_byte(args[1 + channel * 2], args[2 + channel * 2])?;
@@ -773,6 +830,22 @@ fn quantize_touch_strip(colors: &[[u8; 3]]) -> [u8; PUSH2_TOUCH_STRIP_LED_COUNT]
     levels
 }
 
+fn touch_strip_message(packed: &[u8; 16]) -> [u8; 24] {
+    let mut message = [0_u8; 24];
+    message[..7].copy_from_slice(&[
+        0xF0,
+        0x00,
+        0x21,
+        0x1D,
+        0x01,
+        0x01,
+        PUSH2_CMD_SET_TOUCH_STRIP_LEDS,
+    ]);
+    message[7..23].copy_from_slice(packed);
+    message[23] = 0xF7;
+    message
+}
+
 fn all_leds_off_commands() -> Vec<ProtocolCommand> {
     let mut commands =
         Vec::with_capacity(PUSH2_PAD_COUNT + PUSH2_RGB_BUTTON_COUNT + PUSH2_WHITE_BUTTON_COUNT + 1);
@@ -785,13 +858,8 @@ fn all_leds_off_commands() -> Vec<ProtocolCommand> {
     for cc in WHITE_BUTTON_CC_MAP {
         commands.push(primary_command(vec![0xB0, cc, 0x00], false));
     }
-    commands.push(primary_command(
-        push2_sysex(
-            PUSH2_CMD_SET_TOUCH_STRIP_LEDS,
-            &encode_touch_strip(&[0; PUSH2_TOUCH_STRIP_LED_COUNT]),
-        ),
-        false,
-    ));
+    let message = touch_strip_message(&encode_touch_strip(&[0; PUSH2_TOUCH_STRIP_LED_COUNT]));
+    commands.push(primary_command_slice(&message, false));
     commands
 }
 

@@ -4246,6 +4246,7 @@ dependencies = [
 name = "hypercolor-hal"
 version = "0.1.0"
 dependencies = [
+ "alsa",
  "async-hid",
  "async-trait",
  "futures-util",

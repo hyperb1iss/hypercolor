@@ -132,24 +132,27 @@ fn push2_shutdown_restores_cached_factory_palette() {
     let _ = protocol.encode_frame(&colors);
 
     let shutdown = protocol.shutdown_sequence();
+    assert_eq!(shutdown.len(), 134);
+    assert_eq!(shutdown[0].data, vec![0x90, 36, 0x00]);
+    assert_eq!(shutdown[129].data.len(), 24);
     assert_eq!(
-        shutdown[0].data,
+        shutdown[130].data,
         vec![
             0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x03, 0x01, 0x00, 0x00, 0x00, 0x00, 0x7F, 0x01,
             0x12, 0x00, 0xF7
         ]
     );
     assert_eq!(
-        shutdown[1].data,
+        shutdown[131].data,
         vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x05, 0xF7]
     );
-    assert!(shutdown[2].expects_response);
+    assert!(shutdown[132].expects_response);
     assert_eq!(
-        shutdown[2].data,
+        shutdown[132].data,
         vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x0A, 0x00, 0xF7]
     );
     assert_eq!(
-        shutdown[3].data,
+        shutdown[133].data,
         vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x17, 0x68, 0xF7]
     );
 }
@@ -206,7 +209,7 @@ fn push2_display_encoding_emits_header_and_bulk_packets() {
         .encode_display_frame(&solid_red_jpeg())
         .expect("display frames should be supported");
 
-    assert_eq!(commands.len(), 641);
+    assert_eq!(commands.len(), 21);
     assert_eq!(commands[0].transfer_type, TransferType::Bulk);
     assert_eq!(commands[0].data.len(), 16);
     assert_eq!(
@@ -217,7 +220,7 @@ fn push2_display_encoding_emits_header_and_bulk_packets() {
         ]
     );
     assert_eq!(commands[1].transfer_type, TransferType::Bulk);
-    assert_eq!(commands[1].data.len(), 512);
+    assert_eq!(commands[1].data.len(), 16 * 1024);
     assert_eq!(&commands[1].data[..4], &[0xF8, 0xF3, 0xF8, 0xFF]);
 }
 
@@ -259,4 +262,24 @@ fn push2_parse_response_accepts_identity_reply_and_reports_capabilities() {
     assert_eq!(capabilities.display_resolution, Some((960, 160)));
     assert_eq!(protocol.total_leds(), 160);
     assert_eq!(protocol.frame_interval(), Duration::from_millis(16));
+}
+
+#[test]
+fn push2_parse_response_rejects_out_of_range_palette_index() {
+    let protocol = Push2Protocol::new();
+    let response = vec![
+        0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x04, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0xF7,
+    ];
+
+    let error = protocol
+        .parse_response(&response)
+        .expect_err("invalid palette index should be rejected");
+
+    assert!(
+        error
+            .to_string()
+            .contains("palette reply index out of range"),
+        "unexpected error: {error}"
+    );
 }
