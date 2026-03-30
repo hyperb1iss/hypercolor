@@ -55,6 +55,8 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"],
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libpulse-binding = { workspace = true }
+ashpd = { workspace = true }
+pipewire = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

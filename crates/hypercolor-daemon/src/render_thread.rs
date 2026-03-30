@@ -91,6 +91,9 @@ pub struct RenderThreadState {
     /// Persisted global and per-device output settings.
     pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
 
+    /// Whether screen capture is configured for direct passthrough / effects.
+    pub screen_capture_configured: bool,
+
     /// Target render canvas width.
     pub canvas_width: u32,
 
@@ -259,6 +262,7 @@ async fn run_pipeline(state: RenderThreadState) {
     let mut next_frame_at = Instant::now();
     let mut last_audio_level_update_ms = None;
     let mut last_audio_capture_active = None;
+    let mut last_screen_capture_active = None;
 
     loop {
         let scheduled_start = next_frame_at;
@@ -281,6 +285,7 @@ async fn run_pipeline(state: RenderThreadState) {
 
             if loop_state == hypercolor_core::engine::RenderLoopState::Paused {
                 reconcile_audio_capture(&state, false, &mut last_audio_capture_active).await;
+                reconcile_screen_capture(&state, false, &mut last_screen_capture_active).await;
                 // Paused — yield and retry.
                 next_frame_at = Instant::now();
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -288,6 +293,7 @@ async fn run_pipeline(state: RenderThreadState) {
             }
 
             reconcile_audio_capture(&state, false, &mut last_audio_capture_active).await;
+            reconcile_screen_capture(&state, false, &mut last_screen_capture_active).await;
             debug!("render loop not running, exiting pipeline");
             break;
         }
@@ -304,6 +310,7 @@ async fn run_pipeline(state: RenderThreadState) {
             &mut sleep_black_pushed,
             &mut last_audio_level_update_ms,
             &mut last_audio_capture_active,
+            &mut last_screen_capture_active,
         )
         .await;
         skip_decision = frame.next_skip_decision;
@@ -347,6 +354,7 @@ async fn execute_frame(
     sleep_black_pushed: &mut bool,
     last_audio_level_update_ms: &mut Option<u32>,
     last_audio_capture_active: &mut Option<bool>,
+    last_screen_capture_active: &mut Option<bool>,
 ) -> FrameExecution {
     let frame_start = Instant::now();
     let frame_interval = frame_start.saturating_duration_since(*last_tick);
@@ -366,6 +374,12 @@ async fn execute_frame(
         state,
         !output_power.sleeping && effect_demand.audio_capture_active,
         last_audio_capture_active,
+    )
+    .await;
+    reconcile_screen_capture(
+        state,
+        !output_power.sleeping && effect_demand.screen_capture_active,
+        last_screen_capture_active,
     )
     .await;
     if let Some(frame) = maybe_sleep_throttle(
@@ -581,10 +595,11 @@ async fn current_effect_demand(state: &RenderThreadState) -> EffectDemand {
         && engine
             .active_metadata()
             .is_some_and(|meta| meta.audio_reactive);
-    let screen_capture_active = effect_running
+    let screen_capture_active = (effect_running
         && engine
             .active_metadata()
-            .is_some_and(|meta| meta.screen_reactive);
+            .is_some_and(|meta| meta.screen_reactive))
+        || (!effect_running && state.screen_capture_configured);
     EffectDemand {
         effect_running,
         audio_capture_active,
@@ -615,6 +630,34 @@ async fn reconcile_audio_capture(
                 desired_active,
                 %error,
                 "Failed to update audio capture demand"
+            );
+        }
+    }
+}
+
+async fn reconcile_screen_capture(
+    state: &RenderThreadState,
+    desired_active: bool,
+    last_screen_capture_active: &mut Option<bool>,
+) {
+    if last_screen_capture_active.is_some_and(|previous| previous == desired_active) {
+        return;
+    }
+
+    let result = {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager.set_screen_capture_active(desired_active)
+    };
+
+    match result {
+        Ok(()) => {
+            *last_screen_capture_active = Some(desired_active);
+        }
+        Err(error) => {
+            warn!(
+                desired_active,
+                %error,
+                "Failed to update screen capture demand"
             );
         }
     }

@@ -38,9 +38,9 @@ use hypercolor_core::engine::RenderLoop;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::EvdevKeyboardInput;
 use hypercolor_core::input::audio::AudioInput;
-use hypercolor_core::input::screen::{
-    CaptureConfig as ScreenCaptureConfig, MonitorSelect, ScreenCaptureInput,
-};
+#[cfg(target_os = "linux")]
+use hypercolor_core::input::screen::WaylandScreenCaptureInput;
+use hypercolor_core::input::screen::{CaptureConfig as ScreenCaptureConfig, MonitorSelect};
 use hypercolor_core::input::{InputManager, InteractionInput};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
@@ -649,6 +649,7 @@ impl DaemonState {
             input_manager: Arc::clone(&self.input_manager),
             power_state: self.power_state.subscribe(),
             device_settings: Arc::clone(&self.device_settings),
+            screen_capture_configured: config.capture.enabled,
             canvas_width: config.daemon.canvas_width,
             canvas_height: config.daemon.canvas_height,
         };
@@ -1324,13 +1325,14 @@ pub(crate) fn build_input_manager(config: &HypercolorConfig) -> InputManager {
     }
 
     if config.capture.enabled {
-        let monitor = monitor_select_from_config(config.capture.monitor, &config.capture.source);
+        let monitor = monitor_select_from_config(config.capture.monitor);
         let capture_config = ScreenCaptureConfig {
             monitor,
             target_fps: config.capture.capture_fps.max(1),
             ..ScreenCaptureConfig::default()
         };
-        input_manager.add_source(Box::new(ScreenCaptureInput::new(capture_config)));
+        #[cfg(target_os = "linux")]
+        input_manager.add_source(Box::new(WaylandScreenCaptureInput::new(capture_config)));
     }
 
     input_manager
@@ -1352,12 +1354,9 @@ fn audio_source_from_device(device: &str) -> AudioSourceType {
     }
 }
 
-fn monitor_select_from_config(monitor_index: u32, source: &str) -> MonitorSelect {
-    let normalized = source.trim();
-    if normalized.eq_ignore_ascii_case("auto") || normalized.eq_ignore_ascii_case("primary") {
+fn monitor_select_from_config(monitor_index: u32) -> MonitorSelect {
+    if monitor_index == 0 {
         MonitorSelect::Primary
-    } else if let Some(name) = normalized.strip_prefix("name:") {
-        MonitorSelect::ByName(name.trim().to_owned())
     } else {
         MonitorSelect::ByIndex(monitor_index)
     }

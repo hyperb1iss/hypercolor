@@ -339,6 +339,7 @@ fn make_render_state(
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
             "device-settings.json",
         )))),
+        screen_capture_configured: false,
         canvas_width: 320,
         canvas_height: 200,
     }
@@ -811,6 +812,7 @@ async fn pipeline_renders_active_effect_to_devices() {
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
             "device-settings.json",
         )))),
+        screen_capture_configured: false,
         canvas_width: 320,
         canvas_height: 200,
     };
@@ -960,6 +962,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
             "device-settings.json",
         )))),
+        screen_capture_configured: false,
         canvas_width: 320,
         canvas_height: 200,
     };
@@ -1179,6 +1182,7 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
             "device-settings.json",
         )))),
+        screen_capture_configured: false,
         canvas_width: 320,
         canvas_height: 200,
     };

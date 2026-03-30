@@ -17,9 +17,13 @@
 
 pub mod sector;
 pub mod smooth;
+#[cfg(target_os = "linux")]
+pub mod wayland;
 
 pub use sector::{LetterboxBars, SectorGrid};
 pub use smooth::TemporalSmoother;
+#[cfg(target_os = "linux")]
+pub use wayland::WaylandScreenCaptureInput;
 
 use crate::input::traits::{InputData, InputSource, ScreenData};
 use crate::types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};

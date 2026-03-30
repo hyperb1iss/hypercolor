@@ -1,5 +1,7 @@
 //! Tests for the input source abstraction layer.
 
+#[cfg(target_os = "linux")]
+use hypercolor_core::input::screen::{CaptureConfig, WaylandScreenCaptureInput};
 use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData};
 use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use hypercolor_core::types::event::{InputButtonState, InputEvent, ZoneColors};
@@ -308,6 +310,64 @@ impl CaptureTrackingAudioSource {
             running: false,
             capture_active: false,
         }
+    }
+}
+
+struct CaptureTrackingScreenSource {
+    running: bool,
+    capture_active: bool,
+}
+
+impl CaptureTrackingScreenSource {
+    fn new() -> Self {
+        Self {
+            running: false,
+            capture_active: false,
+        }
+    }
+}
+
+impl InputSource for CaptureTrackingScreenSource {
+    fn name(&self) -> &'static str {
+        "CaptureTrackingScreen"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+        self.capture_active = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        if !self.running || !self.capture_active {
+            return Ok(InputData::None);
+        }
+
+        Ok(InputData::Screen(ScreenData::from_zones(
+            vec![ZoneColors {
+                zone_id: "screen:zone_0".to_owned(),
+                colors: vec![[32, 64, 128]],
+            }],
+            1,
+            1,
+        )))
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn is_screen_source(&self) -> bool {
+        true
+    }
+
+    fn set_screen_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        self.capture_active = active;
+        Ok(())
     }
 }
 
@@ -695,4 +755,42 @@ fn manager_reenables_existing_audio_source_after_live_disable() {
         InputData::Audio(audio) => assert!((audio.rms_level - 0.5).abs() < f32::EPSILON),
         _ => panic!("expected audio data"),
     }
+}
+
+#[test]
+fn manager_updates_screen_capture_demand_for_screen_sources() {
+    let mut mgr = InputManager::new();
+    mgr.add_source(Box::new(CaptureTrackingScreenSource::new()));
+    mgr.start_all().expect("start_all should succeed");
+
+    let samples = mgr.sample_all();
+    assert!(matches!(&samples[0], InputData::None));
+
+    mgr.set_screen_capture_active(true)
+        .expect("screen capture demand update should succeed");
+
+    let samples = mgr.sample_all();
+    assert!(matches!(&samples[0], InputData::Screen(_)));
+
+    mgr.set_screen_capture_active(false)
+        .expect("screen capture demand reset should succeed");
+
+    let samples = mgr.sample_all();
+    assert!(matches!(&samples[0], InputData::None));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn wayland_screen_capture_input_stays_idle_without_capture_demand() {
+    let mut src = WaylandScreenCaptureInput::new(CaptureConfig::default());
+    assert_eq!(src.name(), "wayland_screen_capture");
+
+    src.start().expect("start should succeed while idle");
+    assert!(matches!(
+        src.sample().expect("sample should succeed"),
+        InputData::None
+    ));
+
+    src.stop();
+    assert!(!src.is_running());
 }

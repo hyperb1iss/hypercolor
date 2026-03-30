@@ -321,7 +321,12 @@ async fn status_returns_200_with_envelope() {
         json["data"]["audio_available"].is_boolean(),
         "audio_available should be a bool"
     );
-    assert_eq!(json["data"]["capture_available"], serde_json::json!(false));
+    assert_eq!(
+        json["data"]["capture_available"],
+        serde_json::json!(
+            cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some()
+        )
+    );
 }
 
 #[tokio::test]

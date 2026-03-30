@@ -159,6 +159,11 @@ pub trait InputSource: Send {
         false
     }
 
+    /// Whether this source supports runtime screen capture demand control.
+    fn is_screen_source(&self) -> bool {
+        false
+    }
+
     /// Reconfigure a running audio source without rebuilding the full input manager.
     ///
     /// Non-audio sources can ignore this by keeping the default implementation.
@@ -184,6 +189,18 @@ pub trait InputSource: Send {
     ///
     /// Returns an error if the source cannot update its capture state.
     fn set_audio_capture_active(&mut self, _active: bool) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Toggle whether a screen source should actively capture from the compositor.
+    ///
+    /// Screen sources can use this to pause their underlying capture session
+    /// while remaining registered with the input manager.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the source cannot update its capture state.
+    fn set_screen_capture_active(&mut self, _active: bool) -> anyhow::Result<()> {
         Ok(())
     }
 }

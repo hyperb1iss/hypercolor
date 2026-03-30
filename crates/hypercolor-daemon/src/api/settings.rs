@@ -89,10 +89,8 @@ pub(crate) fn audio_input_available() -> bool {
     enumerate_audio_input_devices().is_ok()
 }
 
-pub(crate) const fn capture_input_available() -> bool {
-    // Hypercolor exposes the screen-processing pipeline, but the host capture
-    // backend is not wired in the daemon yet.
-    false
+pub(crate) fn capture_input_available() -> bool {
+    cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some()
 }
 
 fn current_audio_device_id(state: &AppState) -> String {

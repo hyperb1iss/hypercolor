@@ -226,6 +226,28 @@ impl InputManager {
 
         Ok(())
     }
+
+    /// Toggle live screen capture for any registered screen sources.
+    ///
+    /// This keeps the input graph intact while allowing the capture backend to
+    /// pause or resume compositor capture based on current render demand.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a screen source cannot update its capture state.
+    pub fn set_screen_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        for source in &mut self.sources {
+            if source.is_screen_source() {
+                source.set_screen_capture_active(active)?;
+                info!(
+                    source = source.name(),
+                    active, "Updated screen capture demand"
+                );
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for InputManager {
