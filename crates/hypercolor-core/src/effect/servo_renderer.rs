@@ -469,6 +469,7 @@ struct QueuedFrameInput {
     frame_number: u64,
     audio: hypercolor_types::audio::AudioData,
     interaction: crate::input::InteractionData,
+    screen: Option<crate::input::ScreenData>,
     canvas_width: u32,
     canvas_height: u32,
 }
@@ -481,6 +482,7 @@ impl QueuedFrameInput {
             frame_number: input.frame_number,
             audio: input.audio.clone(),
             interaction: input.interaction.clone(),
+            screen: input.screen.cloned(),
             canvas_width: input.canvas_width,
             canvas_height: input.canvas_height,
         }
@@ -493,6 +495,7 @@ impl QueuedFrameInput {
         self.frame_number = input.frame_number;
         self.audio = input.audio.clone();
         self.interaction = input.interaction.clone();
+        self.screen = input.screen.cloned();
         merge_unique_strings(
             &mut self.interaction.keyboard.recent_keys,
             prior_recent_keys.into_iter(),
@@ -508,6 +511,7 @@ impl QueuedFrameInput {
             frame_number: self.frame_number,
             audio: &self.audio,
             interaction: &self.interaction,
+            screen: self.screen.as_ref(),
             canvas_width: self.canvas_width,
             canvas_height: self.canvas_height,
         }
@@ -1632,6 +1636,7 @@ mod tests {
             frame_number: 0,
             audio: &SILENCE,
             interaction: &DEFAULT_INTERACTION,
+            screen: None,
             canvas_width: DEFAULT_CANVAS_WIDTH,
             canvas_height: DEFAULT_CANVAS_HEIGHT,
         }
@@ -1670,6 +1675,7 @@ mod tests {
             frame_number,
             audio,
             interaction,
+            screen: None,
             canvas_width,
             canvas_height,
         }
