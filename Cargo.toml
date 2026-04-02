@@ -208,19 +208,19 @@ debug = 0
 opt-level = 3
 debug = 0
 
-[profile.dev.package.script]
+[profile.dev.package.servo-script]
 opt-level = 3
 debug = 0
 
-[profile.dev.package.script_bindings]
+[profile.dev.package.servo-script-bindings]
 opt-level = 3
 debug = 0
 
-[profile.dev.package.canvas]
+[profile.dev.package.servo-canvas]
 opt-level = 3
 debug = 0
 
-[profile.dev.package.layout]
+[profile.dev.package.servo-layout]
 opt-level = 3
 debug = 0
 
@@ -285,19 +285,19 @@ debug = 0
 opt-level = 3
 debug = 0
 
-[profile.preview.package.script]
+[profile.preview.package.servo-script]
 opt-level = 3
 debug = 0
 
-[profile.preview.package.script_bindings]
+[profile.preview.package.servo-script-bindings]
 opt-level = 3
 debug = 0
 
-[profile.preview.package.canvas]
+[profile.preview.package.servo-canvas]
 opt-level = 3
 debug = 0
 
-[profile.preview.package.layout]
+[profile.preview.package.servo-layout]
 opt-level = 3
 debug = 0
 

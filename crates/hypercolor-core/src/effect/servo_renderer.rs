@@ -91,7 +91,7 @@ fn trimmed_servo_preferences() -> Preferences {
         js_baseline_jit_enabled: false,
         js_ion_enabled: false,
         js_offthread_compilation_enabled: false,
-        js_ion_offthread_compilation_enabled: false,
+        js_ion_unsafe_eager_compilation_enabled: false,
         media_glvideo_enabled: false,
         ..Preferences::default()
     }
