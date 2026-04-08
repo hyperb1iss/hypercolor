@@ -770,27 +770,16 @@ impl NormalizedPosition {
 
 ### Conversion Diagram
 
-```
-Zone-Local (0.0--1.0)         Normalized Canvas (0.0--1.0)         Pixel (0--319, 0--199)
+```mermaid
+graph TD
+    ZL["Zone-Local (0.0--1.0)<br/>LED at (0.3, 0.5)"]
+    NC["Normalized Canvas (0.0--1.0)<br/>(0.463, 0.430)"]
+    PX["Pixel Space<br/>(147.7, 85.6)"]
+    RGB[Rgb color]
 
-  LED at (0.3, 0.5)                                                  (148.2, 86.0)
-       │                                                                  │
-       │  zone_local_to_canvas()                                          │
-       │  (scale by zone.size,                                            │
-       │   rotate by zone.rotation,                                       │
-       │   translate by zone.position)                                    │
-       ▼                                                                  │
-  Normalized (0.463, 0.430)                                               │
-       │                                                                  │
-       │  to_pixel(320, 200)                                              │
-       │  pixel_x = 0.463 * 319 = 147.7                                  │
-       │  pixel_y = 0.430 * 199 = 85.6                                   │
-       ▼                                                                  ▼
-                                                                   (147.7, 85.6)
-                                                                       │
-                                                                       │  sample_bilinear()
-                                                                       ▼
-                                                                    Rgb color
+    ZL -->|"zone_local_to_canvas()<br/>scale by zone.size,<br/>rotate by zone.rotation,<br/>translate by zone.position"| NC
+    NC -->|"to_pixel(320, 200)<br/>pixel_x = 0.463 * 319 = 147.7<br/>pixel_y = 0.430 * 199 = 85.6"| PX
+    PX -->|"sample_bilinear()"| RGB
 ```
 
 ---
@@ -1484,10 +1473,10 @@ Zone-Local Space              Normalized Canvas Space       Pixel Space
   within the zone's            on the effect canvas          for canvas buffer access
   bounding box
 
-       │                              │                              │
-       │  zone_local_to_canvas()      │  normalized_to_pixel()       │
-       │  (scale, rotate, translate)  │  (multiply by dimensions)    │
-       ▼                              ▼                              ▼
+```mermaid
+graph LR
+    ZL[Zone-Local Space] -->|"zone_local_to_canvas()<br/>(scale, rotate, translate)"| NC[Normalized Canvas Space]
+    NC -->|"normalized_to_pixel()<br/>(multiply by dimensions)"| PX[Pixel Space]
 ```
 
 ### 7.2 Transform 1: Zone-Local to Normalized Canvas
@@ -1622,26 +1611,18 @@ pub fn canvas_to_zone_local(
 
 The complete mapping from a physical LED to its sampled color:
 
-```
-LED index (e.g., 42 of 120)
-    │
-    │  topology.compute_positions()
-    ▼
-Zone-local position (0.35, 0.667)
-    │
-    │  zone_local_to_canvas()
-    │  (scale + rotate + translate + pixelize)
-    ▼
-Canvas pixel coordinate (112.4, 87.3)
-    │
-    │  sample_bilinear()
-    │  (read 4 surrounding pixels, blend)
-    ▼
-Rgb { r: 180, g: 42, b: 210 }
-    │
-    │  DeviceColors output
-    ▼
-Backend push_frame()
+```mermaid
+graph TD
+    LED["LED index (e.g., 42 of 120)"]
+    ZL["Zone-local position (0.35, 0.667)"]
+    Canvas["Canvas pixel coordinate (112.4, 87.3)"]
+    Color["Rgb { r: 180, g: 42, b: 210 }"]
+    Backend["Backend push_frame()"]
+
+    LED -->|"topology.compute_positions()"| ZL
+    ZL -->|"zone_local_to_canvas()<br/>(scale + rotate + translate + pixelize)"| Canvas
+    Canvas -->|"sample_bilinear()<br/>(read 4 surrounding pixels, blend)"| Color
+    Color -->|"DeviceColors output"| Backend
 ```
 
 ### 7.6 Room-Space Transform (Multi-Room, Optional)
@@ -2210,16 +2191,13 @@ Not every effect looks good with the same zone placement. A sweeping horizontal 
 
 ### Architecture: Global Layout + Per-Effect Overrides
 
-```
-Global Layout (canonical, represents physical reality)
-        │
-        │  Effect requests an override
-        │
-        ▼
-Resolved Layout = Global + Override transforms
-        │
-        │  Sampler uses resolved layout for this effect
-        ▼
+```mermaid
+graph TD
+    Global["Global Layout<br/>(canonical, represents physical reality)"]
+    Resolved["Resolved Layout = Global + Override transforms"]
+    Sampler["Sampler uses resolved layout for this effect"]
+
+    Global -->|"Effect requests an override"| Resolved --> Sampler
 ```
 
 **Global layout** is the canonical "where are my devices?" definition. It represents physical reality and is what the user edits in the main layout editor.
@@ -2310,37 +2288,29 @@ pub enum Axis {
 
 When an effect is activated, the system resolves the active layout through a negotiation protocol:
 
-```
-1. Effect Activation
-   │
-   ├── Does the effect declare a layout_hint in its metadata?
-   │   │
-   │   ├── YES: Check if user has a saved preference for this effect.
-   │   │   │
-   │   │   ├── User said "Apply" previously → auto-apply the hint
-   │   │   ├── User said "Don't Ask Again" → ignore the hint
-   │   │   └── First time → show prompt:
-   │   │       "This effect suggests [arrangement]. [Apply] [Keep Current] [Don't Ask]"
-   │   │
-   │   └── NO: continue
-   │
-   ├── Does the user have a saved override for this effect ID?
-   │   │
-   │   ├── YES: Apply the saved override
-   │   └── NO: Use global layout as-is
-   │
-   ▼
-2. Resolve Layout
-   │
-   ├── Start with global SpatialLayout (clone)
-   ├── If arrangement is set → compute arranged positions
-   ├── Apply per-zone overrides (position, size, rotation, sampling)
-   ├── Remove hidden zones
-   ├── Apply canvas transform (mirror, rotate, scale)
-   ├── Recompute led_positions for modified zones
-   │
-   ▼
-3. Rebuild Sampler LUT with resolved layout
+```mermaid
+graph TD
+    Activate[1. Effect Activation]
+    HasHint{Effect declares layout_hint?}
+    HasPref{User has saved preference?}
+    Apply[Auto-apply the hint]
+    Ignore[Ignore the hint]
+    Prompt["Show prompt:<br/>'This effect suggests [arrangement].<br/>[Apply] [Keep Current] [Don't Ask]'"]
+    HasOverride{User has saved override<br/>for this effect ID?}
+    ApplyOverride[Apply the saved override]
+    UseGlobal[Use global layout as-is]
+    Resolve["2. Resolve Layout<br/>- Start with global SpatialLayout (clone)<br/>- If arrangement set, compute arranged positions<br/>- Apply per-zone overrides<br/>- Remove hidden zones<br/>- Apply canvas transform<br/>- Recompute led_positions"]
+    Rebuild[3. Rebuild Sampler LUT with resolved layout]
+
+    Activate --> HasHint
+    HasHint -->|YES| HasPref
+    HasHint -->|NO| HasOverride
+    HasPref -->|"'Apply' previously"| Apply --> HasOverride
+    HasPref -->|"'Don't Ask Again'"| Ignore --> HasOverride
+    HasPref -->|First time| Prompt --> HasOverride
+    HasOverride -->|YES| ApplyOverride --> Resolve
+    HasOverride -->|NO| UseGlobal --> Resolve
+    Resolve --> Rebuild
 ```
 
 **Resolution implementation:**

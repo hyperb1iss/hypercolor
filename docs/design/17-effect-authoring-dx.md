@@ -836,17 +836,19 @@ Layer: "Bass Pulse"
 
 The visual builder lets you drag audio sources to any layer parameter. This is the killer feature -- no code required to make an effect pulse with the bass.
 
-```
-Audio Sources             Layer Parameters
-─────────────             ────────────────
-[level]        ──────────→ Layer.opacity
-[bass]         ──────────→ Layer.scale
-[mid]                      Layer.rotation
-[treble]       ──────────→ Layer.color_shift
-[beat]         ──────────→ Layer.position.y
-[beatPhase]                Layer.blur
-[spectralFlux]
-[harmonicHue]  ──────────→ Layer.hue_offset
+```mermaid
+graph LR
+    level["level"] --> opacity["Layer.opacity"]
+    bass["bass"] --> scale["Layer.scale"]
+    treble["treble"] --> colorshift["Layer.color_shift"]
+    beat["beat"] --> posy["Layer.position.y"]
+    harmonicHue["harmonicHue"] --> hueoffset["Layer.hue_offset"]
+
+    mid["mid"]
+    beatPhase["beatPhase"]
+    spectralFlux["spectralFlux"]
+    rotation["Layer.rotation"]
+    blur["Layer.blur"]
 ```
 
 Each wiring has:

@@ -1193,49 +1193,20 @@ impl WledUdpDiscovery {
 
 ### 5.3 Discovery Flow Diagram
 
-```
-┌───────────────────────────────────────────────────────────────────┐
-│                     WledDiscovery                                  │
-│                                                                   │
-│  ┌─────────────────────┐      ┌─────────────────────────────┐    │
-│  │  mDNS Browse         │      │  UDP Broadcast Scan          │    │
-│  │  _wled._tcp.local.   │      │  DDP probe to 255.255.255.x │    │
-│  │                      │      │  3-second timeout            │    │
-│  │  Continuous listener │      │  On-demand only              │    │
-│  └──────────┬───────────┘      └──────────────┬──────────────┘    │
-│             │                                  │                   │
-│             └──────────┬───────────────────────┘                   │
-│                        │                                           │
-│                        ▼                                           │
-│         ┌──────────────────────────────┐                          │
-│         │  HTTP Enrichment              │                          │
-│         │  GET /json/info               │                          │
-│         │  GET /json/state              │                          │
-│         │                               │                          │
-│         │  Extracts:                    │                          │
-│         │  - LED count                  │                          │
-│         │  - Firmware version           │                          │
-│         │  - MAC address                │                          │
-│         │  - Segment configuration      │                          │
-│         │  - RGBW capability            │                          │
-│         │  - Power budget               │                          │
-│         └──────────────┬───────────────┘                          │
-│                        │                                           │
-│                        ▼                                           │
-│         ┌──────────────────────────────┐                          │
-│         │  Deduplication (by MAC)       │                          │
-│         │  mDNS + UDP may find same     │                          │
-│         │  device -- merge, prefer      │                          │
-│         │  mDNS hostname                │                          │
-│         └──────────────┬───────────────┘                          │
-│                        │                                           │
-│                        ▼                                           │
-│         ┌──────────────────────────────┐                          │
-│         │  Emit DiscoveryEvent          │                          │
-│         │  DeviceAppeared with full     │                          │
-│         │  WledEnrichment data          │                          │
-│         └──────────────────────────────┘                          │
-└───────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph WledDiscovery
+        mDNS["mDNS Browse<br/>_wled._tcp.local.<br/>Continuous listener"]
+        UDP["UDP Broadcast Scan<br/>DDP probe to 255.255.255.x<br/>3-second timeout, on-demand only"]
+        Enrich["HTTP Enrichment<br/>GET /json/info<br/>GET /json/state<br/><br/>Extracts: LED count, firmware version,<br/>MAC address, segment config,<br/>RGBW capability, power budget"]
+        Dedup["Deduplication (by MAC)<br/>mDNS + UDP may find same device<br/>merge, prefer mDNS hostname"]
+        Emit["Emit DiscoveryEvent<br/>DeviceAppeared with full<br/>WledEnrichment data"]
+
+        mDNS --> Enrich
+        UDP --> Enrich
+        Enrich --> Dedup
+        Dedup --> Emit
+    end
 ```
 
 ### 5.4 Periodic Re-Enrichment
@@ -2073,33 +2044,18 @@ UDP is inherently unreliable. Frames will be lost. Devices will go offline. The 
 
 ### 8.2 Health State Machine
 
-```
-                  ┌──────────────┐
-                  │   Unknown    │
-                  │  (startup)   │
-                  └──────┬───────┘
-                         │ first successful frame
-                         ▼
-          ┌──────────────────────────────┐
-     ┌───→│          Connected           │←────────────────────┐
-     │    │  (healthy, sending frames)   │                     │
-     │    └──────────────┬───────────────┘                     │
-     │                   │ 3 consecutive send failures         │
-     │                   ▼                                     │
-     │    ┌──────────────────────────────┐                     │
-     │    │          Degraded            │                     │
-     │    │  (send at 1/4 rate, health   │──── health check ───┘
-     │    │   check every 5 seconds)     │     succeeds
-     │    └──────────────┬───────────────┘
-     │                   │ 30 seconds without success
-     │                   ▼
-     │    ┌──────────────────────────────┐
-     │    │          Offline             │
-     │    │  (no sends, health check     │
-     │    │   every 30 seconds)          │
-     │    └──────────────┬───────────────┘
-     │                   │ health check succeeds
-     └───────────────────┘
+```mermaid
+stateDiagram-v2
+    Unknown --> Connected : first successful frame
+    Connected --> Degraded : 3 consecutive send failures
+    Degraded --> Connected : health check succeeds
+    Degraded --> Offline : 30 seconds without success
+    Offline --> Connected : health check succeeds
+
+    Unknown : startup
+    Connected : healthy, sending frames
+    Degraded : send at 1/4 rate\nhealth check every 5 seconds
+    Offline : no sends\nhealth check every 30 seconds
 ```
 
 ### 8.3 Health Check Implementation

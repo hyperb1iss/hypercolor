@@ -14,59 +14,62 @@ Hypercolor is the open-source, Linux-native RGB lighting engine that doesn't exi
 
 ## System Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Hypercolor Daemon                            │
-│                                                                     │
-│  ┌───────────────────────────────────────────────────────────────┐  │
-│  │                      Input Sources                            │  │
-│  │  Audio FFT │ Screen Capture │ Keyboard │ Sensors │ MIDI       │  │
-│  └──────────────────────┬────────────────────────────────────────┘  │
-│                         │                                           │
-│  ┌──────────────────────▼────────────────────────────────────────┐  │
-│  │                    Effect Engine                               │  │
-│  │  ┌─────────────────┐  ┌────────────────────────────────────┐  │  │
-│  │  │  wgpu Path      │  │  Servo Path                        │  │  │
-│  │  │  (WGSL/GLSL)    │  │  (HTML/Canvas/WebGL)               │  │  │
-│  │  │  Native shaders │  │  Lightscript API compatibility     │  │  │
-│  │  │  1000s fps      │  │  Runs HTML effects unmodified     │  │  │
-│  │  └────────┬────────┘  └──────────────┬─────────────────────┘  │  │
-│  │           └──────────┬───────────────┘                        │  │
-│  │                      │ RGBA pixel buffer (320×200)            │  │
-│  └──────────────────────┼────────────────────────────────────────┘  │
-│                         │                                           │
-│  ┌──────────────────────▼────────────────────────────────────────┐  │
-│  │                 Spatial Layout Engine                          │  │
-│  │  Canvas pixel coords → physical LED positions                 │  │
-│  │  Per-zone sampling with interpolation                         │  │
-│  │  Arbitrary topology: strips, fans, rings, matrices, Strimers  │  │
-│  └──────────────────────┬────────────────────────────────────────┘  │
-│                         │                                           │
-│  ┌──────────────────────▼────────────────────────────────────────┐  │
-│  │                  Device Backends                               │  │
-│  │  ┌────────┐ ┌──────┐ ┌─────┐ ┌─────┐ ┌───────────────────┐  │  │
-│  │  │ WLED │ │ Hue │ │ HID │ │ Future: Wasm/gRPC           │  │  │
-│  │  │(DDP) │ │(HTTP│ │(USB)│ │  community plugins          │  │  │
-│  │  └──────┘ └─────┘ └─────┘ └──────────────────────────────┘  │  │
-│  └───────────────────────────────────────────────────────────────┘  │
-│                                                                     │
-│  ┌───────────────────────────────────────────────────────────────┐  │
-│  │                    Event Bus (tokio)                           │  │
-│  │  broadcast::Sender<HypercolorEvent>  → all subscribers        │  │
-│  │  watch::Sender<FrameData>            → latest LED state       │  │
-│  │  watch::Sender<SpectrumData>         → latest audio spectrum  │  │
-│  └───────────────────────────────────────────────────────────────┘  │
-│                                                                     │
-├────────────┬────────────────┬────────────────┬──────────────────────┤
-│  Axum API  │  WebSocket     │  Unix Socket   │  D-Bus               │
-│  (REST)    │  (60fps state) │  (TUI/CLI IPC) │  (systemd/desktop)   │
-└──────┬─────┴───────┬────────┴───────┬────────┴──────────────────────┘
-       │             │                │
-  ┌────▼────┐  ┌─────▼─────┐  ┌──────▼──────┐
-  │ Web UI  │  │    TUI    │  │    CLI      │
-  │SvelteKit│  │  Ratatui  │  │   clap      │
-  │ Three.js│  │ TachyonFX │  │  scripting  │
-  └─────────┘  └───────────┘  └─────────────┘
+```mermaid
+graph TD
+    subgraph daemon["Hypercolor Daemon"]
+        subgraph inputs["Input Sources"]
+            AudioFFT["Audio FFT"]
+            ScreenCapture["Screen Capture"]
+            Keyboard["Keyboard"]
+            Sensors["Sensors"]
+            MIDI["MIDI"]
+        end
+
+        subgraph effect_engine["Effect Engine"]
+            wgpu["wgpu Path<br/>(WGSL/GLSL)<br/>Native shaders, 1000s fps"]
+            servo["Servo Path<br/>(HTML/Canvas/WebGL)<br/>Lightscript API compatibility<br/>Runs HTML effects unmodified"]
+        end
+
+        RGBA["RGBA pixel buffer (320x200)"]
+
+        subgraph spatial["Spatial Layout Engine"]
+            SpatialDesc["Canvas pixel coords → physical LED positions<br/>Per-zone sampling with interpolation<br/>Arbitrary topology: strips, fans, rings, matrices, Strimers"]
+        end
+
+        subgraph backends["Device Backends"]
+            WLED["WLED (DDP)"]
+            Hue["Hue (HTTP)"]
+            HID["HID (USB)"]
+            Future["Future: Wasm/gRPC<br/>community plugins"]
+        end
+
+        subgraph eventbus["Event Bus (tokio)"]
+            Broadcast["broadcast::Sender&lt;HypercolorEvent&gt; → all subscribers"]
+            FrameWatch["watch::Sender&lt;FrameData&gt; → latest LED state"]
+            SpectrumWatch["watch::Sender&lt;SpectrumData&gt; → latest audio spectrum"]
+        end
+    end
+
+    inputs --> effect_engine
+    wgpu --> RGBA
+    servo --> RGBA
+    RGBA --> spatial
+    spatial --> backends
+
+    subgraph transport["Transport Layer"]
+        AxumAPI["Axum API (REST)"]
+        WebSocket["WebSocket (60fps state)"]
+        UnixSocket["Unix Socket (TUI/CLI IPC)"]
+        DBus["D-Bus (systemd/desktop)"]
+    end
+
+    daemon --> transport
+
+    AxumAPI --> WebUI["Web UI<br/>Leptos / WASM"]
+    WebSocket --> WebUI
+    UnixSocket --> TUI["TUI<br/>Ratatui / TachyonFX"]
+    UnixSocket --> CLI["CLI<br/>clap / scripting"]
+    DBus --> CLI
 ```
 
 ---
@@ -633,8 +636,9 @@ Global keyboard state for reactive effects (key press → color flash). Requires
 The primary interface. Served by the daemon itself — no separate web server.
 
 **Development:**
-```
-Vite dev server (HMR, port 5173) ──proxy──▶ Axum daemon (port 9420)
+```mermaid
+graph LR
+    Vite["Vite dev server (HMR, port 5173)"] -->|proxy| Axum["Axum daemon (port 9420)"]
 ```
 
 **Production:**

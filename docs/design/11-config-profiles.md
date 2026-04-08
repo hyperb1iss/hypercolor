@@ -390,12 +390,20 @@ loop = false
 
 Four frontends can simultaneously modify configuration:
 
-```
-Web UI ──────┐
-TUI ─────────┤
-CLI ─────────┤──→ Daemon (single source of truth) ──→ Disk
-External ────┘    (ArcSwap<Config> + event bus)
-  editor
+```mermaid
+graph LR
+    WebUI["Web UI"]
+    TUI["TUI"]
+    CLI["CLI"]
+    Ext["External editor"]
+    Daemon["Daemon (single source of truth)<br/>ArcSwap&lt;Config&gt; + event bus"]
+    Disk["Disk"]
+
+    WebUI --> Daemon
+    TUI --> Daemon
+    CLI --> Daemon
+    Ext --> Daemon
+    Daemon --> Disk
 ```
 
 ### Architecture: Daemon as Authority
@@ -1079,8 +1087,10 @@ pub enum ConfigKind {
 
 Migrations form a linear chain per config kind. The engine walks from the file's current version to the latest:
 
-```
-Profile v1 ──migrate_v1_to_v2──→ Profile v2 ──migrate_v2_to_v3──→ Profile v3 (current)
+```mermaid
+graph LR
+    V1["Profile v1"] -->|migrate_v1_to_v2| V2["Profile v2"]
+    V2 -->|migrate_v2_to_v3| V3["Profile v3 (current)"]
 ```
 
 ### Concrete Migration Example

@@ -58,18 +58,17 @@ These live in `hypercolor-hal` because:
 
 ## 2. Dependency Graph
 
-```
-hypercolor-types        (pure data types, zero deps)
-       │
-       ▼
-hypercolor-hal           (Protocol + Transport + Database; depends on types + nusb)
-       │
-       ▼
-hypercolor-core          (DeviceBackend, UsbBackend adapter, engine; depends on hal + types)
-       │
-       ▼
-hypercolor-daemon        (binary: REST API, WebSocket, daemon lifecycle)
-hypercolor-cli           (binary: CLI tool)
+```mermaid
+graph TD
+    types["hypercolor-types<br/>(pure data types, zero deps)"]
+    hal["hypercolor-hal<br/>(Protocol + Transport + Database; depends on types + nusb)"]
+    core["hypercolor-core<br/>(DeviceBackend, UsbBackend adapter, engine; depends on hal + types)"]
+    daemon["hypercolor-daemon<br/>(binary: REST API, WebSocket, daemon lifecycle)"]
+    cli["hypercolor-cli<br/>(binary: CLI tool)"]
+
+    types --> hal --> core
+    core --> daemon
+    core --> cli
 ```
 
 ### Crate Dependencies
@@ -953,19 +952,21 @@ Not all USB devices fit the Protocol+Transport pattern. Corsair Phase 1 uses an 
 - Discovery via HTTP health check + device list endpoint
 - No `ProtocolDatabase` entry needed (no VID/PID matching)
 
-```
-Bridge flow:            HAL flow:
-DeviceBackend           DeviceBackend (UsbBackend)
-    │                       │
-    ▼                       ▼
-HTTP Client             Protocol + Transport
-    │                       │         │
-    ▼                       ▼         ▼
-OpenLinkHub             encode()   send()
-    │                       │         │
-    ▼                       ▼         ▼
-USB (managed            Wire bytes  nusb
-externally)
+```mermaid
+graph TD
+    subgraph bridge["Bridge Flow"]
+        B_DB[DeviceBackend] --> B_HTTP[HTTP Client]
+        B_HTTP --> B_OLH[OpenLinkHub]
+        B_OLH --> B_USB["USB (managed externally)"]
+    end
+
+    subgraph hal["HAL Flow"]
+        H_DB["DeviceBackend (UsbBackend)"] --> H_PT[Protocol + Transport]
+        H_PT --> H_ENC["encode()"]
+        H_PT --> H_SEND["send()"]
+        H_ENC --> H_WIRE[Wire bytes]
+        H_SEND --> H_NUSB[nusb]
+    end
 ```
 
 ---

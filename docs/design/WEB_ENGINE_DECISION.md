@@ -52,40 +52,25 @@ The 12-17 day estimate for a Canvas 2D bridge was optimistic. Real-world impleme
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────┐
-│              Hypercolor Daemon                │
-├──────────────────────────────────────────────┤
-│                                              │
-│  Native Rust Renderers (6 builtins)          │
-│  ├── SolidColor, Gradient, Rainbow           │
-│  ├── Breathing, AudioPulse, ColorWave        │
-│  └── impl EffectRenderer → Canvas            │
-│                                              │
-│  ServoRenderer (all 230 HTML effects)        │
-│  ├── SoftwareRenderingContext (320x200)       │
-│  ├── Load HTML → execute JS → render Canvas  │
-│  ├── read_to_image() → RGBA pixels → Canvas  │
-│  ├── Canvas 2D effects (217 effects)         │
-│  ├── WebGL/Three.js effects (13 effects)     │
-│  └── impl EffectRenderer → Canvas            │
-│                                              │
-│  Lightscript API Shim                        │
-│  ├── window.engine.audio (FFT injection)     │
-│  ├── Meta tag property globals               │
-│  └── on<Prop>Changed() callbacks             │
-│                                              │
-│  Meta Tag Parser                             │
-│  ├── Extract title, author, controls         │
-│  └── Register in EffectRegistry              │
-│                                              │
-├──────────────────────────────────────────────┤
-│  EffectEngine                                │
-│  └── Box<dyn EffectRenderer> → Canvas        │
-│       (same trait, same output, any backend)  │
-├──────────────────────────────────────────────┤
-│  Spatial Sampler → Device Backends → LEDs    │
-└──────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph daemon["Hypercolor Daemon"]
+        subgraph renderers["Renderers"]
+            Native["Native Rust Renderers (6 builtins)<br/>SolidColor, Gradient, Rainbow<br/>Breathing, AudioPulse, ColorWave<br/>impl EffectRenderer → Canvas"]
+            Servo["ServoRenderer (all 230 HTML effects)<br/>SoftwareRenderingContext (320x200)<br/>Load HTML → execute JS → render Canvas<br/>Canvas 2D (217) + WebGL/Three.js (13)<br/>impl EffectRenderer → Canvas"]
+        end
+
+        Shim["Lightscript API Shim<br/>window.engine.audio (FFT injection)<br/>Meta tag property globals<br/>onPropChanged callbacks"]
+        Parser["Meta Tag Parser<br/>Extract title, author, controls<br/>Register in EffectRegistry"]
+        Engine["EffectEngine<br/>Box dyn EffectRenderer → Canvas<br/>(same trait, same output, any backend)"]
+        Pipeline["Spatial Sampler → Device Backends → LEDs"]
+    end
+
+    Native --> Engine
+    Servo --> Engine
+    Shim --> Servo
+    Parser --> Engine
+    Engine --> Pipeline
 ```
 
 ## Servo Integration Plan

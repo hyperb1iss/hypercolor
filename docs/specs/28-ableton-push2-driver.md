@@ -996,38 +996,17 @@ impl Protocol for Push2Protocol {
 
 ### 12.1 Frame Encoding Flow
 
+```mermaid
+graph TD
+    Input["Engine colors (&[[u8; 3]])"]
+    Dedup["Color Dedup (hash + cache)<br/>Unique colors to palette slots<br/>Typically 10-40 unique per frame"]
+    Diff["Palette Diff (dirty tracking)<br/>Compare against prev frame palette<br/>Only emit SysEx for changed entries"]
+    SysEx["SysEx Palette Cmds (per changed slot)<br/>Set LED Color Palette Entry (0x03)<br/>+ Reapply Palette (0x05)"]
+    MIDI["MIDI LED Cmds (per changed LED)<br/>Note On (pads) + CC (buttons)<br/>Only LEDs whose palette index changed"]
+    Strip["Touch Strip Cmd (single message)<br/>SysEx 0x19 (if strip colors changed)"]
+
+    Input --> Dedup --> Diff --> SysEx --> MIDI --> Strip
 ```
-Engine colors (&[[u8; 3]])
-       │
-       ▼
-┌─────────────────────┐
-│  Color Dedup         │  Unique colors → palette slots
-│  (hash + cache)      │  Typically 10–40 unique per frame
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│  Palette Diff        │  Compare against prev frame palette
-│  (dirty tracking)    │  Only emit SysEx for changed entries
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│  SysEx Palette Cmds  │  Set LED Color Palette Entry (0x03)
-│  (per changed slot)  │  + Reapply Palette (0x05)
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│  MIDI LED Cmds       │  Note On (pads) + CC (buttons)
-│  (per changed LED)   │  Only LEDs whose palette index changed
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│  Touch Strip Cmd     │  SysEx 0x19 (if strip colors changed)
-│  (single message)    │
-└──────────┘
 ```
 
 ### 12.2 encode_frame_into Implementation

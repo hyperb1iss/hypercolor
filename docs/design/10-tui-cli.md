@@ -1240,12 +1240,17 @@ The TUI adapts to terminal capabilities:
 
 The TUI rendering loop is decoupled from the daemon's effect rendering loop:
 
-```
-Daemon (60 fps):                TUI (30 fps):
-  render effect                   recv frame data (watch channel)
-  sample LEDs                     build widget tree
-  push to hardware                diff against previous frame
-  publish frame ──────────────▶   write terminal diff to stdout
+```mermaid
+graph LR
+    subgraph daemon["Daemon (60 fps)"]
+        D1["render effect"] --> D2["sample LEDs"] --> D3["push to hardware"] --> D4["publish frame"]
+    end
+
+    subgraph tui["TUI (30 fps)"]
+        T1["recv frame data (watch channel)"] --> T2["build widget tree"] --> T3["diff against previous frame"] --> T4["write terminal diff to stdout"]
+    end
+
+    D4 --> T1
 ```
 
 The daemon publishes LED frame data via a `tokio::sync::watch` channel. The TUI's receiver always gets the **latest** frame, skipping any intermediate frames it couldn't render in time. This means the TUI never falls behind -- it just shows fewer frames.

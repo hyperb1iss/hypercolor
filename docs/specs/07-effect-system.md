@@ -36,22 +36,16 @@ The effect system renders visual content to a 320x200 RGBA canvas. Everything do
 
 Both paths produce the same output: a `Canvas` struct containing a 320x200 RGBA pixel buffer (256 KB/frame). The effect engine selects the appropriate renderer based on the `EffectSource` variant declared in metadata.
 
-```
-               EffectRegistry
-                    |
-         ┌──────────┴──────────┐
-         |                     |
-    EffectSource::Wgsl    EffectSource::Html
-         |                     |
-    WgpuRenderer          ServoRenderer
-         |                     |
-         └──────────┬──────────┘
-                    |
-              Canvas (320x200 RGBA)
-                    |
-              SpatialSampler
-                    |
-              DeviceBackends
+```mermaid
+graph TD
+    Registry[EffectRegistry] --> Wgsl[EffectSource::Wgsl]
+    Registry --> Html[EffectSource::Html]
+    Wgsl --> WgpuRenderer
+    Html --> ServoRenderer
+    WgpuRenderer --> Canvas["Canvas (320x200 RGBA)"]
+    ServoRenderer --> Canvas
+    Canvas --> SpatialSampler
+    SpatialSampler --> DeviceBackends
 ```
 
 **Crate location:** `hypercolor-core/src/effect/`
@@ -1644,34 +1638,18 @@ Every effect transitions through a defined set of states. The `EffectEngine` man
 
 ### 10.1 State Machine
 
-```
-                  discover()
-    ┌──────────────────────────────┐
-    │                              ▼
-    │                        ┌──────────┐
-    │                        │Discovered│
-    │                        └────┬─────┘
-    │                             │ load()
-    │                             ▼
-    │                        ┌──────────┐
-    │            ┌───────────│  Loaded   │───────────┐
-    │            │           └────┬─────┘            │
-    │            │ unload()       │ activate()       │ error
-    │            ▼                ▼                   ▼
-    │       ┌──────────┐    ┌──────────┐       ┌──────────┐
-    │       │Unloaded  │    │  Active  │       │  Error   │
-    │       └──────────┘    └────┬─────┘       └────┬─────┘
-    │                            │                   │
-    │                    pause() │ resume()    retry()│
-    │                            ▼                   │
-    │                       ┌──────────┐             │
-    │                       │  Paused  │             │
-    │                       └────┬─────┘             │
-    │                            │ unload()          │
-    │                            ▼                   │
-    │                       ┌──────────┐             │
-    └───────────────────────│Unloaded  │◄────────────┘
-                            └──────────┘
+```mermaid
+stateDiagram-v2
+    [*] --> Discovered : discover()
+    Discovered --> Loaded : load()
+    Loaded --> Unloaded : unload()
+    Loaded --> Active : activate()
+    Loaded --> Error : error
+    Active --> Paused : pause()
+    Paused --> Active : resume()
+    Paused --> Unloaded : unload()
+    Error --> Unloaded : retry()
+    Unloaded --> Discovered : discover()
 ```
 
 ### 10.2 State Definitions

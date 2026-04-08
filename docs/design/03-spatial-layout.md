@@ -34,37 +34,18 @@ rectangle. But the LEDs that consume those pixels exist in a wildly different re
 The spatial layout engine solves one deceptively simple question: **for each physical LED, where on the
 320x200 canvas should we sample its color?**
 
-```
-THE MAPPING PIPELINE
+```mermaid
+graph TD
+    Canvas["Effect Canvas (320 x 200)"]
+    Sampler["Spatial Sampler"]
+    Strip["Strip (1D)<br/>60 LEDs, linear"]
+    Strimer["Strimer<br/>20x6 matrix"]
+    HueBulb["Hue Bulb (point)<br/>1 LED"]
 
-    ┌─────────────────────────────────────────────────────┐
-    │              Effect Canvas (320 x 200)               │
-    │                                                      │
-    │   ░░▒▒▓▓██████▓▓▒▒░░    ░░▒▒▓▓██████▓▓▒▒░░         │
-    │   ░▒▓████████████▓▒░    ░▒▓████████████▓▒░          │
-    │   ▒▓██████████████▓▒    ▒▓██████████████▓▒          │
-    │   ▓████████████████▓    ▓████████████████▓          │
-    │   ████████████████████████████████████████          │
-    │   ▓████████████████▓    ▓████████████████▓          │
-    │   ▒▓██████████████▓▒    ▒▓██████████████▓▒          │
-    │   ░▒▓████████████▓▒░    ░▒▓████████████▓▒░          │
-    │   ░░▒▒▓▓██████▓▓▒▒░░    ░░▒▒▓▓██████▓▓▒▒░░         │
-    │                                                      │
-    └──────────────────────┬──────────────────────────────┘
-                           │
-                    Spatial Sampler
-                           │
-        ┌──────────────────┼──────────────────────┐
-        │                  │                      │
-        ▼                  ▼                      ▼
-   ┌─────────┐     ┌──────────────┐      ┌──────────────┐
-   │ Strip   │     │   Strimer    │      │  Hue Bulb    │
-   │ ●●●●●●● │     │   ●●●●●●●●  │      │              │
-   │ (1D)    │     │   ●●●●●●●●  │      │     ●        │
-   │         │     │   ●●●●●●●●  │      │  (point)     │
-   │ 60 LEDs │     │   ●●●●●●●●  │      │              │
-   │ linear  │     │   (20x6)    │      │  1 "LED"     │
-   └─────────┘     └──────────────┘      └──────────────┘
+    Canvas --> Sampler
+    Sampler --> Strip
+    Sampler --> Strimer
+    Sampler --> HueBulb
 ```
 
 ### The Dimensional Collapse

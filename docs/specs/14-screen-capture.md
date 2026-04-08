@@ -914,11 +914,14 @@ Non-rectangular shapes use point-in-polygon tests against the sector grid (testi
 
 Raw sector colors are unsuitable for direct LED output. The processing pipeline transforms them into visually pleasing, temporally stable LED colors.
 
-```
-Raw sector    ┌───────────┐   ┌────────────┐   ┌───────────┐   ┌──────────┐   ┌──────────┐
-  colors   ──>│ Letterbox │──>│ Aggregate  │──>│ Saturate  │──>│  Black   │──>│ Temporal │──> LED
-              │  Adjust   │   │ (avg/dom)  │   │  & Boost  │   │  Level   │   │  Smooth  │   Color
-              └───────────┘   └────────────┘   └───────────┘   └──────────┘   └──────────┘
+```mermaid
+graph LR
+    Raw[Raw sector colors] --> LB[Letterbox Adjust]
+    LB --> Agg["Aggregate (avg/dom)"]
+    Agg --> Sat[Saturate & Boost]
+    Sat --> BL[Black Level]
+    BL --> TS[Temporal Smooth]
+    TS --> LED[LED Color]
 ```
 
 ### 6.1 Downsampling Strategy

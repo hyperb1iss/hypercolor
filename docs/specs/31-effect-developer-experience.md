@@ -62,37 +62,31 @@ conforms to the effect contract (section 3).
 
 ## 2. Architecture
 
-```
-                       ┌──────────────────────────────┐
-                       │   create-hypercolor-effect    │
-                       │   (npx scaffolder)            │
-                       └──────────┬───────────────────┘
-                                  │ generates
-                                  ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     Effect Project                          │
-│                                                             │
-│  src/main.ts ─────┐                                         │
-│  src/fragment.glsl ┤   ┌──────────────┐   ┌──────────────┐  │
-│                    ├──▶│ hypercolor   │──▶│ dist/        │  │
-│  package.json      │   │ build        │   │ my-effect    │  │
-│  (depends on       │   └──────────────┘   │ .html        │  │
-│   @hypercolor/sdk) │                      └──────┬───────┘  │
-│                    │   ┌──────────────┐          │           │
-│                    └──▶│ hypercolor   │          │           │
-│                        │ dev          │          │           │
-│                        └──────────────┘          │           │
-└─────────────────────────────────────────────────┼───────────┘
-                                                  │
-                   ┌──────────────────────────────┼──────────┐
-                   │                              ▼          │
-                   │  hypercolor install    ──▶  user/       │
-                   │  UI upload button      ──▶  effects/    │
-                   │  manual file copy      ──▶  dir         │
-                   │                                         │
-                   │         Hypercolor Daemon                │
-                   │  (watcher picks up new .html files)     │
-                   └─────────────────────────────────────────┘
+```mermaid
+graph TD
+    Scaffold["create-hypercolor-effect<br/>(npx scaffolder)"]
+
+    subgraph Project["Effect Project"]
+        Sources["src/main.ts<br/>src/fragment.glsl<br/>package.json<br/>(depends on @hypercolor/sdk)"]
+        Build["hypercolor build"]
+        Dev["hypercolor dev"]
+        Dist["dist/my-effect.html"]
+
+        Sources --> Build --> Dist
+        Sources --> Dev
+    end
+
+    subgraph Daemon["Hypercolor Daemon"]
+        Install["hypercolor install<br/>UI upload button<br/>manual file copy"]
+        UserDir["user/effects/dir"]
+        Watcher["watcher picks up new .html files"]
+
+        Install --> UserDir
+        UserDir --> Watcher
+    end
+
+    Scaffold -->|generates| Project
+    Dist --> Install
 ```
 
 ---

@@ -1586,40 +1586,16 @@ The MCP server includes a semantic matching layer for queries that don't map to 
 
 When a tool receives a natural language `query` parameter, the matching pipeline runs in this order:
 
-```
-Input: "calm blue aurora"
-            │
-            ▼
-    ┌──────────────────┐
-    │  1. Exact match   │ ── "calm blue aurora" == effect.name?
-    │                    │    Score: 1.0 if exact
-    └───────┬──────────┘
-            │ (no match)
-            ▼
-    ┌──────────────────┐
-    │  2. Fuzzy match   │ ── Levenshtein distance against all effect names
-    │                    │    Score: 1.0 - (distance / max_len)
-    └───────┬──────────┘
-            │
-            ▼
-    ┌──────────────────┐
-    │  3. Tag match     │ ── Do query words appear in effect.tags?
-    │                    │    Score: matched_tags / total_query_words
-    └───────┬──────────┘
-            │
-            ▼
-    ┌──────────────────┐
-    │  4. Description   │ ── Keyword extraction + intersection with
-    │     match         │    effect.description words
-    │                    │    Score: jaccard similarity
-    └───────┬──────────┘
-            │
-            ▼
-    ┌──────────────────┐
-    │  5. Aggregate     │ ── max(exact, fuzzy, tag, description)
-    │     & Rank        │    Filter: score > 0.3
-    │                    │    Sort: descending by score
-    └──────────────────┘
+```mermaid
+graph TD
+    Input["Input: 'calm blue aurora'"]
+    Exact["1. Exact match<br/>effect.name == query?<br/>Score: 1.0 if exact"]
+    Fuzzy["2. Fuzzy match<br/>Levenshtein distance vs all effect names<br/>Score: 1.0 - (distance / max_len)"]
+    Tag["3. Tag match<br/>Query words in effect.tags?<br/>Score: matched_tags / total_query_words"]
+    Desc["4. Description match<br/>Keyword extraction + intersection<br/>Score: jaccard similarity"]
+    Agg["5. Aggregate & Rank<br/>max(exact, fuzzy, tag, description)<br/>Filter: score > 0.3<br/>Sort: descending by score"]
+
+    Input --> Exact -->|no match| Fuzzy --> Tag --> Desc --> Agg
 ```
 
 ### 7.2 Color Resolution

@@ -518,29 +518,25 @@ razer_device!(BASILISK_V3, 0x0099, "Razer Basilisk V3",
 
 For a device with an N-row matrix:
 
-```
-┌─────────────────────────────────────────────┐
-│ 1. Build brightness-scaled RGB buffer       │
-│ 2. For each row 0..N-1:                     │
-│    a. Encode frame data packet (row, cols)   │
-│    b. SET_REPORT (send packet)              │
-│    c. Sleep 1ms                             │
-│ 3. Send custom frame activation command     │
-└─────────────────────────────────────────────┘
+```mermaid
+graph TD
+    S1["1. Build brightness-scaled RGB buffer"]
+    S2["2. For each row 0..N-1:<br/>a. Encode frame data packet (row, cols)<br/>b. SET_REPORT (send packet)<br/>c. Sleep 1ms"]
+    S3["3. Send custom frame activation command"]
+    S1 --> S2 --> S3
 ```
 
 ### 8.2 Single-Row Update (Mouse / Accessory)
 
 For linear devices like the Basilisk V3:
 
-```
-┌─────────────────────────────────────────────┐
-│ 1. Build brightness-scaled RGB buffer       │
-│ 2. Encode single frame data packet          │
-│    (row=0, start_col=0, stop_col=N-1)       │
-│ 3. SET_REPORT (send packet)                 │
-│ 4. Send custom frame activation command     │
-└─────────────────────────────────────────────┘
+```mermaid
+graph TD
+    S1["1. Build brightness-scaled RGB buffer"]
+    S2["2. Encode single frame data packet<br/>(row=0, start_col=0, stop_col=N-1)"]
+    S3["3. SET_REPORT (send packet)"]
+    S4["4. Send custom frame activation command"]
+    S1 --> S2 --> S3 --> S4
 ```
 
 ### 8.3 Timing Budget

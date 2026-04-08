@@ -441,26 +441,20 @@ hypercolor dev [--effect effects/custom/my-effect.html] [--port 3420]
 ```
 
 **Architecture:**
-```
-┌─────────────────────────────────┐
-│  Effect Dev Server (port 3420)   │
-│                                  │
-│  ┌──────────────┐  ┌──────────┐ │
-│  │ File Watcher  │  │ WebSocket│ │
-│  │  (notify)     │──│  Server  │ │
-│  └──────┬───────┘  └─────┬────┘ │
-│         │                │       │
-│  ┌──────▼───────┐  ┌─────▼────┐ │
-│  │ Effect Engine │  │ Browser  │ │
-│  │ (Servo/wgpu)  │  │ Preview  │ │
-│  └──────┬───────┘  └──────────┘ │
-│         │                        │
-│  ┌──────▼───────┐               │
-│  │ Virtual LEDs  │               │
-│  │ (simulated    │               │
-│  │  device panel)│               │
-│  └──────────────┘               │
-└─────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph devserver["Effect Dev Server (port 3420)"]
+        FileWatcher["File Watcher (notify)"]
+        WSServer["WebSocket Server"]
+        EffectEngine["Effect Engine (Servo/wgpu)"]
+        BrowserPreview["Browser Preview"]
+        VirtualLEDs["Virtual LEDs (simulated device panel)"]
+
+        FileWatcher --> WSServer
+        FileWatcher --> EffectEngine
+        WSServer --> BrowserPreview
+        EffectEngine --> VirtualLEDs
+    end
 ```
 
 **HMR behavior:**
@@ -753,20 +747,14 @@ Single effects are great. Layered effects are magic. The composition system lets
 
 The composition engine maintains an ordered stack of effect layers, each with its own blend mode and opacity.
 
-```
-┌─────────────────────────────┐
-│  Layer 3: Beat Pulse        │  Blend: Add, Opacity: 60%
-│  (audio-reactive flash)     │
-├─────────────────────────────┤
-│  Layer 2: Spectrum Bars     │  Blend: Screen, Opacity: 80%
-│  (audio-reactive bars)      │
-├─────────────────────────────┤
-│  Layer 1: Aurora             │  Blend: Normal, Opacity: 100%
-│  (ambient base)             │
-└─────────────────────────────┘
-         │
-         ▼
-    Composited 320x200 canvas
+```mermaid
+graph TD
+    L3["Layer 3: Beat Pulse<br/>(audio-reactive flash)<br/>Blend: Add, Opacity: 60%"]
+    L2["Layer 2: Spectrum Bars<br/>(audio-reactive bars)<br/>Blend: Screen, Opacity: 80%"]
+    L1["Layer 1: Aurora<br/>(ambient base)<br/>Blend: Normal, Opacity: 100%"]
+    Out["Composited 320x200 canvas"]
+
+    L3 --> L2 --> L1 --> Out
 ```
 
 **Data model:**
@@ -1050,81 +1038,34 @@ Audio reactivity is the flagship feature. It's what makes RGB lighting feel aliv
 
 ### 7.1 The Full Audio Data Pipeline
 
-```
-Audio Source (PulseAudio/PipeWire)
-    │
-    ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  Audio Capture (cpal)                                             │
-│  • Sample rate: 44100 Hz                                          │
-│  • Buffer size: 1024 samples (~23ms)                              │
-│  • Format: f32 mono (stereo downmixed)                            │
-└───────────────────┬──────────────────────────────────────────────┘
-                    │ Raw PCM samples
-                    ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  Windowing + FFT                                                  │
-│  • Hann window applied to reduce spectral leakage                 │
-│  • 2048-point FFT (1024 unique bins)                              │
-│  • Magnitude spectrum: |FFT|^2                                    │
-│  • → 200-bin log-scaled frequency array (20Hz - 20kHz)            │
-└───────────────────┬──────────────────────────────────────────────┘
-                    │
-        ┌───────────┼───────────────────────────────────────┐
-        │           │                                       │
-        ▼           ▼                                       ▼
-┌────────────┐ ┌─────────────┐                    ┌────────────────┐
-│ Band Energy │ │ Mel Bands   │                    │ Raw Spectrum   │
-│             │ │             │                    │                │
-│ bass:  0-1  │ │ 24 mel-     │                    │ freq[200]:     │
-│ mid:   0-1  │ │ scaled      │                    │ log-frequency  │
-│ treble:0-1  │ │ bands       │                    │ magnitude      │
-│ level: 0-1  │ │ (perceptual)│                    │ array          │
-└──────┬─────┘ └──────┬──────┘                    └───────┬────────┘
-       │              │                                    │
-       │              ▼                                    │
-       │     ┌────────────────┐                           │
-       │     │ Chromagram     │                           │
-       │     │                │                           │
-       │     │ 12 pitch       │                           │
-       │     │ classes        │                           │
-       │     │ (C,C#,...,B)   │                           │
-       │     │ dominantPitch  │                           │
-       │     │ harmonicHue    │                           │
-       │     │ chordMood      │                           │
-       │     └───────┬────────┘                           │
-       │             │                                    │
-       ▼             ▼                                    ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  Beat Detection & Onset                                           │
-│                                                                   │
-│  Spectral flux (difference between consecutive FFT frames)        │
-│  → Adaptive threshold → onset detection                           │
-│  → Inter-onset interval tracking → BPM estimation                 │
-│  → Phase-locked beat prediction → beatPhase (0-1)                 │
-│  → beatConfidence, beatAnticipation                               │
-│                                                                   │
-│  Separate spectral flux per band:                                 │
-│    spectralFluxBands[3] = [bass_flux, mid_flux, treble_flux]     │
-└───────────────────┬──────────────────────────────────────────────┘
-                    │
-                    ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  Spectral Features                                                │
-│                                                                   │
-│  brightness: spectral centroid (perception of "brightness")       │
-│  spread: spectral bandwidth                                       │
-│  rolloff: frequency below which 85% of energy is contained        │
-│  density: number of active frequency bins above noise floor        │
-└───────────────────┬──────────────────────────────────────────────┘
-                    │
-                    ▼
-            ┌────────────────┐
-            │ AudioData      │
-            │ (published     │
-            │  every frame   │
-            │  via event bus)│
-            └────────────────┘
+```mermaid
+graph TD
+    Source["Audio Source (PulseAudio/PipeWire)"]
+    Capture["Audio Capture (cpal)<br/>44100 Hz, 1024 samples (~23ms), f32 mono"]
+    FFT["Windowing + FFT<br/>Hann window, 2048-point FFT (1024 bins)<br/>Magnitude spectrum |FFT|^2<br/>200-bin log-scaled frequency array (20Hz-20kHz)"]
+
+    BandEnergy["Band Energy<br/>bass: 0-1, mid: 0-1<br/>treble: 0-1, level: 0-1"]
+    MelBands["Mel Bands<br/>24 mel-scaled bands<br/>(perceptual)"]
+    RawSpectrum["Raw Spectrum<br/>freq[200]: log-frequency<br/>magnitude array"]
+    Chromagram["Chromagram<br/>12 pitch classes (C, C#, ... B)<br/>dominantPitch, harmonicHue, chordMood"]
+
+    BeatDetect["Beat Detection & Onset<br/>Spectral flux → adaptive threshold → onset detection<br/>Inter-onset interval → BPM estimation<br/>Phase-locked beat prediction → beatPhase (0-1)<br/>spectralFluxBands[3] per band"]
+
+    SpectralFeatures["Spectral Features<br/>brightness (centroid), spread (bandwidth)<br/>rolloff (85% energy), density (active bins)"]
+
+    AudioData["AudioData<br/>(published every frame via event bus)"]
+
+    Source -->|f32 PCM samples| Capture
+    Capture -->|Raw PCM| FFT
+    FFT --> BandEnergy
+    FFT --> MelBands
+    FFT --> RawSpectrum
+    MelBands --> Chromagram
+    BandEnergy --> BeatDetect
+    Chromagram --> BeatDetect
+    RawSpectrum --> BeatDetect
+    BeatDetect --> SpectralFeatures
+    SpectralFeatures --> AudioData
 ```
 
 ### 7.2 The AudioData Struct

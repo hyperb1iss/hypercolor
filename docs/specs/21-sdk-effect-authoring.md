@@ -93,31 +93,27 @@ Learned from the best creative coding environments:
 
 ## 3. Progressive Tiers
 
-```
-CANVAS EFFECTS                          SHADER EFFECTS
-──────────────────                      ──────────────────
+```mermaid
+graph TD
+    subgraph Canvas["CANVAS EFFECTS"]
+        C0["Tier 0: Plain HTML<br/>canvas + script<br/>Zero toolchain"]
+        C1["Tier 1: canvas()<br/>One function call<br/>Draw callback"]
+        C2["Tier 2: canvas() + factory<br/>Setup + draw with closure<br/>State between frames"]
+        C3["Tier 3: CanvasEffect class<br/>Full OOP escape hatch<br/>Multi-canvas, custom loop"]
+        C0 --> C1 --> C2 --> C3
+    end
 
-Tier 0: Plain HTML                      Tier 0: Single .glsl file
-  <canvas> + <script>                     #pragma hypercolor controls
-  Zero toolchain                          Self-contained shader
-  ↓                                       ↓
-Tier 1: canvas()                        Tier 1: effect()
-  One function call                       One function call
-  Draw callback                           Shader + controls object
-  ↓                                       ↓
-Tier 2: canvas() + factory              Tier 2: effect() + hooks
-  Setup + draw with closure               setup() + frame() for
-  State between frames                    computed uniforms
-  ↓                                       ↓
-Tier 3: CanvasEffect class              Tier 3: WebGLEffect class
-  Full OOP escape hatch                   Full OOP escape hatch
-  Multi-canvas, custom loop               Multi-pass, custom pipeline
-        ↓                                       ↓
-        └──────────┬───────────────────────────┘
-                   ▼
-          HTML file with <meta> tags
-                   ↓
-          Servo renderer → LEDs
+    subgraph Shader["SHADER EFFECTS"]
+        S0["Tier 0: Single .glsl file<br/>#pragma hypercolor controls<br/>Self-contained shader"]
+        S1["Tier 1: effect()<br/>One function call<br/>Shader + controls object"]
+        S2["Tier 2: effect() + hooks<br/>setup() + frame() for<br/>computed uniforms"]
+        S3["Tier 3: WebGLEffect class<br/>Full OOP escape hatch<br/>Multi-pass, custom pipeline"]
+        S0 --> S1 --> S2 --> S3
+    end
+
+    C3 --> HTML["HTML file with meta tags"]
+    S3 --> HTML
+    HTML --> Servo["Servo renderer --> LEDs"]
 ```
 
 Both paths converge to the same HTML output. Both paths have the same progressive disclosure. Each speaks its own language — canvas effects feel like canvas, shader effects feel like shaders.

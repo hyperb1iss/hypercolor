@@ -125,12 +125,16 @@ Runs on a **dedicated OS thread** with its own Tokio runtime (isolated from API 
 
 Per-device states managed by `DeviceLifecycleManager` — a **pure state machine** that emits actions for async executors (no I/O itself):
 
-```
-Unknown → Known → Connecting → Connected → Active
-                      ↓                       ↓
-                  Failed ←──────────── Disconnected
-                      ↓
-              (exponential backoff, 6 max attempts, 30s max delay)
+```mermaid
+stateDiagram-v2
+    Unknown --> Known
+    Known --> Connecting
+    Connecting --> Connected
+    Connected --> Active
+    Connecting --> Failed
+    Connected --> Disconnected
+    Disconnected --> Failed
+    Failed --> Connecting : exponential backoff\n6 max attempts, 30s max delay
 ```
 
 Hot-plug: USB device events trigger state transitions. The lifecycle manager decides whether to reconnect, the executor performs the actual transport operations.

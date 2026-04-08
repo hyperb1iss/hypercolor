@@ -604,12 +604,11 @@ to show only that zone's devices on its canvas.
 
 The dashboard shows a tiled or stacked preview of all active zones:
 
-```
-┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
-│   ⌨️  Desk       │ │   🌀  Case       │ │   🎵  Room       │
-│  screen-mirror  │ │  ambient-plasma  │ │  audio-pulse    │
-│  [canvas prev]  │ │  [canvas prev]  │ │  [canvas prev]  │
-└─────────────────┘ └─────────────────┘ └─────────────────┘
+```mermaid
+graph LR
+    Desk["Desk<br/>screen-mirror<br/>[canvas prev]"]
+    Case["Case<br/>ambient-plasma<br/>[canvas prev]"]
+    Room["Room<br/>audio-pulse<br/>[canvas prev]"]
 ```
 
 ---

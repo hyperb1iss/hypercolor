@@ -27,55 +27,33 @@ This document covers the complete audio pipeline: capturing system audio on Linu
 
 ### Signal Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         Linux Audio Stack                               │
-│                                                                         │
-│  ┌──────────┐    ┌───────────┐    ┌──────────────┐    ┌─────────────┐  │
-│  │ App      │───>│ PipeWire  │───>│ Hardware     │───>│ Speakers /  │  │
-│  │ (Spotify,│    │ Graph     │    │ Output Sink  │    │ DAC         │  │
-│  │  Game)   │    │           │    │              │    │             │  │
-│  └──────────┘    └─────┬─────┘    └──────────────┘    └─────────────┘  │
-│                        │                                                │
-│                        │ Monitor source                                 │
-│                        │ (loopback tap)                                 │
-│                        ▼                                                │
-│               ┌────────────────┐                                        │
-│               │ Hypercolor     │                                        │
-│               │ Audio Capture  │                                        │
-│               │ (cpal stream)  │                                        │
-│               └───────┬────────┘                                        │
-└───────────────────────┼─────────────────────────────────────────────────┘
-                        │
-                        │ f32 PCM samples (ring buffer)
-                        ▼
-┌───────────────────────────────────────────────────────────────────────┐
-│                      DSP Pipeline (dedicated thread)                  │
-│                                                                       │
-│  ┌──────────┐  ┌──────────┐  ┌───────────┐  ┌───────────────────┐   │
-│  │ Window   │─>│ FFT      │─>│ Frequency │─>│ Feature           │   │
-│  │ Function │  │ (realfft)│  │ Mapping   │  │ Extraction        │   │
-│  │ (Hann)   │  │ r2c      │  │ & Binning │  │                   │   │
-│  └──────────┘  └──────────┘  └───────────┘  │ - Mel bands (24)  │   │
-│                                              │ - Chromagram (12) │   │
-│                                              │ - Spectral feat.  │   │
-│                                              │ - Beat detection  │   │
-│                                              │ - Harmonic anal.  │   │
-│                                              └────────┬──────────┘   │
-│                                                       │              │
-└───────────────────────────────────────────────────────┼──────────────┘
-                                                        │
-                                        AudioData struct (lock-free)
-                                                        │
-                        ┌───────────────────────────────┼───────────┐
-                        │                               │           │
-                        ▼                               ▼           ▼
-              ┌──────────────────┐          ┌────────────┐  ┌──────────┐
-              │ Servo Renderer   │          │ wgpu       │  │ Event Bus│
-              │ inject into      │          │ Uniform    │  │ spectrum │
-              │ window.engine    │          │ Buffer     │  │ watch    │
-              │ .audio           │          │            │  │ channel  │
-              └──────────────────┘          └────────────┘  └──────────┘
+```mermaid
+graph TD
+    subgraph linux["Linux Audio Stack"]
+        App["App (Spotify, Game)"]
+        PipeWire["PipeWire Graph"]
+        HWSink["Hardware Output Sink"]
+        Speakers["Speakers / DAC"]
+        Capture["Hypercolor Audio Capture (cpal stream)"]
+
+        App --> PipeWire --> HWSink --> Speakers
+        PipeWire -->|Monitor source<br/>(loopback tap)| Capture
+    end
+
+    subgraph dsp["DSP Pipeline (dedicated thread)"]
+        Window["Window Function (Hann)"]
+        FFT["FFT (realfft r2c)"]
+        FreqMap["Frequency Mapping & Binning"]
+        Features["Feature Extraction<br/>Mel bands (24), Chromagram (12)<br/>Spectral features, Beat detection<br/>Harmonic analysis"]
+
+        Window --> FFT --> FreqMap --> Features
+    end
+
+    Capture -->|f32 PCM samples<br/>(ring buffer)| Window
+
+    Features -->|AudioData struct<br/>(lock-free)| ServoRenderer["Servo Renderer<br/>inject into window.engine.audio"]
+    Features --> wgpuBuffer["wgpu Uniform Buffer"]
+    Features --> EventBus["Event Bus<br/>spectrum watch channel"]
 ```
 
 ### Linux Audio Landscape
@@ -90,14 +68,13 @@ PipeWire is the convergence point. It replaces both PulseAudio and JACK, speaks 
 
 PipeWire exposes every output sink as a corresponding monitor source. When audio plays through `alsa_output.pci-0000_00_1f.3.analog-stereo`, PipeWire creates `alsa_output.pci-0000_00_1f.3.analog-stereo.monitor` -- a loopback tap of everything going to that sink.
 
-```
-PipeWire Graph:
-  Spotify ──────┐
-  Firefox ──────┤──> Output Sink ──> Hardware
-  Game ─────────┘        │
-                         │ .monitor
-                         ▼
-                    Hypercolor (cpal input stream)
+```mermaid
+graph LR
+    Spotify --> Sink["Output Sink"]
+    Firefox --> Sink
+    Game --> Sink
+    Sink --> Hardware
+    Sink -->|.monitor| Hypercolor["Hypercolor (cpal input stream)"]
 ```
 
 **How cpal connects:**
@@ -200,11 +177,17 @@ For advanced scenarios (game audio + music, multiple app capture):
 
 ### The DSP Pipeline
 
+```mermaid
+graph LR
+    PCM["Raw PCM Samples (f32)"] --> DC["DC Offset Removal (subtract mean)"]
+    DC --> Win["Window Function (Hann)"]
+    Win --> FFT["FFT (complex → |z|)"]
+    FFT --> Mag["Magnitude Spectrum"]
+    Mag --> Log["Log Scale (20*log10 dB)"]
+    Log --> Bin["Bin Mapping (200 bins)"]
+    Bin --> Smooth["Smooth (EMA decay)"]
+    Smooth --> Out["Output [200]"]
 ```
-Raw PCM ──> DC Offset ──> Window ──> FFT ──> Magnitude ──> Log Scale ──> Bin ──> Smooth ──> Output
-Samples     Removal       Function          Spectrum      (dB)          Mapping   (EMA)     [200]
-(f32)       (subtract     (Hann)            (complex      (20*log10)    (200      (decay)
-            mean)                            → |z|)                     bins)
 ```
 
 ### Window Function Selection
@@ -415,24 +398,23 @@ Beat detection is the most perceptually critical feature. When the beat drops an
 
 We run three complementary beat detection methods and fuse their outputs:
 
-```
-                    ┌──────────────────┐
-                    │   Band Energy    │──> Bass onset
-                    │   Onset          │──> Snare onset
-                    │   Detection      │──> Hi-hat onset
-                    └────────┬─────────┘
-                             │
-┌──────────────┐             │         ┌──────────────────┐
-│ Spectral     │─────────────┼────────>│  Beat Fusion     │──> beat (bool)
-│ Flux         │             │         │  Engine           │──> beatPulse (0-1)
-│ Detection    │─────────────┘    ┌───>│                   │──> beatPhase (0-1)
-└──────────────┘                  │    │                   │──> beatConfidence
-                                  │    │                   │──> beatAnticipation
-┌──────────────┐                  │    │                   │──> tempo (BPM)
-│ Tempo        │──────────────────┘    └──────────────────┘
-│ Tracker      │
-│ (auto-corr.) │
-└──────────────┘
+```mermaid
+graph LR
+    BandEnergy["Band Energy Onset Detection"]
+    SpectralFlux["Spectral Flux Detection"]
+    TempoTracker["Tempo Tracker (auto-corr.)"]
+    Fusion["Beat Fusion Engine"]
+
+    BandEnergy -->|Bass onset<br/>Snare onset<br/>Hi-hat onset| Fusion
+    SpectralFlux --> Fusion
+    TempoTracker --> Fusion
+
+    Fusion --> beat["beat (bool)"]
+    Fusion --> beatPulse["beatPulse (0-1)"]
+    Fusion --> beatPhase["beatPhase (0-1)"]
+    Fusion --> beatConfidence["beatConfidence"]
+    Fusion --> beatAnticipation["beatAnticipation"]
+    Fusion --> tempo["tempo (BPM)"]
 ```
 
 ### Method 1: Energy-Based Onset Detection
@@ -1057,22 +1039,16 @@ intensity = beatAnticipation * 0.3 + beatPulse * 0.7
 
 The total audio-to-photon latency determines whether lights feel synchronized with music. Human perception merges audio and visual events within ~30ms. Beyond 50ms, the disconnect becomes noticeable.
 
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                         Audio-to-Photon Latency Budget                      │
-│                                                                              │
-│  Audio              DSP                Render            Device              │
-│  Capture            Processing         Frame             Output              │
-│                                                                              │
-│  ├────────┤  ├──────────────┤  ├───────────────┤  ├──────────────────┤      │
-│  0       5ms 5            8ms  8            13ms  13              28ms      │
-│                                                                              │
-│  PipeWire           FFT (1024)          wgpu/Servo          USB HID:  5-10ms│
-│  monitor            + features          render +            WLED DDP: 3-5ms │
-│  tap                + beat det.         pixel sampling      Hue:      30ms+ │
-│                                                                              │
-│  Target total: < 30ms (USB)    < 20ms (WLED)    < 60ms (Hue)               │
-└──────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+gantt
+    title Audio-to-Photon Latency Budget
+    dateFormat X
+    axisFormat %Lms
+    section Pipeline
+        Audio Capture (PipeWire monitor tap)    :a, 0, 5
+        DSP Processing (FFT + features + beat)  :b, 5, 8
+        Render Frame (wgpu/Servo + sampling)    :c, 8, 13
+        Device Output (USB HID 5-10ms / DDP 3-5ms / Hue 30ms+) :d, 13, 28
 ```
 
 ### Per-Stage Breakdown

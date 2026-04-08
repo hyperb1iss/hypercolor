@@ -274,14 +274,10 @@ communicates with the daemon exclusively via the REST API on `localhost:9420`.
 
 ### Architecture
 
-```
-┌─────────────────┐     HTTP/WS      ┌──────────────┐
-│  hypercolor-tray │ ◄──────────────► │  hypercolor   │
-│  (applet binary) │   localhost:9420  │  (daemon)     │
-└────────┬────────┘                   └──────────────┘
-         │
-         ▼
-   System Tray / Menu Bar
+```mermaid
+graph LR
+    Tray["hypercolor-tray<br/>(applet binary)"] <-->|HTTP/WS<br/>localhost:9420| Daemon["hypercolor<br/>(daemon)"]
+    Tray --> SysTray["System Tray / Menu Bar"]
 ```
 
 **Why a separate binary (not embedded in the daemon):**

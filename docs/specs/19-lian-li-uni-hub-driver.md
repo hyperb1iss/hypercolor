@@ -145,14 +145,13 @@ All modern Lian Li hubs (PID `0xA100`+) use this protocol. Every packet starts w
 
 ### 4.1 Three-Phase Lighting Update
 
-```
-         Feature Report          Output Report         Feature Report
-    ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
-    │  Phase 1:        │    │  Phase 2:        │    │  Phase 3:        │
-    │  Activate        │ -> │  Color Data      │ -> │  Commit          │
-    │  (fan count)     │    │  (R-B-G triples) │    │  (effect params) │
-    └──────────────────┘    └──────────────────┘    └──────────────────┘
-          ~20ms                   ~20ms                   ~20ms
+```mermaid
+graph LR
+    P1["Phase 1: Activate<br/>(fan count)<br/>Feature Report<br/>~20ms"]
+    P2["Phase 2: Color Data<br/>(R-B-G triples)<br/>Output Report<br/>~20ms"]
+    P3["Phase 3: Commit<br/>(effect params)<br/>Feature Report<br/>~20ms"]
+
+    P1 --> P2 --> P3
 ```
 
 ### 4.2 Phase 1 -- Activate (Fan Quantity)

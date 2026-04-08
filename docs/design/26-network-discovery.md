@@ -27,26 +27,16 @@ network-scoped API key authentication for remote access.
 
 ## Architecture
 
-```
-┌─────────────────────┐      mDNS publish       ┌──────────────────┐
-│  Daemon A            │◄─────────────────────── │  LAN (multicast) │
-│  192.168.1.10:9420   │      _hypercolor._tcp   │                  │
-│  name: "desk-pc"     │                         │                  │
-└─────────────────────┘                          │                  │
-                                                 │                  │
-┌─────────────────────┐      mDNS publish        │                  │
-│  Daemon B            │◄────────────────────────│                  │
-│  192.168.1.20:9420   │      _hypercolor._tcp   │                  │
-│  name: "server-rack" │                         │                  │
-└─────────────────────┘                          └──────────────────┘
-                                                        ▲
-                                                        │ mDNS browse
-                                                        │
-                                              ┌─────────┴──────────┐
-                                              │  Tray / CLI        │
-                                              │  discovers both    │
-                                              │  connects to one   │
-                                              └────────────────────┘
+```mermaid
+graph TD
+    LAN["LAN (multicast)"]
+    DaemonA["Daemon A<br/>192.168.1.10:9420<br/>name: desk-pc"]
+    DaemonB["Daemon B<br/>192.168.1.20:9420<br/>name: server-rack"]
+    Client["Tray / CLI<br/>discovers both, connects to one"]
+
+    DaemonA -->|mDNS publish<br/>_hypercolor._tcp| LAN
+    DaemonB -->|mDNS publish<br/>_hypercolor._tcp| LAN
+    Client -->|mDNS browse| LAN
 ```
 
 ### mDNS Service Record

@@ -19,14 +19,18 @@
 
 At 60fps, each frame has exactly 16,666 microseconds. Here is how that budget is allocated across the render pipeline stages:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                     16.6ms Frame Budget (60fps)                     │
-├─────────────┬───────────┬───────────┬───────────┬──────┬───────────┤
-│   Input     │  Effect   │  Spatial  │  Device   │ Bus  │  Slack    │
-│  Sampling   │ Rendering │ Sampling  │  Output   │      │           │
-│   1.0ms     │   8.0ms   │   0.5ms   │  2.0ms    │0.1ms │  5.0ms   │
-└─────────────┴───────────┴───────────┴───────────┴──────┴───────────┘
+```mermaid
+gantt
+    title 16.6ms Frame Budget (60fps)
+    dateFormat X
+    axisFormat %Lms
+    section Pipeline
+        Input Sampling          :a, 0, 1
+        Effect Rendering        :b, 1, 9
+        Spatial Sampling        :c, 9, 9.5
+        Device Output           :d, 9.5, 11.5
+        Bus                     :e, 11.5, 11.6
+        Slack                   :f, 11.6, 16.6
 ```
 
 ### Stage Budgets
@@ -540,26 +544,23 @@ E1.31 is less efficient than DDP (170 vs 480 pixels per packet) but more widely 
 
 ### Output Pipeline Architecture
 
-```
-                    Render Loop
-                        │
-                        │ DeviceColors per zone
-                        ▼
-                ┌───────────────┐
-                │ Output Router │
-                └──┬──┬──┬──┬──┘
-                   │  │  │  │
-         ┌─────┐  │  │  │  └──────────────┐
-         │     │  │  │  └────────┐         │
-         ▼     ▼  ▼  ▼          ▼         ▼
-      ┌─────┐┌────┐┌──────┐┌───────┐┌─────────┐
-      │ HID ││ DDP││OpenRGB││ E1.31 ││Hue DTLS │
-      │Queue││Send││ Batch ││ Batch ││  Queue  │
-      └──┬──┘└──┬─┘└──┬───┘└──┬────┘└────┬────┘
-         │      │     │       │          │
-         ▼      ▼     ▼       ▼          ▼
-       USB   UDP/IP  TCP    UDP/IP    DTLS/UDP
-      async  sendmmsg batch  sendmmsg  rate-limited
+```mermaid
+graph TD
+    Render["Render Loop"]
+    Router["Output Router"]
+
+    HID["HID Queue<br/>→ USB async"]
+    DDP["DDP Send<br/>→ UDP/IP sendmmsg"]
+    OpenRGB["OpenRGB Batch<br/>→ TCP batch"]
+    E131["E1.31 Batch<br/>→ UDP/IP sendmmsg"]
+    Hue["Hue DTLS Queue<br/>→ DTLS/UDP rate-limited"]
+
+    Render -->|DeviceColors per zone| Router
+    Router --> HID
+    Router --> DDP
+    Router --> OpenRGB
+    Router --> E131
+    Router --> Hue
 ```
 
 Each backend gets its own output queue:
@@ -903,38 +904,26 @@ pub struct BackendMetrics {
 
 ### Startup Sequence (Parallel Where Possible)
 
-```
-T+0ms      │ Process start
-           │
-T+50ms     │ Config loaded (TOML parse)
-           │ Logging initialized
-           │
-T+100ms    ├──┬──┬──┬── Parallel init ──────────────────────
-           │  │  │  │
-           │  │  │  └─ wgpu device creation + pipeline compile
-           │  │  │     Target: 200-500ms (driver-dependent)
-           │  │  │
-           │  │  └──── Audio device open (cpal)
-           │  │        Target: 50-100ms
-           │  │
-           │  └─────── Device discovery start (mDNS, USB enum, TCP probe)
-           │           Target: 100-300ms for first device, 2-5s for full scan
-           │
-           └────────── Axum web server bind + start
-                       Target: 20ms
-           │
-T+500ms    │ wgpu ready → load default effect shader
-           │ First device likely discovered
-           │
-T+800ms    │ First frame rendered (wgpu path)
-           │ First device output sent
-           │ ✅ DAEMON READY (signal systemd, open IPC socket)
-           │
-T+1-5s     │ Background: remaining devices discovered
-           │ Background: mDNS resolution completes
-           │
-T+?        │ Servo: loaded ONLY when an HTML effect is first selected
-           │ (see Lazy Servo Loading below)
+```mermaid
+gantt
+    title Daemon Startup Sequence
+    dateFormat X
+    axisFormat %Lms
+    section Sequential
+        Process start + config load   :a, 0, 50
+        Logging initialized           :b, 50, 100
+    section Parallel Init (T+100ms)
+        Axum web server bind (20ms)          :c, 100, 120
+        Audio device open (50-100ms)         :d, 100, 200
+        Device discovery (100-300ms first)   :e, 100, 400
+        wgpu device + pipeline (200-500ms)   :f, 100, 500
+    section Ready
+        Load default effect shader           :g, 500, 600
+        First frame rendered                 :h, 600, 800
+        DAEMON READY                         :milestone, m1, 800, 800
+    section Background
+        Remaining device discovery (1-5s)    :i, 800, 5000
+        Servo (lazy, on first HTML effect)   :j, after i, 3200
 ```
 
 ### Lazy Servo Loading

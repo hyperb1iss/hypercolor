@@ -10,25 +10,15 @@ Screen capture is an **input source** in Hypercolor's architecture — it feeds 
 
 This document covers the full pipeline: capturing pixels from the display server, mapping screen regions to LED zones, processing raw colors into good LED output, and handling the edge cases that make or break the experience.
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                          Screen Capture Pipeline                        │
-│                                                                          │
-│  ┌─────────────┐    ┌──────────────┐    ┌──────────────┐    ┌─────────┐ │
-│  │   Display    │    │   Capture    │    │   Region     │    │  Color  │ │
-│  │   Server     │───▶│   Backend    │───▶│   Mapper     │───▶│ Process │ │
-│  │              │    │              │    │              │    │         │ │
-│  │  Wayland /   │    │  PipeWire /  │    │  Edge zones  │    │ Smooth  │ │
-│  │  X11         │    │  XShm        │    │  Sectors     │    │ Boost   │ │
-│  │              │    │  DMA-BUF     │    │  Custom      │    │ Balance │ │
-│  └─────────────┘    └──────────────┘    └──────────────┘    └────┬────┘ │
-│                                                                   │      │
-│                                                    ┌──────────────▼────┐ │
-│                                                    │   Device Output   │ │
-│                                                    │   WLED / OpenRGB  │ │
-│                                                    │   Hue / HID       │ │
-│                                                    └──────────────────┘ │
-└──────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    Display["Display Server<br/>Wayland / X11"]
+    Capture["Capture Backend<br/>PipeWire / XShm / DMA-BUF"]
+    Region["Region Mapper<br/>Edge zones, Sectors, Custom"]
+    Color["Color Process<br/>Smooth, Boost, Balance"]
+    Output["Device Output<br/>WLED / OpenRGB / Hue / HID"]
+
+    Display --> Capture --> Region --> Color --> Output
 ```
 
 ---
@@ -41,13 +31,16 @@ Wayland compositors don't expose screen buffers directly. Screen capture goes th
 
 **Flow:**
 
-```
-┌──────────────┐    D-Bus     ┌──────────────────┐   PipeWire    ┌─────────────┐
-│  Hypercolor  │ ────────────▶│  xdg-desktop-    │ ────────────▶│  Compositor  │
-│  Daemon      │  ScreenCast  │  portal          │   Stream      │  (Mutter /   │
-│              │◀──────────── │                  │ ◀──────────── │   KWin /     │
-│              │  PW stream   │                  │   DMA-BUF     │   Sway)      │
-└──────────────┘   fd + node  └──────────────────┘   frames      └─────────────┘
+```mermaid
+sequenceDiagram
+    participant HC as Hypercolor Daemon
+    participant Portal as xdg-desktop-portal
+    participant Comp as Compositor (Mutter/KWin/Sway)
+
+    HC->>Portal: D-Bus ScreenCast
+    Portal->>Comp: PipeWire Stream
+    Comp-->>Portal: DMA-BUF frames
+    Portal-->>HC: PW stream fd + node
 ```
 
 1. Hypercolor calls `org.freedesktop.portal.ScreenCast.CreateSession()`
@@ -125,11 +118,9 @@ X11 has no permission model for screen capture — any client can read any pixel
 
 **XShm (shared memory) — fast path:**
 
-```
-┌──────────────┐   shared memory   ┌──────────────┐
-│  Hypercolor  │ ◀───────────────▶│   X Server   │
-│              │   XShmGetImage    │              │
-└──────────────┘                   └──────────────┘
+```mermaid
+graph LR
+    HC["Hypercolor"] <-->|shared memory<br/>XShmGetImage| X["X Server"]
 ```
 
 - Allocates a shared memory segment (`shmget`)
@@ -415,12 +406,16 @@ Raw screen pixels are terrible LED colors. Screens display subtle gradients, tex
 
 ### 3.1 Processing Pipeline
 
-```
-Raw Screen    ┌──────────┐   ┌───────────┐   ┌──────────┐   ┌──────────┐
-  Region   ──▶│ Aggregate│──▶│ Letterbox │──▶│ Saturate │──▶│  Smooth  │──▶ LED Color
-  Pixels      │ (avg or  │   │ Detection │   │ & Boost  │   │ (temporal│
-              │ dominant)│   │ & Exclude │   │ & Balance│   │  filter) │
-              └──────────┘   └───────────┘   └──────────┘   └──────────┘
+```mermaid
+graph LR
+    Raw["Raw Screen Region Pixels"]
+    Agg["Aggregate (avg or dominant)"]
+    LB["Letterbox Detection & Exclude"]
+    Sat["Saturate & Boost & Balance"]
+    Smooth["Smooth (temporal filter)"]
+    LED["LED Color"]
+
+    Raw --> Agg --> LB --> Sat --> Smooth --> LED
 ```
 
 ### 3.2 Color Aggregation: Average vs. Dominant
@@ -678,20 +673,17 @@ Two approaches for gaming:
 
 Valve's Gamescope is a micro-compositor for gaming. It wraps a game in its own Wayland session with resolution scaling, frame limiting, and HDR support. Critically, **Gamescope exposes its output as a PipeWire node** — perfect for our capture pipeline.
 
-```
-┌──────────────────────────────────────────────────┐
-│                  Host Compositor                  │
-│  (GNOME / KDE / Sway)                            │
-│                                                    │
-│   ┌──────────────────────────────────────────┐    │
-│   │            Gamescope                      │    │
-│   │   ┌──────────────┐                       │    │
-│   │   │    Game       │   PipeWire           │    │
-│   │   │  (Vulkan/GL)  │──stream──────────────┼───▶ Hypercolor
-│   │   │               │   Clean frames,      │    │  captures this
-│   │   └──────────────┘   no compositor UI    │    │
-│   └──────────────────────────────────────────┘    │
-└──────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    subgraph host["Host Compositor (GNOME / KDE / Sway)"]
+        subgraph gamescope["Gamescope"]
+            Game["Game (Vulkan/GL)"]
+        end
+    end
+
+    HC["Hypercolor"]
+
+    Game -->|PipeWire stream<br/>Clean frames, no compositor UI| HC
 ```
 
 **Launch integration:**
@@ -1383,35 +1375,21 @@ Monitors connect and disconnect. When a captured monitor is unplugged:
 
 ## Data Flow: Complete Pipeline
 
+```mermaid
+graph LR
+    Display["Display Server<br/>(native resolution)<br/>~0.1ms"]
+    PW["PipeWire / XShm<br/>DMA-BUF or shared mem<br/>frame buffer"]
+    Down["Downsample<br/>GPU or CPU<br/>640x360 → 64x36 grid<br/>~0.2ms"]
+    Region["Region Mapper<br/>Edge / Sector / Custom"]
+    Agg["Color Aggregate<br/>Avg or Dominant<br/>~0.1ms"]
+    Sat["Saturation Boost +<br/>White Balance +<br/>Black level handling<br/>~0.05ms"]
+    Smooth["Temporal Smoother<br/>EMA with adaptive alpha<br/>~0.2ms"]
+    Output["Device Output<br/>WLED DDP / OpenRGB<br/>Hue API / USB HID"]
+
+    Display --> PW --> Down --> Region --> Agg --> Sat --> Smooth --> Output
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                          End-to-End Data Flow                                │
-│                                                                              │
-│  ┌───────────┐     ┌──────────────┐     ┌──────────────┐     ┌───────────┐  │
-│  │ Display   │     │ PipeWire /   │     │ Downsample   │     │ Region    │  │
-│  │ Server    │────▶│ XShm         │────▶│ GPU or CPU   │────▶│ Mapper    │  │
-│  │           │     │              │     │              │     │           │  │
-│  │ Native    │     │ DMA-BUF or   │     │ 640×360 →    │     │ Edge /    │  │
-│  │ resolution│     │ shared mem   │     │ 64×36 grid   │     │ Sector /  │  │
-│  │           │     │ frame buffer │     │              │     │ Custom    │  │
-│  └───────────┘     └──────────────┘     └──────────────┘     └─────┬─────┘  │
-│                                                                     │        │
-│  ┌───────────┐     ┌──────────────┐     ┌──────────────┐     ┌─────▼─────┐  │
-│  │ Device    │     │ Temporal     │     │ Saturation   │     │ Color     │  │
-│  │ Output    │◀────│ Smoother     │◀────│ Boost +      │◀────│ Aggregate │  │
-│  │           │     │              │     │ White Bal.   │     │           │  │
-│  │ WLED DDP  │     │ EMA with     │     │              │     │ Avg or    │  │
-│  │ OpenRGB   │     │ adaptive     │     │ Black level  │     │ Dominant  │  │
-│  │ Hue API   │     │ alpha        │     │ handling     │     │           │  │
-│  │ USB HID   │     │              │     │              │     │           │  │
-│  └───────────┘     └──────────────┘     └──────────────┘     └───────────┘  │
-│                                                                              │
-│  Timing:  ~0.1ms      ~0.2ms           ~0.05ms           ~0.1ms             │
-│           capture      downsample       process           aggregate          │
-│                                                                              │
-│  Total: < 2ms per frame @ 30fps = < 6% of frame budget                      │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
+
+Total: < 2ms per frame @ 30fps = < 6% of frame budget
 
 ---
 

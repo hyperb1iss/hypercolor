@@ -123,24 +123,13 @@ device.fan_rpm                →  capabilities (fan control)
 
 ### 4.1 Startup Sequence
 
-```
-┌──────────────────────────────────────────┐
-│ 1. Probe GET /api/ on localhost:27003    │
-│    ├── Success → OpenLinkHub available   │
-│    └── Failure → skip Corsair backend    │
-│                                          │
-│ 2. GET /api/devices/ → enumerate         │
-│    Map each device to DeviceIdentifier   │
-│                                          │
-│ 3. Register devices with HAL             │
-│    DeviceIdentifier::Bridge {            │
-│        service: "openlinkhub",           │
-│        device_serial: "...",             │
-│    }                                     │
-│                                          │
-│ 4. Start polling timer for device list   │
-│    refresh (default: 5s interval)        │
-└──────────────────────────────────────────┘
+```mermaid
+graph TD
+    Probe["1. Probe GET /api/ on localhost:27003"]
+    Probe -->|Success| Enumerate["2. GET /api/devices/ -- enumerate<br/>Map each device to DeviceIdentifier"]
+    Probe -->|Failure| Skip[Skip Corsair backend]
+    Enumerate --> Register["3. Register devices with HAL<br/>DeviceIdentifier::Bridge {<br/>  service: 'openlinkhub',<br/>  device_serial: '...'<br/>}"]
+    Register --> Poll["4. Start polling timer for device list<br/>refresh (default: 5s interval)"]
 ```
 
 ### 4.2 Graceful Degradation

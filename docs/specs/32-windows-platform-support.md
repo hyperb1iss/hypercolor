@@ -420,22 +420,17 @@ Linux exposes I2C buses as `/dev/i2c-*` device files accessible from userspace. 
 
 PawnIO is a lightweight executor framework that runs chipset-specific binary modules in a privileged context:
 
-```
-┌─────────────────────────────────────────┐
-│  Hypercolor Daemon (userspace, admin)   │
-│                                         │
-│  SmBusPawnioTransport                   │
-│    → pawnio_open()                      │
-│    → pawnio_load("SmbusI801.bin")       │
-│    → pawnio_execute("ioctl_smbus_xfer") │
-│    → pawnio_close()                     │
-└─────────────┬───────────────────────────┘
-              │ FFI (libloading)
-┌─────────────▼───────────────────────────┐
-│  PawnIO Runtime (DLL)                   │
-│    Executes binary module functions     │
-│    Direct I/O port access (admin priv)  │
-└─────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Daemon["Hypercolor Daemon (userspace, admin)"]
+        Transport["SmBusPawnioTransport<br/>pawnio_open()<br/>pawnio_load('SmbusI801.bin')<br/>pawnio_execute('ioctl_smbus_xfer')<br/>pawnio_close()"]
+    end
+
+    subgraph Runtime["PawnIO Runtime (DLL)"]
+        Exec["Executes binary module functions<br/>Direct I/O port access (admin priv)"]
+    end
+
+    Transport -->|"FFI (libloading)"| Exec
 ```
 
 ### 9.3 Chipset Module Coverage

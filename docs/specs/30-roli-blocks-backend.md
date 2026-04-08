@@ -115,21 +115,24 @@ multi-device orchestration.
 
 ### 2.3 Architectural Boundary
 
-```
-┌─────────────────────────────────┐     ┌──────────────────────────────┐
-│         Hypercolor              │     │          blocksd             │
-│                                 │     │                              │
-│  Effect Engine ──▶ Sampler      │     │  blocksd API Server          │
-│                     │           │     │    │                         │
-│                     ▼           │     │    ▼                         │
-│  BlocksBackend ────────────────────▶ Unix Socket ──▶ TopologyManager │
-│  (DeviceBackend)    │           │     │    │            │            │
-│                     │           │     │    ▼            ▼            │
-│  Event Bus ◀────────┘           │     │  DeviceGroup ──▶ MIDI SysEx │
-│  (touch/pressure)               │     │    │                  │     │
-│                                 │     │    ▼                  ▼     │
-└─────────────────────────────────┘     │  RemoteHeap ──▶ USB/MIDI    │
-                                        └──────────────────────────────┘
+```mermaid
+graph LR
+    subgraph Hypercolor
+        Engine[Effect Engine] --> Sampler
+        Sampler --> Blocks[BlocksBackend<br/>DeviceBackend]
+        Blocks --> EventBus[Event Bus<br/>touch/pressure]
+    end
+
+    subgraph blocksd
+        API[blocksd API Server] --> Topo[TopologyManager]
+        API --> DG[DeviceGroup]
+        DG --> SysEx[MIDI SysEx]
+        DG --> Heap[RemoteHeap]
+        Heap --> USB[USB/MIDI]
+        SysEx --> USB
+    end
+
+    Blocks -->|Unix Socket| API
 ```
 
 Hypercolor sends RGB888 frames over the socket. blocksd converts to RGB565, computes diffs, packs
@@ -493,13 +496,10 @@ request/response pairs use a `oneshot` channel per request ID.
 Hypercolor sends **RGB888** (3 bytes per pixel, 8-bit per channel). blocksd converts to RGB565
 for the device heap:
 
+```mermaid
+graph LR
+    RGB["RGB888 Input<br/>R: 8 bits<br/>G: 8 bits<br/>B: 8 bits"] -->|conversion| RGB565["RGB565 Storage (little-endian)<br/>Byte 0: [G2 G1 G0 R4 R3 R2 R1 R0]<br/>Byte 1: [B4 B3 B2 B1 B0 G5 G4 G3]"]
 ```
-RGB888 Input          RGB565 Storage (little-endian)
-┌──────────────┐      ┌─────────────────────────────────┐
-│ R: 8 bits    │ ──▶  │ Byte 0: [G2 G1 G0 R4 R3 R2 R1 R0] │
-│ G: 8 bits    │      │ Byte 1: [B4 B3 B2 B1 B0 G5 G4 G3] │
-│ B: 8 bits    │      └─────────────────────────────────┘
-└──────────────┘
 
 Conversion:
   r5 = (r8 >> 3) & 0x1F     // 256 levels → 32 levels  (±4 max error)
@@ -733,31 +733,23 @@ reconnection order, or topology position.
 
 ### 7.1 Render Flow
 
-```
-Effect Engine (60 fps)
-       │
-       ▼
-  Spatial Sampler
-  (maps canvas → 15×15 matrix)
-       │
-       ▼
-  BackendManager::write_colors()
-       │
-       ▼
-  BlocksBackend::write_colors(device_id, &[[u8; 3]; 225])
-       │
-       ├─ Binary frame message (681 bytes)
-       │
-       ▼
-  Unix Socket ──▶ blocksd
-       │
-       ├─ RGB888 → RGB565 conversion
-       ├─ SharedDataChange diff computation
-       ├─ 7-bit SysEx packing
-       ├─ ACK tracking + retransmission
-       │
-       ▼
-  MIDI USB ──▶ ROLI Block ──▶ LittleFoot VM ──▶ LEDs (~25 Hz)
+```mermaid
+graph TD
+    Engine["Effect Engine (60 fps)"] --> Sampler["Spatial Sampler<br/>(maps canvas to 15x15 matrix)"]
+    Sampler --> BM["BackendManager::write_colors()"]
+    BM --> BB["BlocksBackend::write_colors()<br/>(device_id, &[[u8; 3]; 225])"]
+    BB -->|"Binary frame message (681 bytes)"| Socket[Unix Socket]
+    Socket --> blocksd
+
+    subgraph blocksd_processing [blocksd]
+        B1["RGB888 to RGB565 conversion"]
+        B2[SharedDataChange diff computation]
+        B3[7-bit SysEx packing]
+        B4[ACK tracking + retransmission]
+    end
+
+    blocksd --> B1 --> B2 --> B3 --> B4
+    B4 --> MIDI["MIDI USB --> ROLI Block --> LittleFoot VM --> LEDs (~25 Hz)"]
 ```
 
 ### 7.2 Frame Rate Governance
@@ -1126,26 +1118,17 @@ When a device is removed:
 
 ### 10.3 Lifecycle State Machine
 
-```
-                       blocksd not running
-                       ┌──────────────┐
-                       │   Dormant    │◀─── socket doesn't exist
-                       └──────┬───────┘
-                              │ socket appears (next discover() call)
-                              ▼
-                       ┌──────────────┐
-                       │  Connected   │──── ping/pong verified
-                       └──────┬───────┘
-                              │ subscribe + discover
-                              ▼
-                       ┌──────────────┐
-              ┌───────▶│    Active    │◀─── devices discovered, events flowing
-              │        └──────┬───────┘
-              │               │ socket EOF / error
-              │               ▼
-              │        ┌──────────────┐
-              └────────│ Reconnecting │──── exponential backoff
-                       └──────────────┘
+```mermaid
+stateDiagram-v2
+    Dormant --> Connected : socket appears (next discover() call)
+    Connected --> Active : subscribe + discover
+    Active --> Reconnecting : socket EOF / error
+    Reconnecting --> Active : reconnect succeeds
+
+    Dormant : blocksd not running\nsocket doesn't exist
+    Connected : ping/pong verified
+    Active : devices discovered, events flowing
+    Reconnecting : exponential backoff
 ```
 
 ### 10.4 Multi-Block Topologies

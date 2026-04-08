@@ -1207,24 +1207,18 @@ Resolution: Highest priority wins. Ties broken by most-recently-triggered.
 Active rule IDs tracked in a priority stack for restore operations.
 ```
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                   Priority Stack                         │
-│                                                          │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │ P90: Manual Override (user pressed hotkey)        │ ← Active
-│  ├──────────────────────────────────────────────────┤   │
-│  │ P70: Video Call Scene                             │   │
-│  ├──────────────────────────────────────────────────┤   │
-│  │ P50: Gaming Scene                                 │   │
-│  ├──────────────────────────────────────────────────┤   │
-│  │ P20: Circadian Rhythm                             │   │
-│  └──────────────────────────────────────────────────┘   │
-│                                                          │
-│  When P90 expires → fall through to P70                  │
-│  When P70 exits → fall through to P50                    │
-│  When P50 exits → fall through to P20 (base)            │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph stack["Priority Stack"]
+        P90["P90: Manual Override (user pressed hotkey) — Active"]
+        P70["P70: Video Call Scene"]
+        P50["P50: Gaming Scene"]
+        P20["P20: Circadian Rhythm (base)"]
+    end
+
+    P90 -->|expires| P70
+    P70 -->|exits| P50
+    P50 -->|exits| P20
 ```
 
 ### Rule Templates
@@ -1429,31 +1423,18 @@ hypercolor/event/device_connected → { "id": "wled-desk", "name": "Desk Strip" 
 
 **Motion sensor triggers office lights:**
 
-```
-                     ┌─────────────┐
-                     │ Zigbee PIR  │
-                     │ sensor      │
-                     └──────┬──────┘
-                            │ Zigbee2MQTT
-                            ▼
-                     ┌─────────────┐
-                     │   MQTT      │
-                     │   Broker    │
-                     └──────┬──────┘
-                   ┌────────┴────────┐
-                   ▼                 ▼
-            ┌─────────────┐  ┌─────────────┐
-            │ Hypercolor  │  │    Home      │
-            │ (subscribed │  │  Assistant   │
-            │  to topic)  │  │             │
-            └──────┬──────┘  └─────────────┘
-                   │
-                   ▼
-            Rule: "motion detected"
-            + condition: time > 18:00
-            + condition: current_scene != "gaming-*"
-            → Action: activate "evening-warm"
-              with 2s crossfade
+```mermaid
+graph TD
+    PIR["Zigbee PIR sensor"]
+    MQTT["MQTT Broker"]
+    HC["Hypercolor (subscribed to topic)"]
+    HA["Home Assistant"]
+    Rule["Rule: motion detected<br/>+ condition: time > 18:00<br/>+ condition: current_scene != gaming-*<br/>Action: activate evening-warm with 2s crossfade"]
+
+    PIR -->|Zigbee2MQTT| MQTT
+    MQTT --> HC
+    MQTT --> HA
+    HC --> Rule
 ```
 
 **Temperature-reactive accent lighting:**
@@ -1504,18 +1485,18 @@ automation:
 
 Node-RED can orchestrate complex multi-step flows using Hypercolor's REST API:
 
-```
-┌──────────┐     ┌───────────┐     ┌──────────────┐     ┌──────────┐
-│  Twitch  │────→│  Node-RED │────→│  Hypercolor  │────→│  Lights  │
-│  EventSub│     │  (flow)   │     │  REST API    │     │  change  │
-└──────────┘     │           │     └──────────────┘     └──────────┘
-                 │ - Filter  │
-                 │ - Delay   │     ┌──────────────┐     ┌──────────┐
-                 │ - Format  │────→│  Home Asst.  │────→│  Smart   │
-                 │           │     │  (service)   │     │  Speaker │
-                 └───────────┘     └──────────────┘     └──────────┘
-                                   "Someone just
-                                    subscribed!"
+```mermaid
+graph LR
+    Twitch["Twitch EventSub"]
+    NodeRED["Node-RED (flow)<br/>Filter, Delay, Format"]
+    HC["Hypercolor REST API"]
+    Lights["Lights change"]
+    HomeAsst["Home Assistant (service)"]
+    Speaker["Smart Speaker<br/>Someone just subscribed!"]
+
+    Twitch --> NodeRED
+    NodeRED --> HC --> Lights
+    NodeRED --> HomeAsst --> Speaker
 ```
 
 ---
@@ -2449,69 +2430,33 @@ Packs are hosted as git repositories. The gallery is a curated index. Users can 
 
 How all the pieces fit together inside the daemon:
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                          Hypercolor Daemon                            │
-│                                                                       │
-│  ┌────────────────────────────────────────────────────────────────┐  │
-│  │                       Trigger Sources                          │  │
-│  │  Desktop │ App │ System │ MQTT │ HA │ Audio │ Stream │ Calendar│  │
-│  └─────────────────────────┬──────────────────────────────────────┘  │
-│                             │ TriggerEvent                            │
-│                             ▼                                         │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │                      Context Engine                          │    │
-│  │  Detectors → UserContext (working / gaming / media / idle)   │    │
-│  └────────────────────┬─────────────────────────────────────────┘    │
-│                        │                                              │
-│            ┌───────────┴───────────┐                                  │
-│            ▼                       ▼                                  │
-│  ┌─────────────────┐   ┌─────────────────────┐                      │
-│  │   Scheduler     │   │   Rule Engine        │                      │
-│  │  (time-based)   │   │  (event-based)       │                      │
-│  │  Cron, solar,   │   │  Priority stack      │                      │
-│  │  circadian      │   │  Conditions, actions │                      │
-│  └────────┬────────┘   └──────────┬───────────┘                      │
-│           └──────────┬────────────┘                                   │
-│                      │ SceneAction                                    │
-│                      ▼                                                │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │                    Scene Manager                              │    │
-│  │  Scene loading, composition, overlay stack                    │    │
-│  │  Safety limiter (rate limiting, photosensitive mode)         │    │
-│  └───────────────────────┬──────────────────────────────────────┘    │
-│                           │ TransitionState                           │
-│                           ▼                                           │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │                  Transition Engine                             │    │
-│  │  Crossfade, wipe, flash, blackout blending                   │    │
-│  │  Oklab color interpolation                                    │    │
-│  └───────────────────────┬──────────────────────────────────────┘    │
-│                           │ Per-zone effect + params                  │
-│                           ▼                                           │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │                    Effect Engine                               │    │
-│  │  wgpu path (native) + Servo path (HTML/JS)                   │    │
-│  │  Renders each zone's assigned effect                          │    │
-│  └───────────────────────┬──────────────────────────────────────┘    │
-│                           │ RGBA pixel buffer                         │
-│                           ▼                                           │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │                 Spatial Layout Engine                          │    │
-│  │  Canvas pixel coords → physical LED positions                 │    │
-│  └───────────────────────┬──────────────────────────────────────┘    │
-│                           │ LED colors per device                     │
-│                           ▼                                           │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │                   Device Backends                              │    │
-│  │  OpenRGB │ WLED │ Hue │ USB HID │ Network health monitor     │    │
-│  └──────────────────────────────────────────────────────────────┘    │
-│                                                                       │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │                     Event Bus                                 │    │
-│  │  → Web UI, TUI, CLI, D-Bus, MQTT publisher, HA component     │    │
-│  └──────────────────────────────────────────────────────────────┘    │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph daemon["Hypercolor Daemon"]
+        subgraph triggers["Trigger Sources"]
+            Desktop & App & System & MQTT & HA & Audio & Stream & Calendar
+        end
+
+        Context["Context Engine<br/>Detectors → UserContext (working / gaming / media / idle)"]
+        Scheduler["Scheduler (time-based)<br/>Cron, solar, circadian"]
+        Rules["Rule Engine (event-based)<br/>Priority stack, conditions, actions"]
+        SceneManager["Scene Manager<br/>Scene loading, composition, overlay stack<br/>Safety limiter (rate limiting, photosensitive mode)"]
+        Transition["Transition Engine<br/>Crossfade, wipe, flash, blackout blending<br/>Oklab color interpolation"]
+        EffectEngine["Effect Engine<br/>wgpu path (native) + Servo path (HTML/JS)<br/>Renders each zone's assigned effect"]
+        SpatialLayout["Spatial Layout Engine<br/>Canvas pixel coords → physical LED positions"]
+        DeviceBackends["Device Backends<br/>OpenRGB | WLED | Hue | USB HID | Network health monitor"]
+        EventBus["Event Bus<br/>→ Web UI, TUI, CLI, D-Bus, MQTT publisher, HA component"]
+    end
+
+    triggers -->|TriggerEvent| Context
+    Context --> Scheduler
+    Context --> Rules
+    Scheduler -->|SceneAction| SceneManager
+    Rules -->|SceneAction| SceneManager
+    SceneManager -->|TransitionState| Transition
+    Transition -->|Per-zone effect + params| EffectEngine
+    EffectEngine -->|RGBA pixel buffer| SpatialLayout
+    SpatialLayout -->|LED colors per device| DeviceBackends
 ```
 
 ---

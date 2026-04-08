@@ -61,27 +61,16 @@ Hypercolor daemon API on `:9420` — REST + WebSocket with:
 
 ## 2. Architecture
 
-```
-┌─────────────────────────────────────┐
-│          hypercolor-card            │  Lovelace card (Lit 3, Vite)
-│  Effect visualization + controls   │
-└──────────────┬──────────────────────┘
-               │ HA WebSocket (via custom-card-helpers)
-┌──────────────▼──────────────────────┐
-│     hypercolor-homeassistant        │  HA Custom Integration
-│  Light + Select + Sensor + Button   │
-│  DataUpdateCoordinator + Events     │
-└──────────────┬──────────────────────┘
-               │ Python API
-┌──────────────▼──────────────────────┐
-│        hypercolor-python            │  Async Client (httpx + websockets)
-│  Models + Client + CLI + WS        │
-└──────────────┬──────────────────────┘
-               │ HTTP/WS
-┌──────────────▼──────────────────────┐
-│       hypercolor-daemon :9420       │  Rust (Axum)
-│  REST + WebSocket + Binary Frames   │
-└─────────────────────────────────────┘
+```mermaid
+graph TD
+    Card["hypercolor-card<br/>Lovelace card (Lit 3, Vite)<br/>Effect visualization + controls"]
+    HA["hypercolor-homeassistant<br/>HA Custom Integration<br/>Light + Select + Sensor + Button<br/>DataUpdateCoordinator + Events"]
+    Py["hypercolor-python<br/>Async Client (httpx + websockets)<br/>Models + Client + CLI + WS"]
+    Daemon["hypercolor-daemon :9420<br/>Rust (Axum)<br/>REST + WebSocket + Binary Frames"]
+
+    Card -->|"HA WebSocket (via custom-card-helpers)"| HA
+    HA -->|"Python API"| Py
+    Py -->|"HTTP/WS"| Daemon
 ```
 
 ---

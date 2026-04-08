@@ -803,51 +803,37 @@ macro_rules! prismrgb_device {
 
 ### 8.1 Prism 8 / Nollie 8 — Full-Frame Update
 
-```
-┌──────────────────────────────────────────────────┐
-│ 1. Apply brightness scaling (0.75 or 1.00)       │
-│ 2. Convert RGB → GRB                             │
-│ 3. For each active channel 0..7:                 │
-│    a. Split into 21-LED chunks                   │
-│    b. Assign packet_id = idx + (ch × 6)          │
-│    c. Send each chunk as 65-byte HID report      │
-│ 4. Send frame commit (0xFF)                      │
-│ 5. Optional: voltage poll every 150 frames       │
-│    → Query 0xFC 0x1A if firmware ≥ 2             │
-│    → Re-query channel counts on hot-plug change  │
-└──────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    S1["1. Apply brightness scaling (0.75 or 1.00)"]
+    S2["2. Convert RGB to GRB"]
+    S3["3. For each active channel 0..7:<br/>a. Split into 21-LED chunks<br/>b. Assign packet_id = idx + (ch x 6)<br/>c. Send each chunk as 65-byte HID report"]
+    S4["4. Send frame commit (0xFF)"]
+    S5["5. Optional: voltage poll every 150 frames<br/>Query 0xFC 0x1A if firmware >= 2<br/>Re-query channel counts on hot-plug change"]
+    S1 --> S2 --> S3 --> S4 --> S5
 ```
 
 ### 8.2 Prism S — Combined Buffer Update
 
-```
-┌──────────────────────────────────────────────────┐
-│ 1. Apply brightness scaling (0.50)               │
-│ 2. Build contiguous buffer:                      │
-│    a. ATX RGB data (120 LEDs, pad to byte 320)   │
-│    b. GPU marker (0x05) at byte 320              │
-│    c. GPU RGB data after marker                  │
-│ 3. Split buffer into 64-byte chunks             │
-│ 4. Send each chunk as 65-byte HID report        │
-│    (no frame commit — auto-latches)              │
-└──────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    S1["1. Apply brightness scaling (0.50)"]
+    S2["2. Build contiguous buffer:<br/>a. ATX RGB data (120 LEDs, pad to byte 320)<br/>b. GPU marker (0x05) at byte 320<br/>c. GPU RGB data after marker"]
+    S3["3. Split buffer into 64-byte chunks"]
+    S4["4. Send each chunk as 65-byte HID report<br/>(no frame commit -- auto-latches)"]
+    S1 --> S2 --> S3 --> S4
 ```
 
 ### 8.3 Prism Mini — Numbered Packet Update
 
-```
-┌──────────────────────────────────────────────────┐
-│ 1. Optional: apply low-power saver (R+G+B ≤ 175)│
-│ 2. Optional: apply 4-bit color compression       │
-│ 3. Split LEDs into 20-LED chunks                 │
-│ 4. For each chunk:                               │
-│    a. Set packet_number (1-indexed)              │
-│    b. Set total_packets                          │
-│    c. Set data marker 0xAA at offset 4           │
-│    d. Encode RGB data at offset 5+               │
-│    e. Send 65-byte HID report                    │
-│ 5. No frame commit — auto-latches after last pkt │
-└──────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    S1["1. Optional: apply low-power saver (R+G+B <= 175)"]
+    S2["2. Optional: apply 4-bit color compression"]
+    S3["3. Split LEDs into 20-LED chunks"]
+    S4["4. For each chunk:<br/>a. Set packet_number (1-indexed)<br/>b. Set total_packets<br/>c. Set data marker 0xAA at offset 4<br/>d. Encode RGB data at offset 5+<br/>e. Send 65-byte HID report"]
+    S5["5. No frame commit -- auto-latches after last pkt"]
+    S1 --> S2 --> S3 --> S4 --> S5
 ```
 
 ### 8.4 Bandwidth Analysis

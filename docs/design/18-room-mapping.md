@@ -52,20 +52,16 @@ Four coordinate spaces, connected by a transformation chain. Every LED position 
 
 ### The Four Spaces
 
-```
-                Physical Space (meters/cm)
-                       │
-                       │  room_transform (translate, rotate, scale)
-                       ▼
-                Room Space (normalized 0.0 -- 1.0)
-                       │
-                       │  canvas_projection (viewport mapping)
-                       ▼
-                Canvas Space (0 -- 319, 0 -- 199)
-                       │
-                       │  spatial_sampler (bilinear interpolation)
-                       ▼
-                Effect Space (RGBA pixel values)
+```mermaid
+graph TD
+    Physical["Physical Space (meters/cm)"]
+    Room["Room Space (normalized 0.0 -- 1.0)"]
+    Canvas["Canvas Space (0 -- 319, 0 -- 199)"]
+    Effect["Effect Space (RGBA pixel values)"]
+
+    Physical -->|room_transform<br/>(translate, rotate, scale)| Room
+    Room -->|canvas_projection<br/>(viewport mapping)| Canvas
+    Canvas -->|spatial_sampler<br/>(bilinear interpolation)| Effect
 ```
 
 ### 2.1 Physical Space

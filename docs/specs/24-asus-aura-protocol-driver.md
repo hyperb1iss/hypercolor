@@ -271,24 +271,16 @@ Read from register `0x1000` (16 bytes). Determines register layout and capabilit
 
 ASUS Aura devices fall into three distinct transport/protocol families:
 
-```
-                        ┌──────────────────────────────────┐
-                        │       ASUS Aura Ecosystem        │
-                        └──────────┬───────────────────────┘
-                                   │
-              ┌────────────────────┼─────────────────────┐
-              │                    │                      │
-    ┌─────────▼──────────┐  ┌─────▼──────────┐  ┌───────▼─────────┐
-    │  USB HID (0xEC)    │  │  ENE SMBus     │  │ USB HID (0x00)  │
-    │  hid_write/read    │  │  16-bit regs   │  │ hid_write/read  │
-    ├────────────────────┤  ├────────────────┤  ├─────────────────┤
-    │ • Motherboards     │  │ • Motherboards │  │ • Mice          │
-    │ • ARGB headers     │  │ • GPUs         │  │ • Keyboards     │
-    │ • Aura Terminal    │  │ • DRAM         │  │ • Mousemats     │
-    │ • Liquid Coolers   │  │                │  │ • Headset stands│
-    │                    │  │                │  │ • Monitors (FR) │
-    └────────────────────┘  └────────────────┘  └─────────────────┘
-                                                   FR = Feature Reports
+```mermaid
+graph TD
+    Aura[ASUS Aura Ecosystem]
+    USB_EC["USB HID (0xEC)<br/>hid_write/read<br/><br/>Motherboards<br/>ARGB headers<br/>Aura Terminal<br/>Liquid Coolers"]
+    SMBus["ENE SMBus<br/>16-bit regs<br/><br/>Motherboards<br/>GPUs<br/>DRAM"]
+    USB_00["USB HID (0x00)<br/>hid_write/read<br/><br/>Mice<br/>Keyboards<br/>Mousemats<br/>Headset stands<br/>Monitors (Feature Reports)"]
+
+    Aura --> USB_EC
+    Aura --> SMBus
+    Aura --> USB_00
 ```
 
 ### 3.1 Protocol Family Comparison
@@ -1403,24 +1395,22 @@ pub mod asus;
 
 ### 9.1 Full-Frame Update (Motherboard + ARGB)
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ INIT (first connect only):                                      │
-│ 1. hid_write firmware query → hid_read response                │
-│    parse_response() → updates RwLock<AuraTopology>              │
-│ 2. hid_write config query → hid_read response                  │
-│    parse_response() → finalizes topology                        │
-│ 3. hid_write set direct mode per channel                        │
-│                                                                 │
-│ PER-FRAME LOOP:                                                 │
-│ 4. For each channel (mainboard + ARGB headers):                 │
-│    a. Slice color buffer for this channel's LED range            │
-│    b. Apply AuraColorOrder permutation                          │
-│    c. Chunk into 20-LED packets                                 │
-│    d. hid_write each packet                                     │
-│    e. Set apply flag (0x80) on final packet of channel          │
-│ 5. Total frame time = packet_count x ~1ms                       │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Init["INIT (first connect only)"]
+        I1["1. hid_write firmware query --> hid_read response<br/>parse_response() --> updates RwLock&lt;AuraTopology&gt;"]
+        I2["2. hid_write config query --> hid_read response<br/>parse_response() --> finalizes topology"]
+        I3["3. hid_write set direct mode per channel"]
+        I1 --> I2 --> I3
+    end
+
+    subgraph Frame["PER-FRAME LOOP"]
+        F4["4. For each channel (mainboard + ARGB headers):<br/>a. Slice color buffer for channel's LED range<br/>b. Apply AuraColorOrder permutation<br/>c. Chunk into 20-LED packets<br/>d. hid_write each packet<br/>e. Set apply flag (0x80) on final packet"]
+        F5["5. Total frame time = packet_count x ~1ms"]
+        F4 --> F5
+    end
+
+    Init --> Frame
 ```
 
 ### 9.2 Timing Budget
@@ -1446,20 +1436,25 @@ pub mod asus;
 
 ### 9.3 ENE SMBus Frame Update (Phase 2)
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ INIT (first connect only):                                      │
-│ 1. Read device name from 0x1000 (16 bytes, 16 register reads)  │
-│ 2. Read config table from 0x1C00 (64 bytes, 64 register reads) │
-│ 3. Dispatch firmware variant (§2.5)                             │
-│ 4. Enable direct mode: write 0x01 to 0x8020                    │
-│                                                                 │
-│ PER-FRAME LOOP:                                                 │
-│ 5. Permute RGB → RBG for all colors                            │
-│ 6. Block-write colors to direct_reg (3 bytes per write)         │
-│ 7. If variant defines frame_apply_register, write 0x01 there   │
-│ 8. Wait 1ms for bus recovery                                   │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Init["INIT (first connect only)"]
+        S1["1. Read device name from 0x1000<br/>(16 bytes, 16 register reads)"]
+        S2["2. Read config table from 0x1C00<br/>(64 bytes, 64 register reads)"]
+        S3["3. Dispatch firmware variant (section 2.5)"]
+        S4["4. Enable direct mode: write 0x01 to 0x8020"]
+        S1 --> S2 --> S3 --> S4
+    end
+
+    subgraph Frame["PER-FRAME LOOP"]
+        S5["5. Permute RGB to RBG for all colors"]
+        S6["6. Block-write colors to direct_reg<br/>(3 bytes per write)"]
+        S7["7. If variant defines frame_apply_register,<br/>write 0x01 there"]
+        S8["8. Wait 1ms for bus recovery"]
+        S5 --> S6 --> S7 --> S8
+    end
+
+    Init --> Frame
 ```
 
 **Frame timing:**

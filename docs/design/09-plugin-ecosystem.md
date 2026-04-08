@@ -344,19 +344,17 @@ settings_panel = "ui/settings.js"    # Optional web component
 
 **Model:** Plugins run as separate processes, communicating with the daemon over Unix domain sockets using gRPC (tonic on the Rust side). The same WIT-derived interfaces, but serialized over protobuf instead of Wasm memory.
 
-```
-hypercolor-daemon (MIT/Apache-2.0)
-    │
-    │ Unix socket + gRPC
-    │
-    ├──▶ hypercolor-openrgb-bridge (GPL-2.0, separate binary)
-    │    └── openrgb2 crate → OpenRGB daemon (TCP 6742)
-    │
-    ├──▶ hypercolor-nanoleaf-plugin (Go binary)
-    │    └── Nanoleaf LAN API (mDNS + HTTP)
-    │
-    └──▶ hypercolor-home-assistant (Python process)
-         └── HA WebSocket API
+```mermaid
+graph LR
+    Daemon["hypercolor-daemon<br/>(MIT/Apache-2.0)"]
+
+    OpenRGB["hypercolor-openrgb-bridge<br/>(GPL-2.0, separate binary)<br/>openrgb2 crate → OpenRGB daemon (TCP 6742)"]
+    Nanoleaf["hypercolor-nanoleaf-plugin<br/>(Go binary)<br/>Nanoleaf LAN API (mDNS + HTTP)"]
+    HA["hypercolor-home-assistant<br/>(Python process)<br/>HA WebSocket API"]
+
+    Daemon -->|Unix socket + gRPC| OpenRGB
+    Daemon -->|Unix socket + gRPC| Nanoleaf
+    Daemon -->|Unix socket + gRPC| HA
 ```
 
 **When to use gRPC over Wasm:**
@@ -830,21 +828,22 @@ struct PluginMetrics {
 
 ### 5.2 Plugin Lifecycle
 
-```
- Install        Enable         Ready          Running        Disable       Uninstall
- ┌──────┐      ┌──────┐      ┌──────┐       ┌──────┐      ┌──────┐      ┌──────┐
- │ .wasm│─────▶│Verify│─────▶│ Init │──────▶│Active│─────▶│ Stop │─────▶│Remove│
- │ drops│      │ sig  │      │ caps │       │ loop │      │clean │      │ files│
- │ into │      │ caps │      │      │       │      │      │      │      │      │
- │  dir │      │      │      │      │       │      │      │      │      │      │
- └──────┘      └──┬───┘      └──┬───┘       └──┬───┘      └──────┘      └──────┘
-                  │             │              │
-                  │ Reject      │ Error        │ Crash
-                  ▼             ▼              ▼
-               ┌──────┐     ┌──────┐      ┌──────┐
-               │Failed│     │Failed│      │Retry │──▶ (backoff, max 3)
-               │ (log)│     │ (log)│      │      │
-               └──────┘     └──────┘      └──────┘
+```mermaid
+stateDiagram-v2
+    [*] --> Install: .wasm drops into dir
+    Install --> Verify: Enable
+    Verify --> Init: Verified
+    Verify --> Failed1: Reject
+    Init --> Active: Ready
+    Init --> Failed2: Error
+    Active --> Stop: Disable
+    Active --> Retry: Crash
+    Retry --> Active: backoff, max 3
+    Stop --> Remove: Uninstall
+    Remove --> [*]
+
+    state Failed1 <<fork>>
+    state Failed2 <<fork>>
 ```
 
 **States:**
@@ -1713,24 +1712,17 @@ Plugins published to `registry.hypercolor.dev` go through automated and manual r
 
 ### 11.5 Plugin Isolation: Multi-Plugin Safety
 
-```
-Plugin A (Govee)          Plugin B (Spotify)         Plugin C (Color Transform)
-┌──────────────┐          ┌──────────────┐           ┌──────────────┐
-│ Store A       │          │ Store B       │           │ Store C       │
-│ Memory: 4MB   │          │ Memory: 2MB   │           │ Memory: 1MB   │
-│ Fuel: 1M/call │          │ Fuel: 500K    │           │ Fuel: 200K    │
-│ Net: LAN only │          │ Net: spotify  │           │ Net: none     │
-└──────┬───────┘          └──────┬───────┘           └──────┬───────┘
-       │                         │                          │
-       │ WIT calls               │ WIT calls                │ WIT calls
-       │                         │                          │
-┌──────▼─────────────────────────▼──────────────────────────▼───────────┐
-│                        WasmPluginHost                                  │
-│  • Routes calls to correct Store                                      │
-│  • Enforces fuel/memory limits per-plugin                             │
-│  • Catches traps without affecting other plugins                      │
-│  • Provides separate config namespaces                                │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    A["Plugin A (Govee)<br/>Store A: Memory 4MB, Fuel 1M/call<br/>Net: LAN only"]
+    B["Plugin B (Spotify)<br/>Store B: Memory 2MB, Fuel 500K<br/>Net: spotify"]
+    C["Plugin C (Color Transform)<br/>Store C: Memory 1MB, Fuel 200K<br/>Net: none"]
+
+    Host["WasmPluginHost<br/>Routes calls to correct Store<br/>Enforces fuel/memory limits per-plugin<br/>Catches traps without affecting other plugins<br/>Provides separate config namespaces"]
+
+    A -->|WIT calls| Host
+    B -->|WIT calls| Host
+    C -->|WIT calls| Host
 ```
 
 If Plugin A traps (OOM, fuel exhaustion, panic), Plugins B and C continue running unaffected. The host marks Plugin A as `Error`, attempts restart, and logs the failure.
@@ -2068,35 +2060,20 @@ Over 200 community device plugins exist in the JS ecosystem. Each one ported is 
 
 ## Appendix B: Plugin Event Flow
 
-```
-User installs plugin via CLI/UI
-         │
-         ▼
-    ┌─────────┐     ┌──────────┐     ┌──────────┐
-    │ Validate │────▶│ Compile  │────▶│ Create   │
-    │ manifest │     │ Wasm     │     │ Store    │
-    └─────────┘     └──────────┘     └────┬─────┘
-                                          │
-                                          ▼
-                                    ┌──────────┐
-                                    │ Bind host │
-                                    │ functions │
-                                    └────┬─────┘
-                                         │
-         ┌───────────────────────────────┘
-         │
-         ▼
-    ┌──────────┐     ┌──────────┐     ┌──────────┐
-    │ Check    │────▶│ Prompt   │────▶│ Call     │
-    │ caps     │     │ user     │     │ start()  │
-    └──────────┘     └──────────┘     └────┬─────┘
-                                          │
-                                          ▼
-                                    ┌──────────┐
-                                    │  Active  │◀─── render loop calls
-                                    │  plugin  │     discover/push_frame/
-                                    │          │     sample/process
-                                    └──────────┘
+```mermaid
+graph TD
+    Install["User installs plugin via CLI/UI"]
+    Validate["Validate manifest"]
+    Compile["Compile Wasm"]
+    CreateStore["Create Store"]
+    BindHost["Bind host functions"]
+    CheckCaps["Check caps"]
+    PromptUser["Prompt user"]
+    Start["Call start()"]
+    Active["Active plugin<br/>(render loop calls discover/push_frame/sample/process)"]
+
+    Install --> Validate --> Compile --> CreateStore --> BindHost
+    BindHost --> CheckCaps --> PromptUser --> Start --> Active
 ```
 
 ## Appendix C: Registry API (Sketch)

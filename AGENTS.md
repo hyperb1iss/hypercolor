@@ -67,21 +67,22 @@ docs/design/               # Design documents (25+)
 
 ## Crate Dependency Graph
 
-```
-hypercolor-types                    (foundation — no internal deps)
-  ├── hypercolor-hal                (USB/HID drivers)
-  ├── hypercolor-core               (engine, depends on types + hal)
-  │     └── hypercolor-driver-api   (stable plugin boundary, depends on types + core)
-  │           ├── hypercolor-driver-hue
-  │           ├── hypercolor-driver-nanoleaf
-  │           └── hypercolor-driver-wled
-  ├── hypercolor-network            (registry, depends on driver-api only)
-  ├── hypercolor-daemon             (orchestrator — depends on all above)
-  ├── hypercolor-cli                (depends on core)
-  ├── hypercolor-tui                (depends on types only, talks to daemon via WS/REST)
-  ├── hypercolor-tray               (depends on core + types)
-  ├── hypercolor-desktop            (Tauri shell — no workspace deps)
-  └── hypercolor-ui                 (Leptos WASM — depends on types, excluded from workspace)
+```mermaid
+graph TD
+    T[hypercolor-types] --> HAL[hypercolor-hal]
+    T --> CORE[hypercolor-core]
+    HAL --> CORE
+    T & CORE --> DAPI[hypercolor-driver-api]
+    DAPI --> HUE[hypercolor-driver-hue]
+    DAPI --> NL[hypercolor-driver-nanoleaf]
+    DAPI --> WLED[hypercolor-driver-wled]
+    DAPI --> NET[hypercolor-network]
+    CORE & HAL & DAPI & HUE & NL & WLED & NET --> D[hypercolor-daemon]
+    CORE --> CLI[hypercolor-cli]
+    T --> TUI[hypercolor-tui]
+    CORE & T --> TRAY[hypercolor-tray]
+    DT[hypercolor-desktop] ~~~ D
+    T --> UI[hypercolor-ui<br><i>excluded from workspace</i>]
 ```
 
 Do NOT create cross-crate circular dependencies. `hypercolor-hal` must NEVER depend

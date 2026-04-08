@@ -1690,35 +1690,31 @@ characteristics.
 
 ### Event flow
 
-```text
-udev ADD ──────────┐
-                    │
-mDNS resolve ──────┤
-                    ├──> DiscoveryOrchestrator ──> HypercolorEvent::DeviceDiscovered
-health check OK ───┤                                     │
-                    │                                     v
-                    │                             DeviceStateMachine.on_connected()
-                    │                                     │
-                    │                                     v
-                    │                             OutputQueue::spawn()
-                    │                                     │
-                    │                                     v
-                    │                             Render loop includes device
-                    │
-                    │
-udev REMOVE ───────┤
-                    │
-mDNS disappear ────┤
-                    ├──> HypercolorEvent::DeviceVanished
-health check FAIL ─┤              │
-                    │              v
-                    │    DeviceStateMachine.on_comm_error()
-                    │              │
-                    │              v
-                    │    OutputQueue::shutdown()
-                    │              │
-                    │              v
-                    │    Spawn reconnection task (backoff)
+```mermaid
+graph TD
+    subgraph Sources["Discovery Sources"]
+        udevAdd[udev ADD]
+        mDNS[mDNS resolve]
+        health[health check OK]
+        udevRemove[udev REMOVE]
+        mDNSgone[mDNS disappear]
+        healthFail[health check FAIL]
+    end
+
+    udevAdd --> Orch[DiscoveryOrchestrator]
+    mDNS --> Orch
+    health --> Orch
+    Orch --> Discovered["HypercolorEvent::DeviceDiscovered"]
+    Discovered --> Connected["DeviceStateMachine.on_connected()"]
+    Connected --> Spawn["OutputQueue::spawn()"]
+    Spawn --> Render[Render loop includes device]
+
+    udevRemove --> Vanished["HypercolorEvent::DeviceVanished"]
+    mDNSgone --> Vanished
+    healthFail --> Vanished
+    Vanished --> CommErr["DeviceStateMachine.on_comm_error()"]
+    CommErr --> Shutdown["OutputQueue::shutdown()"]
+    Shutdown --> Reconnect["Spawn reconnection task (backoff)"]
 ```
 
 ### Hot-plug manager

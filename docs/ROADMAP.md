@@ -684,46 +684,94 @@ Each backend implements `DeviceBackend`. Each agent owns one backend module. Aud
 
 ## Task Dependency Graph
 
-```
-Wave 0 ─── Task 0.1 (scaffold)
-               │
-Wave 1 ───┬── Task 1.1 (canvas/color)
-           ├── Task 1.2 (device types)
-           ├── Task 1.3 (effect types)
-           ├── Task 1.4 (audio types)
-           ├── Task 1.5 (spatial types)
-           ├── Task 1.6 (event types)
-           ├── Task 1.7 (config types)
-           └── Task 1.8 (scene types)
-               │
-Wave 2 ───┬── Task 2.1 (device traits)     ← 1.2
-           ├── Task 2.2 (effect traits)     ← 1.1, 1.3, 1.4
-           ├── Task 2.3 (event bus)         ← 1.6
-           ├── Task 2.4 (spatial sampler)   ← 1.1, 1.5
-           ├── Task 2.5 (config manager)    ← 1.7
-           ├── Task 2.6 (render loop)       ← 2.1, 2.2, 2.3, 2.4
-           └── Task 2.7 (input traits)      ← 1.4
-               │
-Wave 3 ───┬── Task 3.1 (WLED backend)      ← 2.1
-           ├── Task 3.2 (USB HID backend)   ← 2.1
-           ├── Task 3.4 (audio pipeline)    ← 2.7
-           ├── Task 3.5 (screen capture)    ← 2.7
-           └── Task 3.6 (scene engine)      ← 2.2, 2.3, 2.5
-               │
-Wave 4 ───┬── Task 4.1 (REST API)          ← Wave 3
-           ├── Task 4.2 (WebSocket)         ← 4.1
-           ├── Task 4.3 (CLI)              ← Wave 2
-           ├── Task 4.4 (MCP server)        ← 4.1
-           └── Task 4.5 (daemon bootstrap)  ← 4.1, 4.2
-               │
-Wave 5 ───┬── Task 5.1 (TUI)              ← Wave 4
-           ├── Task 5.2 (effect registry)   ← Wave 2
-           ├── Task 5.3 (LightScript compat) ← 5.2
-           └── Task 5.4 (desktop integration) ← Wave 4
-               │
-Wave 6 ───┬── Task 6.1 (integration tests) ← All
-           ├── Task 6.2 (benchmarks)        ← All
-           └── Task 6.3 (packaging)         ← All
+```mermaid
+graph TD
+    subgraph wave0["Wave 0"]
+        T0_1["0.1 scaffold"]
+    end
+
+    subgraph wave1["Wave 1"]
+        T1_1["1.1 canvas/color"]
+        T1_2["1.2 device types"]
+        T1_3["1.3 effect types"]
+        T1_4["1.4 audio types"]
+        T1_5["1.5 spatial types"]
+        T1_6["1.6 event types"]
+        T1_7["1.7 config types"]
+        T1_8["1.8 scene types"]
+    end
+
+    subgraph wave2["Wave 2"]
+        T2_1["2.1 device traits"]
+        T2_2["2.2 effect traits"]
+        T2_3["2.3 event bus"]
+        T2_4["2.4 spatial sampler"]
+        T2_5["2.5 config manager"]
+        T2_6["2.6 render loop"]
+        T2_7["2.7 input traits"]
+    end
+
+    subgraph wave3["Wave 3"]
+        T3_1["3.1 WLED backend"]
+        T3_2["3.2 USB HID backend"]
+        T3_4["3.4 audio pipeline"]
+        T3_5["3.5 screen capture"]
+        T3_6["3.6 scene engine"]
+    end
+
+    subgraph wave4["Wave 4"]
+        T4_1["4.1 REST API"]
+        T4_2["4.2 WebSocket"]
+        T4_3["4.3 CLI"]
+        T4_4["4.4 MCP server"]
+        T4_5["4.5 daemon bootstrap"]
+    end
+
+    subgraph wave5["Wave 5"]
+        T5_1["5.1 TUI"]
+        T5_2["5.2 effect registry"]
+        T5_3["5.3 LightScript compat"]
+        T5_4["5.4 desktop integration"]
+    end
+
+    subgraph wave6["Wave 6"]
+        T6_1["6.1 integration tests"]
+        T6_2["6.2 benchmarks"]
+        T6_3["6.3 packaging"]
+    end
+
+    T0_1 --> wave1
+    T1_2 --> T2_1
+    T1_1 --> T2_2
+    T1_3 --> T2_2
+    T1_4 --> T2_2
+    T1_6 --> T2_3
+    T1_1 --> T2_4
+    T1_5 --> T2_4
+    T1_7 --> T2_5
+    T1_4 --> T2_7
+    T2_1 --> T2_6
+    T2_2 --> T2_6
+    T2_3 --> T2_6
+    T2_4 --> T2_6
+    T2_1 --> T3_1
+    T2_1 --> T3_2
+    T2_7 --> T3_4
+    T2_7 --> T3_5
+    T2_2 --> T3_6
+    T2_3 --> T3_6
+    T2_5 --> T3_6
+    wave3 --> T4_1
+    T4_1 --> T4_2
+    wave2 --> T4_3
+    T4_1 --> T4_4
+    T4_1 --> T4_5
+    T4_2 --> T4_5
+    wave4 --> T5_1
+    wave2 --> T5_2
+    T5_2 --> T5_3
+    wave4 --> T5_4
+    wave5 --> wave6
 ```
 
 ## Parallelism Summary

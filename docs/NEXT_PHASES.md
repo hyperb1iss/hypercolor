@@ -328,34 +328,50 @@ Three.js or Canvas 2D editor:
 
 ## Phase Dependency Graph
 
-```
-Phase 5 (Make It Run)
-    ├── 5.1 Render Thread
-    ├── 5.2 Backend Registration
-    ├── 5.3 Effect Registration
-    └── 5.4 CLI Round-Trip
-         │
-         ▼
-Phase 6 (Servo) ◄──── can start in parallel with Phase 7
-    ├── 6.1 Servo Dependency Setup
-    ├── 6.2 Meta Parser ──────────┐
-    ├── 6.3 ServoRenderer ────────┤ 6.2-6.5 parallel after 6.1
-    ├── 6.4 WebViewDelegate ──────┤
-    ├── 6.5 Lightscript Shim ─────┘
-    ├── 6.6 Effect Loader (depends: 6.2, 6.3)
-    └── 6.7 Compatibility Testing (depends: all above)
-         │
-         ▼
-Phase 7 (TUI) ◄──── can start after 5.4 (needs WebSocket events)
-    ├── 7.1 TUI Framework
-    ├── 7.2 Canvas Preview
-    └── 7.3 WebSocket Client
-         │
-         ▼
-Phase 8 (Web UI)
-    ├── 8.1 Frontend App
-    ├── 8.2 Canvas Stream
-    └── 8.3 Layout Editor
+```mermaid
+graph TD
+    subgraph phase5["Phase 5 — Make It Run"]
+        T5_1["5.1 Render Thread"]
+        T5_2["5.2 Backend Registration"]
+        T5_3["5.3 Effect Registration"]
+        T5_4["5.4 CLI Round-Trip"]
+    end
+
+    subgraph phase6["Phase 6 — Servo"]
+        T6_1["6.1 Servo Dependency Setup"]
+        T6_2["6.2 Meta Parser"]
+        T6_3["6.3 ServoRenderer"]
+        T6_4["6.4 WebViewDelegate"]
+        T6_5["6.5 Lightscript Shim"]
+        T6_6["6.6 Effect Loader"]
+        T6_7["6.7 Compatibility Testing"]
+    end
+
+    subgraph phase7["Phase 7 — TUI"]
+        T7_1["7.1 TUI Framework"]
+        T7_2["7.2 Canvas Preview"]
+        T7_3["7.3 WebSocket Client"]
+    end
+
+    subgraph phase8["Phase 8 — Web UI"]
+        T8_1["8.1 Frontend App"]
+        T8_2["8.2 Canvas Stream"]
+        T8_3["8.3 Layout Editor"]
+    end
+
+    T5_4 --> phase6
+    T5_4 --> phase7
+
+    T6_1 --> T6_2
+    T6_1 --> T6_3
+    T6_1 --> T6_4
+    T6_1 --> T6_5
+    T6_2 --> T6_6
+    T6_3 --> T6_6
+    T6_6 --> T6_7
+
+    phase6 --> phase8
+    phase7 --> phase8
 ```
 
 **Critical path:** Phase 5 → Phase 6 → Phase 7 → Phase 8

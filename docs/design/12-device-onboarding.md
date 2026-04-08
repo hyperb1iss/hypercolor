@@ -54,31 +54,20 @@ Discovery is a multi-transport sweep that runs at startup, on hot-plug events, a
 
 ### 2.1 Discovery Architecture
 
-```
-┌─────────────────────────────────────────────────────┐
-│                 DiscoveryOrchestrator                │
-│                                                     │
-│  Coordinates all backend scanners, deduplicates,    │
-│  emits DeviceDiscovered events on the bus           │
-│                                                     │
-│  ┌─────────────┐ ┌────────────┐ ┌───────────────┐  │
-│  │  USB Scanner │ │  mDNS      │ │  OpenRGB SDK  │  │
-│  │  (udev +     │ │  Scanner   │ │  Scanner      │  │
-│  │   hidapi)    │ │  (mdns-sd) │ │  (TCP 6742)   │  │
-│  └──────┬──────┘ └─────┬──────┘ └──────┬────────┘  │
-│         │              │               │            │
-│  ┌──────┴──────┐ ┌─────┴──────┐ ┌──────┴────────┐  │
-│  │  UDP Bcast  │ │  HTTP Scan │ │  Bluetooth    │  │
-│  │  Scanner    │ │  (Hue)     │ │  Scanner      │  │
-│  │  (WLED)     │ │            │ │  (future)     │  │
-│  └─────────────┘ └────────────┘ └───────────────┘  │
-│                                                     │
-│  ┌─────────────────────────────────────────────┐    │
-│  │              Device Registry                 │    │
-│  │  Persistent store of known devices,          │    │
-│  │  their identities, and connection history    │    │
-│  └─────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph orchestrator["DiscoveryOrchestrator"]
+        direction TB
+        USB["USB Scanner (udev + hidapi)"]
+        mDNS["mDNS Scanner (mdns-sd)"]
+        OpenRGB["OpenRGB SDK Scanner (TCP 6742)"]
+        UDP["UDP Broadcast Scanner (WLED)"]
+        HTTP["HTTP Scan (Hue)"]
+        BT["Bluetooth Scanner (future)"]
+        Registry["Device Registry<br/>Persistent store of known devices,<br/>their identities, and connection history"]
+    end
+
+    USB & mDNS & OpenRGB & UDP & HTTP & BT --> Registry
 ```
 
 ### 2.2 USB Enumeration (HID Devices)
@@ -147,31 +136,22 @@ impl UsbScanner {
 
 **Discovery flow:**
 
-```
-USB cable plugged in
-        │
-        ▼
-  udev fires ADD event
-        │
-        ▼
-  UsbScanner matches VID:PID
-  against known device table
-        │
-        ├─ Match found ──▶ DiscoveryEvent::DeviceAppeared
-        │                        │
-        │                        ▼
-        │                  Check HID permissions
-        │                        │
-        │                   ┌────┴─────┐
-        │                   │          │
-        │                 OK ✓     Permission denied
-        │                   │          │
-        │                   ▼          ▼
-        │              Auto-connect   Emit PermissionNeeded
-        │              + identify     event (see §4)
-        │              flash
-        │
-        └─ No match ──▶ Ignore (or log for debugging)
+```mermaid
+flowchart TD
+    Plug["USB cable plugged in"]
+    Udev["udev fires ADD event"]
+    Match["UsbScanner matches VID:PID<br/>against known device table"]
+    Appeared["DiscoveryEvent::DeviceAppeared"]
+    CheckPerms["Check HID permissions"]
+    AutoConnect["Auto-connect + identify flash"]
+    PermNeeded["Emit PermissionNeeded event"]
+    Ignore["Ignore (or log for debugging)"]
+
+    Plug --> Udev --> Match
+    Match -->|Match found| Appeared --> CheckPerms
+    CheckPerms -->|OK| AutoConnect
+    CheckPerms -->|Permission denied| PermNeeded
+    Match -->|No match| Ignore
 ```
 
 ### 2.3 mDNS / Zeroconf (WLED, Hue Bridge)

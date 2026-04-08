@@ -254,19 +254,15 @@ In dark mode, text weights are optically lighter due to irradiation. Compensate:
 
 ### 4.1 Layer Model
 
-```
-┌──────────────────────────────────────────────────┐
-│ surface-base          (page background)           │
-│  ┌────────────────────────────────────────────┐  │
-│  │ surface-raised     (sidebar, header)        │  │
-│  │  ┌──────────────────────────────────────┐  │  │
-│  │  │ surface-overlay  (cards, panels)      │  │  │
-│  │  │  ┌────────────────────────────────┐  │  │  │
-│  │  │  │ surface-sunken (inputs, wells)  │  │  │  │
-│  │  │  └────────────────────────────────┘  │  │  │
-│  │  └──────────────────────────────────────┘  │  │
-│  └────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph base["surface-base (page background)"]
+        subgraph raised["surface-raised (sidebar, header)"]
+            subgraph overlay["surface-overlay (cards, panels)"]
+                sunken["surface-sunken (inputs, wells)"]
+            end
+        end
+    end
 ```
 
 **Dark mode:** Each layer is slightly brighter (white overlay at increasing opacity).
