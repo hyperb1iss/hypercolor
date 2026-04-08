@@ -40,6 +40,7 @@ use hypercolor_core::input::EvdevKeyboardInput;
 use hypercolor_core::input::audio::AudioInput;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::WaylandScreenCaptureInput;
+#[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::{CaptureConfig as ScreenCaptureConfig, MonitorSelect};
 use hypercolor_core::input::{InputManager, InteractionInput};
 use hypercolor_core::scene::SceneManager;
@@ -1324,6 +1325,7 @@ pub(crate) fn build_input_manager(config: &HypercolorConfig) -> InputManager {
         input_manager.add_source(Box::new(audio_input));
     }
 
+    #[cfg(target_os = "linux")]
     if config.capture.enabled {
         let monitor = monitor_select_from_config(config.capture.monitor);
         let capture_config = ScreenCaptureConfig {
@@ -1331,7 +1333,6 @@ pub(crate) fn build_input_manager(config: &HypercolorConfig) -> InputManager {
             target_fps: config.capture.capture_fps.max(1),
             ..ScreenCaptureConfig::default()
         };
-        #[cfg(target_os = "linux")]
         input_manager.add_source(Box::new(WaylandScreenCaptureInput::new(capture_config)));
     }
 
@@ -1354,6 +1355,7 @@ fn audio_source_from_device(device: &str) -> AudioSourceType {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn monitor_select_from_config(monitor_index: u32) -> MonitorSelect {
     if monitor_index == 0 {
         MonitorSelect::Primary

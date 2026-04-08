@@ -616,7 +616,7 @@ Usage in Leptos: `class="bg-surface-base text-text-primary border-border-subtle"
 
 Design decisions informed by competitive analysis of:
 - **Razer Synapse 3/4** — single-accent discipline, dark-only rationale, Chroma Studio layer metaphor
-- **SignalRGB** (competitor) — canvas-as-spatial-map, dark + neon accent pairing, effect control type system
+- **Proprietary RGB tools** — canvas-as-spatial-map, dark + neon accent pairing, effect control type system
 - **Linear** — LCH color space, 3-variable theme generation, elevation via opacity
 - **Vercel Geist** — 3-tier token architecture, semantic naming conventions
 - **Arc Browser** — scrim concept (UI as frame for content), ambient color spaces

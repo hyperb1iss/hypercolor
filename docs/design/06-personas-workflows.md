@@ -65,10 +65,10 @@
 
 ### Frustrations with Current Solutions
 
-- **SignalRGB is Windows-only.** Full stop. She dual-boots just for RGB and it makes her want to throw things. An entire OS partition exists so her LEDs can dance.
+- **Proprietary RGB tools are Windows-only.** Full stop. She dual-boots just for RGB and it makes her want to throw things. An entire OS partition exists so her LEDs can dance.
 - **Multiple conflicting daemons.** OpenRGB for mobo/GPU/RAM, OpenRazer for peripherals, OpenLinkHub for Corsair, and she still can't run a unified effect across all of them.
 - **No CLI orchestration.** Every tool has a GUI. She doesn't want a GUI. She wants `hypercolor set aurora --speed 0.7 --palette silkcircuit`.
-- **Effect development is painful.** SignalRGB's editor has no hot-reload, no debugger, no TypeScript support. She edits HTML in VS Code, alt-tabs to SignalRGB, clicks reload, waits, checks if it looks right. Repeat 400 times.
+- **Effect development is painful.** The proprietary editor has no hot-reload, no debugger, no TypeScript support. She edits HTML in VS Code, alt-tabs to the app, clicks reload, waits, checks if it looks right. Repeat 400 times.
 - **PrismRGB has zero Linux support.** Her Strimer cables and Nollie 8 controller -- the most visually dramatic parts of her build -- go dark on Linux. No open-source driver exists.
 
 ### Dream Features
@@ -308,7 +308,7 @@
 ### Frustrations with Current Solutions
 
 - **Nothing unifies PC and room lighting on Linux.** She currently runs OpenRGB for PC, the Hue app on her phone, WLED's web UI per device, and Govee's app. Switching a "scene" means touching 4 different interfaces.
-- **No Twitch integration exists on Linux.** On Windows, SignalRGB had third-party Twitch plugins. On Linux? She wrote a Python script that calls OpenRGB's API when chat messages come in. It breaks constantly.
+- **No Twitch integration exists on Linux.** On Windows, her previous RGB tool had third-party Twitch plugins. On Linux? She wrote a Python script that calls OpenRGB's API when chat messages come in. It breaks constantly.
 - **OBS integration is hacky.** She uses OBS websocket + a custom Node script to detect scene changes and trigger lighting. It's held together with duct tape and prayers.
 - **Transition timing.** When she switches scenes, the lighting change lags behind the video transition by 200-500ms. It looks amateur. Her viewers notice.
 - **Alert fatigue on hardware.** Raid alerts trigger a flash, but the flash command goes to OpenRGB (50ms), then WLED (80ms), then Hue (200ms). They're visibly out of sync.
@@ -922,7 +922,7 @@
 | **Technical Skill** | Intermediate -- built PCs for 15 years, used Linux casually, not a developer |
 | **Former OS** | Windows 11 (switched after the Recall controversy) |
 | **Current OS** | Linux Mint 22 (wanted something familiar) |
-| **Former RGB Software** | SignalRGB Pro (paid subscriber, 2 years) |
+| **Former RGB Software** | Proprietary RGB software (paid subscription, 2 years) |
 
 ### Hardware Setup
 
@@ -954,15 +954,15 @@
 
 1. **Recreate the Windows experience.** Robin wants exactly what they had. Same effects, same colors, same spatial layout. They didn't switch to Linux because they wanted change -- they switched because Windows forced their hand.
 2. **Minimal ongoing maintenance.** Set it up once, forget it exists. Check on it maybe once a month when something catches their eye and they want to tweak a color.
-3. **Unified control.** The thing they loved most about SignalRGB was ONE app for EVERYTHING. Not three tools. Not five browser tabs. One.
-4. **Import, not recreate.** They have 2 years of configuration data in SignalRGB. Layouts, profiles, effect parameters. They don't want to start from scratch.
+3. **Unified control.** The thing they loved most about their previous tool was ONE app for EVERYTHING. Not three tools. Not five browser tabs. One.
+4. **Import, not recreate.** They have 2 years of configuration data in their previous tool. Layouts, profiles, effect parameters. They don't want to start from scratch.
 
 ### Frustrations with Current Solutions (the Linux transition)
 
-- **SignalRGB doesn't run on Linux. At all.** Wine? Nope. The USB HID drivers are Windows kernel-level. This was the hardest part of leaving Windows -- Robin genuinely considered keeping a Windows partition just for SignalRGB.
+- **Their previous Windows-only tool doesn't run on Linux. At all.** Wine? Nope. The USB HID drivers are Windows kernel-level. This was the hardest part of leaving Windows -- Robin genuinely considered keeping a Windows partition just for RGB control.
 - **OpenRGB is confusing.** Installed it, it found some devices, but the Effects Plugin is a separate download, the Visual Map Plugin is another download, the UI looks like it was designed in 2005, and the Strimer cables aren't supported at all.
-- **Lost their spatial layout.** Years of careful positioning -- "the ATX Strimer is here, the GPU Strimer is there, fan 3 is at the bottom-right" -- all gone. SignalRGB's layout export is a proprietary JSON format that nothing else reads.
-- **Effect parity is poor.** The effects that look stunning in SignalRGB (3D wave, neon rain, aurora borealis) have no equivalent in OpenRGB's plugin. The plugin has "rainbow" and "breathing" and... that's about the quality level.
+- **Lost their spatial layout.** Years of careful positioning -- "the ATX Strimer is here, the GPU Strimer is there, fan 3 is at the bottom-right" -- all gone. The proprietary layout export format is a JSON blob that nothing else reads.
+- **Effect parity is poor.** The effects that look stunning in proprietary tools (3D wave, neon rain, aurora borealis) have no equivalent in OpenRGB's plugin. The plugin has "rainbow" and "breathing" and... that's about the quality level.
 - **Corsair LCD display is orphaned.** The AIO's LCD screen showed CPU temp and a GIF on Windows. On Linux, it's blank. OpenLinkHub can drive it, but it's yet another separate tool.
 - **Strimer cables are dark.** Prism S controllers have zero Linux support. The most visually dramatic part of Robin's build is completely non-functional.
 
@@ -1144,7 +1144,7 @@ Bathroom motion sensor fires. WLED mirror backlight comes on at 2200K, 10% brigh
 
 > *"I built a $3000 PC and I can't change my LED colors because I'm running the wrong operating system."*
 
-- SignalRGB, iCUE, Aura Sync, SteelSeries GG, Razer Synapse -- all Windows-only
+- iCUE, Aura Sync, SteelSeries GG, Razer Synapse -- all Windows-only
 - Users who want Linux have to choose between their OS and their RGB
 - Some maintain a Windows partition/VM literally just for lighting control
 - The entire enthusiast RGB ecosystem ignores 4% of desktop users entirely
@@ -1199,7 +1199,7 @@ Bathroom motion sensor fires. WLED mirror backlight comes on at 2200K, 10% brigh
 
 - iCUE: 250-400MB resident memory
 - Razer Synapse: 150-250MB + Razer Central + Razer Cortex
-- SignalRGB: 200-500MB (Chromium renderer for effects)
+- Proprietary tools: 200-500MB (Chromium renderer for effects)
 - Armoury Crate: 150MB + multiple background services
 - Combined, RGB software can consume 1GB+ and multiple CPU cores
 - Gamers notice: 2-5 FPS drop attributed to background RGB services
@@ -1210,7 +1210,7 @@ Bathroom motion sensor fires. WLED mirror backlight comes on at 2200K, 10% brigh
 > *"I want my lights to change when I start a game, leave the room, or play music. Why can't they?"*
 
 - Most RGB software is manual: open app, pick effect, close app
-- Game integration exists in some tools (iCUE, SignalRGB) but is Windows-only
+- Game integration exists in some tools (iCUE, proprietary alternatives) but is Windows-only
 - Time-based scheduling requires third-party tools or scripts
 - Presence detection, audio reactivity, smart home integration -- all DIY
 - **Who feels this most:** Marcus, Luna, Sam

@@ -8,7 +8,7 @@
 
 ### The Core Tension
 
-A lighting control app must be two things simultaneously: **visually stunning** (you're literally selling visual experiences) and **immediately navigable** (people don't read manuals for RGB software). SignalRGB chose stunning and sacrificed navigable. We choose both.
+A lighting control app must be two things simultaneously: **visually stunning** (you're literally selling visual experiences) and **immediately navigable** (people don't read manuals for RGB software). Most existing tools chose stunning and sacrificed navigable. We choose both.
 
 ### Principles
 
@@ -31,7 +31,7 @@ Each level is reachable from the previous one. No level requires understanding a
 
 **3. Spatial Consistency**
 
-Things live where you expect them. Every time. The effect browser is always on the left. The control panel is always on the right. The live preview is always in the center. Navigation doesn't rearrange itself based on context. This is the number one thing SignalRGB gets wrong — the UI shifts and reorganizes depending on what you clicked, destroying spatial memory.
+Things live where you expect them. Every time. The effect browser is always on the left. The control panel is always on the right. The live preview is always in the center. Navigation doesn't rearrange itself based on context. This is the number one thing proprietary alternatives get wrong — the UI shifts and reorganizes depending on what you clicked, destroying spatial memory.
 
 **4. Keyboard-First, Mouse-Friendly**
 
@@ -45,9 +45,9 @@ No effect should ever be represented by just a name and a description. Every eff
 
 A disconnected device isn't a popup. It's a subtle status change on the device's card — a dimmed icon, a reconnect button, a pulse animation when it comes back online. The app doesn't scream at you. It calmly informs and offers resolution.
 
-### The Anti-SignalRGB Manifesto
+### Anti-Patterns in Existing RGB Software
 
-SignalRGB's interface suffers from a specific disease: **feature accumulation without information architecture**. Every new feature got bolted onto the existing UI without asking "where does this live in the user's mental model?" The result is an app where:
+Proprietary RGB tools tend to suffer from a specific disease: **feature accumulation without information architecture**. Every new feature gets bolted onto the existing UI without asking "where does this live in the user's mental model?" The result is an app where:
 
 - Effects, layouts, devices, and settings are all accessed through different navigation paradigms
 - The sidebar changes meaning depending on context
@@ -766,7 +766,7 @@ Total time: ~3 minutes. Total "reading": ~4 sentences. Total "holy shit" moments
 
 ### Jake — The Gamer
 
-**Setup:** Gaming PC with motherboard RGB, GPU RGB, RAM RGB, and a single WLED strip behind his desk. Installed Hypercolor because his friend told him it was "like SignalRGB but for Linux." Has never written code.
+**Setup:** Gaming PC with motherboard RGB, GPU RGB, RAM RGB, and a single WLED strip behind his desk. Installed Hypercolor because his friend told him it was "like having real RGB control on Linux." Has never written code.
 
 **His Hypercolor session:**
 
@@ -872,35 +872,35 @@ Total time: ~3 minutes. Total "reading": ~4 sentences. Total "holy shit" moments
 
 ---
 
-## 9. Anti-Patterns: What SignalRGB Gets Wrong
+## 9. Anti-Patterns in Existing RGB Software
 
 ### Anti-Pattern 1: The Shape-Shifting Sidebar
 
-**SignalRGB's sin:** The left sidebar changes its content depending on what mode you're in. Sometimes it shows devices, sometimes effects categories, sometimes settings groups. The user's spatial memory is constantly invalidated.
+**The problem:** The left sidebar changes its content depending on what mode you're in. Sometimes it shows devices, sometimes effects categories, sometimes settings groups. The user's spatial memory is constantly invalidated.
 
 **Hypercolor's fix:** The sidebar is a fixed list of 7 top-level sections. It never changes. The icons never move. If you close your eyes and click the third icon, it's always the Layout Editor. Spatial consistency is sacred.
 
 ### Anti-Pattern 2: The Marketplace Invasion
 
-**SignalRGB's sin:** Free effects, premium effects, downloadable effects, and installed effects are all mixed together in the same browsing experience. Ads and upsell prompts interrupt the functional workflow. Users report having to "scroll to the bottom" to find free effects, past walls of premium content.
+**The problem:** Free effects, premium effects, downloadable effects, and installed effects are all mixed together in the same browsing experience. Ads and upsell prompts interrupt the functional workflow. Users report having to "scroll to the bottom" to find free effects, past walls of premium content.
 
 **Hypercolor's fix:** There is no marketplace. There is no premium tier. All effects are yours. The effect browser shows what you have. Import adds to what you have. Community effect repositories are linked but never injected into your browsing flow. Zero ads, zero upsells, zero "upgrade to unlock."
 
 ### Anti-Pattern 3: The Invisible Effect Preview
 
-**SignalRGB's sin:** Effects are often represented by a static thumbnail or just a name. The user can't tell what an effect actually looks like until they apply it. Even the community store shows effects as static screenshots with separate video links.
+**The problem:** Effects are often represented by a static thumbnail or just a name. The user can't tell what an effect actually looks like until they apply it. Even the community store shows effects as static screenshots with separate video links.
 
 **Hypercolor's fix:** Every effect thumbnail is a live animated canvas. The effect is literally running in miniature, at reduced framerate (15fps for thumbnails, to keep GPU usage sane when showing a grid of 50+). Hover to see it at full 30fps. Click to activate at 60fps. The progression is: tiny live preview → hover expands → click activates globally. You never wonder "what does this look like?"
 
 ### Anti-Pattern 4: Configuration Whack-a-Mole
 
-**SignalRGB's sin:** Device configuration, effect parameters, layout positioning, and profile management all live in different places with different interaction paradigms. Users report that "the UI is so confusing when trying to assign settings." Finding where a specific setting lives requires trial and error.
+**The problem:** Device configuration, effect parameters, layout positioning, and profile management all live in different places with different interaction paradigms. Users report that "the UI is so confusing when trying to assign settings." Finding where a specific setting lives requires trial and error.
 
 **Hypercolor's fix:** The Inspector Panel pattern. Select anything — an effect, a device, a zone — and its configuration appears in a consistent right panel. Always the same position, always the same interaction pattern (labeled controls, sliders, dropdowns, toggles). The user learns one interaction model and applies it everywhere.
 
 ### Anti-Pattern 5: Startup Confusion
 
-**SignalRGB's sin:** First launch drops the user into a complex interface with no guidance. Device detection happens silently. The relationship between effects, devices, and layouts is unclear. Users report that the app "takes getting used to."
+**The problem:** First launch drops the user into a complex interface with no guidance. Device detection happens silently. The relationship between effects, devices, and layouts is unclear. Users report that the app "takes getting used to."
 
 **Hypercolor's fix:** The setup wizard (Section 7). But also: Hypercolor has a clear conceptual model that the UI reinforces:
 
@@ -912,19 +912,19 @@ This pipeline is reflected in the sidebar order (Effects → Layout → Devices)
 
 ### Anti-Pattern 6: Mobile Afterthought
 
-**SignalRGB's sin:** Windows-only, no remote control capability. If your PC is across the room, you walk to it.
+**Common anti-pattern:** Windows-only, no remote control capability. If your PC is across the room, you walk to it.
 
 **Hypercolor's fix:** It's a web app. Any device on your network can access it. The responsive design ensures it's genuinely useful on a phone (Section 5), not just "the same UI but smaller."
 
 ### Anti-Pattern 7: The Dead State Problem
 
-**SignalRGB's sin:** When SignalRGB crashes or is closed, your devices either freeze on their last color or revert to their hardware default (which might be a blinding rainbow). There's no graceful degradation.
+**The problem:** When these tools crash or are closed, your devices either freeze on their last color or revert to their hardware default (which might be a blinding rainbow). There's no graceful degradation.
 
 **Hypercolor's fix:** The daemon runs as a systemd service. If the web UI disconnects, nothing changes — the daemon keeps running. If the daemon restarts, device backends execute their shutdown sequence (hardware fallback colors configurable per-device). If a single device disconnects, the rest of the system continues unaffected. Graceful degradation at every level.
 
 ### Anti-Pattern 8: No Keyboard Workflow
 
-**SignalRGB's sin:** Everything requires mouse clicks through nested menus. No keyboard shortcuts, no command palette, no CLI integration.
+**The problem:** Everything requires mouse clicks through nested menus. No keyboard shortcuts, no command palette, no CLI integration.
 
 **Hypercolor's fix:** Command palette, comprehensive keyboard shortcuts, and a full CLI that can do everything the web UI can. Power users might never open the web UI at all — `hypercolor set aurora && hypercolor profile gaming` from a terminal is a valid workflow.
 

@@ -34,7 +34,7 @@ Plus the ROLI Blocks out-of-process bridge (Spec 30) and Corsair iCUE LINK Phase
 
 The gaming peripherals market is ~$5.1B (2024), growing at ~7% CAGR. RGB is standard in
 70%+ of enthusiast builds. The Linux RGB ecosystem is fragmented — OpenRGB covers ~800+
-devices but has slowed development, SignalRGB has 1,150+ but is Windows-only, and liquidctl
+devices but has slowed development, proprietary Windows-only tools cover 1,000+ devices but offer no Linux support, and liquidctl
 covers ~40 AIO/fan controller models on Linux.
 
 Hypercolor's opportunity: be the **definitive Linux RGB engine** with real-time effects,

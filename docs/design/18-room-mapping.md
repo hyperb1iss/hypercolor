@@ -1833,17 +1833,17 @@ Transformations:
 
 ## Appendix B: Comparison with Existing Systems
 
-| Feature | Hypercolor | SignalRGB* | Artemis | xLights | OpenRGB |
-|---------|-----------|-----------|---------|---------|---------|
-| Room-level mapping | Yes (Phase 1) | No | Partial (surface editor) | Yes (3D models) | No |
-| Multi-room | Yes (Phase 2) | No | No | Yes (controllers) | No |
-| Photo overlay | Yes | No | No | Yes (custom model backgrounds) | No |
-| Physical coordinates | Yes (cm) | No (canvas-only) | Sort of (pixel coords) | Yes (meters) | No |
-| 3D visualization | Yes (Phase 3) | No | No | Yes (core feature) | No |
-| Mixed device types | Yes (WLED + Hue + HID + OpenRGB) | Yes (proprietary) | Yes (via OpenRGB) | Yes (controllers) | Yes (USB/SMBus) |
-| Ambient/accent roles | Yes | No | Layer-based | No | No |
-| WLED segments | Yes (virtual devices) | Limited | No | E1.31 only | Partial |
-| Cross-room effects | Yes (compositor) | No | No | Yes (universes) | No |
-| AR preview | Phase 4 | No | No | No | No |
+| Feature | Hypercolor | Artemis | xLights | OpenRGB |
+|---------|-----------|---------|---------|---------|
+| Room-level mapping | Yes (Phase 1) | Partial (surface editor) | Yes (3D models) | No |
+| Multi-room | Yes (Phase 2) | No | Yes (controllers) | No |
+| Photo overlay | Yes | No | Yes (custom model backgrounds) | No |
+| Physical coordinates | Yes (cm) | Sort of (pixel coords) | Yes (meters) | No |
+| 3D visualization | Yes (Phase 3) | No | Yes (core feature) | No |
+| Mixed device types | Yes (WLED + Hue + HID) | Yes (via OpenRGB) | Yes (controllers) | Yes (USB/SMBus) |
+| Ambient/accent roles | Yes | Layer-based | No | No |
+| WLED segments | Yes (virtual devices) | No | E1.31 only | Partial |
+| Cross-room effects | Yes (compositor) | No | Yes (universes) | No |
+| AR preview | Phase 4 | No | No | No |
 
 xLights is the closest precedent for installation-scale mapping. Hypercolor differentiates by focusing on the home/room scale with a dramatically simpler UX, real-time effects (vs. pre-programmed sequences), and native integration with the PC RGB ecosystem (OpenRGB, HID controllers).

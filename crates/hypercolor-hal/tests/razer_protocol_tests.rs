@@ -293,7 +293,7 @@ fn huntsman_v2_protocol_initializes_custom_mode_once_and_streams_write_only_fram
 }
 
 #[test]
-fn seiren_v3_protocol_matches_signalrgb_frame_layout() {
+fn seiren_v3_correct_frame_layout() {
     let protocol = build_seiren_v3_protocol();
     let init = protocol.init_sequence();
     assert_eq!(init.len(), 2);

@@ -477,7 +477,7 @@ author_url = "https://github.com/neonartist42"
 contributors = ["fixmaster99", "shaderguru"]
 
 [effect.origin]
-ported_from = "signalrgb"           # If ported from another platform
+ported_from = "other-platform"      # If ported from another platform
 original_author = "OriginalCreator"
 original_url = "https://..."
 ```
@@ -771,33 +771,33 @@ WLED is the most natural ally. It's already open source, already has a massive c
                         |
                    Closed Source
                         |
-                   SignalRGB
+               Proprietary (Windows)
                       *
 ```
 
-### 6.2 vs. SignalRGB
+### 6.2 vs. Proprietary Alternatives
 
 **Their strengths:** 230+ effects, polished UI, extensive hardware support, it just works on Windows.
 
-**Their weaknesses:** Windows-only, closed source, subscription model for premium, no Linux support ever coming, Ultralight renderer is proprietary.
+**Their weaknesses:** Windows-only, closed source, subscription model for premium, no Linux support ever coming, proprietary renderers.
 
 **Hypercolor's pitch:**
 
-> "Everything SignalRGB does, but open source, Linux-native, and yours to keep."
+> "Everything proprietary tools do, but open source, Linux-native, and yours to keep."
 
-| Dimension | SignalRGB | Hypercolor |
+| Dimension | Closed-Source Alternative | Hypercolor |
 |---|---|---|
 | **Platform** | Windows only | Linux-first (future: cross-platform) |
 | **License** | Proprietary | MIT/Apache-2.0 |
 | **Effect compatibility** | Native | ~90% via Servo compatibility layer |
-| **Effect format** | HTML/Canvas (their format) | HTML/Canvas (same!) + native wgpu shaders |
-| **Performance** | 60fps (Ultralight/Qt WebEngine) | 60fps (Servo) + 1000s fps (wgpu) |
+| **Effect format** | HTML/Canvas (proprietary) | HTML/Canvas + native wgpu shaders |
+| **Performance** | 60fps (proprietary renderer) | 60fps (Servo) + 1000s fps (wgpu) |
 | **Customization** | Limited (closed source) | Infinite (modify anything) |
-| **Price** | Free tier + $5/mo Pro | Free forever |
+| **Price** | Free tier + subscription | Free forever |
 | **Community effects** | Curated store | Open marketplace (GitHub) |
 | **Smart home** | None | Home Assistant integration |
 
-**Key narrative:** Hypercolor doesn't need to beat SignalRGB on Windows. It needs to be **so good on Linux** that Windows users consider switching. The existence of a compelling open-source alternative creates pressure regardless.
+**Key narrative:** Hypercolor doesn't need to beat closed-source tools on Windows. It needs to be **so good on Linux** that Windows users consider switching. The existence of a compelling open-source alternative creates pressure regardless.
 
 ### 6.3 vs. OpenRGB
 
@@ -1024,7 +1024,7 @@ The README is the most important marketing asset. It should:
 4. **Quick start.** `curl | sh` or `cargo install` -- get running in 60 seconds.
 5. **Screenshots.** Web UI, TUI, spatial layout editor.
 6. **Device compatibility table.** "Does it work with MY stuff?"
-7. **Comparison table.** vs. SignalRGB, OpenRGB, Artemis, LedFx.
+7. **Comparison table.** vs. proprietary alternatives, OpenRGB, Artemis, LedFx.
 8. **Community links.** Discord, Discussions, contributing guide.
 
 **README anti-patterns to avoid:**
