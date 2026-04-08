@@ -137,7 +137,7 @@ Real-time FFT with beat detection, mel-band analysis, chromagram, and spectral f
 react to bass hits, BPM, spectral centroid, or the full 200-bin spectrum. Lock-free buffering
 ensures the render loop never blocks on audio.
 
-### ✨ And More
+### 🌊 And More
 
 - **Scene engine** with priority stacking, Oklab cross-fades, and automation rules
 - **REST API + WebSocket** for full programmatic control
@@ -216,7 +216,7 @@ Runs anywhere you have a terminal.
 - **Audio spectrum** — real-time level meter and beat indicators
 - **Quick actions** — number keys for instant effect switching
 
-## 🚀 Get Started
+## 🎯 Get Started
 
 ### Install
 
