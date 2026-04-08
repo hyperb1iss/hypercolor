@@ -1,0 +1,37 @@
+Hypercolor
+Copyright 2025 Stefanie Jane
+
+Licensed under the Apache License, Version 2.0.
+
+---
+
+Protocol Implementations
+
+Hypercolor implements device communication protocols derived from publicly available
+sources. All driver implementations are clean-room Rust code based on published protocol
+specifications, community documentation, and packet captures. No proprietary software
+was decompiled or disassembled.
+
+Sources referenced for protocol knowledge:
+
+- OpenRGB project — protocol documentation and community research (GPL-2.0)
+  https://gitlab.com/CalcProgrammer1/OpenRGB
+- openrazer — community reverse-engineering wiki and documentation
+  https://github.com/openrazer/openrazer
+- uchroma — Rust HID report builder and Python protocol abstractions
+  https://github.com/hyperb1iss/uchroma
+- liquidctl — AIO and fan controller protocol documentation
+  https://github.com/liquidctl/liquidctl
+- uni-sync — PrismRGB protocol implementation in Rust
+  https://github.com/EightB1ts/uni-sync
+- WLED project — UDP/HTTP protocol documentation
+  https://kno.wled.ge/
+- ASUS community — Aura/ENE protocol reverse-engineering documentation
+- QMK firmware — HID RGB vendor protocol specification
+  https://qmk.fm/
+
+Vendored Dependencies
+
+- midir (vendor/midir/) — MIDI I/O library, patched for Hypercolor's use case
+  Original: https://github.com/Boddlnagg/midir
+  License: MIT

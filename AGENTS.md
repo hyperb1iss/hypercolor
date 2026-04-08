@@ -8,65 +8,146 @@ Open-source RGB lighting orchestration engine for Linux, written in Rust.
 # Primary interface — use justfile recipes
 just verify          # fmt + lint + test (run after every change)
 just check           # Type-check without building
-just build           # Debug build
-just daemon          # Run daemon (preview profile, debug logging)
-just ui-dev          # Leptos UI dev server (Trunk + hot reload)
-just sdk-dev         # SDK dev server with HMR
+just build           # Debug build (dev profile)
+just build-preview   # Near-release performance, fast compile
+just release         # Full release build (LTO, stripped)
 
-# Direct cargo commands
-cargo check --workspace
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all
+# Run
+just daemon          # Daemon on :9420 (preview profile, debug logging)
+just daemon-servo    # Daemon with Servo HTML effect rendering
+just tui             # TUI client (auto-starts daemon)
+just tray            # System tray applet
+just cli             # CLI tool (`hyper`)
+just dev             # Daemon + UI dev server together
+
+# UI / SDK
+just ui-dev          # Leptos dev server on :9430, proxies API to :9420
+just sdk-dev         # TypeScript SDK dev server with HMR
+just effects-build   # Build all HTML effects -> effects/hypercolor/*.html
+just effect-build X  # Build single effect by name
+
+# Testing
+just test            # All workspace tests
+just test-crate X    # Test specific crate
+just test-one X      # Run single test by name pattern
+
+# Quality
+just lint            # Clippy with -D warnings
+just lint-fix        # Clippy auto-fix
+just deny            # License + advisory audit (cargo-deny)
+just doc-open        # Build and open API docs
 ```
+
+All `just` commands route through `scripts/cargo-cache-build.sh`, which manages
+sccache/ccache, clang+lld linking on Linux, and Servo build state.
 
 ## Project Structure
 
 ```
 crates/
-  hypercolor-types/   # Pure data types — zero deps, no logic, no I/O
-  hypercolor-core/    # Engine: traits, bus, sampler, config, render loop, HAL
-  hypercolor-hal/     # Hardware abstraction — USB/HID drivers (Razer, etc.)
-  hypercolor-daemon/  # Binary: daemon + REST API + WebSocket + embedded UI
-  hypercolor-cli/     # Binary: `hyper` CLI tool
-  hypercolor-ui/      # Leptos 0.8 CSR web UI (WASM, built with Trunk)
-  hypercolor-sdk/     # TypeScript SDK for HTML effects (Vite + Bun)
-sdk/                  # SDK workspace (Bun monorepo)
-docs/specs/           # Implementation specs
-docs/design/          # Design documents
+  hypercolor-types/        # Pure data types — zero deps, no logic, no I/O
+  hypercolor-core/         # Engine: traits, bus, sampler, config, render loop
+  hypercolor-hal/          # Hardware abstraction — USB/HID drivers
+  hypercolor-driver-api/   # Stable boundary for network driver plugins
+  hypercolor-driver-hue/   # Philips Hue network driver
+  hypercolor-driver-nanoleaf/  # Nanoleaf network driver
+  hypercolor-driver-wled/  # WLED network driver
+  hypercolor-network/      # Driver registry and orchestration
+  hypercolor-daemon/       # Binary: daemon + REST API + WebSocket + MCP
+  hypercolor-cli/          # Binary: `hyper` CLI tool
+  hypercolor-tui/          # Binary: Ratatui terminal UI
+  hypercolor-tray/         # Binary: system tray applet
+  hypercolor-desktop/      # Binary: Tauri native shell
+  hypercolor-ui/           # Leptos 0.8 CSR web UI (WASM, Trunk) — EXCLUDED from workspace
+sdk/                       # TypeScript SDK for HTML effects (Bun monorepo)
+docs/specs/                # Implementation specs (35+ numbered)
+docs/design/               # Design documents (25+)
+.agents/                   # AI agent skills and agent definitions
 ```
 
-## Crate Ownership
+## Crate Dependency Graph
 
-Each crate has clear boundaries. Do NOT create cross-crate circular dependencies.
+```
+hypercolor-types                    (foundation — no internal deps)
+  ├── hypercolor-hal                (USB/HID drivers)
+  ├── hypercolor-core               (engine, depends on types + hal)
+  │     └── hypercolor-driver-api   (stable plugin boundary, depends on types + core)
+  │           ├── hypercolor-driver-hue
+  │           ├── hypercolor-driver-nanoleaf
+  │           └── hypercolor-driver-wled
+  ├── hypercolor-network            (registry, depends on driver-api only)
+  ├── hypercolor-daemon             (orchestrator — depends on all above)
+  ├── hypercolor-cli                (depends on core)
+  ├── hypercolor-tui                (depends on types only, talks to daemon via WS/REST)
+  ├── hypercolor-tray               (depends on core + types)
+  ├── hypercolor-desktop            (Tauri shell — no workspace deps)
+  └── hypercolor-ui                 (Leptos WASM — depends on types, excluded from workspace)
+```
 
-| Crate | Depends On | Responsibility |
-|-------|-----------|----------------|
-| `hypercolor-types` | (none) | Shared vocabulary — import from here, never sibling internals |
-| `hypercolor-core` | `types`, `hal` | Traits, engine logic, effect registry, audio pipeline |
-| `hypercolor-hal` | `types` | USB/HID device drivers — must NEVER depend on `core` (circular) |
-| `hypercolor-daemon` | `core`, `hal` | HTTP/WS server, REST API, daemon lifecycle |
-| `hypercolor-cli` | `core` | CLI parsing, output formatting, IPC client |
-| `hypercolor-ui` | (standalone) | Leptos WASM app, excluded from workspace — see UI section |
+Do NOT create cross-crate circular dependencies. `hypercolor-hal` must NEVER depend
+on `core` (would be circular). Network drivers depend on `driver-api`, not on `core` directly.
+
+## Architecture
+
+### Render Pipeline
+
+The daemon runs a render loop on a dedicated thread, targeting adaptive FPS (10/20/30/45/60):
+
+```
+InputManager::sample_all()    → Collect audio, screen, keyboard data
+EffectEngine::tick()          → Render effect to Canvas (320×200 RGBA)
+SpatialEngine::sample()       → Map canvas pixels to LED positions → ZoneColors
+BackendManager::write_frame() → Group by device, queue async sends
+HypercolorBus::publish()      → Publish frame data, canvas preview, timing metrics
+```
+
+`FpsController` auto-shifts between tiers: downshifts fast on budget misses, upshifts
+slowly on sustained headroom.
+
+### Event Bus
+
+`HypercolorBus` uses three lock-free communication patterns:
+
+- **Broadcast** (256 capacity) — discrete events (device connected, effect changed).
+  Every subscriber sees every event. Non-blocking; drops silently if channel is full.
+- **Watch** (latest-value) — high-frequency frame data and spectrum data.
+  Subscribers skip stale frames automatically. Used for device output and preview streaming.
+- **Watch** (canvas) — render canvas and screen-source canvas as `CanvasFrame` (RGBA bytes).
+
+Rule of thumb: events are broadcast, data streams are watch.
+
+### Key Traits
+
+- **`DeviceBackend`** (`core/src/device/traits.rs`) — hardware communication.
+  Methods: discover, connect, write_colors, disconnect. Long-running I/O dispatched internally.
+- **`EffectRenderer`** (`core/src/effect/traits.rs`) — polymorphic renderer (wgpu and Servo
+  both implement this). Input: `FrameInput` (timing, audio, interaction, screen). Output: `Canvas`.
+- **`InputSource`** (`core/src/input/traits.rs`) — audio, screen capture, keyboard, MIDI.
+  One broken source never crashes the render loop.
+- **`Protocol`** (`hal/src/protocol.rs`) — USB/HID wire-format encoding per device family.
+  See hal-driver-development skill for implementation patterns.
+
+### AppState
+
+The daemon's shared state is `Arc`-wrapped and injected into every Axum handler. Key detail:
+`EffectEngine` is behind `Mutex` (not `RwLock`) because `dyn EffectRenderer` is `Send` but
+NOT `Sync`. Read-heavy subsystems (EffectRegistry, SceneManager, SpatialEngine) use `RwLock`.
 
 ## UI Crate
 
-`hypercolor-ui` is a **Leptos 0.8 CSR** app compiled to WASM via **Trunk**. It is **excluded from
-the Cargo workspace** — `cargo check --workspace` does NOT cover it.
+`hypercolor-ui` is **excluded from the Cargo workspace**. `cargo check --workspace` does NOT
+cover it. Build and test separately:
 
 ```bash
-# Build/check UI separately
-just ui-dev              # Dev server on :9430, proxies API to :9420
-cd crates/hypercolor-ui && trunk build   # One-shot build
-
-# UI tech stack
-# - Leptos 0.8 with fine-grained signals (signal(), Memo, Signal::derive)
-# - Tailwind CSS v4 with custom @theme tokens (SilkCircuit palette)
-# - leptos_icons (Icon component, style prop is MaybeProp<String> — no closures)
-# - wasm-bindgen + web-sys for browser APIs
+just ui-dev          # Dev server on :9430, proxies API to :9420
+just ui-test         # Run UI crate tests
+just ui-build        # Production build
 ```
 
-**Key pattern:** `leptos_icons::Icon`'s `style` prop accepts `MaybeProp<String>` — it takes
+Tech stack: Leptos 0.8 CSR, Tailwind v4 with SilkCircuit tokens, wasm-bindgen, leptos_icons.
+Trunk orchestrates Tailwind compilation before WASM build (see `crates/hypercolor-ui/Trunk.toml`).
+
+**Gotcha:** `leptos_icons::Icon`'s `style` prop accepts `MaybeProp<String>` — it takes
 `&str` or `String`, NOT closures. Use conditional rendering to vary icon styles reactively.
 
 ## SDK
@@ -81,28 +162,36 @@ just effects-build       # Build all effects -> effects/hypercolor/*.html
 just effect-build NAME   # Build single effect
 ```
 
-**Generated effects rule:** `effects/hypercolor/` is generated build output and is gitignored on
-purpose. Never hand-edit files under `effects/hypercolor/`, never treat them as source of truth, and
-never re-add them to version control. Make effect changes in `sdk/src/effects/` (and related SDK
-sources) only, then regenerate locally as needed for verification.
+`effects/hypercolor/` is generated build output (gitignored). Never hand-edit, never commit.
+Make changes in `sdk/src/effects/` and regenerate.
+
+## Build Profiles
+
+| Profile | Command | Use For |
+|---------|---------|---------|
+| `dev` | `just build` | Edit-compile loops. Hypercolor crates at opt-level 1, deps at 2, Servo/mozjs at 3. |
+| `preview` | `just build-preview` | Local testing. Like dev but disables debug-assertions and overflow-checks in Hypercolor crates. |
+| `release` | `just release` | Distribution. LTO, codegen-units=1, panic=abort, stripped. |
+
+The daemon defaults to `preview` profile (`just daemon`) for responsive local iteration
+without the runtime cliffs of unoptimized Servo.
 
 ## Conventions
 
-- **Edition 2024**, Rust 1.85+
-- **Tests in `tests/` directory** — NOT inline `#[cfg(test)]` blocks
-- **When adding coverage, update or create files under each crate's `tests/` directory** — do not grow inline test modules in source files
+- **Edition 2024**, Rust 1.94+
+- **Tests in `tests/` directory** — NOT inline `#[cfg(test)]` blocks. Named `{feature}_tests.rs`.
 - **`unsafe_code` is forbidden** across the entire workspace
-- **Clippy pedantic** is enforced — `deny` level, see `Cargo.toml` for allowed exceptions
+- **Clippy pedantic** at deny level — see `Cargo.toml` for allowed exceptions
 - **`unwrap()` is forbidden** — use `?`, `.ok()`, `expect("reason")`, or handle errors properly
-- **`thiserror`** for library error types, **`anyhow`** for application error handling
+- **`thiserror`** for library errors, **`anyhow`** for application errors
 - **`tracing`** for all logging (never `println!` in library code)
-- **Serde** with `#[serde(rename_all = "snake_case")]` on enums, `#[serde(default)]` for backwards compat
+- **Serde** with `#[serde(rename_all = "snake_case")]` on enums, `#[serde(default)]` for compat
 - **Conventional commits**: `feat(scope):`, `fix(scope):`, `refactor(scope):`, etc.
 - **Apache-2.0** license
 
 ## API Surface
 
-The daemon exposes a REST + WebSocket API on `:9420` (Axum, path params use `{id}` syntax):
+The daemon exposes REST + WebSocket on `:9420` (Axum):
 
 - `GET /api/v1/effects` — List all effects
 - `POST /api/v1/effects/{id}/apply` — Apply effect to devices
@@ -112,7 +201,25 @@ The daemon exposes a REST + WebSocket API on `:9420` (Axum, path params use `{id
 - `GET/POST /api/v1/scenes` + `POST /api/v1/scenes/{id}/activate` — Scene management
 - `GET/POST /api/v1/layouts` — Spatial layout CRUD
 - `GET/POST /api/v1/profiles` — Profile save/load
-- `WebSocket /api/v1/ws` — Real-time state updates (events, canvas frames, metrics, spectrum)
+- `WebSocket /api/v1/ws` — Real-time state (events, canvas frames, metrics, spectrum)
+- **MCP server** — 14 tools, 5 resources for AI integration
+
+Response envelope: `{ data: T, meta: { api_version, request_id, timestamp } }`.
+
+## Gotchas
+
+- **EffectRenderer is Send not Sync.** Wrap in `Mutex`, not `RwLock`. This is by design —
+  Servo's renderer is single-threaded.
+- **Canvas is 320x200.** All spatial coordinates are normalized `[0.0, 1.0]`. LED positions
+  are generated once from topology and cached; call `update_layout()` to regenerate.
+- **Watch vs broadcast.** Don't use broadcast for high-frequency data (frame colors, spectrum).
+  Watch gives latest-value semantics; broadcast queues every event.
+- **Cargo deny exceptions.** Three transitive Servo/Tauri vulns are allow-listed in `deny.toml`
+  (gtk3-rs unmaintained, ml-dsa timing, rsa Marvin). No upgrade path. Don't try to fix these.
+- **Device fingerprinting.** Scanners provide stable fingerprints so re-discovered devices
+  keep their `DeviceId` even if transport details (IP, USB path) change.
+- **FPS adaptation.** The render loop auto-shifts between 5 tiers. Downshift is aggressive
+  (2 consecutive budget misses), upshift is conservative (sustained headroom).
 
 ## Agent Coordination
 
@@ -122,98 +229,37 @@ Multiple agents may work simultaneously. Follow these rules:
 2. **Never touch `lib.rs`** of another crate without coordination
 3. **`cargo check --workspace`** must pass after your changes (does NOT cover `hypercolor-ui`)
 4. **No placeholder implementations** — implement the real logic or don't create the file
-5. **Tests are mandatory** — every public type/function needs test coverage in `tests/`
-6. **Never edit generated code** — especially anything under `effects/hypercolor/`; generated files are
-   build artifacts, not source files
+5. **Tests are mandatory** — every public type/function needs coverage in `tests/`
+6. **Never edit generated code** — especially `effects/hypercolor/` (build artifacts, not source)
 
 ## Agent Skills & Agents
 
-Domain-specific knowledge for AI agents lives in `.agents/`:
+Domain-specific knowledge lives in `.agents/`. Skills trigger automatically based on the
+work being done. Each skill's `SKILL.md` contains core knowledge; `references/` subdirectories
+hold detailed deep-dives.
 
 ```
-.agents/
-  skills/
-    rgb-effect-design/        # LED color science, HTML effect design
-    hal-driver-development/   # Protocol trait, zerocopy, CommandBuffer, wire formats
-    protocol-research/        # OpenRGB mining, USB capture, spec writing
-    leptos-ui-development/    # Leptos 0.8 signals, WebSocket, SilkCircuit tokens
-    native-effect-authoring/  # EffectRenderer contract, AudioData, Canvas API
-    daemon-development/       # AppState, REST API, event bus, render pipeline
-  agents/
-    driver-porter/            # End-to-end driver porting (research → spec → implement → test)
-    effect-reviewer/          # Validates effects against LED hardware best practices
+.agents/skills/
+  protocol-research/          # USB captures, community docs, spec writing workflow
+  hal-driver-development/     # Protocol trait, zerocopy, CommandBuffer, wire formats
+  native-effect-authoring/    # EffectRenderer contract, AudioData, Canvas API
+  rgb-effect-design/          # LED color science, HTML canvas effects, palette design
+  leptos-ui-development/      # Leptos 0.8 signals, WebSocket binary protocol, SilkCircuit tokens
+  daemon-development/         # AppState, REST API, event bus, render pipeline, MCP
+
+.agents/agents/
+  driver-porter/              # End-to-end driver porting (research -> spec -> implement -> test)
+  effect-reviewer/            # Validates effects against LED hardware best practices
 ```
 
-Skills trigger automatically based on the work being done. Each skill's `SKILL.md` contains
-the core knowledge; `references/` subdirectories hold detailed deep-dives.
+**Driver families:** Razer, Lian Li (ENE/TL), ASUS Aura, Corsair (Lighting Node/LINK/LCD),
+Dygma, Ableton Push 2, QMK, PrismRGB. Network backends: Hue, Nanoleaf, WLED.
 
-## HAL Driver Best Practices
-
-When writing or modifying device drivers in `hypercolor-hal`, follow these patterns.
-Detailed guidance is in the `hal-driver-development` and `protocol-research` skills.
-
-**Current driver families:** Razer, Lian Li (ENE/TL), ASUS Aura, Corsair (Lighting Node/LINK/LCD),
-Dygma, Ableton Push 2, QMK, PrismRGB.
-
-### Wire-Format Structs with `zerocopy`
-
-Use `zerocopy` typed structs for all fixed-size protocol packets. Never use manual byte-offset
-indexing (`buffer[4] = value`) when a struct can describe the layout instead.
-
-```rust
-use zerocopy::{FromZeros, IntoBytes, KnownLayout, Immutable};
-
-#[derive(FromZeros, IntoBytes, KnownLayout, Immutable)]
-#[repr(C)]
-struct MyDevicePacket {
-    padding: u8,
-    command: u8,
-    channel: u8,
-    data: [u8; 61],
-}
-```
-
-Key rules:
-- **`#[repr(C)]`** is required for deterministic field layout
-- **Compile-time size assertions** — every packet struct must have one:
-  ```rust
-  const _: () = assert!(
-      std::mem::size_of::<MyDevicePacket>() == EXPECTED_SIZE,
-      "MyDevicePacket must match wire size"
-  );
-  ```
-- **`FromZeros` + `IntoBytes`** for write-only packets (frame encoding)
-- **`FromBytes` + `IntoBytes`** for packets that are also parsed from device responses
-- **`FromBytes` implies `FromZeros`** — never derive both, it causes `E0119`
-- Use `read_from_prefix()` (not `read_from_bytes()`) when parsing responses — HID transports
-  may return buffers larger than the struct (extra report ID bytes, etc.)
-- Use `zerocopy::byteorder::{LittleEndian, U16}` for multi-byte wire fields
-
-### Zero-Copy Data Flow
-
-Frame encoding runs at 30-60 FPS per device. Minimize allocations in the hot path:
-
-- **`CommandBuffer::push_struct`** writes zerocopy structs directly into reusable command
-  buffers — no intermediate `Vec<u8>` allocation per packet
-- **`encode_frame_into`** over `encode_frame` — the `_into` variant reuses the command vector
-  across frames instead of allocating a new one every tick
-- **`Cow<'a, [[u8; 3]]>`** for frame normalization — borrow the input slice when the LED count
-  already matches; only allocate when truncation/padding is needed
-- **Avoid `.to_vec()` in loops** — if you're calling `.as_bytes().to_vec()` inside a per-chunk
-  loop, use `push_struct` instead to write directly into the reusable buffer
-
-### Protocol Implementation Checklist
-
-Every new `impl Protocol` should:
-
-1. Define typed packet structs with compile-time size assertions
-2. Implement `encode_frame_into` (not just `encode_frame`) for buffer reuse
-3. Use `CommandBuffer` with `push_struct` or `push_fill` — never build `Vec<ProtocolCommand>`
-   with fresh allocations per frame
-4. Use `Cow` normalization for the color input slice
-5. Keep the hot path (frame encoding) allocation-free after warmup
+For HAL driver implementation patterns (zerocopy structs, CommandBuffer, Protocol trait,
+wire-format gotchas), see the `hal-driver-development` skill. For protocol research
+methodology, see `protocol-research`.
 
 ## Specs & Design Docs
 
-Implementation specs live in `docs/specs/`. Design docs in `docs/design/`.
+Implementation specs live in `docs/specs/` (35+ numbered). Design docs in `docs/design/` (25+).
 Always check the relevant spec before implementing a module.
