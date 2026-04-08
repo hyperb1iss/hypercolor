@@ -39,3 +39,4 @@ site/out/
 
 # Debug
 *.pdb
+.tmp

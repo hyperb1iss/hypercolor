@@ -305,7 +305,7 @@ fn downscale_frame(
                 .unwrap_or_default(),
             height.saturating_sub(1),
         );
-        let src_y_usize = usize::try_from(src_y).ok()?;
+        let src_row = usize::try_from(src_y).ok()?;
         for x in 0..target_width {
             let src_x = u32::min(
                 (u64::from(x) * u64::from(width) / u64::from(target_width))
@@ -314,10 +314,10 @@ fn downscale_frame(
                     .unwrap_or_default(),
                 width.saturating_sub(1),
             );
-            let src_x_usize = usize::try_from(src_x).ok()?;
-            let src_idx = src_y_usize
+            let src_col = usize::try_from(src_x).ok()?;
+            let src_idx = src_row
                 .checked_mul(src_width)?
-                .checked_add(src_x_usize)?
+                .checked_add(src_col)?
                 .checked_mul(4)?;
             let dst_idx = usize::try_from(y)
                 .ok()?

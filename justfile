@@ -55,6 +55,34 @@ test-crate crate *args='':
 test-one name *args='':
     ./scripts/cargo-cache-build.sh cargo test {{ workspace_args }} {{ name }} {{ args }}
 
+# Compile and smoke-run benchmark targets without full measurement
+bench-smoke:
+    ./scripts/cargo-cache-build.sh cargo test -p hypercolor-core --bench core_pipeline
+    ./scripts/cargo-cache-build.sh cargo test -p hypercolor-hal --bench protocol_encoding
+
+# Run the core benchmark suite (Criterion HTML reports land in target/criterion/)
+bench-core *args='':
+    ./scripts/cargo-cache-build.sh cargo bench -p hypercolor-core --bench core_pipeline -- {{ args }}
+
+# Run the HAL protocol benchmark suite
+bench-hal *args='':
+    ./scripts/cargo-cache-build.sh cargo bench -p hypercolor-hal --bench protocol_encoding -- {{ args }}
+
+# Run all benchmark suites
+bench:
+    just bench-core
+    just bench-hal
+
+# Save a named Criterion baseline for all benchmark suites
+bench-baseline name:
+    just bench-core -- --save-baseline {{ name }}
+    just bench-hal -- --save-baseline {{ name }}
+
+# Compare all benchmark suites against a named Criterion baseline
+bench-compare name:
+    just bench-core -- --baseline {{ name }}
+    just bench-hal -- --baseline {{ name }}
+
 # ─── Linting & Formatting ────────────────────────────────
 
 # Run clippy with deny warnings

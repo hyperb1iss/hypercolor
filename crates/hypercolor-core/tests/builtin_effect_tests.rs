@@ -73,7 +73,7 @@ fn frame_with_audio(time_secs: f32, audio: &AudioData) -> FrameInput<'_> {
     }
 }
 
-fn frame_with_screen<'a>(time_secs: f32, screen: &'a ScreenData) -> FrameInput<'a> {
+fn frame_with_screen(time_secs: f32, screen: &ScreenData) -> FrameInput<'_> {
     FrameInput {
         time_secs,
         delta_secs: 1.0 / 60.0,

@@ -146,6 +146,7 @@ turbojpeg = { version = "1.4.0", default-features = false, features = ["cmake", 
 
 # Testing
 tempfile = "3.14"
+criterion = { version = "0.8.2", features = ["html_reports"] }
 
 [profile.release]
 opt-level = 3

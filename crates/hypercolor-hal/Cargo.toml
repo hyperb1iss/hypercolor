@@ -32,3 +32,8 @@ i2cdev = "0.6.2"
 
 [dev-dependencies]
 serde_json = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "protocol_encoding"
+harness = false

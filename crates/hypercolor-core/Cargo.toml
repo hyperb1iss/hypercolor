@@ -63,3 +63,8 @@ tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
 log = "0.4"
+criterion = { workspace = true }
+
+[[bench]]
+name = "core_pipeline"
+harness = false
