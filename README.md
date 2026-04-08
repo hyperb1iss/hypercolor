@@ -57,9 +57,9 @@ Your entire desk becomes a single synchronized canvas.
 ```mermaid
 graph LR
     subgraph Input
-        A[🎵 Audio FFT]
-        B[🖥️ Screen Capture]
-        C[⌨️ Keyboard]
+        A[Audio FFT]
+        B[Screen Capture]
+        C[Keyboard / MIDI]
     end
 
     subgraph Engine
@@ -323,9 +323,18 @@ graph TD
     D --> CLI & TUI & UI & DT & TR
 ```
 
-14 crates with clear boundaries. Rust 2024 edition, `#![forbid(unsafe_code)]`, clippy pedantic.
-The render loop runs on a dedicated thread with adaptive FPS (10–60fps). Lock-free channels
-connect the event bus. Servo provides full web platform rendering headless.
+It's Rust all the way down. 14 crates, zero `unsafe`, clippy pedantic. The daemon, CLI, TUI,
+tray applet, and HAL drivers are all Rust. The web UI is Rust compiled to WASM via Leptos. Even
+the embedded browser is Servo (Rust). The only non-Rust code is the TypeScript effect SDK and
+the GLSL shaders it compiles.
+
+The render loop runs on a dedicated OS thread with adaptive FPS (10-60fps, auto-shifting across
+5 tiers based on measured budget). The event bus uses lock-free `tokio::sync::watch` channels for
+high-frequency frame data and `broadcast` for discrete events. `zerocopy` structs handle
+wire-format encoding at zero allocation cost per frame. The spatial engine caches LED positions
+and samples the canvas with configurable interpolation (nearest, bilinear, area average, Gaussian).
+
+`#![forbid(unsafe_code)]` across the entire workspace. Edition 2024. Rust 1.94+.
 
 ## 📡 Status
 
