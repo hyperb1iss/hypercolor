@@ -190,6 +190,19 @@ without the runtime cliffs of unoptimized Servo.
 - **Conventional commits**: `feat(scope):`, `fix(scope):`, `refactor(scope):`, etc.
 - **Apache-2.0** license
 
+### Emoji
+
+Expressive, not excessive. One per heading max. Never multiple in a row.
+
+**Use:** 💜 (brand) 🔮 (magic/future) ⚡ (energy/fast) 💎 (quality) 🌈 (variety) 🌊 (flow)
+🎯 (goals) 🔥 (important, sparingly) 🪄 (automation) 🧪 (experiments) 🦋 (transformation)
+
+**Never use:** 🚀 (dead) ✨ (filler) 💯 (try-hard) 🙏 (ambiguous) 👀 (overused)
+
+In terminal output, emoji serve as status indicators, not decoration. In docs, they belong
+in section headers only, not body text. See `~/dev/conventions/shared/STYLE_GUIDE.md` for
+the full SilkCircuit emoji philosophy.
+
 ## API Surface
 
 The daemon exposes REST + WebSocket on `:9420` (Axum):

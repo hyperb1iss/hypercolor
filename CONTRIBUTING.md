@@ -50,6 +50,8 @@ just sdk-dev         # SDK dev server with HMR
 - **Clippy pedantic** is enforced at deny level. Run `just lint` before submitting.
 - **Tests go in `tests/` directories**, not inline `#[cfg(test)]` blocks.
 - **Conventional commits**: `feat(scope):`, `fix(scope):`, `refactor(scope):`, etc.
+- **Emoji in docs/UI**: expressive, not excessive. Prefer 💜 🔮 ⚡ 💎 🌈 🌊 🎯.
+  Avoid 🚀 ✨ 💯. One per heading max, never in body text.
 
 ## Submitting Changes
 
