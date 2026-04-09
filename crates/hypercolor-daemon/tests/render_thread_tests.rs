@@ -27,6 +27,7 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::AttachmentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_types::audio::AudioData;
+use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::{DeviceId, DeviceState};
 use hypercolor_types::event::{HypercolorEvent, InputButtonState, InputEvent, ZoneColors};
@@ -152,6 +153,47 @@ impl InputSource for MockScreenSource {
             source_width: 0,
             source_height: 0,
         }))
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+struct MockScreenPreviewSource {
+    running: bool,
+    screen_data: ScreenData,
+}
+
+impl MockScreenPreviewSource {
+    fn new(screen_data: ScreenData) -> Self {
+        Self {
+            running: false,
+            screen_data,
+        }
+    }
+}
+
+impl InputSource for MockScreenPreviewSource {
+    fn name(&self) -> &'static str {
+        "mock_screen_preview"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        if !self.running {
+            return Ok(InputData::None);
+        }
+
+        Ok(InputData::Screen(self.screen_data.clone()))
     }
 
     fn is_running(&self) -> bool {
@@ -1117,6 +1159,104 @@ async fn pipeline_uses_screen_input_canvas_when_available() {
 
     assert_eq!(left_zone.colors.first().copied(), Some([255, 0, 0]));
     assert_eq!(right_zone.colors.first().copied(), Some([0, 255, 0]));
+}
+
+#[tokio::test]
+async fn pipeline_reuses_screen_preview_surface_for_canvas_and_screen_watch() {
+    let layout = test_layout(vec![
+        point_zone("zone_left", "mock:left", 0.25, 0.5),
+        point_zone("zone_right", "mock:right", 0.75, 0.5),
+    ]);
+
+    let mut state = make_render_state(
+        EffectEngine::new(),
+        SpatialEngine::new(layout),
+        BackendManager::new(),
+    );
+    state.screen_capture_configured = true;
+
+    let mut preview_canvas = Canvas::new(320, 200);
+    for y in 0..200 {
+        for x in 0..320 {
+            let color = if x < 160 {
+                Rgba::new(255, 0, 0, 255)
+            } else {
+                Rgba::new(0, 255, 0, 255)
+            };
+            preview_canvas.set_pixel(x, y, color);
+        }
+    }
+    let source_surface = PublishedSurface::from_owned_canvas(preview_canvas, 41, 77);
+    let screen_data = ScreenData {
+        zone_colors: Vec::new(),
+        grid_width: 0,
+        grid_height: 0,
+        canvas_downscale: Some(source_surface.clone()),
+        source_width: 320,
+        source_height: 200,
+    };
+
+    {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager.add_source(Box::new(MockScreenPreviewSource::new(screen_data)));
+        input_manager
+            .start_all()
+            .expect("input manager should start");
+    }
+
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let mut canvas_rx = state.event_bus.canvas_receiver();
+    let mut screen_canvas_rx = state.event_bus.screen_canvas_receiver();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
+        .await
+        .expect("expected sampled frame within 2 seconds")
+        .expect("frame sender should remain connected");
+    tokio::time::timeout(Duration::from_secs(2), canvas_rx.changed())
+        .await
+        .expect("expected published canvas within 2 seconds")
+        .expect("canvas sender should remain connected");
+    tokio::time::timeout(Duration::from_secs(2), screen_canvas_rx.changed())
+        .await
+        .expect("expected screen preview canvas within 2 seconds")
+        .expect("screen canvas sender should remain connected");
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let frame_data = frame_rx.borrow().clone();
+    let left_zone = frame_data
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_left")
+        .expect("left zone should be sampled");
+    let right_zone = frame_data
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_right")
+        .expect("right zone should be sampled");
+    assert_eq!(left_zone.colors.first().copied(), Some([255, 0, 0]));
+    assert_eq!(right_zone.colors.first().copied(), Some([0, 255, 0]));
+
+    let published_canvas = canvas_rx.borrow().clone();
+    let published_screen = screen_canvas_rx.borrow().clone();
+    let source_ptr = source_surface.rgba_bytes().as_ptr();
+    assert_eq!(published_canvas.rgba_bytes().as_ptr(), source_ptr);
+    assert_eq!(published_screen.rgba_bytes().as_ptr(), source_ptr);
+    assert_eq!(
+        published_canvas.rgba_bytes().as_ptr(),
+        published_screen.rgba_bytes().as_ptr()
+    );
 }
 
 #[tokio::test]

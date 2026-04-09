@@ -59,3 +59,8 @@ tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 http = "1.2"
 reqwest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "render_pipeline"
+harness = false

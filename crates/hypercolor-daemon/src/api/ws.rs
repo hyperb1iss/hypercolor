@@ -2169,7 +2169,8 @@ async fn send_json(socket: &mut WebSocket, msg: &impl Serialize) -> Result<(), a
 #[cfg(test)]
 mod tests {
     use super::{
-        ChannelConfig, ChannelConfigPatch, ServerMessage, WsChannel, command_response_from_http,
+        ChannelConfig, ChannelConfigPatch, FrameFormat, FrameRelayMessage, FramesConfig,
+        ServerMessage, WsChannel, cached_frame_payload, command_response_from_http,
         dispatch_command, encode_cached_canvas_preview_binary, encode_canvas_preview_binary,
         encode_frame_binary, encode_spectrum_binary, event_message_parts, filter_frame_zones,
         normalize_command_path, parse_channels, parse_command_method, should_relay_event,
@@ -2184,13 +2185,47 @@ mod tests {
         FrameData, FrameTiming, HypercolorEvent, SpectrumData, ZoneColors,
     };
     use std::collections::HashSet;
-    use std::sync::Arc;
+    use std::sync::{Arc, LazyLock, Mutex as StdMutex};
+
+    static WS_CACHE_TEST_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
 
     fn secured_state() -> Arc<AppState> {
         let mut state = AppState::new();
         state.security_state =
             SecurityState::with_keys(Some("hc_ak_control_test"), Some("hc_ak_r_read_test"));
         Arc::new(state)
+    }
+
+    fn reset_ws_payload_caches() {
+        super::WS_FRAME_PAYLOAD_BUILD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+        super::WS_FRAME_PAYLOAD_CACHE_HIT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+        super::WS_CANVAS_PAYLOAD_BUILD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+        super::WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+        super::WS_FRAME_PAYLOAD_CACHE
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clear();
+        super::WS_CANVAS_BINARY_CACHE
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clear();
+    }
+
+    fn sample_frame() -> FrameData {
+        FrameData {
+            frame_number: 42,
+            timestamp_ms: 1234,
+            zones: vec![
+                ZoneColors {
+                    zone_id: "left".to_owned(),
+                    colors: vec![[255, 0, 0], [128, 0, 0]],
+                },
+                ZoneColors {
+                    zone_id: "right".to_owned(),
+                    colors: vec![[0, 0, 255], [0, 0, 128]],
+                },
+            ],
+        }
     }
 
     #[test]
@@ -2618,6 +2653,97 @@ mod tests {
 
         let all = filter_frame_zones(&zones, &["all".to_owned()]);
         assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn cached_frame_payload_reuses_binary_bytes_for_matching_requests() {
+        let _guard = WS_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        reset_ws_payload_caches();
+
+        let frame = sample_frame();
+        let config = FramesConfig {
+            fps: 30,
+            format: FrameFormat::Binary,
+            zones: vec!["right".to_owned()],
+        };
+
+        let first = cached_frame_payload(&frame, &config);
+        let second = cached_frame_payload(&frame, &config);
+
+        match (first, second) {
+            (FrameRelayMessage::Binary(first), FrameRelayMessage::Binary(second)) => {
+                assert_eq!(first, second);
+                assert_eq!(first.as_ptr(), second.as_ptr());
+            }
+            _ => panic!("expected binary relay payloads"),
+        }
+
+        assert_eq!(
+            super::WS_FRAME_PAYLOAD_BUILD_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            super::WS_FRAME_PAYLOAD_CACHE_HIT_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn cached_frame_payload_keys_selection_and_format_separately() {
+        let _guard = WS_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        reset_ws_payload_caches();
+
+        let frame = sample_frame();
+        let left_binary = cached_frame_payload(
+            &frame,
+            &FramesConfig {
+                fps: 30,
+                format: FrameFormat::Binary,
+                zones: vec!["left".to_owned()],
+            },
+        );
+        let right_binary = cached_frame_payload(
+            &frame,
+            &FramesConfig {
+                fps: 30,
+                format: FrameFormat::Binary,
+                zones: vec!["right".to_owned()],
+            },
+        );
+        let left_json = cached_frame_payload(
+            &frame,
+            &FramesConfig {
+                fps: 30,
+                format: FrameFormat::Json,
+                zones: vec!["left".to_owned()],
+            },
+        );
+
+        match (left_binary, right_binary, left_json) {
+            (
+                FrameRelayMessage::Binary(left_binary),
+                FrameRelayMessage::Binary(right_binary),
+                FrameRelayMessage::Json(left_json),
+            ) => {
+                assert_ne!(left_binary, right_binary);
+                assert!(left_json.contains("\"zone_id\":\"left\""));
+                assert!(!left_json.contains("\"zone_id\":\"right\""));
+            }
+            _ => panic!("unexpected relay payload variants"),
+        }
+
+        assert_eq!(
+            super::WS_FRAME_PAYLOAD_BUILD_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+            3
+        );
+        assert_eq!(
+            super::WS_FRAME_PAYLOAD_CACHE_HIT_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
     }
 
     #[test]

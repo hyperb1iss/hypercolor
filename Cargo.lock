@@ -3941,6 +3941,7 @@ dependencies = [
  "axum",
  "clap",
  "cpal",
+ "criterion",
  "http 1.4.0",
  "hypercolor-core",
  "hypercolor-driver-api",
