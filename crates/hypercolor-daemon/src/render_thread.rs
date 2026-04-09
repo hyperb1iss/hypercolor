@@ -824,6 +824,7 @@ async fn compose_frame_set(
         return compose_render_group_frame_set(
             state,
             scene_snapshot,
+            skip_decision,
             inputs,
             composition_planner,
             sparkleflinger,
@@ -927,6 +928,7 @@ async fn compose_frame_set(
 async fn compose_render_group_frame_set(
     state: &RenderThreadState,
     scene_snapshot: &FrameSceneSnapshot,
+    skip_decision: SkipDecision,
     inputs: &FrameInputs,
     composition_planner: &mut CompositionPlanner,
     sparkleflinger: &mut SparkleFlinger,
@@ -935,21 +937,100 @@ async fn compose_render_group_frame_set(
     delta_secs: f32,
     stage_start: Instant,
 ) -> RenderStageStats {
-    let producer_start = Instant::now();
-    let render_group_result = {
-        let registry = state.effect_registry.read().await;
-        render_group_runtime.render_scene(
-            &scene_snapshot.scene_runtime.active_render_groups,
-            &registry,
-            delta_secs,
-            &inputs.audio,
-            &inputs.interaction,
-            inputs.screen_data.as_ref(),
-        )
+    let (render_group_result, effect_retained) = if skip_decision == SkipDecision::ReuseCanvas {
+        if let Some(retained) =
+            render_group_runtime.reuse_scene(&scene_snapshot.scene_runtime.active_render_groups)
+        {
+            (Ok(retained), true)
+        } else {
+            let producer_start = Instant::now();
+            let result = {
+                let registry = state.effect_registry.read().await;
+                render_group_runtime.render_scene(
+                    &scene_snapshot.scene_runtime.active_render_groups,
+                    &registry,
+                    delta_secs,
+                    &inputs.audio,
+                    &inputs.interaction,
+                    inputs.screen_data.as_ref(),
+                )
+            };
+            let producer_us = micros_u32(producer_start.elapsed());
+            let producer_done_us = micros_u32(stage_start.elapsed());
+            return finish_render_group_frame_set(
+                state,
+                scene_snapshot,
+                composition_planner,
+                sparkleflinger,
+                static_surface_cache,
+                result,
+                producer_us,
+                producer_done_us,
+                false,
+                stage_start,
+            );
+        }
+    } else {
+        let producer_start = Instant::now();
+        let result = {
+            let registry = state.effect_registry.read().await;
+            render_group_runtime.render_scene(
+                &scene_snapshot.scene_runtime.active_render_groups,
+                &registry,
+                delta_secs,
+                &inputs.audio,
+                &inputs.interaction,
+                inputs.screen_data.as_ref(),
+            )
+        };
+        let producer_us = micros_u32(producer_start.elapsed());
+        let producer_done_us = micros_u32(stage_start.elapsed());
+        return finish_render_group_frame_set(
+            state,
+            scene_snapshot,
+            composition_planner,
+            sparkleflinger,
+            static_surface_cache,
+            result,
+            producer_us,
+            producer_done_us,
+            false,
+            stage_start,
+        );
     };
-    let producer_us = micros_u32(producer_start.elapsed());
-    let producer_done_us = micros_u32(stage_start.elapsed());
 
+    let producer_us = 0;
+    let producer_done_us = micros_u32(stage_start.elapsed());
+    finish_render_group_frame_set(
+        state,
+        scene_snapshot,
+        composition_planner,
+        sparkleflinger,
+        static_surface_cache,
+        render_group_result,
+        producer_us,
+        producer_done_us,
+        effect_retained,
+        stage_start,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "render-group finish path needs the staged composition inputs together"
+)]
+fn finish_render_group_frame_set(
+    state: &RenderThreadState,
+    scene_snapshot: &FrameSceneSnapshot,
+    composition_planner: &mut CompositionPlanner,
+    sparkleflinger: &mut SparkleFlinger,
+    static_surface_cache: &mut Option<CachedStaticSurface>,
+    render_group_result: Result<self::render_groups::RenderGroupResult>,
+    producer_us: u32,
+    producer_done_us: u32,
+    effect_retained: bool,
+    stage_start: Instant,
+) -> RenderStageStats {
     match render_group_result {
         Ok(render_group_result) => {
             let composition_start = Instant::now();
@@ -981,7 +1062,7 @@ async fn compose_render_group_frame_set(
                 render_group_count: compiled_plan.metadata.render_group_count,
                 scene_active: compiled_plan.metadata.scene_active,
                 scene_transition_active: compiled_plan.metadata.transition_active,
-                effect_retained: false,
+                effect_retained,
                 screen_retained: false,
                 composition_bypassed,
             }

@@ -24,11 +24,21 @@ pub(crate) struct RenderGroupResult {
     pub logical_layer_count: u32,
 }
 
+#[derive(Clone)]
+struct RetainedRenderGroupFrame {
+    groups: Vec<RenderGroup>,
+    preview_frame: ProducerFrame,
+    zones: Vec<ZoneColors>,
+    layout: Arc<SpatialLayout>,
+    logical_layer_count: u32,
+}
+
 pub(crate) struct RenderGroupRuntime {
     effect_pool: EffectPool,
     target_canvases: HashMap<RenderGroupId, Canvas>,
     spatial_engines: HashMap<RenderGroupId, SpatialEngine>,
     preview_canvas: Option<Canvas>,
+    retained_frame: Option<RetainedRenderGroupFrame>,
     combined_layout: Arc<SpatialLayout>,
     preview_width: u32,
     preview_height: u32,
@@ -41,10 +51,26 @@ impl RenderGroupRuntime {
             target_canvases: HashMap::new(),
             spatial_engines: HashMap::new(),
             preview_canvas: None,
+            retained_frame: None,
             combined_layout: Arc::new(empty_group_layout(preview_width, preview_height)),
             preview_width,
             preview_height,
         }
+    }
+
+    pub(crate) fn reuse_scene(&self, groups: &[RenderGroup]) -> Option<RenderGroupResult> {
+        let retained = self.retained_frame.as_ref()?;
+        if retained.groups != groups {
+            return None;
+        }
+
+        Some(RenderGroupResult {
+            preview_frame: retained.preview_frame.clone(),
+            zones: retained.zones.clone(),
+            layout: Arc::clone(&retained.layout),
+            sample_us: 0,
+            logical_layer_count: retained.logical_layer_count,
+        })
     }
 
     pub(crate) fn render_scene(
@@ -101,11 +127,21 @@ impl RenderGroupRuntime {
                 .count(),
         )
         .unwrap_or(u32::MAX);
+        let preview_frame = ProducerFrame::Canvas(self.compose_preview(groups));
+        let layout = Arc::clone(&self.combined_layout);
+
+        self.retained_frame = Some(RetainedRenderGroupFrame {
+            groups: groups.to_vec(),
+            preview_frame: preview_frame.clone(),
+            zones: zones.clone(),
+            layout: Arc::clone(&layout),
+            logical_layer_count,
+        });
 
         Ok(RenderGroupResult {
-            preview_frame: ProducerFrame::Canvas(self.compose_preview(groups)),
+            preview_frame,
             zones,
-            layout: Arc::clone(&self.combined_layout),
+            layout,
             sample_us,
             logical_layer_count,
         })
