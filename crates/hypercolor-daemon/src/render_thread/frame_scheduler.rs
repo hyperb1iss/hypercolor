@@ -3,7 +3,7 @@ use hypercolor_types::scene::{RenderGroup, SceneId};
 
 use crate::session::OutputPowerState;
 
-use super::EffectDemand;
+use super::frame_state::EffectDemand;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct SceneTransitionSnapshot {

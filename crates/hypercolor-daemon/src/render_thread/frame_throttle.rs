@@ -8,11 +8,11 @@ use hypercolor_core::types::event::{FrameData, FrameTiming};
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::frame_io::publish_frame_updates;
-use super::frame_pacing::{FrameExecution, NextWake};
+use super::frame_pacing::{FrameExecution, NextWake, SkipDecision};
 use super::frame_scheduler::FrameSceneSnapshot;
 use super::frame_sources::static_surface;
 use super::pipeline_runtime::CachedStaticSurface;
-use super::{RenderThreadState, SkipDecision, micros_u32, u64_to_u32};
+use super::{RenderThreadState, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
 use crate::performance::{FrameTimeline, LatestFrameMetrics};
 

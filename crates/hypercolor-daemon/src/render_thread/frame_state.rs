@@ -5,7 +5,27 @@ use super::frame_scheduler::{
     SceneTransitionSnapshot,
 };
 use super::scene_state::RenderSceneState;
-use super::{EffectDemand, EffectSceneSnapshot, RenderLoopSnapshot, RenderThreadState};
+use super::RenderThreadState;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RenderLoopSnapshot {
+    pub(crate) frame_token: u64,
+    pub(crate) elapsed_ms: u32,
+    pub(crate) budget_us: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EffectDemand {
+    pub(crate) effect_running: bool,
+    pub(crate) audio_capture_active: bool,
+    pub(crate) screen_capture_active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EffectSceneSnapshot {
+    pub(crate) demand: EffectDemand,
+    pub(crate) generation: u64,
+}
 
 pub(crate) async fn build_frame_scene_snapshot(
     state: &RenderThreadState,

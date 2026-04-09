@@ -1,9 +1,30 @@
 use std::time::{Duration, Instant};
 
-use super::SkipDecision;
+use hypercolor_core::engine::FrameStats;
 
 pub(crate) const PRECISE_WAKE_GUARD: Duration = Duration::from_micros(1_000);
 const PRECISE_WAKE_SPIN_THRESHOLD: Duration = Duration::from_micros(150);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SkipDecision {
+    None,
+    ReuseInputs,
+    ReuseCanvas,
+}
+
+impl SkipDecision {
+    pub(crate) fn from_frame_stats(stats: &FrameStats) -> Self {
+        if !stats.budget_exceeded {
+            return Self::None;
+        }
+
+        if stats.consecutive_misses >= 2 {
+            Self::ReuseCanvas
+        } else {
+            Self::ReuseInputs
+        }
+    }
+}
 
 pub(crate) struct FrameExecution {
     pub(crate) next_wake: NextWake,

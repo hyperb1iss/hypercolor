@@ -6,14 +6,14 @@ use hypercolor_core::types::event::FrameTiming;
 
 use super::frame_composer::{ComposeRequest, compose_frame};
 use super::frame_io::{publish_frame_updates, sample_inputs};
-use super::frame_pacing::{FrameExecution, NextWake};
+use super::frame_pacing::{FrameExecution, NextWake, SkipDecision};
 use super::frame_state::{
     build_frame_scene_snapshot, reconcile_audio_capture, reconcile_screen_capture,
 };
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
 use super::pipeline_runtime::PipelineRuntime;
 use super::sparkleflinger::ComposedFrameSet;
-use super::{RenderThreadState, SkipDecision, micros_u32, u64_to_u32};
+use super::{RenderThreadState, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
 use crate::performance::{FrameTimeline, LatestFrameMetrics};
 

@@ -13,10 +13,11 @@ use hypercolor_types::spatial::SpatialLayout;
 use super::frame_scheduler::FrameSceneSnapshot;
 use super::frame_sources::{render_effect_into, static_surface};
 use super::pipeline_runtime::{FrameInputs, RenderCaches};
+use super::frame_pacing::SkipDecision;
 use super::producer_queue::{ProducerFrame, ProducerFrameState};
 use super::render_groups::RenderGroupResult;
 use super::sparkleflinger::ComposedFrameSet;
-use super::{MAX_RENDER_SURFACE_SLOTS, RenderThreadState, SkipDecision, micros_u32};
+use super::{MAX_RENDER_SURFACE_SLOTS, RenderThreadState, micros_u32};
 
 pub(crate) struct RenderStageStats {
     pub(crate) composed_frame: ComposedFrameSet,

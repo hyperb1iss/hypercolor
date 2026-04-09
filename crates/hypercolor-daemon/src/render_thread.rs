@@ -40,7 +40,7 @@ use tokio::sync::{Mutex, RwLock, watch};
 use tracing::{debug, info};
 
 use self::frame_executor::execute_frame;
-use self::frame_pacing::{NextWake, advance_deadline, wait_until_frame_deadline};
+use self::frame_pacing::{NextWake, SkipDecision, advance_deadline, wait_until_frame_deadline};
 use self::frame_state::{reconcile_audio_capture, reconcile_screen_capture};
 use self::pipeline_runtime::PipelineRuntime;
 use crate::device_settings::DeviceSettingsStore;
@@ -51,7 +51,7 @@ use crate::session::OutputPowerState;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::BackendManager;
 use hypercolor_core::effect::{EffectEngine, EffectRegistry};
-use hypercolor_core::engine::{FrameStats, RenderLoop};
+use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::InputManager;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
@@ -205,51 +205,6 @@ fn usize_to_u32(v: usize) -> u32 {
     u32::try_from(v).unwrap_or(u32::MAX)
 }
 
-/// Runtime decision for which frame stages may be reused when over budget.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SkipDecision {
-    /// Execute all stages.
-    None,
-    /// Reuse previously sampled inputs (audio/screen/etc).
-    ReuseInputs,
-    /// Reuse previous rendered canvas and sampled inputs.
-    ReuseCanvas,
-}
-
-impl SkipDecision {
-    fn from_frame_stats(stats: &FrameStats) -> Self {
-        if !stats.budget_exceeded {
-            return Self::None;
-        }
-
-        if stats.consecutive_misses >= 2 {
-            Self::ReuseCanvas
-        } else {
-            Self::ReuseInputs
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct RenderLoopSnapshot {
-    frame_token: u64,
-    elapsed_ms: u32,
-    budget_us: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct EffectDemand {
-    effect_running: bool,
-    audio_capture_active: bool,
-    screen_capture_active: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct EffectSceneSnapshot {
-    demand: EffectDemand,
-    generation: u64,
-}
-
 /// The main render pipeline loop.
 ///
 /// Runs continuously, producing one frame per iteration:
@@ -362,9 +317,11 @@ mod tests {
     use hypercolor_core::types::event::ZoneColors;
 
     use super::frame_io::{parse_sector_zone_id, screen_data_to_canvas};
-    use super::frame_pacing::{PRECISE_WAKE_GUARD, advance_deadline, coarse_sleep_deadline};
+    use super::frame_pacing::{
+        PRECISE_WAKE_GUARD, SkipDecision, advance_deadline, coarse_sleep_deadline,
+    };
     use super::frame_throttle::should_idle_throttle;
-    use super::{SkipDecision, micros_u32};
+    use super::micros_u32;
 
     fn frame_stats(
         budget_exceeded: bool,
