@@ -1,11 +1,11 @@
 use tracing::warn;
 
+use super::RenderThreadState;
 use super::frame_scheduler::{
     FrameSceneSnapshot, FrameSceneSnapshotInputs, FrameScheduler, SceneRuntimeSnapshot,
     SceneTransitionSnapshot,
 };
 use super::scene_state::RenderSceneState;
-use super::RenderThreadState;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RenderLoopSnapshot {

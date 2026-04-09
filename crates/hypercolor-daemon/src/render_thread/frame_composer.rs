@@ -10,10 +10,10 @@ use hypercolor_core::types::canvas::Canvas;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::SpatialLayout;
 
+use super::frame_pacing::SkipDecision;
 use super::frame_scheduler::FrameSceneSnapshot;
 use super::frame_sources::{render_effect_into, static_surface};
 use super::pipeline_runtime::{FrameInputs, RenderCaches};
-use super::frame_pacing::SkipDecision;
 use super::producer_queue::{ProducerFrame, ProducerFrameState};
 use super::render_groups::RenderGroupResult;
 use super::sparkleflinger::ComposedFrameSet;

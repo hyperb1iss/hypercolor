@@ -24,6 +24,7 @@ mod frame_scheduler;
 mod frame_sources;
 mod frame_state;
 mod frame_throttle;
+mod pipeline_driver;
 mod pipeline_runtime;
 mod producer_queue;
 mod render_groups;
@@ -33,16 +34,13 @@ pub mod sparkleflinger;
 
 use std::any::Any;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use tokio::sync::{Mutex, RwLock, watch};
-use tracing::{debug, info};
+use tracing::info;
 
-use self::frame_executor::execute_frame;
-use self::frame_pacing::{NextWake, SkipDecision, advance_deadline, wait_until_frame_deadline};
-use self::frame_state::{reconcile_audio_capture, reconcile_screen_capture};
-use self::pipeline_runtime::PipelineRuntime;
+use self::pipeline_driver::run_pipeline;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::DiscoveryRuntime;
 use crate::performance::PerformanceTracker;
@@ -203,98 +201,6 @@ fn u64_to_u32(v: u64) -> u32 {
 /// Saturating conversion from `usize` to `u32`.
 fn usize_to_u32(v: usize) -> u32 {
     u32::try_from(v).unwrap_or(u32::MAX)
-}
-
-/// The main render pipeline loop.
-///
-/// Runs continuously, producing one frame per iteration:
-/// 1. Gate on `RenderLoop::tick()` (exit if stopped)
-/// 2. Render effect → `Canvas`
-/// 3. Spatial sample → `Vec<ZoneColors>`
-/// 4. Route to device backends
-/// 5. Publish frame data + timing event
-/// 6. Sleep for remaining frame budget
-async fn run_pipeline(state: RenderThreadState) {
-    info!(
-        mode = ?state.render_acceleration_mode,
-        "render pipeline started"
-    );
-
-    let initial_spatial_engine = state.spatial_engine.read().await.clone();
-    let mut runtime = PipelineRuntime::new(
-        state.canvas_width,
-        state.canvas_height,
-        initial_spatial_engine,
-        state.screen_capture_configured,
-    );
-    let mut skip_decision = SkipDecision::None;
-    let mut next_frame_at = Instant::now();
-
-    loop {
-        let scheduled_start = next_frame_at;
-        wait_until_frame_deadline(scheduled_start).await;
-
-        // ── Timing gate ─────────────────────────────────────────────
-        let should_render = {
-            let mut rl = state.render_loop.write().await;
-            rl.tick()
-        };
-
-        if !should_render {
-            // Check if we're paused (should wait) vs stopped (should exit).
-            let loop_state = {
-                let rl = state.render_loop.read().await;
-                rl.state()
-            };
-
-            if loop_state == hypercolor_core::engine::RenderLoopState::Paused {
-                reconcile_audio_capture(
-                    &state,
-                    false,
-                    &mut runtime.frame_loop.last_audio_capture_active,
-                )
-                .await;
-                reconcile_screen_capture(
-                    &state,
-                    false,
-                    &mut runtime.frame_loop.last_screen_capture_active,
-                )
-                .await;
-                // Paused — yield and retry.
-                next_frame_at = Instant::now();
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                continue;
-            }
-
-            reconcile_audio_capture(
-                &state,
-                false,
-                &mut runtime.frame_loop.last_audio_capture_active,
-            )
-            .await;
-            reconcile_screen_capture(
-                &state,
-                false,
-                &mut runtime.frame_loop.last_screen_capture_active,
-            )
-            .await;
-            debug!("render loop not running, exiting pipeline");
-            break;
-        }
-
-        let frame = execute_frame(&state, &mut runtime, scheduled_start, skip_decision).await;
-        skip_decision = frame.next_skip_decision;
-        next_frame_at = match frame.next_wake {
-            NextWake::Interval(interval) => {
-                advance_deadline(scheduled_start, interval, Instant::now())
-            }
-            NextWake::Delay(delay) => Instant::now()
-                .checked_add(delay)
-                .unwrap_or_else(Instant::now),
-        };
-    }
-
-    info!("render pipeline exited");
 }
 
 fn panic_payload_message(panic: &(dyn Any + Send + 'static)) -> String {
