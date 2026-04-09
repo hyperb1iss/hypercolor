@@ -16,6 +16,7 @@
 //! ```
 
 mod composition_planner;
+mod frame_composer;
 mod frame_executor;
 mod frame_io;
 mod frame_pacing;
