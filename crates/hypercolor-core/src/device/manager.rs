@@ -6,7 +6,6 @@
 //! it groups zone colors by target device and queues a single payload per
 //! device for asynchronous transmission.
 
-use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -358,6 +357,15 @@ struct FramePayload {
     produced_at: Instant,
 }
 
+#[derive(Debug, Default)]
+struct DeviceStagingBuffer {
+    output: Vec<[u8; 3]>,
+    remap_scratch: Vec<[u8; 3]>,
+    has_segmented_write: bool,
+    required_len: usize,
+    frame_generation: u64,
+}
+
 /// Latest-frame queue for a single `(backend_id, device_id)` target.
 ///
 /// Internally uses a `watch` channel so stale queued payloads are replaced
@@ -484,18 +492,20 @@ impl OutputQueue {
     }
 
     /// Push the latest payload for this device.
-    fn push(&mut self, colors: Vec<[u8; 3]>) {
+    fn push(&mut self, colors: Vec<[u8; 3]>) -> Option<Vec<[u8; 3]>> {
         if let Ok(mut snapshot) = self.metrics.lock() {
             snapshot.frames_received = snapshot.frames_received.saturating_add(1);
         }
 
         self.next_sequence = self.next_sequence.saturating_add(1);
 
-        self.tx.send_replace(Some(Arc::new(FramePayload {
+        let replaced = self.tx.send_replace(Some(Arc::new(FramePayload {
             colors,
             sequence: self.next_sequence,
             produced_at: Instant::now(),
         })));
+
+        replaced.and_then(|payload| Arc::try_unwrap(payload).ok().map(|payload| payload.colors))
     }
 
     fn snapshot(
@@ -558,6 +568,15 @@ pub struct BackendManager {
     /// Per-target latest-frame output queues.
     output_queues: HashMap<BackendDeviceKey, OutputQueue>,
 
+    /// Reusable per-device color staging for steady-state frame routing.
+    device_staging: HashMap<BackendDeviceKey, DeviceStagingBuffer>,
+
+    /// Device staging keys touched during the current frame.
+    active_staging_keys: Vec<BackendDeviceKey>,
+
+    /// Monotonic frame generation for staging reset bookkeeping.
+    staging_generation: u64,
+
     /// Preferred output FPS for connected devices, captured at connect time.
     device_fps_cache: HashMap<BackendDeviceKey, u32>,
 
@@ -615,8 +634,7 @@ enum PlannedZoneRoute {
 #[derive(Debug)]
 struct CompiledZoneRoute {
     layout_device_id: String,
-    backend_id: String,
-    device_id: DeviceId,
+    target_key: BackendDeviceKey,
     led_mapping: Option<Box<[u32]>>,
     segment: Option<SegmentRange>,
     attachment: Option<ZoneAttachment>,
@@ -667,6 +685,8 @@ impl BackendManager {
         // They are lazily recreated on the next frame.
         self.output_queues
             .retain(|(queued_backend_id, _), _| queued_backend_id != &backend_id);
+        self.device_staging
+            .retain(|(staged_backend_id, _), _| staged_backend_id != &backend_id);
         self.device_fps_cache
             .retain(|(cached_backend_id, _), _| cached_backend_id != &backend_id);
         self.direct_control_locks
@@ -993,10 +1013,7 @@ impl BackendManager {
 
         if !still_used {
             let key = (mapping.backend_id, mapping.device_id);
-            self.output_queues.remove(&key);
-            self.device_fps_cache.remove(&key);
-            self.direct_control_locks.remove(&key);
-            self.warned_inactive_layout_devices.remove(&key);
+            self.remove_device_target_state(&key);
         }
 
         self.invalidate_routing_plan();
@@ -1021,10 +1038,7 @@ impl BackendManager {
             .any(|mapping| mapping.backend_id == backend_id && mapping.device_id == device_id)
         {
             let key = (backend_id.to_owned(), device_id);
-            self.output_queues.remove(&key);
-            self.device_fps_cache.remove(&key);
-            self.direct_control_locks.remove(&key);
-            self.warned_inactive_layout_devices.remove(&key);
+            self.remove_device_target_state(&key);
         }
 
         if removed > 0 {
@@ -1125,8 +1139,7 @@ impl BackendManager {
             let route = if let Some(mapping) = self.device_map.get(zone.device_id.as_str()) {
                 PlannedZoneRoute::Mapped(CompiledZoneRoute {
                     layout_device_id: zone.device_id.clone(),
-                    backend_id: mapping.backend_id.clone(),
-                    device_id: mapping.device_id,
+                    target_key: (mapping.backend_id.clone(), mapping.device_id),
                     led_mapping: zone.led_mapping.clone().map(Vec::into_boxed_slice),
                     segment: mapped_segment_for_zone_name(
                         &zone.id,
@@ -1190,6 +1203,42 @@ impl BackendManager {
         }
     }
 
+    fn begin_staging_frame(&mut self) {
+        self.staging_generation = self.staging_generation.saturating_add(1);
+    }
+
+    fn staging_buffer(&mut self, key: &BackendDeviceKey) -> &mut DeviceStagingBuffer {
+        let generation = self.staging_generation;
+        let mut became_active = false;
+
+        {
+            let staging = self.device_staging.entry(key.clone()).or_default();
+            if staging.frame_generation != generation {
+                staging.output.clear();
+                staging.required_len = 0;
+                staging.has_segmented_write = false;
+                staging.frame_generation = generation;
+                became_active = true;
+            }
+        }
+
+        if became_active {
+            self.active_staging_keys.push(key.clone());
+        }
+
+        self.device_staging
+            .get_mut(key)
+            .expect("staging buffer must exist after entry initialization")
+    }
+
+    fn remove_device_target_state(&mut self, key: &BackendDeviceKey) {
+        self.output_queues.remove(key);
+        self.device_staging.remove(key);
+        self.device_fps_cache.remove(key);
+        self.direct_control_locks.remove(key);
+        self.warned_inactive_layout_devices.remove(key);
+    }
+
     /// Push frame color data to all mapped devices.
     ///
     /// For each zone in `zone_colors`, looks up the target device via the
@@ -1225,6 +1274,7 @@ impl BackendManager {
         global_brightness: f32,
         device_brightness: Option<&HashMap<DeviceId, f32>>,
     ) -> FrameWriteStats {
+        self.begin_staging_frame();
         let plan = self.routing_plan(layout);
         self.warned_unmapped_layout_devices
             .retain(|layout_device_id| plan.active_layout_device_ids.contains(layout_device_id));
@@ -1269,18 +1319,6 @@ impl BackendManager {
         }
         self.warned_inactive_layout_devices = inactive_keys;
 
-        #[allow(clippy::items_after_statements)]
-        #[derive(Default)]
-        struct AccumulatedColors {
-            values: Vec<[u8; 3]>,
-            has_segmented_write: bool,
-            required_len: usize,
-        }
-
-        // Group colors by (backend_id, device_id). Owned keys to avoid
-        // borrow conflicts with `self.backends` during the write phase.
-        let mut device_colors: HashMap<(String, DeviceId), AccumulatedColors> = HashMap::new();
-
         for zc in zone_colors {
             let Some(route) = plan.zone_routes.get(zc.zone_id.as_str()) else {
                 warn!(zone_id = %zc.zone_id, "zone not found in spatial layout");
@@ -1304,84 +1342,90 @@ impl BackendManager {
                 continue;
             };
 
-            let remapped_colors =
-                remap_zone_colors(&zc.zone_id, &zc.colors, route.led_mapping.as_deref());
-
             self.warned_unmapped_layout_devices
                 .remove(route.layout_device_id.as_str());
-
-            let key = (route.backend_id.clone(), route.device_id);
-            let entry = device_colors.entry(key).or_default();
-            entry.required_len = entry
-                .required_len
-                .max(route.physical_led_count.unwrap_or_default());
 
             let segment = attachment_segment_for_zone(
                 &zc.zone_id,
                 route.segment,
                 route.attachment.as_ref(),
-                remapped_colors.len(),
+                zc.colors.len(),
             );
+            let mismatch = {
+                let staging = self.staging_buffer(&route.target_key);
+                staging.required_len = staging
+                    .required_len
+                    .max(route.physical_led_count.unwrap_or_default());
+                let remapped_colors = remap_zone_colors(
+                    &zc.zone_id,
+                    &zc.colors,
+                    route.led_mapping.as_deref(),
+                    &mut staging.remap_scratch,
+                );
+                let remapped_len = remapped_colors.len();
 
-            if let Some(segment) = segment {
-                entry.has_segmented_write = true;
-                let required_len = segment.end();
-                if entry.values.len() < required_len {
-                    entry.values.resize(required_len, [0, 0, 0]);
-                }
+                if let Some(segment) = segment {
+                    staging.has_segmented_write = true;
+                    let segment_end = segment.end();
+                    if staging.output.len() < segment_end {
+                        staging.output.resize(segment_end, [0, 0, 0]);
+                    }
 
-                let copy_len = segment.length.min(remapped_colors.len());
-                if copy_len > 0 {
-                    let start = segment.start;
-                    let end = start.saturating_add(copy_len);
-                    entry.values[start..end].copy_from_slice(&remapped_colors[..copy_len]);
-                }
+                    let copy_len = segment.length.min(remapped_len);
+                    if copy_len > 0 {
+                        let start = segment.start;
+                        let end = start.saturating_add(copy_len);
+                        staging.output[start..end].copy_from_slice(&remapped_colors[..copy_len]);
+                    }
 
-                if copy_len != segment.length {
-                    let warn_key = format!("{}:{}", route.layout_device_id, zc.zone_id);
-                    let should_warn = self
-                        .last_segment_mismatch_warn_at
-                        .get(&warn_key)
-                        .is_none_or(|last_warn_at| {
-                            last_warn_at.elapsed() >= UNMAPPED_LAYOUT_WARN_INTERVAL
-                        });
-
-                    if should_warn {
+                    (copy_len != segment.length).then_some((
+                        segment.start,
+                        segment.length,
+                        remapped_len,
+                    ))
+                } else {
+                    if staging.has_segmented_write {
                         warn!(
                             zone_id = %zc.zone_id,
-                            layout_device_id = %route.layout_device_id,
-                            segment_start = segment.start,
-                            expected = segment.length,
-                            received = remapped_colors.len(),
-                            "zone color count does not match mapped segment length"
+                            "mixed segmented and non-segmented mappings for the same physical device"
                         );
-                        self.last_segment_mismatch_warn_at
-                            .insert(warn_key, Instant::now());
                     }
+                    staging.output.extend_from_slice(remapped_colors);
+                    None
                 }
-            } else {
-                if entry.has_segmented_write {
+            };
+
+            if let Some((segment_start, expected, received)) = mismatch {
+                let warn_key = format!("{}:{}", route.layout_device_id, zc.zone_id);
+                let should_warn = self
+                    .last_segment_mismatch_warn_at
+                    .get(&warn_key)
+                    .is_none_or(|last_warn_at| {
+                        last_warn_at.elapsed() >= UNMAPPED_LAYOUT_WARN_INTERVAL
+                    });
+
+                if should_warn {
                     warn!(
                         zone_id = %zc.zone_id,
-                        "mixed segmented and non-segmented mappings for the same physical device"
+                        layout_device_id = %route.layout_device_id,
+                        segment_start,
+                        expected,
+                        received,
+                        "zone color count does not match mapped segment length"
                     );
+                    self.last_segment_mismatch_warn_at
+                        .insert(warn_key, Instant::now());
                 }
-                entry.values.extend_from_slice(&remapped_colors);
             }
         }
 
-        // Dispatch to output queues.
-        for ((backend_id, device_id), colors) in device_colors {
-            let AccumulatedColors {
-                mut values,
-                has_segmented_write: _,
-                required_len,
-            } = colors;
-            if values.len() < required_len {
-                values.resize(required_len, [0, 0, 0]);
-            }
+        let mut active_staging_keys = Vec::new();
+        std::mem::swap(&mut active_staging_keys, &mut self.active_staging_keys);
 
-            if self.is_direct_control_active(backend_id.as_str(), device_id) {
+        for key in &active_staging_keys {
+            let (backend_id, device_id) = key;
+
+            if self.is_direct_control_active(backend_id.as_str(), *device_id) {
                 trace!(
                     backend_id = %backend_id,
                     device_id = %device_id,
@@ -1397,28 +1441,49 @@ impl BackendManager {
                 continue;
             }
 
-            let device_output_brightness = self.device_output_brightness(device_id);
+            let device_output_brightness = self.device_output_brightness(*device_id);
             let per_frame_brightness = device_brightness
-                .and_then(|settings| settings.get(&device_id).copied())
+                .and_then(|settings| settings.get(device_id).copied())
                 .unwrap_or(1.0);
             let brightness = (global_brightness * per_frame_brightness * device_output_brightness)
                 .clamp(0.0, 1.0);
-            let Some(queue) = self.ensure_output_queue(backend_id.as_str(), device_id) else {
+
+            let values = {
+                let staging = self
+                    .device_staging
+                    .get_mut(key)
+                    .expect("active staging key should resolve to a staging buffer");
+                if staging.output.len() < staging.required_len {
+                    staging.output.resize(staging.required_len, [0, 0, 0]);
+                }
+
+                prepare_output_for_leds(&mut staging.output, brightness);
+
+                let mut values = Vec::new();
+                std::mem::swap(&mut values, &mut staging.output);
+                values
+            };
+
+            let Some(queue) = self.ensure_output_queue(backend_id.as_str(), *device_id) else {
                 stats
                     .errors
                     .push(format!("backend '{backend_id}' not registered"));
+                if let Some(staging) = self.device_staging.get_mut(key) {
+                    staging.output = values;
+                }
                 continue;
             };
 
-            // Convert screen-referred sRGB into LED PWM in one pass so we keep
-            // more low-end detail and can compensate dark, saturated colors
-            // before the final 8-bit quantization step.
-            prepare_output_for_leds(&mut values, brightness);
-
             stats.devices_written += 1;
             stats.total_leds += values.len();
-            queue.push(values);
+            let recycled = queue.push(values);
+            if let (Some(staging), Some(recycled)) = (self.device_staging.get_mut(key), recycled) {
+                staging.output = recycled;
+            }
         }
+
+        active_staging_keys.clear();
+        self.active_staging_keys = active_staging_keys;
 
         stats
     }
@@ -1687,9 +1752,10 @@ fn remap_zone_colors<'a>(
     zone_id: &str,
     colors: &'a [[u8; 3]],
     led_mapping: Option<&[u32]>,
-) -> Cow<'a, [[u8; 3]]> {
+    scratch: &'a mut Vec<[u8; 3]>,
+) -> &'a [[u8; 3]] {
     let Some(led_mapping) = led_mapping else {
-        return Cow::Borrowed(colors);
+        return colors;
     };
 
     if led_mapping.len() != colors.len() {
@@ -1699,10 +1765,11 @@ fn remap_zone_colors<'a>(
             color_len = colors.len(),
             "ignoring zone LED mapping because it does not match the sampled LED count"
         );
-        return Cow::Borrowed(colors);
+        return colors;
     }
 
-    let mut reordered = vec![[0, 0, 0]; colors.len()];
+    scratch.clear();
+    scratch.resize(colors.len(), [0, 0, 0]);
     for (spatial_index, &physical_index) in led_mapping.iter().enumerate() {
         let Ok(physical_index) = usize::try_from(physical_index) else {
             warn!(
@@ -1710,21 +1777,21 @@ fn remap_zone_colors<'a>(
                 mapping_index = physical_index,
                 "ignoring zone LED mapping because one physical index does not fit in usize"
             );
-            return Cow::Borrowed(colors);
+            return colors;
         };
-        if physical_index >= reordered.len() {
+        if physical_index >= scratch.len() {
             warn!(
                 zone_id = %zone_id,
                 mapping_index = physical_index,
                 color_len = colors.len(),
                 "ignoring zone LED mapping because one physical index is out of bounds"
             );
-            return Cow::Borrowed(colors);
+            return colors;
         }
-        reordered[physical_index] = colors[spatial_index];
+        scratch[physical_index] = colors[spatial_index];
     }
 
-    Cow::Owned(reordered)
+    scratch.as_slice()
 }
 
 fn zone_segments_from_device_info(device_info: &DeviceInfo) -> HashMap<String, SegmentRange> {
