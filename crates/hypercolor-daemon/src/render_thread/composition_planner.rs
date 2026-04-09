@@ -1,3 +1,5 @@
+use hypercolor_types::scene::SceneId;
+
 use super::frame_scheduler::SceneRuntimeSnapshot;
 use super::producer_queue::ProducerFrame;
 use super::sparkleflinger::{CompositionLayer, CompositionMode, CompositionPlan};
@@ -67,12 +69,26 @@ pub(crate) struct CompiledCompositionPlan {
     pub metadata: CompiledCompositionMetadata,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SceneTransitionKey {
+    from_scene: SceneId,
+    to_scene: SceneId,
+}
+
 #[derive(Debug, Default)]
-pub(crate) struct CompositionPlanner;
+pub(crate) struct CompositionPlanner {
+    active_transition: Option<SceneTransitionKey>,
+    transition_base_frame: Option<ProducerFrame>,
+    last_stable_frame: Option<ProducerFrame>,
+}
 
 impl CompositionPlanner {
     pub const fn new() -> Self {
-        Self
+        Self {
+            active_transition: None,
+            transition_base_frame: None,
+            last_stable_frame: None,
+        }
     }
 
     pub(crate) fn compile(
@@ -113,6 +129,66 @@ impl CompositionPlanner {
         };
 
         CompiledCompositionPlan { plan, metadata }
+    }
+
+    pub(crate) fn compile_primary_frame(
+        &mut self,
+        width: u32,
+        height: u32,
+        scene_runtime: &SceneRuntimeSnapshot,
+        current_frame: ProducerFrame,
+    ) -> CompiledCompositionPlan {
+        let layers = self.transition_layers(scene_runtime, &current_frame);
+        let compiled = self.compile(width, height, scene_runtime, layers);
+        if self.active_transition.is_none() {
+            self.last_stable_frame = Some(current_frame);
+        }
+        compiled
+    }
+
+    fn transition_layers(
+        &mut self,
+        scene_runtime: &SceneRuntimeSnapshot,
+        current_frame: &ProducerFrame,
+    ) -> Vec<PlannedSceneLayer> {
+        let transition = scene_runtime.active_transition.as_ref();
+        let transition_key = transition.and_then(|transition| {
+            Some(SceneTransitionKey {
+                from_scene: transition.from_scene?,
+                to_scene: transition.to_scene?,
+            })
+        });
+
+        match transition_key {
+            Some(key) => {
+                if self.active_transition != Some(key) {
+                    self.active_transition = Some(key);
+                    self.transition_base_frame = self
+                        .last_stable_frame
+                        .clone()
+                        .or_else(|| Some(current_frame.clone()));
+                }
+
+                let opacity = transition
+                    .map(|transition| transition.eased_progress.clamp(0.0, 1.0))
+                    .unwrap_or(1.0);
+                let mut layers = Vec::new();
+                if let Some(base_frame) = self.transition_base_frame.clone() {
+                    layers.push(PlannedSceneLayer::replace(base_frame));
+                }
+                if opacity < 1.0 {
+                    layers.push(PlannedSceneLayer::alpha(current_frame.clone(), opacity));
+                } else {
+                    layers.push(PlannedSceneLayer::replace(current_frame.clone()));
+                }
+                layers
+            }
+            None => {
+                self.active_transition = None;
+                self.transition_base_frame = None;
+                vec![PlannedSceneLayer::replace(current_frame.clone())]
+            }
+        }
     }
 }
 
@@ -180,5 +256,33 @@ mod tests {
         assert!(!composed.bypassed);
         assert_eq!(composed.sampling_canvas.width(), 2);
         assert_eq!(composed.sampling_canvas.height(), 2);
+    }
+
+    #[test]
+    fn planner_crossfades_from_last_stable_frame_during_scene_transition() {
+        let mut planner = CompositionPlanner::new();
+        let stable = ProducerFrame::Canvas(solid_canvas(Rgba::new(255, 0, 0, 255)));
+        let entering = ProducerFrame::Canvas(solid_canvas(Rgba::new(0, 0, 255, 255)));
+        let stable_runtime = SceneRuntimeSnapshot::default();
+        let _ = planner.compile_primary_frame(2, 2, &stable_runtime, stable);
+
+        let transition_runtime = SceneRuntimeSnapshot {
+            active_scene_id: Some(hypercolor_types::scene::SceneId::new()),
+            active_transition: Some(SceneTransitionSnapshot {
+                from_scene: Some(hypercolor_types::scene::SceneId::new()),
+                to_scene: Some(hypercolor_types::scene::SceneId::new()),
+                progress: 0.5,
+                eased_progress: 0.5,
+            }),
+        };
+        let compiled = planner.compile_primary_frame(2, 2, &transition_runtime, entering);
+        let mut sparkleflinger = SparkleFlinger::new();
+        let composed = sparkleflinger.compose(compiled.plan);
+
+        assert_eq!(compiled.metadata.logical_layer_count, 2);
+        assert!(!composed.bypassed);
+        let pixel = &composed.sampling_canvas.as_rgba_bytes()[0..4];
+        assert_ne!(pixel, [255, 0, 0, 255].as_slice());
+        assert_ne!(pixel, [0, 0, 255, 255].as_slice());
     }
 }

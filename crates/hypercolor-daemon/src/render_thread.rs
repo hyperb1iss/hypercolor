@@ -45,7 +45,7 @@ use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, Spe
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::session::OffOutputBehavior;
 
-use self::composition_planner::{CompositionPlanner, PlannedSceneLayer};
+use self::composition_planner::CompositionPlanner;
 use self::frame_scheduler::{
     FrameSceneSnapshot, FrameSceneSnapshotInputs, FrameScheduler, SceneRuntimeSnapshot,
     SceneTransitionSnapshot,
@@ -851,11 +851,11 @@ async fn compose_frame_set(
     };
     let producer_done_us = micros_u32(stage_start.elapsed());
     let composition_start = Instant::now();
-    let compiled_plan = composition_planner.compile(
+    let compiled_plan = composition_planner.compile_primary_frame(
         state.canvas_width,
         state.canvas_height,
         &scene_snapshot.scene_runtime,
-        vec![PlannedSceneLayer::replace(source_frame)],
+        source_frame,
     );
     let composed = sparkleflinger.compose(compiled_plan.plan);
     let composition_us = micros_u32(composition_start.elapsed());

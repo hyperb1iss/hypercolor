@@ -898,6 +898,82 @@ async fn render_thread_advances_active_scene_transitions() {
 }
 
 #[tokio::test]
+async fn render_thread_crossfades_scene_transition_between_effect_frames() {
+    let mut effect_engine = EffectEngine::new();
+    effect_engine
+        .activate(
+            Box::new(MockEffectRenderer::solid(255, 0, 0)),
+            MockEffectRenderer::sample_metadata("scene-transition-red"),
+        )
+        .expect("activate red");
+
+    let state = make_render_state(
+        effect_engine,
+        SpatialEngine::new(test_layout(vec![strip_zone("zone_0", "mock:strip", 8)])),
+        BackendManager::new(),
+    );
+    let mut canvas_rx = state.event_bus.canvas_receiver();
+
+    let scene_a = make_scene("Scene A");
+    let scene_b = make_scene("Scene B");
+    {
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .create(scene_a.clone())
+            .expect("create scene a");
+        scene_manager
+            .create(scene_b.clone())
+            .expect("create scene b");
+        scene_manager
+            .activate(&scene_a.id, None)
+            .expect("activate scene a");
+    }
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+    tokio::time::timeout(Duration::from_secs(2), canvas_rx.changed())
+        .await
+        .expect("timed out waiting for initial canvas")
+        .expect("canvas sender should remain connected");
+    let initial_canvas = canvas_rx.borrow().clone();
+    let initial_pixel = &initial_canvas.rgba_bytes()[0..4];
+    assert_eq!(initial_pixel, [255, 0, 0, 255].as_slice());
+
+    {
+        let mut engine = state.effect_engine.lock().await;
+        engine
+            .activate(
+                Box::new(MockEffectRenderer::solid(0, 0, 255)),
+                MockEffectRenderer::sample_metadata("scene-transition-blue"),
+            )
+            .expect("activate blue");
+    }
+    {
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .activate(&scene_b.id, None)
+            .expect("activate scene b");
+    }
+
+    let blended_canvas =
+        wait_for_next_canvas_frame(&mut canvas_rx, initial_canvas.frame_number).await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let blended_pixel = &blended_canvas.rgba_bytes()[0..4];
+    assert_ne!(blended_pixel, [255, 0, 0, 255].as_slice());
+    assert_ne!(blended_pixel, [0, 0, 255, 255].as_slice());
+}
+
+#[tokio::test]
 async fn pipeline_publishes_frame_data_via_watch() {
     let state = make_render_state(
         EffectEngine::new(),
