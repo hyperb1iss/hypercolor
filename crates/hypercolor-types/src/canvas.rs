@@ -735,6 +735,329 @@ impl std::fmt::Debug for Canvas {
     }
 }
 
+// ── Render Surfaces ───────────────────────────────────────────────────────
+
+/// Pixel storage format for published render surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceFormat {
+    /// Standard 8-bit RGBA surface.
+    Rgba8888,
+}
+
+impl Default for SurfaceFormat {
+    fn default() -> Self {
+        Self::Rgba8888
+    }
+}
+
+/// Immutable dimensions and format for a surface family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub struct SurfaceDescriptor {
+    pub width: u32,
+    pub height: u32,
+    pub format: SurfaceFormat,
+}
+
+impl SurfaceDescriptor {
+    /// Create a descriptor for an RGBA8888 surface.
+    #[must_use]
+    pub const fn rgba8888(width: u32, height: u32) -> Self {
+        Self {
+            width,
+            height,
+            format: SurfaceFormat::Rgba8888,
+        }
+    }
+
+    /// Total byte size for one surface.
+    #[must_use]
+    pub fn byte_len(self) -> usize {
+        usize::try_from(self.width)
+            .unwrap_or_default()
+            .saturating_mul(usize::try_from(self.height).unwrap_or_default())
+            .saturating_mul(BYTES_PER_PIXEL)
+    }
+}
+
+/// Immutable published surface shared across consumers.
+#[derive(Clone, Debug)]
+pub struct PublishedSurface {
+    descriptor: SurfaceDescriptor,
+    generation: u64,
+    frame_number: u32,
+    timestamp_ms: u32,
+    rgba: Arc<Vec<u8>>,
+}
+
+impl PublishedSurface {
+    /// Create an empty published surface.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            descriptor: SurfaceDescriptor::default(),
+            generation: 0,
+            frame_number: 0,
+            timestamp_ms: 0,
+            rgba: Arc::new(Vec::new()),
+        }
+    }
+
+    /// Snapshot a shared published surface from a borrowed canvas.
+    #[must_use]
+    pub fn from_canvas(canvas: &Canvas, frame_number: u32, timestamp_ms: u32) -> Self {
+        Self {
+            descriptor: SurfaceDescriptor::rgba8888(canvas.width(), canvas.height()),
+            generation: 0,
+            frame_number,
+            timestamp_ms,
+            rgba: Arc::new(canvas.as_rgba_bytes().to_vec()),
+        }
+    }
+
+    /// Create a shared published surface from owned canvas storage.
+    #[must_use]
+    pub fn from_owned_canvas_with_copy_info(
+        canvas: Canvas,
+        frame_number: u32,
+        timestamp_ms: u32,
+    ) -> (Self, bool) {
+        let descriptor = SurfaceDescriptor::rgba8888(canvas.width(), canvas.height());
+        let (rgba, copied) = canvas.into_rgba_bytes_with_copy_info();
+        (
+            Self {
+                descriptor,
+                generation: 0,
+                frame_number,
+                timestamp_ms,
+                rgba: Arc::new(rgba),
+            },
+            copied,
+        )
+    }
+
+    /// Descriptor for this published surface.
+    #[must_use]
+    pub const fn descriptor(&self) -> SurfaceDescriptor {
+        self.descriptor
+    }
+
+    /// Monotonic generation for slot-backed surfaces.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Frame number associated with this publish.
+    #[must_use]
+    pub const fn frame_number(&self) -> u32 {
+        self.frame_number
+    }
+
+    /// Timestamp associated with this publish.
+    #[must_use]
+    pub const fn timestamp_ms(&self) -> u32 {
+        self.timestamp_ms
+    }
+
+    /// Surface width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.descriptor.width
+    }
+
+    /// Surface height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.descriptor.height
+    }
+
+    /// Surface format.
+    #[must_use]
+    pub const fn format(&self) -> SurfaceFormat {
+        self.descriptor.format
+    }
+
+    /// Published RGBA bytes.
+    #[must_use]
+    pub fn rgba_bytes(&self) -> &[u8] {
+        self.rgba.as_slice()
+    }
+
+    /// Published RGBA byte length.
+    #[must_use]
+    pub fn rgba_len(&self) -> usize {
+        self.rgba.len()
+    }
+}
+
+/// Lifecycle state for a slot in the render surface pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceState {
+    /// Available for dequeue.
+    Free,
+    /// Currently leased for mutation.
+    Dequeued,
+    /// Published and still potentially shared by readers.
+    Published,
+}
+
+impl Default for SurfaceState {
+    fn default() -> Self {
+        Self::Free
+    }
+}
+
+const DEFAULT_RENDER_SURFACE_SLOTS: usize = 3;
+
+#[derive(Clone)]
+struct SurfaceSlot {
+    canvas: Canvas,
+    generation: u64,
+    state: SurfaceState,
+}
+
+impl SurfaceSlot {
+    fn new(descriptor: SurfaceDescriptor) -> Self {
+        Self {
+            canvas: Canvas::new(descriptor.width, descriptor.height),
+            generation: 0,
+            state: SurfaceState::Free,
+        }
+    }
+}
+
+/// Fixed-capacity pool for reusable render surfaces.
+#[derive(Clone)]
+pub struct RenderSurfacePool {
+    descriptor: SurfaceDescriptor,
+    slots: Vec<SurfaceSlot>,
+    next_slot: usize,
+}
+
+impl RenderSurfacePool {
+    /// Create a new three-slot render surface pool.
+    #[must_use]
+    pub fn new(descriptor: SurfaceDescriptor) -> Self {
+        Self::with_slot_count(descriptor, DEFAULT_RENDER_SURFACE_SLOTS)
+    }
+
+    /// Create a render surface pool with an explicit slot count.
+    #[must_use]
+    pub fn with_slot_count(descriptor: SurfaceDescriptor, slot_count: usize) -> Self {
+        let slot_count = slot_count.max(1);
+        let slots = (0..slot_count)
+            .map(|_| SurfaceSlot::new(descriptor))
+            .collect();
+        Self {
+            descriptor,
+            slots,
+            next_slot: 0,
+        }
+    }
+
+    /// Surface descriptor shared by all slots.
+    #[must_use]
+    pub const fn descriptor(&self) -> SurfaceDescriptor {
+        self.descriptor
+    }
+
+    /// Number of slots in the pool.
+    #[must_use]
+    pub fn slot_count(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// Current visible state of all pool slots.
+    #[must_use]
+    pub fn slot_states(&mut self) -> Vec<SurfaceState> {
+        self.reclaim_published_slots();
+        self.slots.iter().map(|slot| slot.state).collect()
+    }
+
+    /// Lease the next available surface slot for mutation.
+    pub fn dequeue(&mut self) -> Option<SurfaceLease<'_>> {
+        self.reclaim_published_slots();
+
+        for offset in 0..self.slots.len() {
+            let index = (self.next_slot + offset) % self.slots.len();
+            if self.slots[index].state != SurfaceState::Free {
+                continue;
+            }
+
+            self.slots[index].state = SurfaceState::Dequeued;
+            self.next_slot = (index + 1) % self.slots.len();
+            return Some(SurfaceLease {
+                descriptor: self.descriptor,
+                slot: &mut self.slots[index],
+            });
+        }
+
+        None
+    }
+
+    fn reclaim_published_slots(&mut self) {
+        for slot in &mut self.slots {
+            if slot.state == SurfaceState::Published && !slot.canvas.is_shared() {
+                slot.state = SurfaceState::Free;
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for RenderSurfacePool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenderSurfacePool")
+            .field("descriptor", &self.descriptor)
+            .field("slot_count", &self.slots.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Unique mutable lease to one render surface slot.
+pub struct SurfaceLease<'a> {
+    descriptor: SurfaceDescriptor,
+    slot: &'a mut SurfaceSlot,
+}
+
+impl SurfaceLease<'_> {
+    /// Descriptor for the leased surface.
+    #[must_use]
+    pub const fn descriptor(&self) -> SurfaceDescriptor {
+        self.descriptor
+    }
+
+    /// Current slot generation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.slot.generation
+    }
+
+    /// Mutable canvas view for direct CPU rendering.
+    pub fn canvas_mut(&mut self) -> &mut Canvas {
+        &mut self.slot.canvas
+    }
+
+    /// Publish the leased surface and return an immutable shared handle.
+    #[must_use]
+    pub fn submit(self, frame_number: u32, timestamp_ms: u32) -> PublishedSurface {
+        self.slot.generation = self.slot.generation.saturating_add(1);
+        self.slot.state = SurfaceState::Published;
+        PublishedSurface {
+            descriptor: self.descriptor,
+            generation: self.slot.generation,
+            frame_number,
+            timestamp_ms,
+            rgba: Arc::clone(&self.slot.canvas.pixels),
+        }
+    }
+
+    /// Return the leased slot to the pool without publishing.
+    pub fn release(self) {
+        self.slot.state = SurfaceState::Free;
+    }
+}
+
 // ── BlendMode ──────────────────────────────────────────────────────────────
 
 /// Blend modes for layer compositing.

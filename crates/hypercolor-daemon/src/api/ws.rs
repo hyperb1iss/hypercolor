@@ -25,6 +25,8 @@ use tracing::{debug, warn};
 use crate::api::AppState;
 use crate::api::security::RequestAuthContext;
 use crate::performance::FrameTimeSummary as RenderFrameTimeSummary;
+use crate::session::OutputPowerState;
+use hypercolor_types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
 use hypercolor_types::server::ServerIdentity;
 
 /// Maximum number of events that can be buffered per WebSocket client.
@@ -655,8 +657,10 @@ async fn handle_socket(
         spectrum_subs,
     ));
     let canvas_subs = Arc::clone(&subscriptions);
+    let canvas_power_rx = state.power_state.subscribe();
     let canvas_relay_handle = tokio::spawn(relay_canvas(
         canvas_rx,
+        canvas_power_rx,
         json_tx.clone(),
         binary_tx.clone(),
         canvas_subs,
@@ -948,12 +952,15 @@ async fn relay_spectrum(
 /// Relay raw canvas updates to the WebSocket client.
 async fn relay_canvas(
     mut canvas_rx: watch::Receiver<hypercolor_core::bus::CanvasFrame>,
+    mut power_state_rx: watch::Receiver<OutputPowerState>,
     json_tx: tokio::sync::mpsc::Sender<String>,
     binary_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
     subscriptions: Arc<RwLock<SubscriptionState>>,
 ) {
     let mut latest_canvas = canvas_rx.borrow().clone();
+    let mut latest_power_state = *power_state_rx.borrow();
     let mut last_sent_frame_number: Option<u32> = None;
+    let mut last_sent_brightness_bits: Option<u32> = None;
     let mut active_fps = 15_u32;
     let mut ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -969,10 +976,22 @@ async fn relay_canvas(
         };
 
         let Some(canvas_config) = canvas_config else {
-            if canvas_rx.changed().await.is_err() {
-                break;
+            last_sent_frame_number = None;
+            last_sent_brightness_bits = None;
+            tokio::select! {
+                changed = canvas_rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    latest_canvas = canvas_rx.borrow().clone();
+                }
+                changed = power_state_rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    latest_power_state = *power_state_rx.borrow_and_update();
+                }
             }
-            latest_canvas = canvas_rx.borrow().clone();
             continue;
         };
 
@@ -989,13 +1008,27 @@ async fn relay_canvas(
                 }
                 latest_canvas = canvas_rx.borrow().clone();
             }
+            changed = power_state_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                latest_power_state = *power_state_rx.borrow_and_update();
+            }
             _ = ticker.tick() => {
-                if last_sent_frame_number == Some(latest_canvas.frame_number) {
+                let brightness = latest_power_state.effective_brightness();
+                let brightness_bits = brightness.to_bits();
+                if last_sent_frame_number == Some(latest_canvas.frame_number)
+                    && last_sent_brightness_bits == Some(brightness_bits)
+                {
                     continue;
                 }
 
                 if binary_tx
-                    .try_send(encode_canvas_binary(&latest_canvas, canvas_config.format))
+                    .try_send(encode_canvas_preview_binary(
+                        &latest_canvas,
+                        canvas_config.format,
+                        brightness,
+                    ))
                     .is_err()
                 {
                     enqueue_backpressure_notice(&json_tx, "canvas", canvas_config.fps);
@@ -1004,6 +1037,7 @@ async fn relay_canvas(
                 }
 
                 last_sent_frame_number = Some(latest_canvas.frame_number);
+                last_sent_brightness_bits = Some(brightness_bits);
             }
         }
     }
@@ -1518,11 +1552,12 @@ fn encode_spectrum_binary(
     out
 }
 
-fn encode_canvas_binary(
+fn encode_canvas_preview_binary(
     canvas: &hypercolor_core::bus::CanvasFrame,
     format: CanvasFormat,
+    brightness: f32,
 ) -> Vec<u8> {
-    encode_canvas_binary_with_header(canvas, format, WS_CANVAS_HEADER)
+    encode_canvas_binary_with_header_and_brightness(canvas, format, WS_CANVAS_HEADER, brightness)
 }
 
 fn encode_canvas_binary_with_header(
@@ -1530,6 +1565,16 @@ fn encode_canvas_binary_with_header(
     format: CanvasFormat,
     header: u8,
 ) -> Vec<u8> {
+    encode_canvas_binary_with_header_and_brightness(canvas, format, header, 1.0)
+}
+
+fn encode_canvas_binary_with_header_and_brightness(
+    canvas: &hypercolor_core::bus::CanvasFrame,
+    format: CanvasFormat,
+    header: u8,
+    brightness: f32,
+) -> Vec<u8> {
+    let brightness = brightness.clamp(0.0, 1.0);
     let width_u16 = u16::try_from(canvas.width).unwrap_or(u16::MAX);
     let height_u16 = u16::try_from(canvas.height).unwrap_or(u16::MAX);
     let width = usize::from(width_u16);
@@ -1555,16 +1600,32 @@ fn encode_canvas_binary_with_header(
     match format {
         CanvasFormat::Rgb => {
             for pixel in rgba.chunks_exact(4).take(px_count) {
-                out.extend_from_slice(&pixel[..3]);
+                out.push(scale_preview_channel(pixel[0], brightness));
+                out.push(scale_preview_channel(pixel[1], brightness));
+                out.push(scale_preview_channel(pixel[2], brightness));
             }
         }
         CanvasFormat::Rgba => {
-            let max_len = px_count.saturating_mul(4);
-            out.extend_from_slice(&rgba[..rgba.len().min(max_len)]);
+            for pixel in rgba.chunks_exact(4).take(px_count) {
+                out.push(scale_preview_channel(pixel[0], brightness));
+                out.push(scale_preview_channel(pixel[1], brightness));
+                out.push(scale_preview_channel(pixel[2], brightness));
+                out.push(pixel[3]);
+            }
         }
     }
 
     out
+}
+
+fn scale_preview_channel(channel: u8, brightness: f32) -> u8 {
+    if brightness >= 0.999 {
+        return channel;
+    }
+    if brightness <= 0.0 {
+        return 0;
+    }
+    linear_to_srgb_u8(srgb_u8_to_linear(channel) * brightness)
 }
 
 fn sanitize_f32(value: f32) -> f32 {
@@ -1893,16 +1954,16 @@ async fn send_json(socket: &mut WebSocket, msg: &impl Serialize) -> Result<(), a
 mod tests {
     use super::{
         ChannelConfig, ChannelConfigPatch, ServerMessage, WsChannel, command_response_from_http,
-        dispatch_command, encode_canvas_binary, encode_frame_binary, encode_spectrum_binary,
-        event_message_parts, filter_frame_zones, normalize_command_path, parse_channels,
-        parse_command_method, should_relay_event, to_snake_case, try_enqueue_json,
+        dispatch_command, encode_canvas_preview_binary, encode_frame_binary,
+        encode_spectrum_binary, event_message_parts, filter_frame_zones, normalize_command_path,
+        parse_channels, parse_command_method, should_relay_event, to_snake_case, try_enqueue_json,
         unique_sorted_channel_names, ws_capabilities,
     };
     use crate::api::AppState;
     use crate::api::security::{RequestAuthContext, SecurityState};
     use axum::response::IntoResponse;
     use hypercolor_core::bus::CanvasFrame;
-    use hypercolor_types::canvas::{Canvas, Rgba};
+    use hypercolor_types::canvas::{Canvas, Rgba, linear_to_srgb_u8, srgb_u8_to_linear};
     use hypercolor_types::event::{
         FrameData, FrameTiming, HypercolorEvent, SpectrumData, ZoneColors,
     };
@@ -2350,7 +2411,11 @@ mod tests {
         canvas.set_pixel(1, 0, Rgba::new(40, 50, 60, 200));
         let frame = CanvasFrame::from_canvas(&canvas, 7, 99);
 
-        let encoded = encode_canvas_binary(&frame, super::CanvasFormat::Rgb);
+        let encoded = super::encode_canvas_binary_with_header(
+            &frame,
+            super::CanvasFormat::Rgb,
+            super::WS_CANVAS_HEADER,
+        );
         assert_eq!(encoded[0], super::WS_CANVAS_HEADER);
         assert_eq!(
             u32::from_le_bytes([encoded[1], encoded[2], encoded[3], encoded[4]]),
@@ -2373,9 +2438,42 @@ mod tests {
         canvas.set_pixel(1, 0, Rgba::new(40, 50, 60, 200));
         let frame = CanvasFrame::from_canvas(&canvas, 7, 99);
 
-        let encoded = encode_canvas_binary(&frame, super::CanvasFormat::Rgba);
+        let encoded = super::encode_canvas_binary_with_header(
+            &frame,
+            super::CanvasFormat::Rgba,
+            super::WS_CANVAS_HEADER,
+        );
         assert_eq!(encoded[13], 1);
         assert_eq!(&encoded[14..22], &[10, 20, 30, 255, 40, 50, 60, 200]);
+    }
+
+    #[test]
+    fn canvas_preview_binary_applies_brightness_without_mutating_source() {
+        let mut canvas = Canvas::new(1, 1);
+        canvas.set_pixel(0, 0, Rgba::new(255, 128, 0, 200));
+        let frame = CanvasFrame::from_canvas(&canvas, 7, 99);
+
+        let encoded = encode_canvas_preview_binary(&frame, super::CanvasFormat::Rgba, 0.5);
+        let expected = [
+            linear_to_srgb_u8(srgb_u8_to_linear(255) * 0.5),
+            linear_to_srgb_u8(srgb_u8_to_linear(128) * 0.5),
+            linear_to_srgb_u8(srgb_u8_to_linear(0) * 0.5),
+            200,
+        ];
+
+        assert_eq!(&encoded[14..18], &expected);
+        assert_eq!(frame.rgba_bytes(), &[255, 128, 0, 200]);
+    }
+
+    #[test]
+    fn canvas_preview_binary_zero_brightness_preserves_alpha() {
+        let mut canvas = Canvas::new(1, 1);
+        canvas.set_pixel(0, 0, Rgba::new(90, 80, 70, 123));
+        let frame = CanvasFrame::from_canvas(&canvas, 5, 44);
+
+        let encoded = encode_canvas_preview_binary(&frame, super::CanvasFormat::Rgba, 0.0);
+
+        assert_eq!(&encoded[14..18], &[0, 0, 0, 123]);
     }
 
     #[test]

@@ -2,8 +2,9 @@
 
 use hypercolor_types::canvas::{
     BYTES_PER_PIXEL, BlendMode, Canvas, ColorFormat, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH,
-    Oklab, Oklch, Rgb, Rgba, RgbaF32, SamplingMethod, linear_srgb_to_oklab, linear_to_srgb,
-    oklab_to_linear_srgb, srgb_to_linear,
+    Oklab, Oklch, PublishedSurface, RenderSurfacePool, Rgb, Rgba, RgbaF32, SamplingMethod,
+    SurfaceDescriptor, SurfaceState, linear_srgb_to_oklab, linear_to_srgb, oklab_to_linear_srgb,
+    srgb_to_linear,
 };
 
 // ── Rgba ───────────────────────────────────────────────────────────────────
@@ -235,6 +236,95 @@ fn canvas_from_vec() {
     let c = Canvas::from_vec(data, 2, 1);
     assert_eq!(c.get_pixel(0, 0), Rgba::new(100, 150, 200, 255));
     assert_eq!(c.get_pixel(1, 0), Rgba::new(50, 25, 75, 128));
+}
+
+#[test]
+fn published_surface_from_owned_canvas_reuses_unique_storage() {
+    let mut canvas = Canvas::new(2, 1);
+    canvas.set_pixel(0, 0, Rgba::new(100, 150, 200, 255));
+    canvas.set_pixel(1, 0, Rgba::new(50, 25, 75, 128));
+    let original_ptr = canvas.as_rgba_bytes().as_ptr();
+
+    let (surface, copied) = PublishedSurface::from_owned_canvas_with_copy_info(canvas, 7, 42);
+
+    assert!(!copied);
+    assert_eq!(surface.frame_number(), 7);
+    assert_eq!(surface.timestamp_ms(), 42);
+    assert_eq!(surface.rgba_bytes().as_ptr(), original_ptr);
+}
+
+#[test]
+fn published_surface_from_owned_canvas_reports_copy_when_shared() {
+    let mut canvas = Canvas::new(2, 1);
+    canvas.set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
+    canvas.set_pixel(1, 0, Rgba::new(40, 50, 60, 255));
+    let shared = canvas.clone();
+
+    let (surface, copied) = PublishedSurface::from_owned_canvas_with_copy_info(canvas, 8, 84);
+
+    assert!(copied);
+    assert_eq!(
+        surface.rgba_bytes()[..8],
+        [10, 20, 30, 255, 40, 50, 60, 255]
+    );
+    assert_eq!(
+        shared.as_rgba_bytes()[..8],
+        [10, 20, 30, 255, 40, 50, 60, 255]
+    );
+}
+
+#[test]
+fn render_surface_pool_uses_three_slots_and_reclaims_released_surface() {
+    let descriptor = SurfaceDescriptor::rgba8888(4, 2);
+    let mut pool = RenderSurfacePool::new(descriptor);
+
+    let mut lease_a = pool.dequeue().expect("first lease");
+    lease_a.canvas_mut().fill(Rgba::new(1, 2, 3, 255));
+    let surface_a = lease_a.submit(1, 10);
+
+    let mut lease_b = pool.dequeue().expect("second lease");
+    lease_b.canvas_mut().fill(Rgba::new(4, 5, 6, 255));
+    let surface_b = lease_b.submit(2, 20);
+
+    let mut lease_c = pool.dequeue().expect("third lease");
+    lease_c.canvas_mut().fill(Rgba::new(7, 8, 9, 255));
+    let surface_c = lease_c.submit(3, 30);
+
+    assert_eq!(
+        pool.slot_states(),
+        vec![
+            SurfaceState::Published,
+            SurfaceState::Published,
+            SurfaceState::Published
+        ]
+    );
+    assert!(pool.dequeue().is_none());
+
+    drop(surface_b);
+
+    let mut lease_d = pool.dequeue().expect("released slot should be reclaimed");
+    lease_d.canvas_mut().fill(Rgba::new(9, 8, 7, 255));
+    let surface_d = lease_d.submit(4, 40);
+
+    assert_eq!(surface_a.generation(), 1);
+    assert_eq!(surface_c.generation(), 1);
+    assert_eq!(surface_d.generation(), 2);
+    assert_eq!(surface_d.frame_number(), 4);
+    assert_eq!(surface_d.timestamp_ms(), 40);
+    assert_eq!(surface_d.rgba_bytes()[..4], [9, 8, 7, 255]);
+}
+
+#[test]
+fn render_surface_lease_release_returns_slot_without_publish() {
+    let descriptor = SurfaceDescriptor::rgba8888(2, 2);
+    let mut pool = RenderSurfacePool::with_slot_count(descriptor, 1);
+
+    let mut lease = pool.dequeue().expect("lease");
+    lease.canvas_mut().fill(Rgba::new(1, 1, 1, 255));
+    lease.release();
+
+    assert_eq!(pool.slot_states(), vec![SurfaceState::Free]);
+    assert!(pool.dequeue().is_some());
 }
 
 #[test]

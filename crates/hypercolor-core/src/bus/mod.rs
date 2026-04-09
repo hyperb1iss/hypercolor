@@ -15,13 +15,12 @@ mod filter;
 pub use filter::{EventFilter, FilteredEventReceiver};
 
 use std::fmt;
-use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use serde::{Serialize, Serializer};
 use tokio::sync::{broadcast, watch};
 
-use crate::types::canvas::Canvas;
+use crate::types::canvas::{Canvas, PublishedSurface};
 use crate::types::event::{FrameData, HypercolorEvent, SpectrumData};
 
 // ── Constants ────────────────────────────────────────────────────────────
@@ -112,31 +111,33 @@ pub struct CanvasFrame {
     pub width: u32,
     /// Canvas height in pixels.
     pub height: u32,
-    rgba: Arc<Vec<u8>>,
+    surface: PublishedSurface,
 }
 
 impl CanvasFrame {
     /// Creates an empty frame payload.
     #[must_use]
     pub fn empty() -> Self {
+        let surface = PublishedSurface::empty();
         Self {
             frame_number: 0,
             timestamp_ms: 0,
             width: 0,
             height: 0,
-            rgba: Arc::new(Vec::new()),
+            surface,
         }
     }
 
     /// Snapshot a canvas for transport.
     #[must_use]
     pub fn from_canvas(canvas: &Canvas, frame_number: u32, timestamp_ms: u32) -> Self {
+        let surface = PublishedSurface::from_canvas(canvas, frame_number, timestamp_ms);
         Self {
             frame_number,
             timestamp_ms,
             width: canvas.width(),
             height: canvas.height(),
-            rgba: Arc::new(canvas.as_rgba_bytes().to_vec()),
+            surface,
         }
     }
 
@@ -153,25 +154,30 @@ impl CanvasFrame {
         frame_number: u32,
         timestamp_ms: u32,
     ) -> (Self, bool) {
-        let width = canvas.width();
-        let height = canvas.height();
-        let (rgba, copied) = canvas.into_rgba_bytes_with_copy_info();
+        let (surface, copied) =
+            PublishedSurface::from_owned_canvas_with_copy_info(canvas, frame_number, timestamp_ms);
         (
             Self {
                 frame_number,
                 timestamp_ms,
-                width,
-                height,
-                rgba: Arc::new(rgba),
+                width: surface.width(),
+                height: surface.height(),
+                surface,
             },
             copied,
         )
     }
 
+    /// Immutable published surface backing this frame.
+    #[must_use]
+    pub const fn surface(&self) -> &PublishedSurface {
+        &self.surface
+    }
+
     /// RGBA canvas bytes in row-major order.
     #[must_use]
     pub fn rgba_bytes(&self) -> &[u8] {
-        self.rgba.as_slice()
+        self.surface.rgba_bytes()
     }
 }
 

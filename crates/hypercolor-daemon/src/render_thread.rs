@@ -30,7 +30,7 @@ use hypercolor_core::engine::{FrameStats, RenderLoop};
 use hypercolor_core::input::{InputData, InputManager, InteractionData, ScreenData};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::audio::AudioData;
-use hypercolor_core::types::canvas::{Canvas, Rgba, linear_to_srgb_u8, srgb_u8_to_linear};
+use hypercolor_core::types::canvas::{Canvas, Rgba};
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::session::OffOutputBehavior;
@@ -437,7 +437,7 @@ async fn execute_frame(
     let input_us = micros_u32(input_start.elapsed());
 
     // ── Stage 2: Effect render → Canvas ─────────────────────────
-    let (mut canvas, render_us) = resolve_frame_canvas(
+    let (canvas, render_us) = resolve_frame_canvas(
         state,
         skip_decision,
         effect_demand.effect_running,
@@ -478,15 +478,9 @@ async fn execute_frame(
         handle_async_write_failures(runtime, async_failures).await;
     }
 
-    let postprocess_start = Instant::now();
-    let preview_copy = apply_preview_brightness(&mut canvas, output_power.effective_brightness());
-    let postprocess_us = micros_u32(postprocess_start.elapsed());
-    let mut full_frame_copy_count = u32::from(preview_copy);
-    let mut full_frame_copy_bytes = if preview_copy {
-        usize_to_u32(canvas.rgba_len())
-    } else {
-        0
-    };
+    let postprocess_us = 0;
+    let mut full_frame_copy_count = 0_u32;
+    let mut full_frame_copy_bytes = 0_u32;
 
     // ── Stage 5: Publish to bus ─────────────────────────────────
     let (frame_number, elapsed_ms, budget_us) = frame_snapshot(state).await;
@@ -906,25 +900,6 @@ fn should_idle_throttle(effect_running: bool, screen_capture_active: bool) -> bo
     true
 }
 
-fn apply_preview_brightness(canvas: &mut Canvas, brightness: f32) -> bool {
-    let brightness = brightness.clamp(0.0, 1.0);
-    if brightness >= 0.999 {
-        return false;
-    }
-    let copied = canvas.is_shared();
-    if brightness <= 0.0 {
-        canvas.clear();
-        return copied;
-    }
-
-    for chunk in canvas.as_rgba_bytes_mut().chunks_exact_mut(4) {
-        chunk[0] = linear_to_srgb_u8(srgb_u8_to_linear(chunk[0]) * brightness);
-        chunk[1] = linear_to_srgb_u8(srgb_u8_to_linear(chunk[1]) * brightness);
-        chunk[2] = linear_to_srgb_u8(srgb_u8_to_linear(chunk[2]) * brightness);
-    }
-    copied
-}
-
 fn panic_payload_message(panic: &(dyn Any + Send + 'static)) -> String {
     if let Some(message) = panic.downcast_ref::<&str>() {
         (*message).to_owned()
@@ -1208,12 +1183,12 @@ mod tests {
 
     use hypercolor_core::engine::FpsTier;
     use hypercolor_core::input::ScreenData;
-    use hypercolor_core::types::canvas::{Canvas, Rgba};
+    use hypercolor_core::types::canvas::Rgba;
     use hypercolor_core::types::event::ZoneColors;
 
     use super::{
-        SkipDecision, advance_deadline, apply_preview_brightness, micros_u32, parse_sector_zone_id,
-        screen_data_to_canvas, should_idle_throttle,
+        SkipDecision, advance_deadline, micros_u32, parse_sector_zone_id, screen_data_to_canvas,
+        should_idle_throttle,
     };
 
     fn frame_stats(
@@ -1333,28 +1308,5 @@ mod tests {
         assert_eq!(canvas.get_pixel(3, 0), Rgba::new(0, 255, 0, 255));
         assert_eq!(canvas.get_pixel(0, 3), Rgba::new(0, 0, 255, 255));
         assert_eq!(canvas.get_pixel(3, 3), Rgba::new(255, 255, 255, 255));
-    }
-
-    #[test]
-    fn preview_brightness_reports_copy_when_canvas_is_shared() {
-        let mut canvas = Canvas::new(1, 1);
-        canvas.set_pixel(0, 0, Rgba::new(255, 128, 0, 255));
-        let shared = canvas.clone();
-
-        let copied = apply_preview_brightness(&mut canvas, 0.5);
-
-        assert!(copied);
-        assert_eq!(shared.get_pixel(0, 0), Rgba::new(255, 128, 0, 255));
-    }
-
-    #[test]
-    fn preview_brightness_skips_copy_reporting_when_brightness_is_identity() {
-        let mut canvas = Canvas::new(1, 1);
-        canvas.set_pixel(0, 0, Rgba::new(255, 128, 0, 255));
-        let _shared = canvas.clone();
-
-        let copied = apply_preview_brightness(&mut canvas, 1.0);
-
-        assert!(!copied);
     }
 }
