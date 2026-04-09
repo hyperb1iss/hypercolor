@@ -315,6 +315,45 @@ fn render_surface_pool_uses_three_slots_and_reclaims_released_surface() {
 }
 
 #[test]
+fn render_surface_pool_can_grow_without_disturbing_published_slots() {
+    let descriptor = SurfaceDescriptor::rgba8888(4, 2);
+    let mut pool = RenderSurfacePool::with_slot_count(descriptor, 2);
+
+    let mut lease_a = pool.dequeue().expect("first lease");
+    lease_a.canvas_mut().fill(Rgba::new(1, 2, 3, 255));
+    let surface_a = lease_a.submit(1, 10);
+
+    let mut lease_b = pool.dequeue().expect("second lease");
+    lease_b.canvas_mut().fill(Rgba::new(4, 5, 6, 255));
+    let surface_b = lease_b.submit(2, 20);
+
+    assert!(pool.dequeue().is_none(), "two-slot pool should be full");
+
+    pool.ensure_slot_count(4);
+
+    assert_eq!(pool.slot_count(), 4);
+    assert_eq!(
+        pool.slot_states(),
+        vec![
+            SurfaceState::Published,
+            SurfaceState::Published,
+            SurfaceState::Free,
+            SurfaceState::Free
+        ]
+    );
+
+    let mut lease_c = pool
+        .dequeue()
+        .expect("grown pool should provide a third slot");
+    lease_c.canvas_mut().fill(Rgba::new(7, 8, 9, 255));
+    let surface_c = lease_c.submit(3, 30);
+
+    assert_eq!(surface_a.generation(), 1);
+    assert_eq!(surface_b.generation(), 1);
+    assert_eq!(surface_c.generation(), 1);
+}
+
+#[test]
 fn render_surface_lease_release_returns_slot_without_publish() {
     let descriptor = SurfaceDescriptor::rgba8888(2, 2);
     let mut pool = RenderSurfacePool::with_slot_count(descriptor, 1);

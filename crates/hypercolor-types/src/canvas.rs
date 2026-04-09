@@ -1012,6 +1012,16 @@ impl RenderSurfacePool {
         self.slots.len()
     }
 
+    /// Ensure the pool has at least the requested number of slots.
+    pub fn ensure_slot_count(&mut self, slot_count: usize) {
+        if slot_count <= self.slots.len() {
+            return;
+        }
+
+        self.slots
+            .extend((self.slots.len()..slot_count).map(|_| SurfaceSlot::new(self.descriptor)));
+    }
+
     /// Current visible state of all pool slots.
     #[must_use]
     pub fn slot_states(&mut self) -> Vec<SurfaceState> {

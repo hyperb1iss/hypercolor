@@ -45,6 +45,7 @@ use crate::session::OutputPowerState;
 const RENDER_RUNTIME_WORKERS: usize = 2;
 const RENDER_RUNTIME_MAX_BLOCKING_THREADS: usize = 4;
 const RENDER_RUNTIME_THREAD_KEEP_ALIVE: Duration = Duration::from_secs(2);
+const MAX_RENDER_SURFACE_SLOTS: usize = 6;
 
 // ── RenderThread ────────────────────────────────────────────────────────────
 
@@ -687,7 +688,25 @@ async fn resolve_frame_canvas(
         *cached_surface = Some(surface.clone());
         (canvas, Some(surface))
     } else {
-        if let Some(mut lease) = render_surface_pool.dequeue() {
+        let lease = match render_surface_pool.dequeue() {
+            lease @ Some(_) => lease,
+            None => {
+                if render_surface_pool.slot_count() < MAX_RENDER_SURFACE_SLOTS {
+                    let previous_slots = render_surface_pool.slot_count();
+                    let expanded_slots = (previous_slots + 1).min(MAX_RENDER_SURFACE_SLOTS);
+                    render_surface_pool.ensure_slot_count(expanded_slots);
+                    debug!(
+                        previous_slots,
+                        expanded_slots,
+                        canvas_receivers = state.event_bus.canvas_receiver_count(),
+                        "expanded render surface pool under retention pressure"
+                    );
+                }
+                render_surface_pool.dequeue()
+            }
+        };
+
+        if let Some(mut lease) = lease {
             {
                 let target = lease.canvas_mut();
                 render_effect_into(
@@ -706,7 +725,11 @@ async fn resolve_frame_canvas(
             *cached_surface = Some(surface.clone());
             (canvas, Some(surface))
         } else {
-            debug!("render surface pool exhausted, falling back to owned canvas publish path");
+            debug!(
+                slot_count = render_surface_pool.slot_count(),
+                canvas_receivers = state.event_bus.canvas_receiver_count(),
+                "render surface pool exhausted, falling back to owned canvas publish path"
+            );
             let mut rendered = cached_canvas
                 .take()
                 .filter(|canvas| {

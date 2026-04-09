@@ -3,7 +3,7 @@
 //! These tests prove that the render thread correctly orchestrates:
 //! Effect render → Spatial sample → Device push → Bus publish.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -940,6 +940,55 @@ async fn pipeline_publishes_slot_backed_canvas_for_active_effects() {
         canvas.surface().generation() > 0,
         "active effect canvas should come from the render surface pool"
     );
+}
+
+#[tokio::test]
+async fn pipeline_keeps_slot_backed_canvas_when_recent_frames_are_retained() {
+    let mut effect_engine = EffectEngine::new();
+    effect_engine
+        .activate(
+            Box::new(MockEffectRenderer::solid(255, 0, 0)),
+            MockEffectRenderer::sample_metadata("retained-slot-backed-canvas"),
+        )
+        .expect("activate");
+
+    let state = make_render_state(
+        effect_engine,
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    let mut canvas_rx = state.event_bus.canvas_receiver();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+    let mut retained_frames = VecDeque::new();
+
+    for _ in 0..6 {
+        tokio::time::timeout(Duration::from_secs(2), canvas_rx.changed())
+            .await
+            .expect("expected retained-frame canvas within 2 seconds")
+            .expect("canvas sender should remain connected");
+
+        let canvas = canvas_rx.borrow().clone();
+        assert!(
+            canvas.surface().generation() > 0,
+            "active effect canvas should stay slot-backed even when recent frames are retained"
+        );
+        retained_frames.push_back(canvas);
+        if retained_frames.len() > 4 {
+            let _ = retained_frames.pop_front();
+        }
+    }
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test]
