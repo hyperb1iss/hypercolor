@@ -863,7 +863,209 @@ the compositor model.
 
 ---
 
-## 11. Evolution Plan
+## 11. Implementation Decisions
+
+This section resolves the key design questions that were still open before
+implementation.
+
+### 11.1 Color Math
+
+Decision:
+
+- `PublishedSurface` remains 8-bit RGBA in sRGB with straight alpha storage
+- SparkleFlinger composition math uses premultiplied linear-light sRGB
+- composed results are converted back to straight-alpha sRGB bytes when stored
+  in CPU-backed published surfaces
+- additive and `screen` blend modes are also evaluated in linear-light space
+
+Why:
+
+- it preserves compatibility with today's `Canvas`, bus, and preview paths
+- it avoids dark or dirty alpha blending caused by gamma-space composition
+- it keeps the storage contract stable while making blend math correct
+
+Non-goal for v1:
+
+- wide-gamut composition
+- HDR or display-P3 output
+- per-layer color-profile management
+
+### 11.2 V1 Output Scope
+
+Decision:
+
+- v1 defaults to a single `sampling_surface`
+- `preview_surface` is opt-in and only created when there is a clear quality
+  reason:
+  - screen/video preview
+  - remote encoded preview above the LED-oriented resolution
+  - explicit local high-quality preview mode
+- if `preview_surface` is not requested, local raw preview aliases
+  `sampling_surface`
+
+Why:
+
+- it keeps the first SparkleFlinger implementation small
+- it avoids turning the compositor into a hidden multi-pass renderer by default
+- it gives us a clean upgrade path for preview without rewriting the model
+
+### 11.3 Preview Rollout Order
+
+Decision:
+
+1. keep raw preview as the authoritative debug and local path
+2. move local preview presentation to worker-owned `OffscreenCanvas`
+3. use WebGL as the first off-main-thread presentation backend
+4. add encoded remote preview after the local raw path is smooth
+5. use WebRTC first for encoded browser delivery
+6. start with H.264 baseline and VP8 fallback
+7. treat WebGPU browser presentation as an optimization, not as phase one
+
+Why:
+
+- it solves the likely current jank source first
+- it avoids betting the whole preview story on WebGPU availability
+- it uses the browser's strongest low-latency video transport before inventing
+  a custom one
+
+### 11.4 Scene Transactions
+
+Decision:
+
+- all scene-affecting changes become `SceneTransaction`s
+- transactions are applied only on the scheduler thread at the frame boundary
+- transaction application is last-writer-wins by field within one frame boundary
+- one monotonically increasing `frame_token` is assigned after transaction
+  application and carried through all downstream stages
+- producers and consumers never observe partially applied scene state
+
+Why:
+
+- it keeps one frame tied to one coherent world state
+- it makes race conditions debuggable
+- it matches the "snapshot then compose" lesson from SurfaceFlinger
+
+### 11.5 Producer Defaults
+
+Decision:
+
+- `NativeEffectProducer`
+  - cadence: `continuous(target_fps)`
+  - stale budget: 2 presentation intervals
+  - retention: allowed
+  - failure policy: freeze last good frame briefly, then surface error and fall
+    back according to scene policy
+- `ServoEffectProducer`
+  - cadence: `bursty`
+  - stale budget: 250 ms
+  - retention: allowed
+  - failure policy: freeze last good frame and surface an error state; do not
+    hard-hide immediately
+- `ScreenCaptureProducer`
+  - cadence: `external_continuous`
+  - stale budget: 100 ms or 2 capture intervals, whichever is larger
+  - retention: allowed while the source is still configured
+  - failure policy: hide or replace with fallback surface if capture is lost
+- `StaticSurfaceProducer`
+  - cadence: `static`
+  - stale budget: none
+  - retention: infinite until replaced
+  - failure policy: not applicable
+
+Why:
+
+- native effects are expected to track the presentation clock closely
+- Servo needs more tolerance because it is still a CPU-readback producer
+- screen capture can jitter externally without being considered broken
+- static sources should not trigger stale alarms at all
+
+### 11.6 Admission Policy
+
+Decision:
+
+- LED delivery owns the admission decision
+- preview may consume headroom, but not LED deadline margin
+- preview degrades before the compositor drops the LED path to a lower tier
+- 60 FPS is admitted only when recent critical-path metrics show enough margin:
+  - p95 critical-path frame time comfortably below budget
+  - p99 within budget
+  - wake-delay and jitter within a small bounded window
+- 60 FPS is revoked quickly on repeated misses and re-admitted conservatively
+
+Operational rule:
+
+- critical path means:
+  - scene snapshot
+  - latch and compose
+  - spatial sampling
+  - backend routing and enqueue
+
+Why:
+
+- the product is a lighting engine first
+- preview smoothness matters, but must not destabilize actual hardware output
+
+### 11.7 Browser Policy
+
+Decision:
+
+- baseline client support:
+  - WebSocket
+  - raw preview
+  - canvas or WebGL presentation
+- optimized local preview target:
+  - Chromium-class browsers first
+  - worker `OffscreenCanvas`
+  - worker `requestAnimationFrame`
+  - WebGL presentation
+- encoded preview target:
+  - browsers with solid WebRTC support
+  - H.264 and VP8 interop first
+- WebGPU is optional and Chromium-first until support is broader and measured
+
+Why:
+
+- it gives us one strong fast path instead of a mediocre "supports everything"
+  path
+- it preserves a baseline fallback for Firefox and Safari-class clients
+- it avoids making WebGPU availability the gating factor for a smooth preview
+
+### 11.8 GPU Scope
+
+Decision:
+
+- the first GPU work is in-process only
+- no cross-process DMA-BUF or fence choreography in v1
+- no GPU LED sampling in v1
+- no requirement to move Servo to GPU-resident output before SparkleFlinger
+- if a daemon GPU backend is built early, it should prioritize interop with the
+  practical producer set over theoretical purity
+- browser-side WebGPU and daemon-side GPU composition are separate decisions
+
+Why:
+
+- the current system still has a CPU-only producer in Servo
+- preview and composition acceleration are where GPU is most likely to pay off
+- DMA-BUF and fence-sync complexity is not justified until the simpler path is
+  benchmarked
+
+### 11.9 Research Basis
+
+These decisions are informed by:
+
+- SurfaceFlinger's immutable front-end snapshot model and frame timing pipeline
+- current browser support for worker `requestAnimationFrame`,
+  `OffscreenCanvas`, WebRTC codec baselines, WebCodecs worker use, and WebGPU's
+  still-limited availability
+- Hypercolor's current codebase shape:
+  - explicit shared surfaces
+  - CPU-first renderers
+  - raw WebSocket preview
+  - browser-side present/upload work
+
+---
+
+## 12. Evolution Plan
 
 ### Wave 1 — Split Scheduling from Source Selection
 
@@ -1015,9 +1217,9 @@ Verify:
 
 ---
 
-## 12. Risks
+## 13. Risks
 
-### 12.1 Over-Architecting for Future GPU Work
+### 13.1 Over-Architecting for Future GPU Work
 
 The biggest trap is building a compositor so abstract that the CPU path gets
 slower or harder to reason about.
@@ -1028,7 +1230,7 @@ Mitigation:
 - keep the surface contract small
 - only add GPU-specific complexity behind the same contract
 
-### 12.2 Producer Explosion
+### 13.2 Producer Explosion
 
 If every feature becomes its own producer too early, scheduling and debugging
 will get noisy fast.
@@ -1039,7 +1241,7 @@ Mitigation:
 - use render groups as the first real multi-producer feature
 - avoid arbitrary scene-graph flexibility before product needs it
 
-### 12.3 Lying About 60 FPS
+### 13.3 Lying About 60 FPS
 
 Advertising 60 FPS without workload qualification would be a product mistake.
 
@@ -1049,7 +1251,7 @@ Mitigation:
 - publish actual reuse and miss metrics
 - benchmark representative scenes, not toy microbenches only
 
-### 12.4 Solving the Wrong Preview Problem
+### 13.4 Solving the Wrong Preview Problem
 
 The preview path can fail in multiple ways:
 
@@ -1065,7 +1267,7 @@ Mitigation:
 - benchmark browser presentation separately from daemon composition
 - do not assume WebGPU or encoding automatically fixes jank
 
-### 12.5 Scene Snapshot Drift
+### 13.5 Scene Snapshot Drift
 
 If scene-affecting state is not frozen atomically per frame, producers and
 consumers will observe different worlds and debugging will become miserable.
@@ -1076,7 +1278,7 @@ Mitigation:
 - make `FrameSceneSnapshot` immutable
 - tie all downstream work to one `frame_token`
 
-### 12.6 Multi-Output Overreach
+### 13.6 Multi-Output Overreach
 
 Adding multiple output surfaces can turn a clean compositor into a hidden
 re-render machine.
@@ -1090,7 +1292,7 @@ Mitigation:
 
 ---
 
-## 13. Recommendation
+## 14. Recommendation
 
 Build `SparkleFlinger` as a CPU-first compositor that sits between producers
 and spatial sampling, and treat optional 60 FPS as an admitted presentation
