@@ -626,6 +626,46 @@ fn make_zone(id: &str, device_id: &str, led_count: u32) -> DeviceZone {
     }
 }
 
+fn make_multi_zone_device_info(
+    device_id: DeviceId,
+    left_led_count: u32,
+    right_led_count: u32,
+) -> DeviceInfo {
+    DeviceInfo {
+        id: device_id,
+        name: "Dygma Defy".to_owned(),
+        vendor: "Dygma".to_owned(),
+        family: DeviceFamily::Dygma,
+        model: Some("defy_wired".to_owned()),
+        connection_type: ConnectionType::Usb,
+        zones: vec![
+            ZoneInfo {
+                name: "Left Keys".to_owned(),
+                led_count: left_led_count,
+                topology: DeviceTopologyHint::Custom,
+                color_format: DeviceColorFormat::Rgb,
+            },
+            ZoneInfo {
+                name: "Right Keys".to_owned(),
+                led_count: right_led_count,
+                topology: DeviceTopologyHint::Custom,
+                color_format: DeviceColorFormat::Rgb,
+            },
+        ],
+        firmware_version: None,
+        capabilities: DeviceCapabilities {
+            led_count: left_led_count + right_led_count,
+            supports_direct: true,
+            supports_brightness: true,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 10,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    }
+}
+
 const LED_PERCEPTUAL_COMPENSATION_STRENGTH: f32 = 0.22;
 const LED_NEUTRAL_COMPENSATION_WEIGHT: f32 = 0.25;
 const LED_HEADROOM_WEIGHT_FLOOR: f32 = 0.1;
@@ -1445,6 +1485,121 @@ async fn write_frame_empty_layout_produces_no_writes() {
     assert_eq!(stats.devices_written, 0);
     assert_eq!(stats.total_leds, 0);
     assert!(stats.errors.is_empty());
+}
+
+#[tokio::test]
+async fn write_frame_reuses_compiled_routing_plan_for_stable_layout() {
+    let device_id = DeviceId::new();
+    let mock_config = MockDeviceConfig {
+        name: "Cached Strip".into(),
+        led_count: 5,
+        topology: LedTopology::Strip {
+            count: 5,
+            direction: hypercolor_types::spatial::StripDirection::LeftToRight,
+        },
+        id: Some(device_id),
+    };
+
+    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    backend.connect(&device_id).await.expect("connect");
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device("mock:cached-strip", "mock", device_id);
+
+    let layout = make_layout(vec![make_zone("zone_0", "mock:cached-strip", 5)]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[255, 0, 0]; 5],
+    }];
+
+    manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(manager.routing_plan_rebuild_count(), 1);
+
+    manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(manager.routing_plan_rebuild_count(), 1);
+}
+
+#[tokio::test]
+async fn write_frame_rebuilds_routing_plan_when_layout_changes() {
+    let device_id = DeviceId::new();
+    let mock_config = MockDeviceConfig {
+        name: "Cached Strip".into(),
+        led_count: 5,
+        topology: LedTopology::Strip {
+            count: 5,
+            direction: hypercolor_types::spatial::StripDirection::LeftToRight,
+        },
+        id: Some(device_id),
+    };
+
+    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    backend.connect(&device_id).await.expect("connect");
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device("mock:cached-strip", "mock", device_id);
+
+    let layout = make_layout(vec![make_zone("zone_0", "mock:cached-strip", 5)]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[255, 0, 0]; 5],
+    }];
+
+    manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(manager.routing_plan_rebuild_count(), 1);
+
+    let mut remapped_zone = make_zone("zone_0", "mock:cached-strip", 5);
+    remapped_zone.led_mapping = Some(vec![4, 3, 2, 1, 0]);
+    let remapped_layout = make_layout(vec![remapped_zone]);
+
+    manager.write_frame(&zone_colors, &remapped_layout).await;
+    assert_eq!(manager.routing_plan_rebuild_count(), 2);
+}
+
+#[tokio::test]
+async fn write_frame_rebuilds_routing_plan_when_zone_segments_change() {
+    let device_id = DeviceId::new();
+    let mock_config = MockDeviceConfig {
+        name: "Segmented Device".into(),
+        led_count: 6,
+        topology: LedTopology::Strip {
+            count: 6,
+            direction: hypercolor_types::spatial::StripDirection::LeftToRight,
+        },
+        id: Some(device_id),
+    };
+
+    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    backend.connect(&device_id).await.expect("connect");
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device("usb:dygma-defy", "mock", device_id);
+
+    let mut zone = make_zone("zone_right_keys", "usb:dygma-defy", 4);
+    zone.zone_name = Some("Right Keys".to_owned());
+    let layout = make_layout(vec![zone]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_right_keys".into(),
+        colors: vec![[0, 0, 255]; 4],
+    }];
+
+    assert!(manager.set_device_zone_segments(
+        "usb:dygma-defy",
+        &make_multi_zone_device_info(device_id, 2, 4)
+    ));
+
+    manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(manager.routing_plan_rebuild_count(), 1);
+
+    assert!(manager.set_device_zone_segments(
+        "usb:dygma-defy",
+        &make_multi_zone_device_info(device_id, 1, 5)
+    ));
+
+    manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(manager.routing_plan_rebuild_count(), 2);
 }
 
 #[test]

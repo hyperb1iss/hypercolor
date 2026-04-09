@@ -7,7 +7,9 @@
 //! device for asynchronous transmission.
 
 use std::borrow::Cow;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -26,12 +28,6 @@ use super::traits::DeviceBackend;
 
 type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
 type BackendDeviceKey = (String, DeviceId);
-type ZoneRoute<'a> = (
-    &'a str,
-    Option<&'a str>,
-    Option<&'a [u32]>,
-    Option<&'a ZoneAttachment>,
-);
 const UNMAPPED_LAYOUT_WARN_INTERVAL: Duration = Duration::from_secs(5);
 const LED_PERCEPTUAL_COMPENSATION_STRENGTH: f32 = 0.22;
 const LED_NEUTRAL_COMPENSATION_WEIGHT: f32 = 0.25;
@@ -579,6 +575,15 @@ pub struct BackendManager {
 
     /// Connected devices already reported as unused by the active layout.
     warned_inactive_layout_devices: HashSet<BackendDeviceKey>,
+
+    /// Incremented whenever routing-relevant device mappings change.
+    routing_mapping_generation: u64,
+
+    /// Number of times the cached routing plan has been rebuilt.
+    routing_plan_rebuild_count: u64,
+
+    /// Cached routing metadata for the current layout + mapping generation.
+    routing_plan: Option<Arc<RoutingPlan>>,
 }
 
 /// Internal mapping from a layout device identifier to a backend + device.
@@ -588,6 +593,33 @@ struct DeviceMapping {
     device_id: DeviceId,
     segment: Option<SegmentRange>,
     zone_segments: HashMap<String, SegmentRange>,
+    physical_led_count: Option<usize>,
+}
+
+#[derive(Debug)]
+struct RoutingPlan {
+    layout_signature: u64,
+    mapping_generation: u64,
+    active_layout_device_ids: HashSet<String>,
+    zone_routes: HashMap<String, PlannedZoneRoute>,
+    inactive_devices: Vec<BackendDeviceKey>,
+    mapped_layout_ids_by_device: HashMap<BackendDeviceKey, Vec<String>>,
+}
+
+#[derive(Debug)]
+enum PlannedZoneRoute {
+    Mapped(CompiledZoneRoute),
+    Unmapped { layout_device_id: String },
+}
+
+#[derive(Debug)]
+struct CompiledZoneRoute {
+    layout_device_id: String,
+    backend_id: String,
+    device_id: DeviceId,
+    led_mapping: Option<Box<[u32]>>,
+    segment: Option<SegmentRange>,
+    attachment: Option<ZoneAttachment>,
     physical_led_count: Option<usize>,
 }
 
@@ -611,6 +643,11 @@ impl BackendManager {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn invalidate_routing_plan(&mut self) {
+        self.routing_mapping_generation = self.routing_mapping_generation.saturating_add(1);
+        self.routing_plan = None;
     }
 
     /// Register a device backend. Uses `backend.info().id` as the key.
@@ -698,6 +735,7 @@ impl BackendManager {
                 physical_led_count: None,
             },
         );
+        self.invalidate_routing_plan();
     }
 
     /// Attach hardware zone segment metadata to an existing layout-device mapping.
@@ -710,12 +748,15 @@ impl BackendManager {
         layout_device_id: &str,
         device_info: &DeviceInfo,
     ) -> bool {
-        let Some(mapping) = self.device_map.get_mut(layout_device_id) else {
-            return false;
-        };
+        {
+            let Some(mapping) = self.device_map.get_mut(layout_device_id) else {
+                return false;
+            };
 
-        mapping.zone_segments = zone_segments_from_device_info(device_info);
-        mapping.physical_led_count = device_output_len(device_info);
+            mapping.zone_segments = zone_segments_from_device_info(device_info);
+            mapping.physical_led_count = device_output_len(device_info);
+        }
+        self.invalidate_routing_plan();
         true
     }
 
@@ -958,6 +999,7 @@ impl BackendManager {
             self.warned_inactive_layout_devices.remove(&key);
         }
 
+        self.invalidate_routing_plan();
         true
     }
 
@@ -985,7 +1027,16 @@ impl BackendManager {
             self.warned_inactive_layout_devices.remove(&key);
         }
 
+        if removed > 0 {
+            self.invalidate_routing_plan();
+        }
         removed
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn routing_plan_rebuild_count(&self) -> u64 {
+        self.routing_plan_rebuild_count
     }
 
     /// List registered backend IDs.
@@ -1043,6 +1094,102 @@ impl BackendManager {
         inactive
     }
 
+    fn routing_plan(&mut self, layout: &SpatialLayout) -> Arc<RoutingPlan> {
+        let layout_signature = layout_routing_signature(layout);
+        let needs_rebuild = self.routing_plan.as_ref().is_none_or(|plan| {
+            plan.layout_signature != layout_signature
+                || plan.mapping_generation != self.routing_mapping_generation
+        });
+
+        if needs_rebuild {
+            let plan = Arc::new(self.compile_routing_plan(layout, layout_signature));
+            self.routing_plan = Some(Arc::clone(&plan));
+            self.routing_plan_rebuild_count = self.routing_plan_rebuild_count.saturating_add(1);
+            return plan;
+        }
+
+        Arc::clone(
+            self.routing_plan
+                .as_ref()
+                .expect("routing plan should exist when cache is valid"),
+        )
+    }
+
+    fn compile_routing_plan(&self, layout: &SpatialLayout, layout_signature: u64) -> RoutingPlan {
+        let mut active_layout_device_ids = HashSet::with_capacity(layout.zones.len());
+        let mut zone_routes = HashMap::with_capacity(layout.zones.len());
+
+        for zone in &layout.zones {
+            active_layout_device_ids.insert(zone.device_id.clone());
+
+            let route = if let Some(mapping) = self.device_map.get(zone.device_id.as_str()) {
+                PlannedZoneRoute::Mapped(CompiledZoneRoute {
+                    layout_device_id: zone.device_id.clone(),
+                    backend_id: mapping.backend_id.clone(),
+                    device_id: mapping.device_id,
+                    led_mapping: zone.led_mapping.clone().map(Vec::into_boxed_slice),
+                    segment: mapped_segment_for_zone_name(
+                        &zone.id,
+                        zone.zone_name.as_deref(),
+                        mapping,
+                    ),
+                    attachment: zone.attachment.clone(),
+                    physical_led_count: mapping.physical_led_count,
+                })
+            } else {
+                PlannedZoneRoute::Unmapped {
+                    layout_device_id: zone.device_id.clone(),
+                }
+            };
+
+            zone_routes.insert(zone.id.clone(), route);
+        }
+
+        let targeted = active_layout_device_ids
+            .iter()
+            .filter_map(|layout_device_id| {
+                self.device_map
+                    .get(layout_device_id.as_str())
+                    .map(|mapping| (mapping.backend_id.clone(), mapping.device_id))
+            })
+            .collect::<HashSet<_>>();
+
+        let mut inactive_devices = self
+            .device_map
+            .values()
+            .map(|mapping| (mapping.backend_id.clone(), mapping.device_id))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .filter(|key| !targeted.contains(key))
+            .collect::<Vec<_>>();
+        inactive_devices.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.to_string().cmp(&right.1.to_string()))
+        });
+
+        let mut mapped_layout_ids_by_device: HashMap<BackendDeviceKey, Vec<String>> =
+            HashMap::new();
+        for (layout_device_id, mapping) in &self.device_map {
+            mapped_layout_ids_by_device
+                .entry((mapping.backend_id.clone(), mapping.device_id))
+                .or_default()
+                .push(layout_device_id.clone());
+        }
+        for ids in mapped_layout_ids_by_device.values_mut() {
+            ids.sort_unstable();
+        }
+
+        RoutingPlan {
+            layout_signature,
+            mapping_generation: self.routing_mapping_generation,
+            active_layout_device_ids,
+            zone_routes,
+            inactive_devices,
+            mapped_layout_ids_by_device,
+        }
+    }
+
     /// Push frame color data to all mapped devices.
     ///
     /// For each zone in `zone_colors`, looks up the target device via the
@@ -1078,46 +1225,23 @@ impl BackendManager {
         global_brightness: f32,
         device_brightness: Option<&HashMap<DeviceId, f32>>,
     ) -> FrameWriteStats {
-        let active_layout_device_ids = layout
-            .zones
-            .iter()
-            .map(|zone| zone.device_id.as_str())
-            .collect::<HashSet<_>>();
+        let plan = self.routing_plan(layout);
         self.warned_unmapped_layout_devices
-            .retain(|layout_device_id| {
-                active_layout_device_ids.contains(layout_device_id.as_str())
-            });
+            .retain(|layout_device_id| plan.active_layout_device_ids.contains(layout_device_id));
 
         let mut stats = FrameWriteStats::default();
 
-        // Build zone_id → routing metadata lookup from the spatial layout.
-        let zone_routes: HashMap<&str, ZoneRoute<'_>> = layout
-            .zones
+        let inactive_keys = plan
+            .inactive_devices
             .iter()
-            .map(|zone| {
-                (
-                    zone.id.as_str(),
-                    (
-                        zone.device_id.as_str(),
-                        zone.zone_name.as_deref(),
-                        zone.led_mapping.as_deref(),
-                        zone.attachment.as_ref(),
-                    ),
-                )
-            })
-            .collect();
-
-        let inactive_devices = self.connected_devices_without_layout_targets(layout);
-        let inactive_keys = inactive_devices.iter().cloned().collect::<HashSet<_>>();
-        let mut newly_inactive = inactive_devices
-            .into_iter()
-            .filter(|key| !self.warned_inactive_layout_devices.contains(key))
+            .cloned()
+            .collect::<HashSet<_>>();
+        let newly_inactive = plan
+            .inactive_devices
+            .iter()
+            .filter(|key| !self.warned_inactive_layout_devices.contains(*key))
+            .cloned()
             .collect::<Vec<_>>();
-        newly_inactive.sort_by(|left, right| {
-            left.0
-                .cmp(&right.0)
-                .then_with(|| left.1.to_string().cmp(&right.1.to_string()))
-        });
 
         if !newly_inactive.is_empty() {
             let devices = newly_inactive
@@ -1127,15 +1251,11 @@ impl BackendManager {
             let mapped_layout_ids_by_device = newly_inactive
                 .iter()
                 .map(|(backend_id, device_id)| {
-                    let mut aliases = self
-                        .device_map
-                        .iter()
-                        .filter(|(_, mapping)| {
-                            mapping.backend_id == *backend_id && mapping.device_id == *device_id
-                        })
-                        .map(|(layout_device_id, _)| layout_device_id.clone())
-                        .collect::<Vec<_>>();
-                    aliases.sort_unstable();
+                    let aliases = plan
+                        .mapped_layout_ids_by_device
+                        .get(&(backend_id.clone(), *device_id))
+                        .cloned()
+                        .unwrap_or_default();
                     format!("{backend_id}:{device_id} => [{}]", aliases.join(", "))
                 })
                 .collect::<Vec<_>>();
@@ -1162,18 +1282,18 @@ impl BackendManager {
         let mut device_colors: HashMap<(String, DeviceId), AccumulatedColors> = HashMap::new();
 
         for zc in zone_colors {
-            let Some((layout_device_id, zone_name, led_mapping, attachment)) =
-                zone_routes.get(zc.zone_id.as_str()).copied()
-            else {
+            let Some(route) = plan.zone_routes.get(zc.zone_id.as_str()) else {
                 warn!(zone_id = %zc.zone_id, "zone not found in spatial layout");
                 continue;
             };
-            let remapped_colors = remap_zone_colors(&zc.zone_id, &zc.colors, led_mapping);
 
-            let Some(mapping) = self.device_map.get(layout_device_id) else {
+            let PlannedZoneRoute::Mapped(route) = route else {
+                let PlannedZoneRoute::Unmapped { layout_device_id } = route else {
+                    unreachable!("only mapped or unmapped zone routes are compiled");
+                };
                 if self
                     .warned_unmapped_layout_devices
-                    .insert(layout_device_id.to_owned())
+                    .insert(layout_device_id.clone())
                 {
                     warn!(
                         zone_id = %zc.zone_id,
@@ -1184,18 +1304,22 @@ impl BackendManager {
                 continue;
             };
 
-            self.warned_unmapped_layout_devices.remove(layout_device_id);
+            let remapped_colors =
+                remap_zone_colors(&zc.zone_id, &zc.colors, route.led_mapping.as_deref());
 
-            let key = (mapping.backend_id.clone(), mapping.device_id);
+            self.warned_unmapped_layout_devices
+                .remove(route.layout_device_id.as_str());
+
+            let key = (route.backend_id.clone(), route.device_id);
             let entry = device_colors.entry(key).or_default();
             entry.required_len = entry
                 .required_len
-                .max(mapping.physical_led_count.unwrap_or_default());
+                .max(route.physical_led_count.unwrap_or_default());
 
             let segment = attachment_segment_for_zone(
                 &zc.zone_id,
-                mapped_segment_for_zone_name(&zc.zone_id, zone_name, mapping),
-                attachment,
+                route.segment,
+                route.attachment.as_ref(),
                 remapped_colors.len(),
             );
 
@@ -1214,7 +1338,7 @@ impl BackendManager {
                 }
 
                 if copy_len != segment.length {
-                    let warn_key = format!("{layout_device_id}:{}", zc.zone_id);
+                    let warn_key = format!("{}:{}", route.layout_device_id, zc.zone_id);
                     let should_warn = self
                         .last_segment_mismatch_warn_at
                         .get(&warn_key)
@@ -1225,7 +1349,7 @@ impl BackendManager {
                     if should_warn {
                         warn!(
                             zone_id = %zc.zone_id,
-                            layout_device_id = %layout_device_id,
+                            layout_device_id = %route.layout_device_id,
                             segment_start = segment.start,
                             expected = segment.length,
                             received = remapped_colors.len(),
@@ -1699,6 +1823,37 @@ fn mapped_segment_for_zone_name(
         "ignoring hardware zone segment because it does not overlap the mapped logical segment"
     );
     Some(base_segment)
+}
+
+fn layout_routing_signature(layout: &SpatialLayout) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    layout.id.hash(&mut hasher);
+    layout.zones.len().hash(&mut hasher);
+
+    for zone in &layout.zones {
+        zone.id.hash(&mut hasher);
+        zone.device_id.hash(&mut hasher);
+        zone.zone_name.hash(&mut hasher);
+        zone.led_mapping.hash(&mut hasher);
+        hash_attachment(zone.attachment.as_ref(), &mut hasher);
+    }
+
+    hasher.finish()
+}
+
+fn hash_attachment(attachment: Option<&ZoneAttachment>, hasher: &mut DefaultHasher) {
+    let Some(attachment) = attachment else {
+        0_u8.hash(hasher);
+        return;
+    };
+
+    1_u8.hash(hasher);
+    attachment.template_id.hash(hasher);
+    attachment.slot_id.hash(hasher);
+    attachment.instance.hash(hasher);
+    attachment.led_start.hash(hasher);
+    attachment.led_count.hash(hasher);
+    attachment.led_mapping.hash(hasher);
 }
 
 fn attachment_segment_for_zone(

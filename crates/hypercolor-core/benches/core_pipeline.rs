@@ -3,8 +3,10 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use anyhow::Result;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use hypercolor_core::bus::CanvasFrame;
+use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend};
 use hypercolor_core::effect::builtin::{ColorWaveRenderer, GradientRenderer, SolidColorRenderer};
 use hypercolor_core::effect::{EffectRenderer, FrameInput};
 use hypercolor_core::input::InteractionData;
@@ -13,11 +15,14 @@ use hypercolor_core::input::audio::fft::FftPipeline;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, Rgba};
+use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
+use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
     Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
 };
+use tokio::runtime::Runtime;
 use uuid::Uuid;
 
 const CANVAS_WIDTH: u32 = 320;
@@ -27,6 +32,35 @@ const SAMPLE_RATE_HZ: u32 = 48_000;
 
 static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
 static DEFAULT_INTERACTION: LazyLock<InteractionData> = LazyLock::new(InteractionData::default);
+
+struct NullBenchBackend;
+
+#[async_trait::async_trait]
+impl DeviceBackend for NullBenchBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "bench".to_owned(),
+            name: "Null Bench Backend".to_owned(),
+            description: "Discards frame writes during routing benchmarks".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<hypercolor_types::device::DeviceInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        Ok(())
+    }
+}
 
 fn benchmark_config() -> Criterion {
     Criterion::default()
@@ -132,6 +166,37 @@ fn layout_with_zone(zone: DeviceZone) -> SpatialLayout {
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
         version: 1,
+    }
+}
+
+fn bench_routing_zone(
+    id: &str,
+    device_id: &str,
+    led_count: u32,
+    led_mapping: Option<Vec<u32>>,
+) -> DeviceZone {
+    DeviceZone {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        device_id: device_id.to_owned(),
+        zone_name: None,
+        position: NormalizedPosition::new(0.5, 0.5),
+        size: NormalizedPosition::new(1.0, 1.0),
+        rotation: 0.0,
+        scale: 1.0,
+        orientation: None,
+        topology: LedTopology::Strip {
+            count: led_count,
+            direction: StripDirection::LeftToRight,
+        },
+        led_positions: Vec::new(),
+        led_mapping,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        display_order: 0,
+        attachment: None,
     }
 }
 
@@ -448,9 +513,73 @@ fn bench_canvas_handoff(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_backend_routing(c: &mut Criterion) {
+    let mut group = c.benchmark_group("core_backend_routing");
+    group.throughput(Throughput::Elements(120));
+
+    let runtime = Runtime::new().expect("benchmark runtime should initialize");
+
+    let cached_device_id = DeviceId::new();
+    let mut cached_manager = BackendManager::new();
+    cached_manager.register_backend(Box::new(NullBenchBackend));
+    cached_manager.map_device("bench:cached-strip", "bench", cached_device_id);
+    let cached_layout = layout_with_zone(bench_routing_zone(
+        "zone_0",
+        "bench:cached-strip",
+        120,
+        None,
+    ));
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_0".to_owned(),
+        colors: vec![[255, 0, 0]; 120],
+    }];
+    let _ = runtime.block_on(cached_manager.write_frame(&zone_colors, &cached_layout));
+
+    group.bench_function("write_frame_cached_layout", |b| {
+        b.iter(|| {
+            let stats = runtime.block_on(
+                cached_manager.write_frame(black_box(&zone_colors), black_box(&cached_layout)),
+            );
+            black_box(stats.devices_written);
+            black_box(cached_manager.routing_plan_rebuild_count());
+        });
+    });
+
+    let churn_device_id = DeviceId::new();
+    let mut churn_manager = BackendManager::new();
+    churn_manager.register_backend(Box::new(NullBenchBackend));
+    churn_manager.map_device("bench:churn-strip", "bench", churn_device_id);
+    let base_layout =
+        layout_with_zone(bench_routing_zone("zone_0", "bench:churn-strip", 120, None));
+    let remapped_layout = layout_with_zone(bench_routing_zone(
+        "zone_0",
+        "bench:churn-strip",
+        120,
+        Some((0_u32..120_u32).rev().collect()),
+    ));
+    let mut use_remapped_layout = false;
+
+    group.bench_function("write_frame_layout_churn", |b| {
+        b.iter(|| {
+            let layout = if use_remapped_layout {
+                &remapped_layout
+            } else {
+                &base_layout
+            };
+            use_remapped_layout = !use_remapped_layout;
+            let stats = runtime
+                .block_on(churn_manager.write_frame(black_box(&zone_colors), black_box(layout)));
+            black_box(stats.devices_written);
+            black_box(churn_manager.routing_plan_rebuild_count());
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = benchmark_config();
-    targets = bench_builtin_renderers, bench_spatial_sampling, bench_audio_pipeline, bench_canvas_handoff
+    targets = bench_builtin_renderers, bench_spatial_sampling, bench_audio_pipeline, bench_canvas_handoff, bench_backend_routing
 }
 criterion_main!(benches);
