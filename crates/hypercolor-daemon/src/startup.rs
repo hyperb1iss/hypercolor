@@ -675,6 +675,7 @@ impl DaemonState {
             discovery_runtime: Some(self.discovery_runtime()),
             event_bus: Arc::clone(&self.event_bus),
             render_loop: Arc::clone(&self.render_loop),
+            scene_manager: Arc::clone(&self.scene_manager),
             input_manager: Arc::clone(&self.input_manager),
             power_state: self.power_state.subscribe(),
             device_settings: Arc::clone(&self.device_settings),

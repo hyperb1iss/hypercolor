@@ -61,6 +61,14 @@ impl CompositionLayer {
         }
     }
 
+    pub(crate) fn from_parts(frame: ProducerFrame, mode: CompositionMode, opacity: f32) -> Self {
+        Self {
+            frame,
+            mode,
+            opacity,
+        }
+    }
+
     #[allow(
         dead_code,
         reason = "Wave 3 proves blend math in unit tests before live multi-layer plans arrive"

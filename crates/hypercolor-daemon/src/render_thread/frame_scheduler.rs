@@ -1,8 +1,23 @@
 use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_types::scene::SceneId;
 
 use crate::session::OutputPowerState;
 
 use super::EffectDemand;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct SceneTransitionSnapshot {
+    pub from_scene: Option<SceneId>,
+    pub to_scene: Option<SceneId>,
+    pub progress: f32,
+    pub eased_progress: f32,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SceneRuntimeSnapshot {
+    pub active_scene_id: Option<SceneId>,
+    pub active_transition: Option<SceneTransitionSnapshot>,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct FrameSceneSnapshot {
@@ -12,6 +27,7 @@ pub(crate) struct FrameSceneSnapshot {
     pub output_power: OutputPowerState,
     pub effect_demand: EffectDemand,
     pub effect_generation: u64,
+    pub scene_runtime: SceneRuntimeSnapshot,
     pub spatial_engine: SpatialEngine,
 }
 
@@ -22,6 +38,7 @@ pub(crate) struct FrameSceneSnapshotInputs {
     pub output_power: OutputPowerState,
     pub effect_demand: EffectDemand,
     pub effect_generation: u64,
+    pub scene_runtime: SceneRuntimeSnapshot,
     pub spatial_engine: SpatialEngine,
 }
 
@@ -41,6 +58,7 @@ impl FrameScheduler {
             output_power: inputs.output_power,
             effect_demand: inputs.effect_demand,
             effect_generation: inputs.effect_generation,
+            scene_runtime: inputs.scene_runtime,
             spatial_engine: inputs.spatial_engine,
         }
     }
@@ -53,7 +71,10 @@ mod tests {
 
     use crate::session::OutputPowerState;
 
-    use super::{EffectDemand, FrameSceneSnapshotInputs, FrameScheduler};
+    use super::{
+        EffectDemand, FrameSceneSnapshotInputs, FrameScheduler, SceneRuntimeSnapshot,
+        SceneTransitionSnapshot,
+    };
 
     fn empty_spatial_engine() -> SpatialEngine {
         SpatialEngine::new(SpatialLayout {
@@ -85,6 +106,15 @@ mod tests {
                 screen_capture_active: true,
             },
             effect_generation: 7,
+            scene_runtime: SceneRuntimeSnapshot {
+                active_scene_id: None,
+                active_transition: Some(SceneTransitionSnapshot {
+                    from_scene: None,
+                    to_scene: None,
+                    progress: 0.25,
+                    eased_progress: 0.5,
+                }),
+            },
             spatial_engine: empty_spatial_engine(),
         });
 
@@ -94,6 +124,7 @@ mod tests {
         assert_eq!(snapshot.effect_generation, 7);
         assert!(snapshot.effect_demand.effect_running);
         assert!(snapshot.effect_demand.screen_capture_active);
+        assert!(snapshot.scene_runtime.active_transition.is_some());
         assert_eq!(snapshot.spatial_engine.layout().canvas_width, 320);
     }
 }

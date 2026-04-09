@@ -15,6 +15,7 @@
 //! }
 //! ```
 
+mod composition_planner;
 mod frame_scheduler;
 mod producer_queue;
 mod scene_state;
@@ -34,6 +35,7 @@ use hypercolor_core::device::BackendManager;
 use hypercolor_core::effect::EffectEngine;
 use hypercolor_core::engine::{FrameStats, RenderLoop};
 use hypercolor_core::input::{InputData, InputManager, InteractionData, ScreenData};
+use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{
@@ -43,10 +45,14 @@ use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, Spe
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::session::OffOutputBehavior;
 
-use self::frame_scheduler::{FrameSceneSnapshot, FrameSceneSnapshotInputs, FrameScheduler};
+use self::composition_planner::{CompositionPlanner, PlannedSceneLayer};
+use self::frame_scheduler::{
+    FrameSceneSnapshot, FrameSceneSnapshotInputs, FrameScheduler, SceneRuntimeSnapshot,
+    SceneTransitionSnapshot,
+};
 use self::producer_queue::{ProducerFrame, ProducerFrameState, ProducerQueue};
 use self::scene_state::RenderSceneState;
-use self::sparkleflinger::{ComposedFrameSet, CompositionLayer, CompositionPlan, SparkleFlinger};
+use self::sparkleflinger::{ComposedFrameSet, SparkleFlinger};
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::{DiscoveryRuntime, handle_async_write_failures};
 use crate::performance::{FrameTimeline, LatestFrameMetrics, PerformanceTracker};
@@ -98,6 +104,9 @@ pub struct RenderThreadState {
 
     /// Render loop — frame timing, FPS control, tier transitions.
     pub render_loop: Arc<RwLock<RenderLoop>>,
+
+    /// Active scene stack and transition runtime.
+    pub scene_manager: Arc<RwLock<SceneManager>>,
 
     /// Input orchestrator for audio and screen capture sampling.
     pub input_manager: Arc<Mutex<InputManager>>,
@@ -241,6 +250,9 @@ struct RenderStageStats {
     composition_us: u32,
     composition_done_us: u32,
     total_us: u32,
+    logical_layer_count: u32,
+    scene_active: bool,
+    scene_transition_active: bool,
     effect_retained: bool,
     screen_retained: bool,
     composition_bypassed: bool,
@@ -339,6 +351,7 @@ async fn run_pipeline(state: RenderThreadState) {
     let mut effect_target_canvas: Option<Canvas> = None;
     let mut effect_queue = ProducerQueue::new();
     let mut screen_queue = ProducerQueue::new();
+    let mut composition_planner = CompositionPlanner::new();
     let mut sparkleflinger = SparkleFlinger::new();
     let mut render_surface_pool = RenderSurfacePool::new(SurfaceDescriptor::rgba8888(
         state.canvas_width,
@@ -401,6 +414,7 @@ async fn run_pipeline(state: RenderThreadState) {
             &mut effect_target_canvas,
             &mut effect_queue,
             &mut screen_queue,
+            &mut composition_planner,
             &mut sparkleflinger,
             &mut render_surface_pool,
             &mut static_surface_cache,
@@ -478,6 +492,7 @@ async fn execute_frame(
     effect_target_canvas: &mut Option<Canvas>,
     effect_queue: &mut ProducerQueue,
     screen_queue: &mut ProducerQueue,
+    composition_planner: &mut CompositionPlanner,
     sparkleflinger: &mut SparkleFlinger,
     render_surface_pool: &mut RenderSurfacePool,
     static_surface_cache: &mut Option<CachedStaticSurface>,
@@ -503,7 +518,7 @@ async fn execute_frame(
 
     render_scene_state.apply_transactions(&state.scene_transactions);
     let scene_snapshot =
-        build_frame_scene_snapshot(state, frame_scheduler, render_scene_state).await;
+        build_frame_scene_snapshot(state, frame_scheduler, render_scene_state, delta_secs).await;
     let output_power = scene_snapshot.output_power;
     let effect_demand = scene_snapshot.effect_demand;
     reconcile_audio_capture(
@@ -566,6 +581,7 @@ async fn execute_frame(
         effect_target_canvas,
         effect_queue,
         screen_queue,
+        composition_planner,
         sparkleflinger,
         render_surface_pool,
         static_surface_cache,
@@ -724,6 +740,9 @@ async fn execute_frame(
         render_us,
         producer_us = render_stage.producer_us,
         composition_us = render_stage.composition_us,
+        logical_layers = render_stage.logical_layer_count,
+        scene_active = render_stage.scene_active,
+        scene_transition_active = render_stage.scene_transition_active,
         sample_us,
         push_us,
         postprocess_us,
@@ -768,6 +787,7 @@ async fn compose_frame_set(
     effect_target_canvas: &mut Option<Canvas>,
     effect_queue: &mut ProducerQueue,
     screen_queue: &mut ProducerQueue,
+    composition_planner: &mut CompositionPlanner,
     sparkleflinger: &mut SparkleFlinger,
     render_surface_pool: &mut RenderSurfacePool,
     static_surface_cache: &mut Option<CachedStaticSurface>,
@@ -831,11 +851,13 @@ async fn compose_frame_set(
     };
     let producer_done_us = micros_u32(stage_start.elapsed());
     let composition_start = Instant::now();
-    let composed = sparkleflinger.compose(CompositionPlan::single(
+    let compiled_plan = composition_planner.compile(
         state.canvas_width,
         state.canvas_height,
-        CompositionLayer::replace(source_frame),
-    ));
+        &scene_snapshot.scene_runtime,
+        vec![PlannedSceneLayer::replace(source_frame)],
+    );
+    let composed = sparkleflinger.compose(compiled_plan.plan);
     let composition_us = micros_u32(composition_start.elapsed());
     let composition_done_us = micros_u32(stage_start.elapsed());
     RenderStageStats {
@@ -846,6 +868,9 @@ async fn compose_frame_set(
         composition_us,
         composition_done_us,
         total_us: micros_u32(stage_start.elapsed()),
+        logical_layer_count: compiled_plan.metadata.logical_layer_count,
+        scene_active: compiled_plan.metadata.scene_active,
+        scene_transition_active: compiled_plan.metadata.transition_active,
         effect_retained: scene_snapshot.effect_demand.effect_running
             && producer_state.is_some_and(ProducerFrameState::is_retained),
         screen_retained: !scene_snapshot.effect_demand.effect_running
@@ -968,9 +993,11 @@ async fn build_frame_scene_snapshot(
     state: &RenderThreadState,
     frame_scheduler: &mut FrameScheduler,
     render_scene_state: &RenderSceneState,
+    delta_secs: f32,
 ) -> FrameSceneSnapshot {
     let effect_scene =
         current_effect_scene_snapshot(state, render_scene_state.screen_capture_configured()).await;
+    let scene_runtime = current_scene_runtime_snapshot(state, delta_secs).await;
     let render_loop_snapshot = render_loop_snapshot(state).await;
     frame_scheduler.build_snapshot(FrameSceneSnapshotInputs {
         frame_token: render_loop_snapshot.frame_token,
@@ -979,8 +1006,28 @@ async fn build_frame_scene_snapshot(
         output_power: *state.power_state.borrow(),
         effect_demand: effect_scene.demand,
         effect_generation: effect_scene.generation,
+        scene_runtime,
         spatial_engine: render_scene_state.spatial_engine().clone(),
     })
+}
+
+async fn current_scene_runtime_snapshot(
+    state: &RenderThreadState,
+    delta_secs: f32,
+) -> SceneRuntimeSnapshot {
+    let mut manager = state.scene_manager.write().await;
+    manager.tick_transition(delta_secs);
+    SceneRuntimeSnapshot {
+        active_scene_id: manager.active_scene_id().copied(),
+        active_transition: manager
+            .active_transition()
+            .map(|transition| SceneTransitionSnapshot {
+                from_scene: Some(transition.from_scene),
+                to_scene: Some(transition.to_scene),
+                progress: transition.progress,
+                eased_progress: transition.eased_progress(),
+            }),
+    }
 }
 
 async fn current_effect_scene_snapshot(

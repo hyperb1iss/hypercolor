@@ -23,6 +23,7 @@ use hypercolor_core::device::{
 use hypercolor_core::effect::EffectEngine;
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData};
+use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::AttachmentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
@@ -463,6 +464,7 @@ fn make_render_state(
         discovery_runtime: None,
         event_bus: Arc::new(HypercolorBus::new()),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
+        scene_manager: Arc::new(RwLock::new(SceneManager::new())),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         power_state,
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
@@ -837,6 +839,65 @@ async fn pipeline_publishes_frame_events() {
 }
 
 #[tokio::test]
+async fn render_thread_advances_active_scene_transitions() {
+    let mut effect_engine = EffectEngine::new();
+    effect_engine
+        .activate(
+            Box::new(MockEffectRenderer::solid(255, 0, 0)),
+            MockEffectRenderer::sample_metadata("scene-transition"),
+        )
+        .expect("activate");
+
+    let state = make_render_state(
+        effect_engine,
+        SpatialEngine::new(test_layout(vec![strip_zone("zone_0", "mock:strip", 8)])),
+        BackendManager::new(),
+    );
+
+    let scene_a = make_scene("Scene A");
+    let scene_b = make_scene("Scene B");
+    {
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .create(scene_a.clone())
+            .expect("create scene a");
+        scene_manager
+            .create(scene_b.clone())
+            .expect("create scene b");
+        scene_manager
+            .activate(&scene_a.id, None)
+            .expect("activate scene a");
+        scene_manager
+            .activate(&scene_b.id, None)
+            .expect("activate scene b");
+    }
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+    tokio::time::sleep(Duration::from_millis(120)).await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let scene_manager = state.scene_manager.read().await;
+    let transition = scene_manager
+        .active_transition()
+        .expect("scene transition should still be active");
+    assert!(
+        transition.progress > 0.0,
+        "render thread should advance scene transitions on the frame clock"
+    );
+    assert_eq!(scene_manager.active_scene_id(), Some(&scene_b.id));
+}
+
+#[tokio::test]
 async fn pipeline_publishes_frame_data_via_watch() {
     let state = make_render_state(
         EffectEngine::new(),
@@ -938,6 +999,7 @@ async fn pipeline_renders_active_effect_to_devices() {
         discovery_runtime: None,
         event_bus: Arc::new(HypercolorBus::new()),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
+        scene_manager: Arc::new(RwLock::new(SceneManager::new())),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         power_state,
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
@@ -1184,6 +1246,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         discovery_runtime: Some(discovery_runtime.clone()),
         event_bus,
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
+        scene_manager: Arc::new(RwLock::new(SceneManager::new())),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         power_state,
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
@@ -1717,6 +1780,7 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         discovery_runtime: None,
         event_bus: Arc::new(HypercolorBus::new()),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
+        scene_manager: Arc::new(RwLock::new(SceneManager::new())),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         power_state,
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
