@@ -4,7 +4,7 @@
 //! space for rich transitions. Supports an optional middle stop, geometry
 //! controls, motion animation, and post-process saturation and easing.
 
-use hypercolor_types::canvas::{Canvas, Oklab, Oklch, RgbaF32};
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, Oklab, Oklch, RgbaF32};
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
@@ -94,9 +94,188 @@ impl EasingMode {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct GradientStop {
+enum PreparedGradientColor {
+    Direct(RgbaF32),
+    Smooth(Oklab),
+    Vivid(Oklch),
+}
+
+impl PreparedGradientColor {
+    fn from_color(color: [f32; 4], interpolation: InterpolationMode) -> Self {
+        match interpolation {
+            InterpolationMode::Direct => Self::Direct(color_to_rgba(color)),
+            InterpolationMode::Smooth => Self::Smooth(rgba_to_oklab(color)),
+            InterpolationMode::Vivid => Self::Vivid(rgba_to_oklch(color)),
+        }
+    }
+
+    fn into_rgba(self) -> RgbaF32 {
+        match self {
+            Self::Direct(rgba) => rgba,
+            Self::Smooth(lab) => RgbaF32::from_oklab(lab),
+            Self::Vivid(lch) => RgbaF32::from_oklch(lch),
+        }
+    }
+
+    fn interpolate(self, other: Self, t: f32) -> RgbaF32 {
+        match (self, other) {
+            (Self::Direct(a), Self::Direct(b)) => RgbaF32::lerp(&a, &b, t),
+            (Self::Smooth(a), Self::Smooth(b)) => RgbaF32::from_oklab(Oklab::lerp(a, b, t)),
+            (Self::Vivid(a), Self::Vivid(b)) => RgbaF32::from_oklch(a.lerp(b, t)),
+            _ => unreachable!("prepared stops always share the same interpolation mode"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PreparedGradientStop {
     position: f32,
-    color: [f32; 4],
+    color: PreparedGradientColor,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PreparedGradientStops {
+    stops: [PreparedGradientStop; 3],
+    len: usize,
+}
+
+impl PreparedGradientStops {
+    fn new(renderer: &GradientRenderer) -> Self {
+        let start = PreparedGradientStop {
+            position: 0.0,
+            color: PreparedGradientColor::from_color(renderer.color_start, renderer.interpolation),
+        };
+        let end = PreparedGradientStop {
+            position: 1.0,
+            color: PreparedGradientColor::from_color(renderer.color_end, renderer.interpolation),
+        };
+
+        if renderer.use_mid_color {
+            let mid = PreparedGradientStop {
+                position: renderer.midpoint.clamp(0.05, 0.95),
+                color: PreparedGradientColor::from_color(
+                    renderer.color_mid,
+                    renderer.interpolation,
+                ),
+            };
+            Self {
+                stops: [start, mid, end],
+                len: 3,
+            }
+        } else {
+            Self {
+                stops: [start, end, end],
+                len: 2,
+            }
+        }
+    }
+
+    fn sample(self, easing: EasingMode, raw_t: f32) -> RgbaF32 {
+        let t = easing.apply(raw_t);
+        let first = self.stops[0];
+
+        if t <= first.position {
+            return first.color.into_rgba();
+        }
+
+        let second = self.stops[1];
+        if self.len == 2 || t <= second.position {
+            return interpolate_stop_pair(first, second, t);
+        }
+
+        let third = self.stops[2];
+        if t <= third.position {
+            return interpolate_stop_pair(second, third, t);
+        }
+
+        third.color.into_rgba()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PreparedGradientGeometry {
+    Linear {
+        center_x: f32,
+        center_y: f32,
+        axis_x: f32,
+        axis_y: f32,
+        min_extent: f32,
+        inv_span: f32,
+    },
+    Radial {
+        center_x: f32,
+        center_y: f32,
+        inv_max_radius: f32,
+    },
+}
+
+impl PreparedGradientGeometry {
+    fn new(mode: GradientMode, center_x: f32, center_y: f32, angle_degrees: f32) -> Self {
+        match mode {
+            GradientMode::Linear => {
+                let angle = angle_degrees.to_radians();
+                let axis_x = angle.cos();
+                let axis_y = angle.sin();
+                let project = |x: f32, y: f32| (x - center_x) * axis_x + (y - center_y) * axis_y;
+                let extents = [
+                    project(0.0, 0.0),
+                    project(1.0, 0.0),
+                    project(0.0, 1.0),
+                    project(1.0, 1.0),
+                ];
+                let min_extent = extents.iter().copied().fold(f32::INFINITY, f32::min);
+                let max_extent = extents.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let span = (max_extent - min_extent).max(f32::EPSILON);
+
+                Self::Linear {
+                    center_x,
+                    center_y,
+                    axis_x,
+                    axis_y,
+                    min_extent,
+                    inv_span: span.recip(),
+                }
+            }
+            GradientMode::Radial => {
+                let max_radius = [
+                    (0.0f32 - center_x).hypot(0.0 - center_y),
+                    (1.0f32 - center_x).hypot(0.0 - center_y),
+                    (0.0f32 - center_x).hypot(1.0 - center_y),
+                    (1.0f32 - center_x).hypot(1.0 - center_y),
+                ]
+                .into_iter()
+                .fold(0.0, f32::max)
+                .max(f32::EPSILON);
+
+                Self::Radial {
+                    center_x,
+                    center_y,
+                    inv_max_radius: max_radius.recip(),
+                }
+            }
+        }
+    }
+
+    fn position(self, nx: f32, ny: f32) -> f32 {
+        match self {
+            Self::Linear {
+                center_x,
+                center_y,
+                axis_x,
+                axis_y,
+                min_extent,
+                inv_span,
+            } => {
+                let projection = (nx - center_x) * axis_x + (ny - center_y) * axis_y;
+                ((projection - min_extent) * inv_span).clamp(0.0, 1.0)
+            }
+            Self::Radial {
+                center_x,
+                center_y,
+                inv_max_radius,
+            } => ((nx - center_x).hypot(ny - center_y) * inv_max_radius).clamp(0.0, 1.0),
+        }
+    }
 }
 
 /// Animated multi-stop gradient with configurable geometry, motion, and color science.
@@ -147,77 +326,6 @@ impl GradientRenderer {
         }
     }
 
-    fn gradient_stops(&self) -> Vec<GradientStop> {
-        let mut stops = vec![GradientStop {
-            position: 0.0,
-            color: self.color_start,
-        }];
-
-        if self.use_mid_color {
-            stops.push(GradientStop {
-                position: self.midpoint.clamp(0.05, 0.95),
-                color: self.color_mid,
-            });
-        }
-
-        stops.push(GradientStop {
-            position: 1.0,
-            color: self.color_end,
-        });
-
-        stops
-    }
-
-    /// Interpolate between two colors using the active color space.
-    fn interpolate(&self, left: [f32; 4], right: [f32; 4], t: f32) -> RgbaF32 {
-        match self.interpolation {
-            InterpolationMode::Vivid => {
-                let a = rgba_to_oklch(left);
-                let b = rgba_to_oklch(right);
-                RgbaF32::from_oklch(a.lerp(b, t))
-            }
-            InterpolationMode::Smooth => {
-                let a = rgba_to_oklab(left);
-                let b = rgba_to_oklab(right);
-                RgbaF32::from_oklab(Oklab::lerp(a, b, t))
-            }
-            InterpolationMode::Direct => {
-                let a = RgbaF32::new(left[0], left[1], left[2], left[3]);
-                let b = RgbaF32::new(right[0], right[1], right[2], right[3]);
-                RgbaF32::lerp(&a, &b, t)
-            }
-        }
-    }
-
-    /// Sample the gradient at position `raw_t`, applying easing.
-    fn sample(&self, stops: &[GradientStop], raw_t: f32) -> RgbaF32 {
-        if stops.len() == 1 {
-            return color_to_rgba(stops[0].color);
-        }
-
-        let t = self.easing.apply(raw_t);
-
-        if t <= stops[0].position {
-            return color_to_rgba(stops[0].color);
-        }
-
-        for pair in stops.windows(2) {
-            let left = pair[0];
-            let right = pair[1];
-            if t <= right.position {
-                let span = (right.position - left.position).max(f32::EPSILON);
-                let local_t = ((t - left.position) / span).clamp(0.0, 1.0);
-                return self.interpolate(left.color, right.color, local_t);
-            }
-        }
-
-        let last = stops.last().copied().unwrap_or(GradientStop {
-            position: 1.0,
-            color: [0.0, 0.0, 0.0, 1.0],
-        });
-        color_to_rgba(last.color)
-    }
-
     /// Post-process: boost or reduce chroma in Oklch space.
     fn apply_saturation(&self, mut rgba: RgbaF32) -> RgbaF32 {
         if (self.saturation - 1.0).abs() > f32::EPSILON {
@@ -247,31 +355,41 @@ impl EffectRenderer for GradientRenderer {
         let height = input.canvas_height.max(1) as f32;
         let animated_offset = self.offset + input.time_secs * self.speed;
         let scale = self.scale.max(0.1);
-        let stops = self.gradient_stops();
+        let geometry = PreparedGradientGeometry::new(
+            self.mode,
+            self.center_x,
+            self.center_y,
+            self.angle_degrees,
+        );
+        let stops = PreparedGradientStops::new(self);
+        let row_len = input.canvas_width as usize * BYTES_PER_PIXEL;
 
-        for y in 0..input.canvas_height {
+        if row_len == 0 {
+            return Ok(());
+        }
+
+        for (y, row) in canvas
+            .as_rgba_bytes_mut()
+            .chunks_exact_mut(row_len)
+            .enumerate()
+        {
             let ny = (y as f32 + 0.5) / height;
-            for x in 0..input.canvas_width {
+            for (x, pixel) in row.chunks_exact_mut(BYTES_PER_PIXEL).enumerate() {
                 let nx = (x as f32 + 0.5) / width;
-                let raw_t = match self.mode {
-                    GradientMode::Linear => {
-                        linear_position(nx, ny, self.center_x, self.center_y, self.angle_degrees)
-                    }
-                    GradientMode::Radial => radial_position(nx, ny, self.center_x, self.center_y),
-                };
-
+                let raw_t = geometry.position(nx, ny);
                 let transformed = match self.mode {
                     GradientMode::Linear => ((raw_t - 0.5) / scale) + 0.5 + animated_offset,
                     GradientMode::Radial => (raw_t / scale) + animated_offset,
                 };
                 let t = apply_repeat_mode(transformed, self.repeat_mode);
 
-                let mut rgba = self.sample(&stops, t);
+                let mut rgba = stops.sample(self.easing, t);
                 rgba = self.apply_saturation(rgba);
                 rgba.r *= self.brightness;
                 rgba.g *= self.brightness;
                 rgba.b *= self.brightness;
-                canvas.set_pixel(x, y, rgba.to_srgba());
+                let encoded = rgba.to_srgb_u8();
+                pixel.copy_from_slice(&encoded);
             }
         }
 
@@ -384,6 +502,16 @@ impl EffectRenderer for GradientRenderer {
 
 // ── Color Conversion Helpers ─────────────────────────────────────────────────
 
+fn interpolate_stop_pair(
+    left: PreparedGradientStop,
+    right: PreparedGradientStop,
+    t: f32,
+) -> RgbaF32 {
+    let span = (right.position - left.position).max(f32::EPSILON);
+    let local_t = ((t - left.position) / span).clamp(0.0, 1.0);
+    left.color.interpolate(right.color, local_t)
+}
+
 fn color_to_rgba(color: [f32; 4]) -> RgbaF32 {
     RgbaF32::new(color[0], color[1], color[2], color[3])
 }
@@ -397,41 +525,6 @@ fn rgba_to_oklch(color: [f32; 4]) -> Oklch {
 }
 
 // ── Geometry Helpers ─────────────────────────────────────────────────────────
-
-fn linear_position(nx: f32, ny: f32, center_x: f32, center_y: f32, angle_degrees: f32) -> f32 {
-    let angle = angle_degrees.to_radians();
-    let axis_x = angle.cos();
-    let axis_y = angle.sin();
-
-    let project = |x: f32, y: f32| (x - center_x) * axis_x + (y - center_y) * axis_y;
-    let proj = project(nx, ny);
-    let extents = [
-        project(0.0, 0.0),
-        project(1.0, 0.0),
-        project(0.0, 1.0),
-        project(1.0, 1.0),
-    ];
-    let min_extent = extents.iter().copied().fold(f32::INFINITY, f32::min);
-    let max_extent = extents.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    let span = (max_extent - min_extent).max(f32::EPSILON);
-
-    ((proj - min_extent) / span).clamp(0.0, 1.0)
-}
-
-fn radial_position(nx: f32, ny: f32, center_x: f32, center_y: f32) -> f32 {
-    let dist = (nx - center_x).hypot(ny - center_y);
-    let max_radius = [
-        (0.0f32 - center_x).hypot(0.0 - center_y),
-        (1.0f32 - center_x).hypot(0.0 - center_y),
-        (0.0f32 - center_x).hypot(1.0 - center_y),
-        (1.0f32 - center_x).hypot(1.0 - center_y),
-    ]
-    .into_iter()
-    .fold(0.0, f32::max)
-    .max(f32::EPSILON);
-
-    (dist / max_radius).clamp(0.0, 1.0)
-}
 
 fn apply_repeat_mode(value: f32, repeat_mode: RepeatMode) -> f32 {
     match repeat_mode {
