@@ -13,7 +13,7 @@ use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, watch};
 
 use hypercolor_core::attachment::AttachmentRegistry;
-use hypercolor_core::bus::HypercolorBus;
+use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig, MockEffectRenderer};
 use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::{
@@ -30,7 +30,9 @@ use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::{DeviceId, DeviceState};
-use hypercolor_types::event::{HypercolorEvent, InputButtonState, InputEvent, ZoneColors};
+use hypercolor_types::event::{
+    FrameData, HypercolorEvent, InputButtonState, InputEvent, ZoneColors,
+};
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -202,6 +204,51 @@ impl InputSource for MockScreenPreviewSource {
     }
 }
 
+struct BurstyScreenPreviewSource {
+    running: bool,
+    next_screen_data: Option<ScreenData>,
+}
+
+impl BurstyScreenPreviewSource {
+    fn new(screen_data: ScreenData) -> Self {
+        Self {
+            running: false,
+            next_screen_data: Some(screen_data),
+        }
+    }
+}
+
+impl InputSource for BurstyScreenPreviewSource {
+    fn name(&self) -> &'static str {
+        "bursty_screen_preview"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        if !self.running {
+            return Ok(InputData::None);
+        }
+
+        if let Some(screen_data) = self.next_screen_data.take() {
+            return Ok(InputData::Screen(screen_data));
+        }
+
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
 struct MockAudioSource {
     running: bool,
     audio: AudioData,
@@ -362,6 +409,44 @@ async fn wait_for_audio_capture_transition(transitions: &Arc<StdMutex<Vec<bool>>
     })
     .await
     .expect("expected audio capture transition");
+}
+
+async fn wait_for_next_frame(
+    rx: &mut watch::Receiver<FrameData>,
+    previous_frame_number: u32,
+) -> FrameData {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            rx.changed()
+                .await
+                .expect("frame sender should remain connected");
+            let frame = rx.borrow().clone();
+            if frame.frame_number > previous_frame_number {
+                break frame;
+            }
+        }
+    })
+    .await
+    .expect("expected the next frame within 2 seconds")
+}
+
+async fn wait_for_next_canvas_frame(
+    rx: &mut watch::Receiver<CanvasFrame>,
+    previous_frame_number: u32,
+) -> CanvasFrame {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            rx.changed()
+                .await
+                .expect("canvas sender should remain connected");
+            let frame = rx.borrow().clone();
+            if frame.frame_number > previous_frame_number {
+                break frame;
+            }
+        }
+    })
+    .await
+    .expect("expected the next canvas frame within 2 seconds")
 }
 
 fn make_render_state(
@@ -1354,6 +1439,129 @@ async fn pipeline_reuses_screen_preview_surface_for_canvas_and_screen_watch() {
     assert_eq!(
         published_canvas.rgba_bytes().as_ptr(),
         published_screen.rgba_bytes().as_ptr()
+    );
+}
+
+#[tokio::test]
+async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
+    let layout = test_layout(vec![
+        point_zone("zone_left", "mock:left", 0.25, 0.5),
+        point_zone("zone_right", "mock:right", 0.75, 0.5),
+    ]);
+
+    let mut state = make_render_state(
+        EffectEngine::new(),
+        SpatialEngine::new(layout),
+        BackendManager::new(),
+    );
+    state.screen_capture_configured = true;
+
+    let mut preview_canvas = Canvas::new(320, 200);
+    for y in 0..200 {
+        for x in 0..320 {
+            let color = if x < 160 {
+                Rgba::new(255, 0, 0, 255)
+            } else {
+                Rgba::new(0, 255, 0, 255)
+            };
+            preview_canvas.set_pixel(x, y, color);
+        }
+    }
+    let source_surface = PublishedSurface::from_owned_canvas(preview_canvas, 11, 22);
+    let screen_data = ScreenData {
+        zone_colors: Vec::new(),
+        grid_width: 0,
+        grid_height: 0,
+        canvas_downscale: Some(source_surface.clone()),
+        source_width: 320,
+        source_height: 200,
+    };
+
+    {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager.add_source(Box::new(BurstyScreenPreviewSource::new(screen_data)));
+        input_manager
+            .start_all()
+            .expect("input manager should start");
+    }
+
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let mut canvas_rx = state.event_bus.canvas_receiver();
+    let mut screen_canvas_rx = state.event_bus.screen_canvas_receiver();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
+        .await
+        .expect("expected initial sampled frame within 2 seconds")
+        .expect("frame sender should remain connected");
+    tokio::time::timeout(Duration::from_secs(2), canvas_rx.changed())
+        .await
+        .expect("expected initial canvas within 2 seconds")
+        .expect("canvas sender should remain connected");
+    tokio::time::timeout(Duration::from_secs(2), screen_canvas_rx.changed())
+        .await
+        .expect("expected initial screen canvas within 2 seconds")
+        .expect("screen canvas sender should remain connected");
+
+    let initial_frame = frame_rx.borrow().clone();
+    let initial_canvas = canvas_rx.borrow().clone();
+    let initial_screen = screen_canvas_rx.borrow().clone();
+
+    let retained_frame = wait_for_next_frame(&mut frame_rx, initial_frame.frame_number).await;
+    let retained_canvas =
+        wait_for_next_canvas_frame(&mut canvas_rx, initial_canvas.frame_number).await;
+    let retained_screen =
+        wait_for_next_canvas_frame(&mut screen_canvas_rx, initial_screen.frame_number).await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let source_ptr = source_surface.rgba_bytes().as_ptr();
+    let initial_left = initial_frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_left")
+        .and_then(|zone| zone.colors.first().copied())
+        .expect("initial left sample should exist");
+    let initial_right = initial_frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_right")
+        .and_then(|zone| zone.colors.first().copied())
+        .expect("initial right sample should exist");
+    let retained_left = retained_frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_left")
+        .and_then(|zone| zone.colors.first().copied())
+        .expect("retained left sample should exist");
+    let retained_right = retained_frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_right")
+        .and_then(|zone| zone.colors.first().copied())
+        .expect("retained right sample should exist");
+
+    assert_eq!(initial_left, [255, 0, 0]);
+    assert_eq!(initial_right, [0, 255, 0]);
+    assert_eq!(retained_left, [255, 0, 0]);
+    assert_eq!(retained_right, [0, 255, 0]);
+    assert_eq!(initial_canvas.rgba_bytes().as_ptr(), source_ptr);
+    assert_eq!(retained_canvas.rgba_bytes().as_ptr(), source_ptr);
+    assert_eq!(initial_screen.rgba_bytes().as_ptr(), source_ptr);
+    assert_eq!(retained_screen.rgba_bytes().as_ptr(), source_ptr);
+    assert_eq!(
+        retained_canvas.rgba_bytes().as_ptr(),
+        retained_screen.rgba_bytes().as_ptr()
     );
 }
 

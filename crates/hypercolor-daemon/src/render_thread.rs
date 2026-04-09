@@ -16,6 +16,7 @@
 //! ```
 
 mod frame_scheduler;
+mod producer_queue;
 mod scene_state;
 
 use std::any::Any;
@@ -41,6 +42,7 @@ use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::session::OffOutputBehavior;
 
 use self::frame_scheduler::{FrameSceneSnapshot, FrameSceneSnapshotInputs, FrameScheduler};
+use self::producer_queue::{ProducerFrame, ProducerQueue};
 use self::scene_state::RenderSceneState;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::{DiscoveryRuntime, handle_async_write_failures};
@@ -313,8 +315,9 @@ async fn run_pipeline(state: RenderThreadState) {
     );
 
     let mut cached_inputs = FrameInputs::silence();
-    let mut cached_canvas: Option<Canvas> = None;
-    let mut cached_surface: Option<PublishedSurface> = None;
+    let mut effect_target_canvas: Option<Canvas> = None;
+    let mut effect_queue = ProducerQueue::new();
+    let mut screen_queue = ProducerQueue::new();
     let mut render_surface_pool = RenderSurfacePool::new(SurfaceDescriptor::rgba8888(
         state.canvas_width,
         state.canvas_height,
@@ -373,8 +376,9 @@ async fn run_pipeline(state: RenderThreadState) {
             scheduled_start,
             skip_decision,
             &mut cached_inputs,
-            &mut cached_canvas,
-            &mut cached_surface,
+            &mut effect_target_canvas,
+            &mut effect_queue,
+            &mut screen_queue,
             &mut render_surface_pool,
             &mut static_surface_cache,
             &mut recycled_frame,
@@ -448,8 +452,9 @@ async fn execute_frame(
     scheduled_start: Instant,
     skip_decision: SkipDecision,
     cached_inputs: &mut FrameInputs,
-    cached_canvas: &mut Option<Canvas>,
-    cached_surface: &mut Option<PublishedSurface>,
+    effect_target_canvas: &mut Option<Canvas>,
+    effect_queue: &mut ProducerQueue,
+    screen_queue: &mut ProducerQueue,
     render_surface_pool: &mut RenderSurfacePool,
     static_surface_cache: &mut Option<CachedStaticSurface>,
     recycled_frame: &mut FrameData,
@@ -530,8 +535,9 @@ async fn execute_frame(
         &scene_snapshot,
         skip_decision,
         inputs,
-        cached_canvas,
-        cached_surface,
+        effect_target_canvas,
+        effect_queue,
+        screen_queue,
         render_surface_pool,
         static_surface_cache,
         delta_secs,
@@ -575,13 +581,22 @@ async fn execute_frame(
     // ── Stage 5: Publish to bus ─────────────────────────────────
     let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
     let timing_total_us = micros_u32(frame_start.elapsed());
+    let screen_watch_surface = if !scene_snapshot.effect_demand.effect_running
+        && scene_snapshot.effect_demand.screen_capture_active
+    {
+        frame_surface
+            .clone()
+            .or_else(|| inputs.screen_preview_surface.clone())
+    } else {
+        inputs.screen_preview_surface.clone()
+    };
     let publish_stats = publish_frame_updates(
         state,
         recycled_frame,
         &inputs.audio,
         canvas,
         frame_surface,
-        inputs.screen_preview_surface.clone(),
+        screen_watch_surface,
         frame_num_u32,
         scene_snapshot.elapsed_ms,
         last_audio_level_update_ms,
@@ -682,137 +697,157 @@ async fn resolve_frame_canvas(
     scene_snapshot: &FrameSceneSnapshot,
     skip_decision: SkipDecision,
     inputs: &FrameInputs,
-    cached_canvas: &mut Option<Canvas>,
-    cached_surface: &mut Option<PublishedSurface>,
+    effect_target_canvas: &mut Option<Canvas>,
+    effect_queue: &mut ProducerQueue,
+    screen_queue: &mut ProducerQueue,
     render_surface_pool: &mut RenderSurfacePool,
     static_surface_cache: &mut Option<CachedStaticSurface>,
     delta_secs: f32,
 ) -> (Canvas, Option<PublishedSurface>, u32) {
     let render_start = Instant::now();
-    let (canvas, surface) = if skip_decision == SkipDecision::ReuseCanvas {
-        if let Some(previous_surface) = cached_surface.as_ref().filter(|surface| {
-            surface.width() == state.canvas_width && surface.height() == state.canvas_height
-        }) {
-            let surface = previous_surface.clone();
-            (Canvas::from_published_surface(&surface), Some(surface))
-        } else if let Some(previous_canvas) = cached_canvas.as_ref().filter(|canvas| {
-            canvas.width() == state.canvas_width && canvas.height() == state.canvas_height
-        }) {
-            (previous_canvas.clone(), None)
+    let (canvas, surface) = if !scene_snapshot.effect_demand.effect_running {
+        effect_queue.clear();
+        if let Some(screen_frame) = latch_screen_frame(state, inputs, screen_queue) {
+            screen_frame
         } else {
-            let mut rendered = cached_canvas
-                .take()
-                .filter(|canvas| {
-                    canvas.width() == state.canvas_width && canvas.height() == state.canvas_height
-                })
-                .unwrap_or_else(|| Canvas::new(state.canvas_width, state.canvas_height));
-            render_effect_into(
+            let surface = static_surface(
+                static_surface_cache,
+                state.canvas_width,
+                state.canvas_height,
+                [0, 0, 0],
+            );
+            let canvas = Canvas::from_published_surface(&surface);
+            (canvas, Some(surface))
+        }
+    } else if skip_decision == SkipDecision::ReuseCanvas {
+        if let Some(frame) = effect_queue.latch_for_generation(scene_snapshot.effect_generation) {
+            frame.frame.into_render_frame()
+        } else {
+            render_effect_frame(
                 state,
                 scene_snapshot.effect_generation,
                 delta_secs,
                 &inputs.audio,
                 &inputs.interaction,
                 inputs.screen_data.as_ref(),
-                &mut rendered,
+                effect_target_canvas,
+                effect_queue,
+                render_surface_pool,
             )
-            .await;
-            *cached_canvas = Some(rendered.clone());
-            *cached_surface = None;
-            (rendered, None)
+            .await
         }
-    } else if !scene_snapshot.effect_demand.effect_running
-        && let Some(screen_surface) = inputs.screen_preview_surface.as_ref()
+    } else {
+        render_effect_frame(
+            state,
+            scene_snapshot.effect_generation,
+            delta_secs,
+            &inputs.audio,
+            &inputs.interaction,
+            inputs.screen_data.as_ref(),
+            effect_target_canvas,
+            effect_queue,
+            render_surface_pool,
+        )
+        .await
+    };
+    (canvas, surface, micros_u32(render_start.elapsed()))
+}
+
+fn latch_screen_frame(
+    state: &RenderThreadState,
+    inputs: &FrameInputs,
+    screen_queue: &mut ProducerQueue,
+) -> Option<(Canvas, Option<PublishedSurface>)> {
+    if let Some(screen_surface) = inputs.screen_preview_surface.as_ref()
         && screen_surface.width() == state.canvas_width
         && screen_surface.height() == state.canvas_height
     {
-        let canvas = Canvas::from_published_surface(screen_surface);
-        *cached_canvas = None;
-        let surface = screen_surface.clone();
-        *cached_surface = Some(surface.clone());
-        (canvas, Some(surface))
-    } else if !scene_snapshot.effect_demand.effect_running
-        && let Some(screen_canvas) = inputs.screen_canvas.clone()
-    {
-        *cached_canvas = Some(screen_canvas.clone());
-        *cached_surface = None;
-        (screen_canvas, None)
-    } else if !scene_snapshot.effect_demand.effect_running {
-        let surface = static_surface(
-            static_surface_cache,
-            state.canvas_width,
-            state.canvas_height,
-            [0, 0, 0],
-        );
-        let canvas = Canvas::from_published_surface(&surface);
-        *cached_canvas = None;
-        *cached_surface = Some(surface.clone());
-        (canvas, Some(surface))
-    } else {
-        let lease = match render_surface_pool.dequeue() {
-            lease @ Some(_) => lease,
-            None => {
-                if render_surface_pool.slot_count() < MAX_RENDER_SURFACE_SLOTS {
-                    let previous_slots = render_surface_pool.slot_count();
-                    let expanded_slots = (previous_slots + 1).min(MAX_RENDER_SURFACE_SLOTS);
-                    render_surface_pool.ensure_slot_count(expanded_slots);
-                    debug!(
-                        previous_slots,
-                        expanded_slots,
-                        canvas_receivers = state.event_bus.canvas_receiver_count(),
-                        "expanded render surface pool under retention pressure"
-                    );
-                }
-                render_surface_pool.dequeue()
-            }
-        };
+        screen_queue.submit(ProducerFrame::Surface(screen_surface.clone()), 0);
+    } else if let Some(screen_canvas) = inputs.screen_canvas.clone() {
+        screen_queue.submit(ProducerFrame::Canvas(screen_canvas), 0);
+    }
 
-        if let Some(mut lease) = lease {
-            {
-                let target = lease.canvas_mut();
-                render_effect_into(
-                    state,
-                    scene_snapshot.effect_generation,
-                    delta_secs,
-                    &inputs.audio,
-                    &inputs.interaction,
-                    inputs.screen_data.as_ref(),
-                    target,
-                )
-                .await;
+    screen_queue
+        .latch_latest()
+        .map(|frame| frame.frame.into_render_frame())
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "effect rendering needs generation, inputs, reuse target, pool, and queue together"
+)]
+async fn render_effect_frame(
+    state: &RenderThreadState,
+    effect_generation: u64,
+    delta_secs: f32,
+    audio: &AudioData,
+    interaction: &InteractionData,
+    screen_data: Option<&ScreenData>,
+    effect_target_canvas: &mut Option<Canvas>,
+    effect_queue: &mut ProducerQueue,
+    render_surface_pool: &mut RenderSurfacePool,
+) -> (Canvas, Option<PublishedSurface>) {
+    let lease = match render_surface_pool.dequeue() {
+        lease @ Some(_) => lease,
+        None => {
+            if render_surface_pool.slot_count() < MAX_RENDER_SURFACE_SLOTS {
+                let previous_slots = render_surface_pool.slot_count();
+                let expanded_slots = (previous_slots + 1).min(MAX_RENDER_SURFACE_SLOTS);
+                render_surface_pool.ensure_slot_count(expanded_slots);
+                debug!(
+                    previous_slots,
+                    expanded_slots,
+                    canvas_receivers = state.event_bus.canvas_receiver_count(),
+                    "expanded render surface pool under retention pressure"
+                );
             }
-            let canvas = lease.canvas_mut().clone();
-            let surface = lease.submit(0, 0);
-            *cached_canvas = None;
-            *cached_surface = Some(surface.clone());
-            (canvas, Some(surface))
-        } else {
-            debug!(
-                slot_count = render_surface_pool.slot_count(),
-                canvas_receivers = state.event_bus.canvas_receiver_count(),
-                "render surface pool exhausted, falling back to owned canvas publish path"
-            );
-            let mut rendered = cached_canvas
-                .take()
-                .filter(|canvas| {
-                    canvas.width() == state.canvas_width && canvas.height() == state.canvas_height
-                })
-                .unwrap_or_else(|| Canvas::new(state.canvas_width, state.canvas_height));
-            render_effect_into(
-                state,
-                scene_snapshot.effect_generation,
-                delta_secs,
-                &inputs.audio,
-                &inputs.interaction,
-                inputs.screen_data.as_ref(),
-                &mut rendered,
-            )
-            .await;
-            *cached_canvas = Some(rendered.clone());
-            *cached_surface = None;
-            (rendered, None)
+            render_surface_pool.dequeue()
         }
     };
-    (canvas, surface, micros_u32(render_start.elapsed()))
+
+    if let Some(mut lease) = lease {
+        {
+            let target = lease.canvas_mut();
+            render_effect_into(
+                state,
+                effect_generation,
+                delta_secs,
+                audio,
+                interaction,
+                screen_data,
+                target,
+            )
+            .await;
+        }
+        let surface = lease.submit(0, 0);
+        effect_queue.submit(ProducerFrame::Surface(surface.clone()), effect_generation);
+        return (Canvas::from_published_surface(&surface), Some(surface));
+    }
+
+    debug!(
+        slot_count = render_surface_pool.slot_count(),
+        canvas_receivers = state.event_bus.canvas_receiver_count(),
+        "render surface pool exhausted, falling back to owned canvas publish path"
+    );
+    let mut rendered = effect_target_canvas
+        .take()
+        .filter(|canvas| {
+            canvas.width() == state.canvas_width && canvas.height() == state.canvas_height
+        })
+        .unwrap_or_else(|| Canvas::new(state.canvas_width, state.canvas_height));
+    render_effect_into(
+        state,
+        effect_generation,
+        delta_secs,
+        audio,
+        interaction,
+        screen_data,
+        &mut rendered,
+    )
+    .await;
+    *effect_target_canvas = Some(rendered.clone());
+    effect_queue.submit(ProducerFrame::Canvas(rendered.clone()), effect_generation);
+    (rendered, None)
 }
 
 async fn build_frame_scene_snapshot(
