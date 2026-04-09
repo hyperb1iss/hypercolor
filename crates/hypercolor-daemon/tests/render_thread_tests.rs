@@ -899,6 +899,50 @@ async fn pipeline_renders_active_effect_to_devices() {
 }
 
 #[tokio::test]
+async fn pipeline_publishes_slot_backed_canvas_for_active_effects() {
+    let mut effect_engine = EffectEngine::new();
+    effect_engine
+        .activate(
+            Box::new(MockEffectRenderer::solid(255, 0, 0)),
+            MockEffectRenderer::sample_metadata("slot-backed-canvas"),
+        )
+        .expect("activate");
+
+    let state = make_render_state(
+        effect_engine,
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    let mut canvas_rx = state.event_bus.canvas_receiver();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(2), canvas_rx.changed())
+        .await
+        .expect("expected active-effect canvas within 2 seconds")
+        .expect("canvas sender should remain connected");
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let canvas = canvas_rx.borrow().clone();
+    assert_eq!(canvas.width, 320);
+    assert_eq!(canvas.height, 200);
+    assert!(
+        canvas.surface().generation() > 0,
+        "active effect canvas should come from the render surface pool"
+    );
+}
+
+#[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "this integration test exercises the full reconnect flow through render, write failure detection, and lifecycle recovery"

@@ -30,7 +30,9 @@ use hypercolor_core::engine::{FrameStats, RenderLoop};
 use hypercolor_core::input::{InputData, InputManager, InteractionData, ScreenData};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::audio::AudioData;
-use hypercolor_core::types::canvas::{Canvas, PublishedSurface, Rgba};
+use hypercolor_core::types::canvas::{
+    Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
+};
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::session::OffOutputBehavior;
@@ -288,6 +290,10 @@ async fn run_pipeline(state: RenderThreadState) {
     let mut cached_inputs = FrameInputs::silence();
     let mut cached_canvas: Option<Canvas> = None;
     let mut cached_surface: Option<PublishedSurface> = None;
+    let mut render_surface_pool = RenderSurfacePool::new(SurfaceDescriptor::rgba8888(
+        state.canvas_width,
+        state.canvas_height,
+    ));
     let mut static_surface_cache: Option<CachedStaticSurface> = None;
     let mut recycled_frame = FrameData::empty();
     let mut skip_decision = SkipDecision::None;
@@ -340,6 +346,7 @@ async fn run_pipeline(state: RenderThreadState) {
             &mut cached_inputs,
             &mut cached_canvas,
             &mut cached_surface,
+            &mut render_surface_pool,
             &mut static_surface_cache,
             &mut recycled_frame,
             &mut last_tick,
@@ -386,6 +393,7 @@ async fn execute_frame(
     cached_inputs: &mut FrameInputs,
     cached_canvas: &mut Option<Canvas>,
     cached_surface: &mut Option<PublishedSurface>,
+    render_surface_pool: &mut RenderSurfacePool,
     static_surface_cache: &mut Option<CachedStaticSurface>,
     recycled_frame: &mut FrameData,
     last_tick: &mut Instant,
@@ -464,6 +472,7 @@ async fn execute_frame(
         inputs,
         cached_canvas,
         cached_surface,
+        render_surface_pool,
         static_surface_cache,
         delta_secs,
     )
@@ -617,21 +626,48 @@ async fn resolve_frame_canvas(
     inputs: &FrameInputs,
     cached_canvas: &mut Option<Canvas>,
     cached_surface: &mut Option<PublishedSurface>,
+    render_surface_pool: &mut RenderSurfacePool,
     static_surface_cache: &mut Option<CachedStaticSurface>,
     delta_secs: f32,
 ) -> (Canvas, Option<PublishedSurface>, u32) {
     let render_start = Instant::now();
-    let (canvas, surface) = if let (SkipDecision::ReuseCanvas, Some(previous)) =
-        (skip_decision, cached_canvas.as_ref())
-    {
-        (previous.clone(), cached_surface.clone())
+    let (canvas, surface) = if skip_decision == SkipDecision::ReuseCanvas {
+        if let Some(previous_surface) = cached_surface.as_ref().filter(|surface| {
+            surface.width() == state.canvas_width && surface.height() == state.canvas_height
+        }) {
+            let surface = previous_surface.clone();
+            (Canvas::from_published_surface(&surface), Some(surface))
+        } else if let Some(previous_canvas) = cached_canvas.as_ref().filter(|canvas| {
+            canvas.width() == state.canvas_width && canvas.height() == state.canvas_height
+        }) {
+            (previous_canvas.clone(), None)
+        } else {
+            let mut rendered = cached_canvas
+                .take()
+                .filter(|canvas| {
+                    canvas.width() == state.canvas_width && canvas.height() == state.canvas_height
+                })
+                .unwrap_or_else(|| Canvas::new(state.canvas_width, state.canvas_height));
+            render_effect_into(
+                state,
+                delta_secs,
+                &inputs.audio,
+                &inputs.interaction,
+                inputs.screen_data.as_ref(),
+                &mut rendered,
+            )
+            .await;
+            *cached_canvas = Some(rendered.clone());
+            *cached_surface = None;
+            (rendered, None)
+        }
     } else if !effect_running
         && let Some(screen_surface) = inputs.screen_preview_surface.as_ref()
         && screen_surface.width() == state.canvas_width
         && screen_surface.height() == state.canvas_height
     {
         let canvas = Canvas::from_published_surface(screen_surface);
-        *cached_canvas = Some(canvas.clone());
+        *cached_canvas = None;
         let surface = screen_surface.clone();
         *cached_surface = Some(surface.clone());
         (canvas, Some(surface))
@@ -647,28 +683,49 @@ async fn resolve_frame_canvas(
             [0, 0, 0],
         );
         let canvas = Canvas::from_published_surface(&surface);
-        *cached_canvas = Some(canvas.clone());
+        *cached_canvas = None;
         *cached_surface = Some(surface.clone());
         (canvas, Some(surface))
     } else {
-        let mut rendered = cached_canvas
-            .take()
-            .filter(|canvas| {
-                canvas.width() == state.canvas_width && canvas.height() == state.canvas_height
-            })
-            .unwrap_or_else(|| Canvas::new(state.canvas_width, state.canvas_height));
-        render_effect_into(
-            state,
-            delta_secs,
-            &inputs.audio,
-            &inputs.interaction,
-            inputs.screen_data.as_ref(),
-            &mut rendered,
-        )
-        .await;
-        *cached_canvas = Some(rendered.clone());
-        *cached_surface = None;
-        (rendered, None)
+        if let Some(mut lease) = render_surface_pool.dequeue() {
+            {
+                let target = lease.canvas_mut();
+                render_effect_into(
+                    state,
+                    delta_secs,
+                    &inputs.audio,
+                    &inputs.interaction,
+                    inputs.screen_data.as_ref(),
+                    target,
+                )
+                .await;
+            }
+            let canvas = lease.canvas_mut().clone();
+            let surface = lease.submit(0, 0);
+            *cached_canvas = None;
+            *cached_surface = Some(surface.clone());
+            (canvas, Some(surface))
+        } else {
+            debug!("render surface pool exhausted, falling back to owned canvas publish path");
+            let mut rendered = cached_canvas
+                .take()
+                .filter(|canvas| {
+                    canvas.width() == state.canvas_width && canvas.height() == state.canvas_height
+                })
+                .unwrap_or_else(|| Canvas::new(state.canvas_width, state.canvas_height));
+            render_effect_into(
+                state,
+                delta_secs,
+                &inputs.audio,
+                &inputs.interaction,
+                inputs.screen_data.as_ref(),
+                &mut rendered,
+            )
+            .await;
+            *cached_canvas = Some(rendered.clone());
+            *cached_surface = None;
+            (rendered, None)
+        }
     };
     (canvas, surface, micros_u32(render_start.elapsed()))
 }

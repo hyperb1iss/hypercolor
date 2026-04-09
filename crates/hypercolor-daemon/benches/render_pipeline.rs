@@ -10,7 +10,9 @@ use hypercolor_core::effect::EffectEngine;
 use hypercolor_core::input::InteractionData;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::AudioData;
-use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
+use hypercolor_types::canvas::{
+    Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
+};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::FrameData;
 use hypercolor_types::spatial::{
@@ -25,6 +27,7 @@ const FRAME_DT_SECONDS: f32 = 1.0 / 60.0;
 const FRAME_INTERVAL_MS: u32 = 16;
 const BENCH_DEVICE_COUNT: usize = 3;
 const BENCH_LEDS_PER_DEVICE: u32 = 120;
+const CANVAS_RGBA_BYTES: u64 = CANVAS_WIDTH as u64 * CANVAS_HEIGHT as u64 * 4;
 
 static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
 static DEFAULT_INTERACTION: LazyLock<InteractionData> = LazyLock::new(InteractionData::default);
@@ -140,6 +143,78 @@ fn split_surface() -> PublishedSurface {
     PublishedSurface::from_owned_canvas(canvas, 0, 0)
 }
 
+fn patterned_canvas() -> Canvas {
+    let mut canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
+    for y in 0..CANVAS_HEIGHT {
+        for x in 0..CANVAS_WIDTH {
+            let red =
+                u8::try_from((x * 255) / CANVAS_WIDTH.saturating_sub(1).max(1)).expect("red fits");
+            let green = u8::try_from((y * 255) / CANVAS_HEIGHT.saturating_sub(1).max(1))
+                .expect("green fits");
+            let blue = u8::try_from(
+                ((x + y) * 255)
+                    / (CANVAS_WIDTH
+                        .saturating_sub(1)
+                        .saturating_add(CANVAS_HEIGHT.saturating_sub(1))
+                        .max(1)),
+            )
+            .expect("blue fits");
+            canvas.set_pixel(x, y, Rgba::new(red, green, blue, 255));
+        }
+    }
+    canvas
+}
+
+fn bench_publish_handoff(c: &mut Criterion) {
+    let mut group = c.benchmark_group("daemon_publish_handoff");
+    group.throughput(Throughput::Bytes(CANVAS_RGBA_BYTES));
+
+    let copy_bus = HypercolorBus::new();
+    let mut copy_canvas = patterned_canvas();
+    let mut copy_frame_number = 0_u32;
+    group.bench_function("owned_canvas_shared_copy", |b| {
+        b.iter(|| {
+            let cached_alias = copy_canvas.clone();
+            let publish_canvas = std::mem::replace(&mut copy_canvas, cached_alias);
+            let timestamp_ms = copy_frame_number.saturating_mul(FRAME_INTERVAL_MS);
+            let (frame, copied) = CanvasFrame::from_owned_canvas_with_copy_info(
+                black_box(publish_canvas),
+                copy_frame_number,
+                timestamp_ms,
+            );
+            let _ = copy_bus.canvas_sender().send(frame);
+            black_box(copied);
+            copy_frame_number = copy_frame_number.saturating_add(1);
+        });
+    });
+
+    let pooled_bus = HypercolorBus::new();
+    let mut pooled_surface_pool =
+        RenderSurfacePool::new(SurfaceDescriptor::rgba8888(CANVAS_WIDTH, CANVAS_HEIGHT));
+    let mut pooled_frame_number = 0_u32;
+    group.bench_function("slot_backed_surface", |b| {
+        b.iter(|| {
+            let mut lease = pooled_surface_pool
+                .dequeue()
+                .expect("surface pool should recycle under watch semantics");
+            {
+                let target = lease.canvas_mut();
+                let bytes = target.as_rgba_bytes_mut();
+                bytes[0] = u8::try_from(pooled_frame_number & u32::from(u8::MAX))
+                    .expect("frame byte fits");
+            }
+            let timestamp_ms = pooled_frame_number.saturating_mul(FRAME_INTERVAL_MS);
+            let surface = lease.submit(pooled_frame_number, timestamp_ms);
+            let _ = pooled_bus
+                .canvas_sender()
+                .send(CanvasFrame::from_surface(black_box(surface)));
+            pooled_frame_number = pooled_frame_number.saturating_add(1);
+        });
+    });
+
+    group.finish();
+}
+
 fn bench_render_pipeline(c: &mut Criterion) {
     let runtime = Runtime::new().expect("benchmark runtime should initialize");
 
@@ -153,7 +228,8 @@ fn bench_render_pipeline(c: &mut Criterion) {
             MockEffectRenderer::sample_metadata("daemon-bench-rainbow"),
         )
         .expect("benchmark effect should activate");
-    let mut active_canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
+    let mut active_surface_pool =
+        RenderSurfacePool::new(SurfaceDescriptor::rgba8888(CANVAS_WIDTH, CANVAS_HEIGHT));
     let mut active_recycled_frame = FrameData::empty();
     let mut active_frame_number = 0_u32;
 
@@ -169,17 +245,20 @@ fn bench_render_pipeline(c: &mut Criterion) {
 
     group.bench_function("active_effect_shared_publish", |b| {
         b.iter(|| {
+            let mut lease = active_surface_pool
+                .dequeue()
+                .expect("render surface pool should recycle under watch semantics");
             active_effect
                 .tick_with_inputs_into(
                     FRAME_DT_SECONDS,
                     black_box(&*SILENCE),
                     black_box(&*DEFAULT_INTERACTION),
                     None,
-                    &mut active_canvas,
+                    lease.canvas_mut(),
                 )
                 .expect("active effect frame should render");
 
-            let cached_alias = active_canvas.clone();
+            let active_canvas = lease.canvas_mut().clone();
             active_spatial.sample_into(black_box(&active_canvas), &mut active_recycled_frame.zones);
             let _ = runtime.block_on(active_manager.write_frame_with_brightness(
                 black_box(&active_recycled_frame.zones),
@@ -195,14 +274,10 @@ fn bench_render_pipeline(c: &mut Criterion) {
                 timestamp_ms,
             );
             active_recycled_frame = active_bus.frame_sender().send_replace(frame);
-            let publish_canvas = std::mem::replace(&mut active_canvas, cached_alias);
-            let (canvas_frame, copied) = CanvasFrame::from_owned_canvas_with_copy_info(
-                black_box(publish_canvas),
-                active_frame_number,
-                timestamp_ms,
-            );
-            let _ = active_bus.canvas_sender().send(canvas_frame);
-            black_box(copied);
+            let surface = lease.submit(active_frame_number, timestamp_ms);
+            let _ = active_bus
+                .canvas_sender()
+                .send(CanvasFrame::from_surface(black_box(surface)));
             active_frame_number = active_frame_number.saturating_add(1);
         });
     });
@@ -244,6 +319,6 @@ fn bench_render_pipeline(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = benchmark_config();
-    targets = bench_render_pipeline
+    targets = bench_render_pipeline, bench_publish_handoff
 }
 criterion_main!(benches);
