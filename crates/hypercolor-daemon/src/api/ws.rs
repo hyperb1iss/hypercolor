@@ -5,12 +5,13 @@
 //! channel filtering. Backpressure is handled by bounded channels — slow
 //! consumers get dropped frames rather than unbounded memory growth.
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::SystemTime;
 use std::time::{Duration, Instant};
 
+use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Extension, State, WebSocketUpgrade};
 use axum::http::{Method, Request, header};
@@ -38,9 +39,12 @@ const WS_METRICS_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const WS_CANVAS_BYTES_PER_PIXEL_RGBA: u64 = 4;
 const WS_CANVAS_HEADER: u8 = 0x03;
 const WS_SCREEN_CANVAS_HEADER: u8 = 0x05;
+const WS_CANVAS_BINARY_CACHE_CAPACITY: usize = 32;
 
 static WS_CLIENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static WS_TOTAL_BYTES_SENT: AtomicU64 = AtomicU64::new(0);
+static WS_CANVAS_BINARY_CACHE: LazyLock<StdMutex<VecDeque<(CanvasBinaryCacheKey, Bytes)>>> =
+    LazyLock::new(|| StdMutex::new(VecDeque::with_capacity(WS_CANVAS_BINARY_CACHE_CAPACITY)));
 
 struct WsClientGuard;
 
@@ -295,6 +299,18 @@ enum FrameFormat {
 enum CanvasFormat {
     Rgb,
     Rgba,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct CanvasBinaryCacheKey {
+    generation: u64,
+    frame_number: u32,
+    timestamp_ms: u32,
+    width: u32,
+    height: u32,
+    header: u8,
+    format_tag: u8,
+    brightness_bits: u32,
 }
 
 /// Client-to-server subscription messages.
@@ -637,7 +653,7 @@ async fn handle_socket(
     // Split outbound traffic: both queues are bounded so slow clients cannot
     // grow daemon memory without limit.
     let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<String>(WS_BUFFER_SIZE);
-    let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(WS_BUFFER_SIZE);
+    let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(WS_BUFFER_SIZE);
 
     // Spawn event relay task — shares the subscription set via Arc<RwLock<_>>.
     let relay_subs = Arc::clone(&subscriptions);
@@ -831,14 +847,14 @@ fn should_relay_event(
 
 enum FrameRelayMessage {
     Json(String),
-    Binary(Vec<u8>),
+    Binary(Bytes),
 }
 
 /// Relay frame watch updates to the WebSocket client.
 async fn relay_frames(
     mut frame_rx: watch::Receiver<hypercolor_types::event::FrameData>,
     json_tx: tokio::sync::mpsc::Sender<String>,
-    binary_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    binary_tx: tokio::sync::mpsc::Sender<Bytes>,
     subscriptions: Arc<RwLock<SubscriptionState>>,
 ) {
     let mut last_sent = Instant::now()
@@ -871,7 +887,7 @@ async fn relay_frames(
                     timestamp_ms: frame.timestamp_ms,
                     zones,
                 };
-                FrameRelayMessage::Binary(encode_frame_binary(&filtered_frame))
+                FrameRelayMessage::Binary(encode_frame_binary(&filtered_frame).into())
             }
             FrameFormat::Json => {
                 let zones: Vec<serde_json::Value> = zones
@@ -914,7 +930,7 @@ async fn relay_frames(
 async fn relay_spectrum(
     mut spectrum_rx: watch::Receiver<hypercolor_types::event::SpectrumData>,
     json_tx: tokio::sync::mpsc::Sender<String>,
-    binary_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    binary_tx: tokio::sync::mpsc::Sender<Bytes>,
     subscriptions: Arc<RwLock<SubscriptionState>>,
 ) {
     let mut last_sent = Instant::now()
@@ -940,7 +956,7 @@ async fn relay_spectrum(
 
         let spectrum = spectrum_rx.borrow();
         if binary_tx
-            .try_send(encode_spectrum_binary(&spectrum, spectrum_config.bins))
+            .try_send(encode_spectrum_binary(&spectrum, spectrum_config.bins).into())
             .is_err()
         {
             enqueue_backpressure_notice(&json_tx, "spectrum", spectrum_config.fps);
@@ -954,7 +970,7 @@ async fn relay_canvas(
     mut canvas_rx: watch::Receiver<hypercolor_core::bus::CanvasFrame>,
     mut power_state_rx: watch::Receiver<OutputPowerState>,
     json_tx: tokio::sync::mpsc::Sender<String>,
-    binary_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    binary_tx: tokio::sync::mpsc::Sender<Bytes>,
     subscriptions: Arc<RwLock<SubscriptionState>>,
 ) {
     let mut latest_canvas = canvas_rx.borrow().clone();
@@ -1024,7 +1040,7 @@ async fn relay_canvas(
                 }
 
                 if binary_tx
-                    .try_send(encode_canvas_preview_binary(
+                    .try_send(encode_cached_canvas_preview_binary(
                         &latest_canvas,
                         canvas_config.format,
                         brightness,
@@ -1047,7 +1063,7 @@ async fn relay_canvas(
 async fn relay_screen_canvas(
     mut canvas_rx: watch::Receiver<hypercolor_core::bus::CanvasFrame>,
     json_tx: tokio::sync::mpsc::Sender<String>,
-    binary_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    binary_tx: tokio::sync::mpsc::Sender<Bytes>,
     subscriptions: Arc<RwLock<SubscriptionState>>,
 ) {
     let mut latest_canvas = canvas_rx.borrow().clone();
@@ -1093,7 +1109,7 @@ async fn relay_screen_canvas(
                 }
 
                 if binary_tx
-                    .try_send(encode_canvas_binary_with_header(
+                    .try_send(encode_cached_canvas_binary_with_header(
                         &latest_canvas,
                         canvas_config.format,
                         WS_SCREEN_CANVAS_HEADER,
@@ -1560,12 +1576,32 @@ fn encode_canvas_preview_binary(
     encode_canvas_binary_with_header_and_brightness(canvas, format, WS_CANVAS_HEADER, brightness)
 }
 
+fn encode_cached_canvas_preview_binary(
+    canvas: &hypercolor_core::bus::CanvasFrame,
+    format: CanvasFormat,
+    brightness: f32,
+) -> Bytes {
+    cached_canvas_binary(canvas, format, WS_CANVAS_HEADER, brightness, || {
+        Bytes::from(encode_canvas_preview_binary(canvas, format, brightness))
+    })
+}
+
 fn encode_canvas_binary_with_header(
     canvas: &hypercolor_core::bus::CanvasFrame,
     format: CanvasFormat,
     header: u8,
 ) -> Vec<u8> {
     encode_canvas_binary_with_header_and_brightness(canvas, format, header, 1.0)
+}
+
+fn encode_cached_canvas_binary_with_header(
+    canvas: &hypercolor_core::bus::CanvasFrame,
+    format: CanvasFormat,
+    header: u8,
+) -> Bytes {
+    cached_canvas_binary(canvas, format, header, 1.0, || {
+        Bytes::from(encode_canvas_binary_with_header(canvas, format, header))
+    })
 }
 
 fn encode_canvas_binary_with_header_and_brightness(
@@ -1626,6 +1662,67 @@ fn scale_preview_channel(channel: u8, brightness: f32) -> u8 {
         return 0;
     }
     linear_to_srgb_u8(srgb_u8_to_linear(channel) * brightness)
+}
+
+fn cached_canvas_binary<F>(
+    canvas: &hypercolor_core::bus::CanvasFrame,
+    format: CanvasFormat,
+    header: u8,
+    brightness: f32,
+    encode: F,
+) -> Bytes
+where
+    F: FnOnce() -> Bytes,
+{
+    let key = CanvasBinaryCacheKey {
+        generation: canvas.surface().generation(),
+        frame_number: canvas.frame_number,
+        timestamp_ms: canvas.timestamp_ms,
+        width: canvas.width,
+        height: canvas.height,
+        header,
+        format_tag: canvas_format_tag(format),
+        brightness_bits: brightness.to_bits(),
+    };
+
+    if let Some(cached) = canvas_binary_cache_get(key) {
+        return cached;
+    }
+
+    let payload = encode();
+    canvas_binary_cache_put(key, payload.clone());
+    payload
+}
+
+fn canvas_binary_cache_get(key: CanvasBinaryCacheKey) -> Option<Bytes> {
+    let mut cache = WS_CANVAS_BINARY_CACHE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let index = cache.iter().position(|(candidate, _)| *candidate == key)?;
+    let (candidate, payload) = cache.remove(index)?;
+    let cached = payload.clone();
+    cache.push_front((candidate, payload));
+    Some(cached)
+}
+
+fn canvas_binary_cache_put(key: CanvasBinaryCacheKey, payload: Bytes) {
+    let mut cache = WS_CANVAS_BINARY_CACHE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    if let Some(index) = cache.iter().position(|(candidate, _)| *candidate == key) {
+        let _ = cache.remove(index);
+    }
+    cache.push_front((key, payload));
+    while cache.len() > WS_CANVAS_BINARY_CACHE_CAPACITY {
+        let _ = cache.pop_back();
+    }
+}
+
+const fn canvas_format_tag(format: CanvasFormat) -> u8 {
+    match format {
+        CanvasFormat::Rgb => 0,
+        CanvasFormat::Rgba => 1,
+    }
 }
 
 fn sanitize_f32(value: f32) -> f32 {
@@ -1954,10 +2051,10 @@ async fn send_json(socket: &mut WebSocket, msg: &impl Serialize) -> Result<(), a
 mod tests {
     use super::{
         ChannelConfig, ChannelConfigPatch, ServerMessage, WsChannel, command_response_from_http,
-        dispatch_command, encode_canvas_preview_binary, encode_frame_binary,
-        encode_spectrum_binary, event_message_parts, filter_frame_zones, normalize_command_path,
-        parse_channels, parse_command_method, should_relay_event, to_snake_case, try_enqueue_json,
-        unique_sorted_channel_names, ws_capabilities,
+        dispatch_command, encode_cached_canvas_preview_binary, encode_canvas_preview_binary,
+        encode_frame_binary, encode_spectrum_binary, event_message_parts, filter_frame_zones,
+        normalize_command_path, parse_channels, parse_command_method, should_relay_event,
+        to_snake_case, try_enqueue_json, unique_sorted_channel_names, ws_capabilities,
     };
     use crate::api::AppState;
     use crate::api::security::{RequestAuthContext, SecurityState};
@@ -2474,6 +2571,31 @@ mod tests {
         let encoded = encode_canvas_preview_binary(&frame, super::CanvasFormat::Rgba, 0.0);
 
         assert_eq!(&encoded[14..18], &[0, 0, 0, 123]);
+    }
+
+    #[test]
+    fn cached_canvas_preview_binary_reuses_bytes_for_matching_requests() {
+        let mut canvas = Canvas::new(1, 1);
+        canvas.set_pixel(0, 0, Rgba::new(90, 80, 70, 123));
+        let frame = CanvasFrame::from_canvas(&canvas, 7001, 9901);
+
+        let first = encode_cached_canvas_preview_binary(&frame, super::CanvasFormat::Rgba, 0.5);
+        let second = encode_cached_canvas_preview_binary(&frame, super::CanvasFormat::Rgba, 0.5);
+
+        assert_eq!(first, second);
+        assert_eq!(first.as_ptr(), second.as_ptr());
+    }
+
+    #[test]
+    fn cached_canvas_preview_binary_keys_brightness_separately() {
+        let mut canvas = Canvas::new(1, 1);
+        canvas.set_pixel(0, 0, Rgba::new(255, 128, 0, 200));
+        let frame = CanvasFrame::from_canvas(&canvas, 7002, 9902);
+
+        let full = encode_cached_canvas_preview_binary(&frame, super::CanvasFormat::Rgba, 1.0);
+        let dimmed = encode_cached_canvas_preview_binary(&frame, super::CanvasFormat::Rgba, 0.5);
+
+        assert_ne!(full, dimmed);
     }
 
     #[test]
