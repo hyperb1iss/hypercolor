@@ -424,7 +424,7 @@ Output goes to `effects/hypercolor/` by default.
 </body>
 ```
 
-This is the contract between effects and the Hypercolor runtime. You can also write effects as plain HTML without the SDK — the runtime only cares about this format.
+This is the contract between effects and the Hypercolor runtime. You can also write effects as plain HTML without the SDK — the runtime only cares about this format. See [Effect HTML Format Reference](#effect-html-format-reference) for the full specification.
 
 ---
 
@@ -615,3 +615,276 @@ Creates a stateful canvas effect (factory returns draw function).
 | `color(label, '#hex', opts?)` | `tooltip?, uniform?` | Color picker |
 | `hue(label, [min, max], default, opts?)` | `tooltip?, uniform?` | Hue wheel |
 | `text(label, default, opts?)` | `tooltip?, uniform?` | Text input |
+
+---
+
+## Effect HTML Format Reference
+
+The Hypercolor runtime loads effects as self-contained HTML files. The `@hypercolor/sdk` compiles TypeScript effects to this format, but you can author effects directly in HTML — the runtime has no dependency on the SDK.
+
+### Minimal Valid Effect
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>My Effect</title>
+</head>
+<body style="margin:0;overflow:hidden;background:#000">
+  <canvas id="exCanvas" style="display:block;width:100%;height:100%"></canvas>
+  <script>
+    const canvas = document.getElementById('exCanvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = 320;
+    canvas.height = 200;
+
+    function render() {
+      const hue = (performance.now() * 0.036) % 360;
+      ctx.fillStyle = `hsl(${hue}, 80%, 50%)`;
+      ctx.fillRect(0, 0, 320, 200);
+      requestAnimationFrame(render);
+    }
+    requestAnimationFrame(render);
+  </script>
+</body>
+</html>
+```
+
+### Canvas Resolution
+
+The standard canvas is **320 x 200 pixels**. Effects may use any resolution, but this is the default that the spatial engine samples from. The runtime sets `window.engine.width` and `window.engine.height` to the active canvas dimensions.
+
+### Metadata Tags
+
+The `<head>` section carries all metadata and control declarations as `<meta>` tags.
+
+#### Effect Identity
+
+```html
+<title>Effect Name</title>
+<meta description="Brief description of this effect"/>
+<meta publisher="Author Name"/>
+```
+
+#### Renderer and Capability Hints
+
+```html
+<meta renderer="webgl"/>              <!-- or "canvas2d" -->
+<meta audio-reactive="true"/>         <!-- enables audio data injection -->
+<meta category="dynamic"/>            <!-- "dynamic" or "static" -->
+<meta tags="fire,particles,audio"/>   <!-- comma-separated discovery tags -->
+```
+
+If `audio-reactive` is omitted, the runtime uses heuristic detection (scanning the script body for audio API references like `engine.audio`, `iAudioBass`, etc.).
+
+#### Control Declarations
+
+Each user-facing control is a `<meta>` tag with a `property` attribute:
+
+```html
+<meta property="speed" label="Speed" type="number"
+      min="1" max="10" default="5" step="0.5"
+      tooltip="Animation speed multiplier" group="Animation"/>
+```
+
+**Supported attributes:**
+
+| Attribute | Required | Description |
+|-----------|----------|-------------|
+| `property` | yes | JavaScript variable name (injected as `globalThis["property"]`) |
+| `type` | no (defaults to `number`) | Control widget type (see table below) |
+| `label` | no | Display label in UI (defaults to humanized property name) |
+| `default` | no | Initial value |
+| `min`, `max` | no | Range bounds for numeric types |
+| `step` | no | Increment step for numeric types |
+| `values` | no | Comma-separated options for combobox |
+| `tooltip` | no | Help text shown on hover |
+| `group` | no | UI grouping label |
+
+**Control types:**
+
+| Type Value | Widget | Default Format | Notes |
+|------------|--------|----------------|-------|
+| `number` | Slider | `"50"` | Bounded by `min`/`max` |
+| `boolean` | Toggle | `"true"` or `"1"` | Truthy/falsy string |
+| `color` | Color picker | `"#ff0066"` | Hex string |
+| `combobox` | Dropdown | First value | Requires `values` attribute |
+| `dropdown` | Dropdown | First value | Alias for `combobox` |
+| `hue` | Hue wheel | `"0"` | Range 0-360 |
+| `sensor` | Sensor selector | `"CPU Load"` | System sensor name |
+| `textfield` | Text input | `""` | Freeform string |
+| `text` | Text input | `""` | Alias for `textfield` |
+| `input` | Text input | `""` | Alias for `textfield` |
+| `area` | Area selector | — | Spatial area |
+
+#### Preset Declarations
+
+Effects can bundle named presets that override control values:
+
+```html
+<meta preset="Chill Mode" preset-description="Slow, cool tones"
+      preset-controls='{"speed":"2","palette":"Ice","intensity":"40"}'/>
+<meta preset="Overdrive" preset-description="Fast and loud"
+      preset-controls='{"speed":"9","palette":"Fire","intensity":"95"}'/>
+```
+
+Presets appear in the UI as one-click configurations. The `preset-controls` attribute is a JSON object mapping property names to string values. This is a Hypercolor extension with no equivalent in other RGB platforms.
+
+### Runtime API (`window.engine`)
+
+The runtime injects a `window.engine` object before the effect script executes. This is the primary bridge between effect code and the Hypercolor daemon.
+
+#### Canvas Dimensions
+
+```javascript
+window.engine.width   // Canvas width in pixels (default: 320)
+window.engine.height  // Canvas height in pixels (default: 200)
+```
+
+#### Audio Data
+
+Available when `audio-reactive` is enabled. Updated every frame.
+
+```javascript
+// Frequency data
+window.engine.audio.freq              // Int8Array[200] — log-spaced spectrum bins
+window.engine.audio.frequency         // Float32Array[200] — normalized 0.0-1.0
+window.engine.audio.melBands          // Float32Array[24] — perceptual frequency bands
+window.engine.audio.melBandsNormalized // Float32Array[24] — normalized mel bands
+window.engine.audio.chromagram        // Float32Array[12] — pitch classes C through B
+
+// Levels
+window.engine.audio.level             // Overall level in dB
+window.engine.audio.rms               // RMS energy 0.0-1.0
+window.engine.audio.peak              // Peak level 0.0-1.0
+window.engine.audio.bass              // Low frequency energy 0.0-1.0
+window.engine.audio.mid               // Mid frequency energy 0.0-1.0
+window.engine.audio.treble            // High frequency energy 0.0-1.0
+
+// Beat detection
+window.engine.audio.beat              // boolean — true on beat onset
+window.engine.audio.beatPulse         // 1.0 on beat, decays to 0.0
+window.engine.audio.beatPhase         // 0.0-1.0 position within beat cycle
+window.engine.audio.beatConfidence    // Tempo stability 0.0-1.0
+window.engine.audio.bpm               // Estimated BPM
+window.engine.audio.onset             // boolean — transient onset detected
+window.engine.audio.onsetPulse        // 1.0 on onset, decays to 0.0
+
+// Spectral features
+window.engine.audio.brightness        // Spectral centroid (timbral brightness)
+window.engine.audio.spread            // Spectral spread
+window.engine.audio.rolloff           // Spectral rolloff frequency
+window.engine.audio.roughness         // Spectral roughness
+window.engine.audio.spectralFlux      // Rate of spectral change
+window.engine.audio.spectralFluxBands // Float32Array[3] — per-band flux
+
+// Harmonic analysis
+window.engine.audio.harmonicHue       // Dominant pitch mapped to hue 0-360
+window.engine.audio.chordMood         // Major/minor mood indicator
+window.engine.audio.dominantPitch     // Dominant pitch class index 0-11
+window.engine.audio.dominantPitchConfidence // Pitch detection confidence
+```
+
+#### Screen Ambience (`engine.zone`)
+
+For effects that react to screen content. The screen is divided into a 28x20 grid (560 zones).
+
+```javascript
+window.engine.zone.hue               // Int16Array[560] — zone hue values 0-360
+window.engine.zone.saturation        // Int8Array[560] — zone saturation 0-100
+window.engine.zone.lightness         // Int8Array[560] — zone lightness 0-100
+window.engine.zone.imagedata         // Uint8ClampedArray[64000] — 160x100 RGBA pixels
+window.engine.zone.width             // 28 (columns)
+window.engine.zone.height            // 20 (rows)
+```
+
+The `imagedata` buffer can be drawn directly with `ctx.putImageData()` for HD screen mirroring effects.
+
+#### Keyboard and Mouse
+
+For interactive effects that respond to user input.
+
+```javascript
+// Keyboard
+window.engine.keyboard.keys           // Object — currently held keys (key: true)
+window.engine.keyboard.recent         // Array — recently pressed key names
+window.engine.keyboard.isKeyDown(key) // Check if a key is currently held
+window.engine.keyboard.wasKeyPressed(key) // Check recent presses
+window.engine.keyboard.consumePressedKeys() // Read and clear recent buffer
+
+// Mouse
+window.engine.mouse.x                // Horizontal position (canvas-relative)
+window.engine.mouse.y                // Vertical position (canvas-relative)
+window.engine.mouse.down             // boolean — any button held
+window.engine.mouse.buttons          // Bitmask of held buttons
+```
+
+#### Sensors
+
+Query system sensors (CPU temperature, GPU load, etc.) by name.
+
+```javascript
+window.engine.getSensorValue("CPU Load")
+// Returns: { value: 42, min: 0, max: 100, unit: "%" }
+
+window.engine.setSensorValue("Custom Metric", 73, 0, 100, "%")
+window.engine.resetSensors()
+window.engine.sensorList              // Array of registered sensor names
+```
+
+#### Vision Meters
+
+Named numeric values for cross-effect or system data.
+
+```javascript
+window.engine.getMeterValue("brightness")  // Read a named meter
+window.engine.setMeterValue("energy", 0.8) // Set a named meter
+window.engine.setVisionValues({ brightness: 0.6, energy: 0.9 }) // Batch update
+```
+
+### Control Value Injection
+
+Control values are injected as `globalThis` properties. When a user changes a control, the runtime:
+
+1. Sets `globalThis["propertyName"] = newValue`
+2. Calls `window["on{propertyName}Changed"]()` if it exists
+
+```javascript
+// Declared via: <meta property="speed" type="number" default="5"/>
+// Available as:
+console.log(speed);  // 5 (global variable)
+
+// Optional change handler:
+function onspeedChanged() {
+  // Called whenever the user adjusts the speed slider
+  recalculateAnimation();
+}
+```
+
+Color values are injected as hex strings (`"#ff0066"`). Booleans as `true`/`false`. Numbers as numeric literals. Combobox selections as the string value.
+
+### LightScript Compatibility
+
+Hypercolor's effect format is based on the **LightScript** standard used across the RGB lighting ecosystem. Effects authored for LightScript-compatible platforms that follow the HTML meta-tag contract will load in Hypercolor without modification, provided they:
+
+1. Declare controls via `<meta property="..." type="..." .../>` tags
+2. Use standard Canvas 2D or WebGL rendering
+3. Drive animation with `requestAnimationFrame`
+4. Read control values from global variables (e.g., `window["speed"]`)
+
+Hypercolor extends the base LightScript contract with additional capabilities that are gracefully ignored by other platforms:
+
+| Extension | Tag/API | Purpose |
+|-----------|---------|---------|
+| Presets | `<meta preset="..." preset-controls='...'>` | Bundled parameter configurations |
+| Audio-reactive flag | `<meta audio-reactive="true"/>` | Explicit audio opt-in (with heuristic fallback) |
+| Renderer hint | `<meta renderer="webgl\|canvas2d"/>` | Optimization hint for the runtime |
+| Discovery tags | `<meta tags="fire,particles"/>` | Search and categorization metadata |
+| Hue control | `type="hue"` | Dedicated hue wheel widget (0-360) |
+| Area control | `type="area"` | Spatial area selector |
+| Extended audio | `window.engine.audio.*` | 30+ audio properties including mel bands, chromagram, beat detection, spectral features, and harmonic analysis |
+| Keyboard/mouse | `window.engine.keyboard.*`, `window.engine.mouse.*` | Interactive effect input |
+| Screen ambience | `window.engine.zone.*` | 28x20 screen color grid with HD image buffer |
+| Sensor queries | `window.engine.getSensorValue()` | System telemetry access |
+
+Effects that use these extensions will still run on other LightScript platforms — the extended APIs simply return default/zero values when unavailable.
