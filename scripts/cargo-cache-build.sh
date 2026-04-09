@@ -151,6 +151,19 @@ p.write_text(src)
   fi
 done
 
+# Patch mozjs_sys's linker detection for Xcode 26+.
+# Apple's linker changed its PROJECT identifier from "dyld" to "ld-<version>"
+# (e.g. "PROGRAM:ld PROJECT:ld-1266.8"), which mozjs's toolchain.configure
+# doesn't recognize, causing "Failed to find an adequate linker".
+for tc in "$HOME"/.cargo/registry/src/*/mozjs_sys-*/mozjs/build/moz.configure/toolchain.configure; do
+  [ -f "$tc" ] || continue
+  if ! grep -q 'PROGRAM:ld PROJECT:ld' "$tc"; then
+    sed -i.bak 's|"PROGRAM:ld  PROJECT:dyld" in stderr|"PROGRAM:ld  PROJECT:dyld" in stderr or "PROGRAM:ld PROJECT:ld" in stderr|' "$tc"
+    rm -f "$tc.bak"
+    echo "[cargo-cache] patched mozjs toolchain.configure for Xcode 26 linker detection"
+  fi
+done
+
 echo "[cargo-cache] CARGO_TARGET_DIR=$CARGO_TARGET_DIR"
 echo "[cargo-cache] MOZBUILD_STATE_PATH=$MOZBUILD_STATE_PATH"
 
