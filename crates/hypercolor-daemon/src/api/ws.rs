@@ -488,6 +488,7 @@ struct MetricsPayload {
     frame_time: MetricsFrameTime,
     stages: MetricsStages,
     pacing: MetricsPacing,
+    timeline: MetricsTimeline,
     copies: MetricsCopies,
     memory: MetricsMemory,
     devices: MetricsDevices,
@@ -548,6 +549,25 @@ struct MetricsPacing {
     retained_effect: u32,
     retained_screen: u32,
     composition_bypassed: u32,
+}
+
+#[derive(Debug, Serialize)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "JSON keys mirror protocol field names from the WebSocket spec"
+)]
+struct MetricsTimeline {
+    frame_token: u64,
+    budget_ms: f64,
+    wake_late_ms: f64,
+    scene_snapshot_done_ms: f64,
+    input_done_ms: f64,
+    producer_done_ms: f64,
+    composition_done_ms: f64,
+    sampling_done_ms: f64,
+    output_done_ms: f64,
+    publish_done_ms: f64,
+    frame_done_ms: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1928,6 +1948,21 @@ async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> Ser
                 retained_screen: performance_snapshot.pacing.retained_screen,
                 composition_bypassed: performance_snapshot.pacing.composition_bypassed,
             },
+            timeline: MetricsTimeline {
+                frame_token: latest_frame.timeline.frame_token,
+                budget_ms: round_2(us_to_ms(latest_frame.timeline.budget_us)),
+                wake_late_ms: round_2(us_to_ms(latest_frame.wake_late_us)),
+                scene_snapshot_done_ms: round_2(us_to_ms(
+                    latest_frame.timeline.scene_snapshot_done_us,
+                )),
+                input_done_ms: round_2(us_to_ms(latest_frame.timeline.input_done_us)),
+                producer_done_ms: round_2(us_to_ms(latest_frame.timeline.producer_done_us)),
+                composition_done_ms: round_2(us_to_ms(latest_frame.timeline.composition_done_us)),
+                sampling_done_ms: round_2(us_to_ms(latest_frame.timeline.sample_done_us)),
+                output_done_ms: round_2(us_to_ms(latest_frame.timeline.output_done_us)),
+                publish_done_ms: round_2(us_to_ms(latest_frame.timeline.publish_done_us)),
+                frame_done_ms: round_2(us_to_ms(latest_frame.timeline.frame_done_us)),
+            },
             copies: MetricsCopies {
                 full_frame_count: latest_frame.full_frame_copy_count,
                 full_frame_kb: round_2(bytes_to_kib(latest_frame.full_frame_copy_bytes)),
@@ -2180,14 +2215,16 @@ async fn send_json(socket: &mut WebSocket, msg: &impl Serialize) -> Result<(), a
 mod tests {
     use super::{
         ChannelConfig, ChannelConfigPatch, FrameFormat, FrameRelayMessage, FramesConfig,
-        ServerMessage, WsChannel, cached_frame_payload, command_response_from_http,
-        dispatch_command, encode_cached_canvas_preview_binary, encode_canvas_preview_binary,
-        encode_frame_binary, encode_spectrum_binary, event_message_parts, filter_frame_zones,
-        normalize_command_path, parse_channels, parse_command_method, should_relay_event,
-        to_snake_case, try_enqueue_json, unique_sorted_channel_names, ws_capabilities,
+        ServerMessage, WsChannel, build_metrics_message, cached_frame_payload,
+        command_response_from_http, dispatch_command, encode_cached_canvas_preview_binary,
+        encode_canvas_preview_binary, encode_frame_binary, encode_spectrum_binary,
+        event_message_parts, filter_frame_zones, normalize_command_path, parse_channels,
+        parse_command_method, should_relay_event, to_snake_case, try_enqueue_json,
+        unique_sorted_channel_names, ws_capabilities,
     };
     use crate::api::AppState;
     use crate::api::security::{RequestAuthContext, SecurityState};
+    use crate::performance::{FrameTimeline, LatestFrameMetrics};
     use axum::response::IntoResponse;
     use hypercolor_core::bus::CanvasFrame;
     use hypercolor_types::canvas::{Canvas, Rgba, linear_to_srgb_u8, srgb_u8_to_linear};
@@ -2236,6 +2273,61 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[tokio::test]
+    async fn metrics_message_includes_latest_frame_timeline() {
+        let state = Arc::new(AppState::new());
+        {
+            let mut performance = state.performance.write().await;
+            performance.record_frame(LatestFrameMetrics {
+                timestamp_ms: 1234,
+                input_us: 200,
+                producer_us: 900,
+                composition_us: 300,
+                render_us: 1_200,
+                sample_us: 150,
+                push_us: 250,
+                postprocess_us: 0,
+                publish_us: 180,
+                overhead_us: 70,
+                total_us: 1_850,
+                wake_late_us: 220,
+                jitter_us: 440,
+                reused_inputs: false,
+                reused_canvas: false,
+                retained_effect: false,
+                retained_screen: false,
+                composition_bypassed: false,
+                full_frame_copy_count: 0,
+                full_frame_copy_bytes: 0,
+                output_errors: 0,
+                timeline: FrameTimeline {
+                    frame_token: 77,
+                    budget_us: 16_666,
+                    scene_snapshot_done_us: 120,
+                    input_done_us: 320,
+                    producer_done_us: 1_040,
+                    composition_done_us: 1_340,
+                    sample_done_us: 1_490,
+                    output_done_us: 1_740,
+                    publish_done_us: 1_820,
+                    frame_done_us: 1_850,
+                },
+            });
+        }
+
+        let ServerMessage::Metrics { data, .. } = build_metrics_message(&state, 0.0).await else {
+            panic!("expected metrics message");
+        };
+        let json = serde_json::to_value(&data).expect("metrics payload should serialize");
+
+        assert_eq!(json["timeline"]["frame_token"], 77);
+        assert_eq!(json["timeline"]["budget_ms"], 16.67);
+        assert_eq!(json["timeline"]["wake_late_ms"], 0.22);
+        assert_eq!(json["timeline"]["scene_snapshot_done_ms"], 0.12);
+        assert_eq!(json["timeline"]["composition_done_ms"], 1.34);
+        assert_eq!(json["timeline"]["frame_done_ms"], 1.85);
     }
 
     #[test]

@@ -4,6 +4,21 @@ use std::collections::VecDeque;
 
 const FRAME_HISTORY_CAPACITY: usize = 120;
 
+/// Absolute checkpoints for the latest completed frame.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct FrameTimeline {
+    pub frame_token: u64,
+    pub budget_us: u32,
+    pub scene_snapshot_done_us: u32,
+    pub input_done_us: u32,
+    pub producer_done_us: u32,
+    pub composition_done_us: u32,
+    pub sample_done_us: u32,
+    pub output_done_us: u32,
+    pub publish_done_us: u32,
+    pub frame_done_us: u32,
+}
+
 /// Most recent per-frame timings captured from the render thread.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct LatestFrameMetrics {
@@ -28,6 +43,7 @@ pub(crate) struct LatestFrameMetrics {
     pub full_frame_copy_count: u32,
     pub full_frame_copy_bytes: u32,
     pub output_errors: u32,
+    pub timeline: FrameTimeline,
 }
 
 /// Aggregate frame-time summary over the recent render window.

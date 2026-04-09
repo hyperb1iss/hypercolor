@@ -548,6 +548,44 @@ fn PerformancePanel(
             })
             .unwrap_or_else(|| "\u{2014}".to_string())
     });
+    let latest_frame_text = Memo::new(move |_| {
+        metrics
+            .get()
+            .and_then(|m| {
+                if m.timeline.frame_token == 0 {
+                    return None;
+                }
+                Some(format!(
+                    "#{} · wake {:.2} · snap {:.2} · prod {:.2} · comp {:.2} · out {:.2} · pub {:.2}",
+                    m.timeline.frame_token,
+                    m.timeline.wake_late_ms,
+                    m.timeline.scene_snapshot_done_ms,
+                    m.timeline.producer_done_ms,
+                    m.timeline.composition_done_ms,
+                    m.timeline.output_done_ms,
+                    m.timeline.publish_done_ms
+                ))
+            })
+            .unwrap_or_else(|| "\u{2014}".to_string())
+    });
+    let latest_frame_hint = Memo::new(move |_| {
+        metrics
+            .get()
+            .and_then(|m| {
+                if m.timeline.frame_token == 0 {
+                    return None;
+                }
+                Some(format!(
+                    "budget {:.2} ms · input {:.2} · sample {:.2} · total {:.2} · age {:.2}",
+                    m.timeline.budget_ms,
+                    m.timeline.input_done_ms,
+                    m.timeline.sampling_done_ms,
+                    m.timeline.frame_done_ms,
+                    m.pacing.frame_age_ms
+                ))
+            })
+            .unwrap_or_else(|| "latest frame timeline".to_string())
+    });
 
     view! {
         <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle overflow-hidden">
@@ -631,6 +669,16 @@ fn PerformancePanel(
                         <StatChip label="Wake Delay" value=Signal::derive(move || pacing_wake_text.get()) color="var(--electric-yellow)" />
                         <StatChip label="Frame Age" value=Signal::derive(move || pacing_age_text.get()) color="var(--neon-cyan)" />
                         <StatChip label="Reuse (120f)" value=Signal::derive(move || pacing_reuse_text.get()) color="var(--success-green)" />
+                    </div>
+                </div>
+
+                <div class="rounded-lg border border-edge-subtle bg-surface-overlay/20 px-3 py-2.5">
+                    <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                        <div class="text-[9px] font-mono uppercase tracking-[0.14em] text-fg-tertiary">"Latest Frame"</div>
+                        <div class="text-[10px] font-mono text-fg-tertiary">{move || latest_frame_hint.get()}</div>
+                    </div>
+                    <div class="mt-1 text-[11px] font-mono text-fg-secondary break-words">
+                        {move || latest_frame_text.get()}
                     </div>
                 </div>
 

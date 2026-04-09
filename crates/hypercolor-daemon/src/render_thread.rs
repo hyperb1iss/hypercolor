@@ -49,7 +49,7 @@ use self::scene_state::RenderSceneState;
 use self::sparkleflinger::{ComposedFrameSet, CompositionLayer, CompositionPlan, SparkleFlinger};
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::{DiscoveryRuntime, handle_async_write_failures};
-use crate::performance::{LatestFrameMetrics, PerformanceTracker};
+use crate::performance::{FrameTimeline, LatestFrameMetrics, PerformanceTracker};
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::OutputPowerState;
 
@@ -237,7 +237,9 @@ struct PublishFrameStats {
 struct RenderStageStats {
     composed_frame: ComposedFrameSet,
     producer_us: u32,
+    producer_done_us: u32,
     composition_us: u32,
+    composition_done_us: u32,
     total_us: u32,
     effect_retained: bool,
     screen_retained: bool,
@@ -516,9 +518,12 @@ async fn execute_frame(
         last_screen_capture_active,
     )
     .await;
+    let scene_snapshot_done_us = micros_u32(frame_start.elapsed());
     if let Some(frame) = maybe_sleep_throttle(
         state,
         &scene_snapshot,
+        frame_start,
+        scene_snapshot_done_us,
         static_surface_cache,
         recycled_frame,
         sleep_black_pushed,
@@ -550,6 +555,7 @@ async fn execute_frame(
         SkipDecision::ReuseInputs | SkipDecision::ReuseCanvas => &*cached_inputs,
     };
     let input_us = micros_u32(input_start.elapsed());
+    let input_done_us = micros_u32(frame_start.elapsed());
 
     // ── Stage 2: Effect render → Canvas ─────────────────────────
     let render_stage = compose_frame_set(
@@ -577,6 +583,7 @@ async fn execute_frame(
     let zone_colors = &recycled_frame.zones;
     let layout = scene_snapshot.spatial_engine.layout();
     let sample_us = micros_u32(sample_start.elapsed());
+    let sample_done_us = micros_u32(frame_start.elapsed());
 
     // ── Stage 4: Device push → hardware ─────────────────────────
     let push_start = Instant::now();
@@ -594,6 +601,7 @@ async fn execute_frame(
         (write_stats, async_failures)
     };
     let push_us = micros_u32(push_start.elapsed());
+    let output_done_us = micros_u32(frame_start.elapsed());
 
     if let Some(runtime) = &state.discovery_runtime {
         handle_async_write_failures(runtime, async_failures).await;
@@ -649,6 +657,7 @@ async fn execute_frame(
         },
     );
     let publish_us = publish_stats.elapsed_us;
+    let publish_done_us = micros_u32(frame_start.elapsed());
     full_frame_copy_count =
         full_frame_copy_count.saturating_add(publish_stats.full_frame_copy_count);
     full_frame_copy_bytes =
@@ -687,6 +696,18 @@ async fn execute_frame(
             full_frame_copy_count,
             full_frame_copy_bytes,
             output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),
+            timeline: FrameTimeline {
+                frame_token: scene_snapshot.frame_token,
+                budget_us: scene_snapshot.budget_us,
+                scene_snapshot_done_us,
+                input_done_us,
+                producer_done_us: input_done_us.saturating_add(render_stage.producer_done_us),
+                composition_done_us: input_done_us.saturating_add(render_stage.composition_done_us),
+                sample_done_us,
+                output_done_us,
+                publish_done_us,
+                frame_done_us: total_us,
+            },
         });
     }
 
@@ -808,6 +829,7 @@ async fn compose_frame_set(
         )
         .await
     };
+    let producer_done_us = micros_u32(stage_start.elapsed());
     let composition_start = Instant::now();
     let composed = sparkleflinger.compose(CompositionPlan::single(
         state.canvas_width,
@@ -815,11 +837,14 @@ async fn compose_frame_set(
         CompositionLayer::replace(source_frame),
     ));
     let composition_us = micros_u32(composition_start.elapsed());
+    let composition_done_us = micros_u32(stage_start.elapsed());
     RenderStageStats {
         composition_bypassed: composed.bypassed,
         composed_frame: composed,
         producer_us,
+        producer_done_us,
         composition_us,
+        composition_done_us,
         total_us: micros_u32(stage_start.elapsed()),
         effect_retained: scene_snapshot.effect_demand.effect_running
             && producer_state.is_some_and(ProducerFrameState::is_retained),
@@ -1080,6 +1105,8 @@ async fn maybe_idle_throttle(
 async fn maybe_sleep_throttle(
     state: &RenderThreadState,
     scene_snapshot: &FrameSceneSnapshot,
+    frame_start: Instant,
+    scene_snapshot_done_us: u32,
     static_surface_cache: &mut Option<CachedStaticSurface>,
     recycled_frame: &mut FrameData,
     sleep_black_pushed: &mut bool,
@@ -1090,9 +1117,6 @@ async fn maybe_sleep_throttle(
         *sleep_black_pushed = false;
         return None;
     }
-
-    let frame_start = Instant::now();
-
     if *sleep_black_pushed {
         {
             let mut rl = state.render_loop.write().await;
@@ -1165,6 +1189,7 @@ async fn maybe_sleep_throttle(
     let zone_colors = &recycled_frame.zones;
     let layout = scene_snapshot.spatial_engine.layout();
     let sample_us = micros_u32(sample_start.elapsed());
+    let sample_done_us = micros_u32(frame_start.elapsed());
 
     let push_start = Instant::now();
     let (write_stats, async_failures) = {
@@ -1174,6 +1199,7 @@ async fn maybe_sleep_throttle(
         (write_stats, async_failures)
     };
     let push_us = micros_u32(push_start.elapsed());
+    let output_done_us = micros_u32(frame_start.elapsed());
 
     if let Some(runtime) = &state.discovery_runtime {
         handle_async_write_failures(runtime, async_failures).await;
@@ -1202,6 +1228,7 @@ async fn maybe_sleep_throttle(
         },
     );
     let publish_us = publish_stats.elapsed_us;
+    let publish_done_us = micros_u32(frame_start.elapsed());
     let total_us = micros_u32(frame_start.elapsed());
     let overhead_us =
         total_us.saturating_sub(sample_us.saturating_add(push_us).saturating_add(publish_us));
@@ -1230,6 +1257,18 @@ async fn maybe_sleep_throttle(
             full_frame_copy_count: publish_stats.full_frame_copy_count,
             full_frame_copy_bytes: publish_stats.full_frame_copy_bytes,
             output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),
+            timeline: FrameTimeline {
+                frame_token: scene_snapshot.frame_token,
+                budget_us: scene_snapshot.budget_us,
+                scene_snapshot_done_us,
+                input_done_us: scene_snapshot_done_us,
+                producer_done_us: scene_snapshot_done_us,
+                composition_done_us: scene_snapshot_done_us,
+                sample_done_us,
+                output_done_us,
+                publish_done_us,
+                frame_done_us: total_us,
+            },
         });
     }
 

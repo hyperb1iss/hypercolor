@@ -132,6 +132,7 @@ pub struct PerformanceMetrics {
     pub frame_time: MetricsFrameTime,
     pub stages: MetricsStages,
     pub pacing: MetricsPacing,
+    pub timeline: MetricsTimeline,
     pub memory: MetricsMemory,
     pub devices: MetricsDevices,
     pub websocket: MetricsWebsocket,
@@ -183,6 +184,22 @@ pub struct MetricsPacing {
     pub retained_effect: u32,
     pub retained_screen: u32,
     pub composition_bypassed: u32,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MetricsTimeline {
+    pub frame_token: u64,
+    pub budget_ms: f64,
+    pub wake_late_ms: f64,
+    pub scene_snapshot_done_ms: f64,
+    pub input_done_ms: f64,
+    pub producer_done_ms: f64,
+    pub composition_done_ms: f64,
+    pub sampling_done_ms: f64,
+    pub output_done_ms: f64,
+    pub publish_done_ms: f64,
+    pub frame_done_ms: f64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
