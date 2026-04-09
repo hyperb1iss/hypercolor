@@ -604,12 +604,19 @@ async fn resolve_frame_canvas(
         *cached_canvas = Some(screen_canvas.clone());
         screen_canvas
     } else {
-        let rendered = render_effect(
+        let mut rendered = cached_canvas
+            .take()
+            .filter(|canvas| {
+                canvas.width() == state.canvas_width && canvas.height() == state.canvas_height
+            })
+            .unwrap_or_else(|| Canvas::new(state.canvas_width, state.canvas_height));
+        render_effect_into(
             state,
             delta_secs,
             &inputs.audio,
             &inputs.interaction,
             inputs.screen_data.as_ref(),
+            &mut rendered,
         )
         .await;
         *cached_canvas = Some(rendered.clone());
@@ -1159,20 +1166,25 @@ fn parse_sector_zone_id(zone_id: &str) -> Option<(u32, u32)> {
 }
 
 /// Render one frame from the effect engine, falling back to a black canvas on error.
-async fn render_effect(
+async fn render_effect_into(
     state: &RenderThreadState,
     delta_secs: f32,
     audio: &AudioData,
     interaction: &InteractionData,
     screen: Option<&ScreenData>,
-) -> Canvas {
+    target: &mut Canvas,
+) {
     let mut engine = state.effect_engine.lock().await;
 
-    match engine.tick_with_inputs(delta_secs, audio, interaction, screen) {
-        Ok(canvas) => canvas,
+    match engine.tick_with_inputs_into(delta_secs, audio, interaction, screen, target) {
+        Ok(()) => {}
         Err(e) => {
             warn!(error = %e, "effect render failed, producing black canvas");
-            Canvas::new(state.canvas_width, state.canvas_height)
+            if target.width() != state.canvas_width || target.height() != state.canvas_height {
+                *target = Canvas::new(state.canvas_width, state.canvas_height);
+            } else {
+                target.clear();
+            }
         }
     }
 }

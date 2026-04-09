@@ -199,6 +199,28 @@ fn bench_builtin_renderers(c: &mut Criterion) {
             });
         },
     );
+    let mut solid_into = SolidColorRenderer::new();
+    solid_into
+        .init(&ambient_metadata("solid_color"))
+        .expect("solid color renderer should initialize");
+    let mut solid_into_frame = 0_u64;
+    let mut solid_into_canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
+    group.bench_function(
+        BenchmarkId::new(
+            "solid_color_render_into",
+            format!("{CANVAS_WIDTH}x{CANVAS_HEIGHT}"),
+        ),
+        |b| {
+            b.iter(|| {
+                let input = frame_input(frame_time(solid_into_frame), solid_into_frame, &SILENCE);
+                solid_into_frame += 1;
+                solid_into
+                    .render_into(black_box(&input), black_box(&mut solid_into_canvas))
+                    .expect("solid color renderer should render into target");
+                black_box(solid_into_canvas.as_rgba_bytes());
+            });
+        },
+    );
 
     let mut gradient = GradientRenderer::new();
     gradient
@@ -215,6 +237,32 @@ fn bench_builtin_renderers(c: &mut Criterion) {
                     .tick(black_box(&input))
                     .expect("gradient renderer should tick");
                 black_box(canvas);
+            });
+        },
+    );
+    let mut gradient_into = GradientRenderer::new();
+    gradient_into
+        .init(&ambient_metadata("gradient"))
+        .expect("gradient renderer should initialize");
+    let mut gradient_into_frame = 0_u64;
+    let mut gradient_into_canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
+    group.bench_function(
+        BenchmarkId::new(
+            "gradient_render_into",
+            format!("{CANVAS_WIDTH}x{CANVAS_HEIGHT}"),
+        ),
+        |b| {
+            b.iter(|| {
+                let input = frame_input(
+                    frame_time(gradient_into_frame),
+                    gradient_into_frame,
+                    &SILENCE,
+                );
+                gradient_into_frame += 1;
+                gradient_into
+                    .render_into(black_box(&input), black_box(&mut gradient_into_canvas))
+                    .expect("gradient renderer should render into target");
+                black_box(gradient_into_canvas.as_rgba_bytes());
             });
         },
     );
