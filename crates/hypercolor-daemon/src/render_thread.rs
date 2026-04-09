@@ -239,6 +239,19 @@ struct FrameInputs {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StaticSurfaceKey {
+    width: u32,
+    height: u32,
+    color: [u8; 3],
+}
+
+#[derive(Clone)]
+struct CachedStaticSurface {
+    key: StaticSurfaceKey,
+    surface: PublishedSurface,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct EffectDemand {
     effect_running: bool,
     audio_capture_active: bool,
@@ -274,6 +287,8 @@ async fn run_pipeline(state: RenderThreadState) {
 
     let mut cached_inputs = FrameInputs::silence();
     let mut cached_canvas: Option<Canvas> = None;
+    let mut cached_surface: Option<PublishedSurface> = None;
+    let mut static_surface_cache: Option<CachedStaticSurface> = None;
     let mut recycled_frame = FrameData::empty();
     let mut skip_decision = SkipDecision::None;
     let mut last_tick = Instant::now();
@@ -324,6 +339,8 @@ async fn run_pipeline(state: RenderThreadState) {
             skip_decision,
             &mut cached_inputs,
             &mut cached_canvas,
+            &mut cached_surface,
+            &mut static_surface_cache,
             &mut recycled_frame,
             &mut last_tick,
             &mut idle_black_pushed,
@@ -368,6 +385,8 @@ async fn execute_frame(
     skip_decision: SkipDecision,
     cached_inputs: &mut FrameInputs,
     cached_canvas: &mut Option<Canvas>,
+    cached_surface: &mut Option<PublishedSurface>,
+    static_surface_cache: &mut Option<CachedStaticSurface>,
     recycled_frame: &mut FrameData,
     last_tick: &mut Instant,
     idle_black_pushed: &mut bool,
@@ -405,6 +424,7 @@ async fn execute_frame(
     if let Some(frame) = maybe_sleep_throttle(
         state,
         output_power,
+        static_surface_cache,
         recycled_frame,
         sleep_black_pushed,
         last_audio_level_update_ms,
@@ -437,12 +457,14 @@ async fn execute_frame(
     let input_us = micros_u32(input_start.elapsed());
 
     // ── Stage 2: Effect render → Canvas ─────────────────────────
-    let (canvas, render_us) = resolve_frame_canvas(
+    let (canvas, frame_surface, render_us) = resolve_frame_canvas(
         state,
         skip_decision,
         effect_demand.effect_running,
         inputs,
         cached_canvas,
+        cached_surface,
+        static_surface_cache,
         delta_secs,
     )
     .await;
@@ -491,6 +513,7 @@ async fn execute_frame(
         recycled_frame,
         &inputs.audio,
         canvas,
+        frame_surface,
         inputs.screen_preview_surface.clone(),
         frame_num_u32,
         elapsed_ms,
@@ -593,16 +616,40 @@ async fn resolve_frame_canvas(
     effect_running: bool,
     inputs: &FrameInputs,
     cached_canvas: &mut Option<Canvas>,
+    cached_surface: &mut Option<PublishedSurface>,
+    static_surface_cache: &mut Option<CachedStaticSurface>,
     delta_secs: f32,
-) -> (Canvas, u32) {
+) -> (Canvas, Option<PublishedSurface>, u32) {
     let render_start = Instant::now();
-    let canvas = if let (SkipDecision::ReuseCanvas, Some(previous)) =
+    let (canvas, surface) = if let (SkipDecision::ReuseCanvas, Some(previous)) =
         (skip_decision, cached_canvas.as_ref())
     {
-        previous.clone()
+        (previous.clone(), cached_surface.clone())
+    } else if !effect_running
+        && let Some(screen_surface) = inputs.screen_preview_surface.as_ref()
+        && screen_surface.width() == state.canvas_width
+        && screen_surface.height() == state.canvas_height
+    {
+        let canvas = Canvas::from_published_surface(screen_surface);
+        *cached_canvas = Some(canvas.clone());
+        let surface = screen_surface.clone();
+        *cached_surface = Some(surface.clone());
+        (canvas, Some(surface))
     } else if !effect_running && let Some(screen_canvas) = inputs.screen_canvas.clone() {
         *cached_canvas = Some(screen_canvas.clone());
-        screen_canvas
+        *cached_surface = None;
+        (screen_canvas, None)
+    } else if !effect_running {
+        let surface = static_surface(
+            static_surface_cache,
+            state.canvas_width,
+            state.canvas_height,
+            [0, 0, 0],
+        );
+        let canvas = Canvas::from_published_surface(&surface);
+        *cached_canvas = Some(canvas.clone());
+        *cached_surface = Some(surface.clone());
+        (canvas, Some(surface))
     } else {
         let mut rendered = cached_canvas
             .take()
@@ -620,9 +667,10 @@ async fn resolve_frame_canvas(
         )
         .await;
         *cached_canvas = Some(rendered.clone());
-        rendered
+        *cached_surface = None;
+        (rendered, None)
     };
-    (canvas, micros_u32(render_start.elapsed()))
+    (canvas, surface, micros_u32(render_start.elapsed()))
 }
 
 async fn current_effect_demand(state: &RenderThreadState) -> EffectDemand {
@@ -741,6 +789,7 @@ async fn maybe_idle_throttle(
 async fn maybe_sleep_throttle(
     state: &RenderThreadState,
     power_state: OutputPowerState,
+    static_surface_cache: &mut Option<CachedStaticSurface>,
     recycled_frame: &mut FrameData,
     sleep_black_pushed: &mut bool,
     last_audio_level_update_ms: &mut Option<u32>,
@@ -768,11 +817,18 @@ async fn maybe_sleep_throttle(
         recycled_frame.zones.clear();
         let (frame_number, elapsed_ms, budget_us) = frame_snapshot(state).await;
         let frame_num_u32 = u64_to_u32(frame_number);
+        let surface = static_surface(
+            static_surface_cache,
+            state.canvas_width,
+            state.canvas_height,
+            [0, 0, 0],
+        );
         let publish_stats = publish_frame_updates(
             state,
             recycled_frame,
             &AudioData::silence(),
-            Canvas::new(state.canvas_width, state.canvas_height),
+            Canvas::from_published_surface(&surface),
+            Some(surface),
             None,
             frame_num_u32,
             elapsed_ms,
@@ -802,11 +858,13 @@ async fn maybe_sleep_throttle(
         });
     }
 
-    let canvas = static_hold_canvas(
+    let surface = static_surface(
+        static_surface_cache,
         state.canvas_width,
         state.canvas_height,
         power_state.off_output_color,
     );
+    let canvas = Canvas::from_published_surface(&surface);
     let sample_start = Instant::now();
     let (zone_colors, layout) = {
         let spatial = state.spatial_engine.read().await;
@@ -837,6 +895,7 @@ async fn maybe_sleep_throttle(
         recycled_frame,
         &AudioData::silence(),
         canvas,
+        Some(surface),
         None,
         frame_num_u32,
         elapsed_ms,
@@ -894,6 +953,33 @@ fn static_hold_canvas(width: u32, height: u32, color: [u8; 3]) -> Canvas {
         canvas.fill(Rgba::new(color[0], color[1], color[2], 255));
     }
     canvas
+}
+
+fn static_surface(
+    cache: &mut Option<CachedStaticSurface>,
+    width: u32,
+    height: u32,
+    color: [u8; 3],
+) -> PublishedSurface {
+    let key = StaticSurfaceKey {
+        width,
+        height,
+        color,
+    };
+
+    if let Some(cached) = cache.as_ref()
+        && cached.key == key
+    {
+        return cached.surface.clone();
+    }
+
+    let surface =
+        PublishedSurface::from_owned_canvas(static_hold_canvas(width, height, color), 0, 0);
+    *cache = Some(CachedStaticSurface {
+        key,
+        surface: surface.clone(),
+    });
+    surface
 }
 
 fn should_idle_throttle(effect_running: bool, screen_capture_active: bool) -> bool {
@@ -979,6 +1065,7 @@ fn publish_frame_updates(
     recycled_frame: &mut FrameData,
     audio: &AudioData,
     canvas: Canvas,
+    frame_surface: Option<PublishedSurface>,
     screen_preview_surface: Option<PublishedSurface>,
     frame_number: u32,
     elapsed_ms: u32,
@@ -1001,13 +1088,18 @@ fn publish_frame_updates(
         .spectrum_sender()
         .send(spectrum_from_audio(audio, elapsed_ms));
     maybe_publish_audio_level_event(state, audio, elapsed_ms, last_audio_level_update_ms);
-    let canvas_rgba_len = usize_to_u32(canvas.rgba_len());
-    let (canvas_frame, canvas_copied) =
-        CanvasFrame::from_owned_canvas_with_copy_info(canvas, frame_number, elapsed_ms);
-    if canvas_copied {
-        full_frame_copy_count = full_frame_copy_count.saturating_add(1);
-        full_frame_copy_bytes = full_frame_copy_bytes.saturating_add(canvas_rgba_len);
-    }
+    let canvas_frame = if let Some(surface) = frame_surface {
+        CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
+    } else {
+        let canvas_rgba_len = usize_to_u32(canvas.rgba_len());
+        let (frame, copied) =
+            CanvasFrame::from_owned_canvas_with_copy_info(canvas, frame_number, elapsed_ms);
+        if copied {
+            full_frame_copy_count = full_frame_copy_count.saturating_add(1);
+            full_frame_copy_bytes = full_frame_copy_bytes.saturating_add(canvas_rgba_len);
+        }
+        frame
+    };
     let _ = state.event_bus.canvas_sender().send(canvas_frame);
     let screen_frame = if let Some(surface) = screen_preview_surface {
         CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
