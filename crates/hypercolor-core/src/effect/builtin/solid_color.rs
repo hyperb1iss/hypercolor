@@ -6,7 +6,7 @@
 use hypercolor_types::canvas::{Canvas, RgbaF32};
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 
-use crate::effect::traits::{EffectRenderer, FrameInput};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// Utility scene patterns layered on top of the solid fill renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,8 +120,8 @@ impl EffectRenderer for SolidColorRenderer {
     }
 
     #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
-        let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
+    fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> anyhow::Result<()> {
+        prepare_target_canvas(canvas, input.canvas_width, input.canvas_height);
         let width = input.canvas_width.max(1) as f32;
         let height = input.canvas_height.max(1) as f32;
         let primary = RgbaF32::new(self.color[0], self.color[1], self.color[2], self.color[3]);
@@ -145,7 +145,7 @@ impl EffectRenderer for SolidColorRenderer {
             }
         }
 
-        Ok(canvas)
+        Ok(())
     }
 
     fn set_control(&mut self, name: &str, value: &ControlValue) {

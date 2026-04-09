@@ -394,23 +394,25 @@ impl EffectRenderer for MockEffectRenderer {
         Ok(())
     }
 
-    fn tick(&mut self, input: &FrameInput<'_>) -> Result<Canvas> {
+    fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> Result<()> {
         self.tick_count += 1;
-        let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
+        if canvas.width() != input.canvas_width || canvas.height() != input.canvas_height {
+            *canvas = Canvas::new(input.canvas_width, input.canvas_height);
+        }
 
         match &self.mode {
             MockRenderMode::Solid(rgba) => {
                 canvas.fill(Rgba::new(rgba[0], rgba[1], rgba[2], rgba[3]));
             }
             MockRenderMode::RainbowGradient => {
-                render_rainbow(&mut canvas, input);
+                render_rainbow(canvas, input);
             }
             MockRenderMode::AudioReactive { base_color } => {
-                render_audio_reactive(&mut canvas, input, *base_color);
+                render_audio_reactive(canvas, input, *base_color);
             }
         }
 
-        Ok(canvas)
+        Ok(())
     }
 
     fn set_control(&mut self, name: &str, value: &ControlValue) {

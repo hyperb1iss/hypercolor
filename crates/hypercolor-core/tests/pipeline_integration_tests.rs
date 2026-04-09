@@ -67,8 +67,10 @@ impl EffectRenderer for TestGradientRenderer {
         Ok(())
     }
 
-    fn tick(&mut self, input: &FrameInput<'_>) -> Result<Canvas> {
-        let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
+    fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> Result<()> {
+        if canvas.width() != input.canvas_width || canvas.height() != input.canvas_height {
+            *canvas = Canvas::new(input.canvas_width, input.canvas_height);
+        }
         for y in 0..input.canvas_height {
             for x in 0..input.canvas_width {
                 let t = x as f32 / (input.canvas_width.saturating_sub(1)) as f32;
@@ -77,7 +79,7 @@ impl EffectRenderer for TestGradientRenderer {
                 canvas.set_pixel(x, y, Rgba::new(r, 0, b, 255));
             }
         }
-        Ok(canvas)
+        Ok(())
     }
 
     fn set_control(&mut self, _name: &str, _value: &ControlValue) {}
@@ -108,12 +110,14 @@ impl EffectRenderer for TestSolidRenderer {
         Ok(())
     }
 
-    fn tick(&mut self, input: &FrameInput<'_>) -> Result<Canvas> {
+    fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> Result<()> {
         self.frame_count += 1;
         let brightness = ((self.frame_count * 25) % 256) as u8;
-        let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
+        if canvas.width() != input.canvas_width || canvas.height() != input.canvas_height {
+            *canvas = Canvas::new(input.canvas_width, input.canvas_height);
+        }
         canvas.fill(Rgba::new(brightness, brightness, brightness, 255));
-        Ok(canvas)
+        Ok(())
     }
 
     fn set_control(&mut self, _name: &str, _value: &ControlValue) {}

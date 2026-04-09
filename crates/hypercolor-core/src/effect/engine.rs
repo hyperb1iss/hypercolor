@@ -12,7 +12,7 @@ use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WID
 use hypercolor_types::effect::{ControlValidationError, ControlValue, EffectMetadata, EffectState};
 
 use super::factory::create_renderer_for_metadata;
-use super::traits::{EffectRenderer, FrameInput};
+use super::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 use crate::input::{InteractionData, ScreenData};
 
 // ── EffectEngine ─────────────────────────────────────────────────────────────
@@ -296,7 +296,29 @@ impl EffectEngine {
     ///
     /// Returns an error if the renderer's `tick` call fails.
     pub fn tick(&mut self, delta_secs: f32, audio: &AudioData) -> anyhow::Result<Canvas> {
-        self.tick_with_inputs(delta_secs, audio, &InteractionData::default(), None)
+        let mut canvas = Canvas::new(self.canvas_width, self.canvas_height);
+        self.tick_with_inputs_into(
+            delta_secs,
+            audio,
+            &InteractionData::default(),
+            None,
+            &mut canvas,
+        )?;
+        Ok(canvas)
+    }
+
+    /// Produce a single frame into caller-owned target storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the renderer's render call fails.
+    pub fn tick_into(
+        &mut self,
+        delta_secs: f32,
+        audio: &AudioData,
+        target: &mut Canvas,
+    ) -> anyhow::Result<()> {
+        self.tick_with_inputs_into(delta_secs, audio, &InteractionData::default(), None, target)
     }
 
     /// Produce a single frame with host interaction state.
@@ -313,7 +335,24 @@ impl EffectEngine {
         audio: &AudioData,
         interaction: &InteractionData,
     ) -> anyhow::Result<Canvas> {
-        self.tick_with_inputs(delta_secs, audio, interaction, None)
+        let mut canvas = Canvas::new(self.canvas_width, self.canvas_height);
+        self.tick_with_inputs_into(delta_secs, audio, interaction, None, &mut canvas)?;
+        Ok(canvas)
+    }
+
+    /// Produce a single frame with host interaction state into caller-owned storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the renderer's render call fails.
+    pub fn tick_with_interaction_into(
+        &mut self,
+        delta_secs: f32,
+        audio: &AudioData,
+        interaction: &InteractionData,
+        target: &mut Canvas,
+    ) -> anyhow::Result<()> {
+        self.tick_with_inputs_into(delta_secs, audio, interaction, None, target)
     }
 
     /// Produce a single frame with host interaction state and optional screen input.
@@ -332,13 +371,35 @@ impl EffectEngine {
         interaction: &InteractionData,
         screen: Option<&ScreenData>,
     ) -> anyhow::Result<Canvas> {
+        let mut canvas = Canvas::new(self.canvas_width, self.canvas_height);
+        self.tick_with_inputs_into(delta_secs, audio, interaction, screen, &mut canvas)?;
+        Ok(canvas)
+    }
+
+    /// Produce a single frame with optional screen input into caller-owned storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the renderer's render call fails.
+    pub fn tick_with_inputs_into(
+        &mut self,
+        delta_secs: f32,
+        audio: &AudioData,
+        interaction: &InteractionData,
+        screen: Option<&ScreenData>,
+        target: &mut Canvas,
+    ) -> anyhow::Result<()> {
         // If not running, return a blank canvas
         if self.state != EffectState::Running {
-            return Ok(Canvas::new(self.canvas_width, self.canvas_height));
+            prepare_target_canvas(target, self.canvas_width, self.canvas_height);
+            target.clear();
+            return Ok(());
         }
 
         let Some(ref mut renderer) = self.renderer else {
-            return Ok(Canvas::new(self.canvas_width, self.canvas_height));
+            prepare_target_canvas(target, self.canvas_width, self.canvas_height);
+            target.clear();
+            return Ok(());
         };
 
         self.elapsed_secs += delta_secs;
@@ -354,10 +415,10 @@ impl EffectEngine {
             canvas_height: self.canvas_height,
         };
 
-        let canvas = renderer.tick(&input)?;
+        renderer.render_into(&input, target)?;
         self.frame_number += 1;
 
-        Ok(canvas)
+        Ok(())
     }
 }
 

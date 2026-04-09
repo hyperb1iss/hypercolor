@@ -6,7 +6,7 @@
 use hypercolor_types::canvas::{Canvas, Oklch, Rgba, RgbaF32};
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 
-use crate::effect::traits::{EffectRenderer, FrameInput};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WaveDirection {
@@ -319,12 +319,45 @@ impl EffectRenderer for ColorWaveRenderer {
         Ok(())
     }
 
-    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
+    fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> anyhow::Result<()> {
         if self.last_size != (input.canvas_width, input.canvas_height) {
             self.last_size = (input.canvas_width, input.canvas_height);
             self.reset_state();
         }
 
+        if let Some(previous) = self.framebuffer.take()
+            && previous.width() == input.canvas_width
+            && previous.height() == input.canvas_height
+        {
+            *canvas = previous;
+        } else {
+            prepare_target_canvas(canvas, input.canvas_width, input.canvas_height);
+            canvas.fill(self.background_fill());
+        }
+
+        self.fade_canvas(canvas);
+
+        let spawn_interval = self.spawn_interval_secs();
+        self.spawn_accumulator += input.delta_secs.max(0.0);
+        while self.spawn_accumulator >= spawn_interval {
+            self.spawn_wave(input.canvas_width, input.canvas_height);
+            self.spawn_accumulator -= spawn_interval;
+        }
+
+        self.advance_waves(input.delta_secs);
+        self.retain_visible_waves(input.canvas_width, input.canvas_height);
+        self.draw_waves(
+            canvas,
+            input.time_secs,
+            input.canvas_width,
+            input.canvas_height,
+        );
+
+        self.framebuffer = Some(canvas.clone());
+        Ok(())
+    }
+
+    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
         let mut canvas = match self.framebuffer.take() {
             Some(existing)
                 if existing.width() == input.canvas_width

@@ -58,9 +58,11 @@ impl EffectRenderer for MockRenderer {
         Ok(())
     }
 
-    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
+    fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> anyhow::Result<()> {
         self.tick_count += 1;
-        let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
+        if canvas.width() != input.canvas_width || canvas.height() != input.canvas_height {
+            *canvas = Canvas::new(input.canvas_width, input.canvas_height);
+        }
         let color = hypercolor_types::canvas::Rgba::new(
             self.fill_color[0],
             self.fill_color[1],
@@ -68,7 +70,7 @@ impl EffectRenderer for MockRenderer {
             self.fill_color[3],
         );
         canvas.fill(color);
-        Ok(canvas)
+        Ok(())
     }
 
     fn set_control(&mut self, name: &str, value: &ControlValue) {
@@ -338,6 +340,29 @@ fn engine_tick_produces_canvas() {
 }
 
 #[test]
+fn engine_tick_into_reuses_target_canvas_allocation() {
+    let mut engine = EffectEngine::new();
+    engine
+        .activate(Box::new(MockRenderer::new()), sample_metadata())
+        .expect("activate");
+
+    let audio = AudioData::silence();
+    let mut canvas = Canvas::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
+    let original_ptr = canvas.as_rgba_bytes().as_ptr();
+
+    engine
+        .tick_into(0.016, &audio, &mut canvas)
+        .expect("tick_into should succeed");
+
+    assert_eq!(canvas.as_rgba_bytes().as_ptr(), original_ptr);
+    let pixel = canvas.get_pixel(0, 0);
+    assert_eq!(pixel.r, 255);
+    assert_eq!(pixel.g, 0);
+    assert_eq!(pixel.b, 128);
+    assert_eq!(pixel.a, 255);
+}
+
+#[test]
 fn engine_tick_when_idle_returns_black_canvas() {
     let mut engine = EffectEngine::new();
     let audio = AudioData::silence();
@@ -351,6 +376,27 @@ fn engine_tick_when_idle_returns_black_canvas() {
     assert_eq!(pixel.g, 0);
     assert_eq!(pixel.b, 0);
     assert_eq!(pixel.a, 255);
+}
+
+#[test]
+fn engine_tick_into_when_idle_clears_target_canvas() {
+    let mut engine = EffectEngine::new().with_canvas_size(2, 1);
+    let audio = AudioData::silence();
+    let mut canvas = Canvas::new(2, 1);
+    canvas.fill(hypercolor_types::canvas::Rgba::new(255, 0, 128, 255));
+
+    engine
+        .tick_into(0.016, &audio, &mut canvas)
+        .expect("tick_into should succeed");
+
+    assert_eq!(
+        canvas.get_pixel(0, 0).to_rgb(),
+        hypercolor_types::canvas::Rgb::new(0, 0, 0)
+    );
+    assert_eq!(
+        canvas.get_pixel(1, 0).to_rgb(),
+        hypercolor_types::canvas::Rgb::new(0, 0, 0)
+    );
 }
 
 #[test]

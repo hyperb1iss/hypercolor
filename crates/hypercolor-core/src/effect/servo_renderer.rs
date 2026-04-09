@@ -415,7 +415,7 @@ impl EffectRenderer for ServoRenderer {
         Ok(())
     }
 
-    fn tick(&mut self, input: &FrameInput<'_>) -> Result<Canvas> {
+    fn render_into(&mut self, input: &FrameInput<'_>, target: &mut Canvas) -> Result<()> {
         if !self.initialized {
             bail!("ServoRenderer tick called before init");
         }
@@ -424,10 +424,11 @@ impl EffectRenderer for ServoRenderer {
         self.poll_in_flight_render();
         self.try_submit_queued_frame();
 
-        Ok(self
+        *target = self
             .last_canvas
             .clone()
-            .unwrap_or_else(|| Self::placeholder_canvas(input)))
+            .unwrap_or_else(|| Self::placeholder_canvas(input));
+        Ok(())
     }
 
     fn set_control(&mut self, name: &str, value: &ControlValue) {

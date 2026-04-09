@@ -6,7 +6,7 @@
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 
-use crate::effect::traits::{EffectRenderer, FrameInput};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// Cycling rainbow pattern using HSV hue rotation.
 pub struct RainbowRenderer {
@@ -45,8 +45,8 @@ impl EffectRenderer for RainbowRenderer {
     }
 
     #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
-        let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
+    fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> anyhow::Result<()> {
+        prepare_target_canvas(canvas, input.canvas_width, input.canvas_height);
         let w = input.canvas_width as f32;
         let time_offset = input.time_secs * self.speed;
 
@@ -61,7 +61,7 @@ impl EffectRenderer for RainbowRenderer {
             }
         }
 
-        Ok(canvas)
+        Ok(())
     }
 
     fn set_control(&mut self, name: &str, value: &ControlValue) {

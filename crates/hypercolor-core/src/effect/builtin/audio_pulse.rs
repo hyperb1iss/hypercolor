@@ -7,7 +7,7 @@
 use hypercolor_types::canvas::{Canvas, RgbaF32};
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 
-use crate::effect::traits::{EffectRenderer, FrameInput};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// Audio-reactive effect that pulses color intensity with sound.
 pub struct AudioPulseRenderer {
@@ -52,9 +52,8 @@ impl EffectRenderer for AudioPulseRenderer {
         Ok(())
     }
 
-    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
-        let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
-
+    fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> anyhow::Result<()> {
+        prepare_target_canvas(canvas, input.canvas_width, input.canvas_height);
         // RMS-driven blend factor
         let rms_t = (input.audio.rms_level * self.sensitivity).clamp(0.0, 1.0);
 
@@ -87,7 +86,7 @@ impl EffectRenderer for AudioPulseRenderer {
         final_color.b *= self.brightness;
 
         canvas.fill(final_color.to_srgba());
-        Ok(canvas)
+        Ok(())
     }
 
     fn set_control(&mut self, name: &str, value: &ControlValue) {

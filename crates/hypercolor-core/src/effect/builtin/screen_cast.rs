@@ -6,7 +6,7 @@
 use hypercolor_types::canvas::{Canvas, RgbaF32};
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 
-use crate::effect::traits::{EffectRenderer, FrameInput};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FitMode {
@@ -62,13 +62,14 @@ impl EffectRenderer for ScreenCastRenderer {
     }
 
     #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
-        let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
+    fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> anyhow::Result<()> {
+        prepare_target_canvas(canvas, input.canvas_width, input.canvas_height);
+        canvas.clear();
         let Some(screen) = input.screen else {
-            return Ok(canvas);
+            return Ok(());
         };
         let Some(source) = screen.canvas_downscale.as_ref() else {
-            return Ok(canvas);
+            return Ok(());
         };
 
         let crop = normalized_crop(
@@ -81,12 +82,12 @@ impl EffectRenderer for ScreenCastRenderer {
         );
 
         match self.fit_mode {
-            FitMode::Stretch => blit_stretch(&mut canvas, source, crop, self.brightness),
-            FitMode::Contain => blit_contain(&mut canvas, source, crop, self.brightness),
-            FitMode::Cover => blit_cover(&mut canvas, source, crop, self.brightness),
+            FitMode::Stretch => blit_stretch(canvas, source, crop, self.brightness),
+            FitMode::Contain => blit_contain(canvas, source, crop, self.brightness),
+            FitMode::Cover => blit_cover(canvas, source, crop, self.brightness),
         }
 
-        Ok(canvas)
+        Ok(())
     }
 
     fn set_control(&mut self, name: &str, value: &ControlValue) {

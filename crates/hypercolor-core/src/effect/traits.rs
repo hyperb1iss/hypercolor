@@ -45,6 +45,13 @@ pub struct FrameInput<'a> {
     pub canvas_height: u32,
 }
 
+/// Ensure a renderer target canvas matches the requested frame dimensions.
+pub fn prepare_target_canvas(target: &mut Canvas, width: u32, height: u32) {
+    if target.width() != width || target.height() != height {
+        *target = Canvas::new(width, height);
+    }
+}
+
 // ── EffectRenderer ───────────────────────────────────────────────────────────
 
 /// Shared rendering interface for all effect backends.
@@ -57,8 +64,8 @@ pub struct FrameInput<'a> {
 ///
 /// 1. **`init`** — Called once when the effect is activated. The renderer
 ///    should compile shaders, load resources, and prepare for rendering.
-/// 2. **`tick`** — Called once per frame. Produces a [`Canvas`] from the
-///    given [`FrameInput`].
+/// 2. **`render_into`** — Called once per frame. Produces pixels in a caller-
+///    owned [`Canvas`] using the given [`FrameInput`].
 /// 3. **`set_control`** — Called whenever a control value changes (user
 ///    interaction, preset load, API call). May be called between ticks.
 /// 4. **`destroy`** — Called when the effect is deactivated. The renderer
@@ -76,22 +83,36 @@ pub trait EffectRenderer: Send {
     /// allocation, missing source files, etc.).
     fn init(&mut self, metadata: &EffectMetadata) -> anyhow::Result<()>;
 
-    /// Produce a single frame.
+    /// Produce a single frame into caller-owned target storage.
     ///
     /// Called once per render loop iteration while the effect is `Running`.
-    /// The returned [`Canvas`] is consumed by the spatial sampler and UI preview.
+    /// The target [`Canvas`] is consumed by the spatial sampler and UI preview.
     ///
     /// # Errors
     ///
     /// Returns an error if the frame cannot be produced (GPU fault, render
     /// timeout, etc.). The engine may retry or transition to an error state.
-    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas>;
+    fn render_into(&mut self, input: &FrameInput<'_>, target: &mut Canvas) -> anyhow::Result<()>;
+
+    /// Produce a single frame.
+    ///
+    /// Legacy convenience wrapper that allocates a fresh target canvas and
+    /// delegates to [`render_into`](Self::render_into).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the frame cannot be produced.
+    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
+        let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
+        self.render_into(input, &mut canvas)?;
+        Ok(canvas)
+    }
 
     /// Update a control parameter value.
     ///
     /// Called when a user adjusts a control, a preset is loaded, or the API
     /// pushes a value. The renderer should store the value and apply it on
-    /// the next [`tick`](Self::tick) call.
+    /// the next [`render_into`](Self::render_into) call.
     fn set_control(&mut self, name: &str, value: &ControlValue);
 
     /// Tear down the renderer and release all resources.

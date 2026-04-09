@@ -7,7 +7,7 @@
 use hypercolor_types::canvas::{Canvas, RgbaF32};
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 
-use crate::effect::traits::{EffectRenderer, FrameInput};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// Pulsing brightness effect with sinusoidal modulation.
 pub struct BreathingRenderer {
@@ -45,9 +45,8 @@ impl EffectRenderer for BreathingRenderer {
         Ok(())
     }
 
-    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
-        let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
-
+    fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> anyhow::Result<()> {
+        prepare_target_canvas(canvas, input.canvas_width, input.canvas_height);
         // Convert BPM to Hz, then to angular frequency
         let freq_hz = self.speed_bpm / 60.0;
         let phase = input.time_secs * freq_hz * std::f32::consts::TAU;
@@ -66,7 +65,7 @@ impl EffectRenderer for BreathingRenderer {
         .to_srgba();
 
         canvas.fill(pixel);
-        Ok(canvas)
+        Ok(())
     }
 
     fn set_control(&mut self, name: &str, value: &ControlValue) {
