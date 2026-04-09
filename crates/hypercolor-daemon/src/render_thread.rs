@@ -44,7 +44,7 @@ use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::session::OffOutputBehavior;
 
 use self::frame_scheduler::{FrameSceneSnapshot, FrameSceneSnapshotInputs, FrameScheduler};
-use self::producer_queue::{ProducerFrame, ProducerQueue};
+use self::producer_queue::{ProducerFrame, ProducerFrameState, ProducerQueue};
 use self::scene_state::RenderSceneState;
 use self::sparkleflinger::{ComposedFrameSet, CompositionLayer, CompositionPlan, SparkleFlinger};
 use crate::device_settings::DeviceSettingsStore;
@@ -239,11 +239,15 @@ struct RenderStageStats {
     producer_us: u32,
     composition_us: u32,
     total_us: u32,
+    effect_retained: bool,
+    screen_retained: bool,
+    composition_bypassed: bool,
 }
 
 struct ProducedFrame {
     frame: ProducerFrame,
     producer_us: u32,
+    state: Option<ProducerFrameState>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -622,6 +626,7 @@ async fn execute_frame(
         sampling_canvas,
         sampling_surface,
         preview_surface: _,
+        bypassed: _,
     } = render_stage.composed_frame;
     let publish_stats = publish_frame_updates(
         state,
@@ -676,6 +681,9 @@ async fn execute_frame(
             jitter_us,
             reused_inputs,
             reused_canvas,
+            retained_effect: render_stage.effect_retained,
+            retained_screen: render_stage.screen_retained,
+            composition_bypassed: render_stage.composition_bypassed,
             full_frame_copy_count,
             full_frame_copy_bytes,
             output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),
@@ -748,13 +756,11 @@ async fn compose_frame_set(
     let ProducedFrame {
         frame: source_frame,
         producer_us,
+        state: producer_state,
     } = if !scene_snapshot.effect_demand.effect_running {
         effect_queue.clear();
         if let Some(screen_frame) = latch_screen_frame(state, inputs, screen_queue) {
-            ProducedFrame {
-                frame: screen_frame,
-                producer_us: 0,
-            }
+            screen_frame
         } else {
             ProducedFrame {
                 frame: ProducerFrame::Surface(static_surface(
@@ -764,6 +770,7 @@ async fn compose_frame_set(
                     [0, 0, 0],
                 )),
                 producer_us: 0,
+                state: None,
             }
         }
     } else if skip_decision == SkipDecision::ReuseCanvas {
@@ -771,6 +778,7 @@ async fn compose_frame_set(
             ProducedFrame {
                 frame: frame.frame,
                 producer_us: 0,
+                state: Some(frame.state),
             }
         } else {
             render_effect_frame(
@@ -808,10 +816,16 @@ async fn compose_frame_set(
     ));
     let composition_us = micros_u32(composition_start.elapsed());
     RenderStageStats {
+        composition_bypassed: composed.bypassed,
         composed_frame: composed,
         producer_us,
         composition_us,
         total_us: micros_u32(stage_start.elapsed()),
+        effect_retained: scene_snapshot.effect_demand.effect_running
+            && producer_state.is_some_and(ProducerFrameState::is_retained),
+        screen_retained: !scene_snapshot.effect_demand.effect_running
+            && scene_snapshot.effect_demand.screen_capture_active
+            && producer_state.is_some_and(ProducerFrameState::is_retained),
     }
 }
 
@@ -819,7 +833,7 @@ fn latch_screen_frame(
     state: &RenderThreadState,
     inputs: &FrameInputs,
     screen_queue: &mut ProducerQueue,
-) -> Option<ProducerFrame> {
+) -> Option<ProducedFrame> {
     if let Some(screen_surface) = inputs.screen_preview_surface.as_ref()
         && screen_surface.width() == state.canvas_width
         && screen_surface.height() == state.canvas_height
@@ -829,7 +843,11 @@ fn latch_screen_frame(
         screen_queue.submit(ProducerFrame::Canvas(screen_canvas), 0);
     }
 
-    screen_queue.latch_latest().map(|frame| frame.frame)
+    screen_queue.latch_latest().map(|frame| ProducedFrame {
+        frame: frame.frame,
+        producer_us: 0,
+        state: Some(frame.state),
+    })
 }
 
 #[allow(
@@ -886,6 +904,7 @@ async fn render_effect_frame(
         return ProducedFrame {
             frame,
             producer_us: micros_u32(render_start.elapsed()),
+            state: Some(ProducerFrameState::Fresh),
         };
     }
 
@@ -916,6 +935,7 @@ async fn render_effect_frame(
     ProducedFrame {
         frame,
         producer_us: micros_u32(render_start.elapsed()),
+        state: Some(ProducerFrameState::Fresh),
     }
 }
 
@@ -1204,6 +1224,9 @@ async fn maybe_sleep_throttle(
             jitter_us: 0,
             reused_inputs: false,
             reused_canvas: false,
+            retained_effect: false,
+            retained_screen: false,
+            composition_bypassed: false,
             full_frame_copy_count: publish_stats.full_frame_copy_count,
             full_frame_copy_bytes: publish_stats.full_frame_copy_bytes,
             output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),

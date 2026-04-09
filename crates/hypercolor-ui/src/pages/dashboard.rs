@@ -538,8 +538,12 @@ fn PerformancePanel(
             .get()
             .map(|m| {
                 format!(
-                    "{} input · {} canvas",
-                    m.pacing.reused_inputs, m.pacing.reused_canvas
+                    "{} input · {} canvas · {} fx hold · {} screen hold · {} bypass",
+                    m.pacing.reused_inputs,
+                    m.pacing.reused_canvas,
+                    m.pacing.retained_effect,
+                    m.pacing.retained_screen,
+                    m.pacing.composition_bypassed
                 )
             })
             .unwrap_or_else(|| "\u{2014}".to_string())

@@ -180,6 +180,9 @@ pub struct MetricsPacing {
     pub frame_age_ms: f64,
     pub reused_inputs: u32,
     pub reused_canvas: u32,
+    pub retained_effect: u32,
+    pub retained_screen: u32,
+    pub composition_bypassed: u32,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]

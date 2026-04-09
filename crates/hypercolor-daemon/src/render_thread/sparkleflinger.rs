@@ -136,6 +136,7 @@ pub struct ComposedFrameSet {
     pub sampling_canvas: Canvas,
     pub sampling_surface: Option<PublishedSurface>,
     pub preview_surface: Option<PublishedSurface>,
+    pub bypassed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -156,6 +157,7 @@ impl SparkleFlinger {
                 sampling_canvas,
                 sampling_surface,
                 preview_surface: None,
+                bypassed: true,
             };
         }
 
@@ -168,6 +170,7 @@ impl SparkleFlinger {
             sampling_canvas,
             sampling_surface: None,
             preview_surface: None,
+            bypassed: false,
         }
     }
 }

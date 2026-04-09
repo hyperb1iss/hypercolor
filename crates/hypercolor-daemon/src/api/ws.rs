@@ -545,6 +545,9 @@ struct MetricsPacing {
     frame_age_ms: f64,
     reused_inputs: u32,
     reused_canvas: u32,
+    retained_effect: u32,
+    retained_screen: u32,
+    composition_bypassed: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -1921,6 +1924,9 @@ async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> Ser
                 frame_age_ms: round_2(frame_age_ms),
                 reused_inputs: performance_snapshot.pacing.reused_inputs,
                 reused_canvas: performance_snapshot.pacing.reused_canvas,
+                retained_effect: performance_snapshot.pacing.retained_effect,
+                retained_screen: performance_snapshot.pacing.retained_screen,
+                composition_bypassed: performance_snapshot.pacing.composition_bypassed,
             },
             copies: MetricsCopies {
                 full_frame_count: latest_frame.full_frame_copy_count,

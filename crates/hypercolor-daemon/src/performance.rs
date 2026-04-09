@@ -22,6 +22,9 @@ pub(crate) struct LatestFrameMetrics {
     pub jitter_us: u32,
     pub reused_inputs: bool,
     pub reused_canvas: bool,
+    pub retained_effect: bool,
+    pub retained_screen: bool,
+    pub composition_bypassed: bool,
     pub full_frame_copy_count: u32,
     pub full_frame_copy_bytes: u32,
     pub output_errors: u32,
@@ -51,6 +54,9 @@ pub(crate) struct PacingSummary {
     pub wake_delay_max_ms: f64,
     pub reused_inputs: u32,
     pub reused_canvas: u32,
+    pub retained_effect: u32,
+    pub retained_screen: u32,
+    pub composition_bypassed: u32,
 }
 
 /// Snapshot exported to API/WebSocket consumers.
@@ -81,6 +87,9 @@ impl PerformanceTracker {
         self.reuse_history.push_back(FrameReuseSample {
             inputs: metrics.reused_inputs,
             canvas: metrics.reused_canvas,
+            retained_effect: metrics.retained_effect,
+            retained_screen: metrics.retained_screen,
+            composition_bypassed: metrics.composition_bypassed,
         });
 
         if self.frame_times_us.len() > FRAME_HISTORY_CAPACITY {
@@ -123,6 +132,9 @@ struct ShortSummary {
 struct FrameReuseSample {
     inputs: bool,
     canvas: bool,
+    retained_effect: bool,
+    retained_screen: bool,
+    composition_bypassed: bool,
 }
 
 fn summarize_frame_times(samples: &VecDeque<u32>) -> FrameTimeSummary {
@@ -166,6 +178,27 @@ fn summarize_pacing(
             .unwrap_or(u32::MAX),
         reused_canvas: u32::try_from(reuse_history.iter().filter(|sample| sample.canvas).count())
             .unwrap_or(u32::MAX),
+        retained_effect: u32::try_from(
+            reuse_history
+                .iter()
+                .filter(|sample| sample.retained_effect)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+        retained_screen: u32::try_from(
+            reuse_history
+                .iter()
+                .filter(|sample| sample.retained_screen)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+        composition_bypassed: u32::try_from(
+            reuse_history
+                .iter()
+                .filter(|sample| sample.composition_bypassed)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
     }
 }
 

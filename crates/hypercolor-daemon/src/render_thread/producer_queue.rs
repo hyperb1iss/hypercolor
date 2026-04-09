@@ -99,6 +99,12 @@ impl ProducerQueue {
     }
 }
 
+impl ProducerFrameState {
+    pub(crate) const fn is_retained(self) -> bool {
+        matches!(self, Self::Retained)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
