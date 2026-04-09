@@ -20,7 +20,7 @@ use hypercolor_core::device::{
     BackendManager, DeviceBackend, DeviceLifecycleManager, DeviceRegistry, ReconnectPolicy,
     UsbProtocolConfigStore,
 };
-use hypercolor_core::effect::EffectEngine;
+use hypercolor_core::effect::{EffectEngine, EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData};
 use hypercolor_core::scene::{SceneManager, make_scene};
@@ -31,9 +31,11 @@ use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::{DeviceId, DeviceState};
+use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::event::{
     FrameData, HypercolorEvent, InputButtonState, InputEvent, ZoneColors,
 };
+use hypercolor_types::scene::{RenderGroup, RenderGroupId, UnassignedBehavior};
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -114,6 +116,19 @@ fn point_zone(id: &str, device_id: &str, x: f32, y: f32) -> DeviceZone {
         display_order: 0,
         attachment: None,
     }
+}
+
+fn builtin_effect_registry() -> EffectRegistry {
+    let mut registry = EffectRegistry::new(Vec::new());
+    register_builtin_effects(&mut registry);
+    registry
+}
+
+fn builtin_effect_id(registry: &EffectRegistry, stem: &str) -> EffectId {
+    registry
+        .iter()
+        .find_map(|(id, entry)| (entry.metadata.source.source_stem() == Some(stem)).then_some(*id))
+        .expect("builtin effect should exist")
 }
 
 struct MockScreenSource {
@@ -353,6 +368,65 @@ impl InputSource for DemandGatedMockAudioSource {
     }
 }
 
+struct DemandGatedMockScreenSource {
+    running: bool,
+    capture_active: bool,
+    screen_data: ScreenData,
+    transitions: Arc<StdMutex<Vec<bool>>>,
+}
+
+impl DemandGatedMockScreenSource {
+    fn new(screen_data: ScreenData, transitions: Arc<StdMutex<Vec<bool>>>) -> Self {
+        Self {
+            running: false,
+            capture_active: false,
+            screen_data,
+            transitions,
+        }
+    }
+}
+
+impl InputSource for DemandGatedMockScreenSource {
+    fn name(&self) -> &'static str {
+        "demand_gated_screen"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+        self.capture_active = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        if !self.running || !self.capture_active {
+            return Ok(InputData::None);
+        }
+
+        Ok(InputData::Screen(self.screen_data.clone()))
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn is_screen_source(&self) -> bool {
+        true
+    }
+
+    fn set_screen_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        self.capture_active = active;
+        self.transitions
+            .lock()
+            .expect("transition log should lock")
+            .push(active);
+        Ok(())
+    }
+}
+
 struct EventOnlySource {
     running: bool,
     events: Vec<InputEvent>,
@@ -412,6 +486,27 @@ async fn wait_for_audio_capture_transition(transitions: &Arc<StdMutex<Vec<bool>>
     .expect("expected audio capture transition");
 }
 
+async fn wait_for_screen_capture_transition(
+    transitions: &Arc<StdMutex<Vec<bool>>>,
+    expected: bool,
+) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let seen = transitions
+                .lock()
+                .expect("transition log should lock")
+                .last()
+                .copied();
+            if seen == Some(expected) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("expected screen capture transition");
+}
+
 async fn wait_for_next_frame(
     rx: &mut watch::Receiver<FrameData>,
     previous_frame_number: u32,
@@ -458,6 +553,7 @@ fn make_render_state(
     let (_, power_state) = watch::channel(OutputPowerState::default());
     RenderThreadState {
         effect_engine: Arc::new(Mutex::new(effect_engine)),
+        effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
         spatial_engine: Arc::new(RwLock::new(spatial_engine)),
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),
@@ -974,6 +1070,308 @@ async fn render_thread_crossfades_scene_transition_between_effect_frames() {
 }
 
 #[tokio::test]
+async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
+    let state = make_render_state(
+        EffectEngine::new(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    let mut frame_rx = state.event_bus.frame_receiver();
+
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut scene = make_scene("Grouped Scene");
+    scene.groups = vec![
+        RenderGroup {
+            id: RenderGroupId::new(),
+            name: "Left".into(),
+            description: None,
+            effect_id: Some(solid_id),
+            controls: HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+            preset_id: None,
+            layout: test_layout(vec![point_zone("zone_left", "mock:left", 0.5, 0.5)]),
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+        },
+        RenderGroup {
+            id: RenderGroupId::new(),
+            name: "Right".into(),
+            description: None,
+            effect_id: Some(solid_id),
+            controls: HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+            preset_id: None,
+            layout: test_layout(vec![point_zone("zone_right", "mock:right", 0.5, 0.5)]),
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+        },
+    ];
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+
+    {
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .create(scene.clone())
+            .expect("create grouped scene");
+        scene_manager
+            .activate(&scene.id, None)
+            .expect("activate grouped scene");
+    }
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
+        .await
+        .expect("expected grouped frame within 2 seconds")
+        .expect("frame sender should remain connected");
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let frame = frame_rx.borrow().clone();
+    let left_zone = frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_left")
+        .expect("left group zone should be rendered");
+    let right_zone = frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_right")
+        .expect("right group zone should be rendered");
+
+    assert_eq!(left_zone.colors.first().copied(), Some([255, 0, 0]));
+    assert_eq!(right_zone.colors.first().copied(), Some([0, 0, 255]));
+}
+
+#[tokio::test]
+async fn render_thread_gates_audio_capture_to_audio_reactive_scene_groups() {
+    let state = make_render_state(
+        EffectEngine::new(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+
+    let mut audio = AudioData::silence();
+    audio.rms_level = 0.7;
+    {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager.add_source(Box::new(DemandGatedMockAudioSource::new(
+            audio,
+            Arc::clone(&transitions),
+        )));
+        input_manager
+            .start_all()
+            .expect("input manager should start");
+    }
+
+    let (audio_pulse_id, solid_id) = {
+        let registry = state.effect_registry.read().await;
+        (
+            builtin_effect_id(&registry, "audio_pulse"),
+            builtin_effect_id(&registry, "solid_color"),
+        )
+    };
+
+    let mut audio_scene = make_scene("Audio Scene");
+    audio_scene.groups = vec![RenderGroup {
+        id: RenderGroupId::new(),
+        name: "Audio".into(),
+        description: None,
+        effect_id: Some(audio_pulse_id),
+        controls: HashMap::new(),
+        preset_id: None,
+        layout: test_layout(vec![point_zone("zone_audio", "mock:audio", 0.5, 0.5)]),
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+    }];
+    audio_scene.unassigned_behavior = UnassignedBehavior::Off;
+
+    let mut solid_scene = make_scene("Solid Scene");
+    solid_scene.groups = vec![RenderGroup {
+        id: RenderGroupId::new(),
+        name: "Solid".into(),
+        description: None,
+        effect_id: Some(solid_id),
+        controls: HashMap::new(),
+        preset_id: None,
+        layout: test_layout(vec![point_zone("zone_audio", "mock:audio", 0.5, 0.5)]),
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+    }];
+    solid_scene.unassigned_behavior = UnassignedBehavior::Off;
+
+    {
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .create(audio_scene.clone())
+            .expect("create audio scene");
+        scene_manager
+            .create(solid_scene.clone())
+            .expect("create solid scene");
+        scene_manager
+            .activate(&audio_scene.id, None)
+            .expect("activate audio scene");
+    }
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    wait_for_audio_capture_transition(&transitions, true).await;
+
+    {
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .activate(&solid_scene.id, None)
+            .expect("activate solid scene");
+    }
+
+    wait_for_audio_capture_transition(&transitions, false).await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let transitions = transitions
+        .lock()
+        .expect("transition log should lock")
+        .clone();
+    assert_eq!(transitions, vec![true, false]);
+}
+
+#[tokio::test]
+async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
+    let state = make_render_state(
+        EffectEngine::new(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+    let preview_surface = PublishedSurface::from_owned_canvas(Canvas::new(2, 2), 5, 9);
+    let screen_data = ScreenData {
+        zone_colors: Vec::new(),
+        grid_width: 0,
+        grid_height: 0,
+        canvas_downscale: Some(preview_surface),
+        source_width: 2,
+        source_height: 2,
+    };
+
+    {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager.add_source(Box::new(DemandGatedMockScreenSource::new(
+            screen_data,
+            Arc::clone(&transitions),
+        )));
+        input_manager
+            .start_all()
+            .expect("input manager should start");
+    }
+
+    let (screen_cast_id, solid_id) = {
+        let registry = state.effect_registry.read().await;
+        (
+            builtin_effect_id(&registry, "screen_cast"),
+            builtin_effect_id(&registry, "solid_color"),
+        )
+    };
+
+    let mut screen_scene = make_scene("Screen Scene");
+    screen_scene.groups = vec![RenderGroup {
+        id: RenderGroupId::new(),
+        name: "Screen".into(),
+        description: None,
+        effect_id: Some(screen_cast_id),
+        controls: HashMap::new(),
+        preset_id: None,
+        layout: test_layout(vec![point_zone("zone_screen", "mock:screen", 0.5, 0.5)]),
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+    }];
+    screen_scene.unassigned_behavior = UnassignedBehavior::Off;
+
+    let mut solid_scene = make_scene("Solid Scene");
+    solid_scene.groups = vec![RenderGroup {
+        id: RenderGroupId::new(),
+        name: "Solid".into(),
+        description: None,
+        effect_id: Some(solid_id),
+        controls: HashMap::new(),
+        preset_id: None,
+        layout: test_layout(vec![point_zone("zone_screen", "mock:screen", 0.5, 0.5)]),
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+    }];
+    solid_scene.unassigned_behavior = UnassignedBehavior::Off;
+
+    {
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .create(screen_scene.clone())
+            .expect("create screen scene");
+        scene_manager
+            .create(solid_scene.clone())
+            .expect("create solid scene");
+        scene_manager
+            .activate(&screen_scene.id, None)
+            .expect("activate screen scene");
+    }
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    wait_for_screen_capture_transition(&transitions, true).await;
+
+    {
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .activate(&solid_scene.id, None)
+            .expect("activate solid scene");
+    }
+
+    wait_for_screen_capture_transition(&transitions, false).await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let transitions = transitions
+        .lock()
+        .expect("transition log should lock")
+        .clone();
+    assert_eq!(transitions, vec![true, false]);
+}
+
+#[tokio::test]
 async fn pipeline_publishes_frame_data_via_watch() {
     let state = make_render_state(
         EffectEngine::new(),
@@ -1069,6 +1467,7 @@ async fn pipeline_renders_active_effect_to_devices() {
     let (_, power_state) = watch::channel(OutputPowerState::default());
     let state = RenderThreadState {
         effect_engine: Arc::new(Mutex::new(effect_engine)),
+        effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
         spatial_engine: Arc::new(RwLock::new(spatial_engine)),
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),
@@ -1316,6 +1715,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
     let (_, power_state) = watch::channel(OutputPowerState::default());
     let state = RenderThreadState {
         effect_engine: Arc::new(Mutex::new(effect_engine)),
+        effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
         spatial_engine,
         backend_manager,
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),
@@ -1850,6 +2250,7 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
     let (power_tx, power_state) = watch::channel(OutputPowerState::default());
     let state = RenderThreadState {
         effect_engine: Arc::new(Mutex::new(effect_engine)),
+        effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
         spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(layout))),
         backend_manager: Arc::new(Mutex::new(BackendManager::new())),
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),

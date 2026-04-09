@@ -669,6 +669,7 @@ impl DaemonState {
                 .context("failed to resolve render acceleration mode while starting daemon")?;
         let rt_state = RenderThreadState {
             effect_engine: Arc::clone(&self.effect_engine),
+            effect_registry: Arc::clone(&self.effect_registry),
             spatial_engine: Arc::clone(&self.spatial_engine),
             backend_manager: Arc::clone(&self.backend_manager),
             performance: Arc::clone(&self.performance),

@@ -21,6 +21,10 @@ pub(crate) struct SceneRuntimeSnapshot {
 }
 
 impl SceneRuntimeSnapshot {
+    pub(crate) fn has_active_render_groups(&self) -> bool {
+        self.active_render_group_count() > 0
+    }
+
     pub(crate) fn active_render_group_count(&self) -> u32 {
         u32::try_from(
             self.active_render_groups

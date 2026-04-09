@@ -18,6 +18,7 @@
 mod composition_planner;
 mod frame_scheduler;
 mod producer_queue;
+mod render_groups;
 mod scene_state;
 #[doc(hidden)]
 pub mod sparkleflinger;
@@ -32,7 +33,7 @@ use tracing::{debug, info, trace, warn};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::BackendManager;
-use hypercolor_core::effect::EffectEngine;
+use hypercolor_core::effect::{EffectEngine, EffectRegistry};
 use hypercolor_core::engine::{FrameStats, RenderLoop};
 use hypercolor_core::input::{InputData, InputManager, InteractionData, ScreenData};
 use hypercolor_core::scene::SceneManager;
@@ -44,6 +45,7 @@ use hypercolor_core::types::canvas::{
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::session::OffOutputBehavior;
+use hypercolor_types::spatial::SpatialLayout;
 
 use self::composition_planner::CompositionPlanner;
 use self::frame_scheduler::{
@@ -51,6 +53,7 @@ use self::frame_scheduler::{
     SceneTransitionSnapshot,
 };
 use self::producer_queue::{ProducerFrame, ProducerFrameState, ProducerQueue};
+use self::render_groups::RenderGroupRuntime;
 use self::scene_state::RenderSceneState;
 use self::sparkleflinger::{ComposedFrameSet, SparkleFlinger};
 use crate::device_settings::DeviceSettingsStore;
@@ -86,6 +89,9 @@ pub struct RenderThread {
 pub struct RenderThreadState {
     /// Active effect lifecycle and frame production.
     pub effect_engine: Arc<Mutex<EffectEngine>>,
+
+    /// Effect catalog used to resolve render-group assignments.
+    pub effect_registry: Arc<RwLock<EffectRegistry>>,
 
     /// Spatial sampling engine — maps canvas pixels to LED positions.
     pub spatial_engine: Arc<RwLock<SpatialEngine>>,
@@ -245,6 +251,9 @@ struct PublishFrameStats {
 
 struct RenderStageStats {
     composed_frame: ComposedFrameSet,
+    sampled_layout: Option<Arc<SpatialLayout>>,
+    sampled_zones: Option<Vec<hypercolor_types::event::ZoneColors>>,
+    sampled_us: u32,
     producer_us: u32,
     producer_done_us: u32,
     composition_us: u32,
@@ -358,6 +367,7 @@ async fn run_pipeline(state: RenderThreadState) {
         state.canvas_width,
         state.canvas_height,
     ));
+    let mut render_group_runtime = RenderGroupRuntime::new(state.canvas_width, state.canvas_height);
     let initial_spatial_engine = state.spatial_engine.read().await.clone();
     let mut render_scene_state =
         RenderSceneState::new(initial_spatial_engine, state.screen_capture_configured);
@@ -417,6 +427,7 @@ async fn run_pipeline(state: RenderThreadState) {
             &mut screen_queue,
             &mut composition_planner,
             &mut sparkleflinger,
+            &mut render_group_runtime,
             &mut render_surface_pool,
             &mut static_surface_cache,
             &mut recycled_frame,
@@ -495,6 +506,7 @@ async fn execute_frame(
     screen_queue: &mut ProducerQueue,
     composition_planner: &mut CompositionPlanner,
     sparkleflinger: &mut SparkleFlinger,
+    render_group_runtime: &mut RenderGroupRuntime,
     render_surface_pool: &mut RenderSurfacePool,
     static_surface_cache: &mut Option<CachedStaticSurface>,
     recycled_frame: &mut FrameData,
@@ -574,7 +586,7 @@ async fn execute_frame(
     let input_done_us = micros_u32(frame_start.elapsed());
 
     // ── Stage 2: Effect render → Canvas ─────────────────────────
-    let render_stage = compose_frame_set(
+    let mut render_stage = compose_frame_set(
         state,
         &scene_snapshot,
         skip_decision,
@@ -584,6 +596,7 @@ async fn execute_frame(
         screen_queue,
         composition_planner,
         sparkleflinger,
+        render_group_runtime,
         render_surface_pool,
         static_surface_cache,
         delta_secs,
@@ -592,14 +605,20 @@ async fn execute_frame(
     let render_us = render_stage.total_us;
 
     // ── Stage 3: Spatial sampling → ZoneColors ──────────────────
-    let sample_start = Instant::now();
-    scene_snapshot.spatial_engine.sample_into(
-        &render_stage.composed_frame.sampling_canvas,
-        &mut recycled_frame.zones,
-    );
+    let layout = if let Some(sampled_layout) = render_stage.sampled_layout.clone() {
+        recycled_frame.zones = render_stage.sampled_zones.take().unwrap_or_default();
+        sampled_layout
+    } else {
+        let sample_start = Instant::now();
+        scene_snapshot.spatial_engine.sample_into(
+            &render_stage.composed_frame.sampling_canvas,
+            &mut recycled_frame.zones,
+        );
+        render_stage.sampled_us = micros_u32(sample_start.elapsed());
+        scene_snapshot.spatial_engine.layout()
+    };
     let zone_colors = &recycled_frame.zones;
-    let layout = scene_snapshot.spatial_engine.layout();
-    let sample_us = micros_u32(sample_start.elapsed());
+    let sample_us = render_stage.sampled_us;
     let sample_done_us = micros_u32(frame_start.elapsed());
 
     // ── Stage 4: Device push → hardware ─────────────────────────
@@ -795,11 +814,27 @@ async fn compose_frame_set(
     screen_queue: &mut ProducerQueue,
     composition_planner: &mut CompositionPlanner,
     sparkleflinger: &mut SparkleFlinger,
+    render_group_runtime: &mut RenderGroupRuntime,
     render_surface_pool: &mut RenderSurfacePool,
     static_surface_cache: &mut Option<CachedStaticSurface>,
     delta_secs: f32,
 ) -> RenderStageStats {
     let stage_start = Instant::now();
+    if scene_snapshot.scene_runtime.has_active_render_groups() {
+        return compose_render_group_frame_set(
+            state,
+            scene_snapshot,
+            inputs,
+            composition_planner,
+            sparkleflinger,
+            render_group_runtime,
+            static_surface_cache,
+            delta_secs,
+            stage_start,
+        )
+        .await;
+    }
+
     let ProducedFrame {
         frame: source_frame,
         producer_us,
@@ -869,6 +904,9 @@ async fn compose_frame_set(
     RenderStageStats {
         composition_bypassed: composed.bypassed,
         composed_frame: composed,
+        sampled_layout: None,
+        sampled_zones: None,
+        sampled_us: 0,
         producer_us,
         producer_done_us,
         composition_us,
@@ -883,6 +921,110 @@ async fn compose_frame_set(
         screen_retained: !scene_snapshot.effect_demand.effect_running
             && scene_snapshot.effect_demand.screen_capture_active
             && producer_state.is_some_and(ProducerFrameState::is_retained),
+    }
+}
+
+async fn compose_render_group_frame_set(
+    state: &RenderThreadState,
+    scene_snapshot: &FrameSceneSnapshot,
+    inputs: &FrameInputs,
+    composition_planner: &mut CompositionPlanner,
+    sparkleflinger: &mut SparkleFlinger,
+    render_group_runtime: &mut RenderGroupRuntime,
+    static_surface_cache: &mut Option<CachedStaticSurface>,
+    delta_secs: f32,
+    stage_start: Instant,
+) -> RenderStageStats {
+    let producer_start = Instant::now();
+    let render_group_result = {
+        let registry = state.effect_registry.read().await;
+        render_group_runtime.render_scene(
+            &scene_snapshot.scene_runtime.active_render_groups,
+            &registry,
+            delta_secs,
+            &inputs.audio,
+            &inputs.interaction,
+            inputs.screen_data.as_ref(),
+        )
+    };
+    let producer_us = micros_u32(producer_start.elapsed());
+    let producer_done_us = micros_u32(stage_start.elapsed());
+
+    match render_group_result {
+        Ok(render_group_result) => {
+            let composition_start = Instant::now();
+            let compiled_plan = composition_planner.compile_primary_frame(
+                state.canvas_width,
+                state.canvas_height,
+                &scene_snapshot.scene_runtime,
+                render_group_result.preview_frame,
+            );
+            let composed = sparkleflinger.compose(compiled_plan.plan);
+            let composition_bypassed = composed.bypassed;
+            let composition_us = micros_u32(composition_start.elapsed());
+            let composition_done_us = micros_u32(stage_start.elapsed());
+
+            RenderStageStats {
+                composed_frame: composed,
+                sampled_layout: Some(render_group_result.layout),
+                sampled_zones: Some(render_group_result.zones),
+                sampled_us: render_group_result.sample_us,
+                producer_us,
+                producer_done_us,
+                composition_us,
+                composition_done_us,
+                total_us: micros_u32(stage_start.elapsed()),
+                logical_layer_count: compiled_plan
+                    .metadata
+                    .logical_layer_count
+                    .max(render_group_result.logical_layer_count),
+                render_group_count: compiled_plan.metadata.render_group_count,
+                scene_active: compiled_plan.metadata.scene_active,
+                scene_transition_active: compiled_plan.metadata.transition_active,
+                effect_retained: false,
+                screen_retained: false,
+                composition_bypassed,
+            }
+        }
+        Err(error) => {
+            warn!(%error, "failed to render active scene groups; publishing black frame");
+            let source_frame = ProducerFrame::Surface(static_surface(
+                static_surface_cache,
+                state.canvas_width,
+                state.canvas_height,
+                [0, 0, 0],
+            ));
+            let composition_start = Instant::now();
+            let compiled_plan = composition_planner.compile_primary_frame(
+                state.canvas_width,
+                state.canvas_height,
+                &scene_snapshot.scene_runtime,
+                source_frame,
+            );
+            let composed = sparkleflinger.compose(compiled_plan.plan);
+            let composition_bypassed = composed.bypassed;
+            let composition_us = micros_u32(composition_start.elapsed());
+            let composition_done_us = micros_u32(stage_start.elapsed());
+
+            RenderStageStats {
+                composed_frame: composed,
+                sampled_layout: None,
+                sampled_zones: None,
+                sampled_us: 0,
+                producer_us,
+                producer_done_us,
+                composition_us,
+                composition_done_us,
+                total_us: micros_u32(stage_start.elapsed()),
+                logical_layer_count: compiled_plan.metadata.logical_layer_count,
+                render_group_count: compiled_plan.metadata.render_group_count,
+                scene_active: compiled_plan.metadata.scene_active,
+                scene_transition_active: compiled_plan.metadata.transition_active,
+                effect_retained: false,
+                screen_retained: false,
+                composition_bypassed,
+            }
+        }
     }
 }
 
@@ -1002,9 +1144,13 @@ async fn build_frame_scene_snapshot(
     render_scene_state: &RenderSceneState,
     delta_secs: f32,
 ) -> FrameSceneSnapshot {
-    let effect_scene =
-        current_effect_scene_snapshot(state, render_scene_state.screen_capture_configured()).await;
     let scene_runtime = current_scene_runtime_snapshot(state, delta_secs).await;
+    let effect_scene = current_effect_scene_snapshot(
+        state,
+        &scene_runtime,
+        render_scene_state.screen_capture_configured(),
+    )
+    .await;
     let render_loop_snapshot = render_loop_snapshot(state).await;
     frame_scheduler.build_snapshot(FrameSceneSnapshotInputs {
         frame_token: render_loop_snapshot.frame_token,
@@ -1044,8 +1190,13 @@ async fn current_scene_runtime_snapshot(
 
 async fn current_effect_scene_snapshot(
     state: &RenderThreadState,
+    scene_runtime: &SceneRuntimeSnapshot,
     screen_capture_configured: bool,
 ) -> EffectSceneSnapshot {
+    if scene_runtime.has_active_render_groups() {
+        return current_render_group_effect_scene_snapshot(state, scene_runtime).await;
+    }
+
     let engine = state.effect_engine.lock().await;
     let effect_running = engine.is_running();
     let audio_capture_active = effect_running
@@ -1064,6 +1215,41 @@ async fn current_effect_scene_snapshot(
             screen_capture_active,
         },
         generation: engine.scene_generation(),
+    }
+}
+
+async fn current_render_group_effect_scene_snapshot(
+    state: &RenderThreadState,
+    scene_runtime: &SceneRuntimeSnapshot,
+) -> EffectSceneSnapshot {
+    let registry = state.effect_registry.read().await;
+    let mut effect_running = false;
+    let mut audio_capture_active = false;
+    let mut screen_capture_active = false;
+
+    for group in &scene_runtime.active_render_groups {
+        if !group.enabled || group.layout.zones.is_empty() {
+            continue;
+        }
+
+        let Some(effect_id) = group.effect_id else {
+            continue;
+        };
+
+        effect_running = true;
+        if let Some(entry) = registry.get(&effect_id) {
+            audio_capture_active |= entry.metadata.audio_reactive;
+            screen_capture_active |= entry.metadata.screen_reactive;
+        }
+    }
+
+    EffectSceneSnapshot {
+        demand: EffectDemand {
+            effect_running,
+            audio_capture_active,
+            screen_capture_active,
+        },
+        generation: 0,
     }
 }
 
