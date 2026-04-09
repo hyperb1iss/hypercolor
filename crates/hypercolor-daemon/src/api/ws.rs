@@ -452,6 +452,7 @@ struct MetricsPayload {
     frame_time: MetricsFrameTime,
     stages: MetricsStages,
     pacing: MetricsPacing,
+    copies: MetricsCopies,
     memory: MetricsMemory,
     devices: MetricsDevices,
     websocket: MetricsWebsocket,
@@ -506,6 +507,16 @@ struct MetricsPacing {
     frame_age_ms: f64,
     reused_inputs: u32,
     reused_canvas: u32,
+}
+
+#[derive(Debug, Serialize)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "JSON keys mirror protocol field names from the WebSocket spec"
+)]
+struct MetricsCopies {
+    full_frame_count: u32,
+    full_frame_kb: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1635,6 +1646,10 @@ async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> Ser
                 reused_inputs: performance_snapshot.pacing.reused_inputs,
                 reused_canvas: performance_snapshot.pacing.reused_canvas,
             },
+            copies: MetricsCopies {
+                full_frame_count: latest_frame.full_frame_copy_count,
+                full_frame_kb: round_2(bytes_to_kib(latest_frame.full_frame_copy_bytes)),
+            },
             memory: MetricsMemory {
                 daemon_rss_mb: round_1(daemon_rss_mb),
                 servo_rss_mb: 0.0,
@@ -1671,6 +1686,10 @@ fn paced_fps(avg_frame_secs: f64, target_fps: u32) -> f64 {
 
 fn us_to_ms(value: u32) -> f64 {
     f64::from(value) / 1000.0
+}
+
+fn bytes_to_kib(value: u32) -> f64 {
+    f64::from(value) / 1024.0
 }
 
 fn frame_time_summary(

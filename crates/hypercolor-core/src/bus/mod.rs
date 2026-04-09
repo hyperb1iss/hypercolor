@@ -143,13 +143,29 @@ impl CanvasFrame {
     /// Consume a canvas without cloning its RGBA backing buffer.
     #[must_use]
     pub fn from_owned_canvas(canvas: Canvas, frame_number: u32, timestamp_ms: u32) -> Self {
-        Self {
-            frame_number,
-            timestamp_ms,
-            width: canvas.width(),
-            height: canvas.height(),
-            rgba: Arc::new(canvas.into_rgba_bytes()),
-        }
+        Self::from_owned_canvas_with_copy_info(canvas, frame_number, timestamp_ms).0
+    }
+
+    /// Consume a canvas and report whether RGBA ownership required a copy.
+    #[must_use]
+    pub fn from_owned_canvas_with_copy_info(
+        canvas: Canvas,
+        frame_number: u32,
+        timestamp_ms: u32,
+    ) -> (Self, bool) {
+        let width = canvas.width();
+        let height = canvas.height();
+        let (rgba, copied) = canvas.into_rgba_bytes_with_copy_info();
+        (
+            Self {
+                frame_number,
+                timestamp_ms,
+                width,
+                height,
+                rgba: Arc::new(rgba),
+            },
+            copied,
+        )
     }
 
     /// RGBA canvas bytes in row-major order.

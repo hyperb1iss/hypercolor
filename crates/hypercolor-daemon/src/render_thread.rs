@@ -32,6 +32,7 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{Canvas, Rgba, linear_to_srgb_u8, srgb_u8_to_linear};
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
+use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::session::OffOutputBehavior;
 
 use crate::device_settings::DeviceSettingsStore;
@@ -99,6 +100,9 @@ pub struct RenderThreadState {
 
     /// Target render canvas height.
     pub canvas_height: u32,
+
+    /// Requested render acceleration mode for the pipeline.
+    pub render_acceleration_mode: RenderAccelerationMode,
 }
 
 impl RenderThread {
@@ -169,6 +173,11 @@ fn u64_to_u32(v: u64) -> u32 {
     u32::try_from(v).unwrap_or(u32::MAX)
 }
 
+/// Saturating conversion from `usize` to `u32`.
+fn usize_to_u32(v: usize) -> u32 {
+    u32::try_from(v).unwrap_or(u32::MAX)
+}
+
 /// Runtime decision for which frame stages may be reused when over budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SkipDecision {
@@ -198,6 +207,12 @@ impl SkipDecision {
 struct FrameExecution {
     next_wake: NextWake,
     next_skip_decision: SkipDecision,
+}
+
+struct PublishFrameStats {
+    elapsed_us: u32,
+    full_frame_copy_count: u32,
+    full_frame_copy_bytes: u32,
 }
 
 /// Scheduler decision for when the next render iteration should begin.
@@ -252,7 +267,10 @@ impl FrameInputs {
 /// 5. Publish frame data + timing event
 /// 6. Sleep for remaining frame budget
 async fn run_pipeline(state: RenderThreadState) {
-    info!("render pipeline started");
+    info!(
+        mode = ?state.render_acceleration_mode,
+        "render pipeline started"
+    );
 
     let mut cached_inputs = FrameInputs::silence();
     let mut cached_canvas: Option<Canvas> = None;
@@ -461,14 +479,20 @@ async fn execute_frame(
     }
 
     let postprocess_start = Instant::now();
-    apply_preview_brightness(&mut canvas, output_power.effective_brightness());
+    let preview_copy = apply_preview_brightness(&mut canvas, output_power.effective_brightness());
     let postprocess_us = micros_u32(postprocess_start.elapsed());
+    let mut full_frame_copy_count = u32::from(preview_copy);
+    let mut full_frame_copy_bytes = if preview_copy {
+        usize_to_u32(canvas.rgba_len())
+    } else {
+        0
+    };
 
     // ── Stage 5: Publish to bus ─────────────────────────────────
     let (frame_number, elapsed_ms, budget_us) = frame_snapshot(state).await;
     let frame_num_u32 = u64_to_u32(frame_number);
     let timing_total_us = micros_u32(frame_start.elapsed());
-    let publish_us = publish_frame_updates(
+    let publish_stats = publish_frame_updates(
         state,
         recycled_frame,
         &inputs.audio,
@@ -485,6 +509,11 @@ async fn execute_frame(
             budget_us,
         },
     );
+    let publish_us = publish_stats.elapsed_us;
+    full_frame_copy_count =
+        full_frame_copy_count.saturating_add(publish_stats.full_frame_copy_count);
+    full_frame_copy_bytes =
+        full_frame_copy_bytes.saturating_add(publish_stats.full_frame_copy_bytes);
     let total_us = micros_u32(frame_start.elapsed());
     let known_stage_us = input_us
         .saturating_add(render_us)
@@ -511,6 +540,8 @@ async fn execute_frame(
             jitter_us,
             reused_inputs,
             reused_canvas,
+            full_frame_copy_count,
+            full_frame_copy_bytes,
             output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),
         });
     }
@@ -534,6 +565,8 @@ async fn execute_frame(
         total_us,
         reused_inputs,
         reused_canvas,
+        full_frame_copy_count,
+        full_frame_copy_bytes,
         devices = write_stats.devices_written,
         leds = write_stats.total_leds,
         "frame complete"
@@ -734,7 +767,7 @@ async fn maybe_sleep_throttle(
         recycled_frame.zones.clear();
         let (frame_number, elapsed_ms, budget_us) = frame_snapshot(state).await;
         let frame_num_u32 = u64_to_u32(frame_number);
-        let publish_us = publish_frame_updates(
+        let publish_stats = publish_frame_updates(
             state,
             recycled_frame,
             &AudioData::silence(),
@@ -751,6 +784,7 @@ async fn maybe_sleep_throttle(
                 budget_us,
             },
         );
+        let publish_us = publish_stats.elapsed_us;
         {
             let mut rl = state.render_loop.write().await;
             let _ = rl.frame_complete();
@@ -797,7 +831,7 @@ async fn maybe_sleep_throttle(
     let (frame_number, elapsed_ms, budget_us) = frame_snapshot(state).await;
     let frame_num_u32 = u64_to_u32(frame_number);
     let timing_total_us = sample_us.saturating_add(push_us);
-    let publish_us = publish_frame_updates(
+    let publish_stats = publish_frame_updates(
         state,
         recycled_frame,
         &AudioData::silence(),
@@ -814,6 +848,7 @@ async fn maybe_sleep_throttle(
             budget_us,
         },
     );
+    let publish_us = publish_stats.elapsed_us;
     let total_us = micros_u32(frame_start.elapsed());
     let overhead_us =
         total_us.saturating_sub(sample_us.saturating_add(push_us).saturating_add(publish_us));
@@ -834,6 +869,8 @@ async fn maybe_sleep_throttle(
             jitter_us: 0,
             reused_inputs: false,
             reused_canvas: false,
+            full_frame_copy_count: publish_stats.full_frame_copy_count,
+            full_frame_copy_bytes: publish_stats.full_frame_copy_bytes,
             output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),
         });
     }
@@ -869,14 +906,15 @@ fn should_idle_throttle(effect_running: bool, screen_capture_active: bool) -> bo
     true
 }
 
-fn apply_preview_brightness(canvas: &mut Canvas, brightness: f32) {
+fn apply_preview_brightness(canvas: &mut Canvas, brightness: f32) -> bool {
     let brightness = brightness.clamp(0.0, 1.0);
     if brightness >= 0.999 {
-        return;
+        return false;
     }
+    let copied = canvas.is_shared();
     if brightness <= 0.0 {
         canvas.clear();
-        return;
+        return copied;
     }
 
     for chunk in canvas.as_rgba_bytes_mut().chunks_exact_mut(4) {
@@ -884,6 +922,7 @@ fn apply_preview_brightness(canvas: &mut Canvas, brightness: f32) {
         chunk[1] = linear_to_srgb_u8(srgb_u8_to_linear(chunk[1]) * brightness);
         chunk[2] = linear_to_srgb_u8(srgb_u8_to_linear(chunk[2]) * brightness);
     }
+    copied
 }
 
 fn panic_payload_message(panic: &(dyn Any + Send + 'static)) -> String {
@@ -963,8 +1002,10 @@ fn publish_frame_updates(
     elapsed_ms: u32,
     last_audio_level_update_ms: &mut Option<u32>,
     timing: FrameTiming,
-) -> u32 {
+) -> PublishFrameStats {
     let publish_start = Instant::now();
+    let mut full_frame_copy_count = 0_u32;
+    let mut full_frame_copy_bytes = 0_u32;
     recycled_frame.frame_number = frame_number;
     recycled_frame.timestamp_ms = elapsed_ms;
     let published_frame = FrameData::new(
@@ -978,24 +1019,36 @@ fn publish_frame_updates(
         .spectrum_sender()
         .send(spectrum_from_audio(audio, elapsed_ms));
     maybe_publish_audio_level_event(state, audio, elapsed_ms, last_audio_level_update_ms);
-    let _ = state
-        .event_bus
-        .canvas_sender()
-        .send(CanvasFrame::from_owned_canvas(
-            canvas,
-            frame_number,
-            elapsed_ms,
-        ));
-    let _ = state.event_bus.screen_canvas_sender().send(
-        screen_preview_canvas
-            .map(|canvas| CanvasFrame::from_owned_canvas(canvas, frame_number, elapsed_ms))
-            .unwrap_or_else(CanvasFrame::empty),
-    );
+    let canvas_rgba_len = usize_to_u32(canvas.rgba_len());
+    let (canvas_frame, canvas_copied) =
+        CanvasFrame::from_owned_canvas_with_copy_info(canvas, frame_number, elapsed_ms);
+    if canvas_copied {
+        full_frame_copy_count = full_frame_copy_count.saturating_add(1);
+        full_frame_copy_bytes = full_frame_copy_bytes.saturating_add(canvas_rgba_len);
+    }
+    let _ = state.event_bus.canvas_sender().send(canvas_frame);
+    let screen_frame = if let Some(canvas) = screen_preview_canvas {
+        let screen_rgba_len = usize_to_u32(canvas.rgba_len());
+        let (frame, copied) =
+            CanvasFrame::from_owned_canvas_with_copy_info(canvas, frame_number, elapsed_ms);
+        if copied {
+            full_frame_copy_count = full_frame_copy_count.saturating_add(1);
+            full_frame_copy_bytes = full_frame_copy_bytes.saturating_add(screen_rgba_len);
+        }
+        frame
+    } else {
+        CanvasFrame::empty()
+    };
+    let _ = state.event_bus.screen_canvas_sender().send(screen_frame);
     state.event_bus.publish(HypercolorEvent::FrameRendered {
         frame_number,
         timing,
     });
-    micros_u32(publish_start.elapsed())
+    PublishFrameStats {
+        elapsed_us: micros_u32(publish_start.elapsed()),
+        full_frame_copy_count,
+        full_frame_copy_bytes,
+    }
 }
 
 fn maybe_publish_audio_level_event(
@@ -1155,12 +1208,12 @@ mod tests {
 
     use hypercolor_core::engine::FpsTier;
     use hypercolor_core::input::ScreenData;
-    use hypercolor_core::types::canvas::Rgba;
+    use hypercolor_core::types::canvas::{Canvas, Rgba};
     use hypercolor_core::types::event::ZoneColors;
 
     use super::{
-        SkipDecision, advance_deadline, micros_u32, parse_sector_zone_id, screen_data_to_canvas,
-        should_idle_throttle,
+        SkipDecision, advance_deadline, apply_preview_brightness, micros_u32, parse_sector_zone_id,
+        screen_data_to_canvas, should_idle_throttle,
     };
 
     fn frame_stats(
@@ -1280,5 +1333,28 @@ mod tests {
         assert_eq!(canvas.get_pixel(3, 0), Rgba::new(0, 255, 0, 255));
         assert_eq!(canvas.get_pixel(0, 3), Rgba::new(0, 0, 255, 255));
         assert_eq!(canvas.get_pixel(3, 3), Rgba::new(255, 255, 255, 255));
+    }
+
+    #[test]
+    fn preview_brightness_reports_copy_when_canvas_is_shared() {
+        let mut canvas = Canvas::new(1, 1);
+        canvas.set_pixel(0, 0, Rgba::new(255, 128, 0, 255));
+        let shared = canvas.clone();
+
+        let copied = apply_preview_brightness(&mut canvas, 0.5);
+
+        assert!(copied);
+        assert_eq!(shared.get_pixel(0, 0), Rgba::new(255, 128, 0, 255));
+    }
+
+    #[test]
+    fn preview_brightness_skips_copy_reporting_when_brightness_is_identity() {
+        let mut canvas = Canvas::new(1, 1);
+        canvas.set_pixel(0, 0, Rgba::new(255, 128, 0, 255));
+        let _shared = canvas.clone();
+
+        let copied = apply_preview_brightness(&mut canvas, 1.0);
+
+        assert!(!copied);
     }
 }

@@ -254,6 +254,7 @@ impl DaemonState {
                 "{}x{}",
                 config.daemon.canvas_width, config.daemon.canvas_height
             ),
+            render_acceleration = ?config.effect_engine.render_acceleration_mode,
             "Effect engine created"
         );
 
@@ -653,6 +654,7 @@ impl DaemonState {
             screen_capture_configured: config.capture.enabled,
             canvas_width: config.daemon.canvas_width,
             canvas_height: config.daemon.canvas_height,
+            render_acceleration_mode: config.effect_engine.render_acceleration_mode,
         };
         self.render_thread = Some(RenderThread::spawn(rt_state));
         self.display_output_thread = Some(DisplayOutputThread::spawn(DisplayOutputState {

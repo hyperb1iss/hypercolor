@@ -510,6 +510,18 @@ impl Canvas {
         self.pixels.as_slice()
     }
 
+    /// Whether the pixel buffer is currently shared with another canvas handle.
+    #[must_use]
+    pub fn is_shared(&self) -> bool {
+        Arc::strong_count(&self.pixels) > 1
+    }
+
+    /// Raw RGBA byte length for the current canvas dimensions.
+    #[must_use]
+    pub fn rgba_len(&self) -> usize {
+        self.pixels.len()
+    }
+
     /// Mutable pixel slice for renderers writing directly into the buffer.
     pub fn as_rgba_bytes_mut(&mut self) -> &mut [u8] {
         Arc::make_mut(&mut self.pixels).as_mut_slice()
@@ -518,7 +530,16 @@ impl Canvas {
     /// Consume the canvas and return the owned RGBA byte buffer.
     #[must_use]
     pub fn into_rgba_bytes(self) -> Vec<u8> {
-        Arc::try_unwrap(self.pixels).unwrap_or_else(|pixels| pixels.as_ref().clone())
+        self.into_rgba_bytes_with_copy_info().0
+    }
+
+    /// Consume the canvas and report whether ownership required a backing clone.
+    #[must_use]
+    pub fn into_rgba_bytes_with_copy_info(self) -> (Vec<u8>, bool) {
+        match Arc::try_unwrap(self.pixels) {
+            Ok(pixels) => (pixels, false),
+            Err(pixels) => (pixels.as_ref().clone(), true),
+        }
     }
 
     /// View pixel data as `[u8; 4]` RGBA tuples.

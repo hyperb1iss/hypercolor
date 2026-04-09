@@ -3,7 +3,7 @@
 use hypercolor_types::config::{
     AudioConfig, CaptureConfig, DaemonConfig, DbusConfig, DiscoveryConfig, EffectEngineConfig,
     FeatureFlags, HueConfig, HypercolorConfig, LogLevel, McpConfig, NanoleafConfig, NetworkConfig,
-    ShutdownBehavior, TuiConfig, WebConfig, WledConfig, WledProtocolConfig,
+    RenderAccelerationMode, ShutdownBehavior, TuiConfig, WebConfig, WledConfig, WledProtocolConfig,
 };
 use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
 
@@ -52,6 +52,7 @@ fn effect_engine_defaults_match_spec() {
     assert_eq!(e.preferred_renderer, "auto");
     assert!(e.servo_enabled);
     assert_eq!(e.wgpu_backend, "auto");
+    assert_eq!(e.render_acceleration_mode, RenderAccelerationMode::Cpu);
     assert!(e.extra_effect_dirs.is_empty());
     assert!(e.watch_effects);
     assert!(e.watch_config);
@@ -217,6 +218,10 @@ fn full_config_toml_roundtrip() {
     assert_eq!(restored.mcp.base_path, "/mcp");
     assert_eq!(restored.audio.fft_size, 1024);
     assert!(!restored.capture.enabled);
+    assert_eq!(
+        restored.effect_engine.render_acceleration_mode,
+        RenderAccelerationMode::Cpu
+    );
     assert_eq!(restored.discovery.scan_interval_secs, 300);
     assert!(restored.network.mdns_publish);
     assert!(!restored.network.remote_access);
@@ -239,6 +244,10 @@ fn minimal_toml_fills_defaults() {
     assert_eq!(config.mcp.base_path, "/mcp");
     assert_eq!(config.audio.device, "default");
     assert!(!config.capture.enabled);
+    assert_eq!(
+        config.effect_engine.render_acceleration_mode,
+        RenderAccelerationMode::Cpu
+    );
     assert_eq!(config.tui.theme, "silkcircuit");
     assert!(config.network.mdns_publish);
     assert!(!config.network.remote_access);
@@ -247,6 +256,21 @@ fn minimal_toml_fills_defaults() {
     assert_eq!(config.wled.dedup_threshold, 2);
     assert!(config.hue.use_cie_xy);
     assert_eq!(config.nanoleaf.transition_time, 1);
+}
+
+#[test]
+fn effect_engine_acceleration_mode_toml_roundtrip() {
+    let original = EffectEngineConfig {
+        render_acceleration_mode: RenderAccelerationMode::Auto,
+        ..EffectEngineConfig::default()
+    };
+    let toml_str = toml::to_string(&original).expect("serialize EffectEngineConfig");
+    let restored: EffectEngineConfig =
+        toml::from_str(&toml_str).expect("deserialize EffectEngineConfig");
+    assert_eq!(
+        restored.render_acceleration_mode,
+        RenderAccelerationMode::Auto
+    );
 }
 
 #[test]

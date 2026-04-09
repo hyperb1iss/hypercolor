@@ -12,7 +12,7 @@ use std::time::Duration;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::runtime_state::{self, RuntimeSessionSnapshot};
 use hypercolor_daemon::startup::{DaemonState, default_config, load_config};
-use hypercolor_types::config::CURRENT_SCHEMA_VERSION;
+use hypercolor_types::config::{CURRENT_SCHEMA_VERSION, RenderAccelerationMode};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceTopologyHint, ZoneInfo,
@@ -317,6 +317,10 @@ async fn config_loading_all_sub_configs_have_defaults() {
     // Network backend config defaults
     assert!(config.hue.use_cie_xy);
     assert_eq!(config.nanoleaf.transition_time, 1);
+    assert_eq!(
+        config.effect_engine.render_acceleration_mode,
+        RenderAccelerationMode::Cpu
+    );
 
     // TUI config defaults
     assert_eq!(config.tui.theme, "silkcircuit");
@@ -460,6 +464,10 @@ async fn api_state_config_snapshot_matches_init_config() {
     let snapshot = state.config();
     assert_eq!(snapshot.daemon.target_fps, 45);
     assert_eq!(snapshot.schema_version, CURRENT_SCHEMA_VERSION);
+    assert_eq!(
+        snapshot.effect_engine.render_acceleration_mode,
+        RenderAccelerationMode::Cpu
+    );
 }
 
 #[tokio::test]

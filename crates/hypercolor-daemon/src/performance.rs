@@ -20,6 +20,8 @@ pub(crate) struct LatestFrameMetrics {
     pub jitter_us: u32,
     pub reused_inputs: bool,
     pub reused_canvas: bool,
+    pub full_frame_copy_count: u32,
+    pub full_frame_copy_bytes: u32,
     pub output_errors: u32,
 }
 

@@ -16,6 +16,7 @@ use crate::session::SessionConfig;
 
 mod defaults {
     use super::LogLevel;
+    use super::RenderAccelerationMode;
     use super::ShutdownBehavior;
 
     // Daemon
@@ -123,6 +124,9 @@ mod defaults {
     // Effect engine
     pub fn auto_string() -> String {
         "auto".into()
+    }
+    pub fn render_acceleration_mode() -> RenderAccelerationMode {
+        RenderAccelerationMode::Cpu
     }
 
     // Shared
@@ -383,6 +387,9 @@ pub struct EffectEngineConfig {
     #[serde(default = "defaults::auto_string")]
     pub wgpu_backend: String,
 
+    #[serde(default = "defaults::render_acceleration_mode")]
+    pub render_acceleration_mode: RenderAccelerationMode,
+
     #[serde(default)]
     pub extra_effect_dirs: Vec<PathBuf>,
 
@@ -399,11 +406,24 @@ impl Default for EffectEngineConfig {
             preferred_renderer: defaults::auto_string(),
             servo_enabled: defaults::bool_true(),
             wgpu_backend: defaults::auto_string(),
+            render_acceleration_mode: defaults::render_acceleration_mode(),
             extra_effect_dirs: Vec::new(),
             watch_effects: defaults::bool_true(),
             watch_config: defaults::bool_true(),
         }
     }
+}
+
+/// Preferred render-surface acceleration path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderAccelerationMode {
+    /// Always use the CPU path.
+    Cpu,
+    /// Prefer GPU acceleration when available, otherwise fall back safely.
+    Auto,
+    /// Require the GPU acceleration lane.
+    Gpu,
 }
 
 // ─── Audio ───────────────────────────────────────────────────────────────────

@@ -4,6 +4,7 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use hypercolor_core::bus::CanvasFrame;
 use hypercolor_core::effect::builtin::{ColorWaveRenderer, GradientRenderer, SolidColorRenderer};
 use hypercolor_core::effect::{EffectRenderer, FrameInput};
 use hypercolor_core::input::InteractionData;
@@ -353,9 +354,55 @@ fn bench_audio_pipeline(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_canvas_handoff(c: &mut Criterion) {
+    let mut group = c.benchmark_group("core_canvas_handoff");
+    let canvas_bytes = u64::from(CANVAS_WIDTH)
+        .saturating_mul(u64::from(CANVAS_HEIGHT))
+        .saturating_mul(4);
+    group.throughput(Throughput::Bytes(canvas_bytes));
+
+    group.bench_function("into_rgba_bytes_unique", |b| {
+        b.iter(|| {
+            let canvas = patterned_canvas(CANVAS_WIDTH, CANVAS_HEIGHT);
+            let rgba = black_box(canvas).into_rgba_bytes_with_copy_info();
+            black_box(rgba);
+        });
+    });
+
+    group.bench_function("into_rgba_bytes_shared", |b| {
+        b.iter(|| {
+            let canvas = patterned_canvas(CANVAS_WIDTH, CANVAS_HEIGHT);
+            let shared = canvas.clone();
+            black_box(&shared);
+            let rgba = black_box(canvas).into_rgba_bytes_with_copy_info();
+            black_box(rgba);
+        });
+    });
+
+    group.bench_function("canvas_frame_from_owned_unique", |b| {
+        b.iter(|| {
+            let canvas = patterned_canvas(CANVAS_WIDTH, CANVAS_HEIGHT);
+            let frame = CanvasFrame::from_owned_canvas_with_copy_info(black_box(canvas), 1, 16);
+            black_box(frame);
+        });
+    });
+
+    group.bench_function("canvas_frame_from_owned_shared", |b| {
+        b.iter(|| {
+            let canvas = patterned_canvas(CANVAS_WIDTH, CANVAS_HEIGHT);
+            let shared = canvas.clone();
+            black_box(&shared);
+            let frame = CanvasFrame::from_owned_canvas_with_copy_info(black_box(canvas), 1, 16);
+            black_box(frame);
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = benchmark_config();
-    targets = bench_builtin_renderers, bench_spatial_sampling, bench_audio_pipeline
+    targets = bench_builtin_renderers, bench_spatial_sampling, bench_audio_pipeline, bench_canvas_handoff
 }
 criterion_main!(benches);

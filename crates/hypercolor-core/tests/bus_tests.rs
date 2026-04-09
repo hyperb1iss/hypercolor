@@ -585,6 +585,20 @@ fn owned_canvas_frame_reuses_canvas_rgba_allocation() {
     assert_eq!(frame.rgba_bytes()[..8], [1, 2, 3, 255, 4, 5, 6, 255]);
 }
 
+#[test]
+fn owned_canvas_frame_reports_when_shared_canvas_forces_copy() {
+    let mut canvas = Canvas::new(2, 1);
+    canvas.set_pixel(0, 0, Rgba::new(1, 2, 3, 255));
+    canvas.set_pixel(1, 0, Rgba::new(4, 5, 6, 255));
+    let shared = canvas.clone();
+
+    let (frame, copied) = CanvasFrame::from_owned_canvas_with_copy_info(canvas, 9, 123);
+
+    assert!(copied);
+    assert_eq!(frame.rgba_bytes()[..8], [1, 2, 3, 255, 4, 5, 6, 255]);
+    assert_eq!(shared.as_rgba_bytes()[..8], [1, 2, 3, 255, 4, 5, 6, 255]);
+}
+
 // ── Lagged Receiver Handling ─────────────────────────────────────────────
 
 #[tokio::test]

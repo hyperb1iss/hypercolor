@@ -27,6 +27,7 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::AttachmentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_types::audio::AudioData;
+use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::{DeviceId, DeviceState};
 use hypercolor_types::event::{HypercolorEvent, InputButtonState, InputEvent, ZoneColors};
 use hypercolor_types::session::OffOutputBehavior;
@@ -342,6 +343,7 @@ fn make_render_state(
         screen_capture_configured: false,
         canvas_width: 320,
         canvas_height: 200,
+        render_acceleration_mode: RenderAccelerationMode::Cpu,
     }
 }
 
@@ -815,6 +817,7 @@ async fn pipeline_renders_active_effect_to_devices() {
         screen_capture_configured: false,
         canvas_width: 320,
         canvas_height: 200,
+        render_acceleration_mode: RenderAccelerationMode::Cpu,
     };
 
     // Start.
@@ -965,6 +968,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         screen_capture_configured: false,
         canvas_width: 320,
         canvas_height: 200,
+        render_acceleration_mode: RenderAccelerationMode::Cpu,
     };
 
     {
@@ -1185,6 +1189,7 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         screen_capture_configured: false,
         canvas_width: 320,
         canvas_height: 200,
+        render_acceleration_mode: RenderAccelerationMode::Cpu,
     };
 
     let mut frame_rx = state.event_bus.frame_receiver();
