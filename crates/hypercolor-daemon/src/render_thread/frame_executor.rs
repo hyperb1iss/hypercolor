@@ -11,15 +11,18 @@ use hypercolor_core::types::event::FrameTiming;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::SpatialLayout;
 
+use super::frame_io::{publish_frame_updates, sample_inputs};
 use super::frame_scheduler::FrameSceneSnapshot;
+use super::frame_state::{
+    build_frame_scene_snapshot, reconcile_audio_capture, reconcile_screen_capture,
+};
 use super::pipeline_runtime::{FrameInputs, PipelineRuntime, RenderCaches};
 use super::producer_queue::{ProducerFrame, ProducerFrameState};
 use super::render_groups::RenderGroupResult;
 use super::sparkleflinger::ComposedFrameSet;
 use super::{
     MAX_RENDER_SURFACE_SLOTS, NextWake, RenderThreadState, SkipDecision,
-    build_frame_scene_snapshot, handle_async_write_failures, maybe_idle_throttle,
-    maybe_sleep_throttle, micros_u32, sample_inputs, u64_to_u32,
+    handle_async_write_failures, maybe_idle_throttle, maybe_sleep_throttle, micros_u32, u64_to_u32,
 };
 use crate::performance::{FrameTimeline, LatestFrameMetrics};
 
@@ -453,13 +456,13 @@ pub(crate) async fn execute_frame(
     .await;
     let output_power = scene_snapshot.output_power;
     let effect_demand = scene_snapshot.effect_demand;
-    super::reconcile_audio_capture(
+    reconcile_audio_capture(
         state,
         !output_power.sleeping && effect_demand.audio_capture_active,
         &mut frame_loop.last_audio_capture_active,
     )
     .await;
-    super::reconcile_screen_capture(
+    reconcile_screen_capture(
         state,
         !output_power.sleeping && effect_demand.screen_capture_active,
         &mut frame_loop.last_screen_capture_active,
@@ -580,7 +583,7 @@ pub(crate) async fn execute_frame(
         preview_surface: _,
         bypassed: _,
     } = render_stage.composed_frame;
-    let publish_stats = super::publish_frame_updates(
+    let publish_stats = publish_frame_updates(
         state,
         &mut render.recycled_frame,
         &inputs.audio,
