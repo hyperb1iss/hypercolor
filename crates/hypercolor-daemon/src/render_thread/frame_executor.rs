@@ -12,24 +12,20 @@ use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::SpatialLayout;
 
 use super::frame_io::{publish_frame_updates, sample_inputs};
+use super::frame_pacing::{FrameExecution, NextWake};
 use super::frame_scheduler::FrameSceneSnapshot;
+use super::frame_sources::{render_effect_into, static_surface};
 use super::frame_state::{
     build_frame_scene_snapshot, reconcile_audio_capture, reconcile_screen_capture,
 };
+use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
 use super::pipeline_runtime::{FrameInputs, PipelineRuntime, RenderCaches};
 use super::producer_queue::{ProducerFrame, ProducerFrameState};
 use super::render_groups::RenderGroupResult;
 use super::sparkleflinger::ComposedFrameSet;
-use super::{
-    MAX_RENDER_SURFACE_SLOTS, NextWake, RenderThreadState, SkipDecision,
-    handle_async_write_failures, maybe_idle_throttle, maybe_sleep_throttle, micros_u32, u64_to_u32,
-};
+use super::{MAX_RENDER_SURFACE_SLOTS, RenderThreadState, SkipDecision, micros_u32, u64_to_u32};
+use crate::discovery::handle_async_write_failures;
 use crate::performance::{FrameTimeline, LatestFrameMetrics};
-
-pub(crate) struct FrameExecution {
-    pub(crate) next_wake: NextWake,
-    pub(crate) next_skip_decision: SkipDecision,
-}
 
 struct RenderStageStats {
     composed_frame: ComposedFrameSet,
@@ -82,7 +78,7 @@ impl<'a> ComposeContext<'a> {
                 screen_frame
             } else {
                 ProducedFrame {
-                    frame: ProducerFrame::Surface(super::static_surface(
+                    frame: ProducerFrame::Surface(static_surface(
                         &mut self.render.static_surface_cache,
                         self.state.canvas_width,
                         self.state.canvas_height,
@@ -268,7 +264,7 @@ impl<'a> ComposeContext<'a> {
             }
             Err(error) => {
                 warn!(%error, "failed to render active scene groups; publishing black frame");
-                let source_frame = ProducerFrame::Surface(super::static_surface(
+                let source_frame = ProducerFrame::Surface(static_surface(
                     &mut self.render.static_surface_cache,
                     self.state.canvas_width,
                     self.state.canvas_height,
@@ -363,7 +359,7 @@ impl<'a> ComposeContext<'a> {
         if let Some(mut lease) = lease {
             {
                 let target = lease.canvas_mut();
-                super::render_effect_into(
+                render_effect_into(
                     self.state,
                     effect_generation,
                     self.delta_secs,
@@ -400,7 +396,7 @@ impl<'a> ComposeContext<'a> {
                     && canvas.height() == self.state.canvas_height
             })
             .unwrap_or_else(|| Canvas::new(self.state.canvas_width, self.state.canvas_height));
-        super::render_effect_into(
+        render_effect_into(
             self.state,
             effect_generation,
             self.delta_secs,

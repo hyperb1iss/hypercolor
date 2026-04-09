@@ -6,7 +6,10 @@ use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
 
-use super::{FrameInputs, RenderThreadState, micros_u32, usize_to_u32};
+use super::pipeline_runtime::FrameInputs;
+use super::{RenderThreadState, micros_u32, usize_to_u32};
+
+const AUDIO_LEVEL_EVENT_INTERVAL_MS: u32 = 100;
 
 pub(crate) struct PublishFrameStats {
     pub(crate) elapsed_us: u32,
@@ -126,7 +129,7 @@ fn maybe_publish_audio_level_event(
     last_audio_level_update_ms: &mut Option<u32>,
 ) {
     if last_audio_level_update_ms.is_some_and(|last_sent| {
-        elapsed_ms.saturating_sub(last_sent) < super::AUDIO_LEVEL_EVENT_INTERVAL_MS
+        elapsed_ms.saturating_sub(last_sent) < AUDIO_LEVEL_EVENT_INTERVAL_MS
     }) {
         return;
     }

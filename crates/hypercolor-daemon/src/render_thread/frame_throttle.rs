@@ -1,0 +1,252 @@
+use std::time::{Duration, Instant};
+
+use tracing::{debug, trace};
+
+use hypercolor_core::types::audio::AudioData;
+use hypercolor_core::types::canvas::Canvas;
+use hypercolor_core::types::event::{FrameData, FrameTiming};
+use hypercolor_types::session::OffOutputBehavior;
+
+use super::frame_io::publish_frame_updates;
+use super::frame_pacing::{FrameExecution, NextWake};
+use super::frame_scheduler::FrameSceneSnapshot;
+use super::frame_sources::static_surface;
+use super::pipeline_runtime::CachedStaticSurface;
+use super::{RenderThreadState, SkipDecision, micros_u32, u64_to_u32};
+use crate::discovery::handle_async_write_failures;
+use crate::performance::{FrameTimeline, LatestFrameMetrics};
+
+const IDLE_THROTTLE_SLEEP: Duration = Duration::from_millis(120);
+const SESSION_SLEEP_THROTTLE_SLEEP: Duration = Duration::from_millis(250);
+
+pub(crate) async fn maybe_idle_throttle(
+    state: &RenderThreadState,
+    effect_running: bool,
+    screen_capture_active: bool,
+    idle_black_pushed: &mut bool,
+) -> Option<FrameExecution> {
+    let can_idle_throttle = should_idle_throttle(effect_running, screen_capture_active);
+
+    if effect_running {
+        *idle_black_pushed = false;
+        return None;
+    }
+
+    if can_idle_throttle && !*idle_black_pushed {
+        debug!(
+            "No active effect or capture input; layout changes render black until an effect or input source starts"
+        );
+    }
+
+    if can_idle_throttle && *idle_black_pushed {
+        {
+            let mut render_loop = state.render_loop.write().await;
+            let _ = render_loop.frame_complete();
+        }
+
+        return Some(FrameExecution {
+            next_wake: NextWake::Delay(IDLE_THROTTLE_SLEEP),
+            next_skip_decision: SkipDecision::None,
+        });
+    }
+
+    None
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "sleep-throttle execution is easier to audit when frame synthesis, output, and telemetry stay in one async block"
+)]
+pub(crate) async fn maybe_sleep_throttle(
+    state: &RenderThreadState,
+    scene_snapshot: &FrameSceneSnapshot,
+    frame_start: Instant,
+    scene_snapshot_done_us: u32,
+    static_surface_cache: &mut Option<CachedStaticSurface>,
+    recycled_frame: &mut FrameData,
+    sleep_black_pushed: &mut bool,
+    last_audio_level_update_ms: &mut Option<u32>,
+) -> Option<FrameExecution> {
+    let power_state = scene_snapshot.output_power;
+    if !power_state.sleeping {
+        *sleep_black_pushed = false;
+        return None;
+    }
+    if *sleep_black_pushed {
+        {
+            let mut render_loop = state.render_loop.write().await;
+            let _ = render_loop.frame_complete();
+        }
+
+        return Some(FrameExecution {
+            next_wake: NextWake::Delay(SESSION_SLEEP_THROTTLE_SLEEP),
+            next_skip_decision: SkipDecision::None,
+        });
+    }
+
+    if power_state.off_output_behavior == OffOutputBehavior::Release {
+        recycled_frame.zones.clear();
+        let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
+        let surface = static_surface(
+            static_surface_cache,
+            state.canvas_width,
+            state.canvas_height,
+            [0, 0, 0],
+        );
+        let publish_stats = publish_frame_updates(
+            state,
+            recycled_frame,
+            &AudioData::silence(),
+            Canvas::from_published_surface(&surface),
+            Some(surface),
+            None,
+            frame_num_u32,
+            scene_snapshot.elapsed_ms,
+            last_audio_level_update_ms,
+            FrameTiming {
+                producer_us: 0,
+                composition_us: 0,
+                render_us: 0,
+                sample_us: 0,
+                push_us: 0,
+                total_us: 0,
+                budget_us: scene_snapshot.budget_us,
+            },
+        );
+        let publish_us = publish_stats.elapsed_us;
+        {
+            let mut render_loop = state.render_loop.write().await;
+            let _ = render_loop.frame_complete();
+        }
+
+        trace!(
+            publish_us,
+            "published cleared frame/canvas for release sleep"
+        );
+        *sleep_black_pushed = true;
+        return Some(FrameExecution {
+            next_wake: NextWake::Delay(SESSION_SLEEP_THROTTLE_SLEEP),
+            next_skip_decision: SkipDecision::None,
+        });
+    }
+
+    let surface = static_surface(
+        static_surface_cache,
+        state.canvas_width,
+        state.canvas_height,
+        power_state.off_output_color,
+    );
+    let canvas = Canvas::from_published_surface(&surface);
+    let sample_start = Instant::now();
+    scene_snapshot
+        .spatial_engine
+        .sample_into(&canvas, &mut recycled_frame.zones);
+    let zone_colors = &recycled_frame.zones;
+    let layout = scene_snapshot.spatial_engine.layout();
+    let sample_us = micros_u32(sample_start.elapsed());
+    let sample_done_us = micros_u32(frame_start.elapsed());
+
+    let push_start = Instant::now();
+    let (write_stats, async_failures) = {
+        let mut manager = state.backend_manager.lock().await;
+        let write_stats = manager.write_frame(zone_colors, layout.as_ref()).await;
+        let async_failures = manager.async_write_failures();
+        (write_stats, async_failures)
+    };
+    let push_us = micros_u32(push_start.elapsed());
+    let output_done_us = micros_u32(frame_start.elapsed());
+
+    if let Some(runtime) = &state.discovery_runtime {
+        handle_async_write_failures(runtime, async_failures).await;
+    }
+
+    let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
+    let timing_total_us = sample_us.saturating_add(push_us);
+    let publish_stats = publish_frame_updates(
+        state,
+        recycled_frame,
+        &AudioData::silence(),
+        canvas,
+        Some(surface),
+        None,
+        frame_num_u32,
+        scene_snapshot.elapsed_ms,
+        last_audio_level_update_ms,
+        FrameTiming {
+            producer_us: 0,
+            composition_us: 0,
+            render_us: 0,
+            sample_us,
+            push_us,
+            total_us: timing_total_us,
+            budget_us: scene_snapshot.budget_us,
+        },
+    );
+    let publish_us = publish_stats.elapsed_us;
+    let publish_done_us = micros_u32(frame_start.elapsed());
+    let total_us = micros_u32(frame_start.elapsed());
+    let overhead_us =
+        total_us.saturating_sub(sample_us.saturating_add(push_us).saturating_add(publish_us));
+
+    {
+        let mut performance = state.performance.write().await;
+        performance.record_frame(LatestFrameMetrics {
+            timestamp_ms: scene_snapshot.elapsed_ms,
+            input_us: 0,
+            producer_us: 0,
+            composition_us: 0,
+            render_us: 0,
+            sample_us,
+            push_us,
+            postprocess_us: 0,
+            publish_us,
+            overhead_us,
+            total_us,
+            wake_late_us: 0,
+            jitter_us: 0,
+            reused_inputs: false,
+            reused_canvas: false,
+            retained_effect: false,
+            retained_screen: false,
+            composition_bypassed: false,
+            logical_layer_count: 0,
+            render_group_count: scene_snapshot.scene_runtime.active_render_group_count(),
+            scene_active: scene_snapshot.scene_runtime.active_scene_id.is_some(),
+            scene_transition_active: scene_snapshot.scene_runtime.active_transition.is_some(),
+            full_frame_copy_count: publish_stats.full_frame_copy_count,
+            full_frame_copy_bytes: publish_stats.full_frame_copy_bytes,
+            output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),
+            timeline: FrameTimeline {
+                frame_token: scene_snapshot.frame_token,
+                budget_us: scene_snapshot.budget_us,
+                scene_snapshot_done_us,
+                input_done_us: scene_snapshot_done_us,
+                producer_done_us: scene_snapshot_done_us,
+                composition_done_us: scene_snapshot_done_us,
+                sample_done_us,
+                output_done_us,
+                publish_done_us,
+                frame_done_us: total_us,
+            },
+        });
+    }
+
+    {
+        let mut render_loop = state.render_loop.write().await;
+        let _ = render_loop.frame_complete();
+    }
+
+    *sleep_black_pushed = true;
+    Some(FrameExecution {
+        next_wake: NextWake::Delay(SESSION_SLEEP_THROTTLE_SLEEP),
+        next_skip_decision: SkipDecision::None,
+    })
+}
+
+pub(crate) fn should_idle_throttle(effect_running: bool, screen_capture_active: bool) -> bool {
+    if effect_running || screen_capture_active {
+        return false;
+    }
+
+    true
+}

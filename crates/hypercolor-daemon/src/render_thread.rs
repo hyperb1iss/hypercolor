@@ -18,8 +18,11 @@
 mod composition_planner;
 mod frame_executor;
 mod frame_io;
+mod frame_pacing;
 mod frame_scheduler;
+mod frame_sources;
 mod frame_state;
+mod frame_throttle;
 mod pipeline_runtime;
 mod producer_queue;
 mod render_groups;
@@ -33,37 +36,30 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use tokio::sync::{Mutex, RwLock, watch};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info};
 
-use self::frame_executor::{FrameExecution, execute_frame};
-use self::frame_io::publish_frame_updates;
-use self::frame_scheduler::FrameSceneSnapshot;
+use self::frame_executor::execute_frame;
+use self::frame_pacing::{NextWake, advance_deadline, wait_until_frame_deadline};
 use self::frame_state::{reconcile_audio_capture, reconcile_screen_capture};
-use self::pipeline_runtime::{CachedStaticSurface, FrameInputs, PipelineRuntime, StaticSurfaceKey};
+use self::pipeline_runtime::PipelineRuntime;
 use crate::device_settings::DeviceSettingsStore;
-use crate::discovery::{DiscoveryRuntime, handle_async_write_failures};
-use crate::performance::{FrameTimeline, LatestFrameMetrics, PerformanceTracker};
+use crate::discovery::DiscoveryRuntime;
+use crate::performance::PerformanceTracker;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::OutputPowerState;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::BackendManager;
 use hypercolor_core::effect::{EffectEngine, EffectRegistry};
 use hypercolor_core::engine::{FrameStats, RenderLoop};
-use hypercolor_core::input::{InputManager, InteractionData, ScreenData};
+use hypercolor_core::input::InputManager;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_core::types::audio::AudioData;
-use hypercolor_core::types::canvas::{Canvas, PublishedSurface, Rgba};
-use hypercolor_core::types::event::{FrameData, FrameTiming};
 use hypercolor_types::config::RenderAccelerationMode;
-use hypercolor_types::session::OffOutputBehavior;
 
 const RENDER_RUNTIME_WORKERS: usize = 2;
 const RENDER_RUNTIME_MAX_BLOCKING_THREADS: usize = 4;
 const RENDER_RUNTIME_THREAD_KEEP_ALIVE: Duration = Duration::from_secs(2);
 const MAX_RENDER_SURFACE_SLOTS: usize = 6;
-const PRECISE_WAKE_GUARD: Duration = Duration::from_micros(1_000);
-const PRECISE_WAKE_SPIN_THRESHOLD: Duration = Duration::from_micros(150);
 
 // ── RenderThread ────────────────────────────────────────────────────────────
 
@@ -240,21 +236,6 @@ struct RenderLoopSnapshot {
     budget_us: u32,
 }
 
-/// Scheduler decision for when the next render iteration should begin.
-enum NextWake {
-    /// Continue on the regular render cadence using the current FPS interval.
-    Interval(Duration),
-    /// Hold the loop for a fixed delay before checking again.
-    Delay(Duration),
-}
-
-/// Sleep duration when the pipeline is fully idle.
-const IDLE_THROTTLE_SLEEP: Duration = Duration::from_millis(120);
-/// Sleep duration while session policy has output fully suspended.
-const SESSION_SLEEP_THROTTLE_SLEEP: Duration = Duration::from_millis(250);
-/// Emit UI audio summary events at 10 Hz.
-const AUDIO_LEVEL_EVENT_INTERVAL_MS: u32 = 100;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct EffectDemand {
     effect_running: bool,
@@ -360,309 +341,6 @@ async fn run_pipeline(state: RenderThreadState) {
     info!("render pipeline exited");
 }
 
-fn advance_deadline(previous_deadline: Instant, interval: Duration, now: Instant) -> Instant {
-    previous_deadline
-        .checked_add(interval)
-        .unwrap_or(now)
-        .max(now)
-}
-
-fn coarse_sleep_deadline(deadline: Instant, now: Instant) -> Option<Instant> {
-    deadline
-        .checked_sub(PRECISE_WAKE_GUARD)
-        .filter(|coarse_deadline| *coarse_deadline > now)
-}
-
-async fn wait_until_frame_deadline(deadline: Instant) {
-    let now = Instant::now();
-    if let Some(coarse_deadline) = coarse_sleep_deadline(deadline, now) {
-        tokio::time::sleep_until(tokio::time::Instant::from_std(coarse_deadline)).await;
-    }
-
-    loop {
-        let now = Instant::now();
-        if now >= deadline {
-            break;
-        }
-
-        if deadline.duration_since(now) > PRECISE_WAKE_SPIN_THRESHOLD {
-            std::thread::yield_now();
-        } else {
-            std::hint::spin_loop();
-        }
-    }
-}
-
-async fn maybe_idle_throttle(
-    state: &RenderThreadState,
-    effect_running: bool,
-    screen_capture_active: bool,
-    idle_black_pushed: &mut bool,
-) -> Option<FrameExecution> {
-    let can_idle_throttle = should_idle_throttle(effect_running, screen_capture_active);
-
-    if effect_running {
-        *idle_black_pushed = false;
-        return None;
-    }
-
-    if can_idle_throttle && !*idle_black_pushed {
-        debug!(
-            "No active effect or capture input; layout changes render black until an effect or input source starts"
-        );
-    }
-
-    if can_idle_throttle && *idle_black_pushed {
-        {
-            let mut rl = state.render_loop.write().await;
-            let _ = rl.frame_complete();
-        }
-
-        return Some(FrameExecution {
-            next_wake: NextWake::Delay(IDLE_THROTTLE_SLEEP),
-            next_skip_decision: SkipDecision::None,
-        });
-    }
-
-    None
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "sleep-throttle execution is easier to audit when frame synthesis, output, and telemetry stay in one async block"
-)]
-async fn maybe_sleep_throttle(
-    state: &RenderThreadState,
-    scene_snapshot: &FrameSceneSnapshot,
-    frame_start: Instant,
-    scene_snapshot_done_us: u32,
-    static_surface_cache: &mut Option<CachedStaticSurface>,
-    recycled_frame: &mut FrameData,
-    sleep_black_pushed: &mut bool,
-    last_audio_level_update_ms: &mut Option<u32>,
-) -> Option<FrameExecution> {
-    let power_state = scene_snapshot.output_power;
-    if !power_state.sleeping {
-        *sleep_black_pushed = false;
-        return None;
-    }
-    if *sleep_black_pushed {
-        {
-            let mut rl = state.render_loop.write().await;
-            let _ = rl.frame_complete();
-        }
-
-        return Some(FrameExecution {
-            next_wake: NextWake::Delay(SESSION_SLEEP_THROTTLE_SLEEP),
-            next_skip_decision: SkipDecision::None,
-        });
-    }
-
-    if power_state.off_output_behavior == OffOutputBehavior::Release {
-        recycled_frame.zones.clear();
-        let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
-        let surface = static_surface(
-            static_surface_cache,
-            state.canvas_width,
-            state.canvas_height,
-            [0, 0, 0],
-        );
-        let publish_stats = publish_frame_updates(
-            state,
-            recycled_frame,
-            &AudioData::silence(),
-            Canvas::from_published_surface(&surface),
-            Some(surface),
-            None,
-            frame_num_u32,
-            scene_snapshot.elapsed_ms,
-            last_audio_level_update_ms,
-            FrameTiming {
-                producer_us: 0,
-                composition_us: 0,
-                render_us: 0,
-                sample_us: 0,
-                push_us: 0,
-                total_us: 0,
-                budget_us: scene_snapshot.budget_us,
-            },
-        );
-        let publish_us = publish_stats.elapsed_us;
-        {
-            let mut rl = state.render_loop.write().await;
-            let _ = rl.frame_complete();
-        }
-
-        trace!(
-            publish_us,
-            "published cleared frame/canvas for release sleep"
-        );
-        *sleep_black_pushed = true;
-        return Some(FrameExecution {
-            next_wake: NextWake::Delay(SESSION_SLEEP_THROTTLE_SLEEP),
-            next_skip_decision: SkipDecision::None,
-        });
-    }
-
-    let surface = static_surface(
-        static_surface_cache,
-        state.canvas_width,
-        state.canvas_height,
-        power_state.off_output_color,
-    );
-    let canvas = Canvas::from_published_surface(&surface);
-    let sample_start = Instant::now();
-    scene_snapshot
-        .spatial_engine
-        .sample_into(&canvas, &mut recycled_frame.zones);
-    let zone_colors = &recycled_frame.zones;
-    let layout = scene_snapshot.spatial_engine.layout();
-    let sample_us = micros_u32(sample_start.elapsed());
-    let sample_done_us = micros_u32(frame_start.elapsed());
-
-    let push_start = Instant::now();
-    let (write_stats, async_failures) = {
-        let mut manager = state.backend_manager.lock().await;
-        let write_stats = manager.write_frame(zone_colors, layout.as_ref()).await;
-        let async_failures = manager.async_write_failures();
-        (write_stats, async_failures)
-    };
-    let push_us = micros_u32(push_start.elapsed());
-    let output_done_us = micros_u32(frame_start.elapsed());
-
-    if let Some(runtime) = &state.discovery_runtime {
-        handle_async_write_failures(runtime, async_failures).await;
-    }
-
-    let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
-    let timing_total_us = sample_us.saturating_add(push_us);
-    let publish_stats = publish_frame_updates(
-        state,
-        recycled_frame,
-        &AudioData::silence(),
-        canvas,
-        Some(surface),
-        None,
-        frame_num_u32,
-        scene_snapshot.elapsed_ms,
-        last_audio_level_update_ms,
-        FrameTiming {
-            producer_us: 0,
-            composition_us: 0,
-            render_us: 0,
-            sample_us,
-            push_us,
-            total_us: timing_total_us,
-            budget_us: scene_snapshot.budget_us,
-        },
-    );
-    let publish_us = publish_stats.elapsed_us;
-    let publish_done_us = micros_u32(frame_start.elapsed());
-    let total_us = micros_u32(frame_start.elapsed());
-    let overhead_us =
-        total_us.saturating_sub(sample_us.saturating_add(push_us).saturating_add(publish_us));
-
-    {
-        let mut performance = state.performance.write().await;
-        performance.record_frame(LatestFrameMetrics {
-            timestamp_ms: scene_snapshot.elapsed_ms,
-            input_us: 0,
-            producer_us: 0,
-            composition_us: 0,
-            render_us: 0,
-            sample_us,
-            push_us,
-            postprocess_us: 0,
-            publish_us,
-            overhead_us,
-            total_us,
-            wake_late_us: 0,
-            jitter_us: 0,
-            reused_inputs: false,
-            reused_canvas: false,
-            retained_effect: false,
-            retained_screen: false,
-            composition_bypassed: false,
-            logical_layer_count: 0,
-            render_group_count: scene_snapshot.scene_runtime.active_render_group_count(),
-            scene_active: scene_snapshot.scene_runtime.active_scene_id.is_some(),
-            scene_transition_active: scene_snapshot.scene_runtime.active_transition.is_some(),
-            full_frame_copy_count: publish_stats.full_frame_copy_count,
-            full_frame_copy_bytes: publish_stats.full_frame_copy_bytes,
-            output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),
-            timeline: FrameTimeline {
-                frame_token: scene_snapshot.frame_token,
-                budget_us: scene_snapshot.budget_us,
-                scene_snapshot_done_us,
-                input_done_us: scene_snapshot_done_us,
-                producer_done_us: scene_snapshot_done_us,
-                composition_done_us: scene_snapshot_done_us,
-                sample_done_us,
-                output_done_us,
-                publish_done_us,
-                frame_done_us: total_us,
-            },
-        });
-    }
-
-    {
-        let mut rl = state.render_loop.write().await;
-        let _ = rl.frame_complete();
-    }
-
-    *sleep_black_pushed = true;
-    Some(FrameExecution {
-        next_wake: NextWake::Delay(SESSION_SLEEP_THROTTLE_SLEEP),
-        next_skip_decision: SkipDecision::None,
-    })
-}
-
-fn static_hold_canvas(width: u32, height: u32, color: [u8; 3]) -> Canvas {
-    let mut canvas = Canvas::new(width, height);
-    if color != [0, 0, 0] {
-        canvas.fill(Rgba::new(color[0], color[1], color[2], 255));
-    }
-    canvas
-}
-
-fn static_surface(
-    cache: &mut Option<CachedStaticSurface>,
-    width: u32,
-    height: u32,
-    color: [u8; 3],
-) -> PublishedSurface {
-    let key = StaticSurfaceKey {
-        width,
-        height,
-        color,
-    };
-
-    if let Some(cached) = cache.as_ref()
-        && cached.key == key
-    {
-        return cached.surface.clone();
-    }
-
-    let surface =
-        PublishedSurface::from_owned_canvas(static_hold_canvas(width, height, color), 0, 0);
-    *cache = Some(CachedStaticSurface {
-        key,
-        surface: surface.clone(),
-    });
-    surface
-}
-
-fn should_idle_throttle(effect_running: bool, screen_capture_active: bool) -> bool {
-    if effect_running || screen_capture_active {
-        return false;
-    }
-
-    // The bus keeps the latest black frame/spectrum snapshot for late subscribers,
-    // so internal or UI watch receivers should not force the daemon to keep
-    // rendering when nothing is active.
-    true
-}
-
 fn panic_payload_message(panic: &(dyn Any + Send + 'static)) -> String {
     if let Some(message) = panic.downcast_ref::<&str>() {
         (*message).to_owned()
@@ -670,45 +348,6 @@ fn panic_payload_message(panic: &(dyn Any + Send + 'static)) -> String {
         message.clone()
     } else {
         "unknown panic payload".to_owned()
-    }
-}
-
-/// Render one frame from the effect engine, falling back to a black canvas on error.
-async fn render_effect_into(
-    state: &RenderThreadState,
-    expected_generation: u64,
-    delta_secs: f32,
-    audio: &AudioData,
-    interaction: &InteractionData,
-    screen: Option<&ScreenData>,
-    target: &mut Canvas,
-) {
-    let mut engine = state.effect_engine.lock().await;
-    let actual_generation = engine.scene_generation();
-
-    if actual_generation != expected_generation {
-        debug!(
-            expected_generation,
-            actual_generation, "deferred effect render until next frame after scene change"
-        );
-        if target.width() != state.canvas_width || target.height() != state.canvas_height {
-            *target = Canvas::new(state.canvas_width, state.canvas_height);
-        } else {
-            target.clear();
-        }
-        return;
-    }
-
-    match engine.tick_with_inputs_into(delta_secs, audio, interaction, screen, target) {
-        Ok(()) => {}
-        Err(e) => {
-            warn!(error = %e, "effect render failed, producing black canvas");
-            if target.width() != state.canvas_width || target.height() != state.canvas_height {
-                *target = Canvas::new(state.canvas_width, state.canvas_height);
-            } else {
-                target.clear();
-            }
-        }
     }
 }
 
@@ -722,10 +361,9 @@ mod tests {
     use hypercolor_core::types::event::ZoneColors;
 
     use super::frame_io::{parse_sector_zone_id, screen_data_to_canvas};
-    use super::{
-        PRECISE_WAKE_GUARD, SkipDecision, advance_deadline, coarse_sleep_deadline, micros_u32,
-        should_idle_throttle,
-    };
+    use super::frame_pacing::{PRECISE_WAKE_GUARD, advance_deadline, coarse_sleep_deadline};
+    use super::frame_throttle::should_idle_throttle;
+    use super::{SkipDecision, micros_u32};
 
     fn frame_stats(
         budget_exceeded: bool,
