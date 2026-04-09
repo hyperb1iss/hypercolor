@@ -47,8 +47,8 @@ use hypercolor_types::session::OffOutputBehavior;
 
 use self::composition_planner::CompositionPlanner;
 use self::frame_scheduler::{
-    FrameSceneSnapshot, FrameSceneSnapshotInputs, FrameScheduler, SceneRuntimeSnapshot,
-    SceneTransitionSnapshot,
+    FrameSceneSnapshot, FrameSceneSnapshotInputs, FrameScheduler, RenderGroupSnapshot,
+    SceneRuntimeSnapshot, SceneTransitionSnapshot,
 };
 use self::producer_queue::{ProducerFrame, ProducerFrameState, ProducerQueue};
 use self::scene_state::RenderSceneState;
@@ -251,6 +251,7 @@ struct RenderStageStats {
     composition_done_us: u32,
     total_us: u32,
     logical_layer_count: u32,
+    render_group_count: u32,
     scene_active: bool,
     scene_transition_active: bool,
     effect_retained: bool,
@@ -709,6 +710,10 @@ async fn execute_frame(
             retained_effect: render_stage.effect_retained,
             retained_screen: render_stage.screen_retained,
             composition_bypassed: render_stage.composition_bypassed,
+            logical_layer_count: render_stage.logical_layer_count,
+            render_group_count: render_stage.render_group_count,
+            scene_active: render_stage.scene_active,
+            scene_transition_active: render_stage.scene_transition_active,
             full_frame_copy_count,
             full_frame_copy_bytes,
             output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),
@@ -741,6 +746,7 @@ async fn execute_frame(
         producer_us = render_stage.producer_us,
         composition_us = render_stage.composition_us,
         logical_layers = render_stage.logical_layer_count,
+        render_groups = render_stage.render_group_count,
         scene_active = render_stage.scene_active,
         scene_transition_active = render_stage.scene_transition_active,
         sample_us,
@@ -869,6 +875,7 @@ async fn compose_frame_set(
         composition_done_us,
         total_us: micros_u32(stage_start.elapsed()),
         logical_layer_count: compiled_plan.metadata.logical_layer_count,
+        render_group_count: compiled_plan.metadata.render_group_count,
         scene_active: compiled_plan.metadata.scene_active,
         scene_transition_active: compiled_plan.metadata.transition_active,
         effect_retained: scene_snapshot.effect_demand.effect_running
@@ -1017,6 +1024,26 @@ async fn current_scene_runtime_snapshot(
 ) -> SceneRuntimeSnapshot {
     let mut manager = state.scene_manager.write().await;
     manager.tick_transition(delta_secs);
+    let active_groups = manager
+        .active_scene()
+        .map(|scene| {
+            scene
+                .groups
+                .iter()
+                .map(|group| RenderGroupSnapshot {
+                    id: group.id,
+                    effect_id: group.effect_id,
+                    enabled: group.enabled,
+                    zone_ids: group
+                        .layout
+                        .zones
+                        .iter()
+                        .map(|zone| zone.id.clone())
+                        .collect(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     SceneRuntimeSnapshot {
         active_scene_id: manager.active_scene_id().copied(),
         active_transition: manager
@@ -1027,6 +1054,7 @@ async fn current_scene_runtime_snapshot(
                 progress: transition.progress,
                 eased_progress: transition.eased_progress(),
             }),
+        active_groups,
     }
 }
 
@@ -1301,6 +1329,10 @@ async fn maybe_sleep_throttle(
             retained_effect: false,
             retained_screen: false,
             composition_bypassed: false,
+            logical_layer_count: 0,
+            render_group_count: scene_snapshot.scene_runtime.active_render_group_count(),
+            scene_active: scene_snapshot.scene_runtime.active_scene_id.is_some(),
+            scene_transition_active: scene_snapshot.scene_runtime.active_transition.is_some(),
             full_frame_copy_count: publish_stats.full_frame_copy_count,
             full_frame_copy_bytes: publish_stats.full_frame_copy_bytes,
             output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),

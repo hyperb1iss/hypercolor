@@ -60,6 +60,7 @@ impl PlannedSceneLayer {
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct CompiledCompositionMetadata {
     pub logical_layer_count: u32,
+    pub render_group_count: u32,
     pub scene_active: bool,
     pub transition_active: bool,
 }
@@ -111,6 +112,7 @@ impl CompositionPlanner {
                 });
         let metadata = CompiledCompositionMetadata {
             logical_layer_count,
+            render_group_count: scene_runtime.active_render_group_count(),
             scene_active: scene_runtime.active_scene_id.is_some(),
             transition_active,
         };
@@ -195,9 +197,14 @@ impl CompositionPlanner {
 #[cfg(test)]
 mod tests {
     use hypercolor_core::types::canvas::{Canvas, Rgba};
+    use hypercolor_types::effect::EffectId;
+    use hypercolor_types::scene::RenderGroupId;
+    use uuid::Uuid;
 
     use super::{CompositionPlanner, PlannedSceneLayer};
-    use crate::render_thread::frame_scheduler::{SceneRuntimeSnapshot, SceneTransitionSnapshot};
+    use crate::render_thread::frame_scheduler::{
+        RenderGroupSnapshot, SceneRuntimeSnapshot, SceneTransitionSnapshot,
+    };
     use crate::render_thread::producer_queue::ProducerFrame;
     use crate::render_thread::sparkleflinger::SparkleFlinger;
 
@@ -221,6 +228,12 @@ mod tests {
                     progress: 0.25,
                     eased_progress: 0.5,
                 }),
+                active_groups: vec![RenderGroupSnapshot {
+                    id: RenderGroupId::new(),
+                    effect_id: Some(EffectId::from(Uuid::now_v7())),
+                    enabled: true,
+                    zone_ids: vec!["desk:main".into()],
+                }],
             },
             vec![PlannedSceneLayer::replace(ProducerFrame::Canvas(
                 solid_canvas(Rgba::new(12, 34, 56, 255)),
@@ -228,6 +241,7 @@ mod tests {
         );
 
         assert_eq!(compiled.metadata.logical_layer_count, 1);
+        assert_eq!(compiled.metadata.render_group_count, 1);
         assert!(compiled.metadata.scene_active);
         assert!(compiled.metadata.transition_active);
     }
@@ -253,6 +267,7 @@ mod tests {
         let composed = sparkleflinger.compose(compiled.plan);
 
         assert_eq!(compiled.metadata.logical_layer_count, 2);
+        assert_eq!(compiled.metadata.render_group_count, 0);
         assert!(!composed.bypassed);
         assert_eq!(composed.sampling_canvas.width(), 2);
         assert_eq!(composed.sampling_canvas.height(), 2);
@@ -274,12 +289,14 @@ mod tests {
                 progress: 0.5,
                 eased_progress: 0.5,
             }),
+            active_groups: Vec::new(),
         };
         let compiled = planner.compile_primary_frame(2, 2, &transition_runtime, entering);
         let mut sparkleflinger = SparkleFlinger::new();
         let composed = sparkleflinger.compose(compiled.plan);
 
         assert_eq!(compiled.metadata.logical_layer_count, 2);
+        assert_eq!(compiled.metadata.render_group_count, 0);
         assert!(!composed.bypassed);
         let pixel = &composed.sampling_canvas.as_rgba_bytes()[0..4];
         assert_ne!(pixel, [255, 0, 0, 255].as_slice());

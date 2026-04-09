@@ -560,6 +560,10 @@ struct MetricsTimeline {
     frame_token: u64,
     budget_ms: f64,
     wake_late_ms: f64,
+    logical_layer_count: u32,
+    render_group_count: u32,
+    scene_active: bool,
+    scene_transition_active: bool,
     scene_snapshot_done_ms: f64,
     input_done_ms: f64,
     producer_done_ms: f64,
@@ -1952,6 +1956,10 @@ async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> Ser
                 frame_token: latest_frame.timeline.frame_token,
                 budget_ms: round_2(us_to_ms(latest_frame.timeline.budget_us)),
                 wake_late_ms: round_2(us_to_ms(latest_frame.wake_late_us)),
+                logical_layer_count: latest_frame.logical_layer_count,
+                render_group_count: latest_frame.render_group_count,
+                scene_active: latest_frame.scene_active,
+                scene_transition_active: latest_frame.scene_transition_active,
                 scene_snapshot_done_ms: round_2(us_to_ms(
                     latest_frame.timeline.scene_snapshot_done_us,
                 )),
@@ -2299,6 +2307,10 @@ mod tests {
                 retained_effect: false,
                 retained_screen: false,
                 composition_bypassed: false,
+                logical_layer_count: 2,
+                render_group_count: 1,
+                scene_active: true,
+                scene_transition_active: true,
                 full_frame_copy_count: 0,
                 full_frame_copy_bytes: 0,
                 output_errors: 0,
@@ -2325,6 +2337,10 @@ mod tests {
         assert_eq!(json["timeline"]["frame_token"], 77);
         assert_eq!(json["timeline"]["budget_ms"], 16.67);
         assert_eq!(json["timeline"]["wake_late_ms"], 0.22);
+        assert_eq!(json["timeline"]["logical_layer_count"], 2);
+        assert_eq!(json["timeline"]["render_group_count"], 1);
+        assert_eq!(json["timeline"]["scene_active"], true);
+        assert_eq!(json["timeline"]["scene_transition_active"], true);
         assert_eq!(json["timeline"]["scene_snapshot_done_ms"], 0.12);
         assert_eq!(json["timeline"]["composition_done_ms"], 1.34);
         assert_eq!(json["timeline"]["frame_done_ms"], 1.85);

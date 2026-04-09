@@ -556,8 +556,10 @@ fn PerformancePanel(
                     return None;
                 }
                 Some(format!(
-                    "#{} · wake {:.2} · snap {:.2} · prod {:.2} · comp {:.2} · out {:.2} · pub {:.2}",
+                    "#{} · g{} · l{} · wake {:.2} · snap {:.2} · prod {:.2} · comp {:.2} · out {:.2} · pub {:.2}",
                     m.timeline.frame_token,
+                    m.timeline.render_group_count,
+                    m.timeline.logical_layer_count,
                     m.timeline.wake_late_ms,
                     m.timeline.scene_snapshot_done_ms,
                     m.timeline.producer_done_ms,
@@ -576,12 +578,18 @@ fn PerformancePanel(
                     return None;
                 }
                 Some(format!(
-                    "budget {:.2} ms · input {:.2} · sample {:.2} · total {:.2} · age {:.2}",
+                    "budget {:.2} ms · input {:.2} · sample {:.2} · total {:.2} · age {:.2} · scene {} · xfade {}",
                     m.timeline.budget_ms,
                     m.timeline.input_done_ms,
                     m.timeline.sampling_done_ms,
                     m.timeline.frame_done_ms,
-                    m.pacing.frame_age_ms
+                    m.pacing.frame_age_ms,
+                    if m.timeline.scene_active { "on" } else { "off" },
+                    if m.timeline.scene_transition_active {
+                        "on"
+                    } else {
+                        "off"
+                    }
                 ))
             })
             .unwrap_or_else(|| "latest frame timeline".to_string())
