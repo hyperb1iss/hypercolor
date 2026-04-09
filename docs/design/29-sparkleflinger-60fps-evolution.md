@@ -108,6 +108,8 @@ eligible, and degrade predictably when it is not?"
 - support producers running at different cadences without timing collapse
 - enable render groups and hyperzones without multiplying hidden copies
 - make 60 FPS an opt-in runtime target with measurable eligibility
+- make preview delivery a first-class downstream consumer of composed surfaces
+- support both local low-latency preview and efficient remote preview transport
 - leave room for optional GPU-backed composition later
 
 ### Non-Goals
@@ -199,9 +201,12 @@ Producer runtimes
   -> per-producer surface queues
   -> SparkleFlinger latch + compose
   -> canonical composed PublishedSurface
-  -> SpatialEngine sample
+  -> downstream consumers:
+       - SpatialEngine sample
+       - local preview presentation
+       - remote preview encode / transport
   -> BackendManager route + stage
-  -> HypercolorBus publish
+  -> HypercolorBus publish + preview transport
 ```
 
 This is effectively:
@@ -242,6 +247,7 @@ many asynchronous frame sources
 | `SparkleFlinger` | Latches ready surfaces, composes, and emits the frame for this tick |
 | `CompositionPlan` | Describes the ordered set of active layers or groups for the scene |
 | `ComposedFrame` | Immutable output surface plus frame metadata |
+| `PreviewRuntime` | Presents or encodes composed frames for browser and remote consumers |
 
 ### 6.2 Producer Types
 
@@ -408,9 +414,131 @@ Every 60 FPS claim must be backed by:
 
 ---
 
-## 9. GPU Architecture
+## 9. Preview Architecture
 
-### 9.1 Where GPU Actually Helps
+### 9.1 Preview Is Part of the Pipeline
+
+Preview is not "just a UI concern."
+
+Once SparkleFlinger exists, preview becomes one of the primary consumers of the
+composed frame alongside spatial sampling and device routing.
+
+That means preview architecture must inherit the same guarantees:
+
+- latest ready frame semantics
+- deadline-aware reuse
+- immutable published surfaces
+- no mutation of the canonical composed frame for presentation-only effects
+
+### 9.2 Two Preview Lanes
+
+SparkleFlinger should feed two distinct preview lanes:
+
+- `local_raw`
+  - authoritative low-latency preview for the local browser or desktop shell
+  - optimized for minimal encode latency and visual smoothness
+  - suitable for the current 320x200 canonical canvas and authoring workflows
+- `remote_encoded`
+  - transport-efficient preview for higher-resolution screen or video-like output
+  - optimized for bandwidth, jitter tolerance, and remote delivery
+  - suitable for browser clients across a network
+
+These lanes should share one composed frame contract and diverge only at the
+consumer boundary.
+
+### 9.3 Local Raw Preview Path
+
+The local preview path should remain raw-frame capable even after encoded
+transport exists.
+
+That path should evolve toward:
+
+- worker-owned presentation rather than main-thread painting
+- `OffscreenCanvas` presentation where supported
+- WebGL as the baseline browser renderer
+- optional WebGPU presentation backend where it proves materially better
+- one present per animation frame using latest-value frame retention
+
+This path is the right answer for:
+
+- local dashboards
+- effect authoring
+- immediate "what is the daemon doing right now?" validation
+- cases where encode latency would be worse than raw transport cost
+
+### 9.4 Remote Encoded Preview Path
+
+Raw preview frames are not the long-term answer for remote, larger, or
+video-rate preview.
+
+The remote path should be treated as a video transport problem:
+
+- encode from the composed frame, not from per-producer inputs
+- prefer low-latency streaming semantics over file-style media semantics
+- negotiate codec and transport based on client capabilities
+- preserve raw WebSocket preview as the debug and fallback path
+
+The likely first shipping shape is:
+
+- WebRTC transport for low-latency browser delivery
+- H.264 as the practical broad-compatibility baseline
+- VP8 fallback
+- AV1 only where support and latency are good enough
+
+### 9.5 Preview Capability Negotiation
+
+Preview clients should not all consume the same transport.
+
+The daemon should eventually negotiate a preview mode based on:
+
+- local vs remote client
+- requested resolution
+- requested frame rate
+- latency sensitivity
+- bandwidth constraints
+- browser capabilities
+- daemon acceleration mode
+
+Possible negotiated modes:
+
+- `ws_raw_rgb`
+- `ws_raw_rgba`
+- `webrtc_h264`
+- `webrtc_vp8`
+- future `webtransport_av1` or similar only if justified later
+
+### 9.6 Preview Metrics
+
+Preview quality should be measured explicitly, not inferred from engine FPS.
+
+Required metrics:
+
+- composed frame FPS
+- preview target FPS and actual delivered FPS
+- encode queue depth
+- preview frame age at send time
+- browser present latency when measurable
+- dropped preview frame count
+- codec bitrate for encoded modes
+- local raw upload or present time where measurable
+
+### 9.7 Preview Quality Rules
+
+The preview must feel smooth before it is feature-rich.
+
+Rules:
+
+- local preview should prefer freshness over completeness
+- one slow browser tab must never backpressure SparkleFlinger
+- encoded preview should degrade resolution or bitrate before it destroys latency
+- raw preview should be allowed to cap lower than engine FPS when the client asks
+- authoritative debug mode must exist so engineering can see uncompressed daemon output
+
+---
+
+## 10. GPU Architecture
+
+### 10.1 Where GPU Actually Helps
 
 GPU acceleration is most useful in three places:
 
@@ -424,7 +552,7 @@ GPU does not magically remove the CPU work that still exists after composition:
 - per-device routing
 - HID/SMBus/network packet encoding
 
-### 9.2 CPU and GPU Share One Contract
+### 10.2 CPU and GPU Share One Contract
 
 SparkleFlinger must define one abstract surface and queue contract:
 
@@ -441,7 +569,26 @@ The backing may be:
 
 The semantics must remain identical.
 
-### 9.3 Servo Reality
+### 10.3 GPU Preview and Encode
+
+GPU becomes especially interesting once preview is treated as its own consumer.
+
+If the composed frame is GPU-backed, the ideal downstream order is:
+
+- compose on GPU
+- present locally from the same GPU backing when possible
+- feed a hardware or GPU-assisted encoder from that backing when possible
+- read back to CPU only for consumers that still require CPU-visible pixels
+
+That means GPU helps preview most when:
+
+- the scene is larger than the canonical LED canvas
+- screen or video output is active
+- remote preview is enabled at higher frame rates
+- the same composed frame would otherwise be uploaded to the browser and also
+  copied into an encoder
+
+### 10.4 Servo Reality
 
 Servo is still effectively a CPU producer in Hypercolor today.
 
@@ -452,7 +599,22 @@ That means:
 - GPU composition becomes most valuable when native effects and screen capture
   can stay GPU-backed longer than Servo can
 
-### 9.4 DMA-BUF and Fence Sync
+### 10.5 WebGPU, WebGL, and Hardware Encode
+
+WebGPU is promising, but it is not the architecture by itself.
+
+What matters is the split of responsibilities:
+
+- SparkleFlinger defines frame ownership and consumer boundaries
+- WebGL or WebGPU can implement local browser presentation
+- hardware encode can implement remote preview transport
+
+The design should not require WebGPU to exist everywhere in order for preview
+to be excellent. WebGL remains the practical browser baseline. WebGPU should be
+used when it measurably improves smoothness, upload cost, or decoded-frame
+presentation.
+
+### 10.6 DMA-BUF and Fence Sync
 
 SurfaceFlinger's lower layers are still worth studying, but they are not v1
 requirements.
@@ -475,7 +637,7 @@ the compositor model.
 
 ---
 
-## 10. Evolution Plan
+## 11. Evolution Plan
 
 ### Wave 1 — Split Scheduling from Source Selection
 
@@ -552,7 +714,42 @@ Verify:
 - representative scenes show measured p95 and p99 timings
 - runtime drops tiers cleanly under load and recovers conservatively
 
-### Wave 6 — Optional GPU Composition
+### Wave 6 — Preview Re-Architecture
+
+**Goal:** Make preview a first-class consumer of composed frames.
+
+Deliverables:
+
+- add a `PreviewRuntime` boundary that consumes the composed frame
+- preserve raw preview as the authoritative local and debug path
+- move browser preview toward worker-owned presentation
+- add preview mode negotiation and per-mode telemetry
+- define local raw and remote encoded preview scenarios in the bench suite
+
+Verify:
+
+- local preview remains smooth at target FPS without affecting daemon pacing
+- slow preview clients drop frames without backpressuring the compositor
+- benchmark data includes preview frame age and client-visible delivery rate
+
+### Wave 7 — Remote Encoded Preview
+
+**Goal:** Add a transport-efficient preview lane for network and higher-rate use.
+
+Deliverables:
+
+- add encoded preview pipeline fed from composed frames
+- implement at least one low-latency browser-friendly transport
+- preserve raw preview fallback and debugging modes
+- benchmark bitrate, latency, and degradation behavior under constrained links
+
+Verify:
+
+- end-to-end latency and smoothness are measured, not assumed
+- remote preview degrades gracefully under bandwidth pressure
+- encoded preview does not change LED or local preview semantics
+
+### Wave 8 — Optional GPU Composition
 
 **Goal:** Accelerate composition without changing semantics.
 
@@ -568,12 +765,14 @@ Verify:
 - benchmark comparison between CPU and GPU for supported scenes
 - explicit fallback to CPU on init or runtime failure
 
-### Wave 7 — Advanced Producer Backings
+### Wave 9 — GPU Preview and Advanced Producer Backings
 
-**Goal:** Explore more SurfaceFlinger-like buffer backings only if justified.
+**Goal:** Explore more SurfaceFlinger-like backings only if justified.
 
 Deliverables:
 
+- evaluate direct GPU-to-preview presentation for local clients
+- evaluate hardware-accelerated encode fed from GPU-backed composed frames
 - evaluate DMA-BUF-backed surfaces for screen capture or preview
 - evaluate fence-style synchronization for GPU-backed producers
 - adopt only if the measured win is meaningful and complexity is contained
@@ -585,9 +784,9 @@ Verify:
 
 ---
 
-## 11. Risks
+## 12. Risks
 
-### 11.1 Over-Architecting for Future GPU Work
+### 12.1 Over-Architecting for Future GPU Work
 
 The biggest trap is building a compositor so abstract that the CPU path gets
 slower or harder to reason about.
@@ -598,7 +797,7 @@ Mitigation:
 - keep the surface contract small
 - only add GPU-specific complexity behind the same contract
 
-### 11.2 Producer Explosion
+### 12.2 Producer Explosion
 
 If every feature becomes its own producer too early, scheduling and debugging
 will get noisy fast.
@@ -609,7 +808,7 @@ Mitigation:
 - use render groups as the first real multi-producer feature
 - avoid arbitrary scene-graph flexibility before product needs it
 
-### 11.3 Lying About 60 FPS
+### 12.3 Lying About 60 FPS
 
 Advertising 60 FPS without workload qualification would be a product mistake.
 
@@ -619,9 +818,25 @@ Mitigation:
 - publish actual reuse and miss metrics
 - benchmark representative scenes, not toy microbenches only
 
+### 12.4 Solving the Wrong Preview Problem
+
+The preview path can fail in multiple ways:
+
+- daemon-side pacing may be bad
+- browser-side presentation may be bad
+- transport may be bad
+- encoding may be bad
+
+Mitigation:
+
+- measure each boundary separately
+- keep raw local preview available for diagnosis
+- benchmark browser presentation separately from daemon composition
+- do not assume WebGPU or encoding automatically fixes jank
+
 ---
 
-## 12. Recommendation
+## 13. Recommendation
 
 Build `SparkleFlinger` as a CPU-first compositor that sits between producers
 and spatial sampling, and treat optional 60 FPS as an admitted presentation
@@ -634,7 +849,10 @@ join those two ideas:
 - producer queues with explicit ownership
 - deadline-driven latching and retention
 - one composed immutable frame per tick
-- spatial sampling after composition
+- spatial sampling and preview as first-class downstream consumers
+- a dual-lane preview model:
+  - raw local preview for low-latency authoring and debugging
+  - encoded remote preview for efficient network delivery
 - optional GPU acceleration later, under the same contract
 
 That gets Hypercolor the parts of SurfaceFlinger that matter most:
