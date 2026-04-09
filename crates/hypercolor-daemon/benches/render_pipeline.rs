@@ -9,6 +9,9 @@ use hypercolor_core::device::{BackendManager, DeviceBackend};
 use hypercolor_core::effect::EffectEngine;
 use hypercolor_core::input::InteractionData;
 use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_daemon::render_thread::sparkleflinger::{
+    CompositionLayer, CompositionPlan, SparkleFlinger,
+};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
@@ -159,6 +162,27 @@ fn patterned_canvas() -> Canvas {
                         .max(1)),
             )
             .expect("blue fits");
+            canvas.set_pixel(x, y, Rgba::new(red, green, blue, 255));
+        }
+    }
+    canvas
+}
+
+fn inverse_patterned_canvas() -> Canvas {
+    let mut canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
+    for y in 0..CANVAS_HEIGHT {
+        for x in 0..CANVAS_WIDTH {
+            let red = u8::try_from(
+                ((CANVAS_WIDTH.saturating_sub(1).saturating_sub(x)) * 255)
+                    / CANVAS_WIDTH.saturating_sub(1).max(1),
+            )
+            .expect("red fits");
+            let green = u8::try_from(
+                ((CANVAS_HEIGHT.saturating_sub(1).saturating_sub(y)) * 255)
+                    / CANVAS_HEIGHT.saturating_sub(1).max(1),
+            )
+            .expect("green fits");
+            let blue = u8::try_from(((x ^ y) & u32::from(u8::MAX)) as u64).expect("blue fits");
             canvas.set_pixel(x, y, Rgba::new(red, green, blue, 255));
         }
     }
@@ -316,9 +340,50 @@ fn bench_render_pipeline(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_sparkleflinger(c: &mut Criterion) {
+    let mut group = c.benchmark_group("daemon_sparkleflinger");
+    group.throughput(Throughput::Bytes(CANVAS_RGBA_BYTES));
+
+    let mut sparkleflinger = SparkleFlinger::new();
+    let bypass_surface = split_surface();
+    group.bench_function("single_replace_bypass", |b| {
+        b.iter(|| {
+            let composed = sparkleflinger.compose(CompositionPlan::single(
+                CANVAS_WIDTH,
+                CANVAS_HEIGHT,
+                CompositionLayer::replace_surface(black_box(bypass_surface.clone())),
+            ));
+            black_box(
+                composed
+                    .sampling_surface
+                    .as_ref()
+                    .map(hypercolor_types::canvas::PublishedSurface::rgba_len),
+            );
+        });
+    });
+
+    let base = patterned_canvas();
+    let overlay = inverse_patterned_canvas();
+    group.bench_function("alpha_two_layer_compose", |b| {
+        b.iter(|| {
+            let composed = sparkleflinger.compose(CompositionPlan::with_layers(
+                CANVAS_WIDTH,
+                CANVAS_HEIGHT,
+                vec![
+                    CompositionLayer::replace_canvas(black_box(base.clone())),
+                    CompositionLayer::alpha_canvas(black_box(overlay.clone()), 0.35),
+                ],
+            ));
+            black_box(composed.sampling_canvas.get_pixel(0, 0));
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = benchmark_config();
-    targets = bench_render_pipeline, bench_publish_handoff
+    targets = bench_render_pipeline, bench_publish_handoff, bench_sparkleflinger
 }
 criterion_main!(benches);

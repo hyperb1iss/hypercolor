@@ -18,6 +18,8 @@
 mod frame_scheduler;
 mod producer_queue;
 mod scene_state;
+#[doc(hidden)]
+pub mod sparkleflinger;
 
 use std::any::Any;
 use std::sync::Arc;
@@ -44,6 +46,7 @@ use hypercolor_types::session::OffOutputBehavior;
 use self::frame_scheduler::{FrameSceneSnapshot, FrameSceneSnapshotInputs, FrameScheduler};
 use self::producer_queue::{ProducerFrame, ProducerQueue};
 use self::scene_state::RenderSceneState;
+use self::sparkleflinger::{ComposedFrameSet, CompositionLayer, CompositionPlan, SparkleFlinger};
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::{DiscoveryRuntime, handle_async_write_failures};
 use crate::performance::{LatestFrameMetrics, PerformanceTracker};
@@ -318,6 +321,7 @@ async fn run_pipeline(state: RenderThreadState) {
     let mut effect_target_canvas: Option<Canvas> = None;
     let mut effect_queue = ProducerQueue::new();
     let mut screen_queue = ProducerQueue::new();
+    let mut sparkleflinger = SparkleFlinger::new();
     let mut render_surface_pool = RenderSurfacePool::new(SurfaceDescriptor::rgba8888(
         state.canvas_width,
         state.canvas_height,
@@ -379,6 +383,7 @@ async fn run_pipeline(state: RenderThreadState) {
             &mut effect_target_canvas,
             &mut effect_queue,
             &mut screen_queue,
+            &mut sparkleflinger,
             &mut render_surface_pool,
             &mut static_surface_cache,
             &mut recycled_frame,
@@ -455,6 +460,7 @@ async fn execute_frame(
     effect_target_canvas: &mut Option<Canvas>,
     effect_queue: &mut ProducerQueue,
     screen_queue: &mut ProducerQueue,
+    sparkleflinger: &mut SparkleFlinger,
     render_surface_pool: &mut RenderSurfacePool,
     static_surface_cache: &mut Option<CachedStaticSurface>,
     recycled_frame: &mut FrameData,
@@ -530,7 +536,7 @@ async fn execute_frame(
     let input_us = micros_u32(input_start.elapsed());
 
     // ── Stage 2: Effect render → Canvas ─────────────────────────
-    let (canvas, frame_surface, render_us) = resolve_frame_canvas(
+    let (composed_frame, render_us) = compose_frame_set(
         state,
         &scene_snapshot,
         skip_decision,
@@ -538,6 +544,7 @@ async fn execute_frame(
         effect_target_canvas,
         effect_queue,
         screen_queue,
+        sparkleflinger,
         render_surface_pool,
         static_surface_cache,
         delta_secs,
@@ -548,7 +555,7 @@ async fn execute_frame(
     let sample_start = Instant::now();
     scene_snapshot
         .spatial_engine
-        .sample_into(&canvas, &mut recycled_frame.zones);
+        .sample_into(&composed_frame.sampling_canvas, &mut recycled_frame.zones);
     let zone_colors = &recycled_frame.zones;
     let layout = scene_snapshot.spatial_engine.layout();
     let sample_us = micros_u32(sample_start.elapsed());
@@ -584,18 +591,23 @@ async fn execute_frame(
     let screen_watch_surface = if !scene_snapshot.effect_demand.effect_running
         && scene_snapshot.effect_demand.screen_capture_active
     {
-        frame_surface
+        composed_frame
+            .preview_surface
             .clone()
+            .or_else(|| composed_frame.sampling_surface.clone())
             .or_else(|| inputs.screen_preview_surface.clone())
     } else {
-        inputs.screen_preview_surface.clone()
+        composed_frame
+            .preview_surface
+            .clone()
+            .or_else(|| inputs.screen_preview_surface.clone())
     };
     let publish_stats = publish_frame_updates(
         state,
         recycled_frame,
         &inputs.audio,
-        canvas,
-        frame_surface,
+        composed_frame.sampling_canvas,
+        composed_frame.sampling_surface,
         screen_watch_surface,
         frame_num_u32,
         scene_snapshot.elapsed_ms,
@@ -692,7 +704,7 @@ async fn execute_frame(
     }
 }
 
-async fn resolve_frame_canvas(
+async fn compose_frame_set(
     state: &RenderThreadState,
     scene_snapshot: &FrameSceneSnapshot,
     skip_decision: SkipDecision,
@@ -700,28 +712,27 @@ async fn resolve_frame_canvas(
     effect_target_canvas: &mut Option<Canvas>,
     effect_queue: &mut ProducerQueue,
     screen_queue: &mut ProducerQueue,
+    sparkleflinger: &mut SparkleFlinger,
     render_surface_pool: &mut RenderSurfacePool,
     static_surface_cache: &mut Option<CachedStaticSurface>,
     delta_secs: f32,
-) -> (Canvas, Option<PublishedSurface>, u32) {
+) -> (ComposedFrameSet, u32) {
     let render_start = Instant::now();
-    let (canvas, surface) = if !scene_snapshot.effect_demand.effect_running {
+    let source_frame = if !scene_snapshot.effect_demand.effect_running {
         effect_queue.clear();
         if let Some(screen_frame) = latch_screen_frame(state, inputs, screen_queue) {
             screen_frame
         } else {
-            let surface = static_surface(
+            ProducerFrame::Surface(static_surface(
                 static_surface_cache,
                 state.canvas_width,
                 state.canvas_height,
                 [0, 0, 0],
-            );
-            let canvas = Canvas::from_published_surface(&surface);
-            (canvas, Some(surface))
+            ))
         }
     } else if skip_decision == SkipDecision::ReuseCanvas {
         if let Some(frame) = effect_queue.latch_for_generation(scene_snapshot.effect_generation) {
-            frame.frame.into_render_frame()
+            frame.frame
         } else {
             render_effect_frame(
                 state,
@@ -750,14 +761,19 @@ async fn resolve_frame_canvas(
         )
         .await
     };
-    (canvas, surface, micros_u32(render_start.elapsed()))
+    let composed = sparkleflinger.compose(CompositionPlan::single(
+        state.canvas_width,
+        state.canvas_height,
+        CompositionLayer::replace(source_frame),
+    ));
+    (composed, micros_u32(render_start.elapsed()))
 }
 
 fn latch_screen_frame(
     state: &RenderThreadState,
     inputs: &FrameInputs,
     screen_queue: &mut ProducerQueue,
-) -> Option<(Canvas, Option<PublishedSurface>)> {
+) -> Option<ProducerFrame> {
     if let Some(screen_surface) = inputs.screen_preview_surface.as_ref()
         && screen_surface.width() == state.canvas_width
         && screen_surface.height() == state.canvas_height
@@ -767,9 +783,7 @@ fn latch_screen_frame(
         screen_queue.submit(ProducerFrame::Canvas(screen_canvas), 0);
     }
 
-    screen_queue
-        .latch_latest()
-        .map(|frame| frame.frame.into_render_frame())
+    screen_queue.latch_latest().map(|frame| frame.frame)
 }
 
 #[allow(
@@ -786,7 +800,7 @@ async fn render_effect_frame(
     effect_target_canvas: &mut Option<Canvas>,
     effect_queue: &mut ProducerQueue,
     render_surface_pool: &mut RenderSurfacePool,
-) -> (Canvas, Option<PublishedSurface>) {
+) -> ProducerFrame {
     let lease = match render_surface_pool.dequeue() {
         lease @ Some(_) => lease,
         None => {
@@ -820,8 +834,9 @@ async fn render_effect_frame(
             .await;
         }
         let surface = lease.submit(0, 0);
-        effect_queue.submit(ProducerFrame::Surface(surface.clone()), effect_generation);
-        return (Canvas::from_published_surface(&surface), Some(surface));
+        let frame = ProducerFrame::Surface(surface);
+        effect_queue.submit(frame.clone(), effect_generation);
+        return frame;
     }
 
     debug!(
@@ -846,8 +861,9 @@ async fn render_effect_frame(
     )
     .await;
     *effect_target_canvas = Some(rendered.clone());
-    effect_queue.submit(ProducerFrame::Canvas(rendered.clone()), effect_generation);
-    (rendered, None)
+    let frame = ProducerFrame::Canvas(rendered);
+    effect_queue.submit(frame.clone(), effect_generation);
+    frame
 }
 
 async fn build_frame_scene_snapshot(
