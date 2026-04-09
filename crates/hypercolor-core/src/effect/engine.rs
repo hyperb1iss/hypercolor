@@ -53,6 +53,9 @@ pub struct EffectEngine {
     /// The currently applied preset ID, if any.
     /// Cleared when controls are tweaked manually or the effect is re-activated.
     active_preset_id: Option<String>,
+
+    /// Monotonically increasing scene generation for frame-boundary snapshots.
+    scene_generation: u64,
 }
 
 impl EffectEngine {
@@ -69,6 +72,7 @@ impl EffectEngine {
             canvas_width: DEFAULT_CANVAS_WIDTH,
             canvas_height: DEFAULT_CANVAS_HEIGHT,
             active_preset_id: None,
+            scene_generation: 0,
         }
     }
 
@@ -96,6 +100,12 @@ impl EffectEngine {
     #[must_use]
     pub fn is_running(&self) -> bool {
         self.state == EffectState::Running && self.renderer.is_some()
+    }
+
+    /// Returns the current scene generation.
+    #[must_use]
+    pub fn scene_generation(&self) -> u64 {
+        self.scene_generation
     }
 
     /// Activate a new effect with the given renderer and metadata.
@@ -139,6 +149,7 @@ impl EffectEngine {
                 self.frame_number = 0;
                 self.active_preset_id = None;
                 self.state = EffectState::Running;
+                self.touch_scene();
                 debug!("Effect initialized and running");
                 Ok(())
             }
@@ -166,6 +177,11 @@ impl EffectEngine {
     ///
     /// No-op if no effect is active.
     pub fn deactivate(&mut self) {
+        let had_active_effect = self.renderer.is_some()
+            || self.metadata.is_some()
+            || !self.controls.is_empty()
+            || self.active_preset_id.is_some()
+            || self.state != EffectState::Loading;
         if let Some(ref mut renderer) = self.renderer {
             if let Some(ref meta) = self.metadata {
                 info!(effect = %meta.name, "Deactivating effect");
@@ -180,6 +196,9 @@ impl EffectEngine {
         self.frame_number = 0;
         self.active_preset_id = None;
         self.state = EffectState::Loading;
+        if had_active_effect {
+            self.touch_scene();
+        }
     }
 
     /// Pause the active effect. Renderer stays alive but `tick` returns
@@ -188,6 +207,7 @@ impl EffectEngine {
         if self.state == EffectState::Running {
             debug!("Effect paused");
             self.state = EffectState::Paused;
+            self.touch_scene();
         } else {
             warn!(state = ?self.state, "Cannot pause — effect is not running");
         }
@@ -198,6 +218,7 @@ impl EffectEngine {
         if self.state == EffectState::Paused {
             debug!("Effect resumed");
             self.state = EffectState::Running;
+            self.touch_scene();
         } else {
             warn!(state = ?self.state, "Cannot resume — effect is not paused");
         }
@@ -208,11 +229,15 @@ impl EffectEngine {
     /// The value is stored and forwarded to the active renderer. If no
     /// renderer is active, the value is stored for when one is activated.
     pub fn set_control(&mut self, name: &str, value: &ControlValue) {
+        let changed = self.controls.get(name) != Some(value);
         self.controls.insert(name.to_owned(), value.clone());
         if let Some(ref mut renderer) = self.renderer {
             renderer.set_control(name, value);
         }
         self.active_preset_id = None;
+        if changed {
+            self.touch_scene();
+        }
     }
 
     /// Validate and update a control value against the active effect schema.
@@ -256,7 +281,10 @@ impl EffectEngine {
 
     /// Set the active preset ID (called after preset controls are successfully applied).
     pub fn set_active_preset_id(&mut self, id: String) {
-        self.active_preset_id = Some(id);
+        if self.active_preset_id.as_deref() != Some(id.as_str()) {
+            self.active_preset_id = Some(id);
+            self.touch_scene();
+        }
     }
 
     /// Reset all controls to their metadata-defined defaults.
@@ -272,17 +300,23 @@ impl EffectEngine {
             return Err(anyhow::anyhow!("No active effect to reset"));
         };
 
+        let mut changed = self.active_preset_id.is_some();
+
         for control in &metadata.controls {
-            self.controls.insert(
+            let previous = self.controls.insert(
                 control.control_id().to_owned(),
                 control.default_value.clone(),
             );
+            changed |= previous.as_ref() != Some(&control.default_value);
             if let Some(ref mut renderer) = self.renderer {
                 renderer.set_control(control.control_id(), &control.default_value);
             }
         }
 
         self.active_preset_id = None;
+        if changed {
+            self.touch_scene();
+        }
         debug!("Controls reset to defaults");
         Ok(())
     }
@@ -419,6 +453,10 @@ impl EffectEngine {
         self.frame_number += 1;
 
         Ok(())
+    }
+
+    fn touch_scene(&mut self) {
+        self.scene_generation = self.scene_generation.wrapping_add(1);
     }
 }
 

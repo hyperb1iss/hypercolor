@@ -47,7 +47,7 @@ pub struct SpatialEngine {
     /// The active spatial layout with precomputed LED positions.
     layout: Arc<SpatialLayout>,
     /// Immutable per-zone sampling plans cached from the layout.
-    prepared_zones: Vec<sampler::PreparedZone>,
+    prepared_zones: Arc<[sampler::PreparedZone]>,
 }
 
 impl SpatialEngine {
@@ -58,7 +58,7 @@ impl SpatialEngine {
     pub fn new(layout: SpatialLayout) -> Self {
         let mut engine = Self {
             layout: Arc::new(layout),
-            prepared_zones: Vec::new(),
+            prepared_zones: Arc::default(),
         };
         engine.rebuild_positions();
         engine
@@ -128,7 +128,8 @@ impl SpatialEngine {
             .iter()
             .filter(|zone| should_sample_zone(zone))
             .map(|zone| sampler::prepare_zone(zone, layout))
-            .collect();
+            .collect::<Vec<_>>()
+            .into();
     }
 }
 

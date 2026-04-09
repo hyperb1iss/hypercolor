@@ -15,6 +15,8 @@
 //! }
 //! ```
 
+mod frame_scheduler;
+
 use std::any::Any;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -37,6 +39,7 @@ use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, Spe
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::session::OffOutputBehavior;
 
+use self::frame_scheduler::{FrameSceneSnapshot, FrameSceneSnapshotInputs, FrameScheduler};
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::{DiscoveryRuntime, handle_async_write_failures};
 use crate::performance::{LatestFrameMetrics, PerformanceTracker};
@@ -220,6 +223,13 @@ struct PublishFrameStats {
     full_frame_copy_bytes: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RenderLoopSnapshot {
+    frame_token: u64,
+    elapsed_ms: u32,
+    budget_us: u32,
+}
+
 /// Scheduler decision for when the next render iteration should begin.
 enum NextWake {
     /// Continue on the regular render cadence using the current FPS interval.
@@ -263,6 +273,12 @@ struct EffectDemand {
     screen_capture_active: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EffectSceneSnapshot {
+    demand: EffectDemand,
+    generation: u64,
+}
+
 impl FrameInputs {
     fn silence() -> Self {
         Self {
@@ -300,6 +316,7 @@ async fn run_pipeline(state: RenderThreadState) {
     let mut static_surface_cache: Option<CachedStaticSurface> = None;
     let mut recycled_frame = FrameData::empty();
     let mut skip_decision = SkipDecision::None;
+    let mut frame_scheduler = FrameScheduler::new();
     let mut last_tick = Instant::now();
     let mut idle_black_pushed = false;
     let mut sleep_black_pushed = false;
@@ -342,6 +359,7 @@ async fn run_pipeline(state: RenderThreadState) {
 
         let frame = execute_frame(
             &state,
+            &mut frame_scheduler,
             scheduled_start,
             skip_decision,
             &mut cached_inputs,
@@ -415,6 +433,7 @@ async fn wait_until_frame_deadline(deadline: Instant) {
 )]
 async fn execute_frame(
     state: &RenderThreadState,
+    frame_scheduler: &mut FrameScheduler,
     scheduled_start: Instant,
     skip_decision: SkipDecision,
     cached_inputs: &mut FrameInputs,
@@ -442,8 +461,9 @@ async fn execute_frame(
     );
     let reused_canvas = matches!(skip_decision, SkipDecision::ReuseCanvas);
 
-    let output_power = *state.power_state.borrow();
-    let effect_demand = current_effect_demand(state).await;
+    let scene_snapshot = build_frame_scene_snapshot(state, frame_scheduler).await;
+    let output_power = scene_snapshot.output_power;
+    let effect_demand = scene_snapshot.effect_demand;
     reconcile_audio_capture(
         state,
         !output_power.sleeping && effect_demand.audio_capture_active,
@@ -458,7 +478,7 @@ async fn execute_frame(
     .await;
     if let Some(frame) = maybe_sleep_throttle(
         state,
-        output_power,
+        &scene_snapshot,
         static_surface_cache,
         recycled_frame,
         sleep_black_pushed,
@@ -494,8 +514,8 @@ async fn execute_frame(
     // ── Stage 2: Effect render → Canvas ─────────────────────────
     let (canvas, frame_surface, render_us) = resolve_frame_canvas(
         state,
+        &scene_snapshot,
         skip_decision,
-        effect_demand.effect_running,
         inputs,
         cached_canvas,
         cached_surface,
@@ -507,12 +527,11 @@ async fn execute_frame(
 
     // ── Stage 3: Spatial sampling → ZoneColors ──────────────────
     let sample_start = Instant::now();
-    let (zone_colors, layout) = {
-        let spatial = state.spatial_engine.read().await;
-        spatial.sample_into(&canvas, &mut recycled_frame.zones);
-        let layout = spatial.layout();
-        (&recycled_frame.zones, layout)
-    };
+    scene_snapshot
+        .spatial_engine
+        .sample_into(&canvas, &mut recycled_frame.zones);
+    let zone_colors = &recycled_frame.zones;
+    let layout = scene_snapshot.spatial_engine.layout();
     let sample_us = micros_u32(sample_start.elapsed());
 
     // ── Stage 4: Device push → hardware ─────────────────────────
@@ -541,8 +560,7 @@ async fn execute_frame(
     let mut full_frame_copy_bytes = 0_u32;
 
     // ── Stage 5: Publish to bus ─────────────────────────────────
-    let (frame_number, elapsed_ms, budget_us) = frame_snapshot(state).await;
-    let frame_num_u32 = u64_to_u32(frame_number);
+    let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
     let timing_total_us = micros_u32(frame_start.elapsed());
     let publish_stats = publish_frame_updates(
         state,
@@ -552,14 +570,14 @@ async fn execute_frame(
         frame_surface,
         inputs.screen_preview_surface.clone(),
         frame_num_u32,
-        elapsed_ms,
+        scene_snapshot.elapsed_ms,
         last_audio_level_update_ms,
         FrameTiming {
             render_us,
             sample_us,
             push_us,
             total_us: timing_total_us,
-            budget_us,
+            budget_us: scene_snapshot.budget_us,
         },
     );
     let publish_us = publish_stats.elapsed_us;
@@ -575,12 +593,12 @@ async fn execute_frame(
         .saturating_add(postprocess_us)
         .saturating_add(publish_us);
     let overhead_us = total_us.saturating_sub(known_stage_us);
-    let jitter_us = frame_interval_us.abs_diff(budget_us);
+    let jitter_us = frame_interval_us.abs_diff(scene_snapshot.budget_us);
 
     {
         let mut performance = state.performance.write().await;
         performance.record_frame(LatestFrameMetrics {
-            timestamp_ms: elapsed_ms,
+            timestamp_ms: scene_snapshot.elapsed_ms,
             input_us,
             render_us,
             sample_us,
@@ -604,7 +622,7 @@ async fn execute_frame(
     }
 
     trace!(
-        frame = frame_number,
+        frame = scene_snapshot.frame_token,
         frame_interval_us,
         wake_late_us,
         jitter_us,
@@ -648,8 +666,8 @@ async fn execute_frame(
 
 async fn resolve_frame_canvas(
     state: &RenderThreadState,
+    scene_snapshot: &FrameSceneSnapshot,
     skip_decision: SkipDecision,
-    effect_running: bool,
     inputs: &FrameInputs,
     cached_canvas: &mut Option<Canvas>,
     cached_surface: &mut Option<PublishedSurface>,
@@ -677,6 +695,7 @@ async fn resolve_frame_canvas(
                 .unwrap_or_else(|| Canvas::new(state.canvas_width, state.canvas_height));
             render_effect_into(
                 state,
+                scene_snapshot.effect_generation,
                 delta_secs,
                 &inputs.audio,
                 &inputs.interaction,
@@ -688,7 +707,7 @@ async fn resolve_frame_canvas(
             *cached_surface = None;
             (rendered, None)
         }
-    } else if !effect_running
+    } else if !scene_snapshot.effect_demand.effect_running
         && let Some(screen_surface) = inputs.screen_preview_surface.as_ref()
         && screen_surface.width() == state.canvas_width
         && screen_surface.height() == state.canvas_height
@@ -698,11 +717,13 @@ async fn resolve_frame_canvas(
         let surface = screen_surface.clone();
         *cached_surface = Some(surface.clone());
         (canvas, Some(surface))
-    } else if !effect_running && let Some(screen_canvas) = inputs.screen_canvas.clone() {
+    } else if !scene_snapshot.effect_demand.effect_running
+        && let Some(screen_canvas) = inputs.screen_canvas.clone()
+    {
         *cached_canvas = Some(screen_canvas.clone());
         *cached_surface = None;
         (screen_canvas, None)
-    } else if !effect_running {
+    } else if !scene_snapshot.effect_demand.effect_running {
         let surface = static_surface(
             static_surface_cache,
             state.canvas_width,
@@ -737,6 +758,7 @@ async fn resolve_frame_canvas(
                 let target = lease.canvas_mut();
                 render_effect_into(
                     state,
+                    scene_snapshot.effect_generation,
                     delta_secs,
                     &inputs.audio,
                     &inputs.interaction,
@@ -764,6 +786,7 @@ async fn resolve_frame_canvas(
                 .unwrap_or_else(|| Canvas::new(state.canvas_width, state.canvas_height));
             render_effect_into(
                 state,
+                scene_snapshot.effect_generation,
                 delta_secs,
                 &inputs.audio,
                 &inputs.interaction,
@@ -779,7 +802,25 @@ async fn resolve_frame_canvas(
     (canvas, surface, micros_u32(render_start.elapsed()))
 }
 
-async fn current_effect_demand(state: &RenderThreadState) -> EffectDemand {
+async fn build_frame_scene_snapshot(
+    state: &RenderThreadState,
+    frame_scheduler: &mut FrameScheduler,
+) -> FrameSceneSnapshot {
+    let effect_scene = current_effect_scene_snapshot(state).await;
+    let render_loop_snapshot = render_loop_snapshot(state).await;
+    let spatial_engine = state.spatial_engine.read().await.clone();
+    frame_scheduler.build_snapshot(FrameSceneSnapshotInputs {
+        frame_token: render_loop_snapshot.frame_token,
+        elapsed_ms: render_loop_snapshot.elapsed_ms,
+        budget_us: render_loop_snapshot.budget_us,
+        output_power: *state.power_state.borrow(),
+        effect_demand: effect_scene.demand,
+        effect_generation: effect_scene.generation,
+        spatial_engine,
+    })
+}
+
+async fn current_effect_scene_snapshot(state: &RenderThreadState) -> EffectSceneSnapshot {
     let engine = state.effect_engine.lock().await;
     let effect_running = engine.is_running();
     let audio_capture_active = effect_running
@@ -791,10 +832,13 @@ async fn current_effect_demand(state: &RenderThreadState) -> EffectDemand {
             .active_metadata()
             .is_some_and(|meta| meta.screen_reactive))
         || (!effect_running && state.screen_capture_configured);
-    EffectDemand {
-        effect_running,
-        audio_capture_active,
-        screen_capture_active,
+    EffectSceneSnapshot {
+        demand: EffectDemand {
+            effect_running,
+            audio_capture_active,
+            screen_capture_active,
+        },
+        generation: engine.scene_generation(),
     }
 }
 
@@ -894,12 +938,13 @@ async fn maybe_idle_throttle(
 )]
 async fn maybe_sleep_throttle(
     state: &RenderThreadState,
-    power_state: OutputPowerState,
+    scene_snapshot: &FrameSceneSnapshot,
     static_surface_cache: &mut Option<CachedStaticSurface>,
     recycled_frame: &mut FrameData,
     sleep_black_pushed: &mut bool,
     last_audio_level_update_ms: &mut Option<u32>,
 ) -> Option<FrameExecution> {
+    let power_state = scene_snapshot.output_power;
     if !power_state.sleeping {
         *sleep_black_pushed = false;
         return None;
@@ -921,8 +966,7 @@ async fn maybe_sleep_throttle(
 
     if power_state.off_output_behavior == OffOutputBehavior::Release {
         recycled_frame.zones.clear();
-        let (frame_number, elapsed_ms, budget_us) = frame_snapshot(state).await;
-        let frame_num_u32 = u64_to_u32(frame_number);
+        let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
         let surface = static_surface(
             static_surface_cache,
             state.canvas_width,
@@ -937,14 +981,14 @@ async fn maybe_sleep_throttle(
             Some(surface),
             None,
             frame_num_u32,
-            elapsed_ms,
+            scene_snapshot.elapsed_ms,
             last_audio_level_update_ms,
             FrameTiming {
                 render_us: 0,
                 sample_us: 0,
                 push_us: 0,
                 total_us: 0,
-                budget_us,
+                budget_us: scene_snapshot.budget_us,
             },
         );
         let publish_us = publish_stats.elapsed_us;
@@ -972,12 +1016,11 @@ async fn maybe_sleep_throttle(
     );
     let canvas = Canvas::from_published_surface(&surface);
     let sample_start = Instant::now();
-    let (zone_colors, layout) = {
-        let spatial = state.spatial_engine.read().await;
-        spatial.sample_into(&canvas, &mut recycled_frame.zones);
-        let layout = spatial.layout();
-        (&recycled_frame.zones, layout)
-    };
+    scene_snapshot
+        .spatial_engine
+        .sample_into(&canvas, &mut recycled_frame.zones);
+    let zone_colors = &recycled_frame.zones;
+    let layout = scene_snapshot.spatial_engine.layout();
     let sample_us = micros_u32(sample_start.elapsed());
 
     let push_start = Instant::now();
@@ -993,8 +1036,7 @@ async fn maybe_sleep_throttle(
         handle_async_write_failures(runtime, async_failures).await;
     }
 
-    let (frame_number, elapsed_ms, budget_us) = frame_snapshot(state).await;
-    let frame_num_u32 = u64_to_u32(frame_number);
+    let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
     let timing_total_us = sample_us.saturating_add(push_us);
     let publish_stats = publish_frame_updates(
         state,
@@ -1004,14 +1046,14 @@ async fn maybe_sleep_throttle(
         Some(surface),
         None,
         frame_num_u32,
-        elapsed_ms,
+        scene_snapshot.elapsed_ms,
         last_audio_level_update_ms,
         FrameTiming {
             render_us: 0,
             sample_us,
             push_us,
             total_us: timing_total_us,
-            budget_us,
+            budget_us: scene_snapshot.budget_us,
         },
     );
     let publish_us = publish_stats.elapsed_us;
@@ -1022,7 +1064,7 @@ async fn maybe_sleep_throttle(
     {
         let mut performance = state.performance.write().await;
         performance.record_frame(LatestFrameMetrics {
-            timestamp_ms: elapsed_ms,
+            timestamp_ms: scene_snapshot.elapsed_ms,
             input_us: 0,
             render_us: 0,
             sample_us,
@@ -1153,13 +1195,13 @@ async fn sample_inputs(state: &RenderThreadState, delta_secs: f32) -> FrameInput
     }
 }
 
-async fn frame_snapshot(state: &RenderThreadState) -> (u64, u32, u32) {
+async fn render_loop_snapshot(state: &RenderThreadState) -> RenderLoopSnapshot {
     let render_loop = state.render_loop.read().await;
-    (
-        render_loop.frame_number(),
-        millis_u32(render_loop.elapsed()),
-        micros_u32(render_loop.target_interval()),
-    )
+    RenderLoopSnapshot {
+        frame_token: render_loop.frame_number(),
+        elapsed_ms: millis_u32(render_loop.elapsed()),
+        budget_us: micros_u32(render_loop.target_interval()),
+    }
 }
 
 #[expect(
@@ -1359,6 +1401,7 @@ fn parse_sector_zone_id(zone_id: &str) -> Option<(u32, u32)> {
 /// Render one frame from the effect engine, falling back to a black canvas on error.
 async fn render_effect_into(
     state: &RenderThreadState,
+    expected_generation: u64,
     delta_secs: f32,
     audio: &AudioData,
     interaction: &InteractionData,
@@ -1366,6 +1409,20 @@ async fn render_effect_into(
     target: &mut Canvas,
 ) {
     let mut engine = state.effect_engine.lock().await;
+    let actual_generation = engine.scene_generation();
+
+    if actual_generation != expected_generation {
+        debug!(
+            expected_generation,
+            actual_generation, "deferred effect render until next frame after scene change"
+        );
+        if target.width() != state.canvas_width || target.height() != state.canvas_height {
+            *target = Canvas::new(state.canvas_width, state.canvas_height);
+        } else {
+            target.clear();
+        }
+        return;
+    }
 
     match engine.tick_with_inputs_into(delta_secs, audio, interaction, screen, target) {
         Ok(()) => {}
