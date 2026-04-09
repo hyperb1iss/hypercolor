@@ -571,7 +571,7 @@ pub fn Sidebar() -> impl IntoView {
                     >
                         // Now Playing label
                         <div class="px-4 text-[9px] font-mono uppercase tracking-[0.15em] text-fg-tertiary/60">
-                            "Now Playing"
+                            {move || if fx.is_playing.get() { "Now Playing" } else { "Stopped" }}
                         </div>
 
                         // Live canvas thumbnail — only on pages without their own preview
@@ -601,9 +601,17 @@ pub fn Sidebar() -> impl IntoView {
                         // Effect name + category + audio toggle
                         <div class="px-4 flex items-center gap-2.5 min-w-0">
                             <div
-                                class="w-2 h-2 rounded-full dot-alive shrink-0"
+                                class=move || if fx.is_playing.get() {
+                                    "w-2 h-2 rounded-full dot-alive shrink-0"
+                                } else {
+                                    "w-2 h-2 rounded-full shrink-0 opacity-50"
+                                }
                                 style:background=move || format!("rgb({})", primary_rgb())
-                                style:box-shadow=move || format!("0 0 8px rgba({}, 0.7)", primary_rgb())
+                                style:box-shadow=move || if fx.is_playing.get() {
+                                    format!("0 0 8px rgba({}, 0.7)", primary_rgb())
+                                } else {
+                                    String::new()
+                                }
                             />
                             <div class="min-w-0 flex-1">
                                 <div class="text-[11px] font-medium text-fg-primary truncate leading-tight">
@@ -626,14 +634,29 @@ pub fn Sidebar() -> impl IntoView {
                             >
                                 <Icon icon=LuSkipBack width="16px" height="16px" />
                             </button>
-                            <button
-                                class="p-2 rounded-lg text-error-red/40 hover:text-error-red hover:bg-error-red/[0.06] player-btn"
-                                title="Stop effect"
-                                aria-label="Stop effect"
-                                on:click=move |_| fx.stop_effect()
-                            >
-                                <Icon icon=LuSquare width="16px" height="16px" />
-                            </button>
+                            {move || if fx.is_playing.get() {
+                                view! {
+                                    <button
+                                        class="p-2 rounded-lg text-error-red/40 hover:text-error-red hover:bg-error-red/[0.06] player-btn"
+                                        title="Stop effect"
+                                        aria-label="Stop effect"
+                                        on:click=move |_| fx.stop_effect()
+                                    >
+                                        <Icon icon=LuSquare width="16px" height="16px" />
+                                    </button>
+                                }.into_any()
+                            } else {
+                                view! {
+                                    <button
+                                        class="p-2 rounded-lg text-neon-cyan/40 hover:text-neon-cyan hover:bg-neon-cyan/[0.06] player-btn"
+                                        title="Resume effect"
+                                        aria-label="Resume effect"
+                                        on:click=move |_| fx.resume_effect()
+                                    >
+                                        <Icon icon=LuPlay width="16px" height="16px" />
+                                    </button>
+                                }.into_any()
+                            }}
                             <button
                                 class="p-2 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 player-btn"
                                 title="Next effect"

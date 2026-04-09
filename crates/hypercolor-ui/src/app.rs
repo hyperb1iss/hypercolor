@@ -112,6 +112,8 @@ pub struct EffectsContext {
     pub set_active_control_values: WriteSignal<HashMap<String, ControlValue>>,
     pub active_preset_id: ReadSignal<Option<String>>,
     pub set_active_preset_id: WriteSignal<Option<String>>,
+    pub is_playing: ReadSignal<bool>,
+    pub set_is_playing: WriteSignal<bool>,
     pub favorite_ids: ReadSignal<HashSet<String>>,
     pub set_favorite_ids: WriteSignal<HashSet<String>>,
 }
@@ -147,7 +149,7 @@ impl EffectsContext {
                         active.active_preset_id,
                     );
                 }
-                Ok(None) => clear_active_effect_state(&ctx),
+                Ok(None) => ctx.set_is_playing.set(false),
                 Err(_) => {}
             }
         });
@@ -220,15 +222,30 @@ impl EffectsContext {
         }
     }
 
-    /// Stop the active effect.
+    /// Stop the active effect (keeps metadata visible for the sidebar).
     pub fn stop_effect(&self) {
-        clear_active_effect_state(self);
+        self.set_is_playing.set(false);
         let ctx = *self;
         leptos::task::spawn_local(async move {
             if api::stop_effect().await.is_err() {
                 ctx.refresh_active_effect();
             }
         });
+    }
+
+    /// Resume the previously stopped effect.
+    pub fn resume_effect(&self) {
+        if let Some(id) = self.active_effect_id.get_untracked() {
+            self.set_is_playing.set(true);
+            let ctx = *self;
+            leptos::task::spawn_local(async move {
+                if api::apply_effect(&id).await.is_ok() {
+                    ctx.refresh_active_effect();
+                } else {
+                    ctx.set_is_playing.set(false);
+                }
+            });
+        }
     }
 }
 
@@ -250,6 +267,7 @@ fn apply_active_effect_snapshot(
     ctx.set_active_controls.set(controls);
     ctx.set_active_control_values.set(control_values);
     ctx.set_active_preset_id.set(active_preset_id);
+    ctx.set_is_playing.set(true);
     if ctx.active_effect_id.get_untracked().as_deref() != Some(id.as_str()) {
         ctx.set_active_effect_id.set(Some(id));
     }
@@ -262,6 +280,7 @@ fn clear_active_effect_state(ctx: &EffectsContext) {
     ctx.set_active_control_values.set(HashMap::new());
     ctx.set_active_effect_category.set(String::new());
     ctx.set_active_preset_id.set(None);
+    ctx.set_is_playing.set(false);
 }
 
 fn capture_active_effect_state(ctx: &EffectsContext) -> ActiveEffectSnapshot {
@@ -342,6 +361,7 @@ pub fn App() -> impl IntoView {
     let (active_control_values, set_active_control_values) =
         signal(HashMap::<String, ControlValue>::new());
     let (active_preset_id, set_active_preset_id) = signal(None::<String>);
+    let (is_playing, set_is_playing) = signal(false);
     let (favorite_ids, set_favorite_ids) = signal(HashSet::<String>::new());
 
     let effects_ctx = EffectsContext {
@@ -358,6 +378,8 @@ pub fn App() -> impl IntoView {
         set_active_control_values,
         active_preset_id,
         set_active_preset_id,
+        is_playing,
+        set_is_playing,
         favorite_ids,
         set_favorite_ids,
     };
@@ -440,7 +462,7 @@ pub fn App() -> impl IntoView {
         if current_effect_name.is_some() {
             effects_ctx.refresh_active_effect();
         } else {
-            clear_active_effect_state(&effects_ctx);
+            effects_ctx.set_is_playing.set(false);
         }
 
         current_effect_name
