@@ -3,7 +3,7 @@
 //! The simplest possible effect, extended with a few utility scene layouts
 //! so it also works as a diagnostic and quick composition tool.
 
-use hypercolor_types::canvas::{Canvas, RgbaF32};
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, RgbaF32};
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
@@ -132,16 +132,35 @@ impl EffectRenderer for SolidColorRenderer {
             self.secondary_color[3],
         );
 
-        for y in 0..input.canvas_height {
+        if self.pattern == SolidPattern::Solid {
+            let mut pixel = primary;
+            pixel.r *= self.brightness;
+            pixel.g *= self.brightness;
+            pixel.b *= self.brightness;
+            canvas.fill(pixel.to_srgba());
+            return Ok(());
+        }
+
+        let row_len = input.canvas_width as usize * BYTES_PER_PIXEL;
+        if row_len == 0 {
+            return Ok(());
+        }
+
+        for (y, row) in canvas
+            .as_rgba_bytes_mut()
+            .chunks_exact_mut(row_len)
+            .enumerate()
+        {
             let ny = (y as f32 + 0.5) / height;
-            for x in 0..input.canvas_width {
+            for (x, pixel_bytes) in row.chunks_exact_mut(BYTES_PER_PIXEL).enumerate() {
                 let nx = (x as f32 + 0.5) / width;
                 let mix = self.pattern_mix(nx, ny, width, height);
                 let mut pixel = RgbaF32::lerp(&primary, &secondary, mix);
                 pixel.r *= self.brightness;
                 pixel.g *= self.brightness;
                 pixel.b *= self.brightness;
-                canvas.set_pixel(x, y, pixel.to_srgba());
+                let rgba = pixel.to_srgb_u8();
+                pixel_bytes.copy_from_slice(&rgba);
             }
         }
 

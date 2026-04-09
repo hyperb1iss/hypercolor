@@ -3,7 +3,7 @@
 //! Sweeps through the hue spectrum in HSV space, producing vivid,
 //! fully-saturated rainbow bands that animate over time.
 
-use hypercolor_types::canvas::{Canvas, Rgba};
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas};
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
@@ -47,18 +47,28 @@ impl EffectRenderer for RainbowRenderer {
     #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
     fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> anyhow::Result<()> {
         prepare_target_canvas(canvas, input.canvas_width, input.canvas_height);
-        let w = input.canvas_width as f32;
+        let width = input.canvas_width.max(1) as f32;
         let time_offset = input.time_secs * self.speed;
+        let row_len = input.canvas_width as usize * BYTES_PER_PIXEL;
 
-        for y in 0..input.canvas_height {
-            for x in 0..input.canvas_width {
-                // Position-based hue offset, scaled by wavelength
-                let pos_hue = (x as f32 / w.max(1.0)) * 360.0 * self.scale;
-                let hue = ((pos_hue + time_offset) % 360.0 + 360.0) % 360.0;
+        if row_len == 0 {
+            return Ok(());
+        }
 
-                let (r, g, b) = hsv_to_rgb(hue, self.saturation, self.brightness);
-                canvas.set_pixel(x, y, Rgba::new(r, g, b, u8::MAX));
-            }
+        let pixels = canvas.as_rgba_bytes_mut();
+        let (first_row, remaining_rows) = pixels.split_at_mut(row_len);
+        for (x, pixel) in first_row.chunks_exact_mut(BYTES_PER_PIXEL).enumerate() {
+            let pos_hue = (x as f32 / width) * 360.0 * self.scale;
+            let hue = (pos_hue + time_offset).rem_euclid(360.0);
+            let (r, g, b) = hsv_to_rgb(hue, self.saturation, self.brightness);
+            pixel[0] = r;
+            pixel[1] = g;
+            pixel[2] = b;
+            pixel[3] = u8::MAX;
+        }
+
+        for row in remaining_rows.chunks_exact_mut(row_len) {
+            row.copy_from_slice(first_row);
         }
 
         Ok(())

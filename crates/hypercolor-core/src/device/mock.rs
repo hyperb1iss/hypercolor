@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 
-use hypercolor_types::canvas::{Canvas, Rgba};
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, Rgba};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
@@ -439,15 +439,26 @@ impl EffectRenderer for MockEffectRenderer {
 )]
 fn render_rainbow(canvas: &mut Canvas, input: &FrameInput) {
     let w = canvas.width();
-    let h = canvas.height();
     let time_offset = input.time_secs * 30.0; // Slow drift
+    let row_len = w as usize * BYTES_PER_PIXEL;
 
-    for y in 0..h {
-        for x in 0..w {
-            let hue = ((x as f32 / w.max(1) as f32) * 360.0 + time_offset) % 360.0;
-            let (r, g, b) = hsv_to_rgb(hue, 1.0, 1.0);
-            canvas.set_pixel(x, y, Rgba::new(r, g, b, 255));
-        }
+    if row_len == 0 {
+        return;
+    }
+
+    let pixels = canvas.as_rgba_bytes_mut();
+    let (first_row, remaining_rows) = pixels.split_at_mut(row_len);
+    for (x, pixel) in first_row.chunks_exact_mut(BYTES_PER_PIXEL).enumerate() {
+        let hue = ((x as f32 / w.max(1) as f32) * 360.0 + time_offset).rem_euclid(360.0);
+        let (r, g, b) = hsv_to_rgb(hue, 1.0, 1.0);
+        pixel[0] = r;
+        pixel[1] = g;
+        pixel[2] = b;
+        pixel[3] = 255;
+    }
+
+    for row in remaining_rows.chunks_exact_mut(row_len) {
+        row.copy_from_slice(first_row);
     }
 }
 

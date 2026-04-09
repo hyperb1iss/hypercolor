@@ -7,7 +7,9 @@ use anyhow::Result;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use hypercolor_core::bus::CanvasFrame;
 use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend};
-use hypercolor_core::effect::builtin::{ColorWaveRenderer, GradientRenderer, SolidColorRenderer};
+use hypercolor_core::effect::builtin::{
+    ColorWaveRenderer, GradientRenderer, RainbowRenderer, SolidColorRenderer,
+};
 use hypercolor_core::effect::{EffectRenderer, FrameInput};
 use hypercolor_core::input::InteractionData;
 use hypercolor_core::input::audio::beat::{BeatDetector, BeatFrame};
@@ -328,6 +330,48 @@ fn bench_builtin_renderers(c: &mut Criterion) {
                     .render_into(black_box(&input), black_box(&mut gradient_into_canvas))
                     .expect("gradient renderer should render into target");
                 black_box(gradient_into_canvas.as_rgba_bytes());
+            });
+        },
+    );
+
+    let mut rainbow = RainbowRenderer::new();
+    rainbow
+        .init(&ambient_metadata("rainbow"))
+        .expect("rainbow renderer should initialize");
+    let mut rainbow_frame = 0_u64;
+    group.bench_function(
+        BenchmarkId::new("rainbow", format!("{CANVAS_WIDTH}x{CANVAS_HEIGHT}")),
+        |b| {
+            b.iter(|| {
+                let input = frame_input(frame_time(rainbow_frame), rainbow_frame, &SILENCE);
+                rainbow_frame += 1;
+                let canvas = rainbow
+                    .tick(black_box(&input))
+                    .expect("rainbow renderer should tick");
+                black_box(canvas);
+            });
+        },
+    );
+    let mut rainbow_into = RainbowRenderer::new();
+    rainbow_into
+        .init(&ambient_metadata("rainbow"))
+        .expect("rainbow renderer should initialize");
+    let mut rainbow_into_frame = 0_u64;
+    let mut rainbow_into_canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
+    group.bench_function(
+        BenchmarkId::new(
+            "rainbow_render_into",
+            format!("{CANVAS_WIDTH}x{CANVAS_HEIGHT}"),
+        ),
+        |b| {
+            b.iter(|| {
+                let input =
+                    frame_input(frame_time(rainbow_into_frame), rainbow_into_frame, &SILENCE);
+                rainbow_into_frame += 1;
+                rainbow_into
+                    .render_into(black_box(&input), black_box(&mut rainbow_into_canvas))
+                    .expect("rainbow renderer should render into target");
+                black_box(rainbow_into_canvas.as_rgba_bytes());
             });
         },
     );
