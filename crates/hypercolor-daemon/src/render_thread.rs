@@ -47,8 +47,8 @@ use hypercolor_types::session::OffOutputBehavior;
 
 use self::composition_planner::CompositionPlanner;
 use self::frame_scheduler::{
-    FrameSceneSnapshot, FrameSceneSnapshotInputs, FrameScheduler, RenderGroupSnapshot,
-    SceneRuntimeSnapshot, SceneTransitionSnapshot,
+    FrameSceneSnapshot, FrameSceneSnapshotInputs, FrameScheduler, SceneRuntimeSnapshot,
+    SceneTransitionSnapshot,
 };
 use self::producer_queue::{ProducerFrame, ProducerFrameState, ProducerQueue};
 use self::scene_state::RenderSceneState;
@@ -1026,23 +1026,7 @@ async fn current_scene_runtime_snapshot(
     manager.tick_transition(delta_secs);
     let active_groups = manager
         .active_scene()
-        .map(|scene| {
-            scene
-                .groups
-                .iter()
-                .map(|group| RenderGroupSnapshot {
-                    id: group.id,
-                    effect_id: group.effect_id,
-                    enabled: group.enabled,
-                    zone_ids: group
-                        .layout
-                        .zones
-                        .iter()
-                        .map(|zone| zone.id.clone())
-                        .collect(),
-                })
-                .collect()
-        })
+        .map(|scene| scene.groups.clone())
         .unwrap_or_default();
     SceneRuntimeSnapshot {
         active_scene_id: manager.active_scene_id().copied(),
@@ -1054,7 +1038,7 @@ async fn current_scene_runtime_snapshot(
                 progress: transition.progress,
                 eased_progress: transition.eased_progress(),
             }),
-        active_groups,
+        active_render_groups: active_groups,
     }
 }
 

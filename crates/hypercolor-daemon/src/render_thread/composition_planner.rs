@@ -196,15 +196,19 @@ impl CompositionPlanner {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use hypercolor_core::types::canvas::{Canvas, Rgba};
     use hypercolor_types::effect::EffectId;
-    use hypercolor_types::scene::RenderGroupId;
+    use hypercolor_types::scene::{RenderGroup, RenderGroupId};
+    use hypercolor_types::spatial::{
+        DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+        StripDirection,
+    };
     use uuid::Uuid;
 
     use super::{CompositionPlanner, PlannedSceneLayer};
-    use crate::render_thread::frame_scheduler::{
-        RenderGroupSnapshot, SceneRuntimeSnapshot, SceneTransitionSnapshot,
-    };
+    use crate::render_thread::frame_scheduler::{SceneRuntimeSnapshot, SceneTransitionSnapshot};
     use crate::render_thread::producer_queue::ProducerFrame;
     use crate::render_thread::sparkleflinger::SparkleFlinger;
 
@@ -212,6 +216,54 @@ mod tests {
         let mut canvas = Canvas::new(2, 2);
         canvas.fill(color);
         canvas
+    }
+
+    fn sample_group() -> RenderGroup {
+        RenderGroup {
+            id: RenderGroupId::new(),
+            name: "Desk".into(),
+            description: None,
+            effect_id: Some(EffectId::from(Uuid::now_v7())),
+            controls: HashMap::new(),
+            preset_id: None,
+            layout: SpatialLayout {
+                id: "desk".into(),
+                name: "Desk".into(),
+                description: None,
+                canvas_width: 2,
+                canvas_height: 2,
+                zones: vec![DeviceZone {
+                    id: "desk:main".into(),
+                    name: "Desk".into(),
+                    device_id: "mock:device".into(),
+                    zone_name: None,
+                    position: NormalizedPosition::new(0.5, 0.5),
+                    size: NormalizedPosition::new(1.0, 1.0),
+                    rotation: 0.0,
+                    scale: 1.0,
+                    display_order: 0,
+                    orientation: None,
+                    topology: LedTopology::Strip {
+                        count: 1,
+                        direction: StripDirection::LeftToRight,
+                    },
+                    led_positions: Vec::new(),
+                    led_mapping: None,
+                    sampling_mode: Some(SamplingMode::Bilinear),
+                    edge_behavior: Some(EdgeBehavior::Clamp),
+                    shape: None,
+                    shape_preset: None,
+                    attachment: None,
+                }],
+                default_sampling_mode: SamplingMode::Bilinear,
+                default_edge_behavior: EdgeBehavior::Clamp,
+                spaces: None,
+                version: 1,
+            },
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+        }
     }
 
     #[test]
@@ -228,12 +280,7 @@ mod tests {
                     progress: 0.25,
                     eased_progress: 0.5,
                 }),
-                active_groups: vec![RenderGroupSnapshot {
-                    id: RenderGroupId::new(),
-                    effect_id: Some(EffectId::from(Uuid::now_v7())),
-                    enabled: true,
-                    zone_ids: vec!["desk:main".into()],
-                }],
+                active_render_groups: vec![sample_group()],
             },
             vec![PlannedSceneLayer::replace(ProducerFrame::Canvas(
                 solid_canvas(Rgba::new(12, 34, 56, 255)),
@@ -289,7 +336,7 @@ mod tests {
                 progress: 0.5,
                 eased_progress: 0.5,
             }),
-            active_groups: Vec::new(),
+            active_render_groups: Vec::new(),
         };
         let compiled = planner.compile_primary_frame(2, 2, &transition_runtime, entering);
         let mut sparkleflinger = SparkleFlinger::new();

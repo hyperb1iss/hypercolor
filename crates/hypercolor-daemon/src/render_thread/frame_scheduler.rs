@@ -1,6 +1,5 @@
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_types::effect::EffectId;
-use hypercolor_types::scene::{RenderGroupId, SceneId};
+use hypercolor_types::scene::{RenderGroup, SceneId};
 
 use crate::session::OutputPowerState;
 
@@ -15,36 +14,20 @@ pub(crate) struct SceneTransitionSnapshot {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct RenderGroupSnapshot {
-    #[allow(
-        dead_code,
-        reason = "render-group producer runtimes will key off this id once multi-producer composition is live"
-    )]
-    pub id: RenderGroupId,
-    pub effect_id: Option<EffectId>,
-    pub enabled: bool,
-    pub zone_ids: Vec<String>,
-}
-
-impl RenderGroupSnapshot {
-    pub(crate) fn participates_in_composition(&self) -> bool {
-        self.enabled && self.effect_id.is_some() && !self.zone_ids.is_empty()
-    }
-}
-
-#[derive(Debug, Clone, Default)]
 pub(crate) struct SceneRuntimeSnapshot {
     pub active_scene_id: Option<SceneId>,
     pub active_transition: Option<SceneTransitionSnapshot>,
-    pub active_groups: Vec<RenderGroupSnapshot>,
+    pub active_render_groups: Vec<RenderGroup>,
 }
 
 impl SceneRuntimeSnapshot {
     pub(crate) fn active_render_group_count(&self) -> u32 {
         u32::try_from(
-            self.active_groups
+            self.active_render_groups
                 .iter()
-                .filter(|group| group.participates_in_composition())
+                .filter(|group| {
+                    group.enabled && group.effect_id.is_some() && !group.layout.zones.is_empty()
+                })
                 .count(),
         )
         .unwrap_or(u32::MAX)
@@ -100,15 +83,18 @@ impl FrameScheduler {
 mod tests {
     use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_types::effect::EffectId;
-    use hypercolor_types::scene::RenderGroupId;
-    use hypercolor_types::spatial::SpatialLayout;
+    use hypercolor_types::scene::{RenderGroup, RenderGroupId};
+    use hypercolor_types::spatial::{
+        DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+        StripDirection,
+    };
     use uuid::Uuid;
 
     use crate::session::OutputPowerState;
 
     use super::{
-        EffectDemand, FrameSceneSnapshotInputs, FrameScheduler, RenderGroupSnapshot,
-        SceneRuntimeSnapshot, SceneTransitionSnapshot,
+        EffectDemand, FrameSceneSnapshotInputs, FrameScheduler, SceneRuntimeSnapshot,
+        SceneTransitionSnapshot,
     };
 
     fn empty_spatial_engine() -> SpatialEngine {
@@ -124,6 +110,54 @@ mod tests {
             spaces: None,
             version: 1,
         })
+    }
+
+    fn sample_group() -> RenderGroup {
+        RenderGroup {
+            id: RenderGroupId::new(),
+            name: "Desk".into(),
+            description: None,
+            effect_id: Some(EffectId::from(Uuid::now_v7())),
+            controls: std::collections::HashMap::new(),
+            preset_id: None,
+            layout: SpatialLayout {
+                id: "group-layout".into(),
+                name: "Group Layout".into(),
+                description: None,
+                canvas_width: 320,
+                canvas_height: 200,
+                zones: vec![DeviceZone {
+                    id: "desk:main".into(),
+                    name: "Desk".into(),
+                    device_id: "mock:device".into(),
+                    zone_name: None,
+                    position: NormalizedPosition::new(0.5, 0.5),
+                    size: NormalizedPosition::new(1.0, 1.0),
+                    rotation: 0.0,
+                    scale: 1.0,
+                    display_order: 0,
+                    orientation: None,
+                    topology: LedTopology::Strip {
+                        count: 1,
+                        direction: StripDirection::LeftToRight,
+                    },
+                    led_positions: Vec::new(),
+                    led_mapping: None,
+                    sampling_mode: Some(SamplingMode::Bilinear),
+                    edge_behavior: Some(EdgeBehavior::Clamp),
+                    shape: None,
+                    shape_preset: None,
+                    attachment: None,
+                }],
+                default_sampling_mode: SamplingMode::Bilinear,
+                default_edge_behavior: EdgeBehavior::Clamp,
+                spaces: None,
+                version: 1,
+            },
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+        }
     }
 
     #[test]
@@ -149,12 +183,7 @@ mod tests {
                     progress: 0.25,
                     eased_progress: 0.5,
                 }),
-                active_groups: vec![RenderGroupSnapshot {
-                    id: RenderGroupId::new(),
-                    effect_id: Some(EffectId::from(Uuid::now_v7())),
-                    enabled: true,
-                    zone_ids: vec!["desk:main".into()],
-                }],
+                active_render_groups: vec![sample_group()],
             },
             spatial_engine: empty_spatial_engine(),
         });
