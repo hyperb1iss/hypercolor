@@ -5,7 +5,9 @@
 //! channel filtering. Backpressure is handled by bounded channels — slow
 //! consumers get dropped frames rather than unbounded memory growth.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::SystemTime;
@@ -40,13 +42,19 @@ const WS_CANVAS_BYTES_PER_PIXEL_RGBA: u64 = 4;
 const WS_CANVAS_HEADER: u8 = 0x03;
 const WS_SCREEN_CANVAS_HEADER: u8 = 0x05;
 const WS_CANVAS_BINARY_CACHE_CAPACITY: usize = 32;
+const WS_FRAME_PAYLOAD_CACHE_CAPACITY: usize = 64;
 
 static WS_CLIENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static WS_TOTAL_BYTES_SENT: AtomicU64 = AtomicU64::new(0);
 static WS_CANVAS_PAYLOAD_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
 static WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
+static WS_FRAME_PAYLOAD_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
+static WS_FRAME_PAYLOAD_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 static WS_CANVAS_BINARY_CACHE: LazyLock<StdMutex<VecDeque<(CanvasBinaryCacheKey, Bytes)>>> =
     LazyLock::new(|| StdMutex::new(VecDeque::with_capacity(WS_CANVAS_BINARY_CACHE_CAPACITY)));
+static WS_FRAME_PAYLOAD_CACHE: LazyLock<
+    StdMutex<VecDeque<(FramePayloadCacheKey, FrameRelayMessage)>>,
+> = LazyLock::new(|| StdMutex::new(VecDeque::with_capacity(WS_FRAME_PAYLOAD_CACHE_CAPACITY)));
 
 struct WsClientGuard;
 
@@ -289,7 +297,7 @@ impl Default for MetricsConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum FrameFormat {
     Binary,
@@ -313,6 +321,14 @@ struct CanvasBinaryCacheKey {
     header: u8,
     format_tag: u8,
     brightness_bits: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct FramePayloadCacheKey {
+    frame_number: u32,
+    timestamp_ms: u32,
+    selection_hash: u64,
+    format: FrameFormat,
 }
 
 /// Client-to-server subscription messages.
@@ -557,6 +573,8 @@ struct MetricsDevices {
 struct MetricsWebsocket {
     client_count: usize,
     bytes_sent_per_sec: f64,
+    frame_payload_builds: u64,
+    frame_payload_cache_hits: u64,
     canvas_payload_builds: u64,
     canvas_payload_cache_hits: u64,
 }
@@ -849,6 +867,7 @@ fn should_relay_event(
     true
 }
 
+#[derive(Clone)]
 enum FrameRelayMessage {
     Json(String),
     Binary(Bytes),
@@ -883,38 +902,7 @@ async fn relay_frames(
         }
 
         let frame = frame_rx.borrow();
-        let zones = filter_frame_zones(&frame.zones, &frame_config.zones);
-        let outbound = match frame_config.format {
-            FrameFormat::Binary => {
-                let filtered_frame = hypercolor_types::event::FrameData {
-                    frame_number: frame.frame_number,
-                    timestamp_ms: frame.timestamp_ms,
-                    zones,
-                };
-                FrameRelayMessage::Binary(encode_frame_binary(&filtered_frame).into())
-            }
-            FrameFormat::Json => {
-                let zones: Vec<serde_json::Value> = zones
-                    .iter()
-                    .map(|zone| {
-                        json!({
-                            "zone_id": zone.zone_id,
-                            "colors": zone.colors,
-                        })
-                    })
-                    .collect();
-                let json_frame = json!({
-                    "type": "frame",
-                    "frame_number": frame.frame_number,
-                    "timestamp_ms": frame.timestamp_ms,
-                    "zones": zones,
-                });
-                let Ok(text) = serde_json::to_string(&json_frame) else {
-                    continue;
-                };
-                FrameRelayMessage::Json(text)
-            }
-        };
+        let outbound = cached_frame_payload(&frame, &frame_config);
 
         match outbound {
             FrameRelayMessage::Json(text) => {
@@ -1459,20 +1447,72 @@ fn parse_channels(channels: &[String]) -> Result<Vec<WsChannel>, WsProtocolError
     Ok(parsed)
 }
 
-fn filter_frame_zones(
-    zones: &[hypercolor_types::event::ZoneColors],
+fn selected_frame_zones<'a>(
+    zones: &'a [hypercolor_types::event::ZoneColors],
     selected: &[String],
-) -> Vec<hypercolor_types::event::ZoneColors> {
+) -> Vec<&'a hypercolor_types::event::ZoneColors> {
     if selected.iter().any(|zone| zone == "all") {
-        return zones.to_vec();
+        return zones.iter().collect();
     }
 
     let selected_set: HashSet<&str> = selected.iter().map(String::as_str).collect();
     zones
         .iter()
         .filter(|zone| selected_set.contains(zone.zone_id.as_str()))
+        .collect()
+}
+
+#[cfg(test)]
+fn filter_frame_zones(
+    zones: &[hypercolor_types::event::ZoneColors],
+    selected: &[String],
+) -> Vec<hypercolor_types::event::ZoneColors> {
+    selected_frame_zones(zones, selected)
+        .into_iter()
         .cloned()
         .collect()
+}
+
+fn frame_selection_hash(selected: &[String]) -> u64 {
+    if selected.iter().any(|zone| zone == "all") {
+        return 0;
+    }
+
+    let mut hasher = DefaultHasher::new();
+    selected.len().hash(&mut hasher);
+    for zone in selected {
+        zone.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn cached_frame_payload(
+    frame: &hypercolor_types::event::FrameData,
+    config: &FramesConfig,
+) -> FrameRelayMessage {
+    let key = FramePayloadCacheKey {
+        frame_number: frame.frame_number,
+        timestamp_ms: frame.timestamp_ms,
+        selection_hash: frame_selection_hash(&config.zones),
+        format: config.format,
+    };
+
+    if let Some(cached) = frame_payload_cache_get(key) {
+        WS_FRAME_PAYLOAD_CACHE_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+        return cached;
+    }
+
+    let payload = match config.format {
+        FrameFormat::Binary => FrameRelayMessage::Binary(Bytes::from(
+            encode_frame_binary_selected(frame, &config.zones),
+        )),
+        FrameFormat::Json => {
+            FrameRelayMessage::Json(encode_frame_json_selected(frame, &config.zones))
+        }
+    };
+    WS_FRAME_PAYLOAD_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
+    frame_payload_cache_put(key, payload.clone());
+    payload
 }
 
 fn validate_range(
@@ -1504,12 +1544,21 @@ fn track_ws_bytes_sent(sent_len: usize) {
     WS_TOTAL_BYTES_SENT.fetch_add(sent_u64, Ordering::Relaxed);
 }
 
+#[cfg(test)]
 fn encode_frame_binary(frame: &hypercolor_types::event::FrameData) -> Vec<u8> {
+    encode_frame_binary_selected(frame, &["all".to_owned()])
+}
+
+fn encode_frame_binary_selected(
+    frame: &hypercolor_types::event::FrameData,
+    selected: &[String],
+) -> Vec<u8> {
+    let selected_zones = selected_frame_zones(&frame.zones, selected);
     let max_zone_count = usize::from(u8::MAX);
-    let included_zones = if frame.zones.len() > max_zone_count {
-        &frame.zones[..max_zone_count]
+    let included_zones = if selected_zones.len() > max_zone_count {
+        &selected_zones[..max_zone_count]
     } else {
-        &frame.zones[..]
+        &selected_zones[..]
     };
 
     let payload_bytes = included_zones.iter().fold(0_usize, |acc, zone| {
@@ -1544,6 +1593,41 @@ fn encode_frame_binary(frame: &hypercolor_types::event::FrameData) -> Vec<u8> {
     }
 
     out
+}
+
+#[derive(Serialize)]
+struct BorrowedFrameZone<'a> {
+    zone_id: &'a str,
+    colors: &'a [[u8; 3]],
+}
+
+#[derive(Serialize)]
+struct BorrowedFrameMessage<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    frame_number: u32,
+    timestamp_ms: u32,
+    zones: Vec<BorrowedFrameZone<'a>>,
+}
+
+fn encode_frame_json_selected(
+    frame: &hypercolor_types::event::FrameData,
+    selected: &[String],
+) -> String {
+    let zones = selected_frame_zones(&frame.zones, selected)
+        .into_iter()
+        .map(|zone| BorrowedFrameZone {
+            zone_id: zone.zone_id.as_str(),
+            colors: zone.colors.as_slice(),
+        })
+        .collect();
+    serde_json::to_string(&BorrowedFrameMessage {
+        kind: "frame",
+        frame_number: frame.frame_number,
+        timestamp_ms: frame.timestamp_ms,
+        zones,
+    })
+    .unwrap_or_default()
 }
 
 fn encode_spectrum_binary(
@@ -1700,6 +1784,30 @@ where
     payload
 }
 
+fn frame_payload_cache_get(key: FramePayloadCacheKey) -> Option<FrameRelayMessage> {
+    let mut cache = WS_FRAME_PAYLOAD_CACHE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let index = cache.iter().position(|(candidate, _)| *candidate == key)?;
+    let (candidate, payload) = cache.remove(index)?;
+    let cached = payload.clone();
+    cache.push_front((candidate, payload));
+    Some(cached)
+}
+
+fn frame_payload_cache_put(key: FramePayloadCacheKey, payload: FrameRelayMessage) {
+    let mut cache = WS_FRAME_PAYLOAD_CACHE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    if let Some(index) = cache.iter().position(|(candidate, _)| *candidate == key) {
+        let _ = cache.remove(index);
+    }
+    cache.push_front((key, payload));
+    while cache.len() > WS_FRAME_PAYLOAD_CACHE_CAPACITY {
+        let _ = cache.pop_back();
+    }
+}
+
 fn canvas_binary_cache_get(key: CanvasBinaryCacheKey) -> Option<Bytes> {
     let mut cache = WS_CANVAS_BINARY_CACHE
         .lock()
@@ -1827,6 +1935,8 @@ async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> Ser
             websocket: MetricsWebsocket {
                 client_count,
                 bytes_sent_per_sec: round_1(bytes_sent_per_sec),
+                frame_payload_builds: WS_FRAME_PAYLOAD_BUILD_COUNT.load(Ordering::Relaxed),
+                frame_payload_cache_hits: WS_FRAME_PAYLOAD_CACHE_HIT_COUNT.load(Ordering::Relaxed),
                 canvas_payload_builds: WS_CANVAS_PAYLOAD_BUILD_COUNT.load(Ordering::Relaxed),
                 canvas_payload_cache_hits: WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT
                     .load(Ordering::Relaxed),
