@@ -196,7 +196,16 @@ pub enum EventControlValue {
 /// Per-stage frame timing in microseconds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrameTiming {
+    /// Time spent producing source surfaces before composition.
+    #[serde(default)]
+    pub producer_us: u32,
+    /// Time spent latching and composing the frame set.
+    #[serde(default)]
+    pub composition_us: u32,
     /// Time to render the effect to the canvas.
+    ///
+    /// This remains the total Stage 2 cost for compatibility and equals
+    /// `producer_us + composition_us` for new senders.
     pub render_us: u32,
     /// Time to sample LED positions from the canvas.
     pub sample_us: u32,

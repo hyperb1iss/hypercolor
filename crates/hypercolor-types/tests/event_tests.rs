@@ -201,6 +201,8 @@ fn system_events_have_system_category() {
         HypercolorEvent::FrameRendered {
             frame_number: 42,
             timing: FrameTiming {
+                producer_us: 700,
+                composition_us: 300,
                 render_us: 1000,
                 sample_us: 200,
                 push_us: 500,
@@ -485,6 +487,8 @@ fn low_priority_events() {
         HypercolorEvent::FrameRendered {
             frame_number: 1,
             timing: FrameTiming {
+                producer_us: 500,
+                composition_us: 300,
                 render_us: 800,
                 sample_us: 100,
                 push_us: 300,
@@ -923,6 +927,8 @@ fn event_category_serde() {
 #[test]
 fn frame_timing_serde() {
     let timing = FrameTiming {
+        producer_us: 900,
+        composition_us: 300,
         render_us: 1200,
         sample_us: 300,
         push_us: 800,

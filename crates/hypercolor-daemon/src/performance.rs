@@ -9,6 +9,8 @@ const FRAME_HISTORY_CAPACITY: usize = 120;
 pub(crate) struct LatestFrameMetrics {
     pub timestamp_ms: u32,
     pub input_us: u32,
+    pub producer_us: u32,
+    pub composition_us: u32,
     pub render_us: u32,
     pub sample_us: u32,
     pub push_us: u32,

@@ -520,6 +520,8 @@ struct MetricsFrameTime {
 )]
 struct MetricsStages {
     input_sampling_ms: f64,
+    producer_rendering_ms: f64,
+    composition_ms: f64,
     effect_rendering_ms: f64,
     spatial_sampling_ms: f64,
     device_output_ms: f64,
@@ -1900,6 +1902,8 @@ async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> Ser
             },
             stages: MetricsStages {
                 input_sampling_ms: round_2(us_to_ms(latest_frame.input_us)),
+                producer_rendering_ms: round_2(us_to_ms(latest_frame.producer_us)),
+                composition_ms: round_2(us_to_ms(latest_frame.composition_us)),
                 effect_rendering_ms: round_2(us_to_ms(latest_frame.render_us)),
                 spatial_sampling_ms: round_2(us_to_ms(latest_frame.sample_us)),
                 device_output_ms: round_2(us_to_ms(latest_frame.push_us)),
@@ -2334,6 +2338,8 @@ mod tests {
         let event = HypercolorEvent::FrameRendered {
             frame_number: 7,
             timing: FrameTiming {
+                producer_us: 0,
+                composition_us: 0,
                 render_us: 0,
                 sample_us: 0,
                 push_us: 0,
@@ -2351,6 +2357,8 @@ mod tests {
         let event = HypercolorEvent::FrameRendered {
             frame_number: 7,
             timing: FrameTiming {
+                producer_us: 0,
+                composition_us: 0,
                 render_us: 0,
                 sample_us: 0,
                 push_us: 0,

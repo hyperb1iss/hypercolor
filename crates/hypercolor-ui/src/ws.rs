@@ -158,6 +158,8 @@ pub struct MetricsFrameTime {
 #[serde(default)]
 pub struct MetricsStages {
     pub input_sampling_ms: f64,
+    pub producer_rendering_ms: f64,
+    pub composition_ms: f64,
     pub effect_rendering_ms: f64,
     pub spatial_sampling_ms: f64,
     pub device_output_ms: f64,

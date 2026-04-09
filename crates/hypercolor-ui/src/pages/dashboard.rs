@@ -473,10 +473,16 @@ fn PerformancePanel(
             .map(|m| m.stages.input_sampling_ms)
             .unwrap_or_default()
     });
-    let render_stage = Memo::new(move |_| {
+    let producer_stage = Memo::new(move |_| {
         metrics
             .get()
-            .map(|m| m.stages.effect_rendering_ms)
+            .map(|m| m.stages.producer_rendering_ms)
+            .unwrap_or_default()
+    });
+    let composition_stage = Memo::new(move |_| {
+        metrics
+            .get()
+            .map(|m| m.stages.composition_ms)
             .unwrap_or_default()
     });
     let sample_stage = Memo::new(move |_| {
@@ -602,9 +608,10 @@ fn PerformancePanel(
                 // Pipeline stages — with color accents per stage
                 <div>
                     <div class="text-[9px] font-mono uppercase tracking-[0.14em] text-fg-tertiary mb-2 px-1">"Pipeline Stages"</div>
-                    <div class="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-2">
+                    <div class="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-2">
                         <StageChip label="Input"   value=Signal::derive(move || input_stage.get())   color="var(--neon-cyan)" />
-                        <StageChip label="Render"  value=Signal::derive(move || render_stage.get())  color="var(--electric-purple)" />
+                        <StageChip label="Producer" value=Signal::derive(move || producer_stage.get()) color="var(--electric-purple)" />
+                        <StageChip label="Compose" value=Signal::derive(move || composition_stage.get()) color="var(--coral)" />
                         <StageChip label="Sample"  value=Signal::derive(move || sample_stage.get())  color="var(--coral)" />
                         <StageChip label="Output"  value=Signal::derive(move || push_stage.get())    color="var(--electric-yellow)" />
                         <StageChip label="Post"    value=Signal::derive(move || postprocess_stage.get()) color="var(--coral)" />
