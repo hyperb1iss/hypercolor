@@ -9,7 +9,7 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use hypercolor_core::effect::{EffectRegistry, create_renderer_for_metadata};
+use hypercolor_core::effect::{EffectRegistry, create_renderer_for_metadata_with_mode};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectId, EffectMetadata, EffectSource, PresetTemplate,
 };
@@ -353,12 +353,16 @@ pub async fn apply_effect(
         Err(error) => return ApiError::bad_request(error),
     };
 
-    let renderer = match create_renderer_for_metadata(&metadata) {
+    let render_acceleration_mode =
+        crate::api::configured_render_acceleration_mode(state.config_manager.as_ref());
+    let renderer = match create_renderer_for_metadata_with_mode(&metadata, render_acceleration_mode)
+    {
         Ok(renderer) => renderer,
         Err(error) => {
             warn!(
                 effect_id = %metadata.id,
                 effect = %metadata.name,
+                requested_mode = ?render_acceleration_mode,
                 %error,
                 "Failed to prepare effect renderer"
             );

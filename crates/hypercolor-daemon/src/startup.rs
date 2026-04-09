@@ -31,8 +31,9 @@ use hypercolor_core::device::{
 };
 use hypercolor_core::effect::builtin::register_builtin_effects;
 use hypercolor_core::effect::{
-    EffectEngine, EffectRegistry, EffectWatchEvent, EffectWatcher, create_renderer_for_metadata,
-    default_effect_search_paths, register_html_effects,
+    EffectEngine, EffectRegistry, EffectWatchEvent, EffectWatcher,
+    create_renderer_for_metadata_with_mode, default_effect_search_paths, register_html_effects,
+    resolve_render_acceleration_mode,
 };
 use hypercolor_core::engine::RenderLoop;
 #[cfg(target_os = "linux")]
@@ -225,6 +226,22 @@ impl DaemonState {
     )]
     pub fn initialize(config: &HypercolorConfig, config_path: PathBuf) -> Result<Self> {
         info!("Initializing daemon subsystems");
+        let render_acceleration =
+            resolve_render_acceleration_mode(config.effect_engine.render_acceleration_mode)
+                .context("failed to resolve render acceleration mode")?;
+        if let Some(reason) = render_acceleration.fallback_reason {
+            warn!(
+                requested_mode = ?render_acceleration.requested_mode,
+                effective_mode = ?render_acceleration.effective_mode,
+                reason,
+                "Requested render acceleration is unavailable; using CPU path"
+            );
+        } else {
+            info!(
+                effective_mode = ?render_acceleration.effective_mode,
+                "Render acceleration resolved"
+            );
+        }
 
         let server_identity =
             resolve_server_identity(config).context("failed to resolve server identity")?;
@@ -640,6 +657,9 @@ impl DaemonState {
         }
 
         // Spawn the render thread.
+        let render_acceleration =
+            resolve_render_acceleration_mode(config.effect_engine.render_acceleration_mode)
+                .context("failed to resolve render acceleration mode while starting daemon")?;
         let rt_state = RenderThreadState {
             effect_engine: Arc::clone(&self.effect_engine),
             spatial_engine: Arc::clone(&self.spatial_engine),
@@ -654,7 +674,7 @@ impl DaemonState {
             screen_capture_configured: config.capture.enabled,
             canvas_width: config.daemon.canvas_width,
             canvas_height: config.daemon.canvas_height,
-            render_acceleration_mode: config.effect_engine.render_acceleration_mode,
+            render_acceleration_mode: render_acceleration.effective_mode,
         };
         self.render_thread = Some(RenderThread::spawn(rt_state));
         self.display_output_thread = Some(DisplayOutputThread::spawn(DisplayOutputState {
@@ -894,8 +914,14 @@ impl DaemonState {
             anyhow::bail!("saved effect is no longer available: {active_effect_id}");
         };
 
-        let renderer = create_renderer_for_metadata(&metadata)
-            .with_context(|| format!("failed to create renderer for '{}'", metadata.name))?;
+        let renderer = create_renderer_for_metadata_with_mode(
+            &metadata,
+            self.config_manager
+                .get()
+                .effect_engine
+                .render_acceleration_mode,
+        )
+        .with_context(|| format!("failed to create renderer for '{}'", metadata.name))?;
 
         let mut rejected_controls: Vec<String> = Vec::new();
         {

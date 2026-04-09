@@ -18,7 +18,7 @@ use hypercolor_daemon::startup::{
     load_config, parse_config_toml,
 };
 use hypercolor_daemon::{layout_store, runtime_state};
-use hypercolor_types::config::WledProtocolConfig;
+use hypercolor_types::config::{RenderAccelerationMode, WledProtocolConfig};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
@@ -224,6 +224,21 @@ listen_address = "0.0.0.0"
     assert_eq!(config.daemon.port, 8080);
     assert_eq!(config.daemon.listen_address, "0.0.0.0");
     assert_eq!(path, temp.path());
+}
+
+#[tokio::test]
+async fn initialize_rejects_explicit_gpu_render_acceleration_until_supported() {
+    let _guard = TestDataDirGuard::new().await;
+    let temp = temp_config_file();
+    let mut config = default_config();
+    config.effect_engine.render_acceleration_mode = RenderAccelerationMode::Gpu;
+
+    let error = match DaemonState::initialize(&config, temp.path().to_path_buf()) {
+        Ok(_) => panic!("gpu render acceleration should fail explicitly"),
+        Err(error) => error,
+    };
+
+    assert!(format!("{error:#}").contains("gpu render acceleration is not available yet"));
 }
 
 #[tokio::test]

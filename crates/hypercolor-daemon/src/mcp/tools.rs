@@ -9,6 +9,7 @@ use serde_json::{Map, Value, json};
 
 use crate::api::AppState;
 use crate::session::{current_global_brightness, set_global_brightness};
+use hypercolor_core::effect::create_renderer_for_metadata_with_mode;
 use hypercolor_core::scene::make_scene;
 use hypercolor_types::effect::ControlValue;
 use hypercolor_types::event::{ChangeTrigger, EffectRef, EffectStopReason, HypercolorEvent};
@@ -918,6 +919,12 @@ async fn handle_set_effect_with_state(
     };
 
     let previous_effect = {
+        let requested_mode =
+            crate::api::configured_render_acceleration_mode(state.config_manager.as_ref());
+        let renderer = create_renderer_for_metadata_with_mode(&best_match.effect, requested_mode)
+            .map_err(|error| {
+            ToolError::Internal(format!("failed to prepare effect: {error}"))
+        })?;
         let mut engine = state.effect_engine.lock().await;
         let previous = engine.active_metadata().map(|m| EffectRef {
             id: m.id.to_string(),
@@ -925,7 +932,7 @@ async fn handle_set_effect_with_state(
             engine: "servo".into(),
         });
         engine
-            .activate_metadata(best_match.effect.clone())
+            .activate(renderer, best_match.effect.clone())
             .map_err(|error| ToolError::Internal(format!("failed to activate effect: {error}")))?;
 
         if let Some(controls) = params.get("controls").and_then(Value::as_object) {
@@ -1118,6 +1125,12 @@ async fn handle_set_color_with_state(params: &Value, state: &AppState) -> Result
         .ok_or_else(|| ToolError::Internal("solid color effect is not registered".into()))?;
 
     let previous_effect = {
+        let requested_mode =
+            crate::api::configured_render_acceleration_mode(state.config_manager.as_ref());
+        let renderer = create_renderer_for_metadata_with_mode(&solid_effect, requested_mode)
+            .map_err(|error| {
+                ToolError::Internal(format!("failed to prepare solid color: {error}"))
+            })?;
         let mut engine = state.effect_engine.lock().await;
         let previous = engine.active_metadata().map(|m| EffectRef {
             id: m.id.to_string(),
@@ -1125,7 +1138,7 @@ async fn handle_set_color_with_state(params: &Value, state: &AppState) -> Result
             engine: "servo".into(),
         });
         engine
-            .activate_metadata(solid_effect.clone())
+            .activate(renderer, solid_effect.clone())
             .map_err(|error| {
                 ToolError::Internal(format!("failed to activate solid color: {error}"))
             })?;

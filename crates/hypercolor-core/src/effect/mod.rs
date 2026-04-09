@@ -23,7 +23,10 @@ mod traits;
 pub mod watcher;
 
 pub use engine::EffectEngine;
-pub use factory::create_renderer_for_metadata;
+pub use factory::{
+    RenderAccelerationResolution, create_renderer_for_metadata,
+    create_renderer_for_metadata_with_mode, resolve_render_acceleration_mode,
+};
 pub use lightscript::{
     LightscriptFrameScripts, LightscriptRuntime, control_update_script, normalized_level_to_db,
 };

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tracing::warn;
 
-use hypercolor_core::effect::create_renderer_for_metadata;
+use hypercolor_core::effect::create_renderer_for_metadata_with_mode;
 use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
 use hypercolor_types::library::{
     EffectPlaylist, EffectPreset, PlaylistId, PlaylistItem, PlaylistItemId, PlaylistItemTarget,
@@ -881,7 +881,9 @@ async fn activate_effect_with_controls(
     metadata: &EffectMetadata,
     controls: &HashMap<String, ControlValue>,
 ) -> Result<ActivationResult, ActivateEffectError> {
-    let renderer = create_renderer_for_metadata(metadata)
+    let render_acceleration_mode =
+        crate::api::configured_render_acceleration_mode(state.config_manager.as_ref());
+    let renderer = create_renderer_for_metadata_with_mode(metadata, render_acceleration_mode)
         .map_err(|error| ActivateEffectError::Renderer(error.to_string()))?;
 
     let mut applied: HashMap<String, ControlValue> = HashMap::new();

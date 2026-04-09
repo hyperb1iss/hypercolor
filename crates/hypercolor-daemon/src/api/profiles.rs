@@ -8,7 +8,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::Response;
-use hypercolor_core::effect::create_renderer_for_metadata;
+use hypercolor_core::effect::create_renderer_for_metadata_with_mode;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 use uuid::Uuid;
@@ -272,12 +272,15 @@ pub(crate) async fn apply_profile_snapshot(
                 .ok_or_else(|| format!("profile effect not found: {effect_id}"))?
         };
 
-        let renderer = create_renderer_for_metadata(&metadata).map_err(|error| {
-            format!(
-                "failed to prepare renderer for profile effect '{}': {error}",
-                metadata.name
-            )
-        })?;
+        let render_acceleration_mode =
+            crate::api::configured_render_acceleration_mode(state.config_manager.as_ref());
+        let renderer = create_renderer_for_metadata_with_mode(&metadata, render_acceleration_mode)
+            .map_err(|error| {
+                format!(
+                    "failed to prepare renderer for profile effect '{}': {error}",
+                    metadata.name
+                )
+            })?;
 
         Some((metadata, renderer))
     } else {

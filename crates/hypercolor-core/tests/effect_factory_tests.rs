@@ -2,7 +2,11 @@
 
 use std::path::PathBuf;
 
-use hypercolor_core::effect::create_renderer_for_metadata;
+use hypercolor_core::effect::{
+    create_renderer_for_metadata, create_renderer_for_metadata_with_mode,
+    resolve_render_acceleration_mode,
+};
+use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use uuid::Uuid;
 
@@ -64,6 +68,36 @@ fn factory_errors_for_unknown_native_renderer() {
         error
             .to_string()
             .contains("has no built-in renderer implementation")
+    );
+}
+
+#[test]
+fn auto_render_acceleration_falls_back_to_cpu() {
+    let resolution = resolve_render_acceleration_mode(RenderAccelerationMode::Auto)
+        .expect("auto mode should resolve");
+    assert_eq!(resolution.effective_mode, RenderAccelerationMode::Cpu);
+    assert!(resolution.fallback_reason.is_some());
+
+    let renderer = create_renderer_for_metadata_with_mode(
+        &native_metadata("rainbow"),
+        RenderAccelerationMode::Auto,
+    );
+    assert!(renderer.is_ok());
+}
+
+#[test]
+fn gpu_render_acceleration_requires_a_real_gpu_lane() {
+    let Err(error) = create_renderer_for_metadata_with_mode(
+        &native_metadata("rainbow"),
+        RenderAccelerationMode::Gpu,
+    ) else {
+        panic!("gpu mode should error until the GPU lane exists");
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("gpu render acceleration is not available yet")
     );
 }
 

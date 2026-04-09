@@ -51,7 +51,7 @@ use hypercolor_core::input::InputManager;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_network::DriverRegistry;
-use hypercolor_types::config::{HypercolorConfig, McpConfig};
+use hypercolor_types::config::{HypercolorConfig, McpConfig, RenderAccelerationMode};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
@@ -195,6 +195,14 @@ pub struct AppState {
 
     /// Shared API auth and rate-limiting state for HTTP and WS command dispatch.
     pub security_state: security::SecurityState,
+}
+
+pub(crate) fn configured_render_acceleration_mode(
+    config_manager: Option<&Arc<ConfigManager>>,
+) -> RenderAccelerationMode {
+    config_manager.map_or(RenderAccelerationMode::Cpu, |manager| {
+        manager.get().effect_engine.render_acceleration_mode
+    })
 }
 
 impl AppState {
