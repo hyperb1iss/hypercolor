@@ -68,6 +68,13 @@ impl SceneManager {
         if self.scenes.contains_key(&scene.id) {
             bail!("scene already exists: {}", scene.id);
         }
+        if let Err(conflicts) = scene.validate_group_exclusivity() {
+            bail!(
+                "scene '{}' has overlapping render groups: {}",
+                scene.name,
+                conflicts.join("; ")
+            );
+        }
         self.scenes.insert(scene.id, scene);
         Ok(())
     }
@@ -89,6 +96,13 @@ impl SceneManager {
     pub fn update(&mut self, scene: Scene) -> Result<()> {
         if !self.scenes.contains_key(&scene.id) {
             bail!("scene not found: {}", scene.id);
+        }
+        if let Err(conflicts) = scene.validate_group_exclusivity() {
+            bail!(
+                "scene '{}' has overlapping render groups: {}",
+                scene.name,
+                conflicts.join("; ")
+            );
         }
         self.scenes.insert(scene.id, scene);
         Ok(())
@@ -133,7 +147,7 @@ impl SceneManager {
 
         let spec = transition_override.unwrap_or_else(|| scene.transition.clone());
         let priority = scene.priority;
-        let to_assignments = scene.zone_assignments.clone();
+        let to_assignments = scene.effective_zone_assignments();
         let to_id = scene.id;
 
         // Capture from-state before pushing.
@@ -141,7 +155,7 @@ impl SceneManager {
         let from_assignments = from_state
             .as_ref()
             .and_then(|fid| self.scenes.get(fid))
-            .map(|s| s.zone_assignments.clone())
+            .map(Scene::effective_zone_assignments)
             .unwrap_or_default();
 
         // Record history.
@@ -270,6 +284,7 @@ pub fn make_scene(name: &str) -> Scene {
         description: None,
         scope: SceneScope::Full,
         zone_assignments: Vec::new(),
+        groups: Vec::new(),
         transition: TransitionSpec {
             duration_ms: 1000,
             easing: EasingFunction::Linear,
@@ -278,5 +293,6 @@ pub fn make_scene(name: &str) -> Scene {
         priority: ScenePriority::USER,
         enabled: true,
         metadata: HashMap::new(),
+        unassigned_behavior: crate::types::scene::UnassignedBehavior::Off,
     }
 }

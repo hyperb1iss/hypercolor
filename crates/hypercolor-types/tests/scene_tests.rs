@@ -1,8 +1,15 @@
+use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::scene::{
-    ActionKind, AutomationRule, ColorInterpolation, EasingFunction, Scene, SceneId, ScenePriority,
-    SceneScope, TransitionSpec, TriggerSource, ZoneAssignment,
+    ActionKind, AutomationRule, ColorInterpolation, EasingFunction, RenderGroup, RenderGroupId,
+    Scene, SceneId, ScenePriority, SceneScope, TransitionSpec, TriggerSource, UnassignedBehavior,
+    ZoneAssignment,
+};
+use hypercolor_types::spatial::{
+    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    StripDirection,
 };
 use std::collections::HashMap;
+use uuid::Uuid;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -26,10 +33,64 @@ fn sample_scene() -> Scene {
             parameters: HashMap::from([("speed".into(), "0.5".into())]),
             brightness: Some(0.8),
         }],
+        groups: Vec::new(),
         transition: sample_transition(),
         priority: ScenePriority::USER,
         enabled: true,
         metadata: HashMap::from([("author".into(), "test".into())]),
+        unassigned_behavior: UnassignedBehavior::Off,
+    }
+}
+
+fn sample_layout(zone_id: &str) -> SpatialLayout {
+    SpatialLayout {
+        id: format!("layout-{zone_id}"),
+        name: format!("Layout {zone_id}"),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![DeviceZone {
+            id: zone_id.into(),
+            name: zone_id.into(),
+            device_id: "mock:device".into(),
+            zone_name: None,
+            position: NormalizedPosition::new(0.5, 0.5),
+            size: NormalizedPosition::new(1.0, 1.0),
+            rotation: 0.0,
+            scale: 1.0,
+            display_order: 0,
+            orientation: None,
+            topology: LedTopology::Strip {
+                count: 1,
+                direction: StripDirection::LeftToRight,
+            },
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: Some(SamplingMode::Bilinear),
+            edge_behavior: Some(EdgeBehavior::Clamp),
+            shape: None,
+            shape_preset: None,
+            attachment: None,
+        }],
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    }
+}
+
+fn sample_group(name: &str, zone_id: &str, effect_id: EffectId) -> RenderGroup {
+    RenderGroup {
+        id: RenderGroupId::new(),
+        name: name.into(),
+        description: None,
+        effect_id: Some(effect_id),
+        controls: HashMap::from([("speed".into(), ControlValue::Float(0.5))]),
+        preset_id: None,
+        layout: sample_layout(zone_id),
+        brightness: 0.8,
+        enabled: true,
+        color: Some("#e135ff".into()),
     }
 }
 
@@ -90,10 +151,12 @@ fn scene_with_no_assignments() {
         description: None,
         scope: SceneScope::Full,
         zone_assignments: vec![],
+        groups: Vec::new(),
         transition: sample_transition(),
         priority: ScenePriority::AMBIENT,
         enabled: false,
         metadata: HashMap::new(),
+        unassigned_behavior: UnassignedBehavior::Off,
     };
     assert!(scene.zone_assignments.is_empty());
     assert!(!scene.enabled);
@@ -112,6 +175,57 @@ fn scene_json_round_trip() {
         restored.zone_assignments.len(),
         original.zone_assignments.len()
     );
+    assert_eq!(restored.groups.len(), original.groups.len());
+}
+
+#[test]
+fn scene_effective_scope_prefers_render_groups() {
+    let effect_id = EffectId::from(Uuid::now_v7());
+    let scene = Scene {
+        groups: vec![sample_group("Desk", "desk:main", effect_id)],
+        ..sample_scene()
+    };
+
+    assert_eq!(
+        scene.effective_scope(),
+        SceneScope::Zones(vec!["desk:main".into()])
+    );
+}
+
+#[test]
+fn scene_effective_zone_assignments_flatten_render_groups() {
+    let effect_id = EffectId::from(Uuid::now_v7());
+    let scene = Scene {
+        groups: vec![sample_group("Desk", "desk:main", effect_id)],
+        ..sample_scene()
+    };
+
+    let assignments = scene.effective_zone_assignments();
+    assert_eq!(assignments.len(), 1);
+    assert_eq!(assignments[0].zone_name, "desk:main");
+    assert_eq!(assignments[0].effect_name, effect_id.to_string());
+    assert_eq!(
+        assignments[0].parameters.get("speed").map(String::as_str),
+        Some("0.5")
+    );
+    assert_eq!(assignments[0].brightness, Some(0.8));
+}
+
+#[test]
+fn scene_validate_group_exclusivity_rejects_duplicates() {
+    let scene = Scene {
+        groups: vec![
+            sample_group("Desk", "shared:zone", EffectId::from(Uuid::now_v7())),
+            sample_group("Room", "shared:zone", EffectId::from(Uuid::now_v7())),
+        ],
+        ..sample_scene()
+    };
+
+    let conflicts = scene
+        .validate_group_exclusivity()
+        .expect_err("duplicate zone ids should fail exclusivity");
+    assert_eq!(conflicts.len(), 1);
+    assert!(conflicts[0].contains("shared:zone"));
 }
 
 // ── SceneScope ───────────────────────────────────────────────────────────

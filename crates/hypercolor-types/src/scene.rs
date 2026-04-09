@@ -10,6 +10,10 @@ use std::collections::HashMap;
 use std::fmt;
 use uuid::Uuid;
 
+use crate::effect::{ControlValue, EffectId};
+use crate::library::PresetId;
+use crate::spatial::SpatialLayout;
+
 // ── Scene Identity ───────────────────────────────────────────────────────
 
 /// Opaque scene identifier. UUID v7 for time-sortable ordering.
@@ -34,6 +38,141 @@ impl fmt::Display for SceneId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
+}
+
+// ── Render Groups ────────────────────────────────────────────────────────
+
+/// Opaque render group identifier. UUID v7 for time-sortable ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RenderGroupId(pub Uuid);
+
+impl RenderGroupId {
+    /// Create a new random render group identifier (UUID v7).
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::now_v7())
+    }
+}
+
+impl Default for RenderGroupId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for RenderGroupId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// An independent rendering pipeline within a scene.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RenderGroup {
+    /// Unique identifier.
+    pub id: RenderGroupId,
+
+    /// Human-readable display name.
+    pub name: String,
+
+    /// Optional long-form description.
+    pub description: Option<String>,
+
+    /// Effect assigned to this group. `None` means the group is intentionally empty.
+    pub effect_id: Option<EffectId>,
+
+    /// Effect control overrides for this group.
+    #[serde(default)]
+    pub controls: HashMap<String, ControlValue>,
+
+    /// Optional preset applied to the group.
+    pub preset_id: Option<PresetId>,
+
+    /// Spatial layout used to sample this group.
+    pub layout: SpatialLayout,
+
+    /// Per-group brightness multiplier.
+    #[serde(default = "default_group_brightness")]
+    pub brightness: f32,
+
+    /// Whether this group is currently active.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Optional UI accent color.
+    pub color: Option<String>,
+}
+
+impl RenderGroup {
+    /// Flatten this render group into legacy zone assignments.
+    #[must_use]
+    pub fn zone_assignments(&self) -> Vec<ZoneAssignment> {
+        if !self.enabled {
+            return Vec::new();
+        }
+
+        let Some(effect_id) = self.effect_id else {
+            return Vec::new();
+        };
+
+        let parameters = self
+            .controls
+            .iter()
+            .map(|(key, value)| (key.clone(), control_value_parameter(value)))
+            .collect::<HashMap<_, _>>();
+
+        self.layout
+            .zones
+            .iter()
+            .map(|zone| ZoneAssignment {
+                zone_name: zone.id.clone(),
+                effect_name: effect_id.to_string(),
+                parameters: parameters.clone(),
+                brightness: Some(self.brightness),
+            })
+            .collect()
+    }
+}
+
+fn default_group_brightness() -> f32 {
+    1.0
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn control_value_parameter(value: &ControlValue) -> String {
+    match value {
+        ControlValue::Float(value) => value.to_string(),
+        ControlValue::Integer(value) => value.to_string(),
+        ControlValue::Boolean(value) => value.to_string(),
+        ControlValue::Enum(value) | ControlValue::Text(value) => value.clone(),
+        ControlValue::Color([r, g, b, a]) => format!("{r:.6},{g:.6},{b:.6},{a:.6}"),
+        ControlValue::Gradient(_) => serde_json::to_string(value).unwrap_or_default(),
+    }
+}
+
+/// How zones not claimed by any render group should behave.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnassignedBehavior {
+    /// Unassigned zones render black.
+    Off,
+    /// Unassigned zones retain their previous colors.
+    Hold,
+    /// Route unassigned zones to a fallback render group.
+    Fallback(RenderGroupId),
+}
+
+impl Default for UnassignedBehavior {
+    fn default() -> Self {
+        Self::Off
+    }
+}
+
+fn is_default_unassigned_behavior(value: &UnassignedBehavior) -> bool {
+    matches!(value, UnassignedBehavior::Off)
 }
 
 // ── Scene ────────────────────────────────────────────────────────────────
@@ -61,6 +200,10 @@ pub struct Scene {
     /// Each zone must appear at most once.
     pub zone_assignments: Vec<ZoneAssignment>,
 
+    /// Independent render pipelines owned by this scene.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<RenderGroup>,
+
     /// Default transition used when activating this scene.
     pub transition: TransitionSpec,
 
@@ -72,6 +215,79 @@ pub struct Scene {
 
     /// Freeform key-value metadata for extensions and UI display.
     pub metadata: HashMap<String, String>,
+
+    /// Policy for zones not claimed by any render group.
+    #[serde(default, skip_serializing_if = "is_default_unassigned_behavior")]
+    pub unassigned_behavior: UnassignedBehavior,
+}
+
+impl Scene {
+    /// Whether this scene uses render groups instead of the legacy flat assignments.
+    #[must_use]
+    pub fn has_render_groups(&self) -> bool {
+        !self.groups.is_empty()
+    }
+
+    /// Derive the effective scope for the currently active scene representation.
+    #[must_use]
+    pub fn effective_scope(&self) -> SceneScope {
+        if !self.has_render_groups() {
+            return self.scope.clone();
+        }
+
+        let zone_ids = self
+            .groups
+            .iter()
+            .filter(|group| group.enabled)
+            .flat_map(|group| group.layout.zones.iter().map(|zone| zone.id.clone()))
+            .collect::<Vec<_>>();
+
+        if zone_ids.is_empty() {
+            SceneScope::Full
+        } else {
+            SceneScope::Zones(zone_ids)
+        }
+    }
+
+    /// Flatten the active scene into legacy zone assignments for existing systems.
+    #[must_use]
+    pub fn effective_zone_assignments(&self) -> Vec<ZoneAssignment> {
+        if !self.has_render_groups() {
+            return self.zone_assignments.clone();
+        }
+
+        self.groups
+            .iter()
+            .flat_map(RenderGroup::zone_assignments)
+            .collect()
+    }
+
+    /// Ensure no zone is claimed by multiple render groups.
+    pub fn validate_group_exclusivity(&self) -> Result<(), Vec<String>> {
+        if !self.has_render_groups() {
+            return Ok(());
+        }
+
+        let mut seen = HashMap::<&str, &str>::new();
+        let mut conflicts = Vec::new();
+
+        for group in &self.groups {
+            for zone in &group.layout.zones {
+                if let Some(existing_group) = seen.insert(zone.id.as_str(), group.name.as_str()) {
+                    conflicts.push(format!(
+                        "zone '{}' claimed by both '{}' and '{}'",
+                        zone.id, existing_group, group.name
+                    ));
+                }
+            }
+        }
+
+        if conflicts.is_empty() {
+            Ok(())
+        } else {
+            Err(conflicts)
+        }
+    }
 }
 
 // ── Scene Scope ──────────────────────────────────────────────────────────

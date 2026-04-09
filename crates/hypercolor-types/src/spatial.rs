@@ -454,7 +454,7 @@ pub enum Orientation {
 /// Defines the complete mapping from a 2D effect canvas to the physical LED
 /// positions of every connected device. All coordinates use normalized
 /// `[0.0, 1.0]` space where `(0,0)` is top-left and `(1,1)` is bottom-right.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SpatialLayout {
     // ── Identity ──────────────────────────────────────────────────────
     /// Unique layout identifier (UUID or slug).
@@ -560,7 +560,7 @@ pub enum EdgeBehavior {
 /// A physical space (room) containing a subset of zones.
 ///
 /// Used for multi-room orchestration and per-room canvas rendering.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SpaceDefinition {
     /// Unique space identifier.
     pub id: String,
@@ -582,7 +582,7 @@ pub struct SpaceDefinition {
 }
 
 /// Physical room dimensions in centimeters.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct RoomDimensions {
     /// X-axis (left to right).
     pub width: f64,
@@ -593,7 +593,7 @@ pub struct RoomDimensions {
 }
 
 /// Declares adjacency between two rooms for cross-room effects.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoomAdjacency {
     /// ID of the neighboring space.
     pub neighbor_id: String,

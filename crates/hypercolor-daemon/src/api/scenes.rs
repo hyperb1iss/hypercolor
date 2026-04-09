@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{
     ColorInterpolation, EasingFunction, Scene, SceneId, ScenePriority, SceneScope, TransitionSpec,
+    UnassignedBehavior,
 };
 
 use crate::api::AppState;
@@ -110,6 +111,7 @@ pub async fn create_scene(
         description: body.description,
         scope: SceneScope::Full,
         zone_assignments: Vec::new(),
+        groups: Vec::new(),
         transition: TransitionSpec {
             duration_ms: 1000,
             easing: EasingFunction::Linear,
@@ -118,6 +120,7 @@ pub async fn create_scene(
         priority: ScenePriority::USER,
         enabled: body.enabled.unwrap_or(true),
         metadata: HashMap::new(),
+        unassigned_behavior: UnassignedBehavior::Off,
     };
 
     let summary = SceneSummary {
@@ -156,10 +159,12 @@ pub async fn update_scene(
         description: body.description,
         scope: existing.scope,
         zone_assignments: existing.zone_assignments,
+        groups: existing.groups,
         transition: existing.transition,
         priority: existing.priority,
         enabled: body.enabled.unwrap_or(existing.enabled),
         metadata: existing.metadata,
+        unassigned_behavior: existing.unassigned_behavior,
     };
 
     let summary = SceneSummary {

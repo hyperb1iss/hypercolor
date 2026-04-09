@@ -9,10 +9,16 @@ use hypercolor_core::scene::priority::PriorityStack;
 use hypercolor_core::scene::transition::TransitionState;
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_types::canvas::RgbaF32;
+use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::scene::{
-    ActionKind, AutomationRule, ColorInterpolation, EasingFunction, SceneId, ScenePriority,
-    TransitionSpec, TriggerSource, ZoneAssignment,
+    ActionKind, AutomationRule, ColorInterpolation, EasingFunction, RenderGroup, RenderGroupId,
+    SceneId, ScenePriority, TransitionSpec, TriggerSource, UnassignedBehavior, ZoneAssignment,
 };
+use hypercolor_types::spatial::{
+    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    StripDirection,
+};
+use uuid::Uuid;
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -53,6 +59,61 @@ fn zone(name: &str, effect: &str, brightness: Option<f32>) -> ZoneAssignment {
     }
 }
 
+fn sample_layout(zone_id: &str) -> SpatialLayout {
+    SpatialLayout {
+        id: format!("layout-{zone_id}"),
+        name: format!("Layout {zone_id}"),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![DeviceZone {
+            id: zone_id.into(),
+            name: zone_id.into(),
+            device_id: "mock:device".into(),
+            zone_name: None,
+            position: NormalizedPosition::new(0.5, 0.5),
+            size: NormalizedPosition::new(1.0, 1.0),
+            rotation: 0.0,
+            scale: 1.0,
+            display_order: 0,
+            orientation: None,
+            topology: LedTopology::Strip {
+                count: 1,
+                direction: StripDirection::LeftToRight,
+            },
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: Some(SamplingMode::Bilinear),
+            edge_behavior: Some(EdgeBehavior::Clamp),
+            shape: None,
+            shape_preset: None,
+            attachment: None,
+        }],
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    }
+}
+
+fn grouped_scene(name: &str, zone_id: &str, effect_id: EffectId) -> hypercolor_types::scene::Scene {
+    let mut scene = make_scene(name);
+    scene.groups = vec![RenderGroup {
+        id: RenderGroupId::new(),
+        name: format!("{name} Group"),
+        description: None,
+        effect_id: Some(effect_id),
+        controls: HashMap::from([("speed".into(), ControlValue::Float(0.5))]),
+        preset_id: None,
+        layout: sample_layout(zone_id),
+        brightness: 0.8,
+        enabled: true,
+        color: None,
+    }];
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    scene
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // SceneManager Tests
 // ═══════════════════════════════════════════════════════════════════════
@@ -78,6 +139,41 @@ fn scene_manager_create_duplicate_fails() {
     mgr.create(scene).expect("first create should succeed");
     let result = mgr.create(dupe);
     assert!(result.is_err(), "duplicate create should fail");
+}
+
+#[test]
+fn scene_manager_create_rejects_overlapping_render_groups() {
+    let mut mgr = SceneManager::new();
+    let mut scene = make_scene("Grouped");
+    scene.groups = vec![
+        RenderGroup {
+            id: RenderGroupId::new(),
+            name: "Desk".into(),
+            description: None,
+            effect_id: Some(EffectId::from(Uuid::now_v7())),
+            controls: HashMap::new(),
+            preset_id: None,
+            layout: sample_layout("shared:zone"),
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+        },
+        RenderGroup {
+            id: RenderGroupId::new(),
+            name: "Room".into(),
+            description: None,
+            effect_id: Some(EffectId::from(Uuid::now_v7())),
+            controls: HashMap::new(),
+            preset_id: None,
+            layout: sample_layout("shared:zone"),
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+        },
+    ];
+
+    let result = mgr.create(scene);
+    assert!(result.is_err(), "overlapping render groups should fail");
 }
 
 #[test]
@@ -186,6 +282,35 @@ fn scene_manager_deactivate_empty_is_noop() {
     // Should not panic.
     mgr.deactivate_current();
     assert!(mgr.active_scene_id().is_none());
+}
+
+#[test]
+fn scene_manager_transition_uses_grouped_scene_assignments() {
+    let mut mgr = SceneManager::new();
+    let scene_a = grouped_scene("Ambient", "desk:main", EffectId::from(Uuid::now_v7()));
+    let scene_b = grouped_scene("Focus", "desk:main", EffectId::from(Uuid::now_v7()));
+    let id_a = scene_a.id;
+    let id_b = scene_b.id;
+    let effect_b = scene_b.groups[0]
+        .effect_id
+        .expect("grouped scene should carry an effect");
+
+    mgr.create(scene_a).expect("create scene A");
+    mgr.create(scene_b).expect("create scene B");
+    mgr.activate(&id_a, None).expect("activate A");
+    mgr.activate(&id_b, None).expect("activate B");
+
+    let transition = mgr.active_transition().expect("transition should exist");
+    let blended = transition.blend();
+    assert_eq!(blended.len(), 1);
+    assert_eq!(blended[0].zone_name, "desk:main");
+
+    mgr.tick_transition(0.6);
+    let blended = mgr
+        .active_transition()
+        .expect("transition should still exist")
+        .blend();
+    assert_eq!(blended[0].effect_name, effect_b.to_string());
 }
 
 // ═══════════════════════════════════════════════════════════════════════
