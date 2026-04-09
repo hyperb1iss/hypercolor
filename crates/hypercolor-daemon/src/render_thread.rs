@@ -16,6 +16,7 @@
 //! ```
 
 mod frame_scheduler;
+mod scene_state;
 
 use std::any::Any;
 use std::sync::Arc;
@@ -40,9 +41,11 @@ use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::session::OffOutputBehavior;
 
 use self::frame_scheduler::{FrameSceneSnapshot, FrameSceneSnapshotInputs, FrameScheduler};
+use self::scene_state::RenderSceneState;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::{DiscoveryRuntime, handle_async_write_failures};
 use crate::performance::{LatestFrameMetrics, PerformanceTracker};
+use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::OutputPowerState;
 
 const RENDER_RUNTIME_WORKERS: usize = 2;
@@ -99,6 +102,9 @@ pub struct RenderThreadState {
 
     /// Persisted global and per-device output settings.
     pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
+
+    /// Frame-boundary scene changes consumed by the render thread.
+    pub scene_transactions: SceneTransactionQueue,
 
     /// Whether screen capture is configured for direct passthrough / effects.
     pub screen_capture_configured: bool,
@@ -313,6 +319,9 @@ async fn run_pipeline(state: RenderThreadState) {
         state.canvas_width,
         state.canvas_height,
     ));
+    let initial_spatial_engine = state.spatial_engine.read().await.clone();
+    let mut render_scene_state =
+        RenderSceneState::new(initial_spatial_engine, state.screen_capture_configured);
     let mut static_surface_cache: Option<CachedStaticSurface> = None;
     let mut recycled_frame = FrameData::empty();
     let mut skip_decision = SkipDecision::None;
@@ -360,6 +369,7 @@ async fn run_pipeline(state: RenderThreadState) {
         let frame = execute_frame(
             &state,
             &mut frame_scheduler,
+            &mut render_scene_state,
             scheduled_start,
             skip_decision,
             &mut cached_inputs,
@@ -434,6 +444,7 @@ async fn wait_until_frame_deadline(deadline: Instant) {
 async fn execute_frame(
     state: &RenderThreadState,
     frame_scheduler: &mut FrameScheduler,
+    render_scene_state: &mut RenderSceneState,
     scheduled_start: Instant,
     skip_decision: SkipDecision,
     cached_inputs: &mut FrameInputs,
@@ -461,7 +472,9 @@ async fn execute_frame(
     );
     let reused_canvas = matches!(skip_decision, SkipDecision::ReuseCanvas);
 
-    let scene_snapshot = build_frame_scene_snapshot(state, frame_scheduler).await;
+    render_scene_state.apply_transactions(&state.scene_transactions);
+    let scene_snapshot =
+        build_frame_scene_snapshot(state, frame_scheduler, render_scene_state).await;
     let output_power = scene_snapshot.output_power;
     let effect_demand = scene_snapshot.effect_demand;
     reconcile_audio_capture(
@@ -805,10 +818,11 @@ async fn resolve_frame_canvas(
 async fn build_frame_scene_snapshot(
     state: &RenderThreadState,
     frame_scheduler: &mut FrameScheduler,
+    render_scene_state: &RenderSceneState,
 ) -> FrameSceneSnapshot {
-    let effect_scene = current_effect_scene_snapshot(state).await;
+    let effect_scene =
+        current_effect_scene_snapshot(state, render_scene_state.screen_capture_configured()).await;
     let render_loop_snapshot = render_loop_snapshot(state).await;
-    let spatial_engine = state.spatial_engine.read().await.clone();
     frame_scheduler.build_snapshot(FrameSceneSnapshotInputs {
         frame_token: render_loop_snapshot.frame_token,
         elapsed_ms: render_loop_snapshot.elapsed_ms,
@@ -816,11 +830,14 @@ async fn build_frame_scene_snapshot(
         output_power: *state.power_state.borrow(),
         effect_demand: effect_scene.demand,
         effect_generation: effect_scene.generation,
-        spatial_engine,
+        spatial_engine: render_scene_state.spatial_engine().clone(),
     })
 }
 
-async fn current_effect_scene_snapshot(state: &RenderThreadState) -> EffectSceneSnapshot {
+async fn current_effect_scene_snapshot(
+    state: &RenderThreadState,
+    screen_capture_configured: bool,
+) -> EffectSceneSnapshot {
     let engine = state.effect_engine.lock().await;
     let effect_running = engine.is_running();
     let audio_capture_active = effect_running
@@ -831,7 +848,7 @@ async fn current_effect_scene_snapshot(state: &RenderThreadState) -> EffectScene
         && engine
             .active_metadata()
             .is_some_and(|meta| meta.screen_reactive))
-        || (!effect_running && state.screen_capture_configured);
+        || (!effect_running && screen_capture_configured);
     EffectSceneSnapshot {
         demand: EffectDemand {
             effect_running,

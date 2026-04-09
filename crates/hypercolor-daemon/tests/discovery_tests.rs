@@ -27,6 +27,7 @@ use hypercolor_daemon::discovery::{
 use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::network::{self, DaemonDriverHost};
 use hypercolor_daemon::runtime_state;
+use hypercolor_daemon::scene_transactions::SceneTransactionQueue;
 use hypercolor_driver_hue::HueKnownBridge;
 use hypercolor_network::DriverRegistry;
 use hypercolor_types::config::HypercolorConfig;
@@ -296,6 +297,7 @@ fn make_runtime(
     );
     let in_progress = Arc::new(AtomicBool::new(true));
     let runtime_state_path_for_host = runtime_state_path.clone();
+    let scene_transactions = SceneTransactionQueue::default();
     let runtime = DiscoveryRuntime {
         device_registry: device_registry.clone(),
         backend_manager: Arc::clone(&backend_manager),
@@ -310,6 +312,7 @@ fn make_runtime(
         attachment_registry: Arc::clone(&attachment_registry),
         attachment_profiles: Arc::clone(&attachment_profiles),
         device_settings: Arc::clone(&device_settings),
+        scene_transactions: scene_transactions.clone(),
         runtime_state_path,
         usb_protocol_configs: usb_protocol_configs.clone(),
         credential_store: Arc::clone(&credential_store),
@@ -334,6 +337,7 @@ fn make_runtime(
         usb_protocol_configs,
         credential_store,
         in_progress,
+        scene_transactions,
     ));
     let driver_registry = Arc::new(
         network::build_builtin_driver_registry(

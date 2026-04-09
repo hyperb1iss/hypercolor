@@ -66,6 +66,7 @@ use crate::network::{self, DaemonDriverHost};
 use crate::performance::PerformanceTracker;
 use crate::render_thread::{RenderThread, RenderThreadState};
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
+use crate::scene_transactions::{SceneTransactionQueue, apply_layout_update};
 use crate::session::{
     OutputPowerState, SessionController, current_global_brightness, set_global_brightness,
 };
@@ -187,6 +188,9 @@ pub struct DaemonState {
     /// Shared session-driven output power state for the render thread.
     pub power_state: watch::Sender<OutputPowerState>,
 
+    /// Frame-boundary scene changes mirrored into the render thread.
+    pub scene_transactions: SceneTransactionQueue,
+
     /// Handle to the running render thread (if started).
     render_thread: Option<RenderThread>,
 
@@ -256,6 +260,7 @@ impl DaemonState {
         info!("Event bus created");
 
         let (power_state, _) = watch::channel(OutputPowerState::default());
+        let scene_transactions = SceneTransactionQueue::default();
         info!("Session power state channel created");
 
         // ── Device Registry ─────────────────────────────────────────────
@@ -515,6 +520,7 @@ impl DaemonState {
             usb_protocol_configs.clone(),
             Arc::clone(&credential_store),
             Arc::clone(&discovery_in_progress),
+            scene_transactions.clone(),
         ));
         let driver_registry = Arc::new(
             network::build_builtin_driver_registry(config, Arc::clone(&credential_store))
@@ -591,6 +597,7 @@ impl DaemonState {
             runtime_state_path,
             discovery_in_progress,
             power_state,
+            scene_transactions,
             render_thread: None,
             display_output_thread: None,
             effect_watcher_task: None,
@@ -671,6 +678,7 @@ impl DaemonState {
             input_manager: Arc::clone(&self.input_manager),
             power_state: self.power_state.subscribe(),
             device_settings: Arc::clone(&self.device_settings),
+            scene_transactions: self.scene_transactions.clone(),
             screen_capture_configured: config.capture.enabled,
             canvas_width: config.daemon.canvas_width,
             canvas_height: config.daemon.canvas_height,
@@ -882,8 +890,12 @@ impl DaemonState {
         if let Some(layout_id) = &snapshot.active_layout_id {
             let layouts = self.layouts.read().await;
             if let Some(layout) = layouts.get(layout_id) {
-                let mut spatial = self.spatial_engine.write().await;
-                spatial.update_layout(layout.clone());
+                apply_layout_update(
+                    &self.spatial_engine,
+                    &self.scene_transactions,
+                    layout.clone(),
+                )
+                .await;
                 info!(layout_id, layout_name = %layout.name, "Restored active layout");
             } else {
                 debug!(
@@ -1035,6 +1047,7 @@ impl DaemonState {
             usb_protocol_configs: self.usb_protocol_configs.clone(),
             credential_store: Arc::clone(&self.credential_store),
             in_progress: Arc::clone(&self.discovery_in_progress),
+            scene_transactions: self.scene_transactions.clone(),
         };
 
         let initial_backends =
@@ -1153,6 +1166,7 @@ struct DiscoveryWorkerContext {
     usb_protocol_configs: UsbProtocolConfigStore,
     credential_store: Arc<CredentialStore>,
     in_progress: Arc<AtomicBool>,
+    scene_transactions: SceneTransactionQueue,
 }
 
 impl DiscoveryWorkerContext {
@@ -1175,6 +1189,7 @@ impl DiscoveryWorkerContext {
             usb_protocol_configs: self.usb_protocol_configs.clone(),
             credential_store: Arc::clone(&self.credential_store),
             in_progress: Arc::clone(&self.in_progress),
+            scene_transactions: self.scene_transactions.clone(),
             task_spawner: tokio::runtime::Handle::current(),
         }
     }

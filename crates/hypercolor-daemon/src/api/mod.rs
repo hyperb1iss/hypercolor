@@ -66,6 +66,7 @@ use crate::performance::PerformanceTracker;
 use crate::playlist_runtime::PlaylistRuntimeState;
 use crate::profile_store::ProfileStore;
 use crate::runtime_state;
+use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::{OutputPowerState, current_global_brightness};
 
 // ── AppState ─────────────────────────────────────────────────────────────
@@ -181,6 +182,9 @@ pub struct AppState {
     /// Shared user/session output brightness state.
     pub power_state: watch::Sender<OutputPowerState>,
 
+    /// Frame-boundary scene changes mirrored into the render thread.
+    pub scene_transactions: SceneTransactionQueue,
+
     /// Saved effect library storage (favorites, presets, playlists).
     pub library_store: Arc<dyn LibraryStore>,
 
@@ -279,6 +283,7 @@ impl AppState {
             global_brightness: initial_global_brightness,
             ..OutputPowerState::default()
         });
+        let scene_transactions = SceneTransactionQueue::default();
         let credential_store = Arc::new(
             CredentialStore::open_blocking(&ConfigManager::data_dir())
                 .expect("default app state should open credential store"),
@@ -328,6 +333,7 @@ impl AppState {
             usb_protocol_configs.clone(),
             Arc::clone(&credential_store),
             Arc::clone(&discovery_in_progress),
+            scene_transactions.clone(),
         ));
         let driver_registry = Arc::new(
             network::build_builtin_driver_registry(
@@ -370,6 +376,7 @@ impl AppState {
             effect_layout_links_path,
             runtime_state_path,
             power_state,
+            scene_transactions,
             library_store: Arc::new(InMemoryLibraryStore::new()),
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
             start_time: Instant::now(),
@@ -447,6 +454,7 @@ impl AppState {
             effect_layout_links_path: daemon.effect_layout_links_path.clone(),
             runtime_state_path: daemon.runtime_state_path.clone(),
             power_state: daemon.power_state.clone(),
+            scene_transactions: daemon.scene_transactions.clone(),
             library_store,
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
             start_time: daemon.start_time,

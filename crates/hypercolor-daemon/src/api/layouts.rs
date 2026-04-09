@@ -17,6 +17,7 @@ use crate::api::envelope::{ApiError, ApiResponse};
 use crate::api::{persist_layout_auto_exclusions, persist_layouts, persist_runtime_session};
 use crate::discovery;
 use crate::layout_auto_exclusions;
+use crate::scene_transactions::apply_layout_update;
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -283,10 +284,12 @@ pub async fn apply_layout(State(state): State<Arc<AppState>>, Path(id): Path<Str
             .clone()
     };
 
-    {
-        let mut spatial = state.spatial_engine.write().await;
-        spatial.update_layout(layout.clone());
-    }
+    apply_layout_update(
+        &state.spatial_engine,
+        &state.scene_transactions,
+        layout.clone(),
+    )
+    .await;
     let runtime = super::discovery_runtime(&state);
     discovery::sync_active_layout_connectivity(&runtime, None).await;
     persist_runtime_session(&state).await;
@@ -304,10 +307,7 @@ pub async fn preview_layout(
     State(state): State<Arc<AppState>>,
     Json(layout): Json<SpatialLayout>,
 ) -> Response {
-    {
-        let mut spatial = state.spatial_engine.write().await;
-        spatial.update_layout(layout);
-    }
+    apply_layout_update(&state.spatial_engine, &state.scene_transactions, layout).await;
     let runtime = super::discovery_runtime(&state);
     discovery::sync_active_layout_connectivity(&runtime, None).await;
 
@@ -349,10 +349,7 @@ pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<St
     };
 
     if let Some(layout) = next_active_layout {
-        {
-            let mut spatial = state.spatial_engine.write().await;
-            spatial.update_layout(layout);
-        }
+        apply_layout_update(&state.spatial_engine, &state.scene_transactions, layout).await;
         let runtime = super::discovery_runtime(&state);
         discovery::sync_active_layout_connectivity(&runtime, None).await;
         persist_runtime_session(&state).await;

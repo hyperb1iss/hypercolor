@@ -30,6 +30,7 @@ use crate::discovery::{self, DiscoveryRuntime};
 use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
 use crate::runtime_state;
+use crate::scene_transactions::SceneTransactionQueue;
 
 /// Daemon-owned host adapter passed to built-in drivers.
 #[derive(Clone)]
@@ -51,6 +52,7 @@ pub struct DaemonDriverHost {
     usb_protocol_configs: UsbProtocolConfigStore,
     credential_store: Arc<CredentialStore>,
     discovery_in_progress: Arc<AtomicBool>,
+    scene_transactions: SceneTransactionQueue,
 }
 
 impl DaemonDriverHost {
@@ -74,6 +76,7 @@ impl DaemonDriverHost {
         usb_protocol_configs: UsbProtocolConfigStore,
         credential_store: Arc<CredentialStore>,
         discovery_in_progress: Arc<AtomicBool>,
+        scene_transactions: SceneTransactionQueue,
     ) -> Self {
         Self {
             device_registry,
@@ -93,6 +96,7 @@ impl DaemonDriverHost {
             usb_protocol_configs,
             credential_store,
             discovery_in_progress,
+            scene_transactions,
         }
     }
 
@@ -116,6 +120,7 @@ impl DaemonDriverHost {
             usb_protocol_configs: self.usb_protocol_configs.clone(),
             credential_store: Arc::clone(&self.credential_store),
             in_progress: Arc::clone(&self.discovery_in_progress),
+            scene_transactions: self.scene_transactions.clone(),
             task_spawner: tokio::runtime::Handle::current(),
         }
     }

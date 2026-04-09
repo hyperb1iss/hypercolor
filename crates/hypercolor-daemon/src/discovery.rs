@@ -55,6 +55,7 @@ use crate::layout_auto_exclusions;
 use crate::logical_devices::{self, LogicalDevice};
 use crate::network::{self, DaemonDriverHost};
 use crate::runtime_state;
+use crate::scene_transactions::{SceneTransactionQueue, apply_layout_update};
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 10_000;
 const MIN_DISCOVERY_TIMEOUT_MS: u64 = 100;
@@ -148,6 +149,9 @@ pub struct DiscoveryRuntime {
 
     /// Persisted global and per-device output settings.
     pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
+
+    /// Frame-boundary scene changes mirrored into the render thread.
+    pub scene_transactions: SceneTransactionQueue,
 
     /// Persistent JSON file for startup runtime session state.
     pub runtime_state_path: PathBuf,
@@ -2071,8 +2075,12 @@ pub async fn sync_active_layout_for_renderable_devices(
     }
 
     {
-        let mut spatial = runtime.spatial_engine.write().await;
-        spatial.update_layout(layout.clone());
+        apply_layout_update(
+            &runtime.spatial_engine,
+            &runtime.scene_transactions,
+            layout.clone(),
+        )
+        .await;
     }
 
     let layouts_snapshot = {

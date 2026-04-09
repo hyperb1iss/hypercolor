@@ -20,6 +20,7 @@ use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::effect_layouts;
+use crate::scene_transactions::apply_layout_update;
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -762,10 +763,12 @@ async fn apply_associated_layout(
     };
 
     if let Some(layout) = layout {
-        {
-            let mut spatial = state.spatial_engine.write().await;
-            spatial.update_layout(layout.clone());
-        }
+        apply_layout_update(
+            &state.spatial_engine,
+            &state.scene_transactions,
+            layout.clone(),
+        )
+        .await;
         return Some(EffectLayoutApplyResult {
             associated_layout_id,
             resolved: true,

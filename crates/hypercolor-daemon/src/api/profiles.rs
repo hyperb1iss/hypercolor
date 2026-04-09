@@ -18,6 +18,7 @@ use crate::api::envelope::{ApiError, ApiResponse};
 use crate::api::{effects, persist_runtime_session};
 use crate::discovery;
 use crate::profile_store::{Profile, ResolveProfileError};
+use crate::scene_transactions::apply_layout_update;
 use crate::session::{current_global_brightness, set_global_brightness};
 
 // ── Request / Response Types ─────────────────────────────────────────────
@@ -319,10 +320,7 @@ pub(crate) async fn apply_profile_snapshot(
     }
 
     if let Some(layout) = layout {
-        {
-            let mut spatial = state.spatial_engine.write().await;
-            spatial.update_layout(layout);
-        }
+        apply_layout_update(&state.spatial_engine, &state.scene_transactions, layout).await;
 
         let runtime = super::discovery_runtime(state);
         discovery::sync_active_layout_connectivity(&runtime, None).await;

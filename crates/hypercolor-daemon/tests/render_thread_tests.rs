@@ -41,6 +41,7 @@ use hypercolor_daemon::discovery::DiscoveryRuntime;
 use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::performance::PerformanceTracker;
 use hypercolor_daemon::render_thread::{RenderThread, RenderThreadState};
+use hypercolor_daemon::scene_transactions::{SceneTransaction, SceneTransactionQueue};
 use hypercolor_daemon::session::OutputPowerState;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -382,6 +383,7 @@ fn make_render_state(
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
             "device-settings.json",
         )))),
+        scene_transactions: SceneTransactionQueue::default(),
         screen_capture_configured: false,
         canvas_width: 320,
         canvas_height: 200,
@@ -856,6 +858,7 @@ async fn pipeline_renders_active_effect_to_devices() {
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
             "device-settings.json",
         )))),
+        scene_transactions: SceneTransactionQueue::default(),
         screen_capture_configured: false,
         canvas_width: 320,
         canvas_height: 200,
@@ -1066,6 +1069,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
             "device-settings.json",
         )))),
+        scene_transactions: SceneTransactionQueue::default(),
         runtime_state_path: PathBuf::from("runtime-state.json"),
         usb_protocol_configs: UsbProtocolConfigStore::new(),
         credential_store: Arc::new(
@@ -1100,6 +1104,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
             "device-settings.json",
         )))),
+        scene_transactions: SceneTransactionQueue::default(),
         screen_capture_configured: false,
         canvas_width: 320,
         canvas_height: 200,
@@ -1353,6 +1358,96 @@ async fn pipeline_reuses_screen_preview_surface_for_canvas_and_screen_watch() {
 }
 
 #[tokio::test]
+async fn pipeline_applies_queued_layout_changes_on_the_next_frame() {
+    let mut state = make_render_state(
+        EffectEngine::new(),
+        SpatialEngine::new(test_layout(vec![point_zone(
+            "zone_sample",
+            "mock:sample",
+            0.25,
+            0.5,
+        )])),
+        BackendManager::new(),
+    );
+    state.screen_capture_configured = true;
+
+    {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager.add_source(Box::new(MockScreenSource::new(vec![
+            ZoneColors {
+                zone_id: "screen:sector_0_0".to_owned(),
+                colors: vec![[255, 0, 0]],
+            },
+            ZoneColors {
+                zone_id: "screen:sector_0_1".to_owned(),
+                colors: vec![[0, 255, 0]],
+            },
+        ])));
+        input_manager
+            .start_all()
+            .expect("input manager should start");
+    }
+
+    let mut frame_rx = state.event_bus.frame_receiver();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
+        .await
+        .expect("expected initial frame within 2 seconds")
+        .expect("frame sender should remain connected");
+
+    let initial_frame = frame_rx.borrow().clone();
+    let initial_color = initial_frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_sample")
+        .and_then(|zone| zone.colors.first().copied())
+        .expect("initial sampled color should exist");
+    assert_eq!(initial_color, [255, 0, 0]);
+
+    state
+        .scene_transactions
+        .push(SceneTransaction::ReplaceLayout(test_layout(vec![
+            point_zone("zone_sample", "mock:sample", 0.75, 0.5),
+        ])));
+
+    let updated_color = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            frame_rx
+                .changed()
+                .await
+                .expect("frame sender should remain connected");
+            let frame = frame_rx.borrow().clone();
+            let color = frame
+                .zones
+                .iter()
+                .find(|zone| zone.zone_id == "zone_sample")
+                .and_then(|zone| zone.colors.first().copied())
+                .expect("updated sampled color should exist");
+            if color != initial_color {
+                break color;
+            }
+        }
+    })
+    .await
+    .expect("expected queued layout update within 2 seconds");
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    assert_eq!(updated_color, [0, 255, 0]);
+}
+
+#[tokio::test]
 async fn idle_pipeline_throttles_even_with_watch_receivers() {
     let state = make_render_state(
         EffectEngine::new(),
@@ -1419,6 +1514,7 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
             "device-settings.json",
         )))),
+        scene_transactions: SceneTransactionQueue::default(),
         screen_capture_configured: false,
         canvas_width: 320,
         canvas_height: 200,
