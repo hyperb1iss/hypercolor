@@ -43,6 +43,8 @@ const WS_CANVAS_BINARY_CACHE_CAPACITY: usize = 32;
 
 static WS_CLIENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static WS_TOTAL_BYTES_SENT: AtomicU64 = AtomicU64::new(0);
+static WS_CANVAS_PAYLOAD_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
+static WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 static WS_CANVAS_BINARY_CACHE: LazyLock<StdMutex<VecDeque<(CanvasBinaryCacheKey, Bytes)>>> =
     LazyLock::new(|| StdMutex::new(VecDeque::with_capacity(WS_CANVAS_BINARY_CACHE_CAPACITY)));
 
@@ -555,6 +557,8 @@ struct MetricsDevices {
 struct MetricsWebsocket {
     client_count: usize,
     bytes_sent_per_sec: f64,
+    canvas_payload_builds: u64,
+    canvas_payload_cache_hits: u64,
 }
 
 #[derive(Debug)]
@@ -1686,10 +1690,12 @@ where
     };
 
     if let Some(cached) = canvas_binary_cache_get(key) {
+        WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
         return cached;
     }
 
     let payload = encode();
+    WS_CANVAS_PAYLOAD_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
     canvas_binary_cache_put(key, payload.clone());
     payload
 }
@@ -1821,6 +1827,9 @@ async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> Ser
             websocket: MetricsWebsocket {
                 client_count,
                 bytes_sent_per_sec: round_1(bytes_sent_per_sec),
+                canvas_payload_builds: WS_CANVAS_PAYLOAD_BUILD_COUNT.load(Ordering::Relaxed),
+                canvas_payload_cache_hits: WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT
+                    .load(Ordering::Relaxed),
             },
         },
     }
