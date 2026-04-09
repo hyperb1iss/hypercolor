@@ -108,6 +108,7 @@ eligible, and degrade predictably when it is not?"
 - support producers running at different cadences without timing collapse
 - enable render groups and hyperzones without multiplying hidden copies
 - make 60 FPS an opt-in runtime target with measurable eligibility
+- freeze scene-affecting state atomically per frame
 - make preview delivery a first-class downstream consumer of composed surfaces
 - support both local low-latency preview and efficient remote preview transport
 - leave room for optional GPU-backed composition later
@@ -171,6 +172,38 @@ ship first and use as the reference path.
 GPU acceleration is an implementation option for producer rendering and
 composition, not a prerequisite for the architecture.
 
+### 4.6 One Frame, One Immutable Scene Snapshot
+
+Every frame must observe one coherent view of scene state.
+
+That means changes to:
+
+- layer ordering
+- render-group membership
+- layout or spatial configuration
+- brightness or power state
+- preview mode requests
+- output surface requirements
+
+must be applied atomically at the frame boundary, not piecemeal while
+producers and consumers are already working.
+
+### 4.7 LED Delivery Owns the Hard Deadline
+
+SparkleFlinger exists to keep the lighting output stable first.
+
+The LED-critical path is:
+
+- schedule frame
+- build scene snapshot
+- latch and compose
+- spatial sample
+- route and enqueue device writes
+
+Preview, encode, and browser presentation are first-class consumers, but they
+must remain bounded sidecars. They may reuse or drop. They may not steal the
+frame deadline from device output.
+
 ---
 
 ## 5. Current Architecture vs Target Architecture
@@ -197,16 +230,19 @@ one chosen frame source
 ### 5.2 Target
 
 ```text
-Producer runtimes
+Scene transactions
+  -> FrameScheduler builds FrameSceneSnapshot
+  -> Producer runtimes
   -> per-producer surface queues
   -> SparkleFlinger latch + compose
-  -> canonical composed PublishedSurface
-  -> downstream consumers:
+  -> ComposedFrameSet
+  -> critical path:
        - SpatialEngine sample
+       - BackendManager route + stage
+       - HypercolorBus publish state + metrics
+  -> sidecars:
        - local preview presentation
        - remote preview encode / transport
-  -> BackendManager route + stage
-  -> HypercolorBus publish + preview transport
 ```
 
 This is effectively:
@@ -214,7 +250,7 @@ This is effectively:
 ```text
 many asynchronous frame sources
   -> one presentation clock
-  -> one composed immutable surface per tick
+  -> one composed immutable frame set per tick
   -> one downstream sampling and output path
 ```
 
@@ -233,6 +269,43 @@ many asynchronous frame sources
 - the frame deadline loop latches from producer queues before sampling
 - composition becomes explicit rather than incidental
 
+### 5.5 Current Baseline in the Tree
+
+Important pieces are already in place:
+
+- `PublishedSurface` and `RenderSurfacePool` from Spec 36
+- `render_into(...)` / `tick_into(...)` renderer reuse
+- cached routing plans and per-device staging reuse
+- shared bus canvas handles and cached WebSocket preview payloads
+- deadline metrics for wake delay and jitter
+
+The main missing pieces are architectural, not foundational:
+
+- atomic scene snapshots
+- producer queues as first-class runtimes
+- a real compositor instead of source selection
+- preview isolation as its own runtime
+- multi-output composition for higher-quality preview
+- end-to-end frame timeline diagnostics
+
+### 5.6 What SparkleFlinger Gains
+
+- true mixed-cadence composition
+- one presentation clock across many producers
+- cleaner hyperzone and render-group composition
+- better preview architecture without polluting the LED path
+- a principled optional GPU lane
+
+### 5.7 What SparkleFlinger Costs
+
+- more state machinery
+- more retained buffers in steady state
+- more debugging surface area
+- stricter requirements for instrumentation and invariants
+
+That complexity is worth it only if the design keeps the critical path small and
+observable.
+
 ---
 
 ## 6. SparkleFlinger Component Model
@@ -242,12 +315,15 @@ many asynchronous frame sources
 | Component | Responsibility |
 |----------|----------------|
 | `FrameScheduler` | Owns the presentation clock and target FPS tier |
+| `SceneTransactionQueue` | Collects scene-affecting changes to apply at the next frame boundary |
+| `FrameSceneSnapshot` | Immutable per-frame scene state used by producers, compositor, and consumers |
 | `ProducerRuntime` | Runs one producer and submits completed surfaces |
 | `ProducerQueue` | Holds `front` / `back` / `spare` surfaces plus metadata |
 | `SparkleFlinger` | Latches ready surfaces, composes, and emits the frame for this tick |
 | `CompositionPlan` | Describes the ordered set of active layers or groups for the scene |
-| `ComposedFrame` | Immutable output surface plus frame metadata |
+| `ComposedFrameSet` | Immutable output surface set plus frame metadata and routing for downstream consumers |
 | `PreviewRuntime` | Presents or encodes composed frames for browser and remote consumers |
+| `FrameTimeline` | Tracks predicted and actual timing across produce, latch, compose, send, and present |
 
 ### 6.2 Producer Types
 
@@ -264,7 +340,34 @@ Future producer classes:
 - `TransitionProducer`
 - `SceneOverlayProducer`
 
-### 6.3 Producer Submission Model
+### 6.3 Scene Transactions and FrameSceneSnapshot
+
+Scene-affecting changes should not mutate the live frame graph directly.
+
+Instead:
+
+1. API, UI, layout, and runtime changes are recorded as `SceneTransaction`s
+2. `FrameScheduler` applies pending transactions at the next frame boundary
+3. the result becomes one immutable `FrameSceneSnapshot`
+4. producers, compositor, sampler, and preview all use that snapshot for the
+   duration of the frame
+
+`FrameSceneSnapshot` should include at least:
+
+- frame token and predicted deadlines
+- active composition plan
+- render-group and layer visibility state
+- output power and brightness state
+- target FPS tier and admission decision
+- output surface requests:
+  - LED sampling surface
+  - optional preview surfaces
+- preview mode policy and negotiated capabilities
+
+This is SparkleFlinger's equivalent of SurfaceFlinger's immutable front-end
+snapshot model.
+
+### 6.4 Producer Submission Model
 
 Each producer owns a surface queue with explicit roles:
 
@@ -284,7 +387,7 @@ Submission metadata should include:
 
 SparkleFlinger only needs the latest submitted surface per producer for v1.
 
-### 6.4 Latch Model
+### 6.5 Latch Model
 
 At each frame boundary:
 
@@ -298,6 +401,72 @@ At each frame boundary:
 This is the exact behavior we want from SurfaceFlinger and from uchroma's
 animation loop: presentation stays stable even when producers do not all update
 on the same tick.
+
+### 6.6 Producer State Model
+
+Retention needs explicit semantics, not just "keep the last surface forever."
+
+Each producer should expose one of these presentation states:
+
+- `fresh`
+  - a new surface was submitted and latched for this frame
+- `retained`
+  - no new surface arrived, but the previously latched surface is still valid
+- `static`
+  - the producer is intentionally non-animating and does not expect cadence
+- `stale`
+  - the previously latched surface has aged past the producer's stale budget
+- `paused`
+  - the producer is intentionally idle and should not be considered a fault
+- `failed`
+  - the producer faulted and may be retained or hidden by policy
+
+Each producer should also publish:
+
+- expected cadence class
+- stale timeout or age budget
+- whether stale retention is allowed
+- whether the layer should disappear or freeze on failure
+
+### 6.7 Output Model and ComposedFrameSet
+
+SparkleFlinger should emit a `ComposedFrameSet`, not just one anonymous
+surface.
+
+The initial output set should support:
+
+- `sampling_surface`
+  - authoritative composed surface for spatial sampling and LED output
+- `preview_surface`
+  - optional presentation-oriented surface for browser or remote preview
+  - may alias `sampling_surface` when the same resolution is sufficient
+
+This is important because the LED-oriented sampling surface and the
+presentation-oriented preview surface will not always want the same resolution
+or composition cost profile.
+
+### 6.8 Frame Timeline
+
+Every frame should carry one `frame_token` through the pipeline.
+
+The timeline should capture:
+
+- predicted wake time
+- actual scheduler wake time
+- scene snapshot build time
+- producer submissions and latched generations
+- composition start and end
+- publish time
+- preview send time
+- browser or client present time when available
+
+This is the observability contract for identifying whether jank is caused by:
+
+- scheduling
+- producer latency
+- composition
+- preview transport
+- browser presentation
 
 ---
 
@@ -353,6 +522,22 @@ That preserves the cheap path for:
 - single builtin effects
 - screen passthrough
 - static surfaces
+
+### 7.4 Multi-Output Composition
+
+One scene snapshot may need more than one composed output.
+
+Rules:
+
+- the LED path always samples from `sampling_surface`
+- local raw preview may alias `sampling_surface` when that is sufficient
+- higher-quality local or remote preview may request `preview_surface`
+- `preview_surface` is composed from the same `FrameSceneSnapshot`, not from
+  ad hoc browser-side state
+- per-client bespoke composition on the LED-critical path is forbidden
+
+This keeps LED semantics authoritative while still allowing preview to become
+better than a stretched 320x200 surface when the product needs it.
 
 ---
 
@@ -412,6 +597,18 @@ Every 60 FPS claim must be backed by:
   - device push
   - preview or publish work
 
+### 8.5 Admission Must Respect Priority
+
+60 FPS admission should evaluate the LED-critical path first.
+
+That means:
+
+- preview demand may prevent admission to 60
+- preview demand may justify a separate preview downgrade
+- preview alone must not force the LED path to miss deadlines
+- encoded preview should degrade independently before it drags the compositor
+  below an honest tier
+
 ---
 
 ## 9. Preview Architecture
@@ -446,7 +643,23 @@ SparkleFlinger should feed two distinct preview lanes:
 These lanes should share one composed frame contract and diverge only at the
 consumer boundary.
 
-### 9.3 Local Raw Preview Path
+### 9.3 Preview Resolution Model
+
+Preview quality depends on more than transport.
+
+The resolution model should be:
+
+- `sampling_surface` remains the authoritative LED-oriented output
+- `preview_surface` is optional and presentation-oriented
+- local raw preview may alias `sampling_surface` in the first implementation
+- remote or high-quality preview may request a larger `preview_surface`
+- if no dedicated `preview_surface` exists, preview may scale the sampling
+  surface as a fallback
+
+This avoids baking "one 320x200 canvas for everything" into the long-term
+design.
+
+### 9.4 Local Raw Preview Path
 
 The local preview path should remain raw-frame capable even after encoded
 transport exists.
@@ -466,7 +679,7 @@ This path is the right answer for:
 - immediate "what is the daemon doing right now?" validation
 - cases where encode latency would be worse than raw transport cost
 
-### 9.4 Remote Encoded Preview Path
+### 9.5 Remote Encoded Preview Path
 
 Raw preview frames are not the long-term answer for remote, larger, or
 video-rate preview.
@@ -485,7 +698,7 @@ The likely first shipping shape is:
 - VP8 fallback
 - AV1 only where support and latency are good enough
 
-### 9.5 Preview Capability Negotiation
+### 9.6 Preview Capability Negotiation
 
 Preview clients should not all consume the same transport.
 
@@ -507,7 +720,7 @@ Possible negotiated modes:
 - `webrtc_vp8`
 - future `webtransport_av1` or similar only if justified later
 
-### 9.6 Preview Metrics
+### 9.7 Preview Metrics
 
 Preview quality should be measured explicitly, not inferred from engine FPS.
 
@@ -522,7 +735,20 @@ Required metrics:
 - codec bitrate for encoded modes
 - local raw upload or present time where measurable
 
-### 9.7 Preview Quality Rules
+### 9.8 Preview Isolation
+
+`PreviewRuntime` must consume frames through bounded latest-value queues.
+
+That means:
+
+- preview workers always pull the latest `ComposedFrameSet`
+- slow local or remote preview consumers skip old frames
+- preview encode queues are bounded
+- preview transport backpressure does not block scheduler, compositor, or
+  device routing
+- only aggregate preview load and quality metrics feed back into admission
+
+### 9.9 Preview Quality Rules
 
 The preview must feel smooth before it is feature-rich.
 
@@ -559,7 +785,7 @@ SparkleFlinger must define one abstract surface and queue contract:
 - producer dequeues a writable target
 - producer submits an immutable published surface
 - compositor latches surfaces
-- compositor emits one immutable composed frame
+- compositor emits one immutable composed frame set
 
 The backing may be:
 
@@ -647,6 +873,7 @@ Deliverables:
 
 - extract a `FrameScheduler` boundary from the existing render thread loop
 - make frame deadline decisions explicit and independently testable
+- introduce `SceneTransactionQueue` and `FrameSceneSnapshot`
 - preserve current single-source behavior through the new boundary
 
 Verify:
@@ -661,6 +888,7 @@ Verify:
 Deliverables:
 
 - add `ProducerQueue` and producer submission metadata
+- add producer state and stale-retention policy
 - convert builtin, Servo, and screen paths to submit surfaces
 - retain last latched surface per producer
 
@@ -677,7 +905,7 @@ Deliverables:
 
 - add `SparkleFlinger` CPU path
 - support bypass, `replace`, `alpha`, `add`, and `screen`
-- emit one composed `PublishedSurface` downstream
+- emit a `ComposedFrameSet` downstream
 
 Verify:
 
@@ -707,6 +935,7 @@ Deliverables:
 
 - add 60 FPS admission checks and runtime tier decisions
 - publish reuse counts, latch counts, and composition timing metrics
+- add `FrameTimeline` diagnostics across scheduler, compose, and preview send
 - define product-level benchmark scenes and baseline numbers
 
 Verify:
@@ -723,6 +952,7 @@ Deliverables:
 - add a `PreviewRuntime` boundary that consumes the composed frame
 - preserve raw preview as the authoritative local and debug path
 - move browser preview toward worker-owned presentation
+- explicitly isolate preview from the LED-critical path
 - add preview mode negotiation and per-mode telemetry
 - define local raw and remote encoded preview scenarios in the bench suite
 
@@ -741,6 +971,7 @@ Deliverables:
 - add encoded preview pipeline fed from composed frames
 - implement at least one low-latency browser-friendly transport
 - preserve raw preview fallback and debugging modes
+- support dedicated `preview_surface` targets when justified by quality
 - benchmark bitrate, latency, and degradation behavior under constrained links
 
 Verify:
@@ -834,6 +1065,29 @@ Mitigation:
 - benchmark browser presentation separately from daemon composition
 - do not assume WebGPU or encoding automatically fixes jank
 
+### 12.5 Scene Snapshot Drift
+
+If scene-affecting state is not frozen atomically per frame, producers and
+consumers will observe different worlds and debugging will become miserable.
+
+Mitigation:
+
+- apply scene transactions only at the frame boundary
+- make `FrameSceneSnapshot` immutable
+- tie all downstream work to one `frame_token`
+
+### 12.6 Multi-Output Overreach
+
+Adding multiple output surfaces can turn a clean compositor into a hidden
+re-render machine.
+
+Mitigation:
+
+- start with `sampling_surface`
+- allow `preview_surface` only when it has a clear quality reason
+- alias surfaces when possible
+- measure every additional composition target
+
 ---
 
 ## 13. Recommendation
@@ -847,8 +1101,9 @@ the correct unit of composition in render groups. The right next move is to
 join those two ideas:
 
 - producer queues with explicit ownership
+- atomic scene snapshots per frame
 - deadline-driven latching and retention
-- one composed immutable frame per tick
+- one composed immutable frame set per tick
 - spatial sampling and preview as first-class downstream consumers
 - a dual-lane preview model:
   - raw local preview for low-latency authoring and debugging
