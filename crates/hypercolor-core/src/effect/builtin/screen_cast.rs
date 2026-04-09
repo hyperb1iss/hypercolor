@@ -68,9 +68,10 @@ impl EffectRenderer for ScreenCastRenderer {
         let Some(screen) = input.screen else {
             return Ok(());
         };
-        let Some(source) = screen.canvas_downscale.as_ref() else {
+        let Some(source_surface) = screen.canvas_downscale.as_ref() else {
             return Ok(());
         };
+        let source = Canvas::from_published_surface(source_surface);
 
         let crop = normalized_crop(
             source.width(),
@@ -82,9 +83,9 @@ impl EffectRenderer for ScreenCastRenderer {
         );
 
         match self.fit_mode {
-            FitMode::Stretch => blit_stretch(canvas, source, crop, self.brightness),
-            FitMode::Contain => blit_contain(canvas, source, crop, self.brightness),
-            FitMode::Cover => blit_cover(canvas, source, crop, self.brightness),
+            FitMode::Stretch => blit_stretch(canvas, &source, crop, self.brightness),
+            FitMode::Contain => blit_contain(canvas, &source, crop, self.brightness),
+            FitMode::Cover => blit_cover(canvas, &source, crop, self.brightness),
         }
 
         Ok(())

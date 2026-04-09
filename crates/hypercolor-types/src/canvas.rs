@@ -492,6 +492,16 @@ impl Canvas {
         }
     }
 
+    /// Alias an immutable published surface as a read-mostly canvas handle.
+    #[must_use]
+    pub fn from_published_surface(surface: &PublishedSurface) -> Self {
+        Self {
+            width: surface.width(),
+            height: surface.height(),
+            pixels: Arc::clone(&surface.rgba),
+        }
+    }
+
     /// Horizontal pixel count.
     #[must_use]
     pub const fn width(&self) -> u32 {
@@ -817,6 +827,12 @@ impl PublishedSurface {
 
     /// Create a shared published surface from owned canvas storage.
     #[must_use]
+    pub fn from_owned_canvas(canvas: Canvas, frame_number: u32, timestamp_ms: u32) -> Self {
+        Self::from_owned_canvas_with_copy_info(canvas, frame_number, timestamp_ms).0
+    }
+
+    /// Create a shared published surface from owned canvas storage.
+    #[must_use]
     pub fn from_owned_canvas_with_copy_info(
         canvas: Canvas,
         frame_number: u32,
@@ -888,6 +904,34 @@ impl PublishedSurface {
     #[must_use]
     pub fn rgba_len(&self) -> usize {
         self.rgba.len()
+    }
+
+    /// Read a single pixel. Returns opaque black for out-of-bounds coordinates.
+    #[must_use]
+    #[allow(clippy::as_conversions)]
+    pub fn get_pixel(&self, x: u32, y: u32) -> Rgba {
+        if x >= self.width() || y >= self.height() {
+            return Rgba::BLACK;
+        }
+        let idx = (y as usize * self.width() as usize + x as usize) * BYTES_PER_PIXEL;
+        Rgba {
+            r: self.rgba[idx],
+            g: self.rgba[idx + 1],
+            b: self.rgba[idx + 2],
+            a: self.rgba[idx + 3],
+        }
+    }
+
+    /// Clone the surface handle with updated frame metadata.
+    #[must_use]
+    pub fn with_frame_metadata(&self, frame_number: u32, timestamp_ms: u32) -> Self {
+        Self {
+            descriptor: self.descriptor,
+            generation: self.generation,
+            frame_number,
+            timestamp_ms,
+            rgba: Arc::clone(&self.rgba),
+        }
     }
 }
 

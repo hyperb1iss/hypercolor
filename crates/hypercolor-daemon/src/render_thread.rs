@@ -30,7 +30,7 @@ use hypercolor_core::engine::{FrameStats, RenderLoop};
 use hypercolor_core::input::{InputData, InputManager, InteractionData, ScreenData};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::audio::AudioData;
-use hypercolor_core::types::canvas::{Canvas, Rgba};
+use hypercolor_core::types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::session::OffOutputBehavior;
@@ -235,7 +235,7 @@ struct FrameInputs {
     interaction: InteractionData,
     screen_data: Option<ScreenData>,
     screen_canvas: Option<Canvas>,
-    screen_preview_canvas: Option<Canvas>,
+    screen_preview_surface: Option<PublishedSurface>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -252,7 +252,7 @@ impl FrameInputs {
             interaction: InteractionData::default(),
             screen_data: None,
             screen_canvas: None,
-            screen_preview_canvas: None,
+            screen_preview_surface: None,
         }
     }
 }
@@ -491,7 +491,7 @@ async fn execute_frame(
         recycled_frame,
         &inputs.audio,
         canvas,
-        inputs.screen_preview_canvas.clone(),
+        inputs.screen_preview_surface.clone(),
         frame_num_u32,
         elapsed_ms,
         last_audio_level_update_ms,
@@ -948,7 +948,7 @@ async fn sample_inputs(state: &RenderThreadState, delta_secs: f32) -> FrameInput
     let screen_canvas = screen_data
         .as_ref()
         .and_then(|data| screen_data_to_canvas(data, state.canvas_width, state.canvas_height));
-    let screen_preview_canvas = screen_data
+    let screen_preview_surface = screen_data
         .as_ref()
         .and_then(|data| data.canvas_downscale.clone());
 
@@ -957,7 +957,7 @@ async fn sample_inputs(state: &RenderThreadState, delta_secs: f32) -> FrameInput
         interaction,
         screen_data,
         screen_canvas,
-        screen_preview_canvas,
+        screen_preview_surface,
     }
 }
 
@@ -979,7 +979,7 @@ fn publish_frame_updates(
     recycled_frame: &mut FrameData,
     audio: &AudioData,
     canvas: Canvas,
-    screen_preview_canvas: Option<Canvas>,
+    screen_preview_surface: Option<PublishedSurface>,
     frame_number: u32,
     elapsed_ms: u32,
     last_audio_level_update_ms: &mut Option<u32>,
@@ -1009,15 +1009,8 @@ fn publish_frame_updates(
         full_frame_copy_bytes = full_frame_copy_bytes.saturating_add(canvas_rgba_len);
     }
     let _ = state.event_bus.canvas_sender().send(canvas_frame);
-    let screen_frame = if let Some(canvas) = screen_preview_canvas {
-        let screen_rgba_len = usize_to_u32(canvas.rgba_len());
-        let (frame, copied) =
-            CanvasFrame::from_owned_canvas_with_copy_info(canvas, frame_number, elapsed_ms);
-        if copied {
-            full_frame_copy_count = full_frame_copy_count.saturating_add(1);
-            full_frame_copy_bytes = full_frame_copy_bytes.saturating_add(screen_rgba_len);
-        }
-        frame
+    let screen_frame = if let Some(surface) = screen_preview_surface {
+        CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
     } else {
         CanvasFrame::empty()
     };
@@ -1078,11 +1071,11 @@ fn screen_data_to_canvas(
     canvas_width: u32,
     canvas_height: u32,
 ) -> Option<Canvas> {
-    if let Some(canvas) = &screen_data.canvas_downscale
-        && canvas.width() == canvas_width
-        && canvas.height() == canvas_height
+    if let Some(surface) = &screen_data.canvas_downscale
+        && surface.width() == canvas_width
+        && surface.height() == canvas_height
     {
-        return Some(canvas.clone());
+        return Some(Canvas::from_published_surface(surface));
     }
 
     if canvas_width == 0 || canvas_height == 0 {

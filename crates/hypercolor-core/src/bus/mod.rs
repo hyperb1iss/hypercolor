@@ -141,6 +141,18 @@ impl CanvasFrame {
         }
     }
 
+    /// Publish an existing immutable surface without rebuilding its RGBA storage.
+    #[must_use]
+    pub fn from_surface(surface: PublishedSurface) -> Self {
+        Self {
+            frame_number: surface.frame_number(),
+            timestamp_ms: surface.timestamp_ms(),
+            width: surface.width(),
+            height: surface.height(),
+            surface,
+        }
+    }
+
     /// Consume a canvas without cloning its RGBA backing buffer.
     #[must_use]
     pub fn from_owned_canvas(canvas: Canvas, frame_number: u32, timestamp_ms: u32) -> Self {

@@ -26,7 +26,7 @@ pub use smooth::TemporalSmoother;
 pub use wayland::WaylandScreenCaptureInput;
 
 use crate::input::traits::{InputData, InputSource, ScreenData};
-use crate::types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
+use crate::types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, PublishedSurface};
 use crate::types::event::ZoneColors;
 
 // ── CaptureConfig ─────────────────────────────────────────────────────────
@@ -119,7 +119,7 @@ pub struct ScreenCaptureInput {
     latest_zone_ids: Vec<String>,
 
     /// Latest downscaled capture frame for screen-reactive effects.
-    latest_canvas_downscale: Option<Canvas>,
+    latest_canvas_downscale: Option<PublishedSurface>,
 
     /// Whether the source is actively capturing.
     running: bool,
@@ -279,7 +279,7 @@ fn downscale_frame(
     height: u32,
     target_width: u32,
     target_height: u32,
-) -> Option<Canvas> {
+) -> Option<PublishedSurface> {
     if width == 0 || height == 0 || target_width == 0 || target_height == 0 {
         return None;
     }
@@ -328,5 +328,5 @@ fn downscale_frame(
         }
     }
 
-    Some(canvas)
+    Some(PublishedSurface::from_owned_canvas(canvas, 0, 0))
 }

@@ -5,7 +5,7 @@
 //! the render loop consumes per frame.
 
 use crate::types::audio::{AudioData, AudioPipelineConfig};
-use crate::types::canvas::Canvas;
+use crate::types::canvas::PublishedSurface;
 use crate::types::event::{InputEvent, ZoneColors};
 
 // ── InputData ──────────────────────────────────────────────────────────────
@@ -74,7 +74,7 @@ pub struct ScreenData {
     /// Grid height used when deriving `zone_colors`.
     pub grid_height: u32,
     /// Downscaled screen image suitable for screen-reactive effects.
-    pub canvas_downscale: Option<Canvas>,
+    pub canvas_downscale: Option<PublishedSurface>,
     /// Source frame width in pixels.
     pub source_width: u32,
     /// Source frame height in pixels.

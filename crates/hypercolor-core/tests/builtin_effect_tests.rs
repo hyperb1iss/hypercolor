@@ -14,7 +14,7 @@ use hypercolor_core::effect::builtin::{
 use hypercolor_core::effect::{EffectRegistry, EffectRenderer, FrameInput};
 use hypercolor_core::input::{InteractionData, ScreenData};
 use hypercolor_types::audio::AudioData;
-use hypercolor_types::canvas::{Canvas, Rgba};
+use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
@@ -103,7 +103,7 @@ fn make_screen_data() -> ScreenData {
         zone_colors: Vec::new(),
         grid_width: 0,
         grid_height: 0,
-        canvas_downscale: Some(canvas),
+        canvas_downscale: Some(PublishedSurface::from_owned_canvas(canvas, 0, 0)),
         source_width: 4,
         source_height: 2,
     }
