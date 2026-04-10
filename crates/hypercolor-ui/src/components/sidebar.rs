@@ -18,24 +18,12 @@ use crate::style_utils::category_accent_rgb;
 use crate::toasts;
 use crate::ws::ConnectionState;
 
-/// Sidebar collapsed state, shared via context so the shell can react.
-#[derive(Clone, Copy)]
-#[allow(dead_code)]
-pub struct SidebarState {
-    pub collapsed: ReadSignal<bool>,
-    pub set_collapsed: WriteSignal<bool>,
-}
-
 // ── Sidebar Component ──────────────────────────────────────────────────────
 
 /// Navigation sidebar with manual toggle.
 #[component]
 pub fn Sidebar() -> impl IntoView {
     let (collapsed, set_collapsed) = signal(false);
-    provide_context(SidebarState {
-        collapsed,
-        set_collapsed,
-    });
 
     let location = use_location();
     let fx = expect_context::<EffectsContext>();
