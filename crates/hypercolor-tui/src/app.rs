@@ -1,6 +1,8 @@
 //! App — the central coordinator and main event loop.
 
 use std::collections::HashMap;
+use std::sync::mpsc::{self as std_mpsc, Receiver as StdReceiver, Sender as StdSender};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -20,9 +22,10 @@ use crate::screen::ScreenId;
 use crate::state::{AppState, ConnectionStatus, ControlValue, Notification, NotificationLevel};
 use crate::theme_picker::ThemePicker;
 use opaline::widgets::ThemeSelectorAction;
+use ratatui_image::errors::Errors as ImageProtocolError;
 use ratatui_image::picker::Picker;
-use ratatui_image::protocol::StatefulProtocol;
-use ratatui_image::{Resize, StatefulImage};
+use ratatui_image::thread::{ResizeRequest, ResizeResponse, ThreadProtocol};
+use ratatui_image::{Resize, ResizeEncodeRender};
 
 /// Top-level application that owns all screens and drives the event loop.
 pub struct App {
@@ -49,9 +52,24 @@ pub struct App {
     /// ratatui-image picker for terminal-native graphics protocol selection.
     /// Falls back to halfblocks if the terminal can't be queried.
     picker: Picker,
-    /// Stateful image protocol for the live canvas preview. Rebuilt on each
-    /// CanvasFrameReceived from the latest pixels. `None` until first frame.
-    canvas_protocol: Option<StatefulProtocol>,
+    /// Dedicated halfblocks picker for fullscreen preview to avoid massive
+    /// terminal-native image payloads at screen-filling sizes.
+    fullscreen_picker: Picker,
+    /// Preview resize/encode worker sender. `None` after shutdown signals the
+    /// worker thread to exit by dropping the last sender.
+    canvas_resize_tx: Option<StdSender<ResizeRequest>>,
+    /// Completed preview resize/encode results from the worker thread.
+    canvas_resize_rx: StdReceiver<Result<ResizeResponse, ImageProtocolError>>,
+    /// Handle to the preview resize/encode worker thread, joined on shutdown.
+    canvas_resize_worker: Option<thread::JoinHandle<()>>,
+    /// Currently displayed preview protocol.
+    canvas_protocol_current: Option<ThreadProtocol>,
+    /// Next preview protocol being encoded in the background.
+    canvas_protocol_pending: Option<ThreadProtocol>,
+    /// Last preview area requested by the active screen.
+    canvas_preview_area: Option<Rect>,
+    /// Whether the UI needs a fresh draw for newly applied state.
+    render_dirty: bool,
     /// Last rendered frame area, cached so action handlers can scope effects.
     last_frame_area: Rect,
     /// Last user input or significant state event, used to trigger the idle
@@ -84,6 +102,23 @@ impl App {
         let screen_defs = crate::views::create_screens();
         let available_screens = screen_defs.iter().map(|(id, _)| *id).collect();
         let screens = screen_defs.into_iter().collect();
+        let (canvas_resize_tx, canvas_resize_requests) = std_mpsc::channel::<ResizeRequest>();
+        let (canvas_resize_results_tx, canvas_resize_rx) =
+            std_mpsc::channel::<Result<ResizeResponse, ImageProtocolError>>();
+
+        let canvas_resize_worker = thread::Builder::new()
+            .name("hypercolor-tui-preview".to_string())
+            .spawn(move || {
+                while let Ok(request) = canvas_resize_requests.recv() {
+                    if canvas_resize_results_tx
+                        .send(request.resize_encode())
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .ok();
 
         let client = DaemonClient::new(&host, port);
 
@@ -112,7 +147,14 @@ impl App {
             theme_picker: None,
             motion: MotionSystem::new(MotionSensitivity::resolve(MotionSensitivity::Full)),
             picker,
-            canvas_protocol: None,
+            fullscreen_picker: Picker::halfblocks(),
+            canvas_resize_tx: Some(canvas_resize_tx),
+            canvas_resize_rx,
+            canvas_resize_worker,
+            canvas_protocol_current: None,
+            canvas_protocol_pending: None,
+            canvas_preview_area: None,
+            render_dirty: true,
             last_frame_area: Rect::new(0, 0, 80, 24),
             last_activity: Instant::now(),
             idle_active: false,
@@ -176,6 +218,7 @@ impl App {
             let Some(event) = events.next().await else {
                 break;
             };
+            let mut render_requested = matches!(event, Event::Render);
 
             // Map event → action
             match event {
@@ -200,24 +243,44 @@ impl App {
                 Event::Tick => {
                     let _ = self.action_tx.send(Action::Tick);
                 }
-                Event::Render => {
-                    let _ = self.action_tx.send(Action::Render);
-                }
+                Event::Render => {}
             }
+
+            self.drain_canvas_resize_results();
 
             // Drain and process all queued actions
             while let Ok(action) = self.action_rx.try_recv() {
                 if let Action::Render = action {
-                    terminal.draw(|frame| self.render(frame))?;
-                } else {
-                    self.process_action(&action);
+                    render_requested = true;
+                    continue;
                 }
+
+                self.process_action(&action);
+                self.render_dirty = true;
+            }
+
+            if self.render_dirty
+                || (render_requested && !self.fullscreen_preview && self.motion.is_active())
+            {
+                self.drain_canvas_resize_results();
+                terminal.draw(|frame| self.render(frame))?;
+                self.render_dirty = false;
             }
         }
 
         // Cleanup
         self.data_cancel.cancel();
         events.stop();
+        // Dropping the last sender clone unblocks the preview worker's recv()
+        // loop; the ThreadProtocol's internal clones are released alongside.
+        self.canvas_resize_tx = None;
+        self.canvas_protocol_current = None;
+        self.canvas_protocol_pending = None;
+        if let Some(worker) = self.canvas_resize_worker.take()
+            && let Err(e) = worker.join()
+        {
+            tracing::warn!("preview resize worker panicked during shutdown: {e:?}");
+        }
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
         ratatui::restore();
         tracing::info!("TUI event loop ended");
@@ -388,6 +451,10 @@ impl App {
             }
             Action::ToggleFullscreenPreview => {
                 self.fullscreen_preview = !self.fullscreen_preview;
+                self.canvas_protocol_current = None;
+                self.canvas_protocol_pending = None;
+                self.canvas_preview_area = None;
+                self.render_dirty = true;
             }
 
             // ── Connection state ────────────────────────────
@@ -423,7 +490,9 @@ impl App {
                 self.state.spectrum = None;
                 self.motion.spectrum_channel().clear();
                 self.motion.canvas_color_channel().clear();
-                self.canvas_protocol = None;
+                self.canvas_protocol_current = None;
+                self.canvas_protocol_pending = None;
+                self.canvas_preview_area = None;
                 if was_connected {
                     self.notification = Some((
                         Notification {
@@ -477,10 +546,19 @@ impl App {
                     u32::from(frame.height),
                     frame.pixels.clone(),
                 ) {
-                    self.canvas_protocol = Some(
-                        self.picker
-                            .new_resize_protocol(image::DynamicImage::ImageRgb8(img)),
-                    );
+                    let next_protocol = self
+                        .active_canvas_picker()
+                        .new_resize_protocol(image::DynamicImage::ImageRgb8(img));
+                    if let Some(protocol) = self.canvas_protocol_pending.as_mut() {
+                        if protocol.protocol_type().is_some() {
+                            protocol.replace_protocol(next_protocol);
+                        }
+                    } else if let Some(resize_tx) = self.canvas_resize_tx.as_ref() {
+                        self.canvas_protocol_pending = Some(ThreadProtocol::new(
+                            resize_tx.clone(),
+                            Some(next_protocol),
+                        ));
+                    }
                 }
             }
             Action::SpectrumUpdated(spectrum) => {
@@ -648,6 +726,45 @@ impl App {
         &self.available_screens
     }
 
+    fn active_canvas_picker(&self) -> &Picker {
+        if self.fullscreen_preview {
+            &self.fullscreen_picker
+        } else {
+            &self.picker
+        }
+    }
+
+    fn canvas_resize_area(area: Rect) -> Rect {
+        Rect::new(0, 0, area.width, area.height)
+    }
+
+    fn drain_canvas_resize_results(&mut self) {
+        while let Ok(result) = self.canvas_resize_rx.try_recv() {
+            match result {
+                Ok(completed) => {
+                    if let Some(protocol) = self.canvas_protocol_pending.as_mut()
+                        && protocol.update_resized_protocol(completed)
+                    {
+                        self.render_dirty = true;
+                        let ready_for_current_area = self
+                            .canvas_preview_area
+                            .map(Self::canvas_resize_area)
+                            .is_some_and(|area| {
+                                protocol.needs_resize(&Resize::Scale(None), area).is_none()
+                            });
+
+                        if ready_for_current_area || self.canvas_protocol_current.is_none() {
+                            self.canvas_protocol_current = self.canvas_protocol_pending.take();
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::debug!("preview resize/encode failed: {error}");
+                }
+            }
+        }
+    }
+
     #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
     fn sync_daemon_device_summary(&mut self) {
         let Some(daemon) = self.state.daemon.as_mut() else {
@@ -747,13 +864,21 @@ impl App {
         if let Some(area) = preview_area
             && area.width > 0
             && area.height > 0
-            && let Some(protocol) = self.canvas_protocol.as_mut()
         {
-            frame.render_stateful_widget(
-                StatefulImage::default().resize(Resize::Scale(None)),
-                area,
-                protocol,
-            );
+            self.canvas_preview_area = Some(area);
+            let resize_area = Self::canvas_resize_area(area);
+
+            if let Some(protocol) = self.canvas_protocol_pending.as_mut()
+                && let Some(target_rect) = protocol.needs_resize(&Resize::Scale(None), resize_area)
+            {
+                protocol.resize_encode(&Resize::Scale(None), target_rect);
+            }
+
+            if let Some(protocol) = self.canvas_protocol_current.as_mut() {
+                protocol.render(area, frame.buffer_mut());
+            }
+        } else {
+            self.canvas_preview_area = None;
         }
 
         // Render notification toast (centered, overlays content bottom)
@@ -899,12 +1024,17 @@ impl App {
         // on Ghostty/Kitty, Sixel on supporting terminals, halfblocks elsewhere.
         // Picker is auto-selected at startup so this branch always works once
         // a frame has arrived.
-        if let Some(protocol) = self.canvas_protocol.as_mut() {
-            frame.render_stateful_widget(
-                StatefulImage::default().resize(Resize::Scale(None)),
-                canvas_area,
-                protocol,
-            );
+        self.canvas_preview_area = Some(canvas_area);
+        let resize_area = Self::canvas_resize_area(canvas_area);
+
+        if let Some(protocol) = self.canvas_protocol_pending.as_mut()
+            && let Some(target_rect) = protocol.needs_resize(&Resize::Scale(None), resize_area)
+        {
+            protocol.resize_encode(&Resize::Scale(None), target_rect);
+        }
+
+        if let Some(protocol) = self.canvas_protocol_current.as_mut() {
+            protocol.render(canvas_area, frame.buffer_mut());
         } else {
             // No canvas — fill with dark background
             let block = Block::default().style(Style::default().bg(Color::Rgb(20, 20, 30)));
