@@ -19,7 +19,7 @@ static CONFIG_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> = LazyLock::new(||
 pub fn config_dir() -> PathBuf {
     if let Some(override_path) = CONFIG_DIR_OVERRIDE
         .read()
-        .expect("config dir override lock should not be poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .clone()
     {
         return override_path;
@@ -51,7 +51,7 @@ pub fn config_dir() -> PathBuf {
 pub fn set_config_dir_override(path: Option<PathBuf>) {
     let mut override_path = CONFIG_DIR_OVERRIDE
         .write()
-        .expect("config dir override lock should not be poisoned");
+        .unwrap_or_else(|e| e.into_inner());
     *override_path = path;
 }
 
@@ -62,7 +62,7 @@ pub fn set_config_dir_override(path: Option<PathBuf>) {
 pub fn data_dir() -> PathBuf {
     if let Some(override_path) = DATA_DIR_OVERRIDE
         .read()
-        .expect("data dir override lock should not be poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .clone()
     {
         return override_path;
@@ -98,7 +98,7 @@ pub fn data_dir() -> PathBuf {
 pub fn set_data_dir_override(path: Option<PathBuf>) {
     let mut override_path = DATA_DIR_OVERRIDE
         .write()
-        .expect("data dir override lock should not be poisoned");
+        .unwrap_or_else(|e| e.into_inner());
     *override_path = path;
 }
 
