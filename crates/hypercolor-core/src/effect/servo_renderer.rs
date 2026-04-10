@@ -29,6 +29,7 @@ use super::bootstrap_software_rendering_context;
 use super::lightscript::LightscriptRuntime;
 use super::paths::resolve_html_source_path;
 use super::{ConsoleMessage, EffectRenderer, FrameInput, HypercolorWebViewDelegate};
+use crate::engine::FpsTier;
 
 const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 const SCRIPT_TIMEOUT: Duration = Duration::from_millis(250);
@@ -1409,7 +1410,7 @@ fn animation_fps_cap(delta_secs: f32) -> u32 {
     }
 
     let fps = (1.0 / delta_secs).round();
-    (fps as u32).clamp(1, MAX_EFFECT_FPS_CAP)
+    FpsTier::from_fps((fps as u32).clamp(1, MAX_EFFECT_FPS_CAP)).fps()
 }
 
 fn animation_fps_cap_script(fps_cap: u32) -> String {
@@ -1743,6 +1744,7 @@ mod tests {
             controls: Vec::new(),
             presets: Vec::new(),
             audio_reactive: true,
+            screen_reactive: false,
             source: EffectSource::Html {
                 path: PathBuf::from("effects/audio.html"),
             },
@@ -1765,6 +1767,7 @@ mod tests {
             controls: Vec::new(),
             presets: Vec::new(),
             audio_reactive: false,
+            screen_reactive: false,
             source: EffectSource::Html {
                 path: PathBuf::from("effects/ambient-audio.html"),
             },
@@ -1787,6 +1790,7 @@ mod tests {
             controls: Vec::new(),
             presets: Vec::new(),
             audio_reactive: false,
+            screen_reactive: false,
             source: EffectSource::Html {
                 path: PathBuf::from("effects/electric-colors.html"),
             },
@@ -1994,12 +1998,37 @@ mod tests {
 
         renderer.pending_scripts.clear();
         renderer.enqueue_frame_scripts(&frame_input(1.0 / 15.0));
-        assert_eq!(renderer.last_animation_fps_cap, Some(15));
+        assert_eq!(renderer.last_animation_fps_cap, Some(20));
         assert!(
             renderer
                 .pending_scripts
                 .iter()
-                .any(|script| script == "window.__hypercolorFpsCap = 15;")
+                .any(|script| script == "window.__hypercolorFpsCap = 20;")
+        );
+    }
+
+    #[test]
+    fn frame_scripts_skip_near_tier_jitter_updates() {
+        let mut renderer = ServoRenderer::new();
+        renderer.enqueue_bootstrap_scripts();
+        renderer.pending_scripts.clear();
+
+        renderer.enqueue_frame_scripts(&frame_input(1.0 / 60.0));
+        assert!(
+            renderer
+                .pending_scripts
+                .iter()
+                .any(|script| script == "window.__hypercolorFpsCap = 60;")
+        );
+
+        renderer.pending_scripts.clear();
+        renderer.enqueue_frame_scripts(&frame_input(1.0 / 58.0));
+        assert_eq!(renderer.last_animation_fps_cap, Some(60));
+        assert!(
+            renderer
+                .pending_scripts
+                .iter()
+                .all(|script| !script.contains("__hypercolorFpsCap"))
         );
     }
 
@@ -2090,7 +2119,7 @@ mod tests {
             second_render
                 .scripts
                 .iter()
-                .any(|script| script == "window.__hypercolorFpsCap = 15;")
+                .any(|script| script == "window.__hypercolorFpsCap = 20;")
         );
         assert!(
             second_render
