@@ -69,10 +69,6 @@ pub(crate) async fn maybe_sleep_throttle(
     last_audio_level_update_ms: &mut Option<u32>,
 ) -> Option<FrameExecution> {
     let power_state = scene_snapshot.output_power;
-    if !power_state.sleeping {
-        *sleep_black_pushed = false;
-        return None;
-    }
     if *sleep_black_pushed {
         {
             let mut render_loop = state.render_loop.write().await;

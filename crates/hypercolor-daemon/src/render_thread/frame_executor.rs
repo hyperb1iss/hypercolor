@@ -65,22 +65,26 @@ pub(crate) async fn execute_frame(
     )
     .await;
     let scene_snapshot_done_us = micros_u32(frame_start.elapsed());
-    let sleep_render_surfaces =
-        render.render_surface_snapshot(state.preview_canvas_receiver_count());
-    if let Some(frame) = maybe_sleep_throttle(
-        state,
-        &scene_snapshot,
-        frame_start,
-        scene_snapshot_done_us,
-        sleep_render_surfaces,
-        &mut render.static_surface_cache,
-        &mut render.recycled_frame,
-        &mut frame_loop.sleep_black_pushed,
-        &mut frame_loop.last_audio_level_update_ms,
-    )
-    .await
-    {
-        return frame;
+    if output_power.sleeping {
+        let sleep_render_surfaces =
+            render.render_surface_snapshot(state.preview_canvas_receiver_count());
+        if let Some(frame) = maybe_sleep_throttle(
+            state,
+            &scene_snapshot,
+            frame_start,
+            scene_snapshot_done_us,
+            sleep_render_surfaces,
+            &mut render.static_surface_cache,
+            &mut render.recycled_frame,
+            &mut frame_loop.sleep_black_pushed,
+            &mut frame_loop.last_audio_level_update_ms,
+        )
+        .await
+        {
+            return frame;
+        }
+    } else {
+        frame_loop.sleep_black_pushed = false;
     }
 
     if let Some(frame) = maybe_idle_throttle(
