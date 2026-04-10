@@ -114,8 +114,9 @@ float barEnergy(float freq, float barId, float time, float smoothAmt) {
 
     float energy = spectrum + breath * 0.55 + organic * (0.32 + breath * 0.45);
 
-    // Minimum baseline so bars breathe even when silent
-    float floor_ = 0.05 + organic * 0.08;
+    // Minimum baseline so bars breathe even when silent — high enough
+    // that the visualizer looks alive with no audio input
+    float floor_ = 0.22 + organic * 0.14;
     energy = max(energy, floor_);
 
     return clamp(energy, 0.0, 1.7);
@@ -261,8 +262,8 @@ void main() {
     vec3 peakColor = paletteColor(paletteT + 0.42, iPalette);
 
     // Deep, calm background — single smooth gradient, driven by scene backdrop
-    vec3 bgLow = paletteColor(0.05 + time * 0.004, iPalette) * 0.025;
-    vec3 bgHigh = paletteColor(0.46, iPalette) * 0.075;
+    vec3 bgLow = paletteColor(0.05 + time * 0.004, iPalette) * 0.04;
+    vec3 bgHigh = paletteColor(0.46, iPalette) * 0.11;
     vec3 color = mix(bgLow, bgHigh, scn.backdrop);
 
     // Bar body — peaks warm toward peakColor for emphasis
