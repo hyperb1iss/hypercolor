@@ -76,9 +76,9 @@ pub fn EffectCard(
     // accent but locked to a readable lightness band so titles/descriptions
     // feel like they belong to this specific card rather than being generic
     // white. Re-computes only when the accent changes (Memo caches the String).
-    let title_tint = Memo::new(move |_| color::accent_text_tint(&accent_rgb.get(), 0.94, 0.35));
-    let body_tint = Memo::new(move |_| color::accent_text_tint(&accent_rgb.get(), 0.84, 0.45));
-    let meta_tint = Memo::new(move |_| color::accent_text_tint(&accent_rgb.get(), 0.76, 0.55));
+    let title_tint = Memo::new(move |_| color::accent_text_tint(&accent_rgb.get(), 0.86, 0.65));
+    let body_tint = Memo::new(move |_| color::accent_text_tint(&accent_rgb.get(), 0.78, 0.22));
+    let meta_tint = Memo::new(move |_| color::accent_text_tint(&accent_rgb.get(), 0.68, 0.65));
 
     let click_id = effect.id.clone();
     let fav_id = effect.id.clone();

@@ -164,11 +164,11 @@ pub fn EffectsPage() -> impl IntoView {
     });
 
     let preview_title_tint =
-        Memo::new(move |_| color::accent_text_tint(&preview_accent_rgb.get(), 0.94, 0.35));
+        Memo::new(move |_| color::accent_text_tint(&preview_accent_rgb.get(), 0.86, 0.65));
     let preview_body_tint =
-        Memo::new(move |_| color::accent_text_tint(&preview_accent_rgb.get(), 0.84, 0.45));
+        Memo::new(move |_| color::accent_text_tint(&preview_accent_rgb.get(), 0.78, 0.22));
     let preview_meta_tint =
-        Memo::new(move |_| color::accent_text_tint(&preview_accent_rgb.get(), 0.76, 0.55));
+        Memo::new(move |_| color::accent_text_tint(&preview_accent_rgb.get(), 0.68, 0.65));
 
     let has_active = Memo::new(move |_| fx.active_effect_id.get().is_some());
 
