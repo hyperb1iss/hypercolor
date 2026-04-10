@@ -117,6 +117,14 @@ async fn adopt_command(args: &AdoptArgs, ctx: &OutputContext) -> Result<()> {
 
     let mut cfg = config::load()?;
 
+    if cfg.profiles.contains_key(&profile_name) {
+        anyhow::bail!(
+            "profile {profile_name:?} already exists \
+             (use `hyper config profile set {profile_name} host ...` to update, \
+             or `--name` to adopt under a different name)"
+        );
+    }
+
     cfg.profiles.insert(
         profile_name.clone(),
         Profile {
