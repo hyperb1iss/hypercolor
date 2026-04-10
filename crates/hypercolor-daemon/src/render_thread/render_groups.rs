@@ -8,7 +8,7 @@ use hypercolor_core::effect::{EffectPool, EffectRegistry};
 use hypercolor_core::input::{InteractionData, ScreenData};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::AudioData;
-use hypercolor_types::canvas::Canvas;
+use hypercolor_types::canvas::{Canvas, RenderSurfacePool, SurfaceDescriptor};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::{RenderGroup, RenderGroupId};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
@@ -37,7 +37,7 @@ pub(crate) struct RenderGroupRuntime {
     effect_pool: EffectPool,
     target_canvases: HashMap<RenderGroupId, Canvas>,
     spatial_engines: HashMap<RenderGroupId, SpatialEngine>,
-    preview_canvas: Option<Canvas>,
+    preview_surface_pool: RenderSurfacePool,
     retained_frame: Option<RetainedRenderGroupFrame>,
     combined_layout: Arc<SpatialLayout>,
     preview_width: u32,
@@ -50,7 +50,10 @@ impl RenderGroupRuntime {
             effect_pool: EffectPool::new(),
             target_canvases: HashMap::new(),
             spatial_engines: HashMap::new(),
-            preview_canvas: None,
+            preview_surface_pool: RenderSurfacePool::new(SurfaceDescriptor::rgba8888(
+                preview_width,
+                preview_height,
+            )),
             retained_frame: None,
             combined_layout: Arc::new(empty_group_layout(preview_width, preview_height)),
             preview_width,
@@ -127,7 +130,7 @@ impl RenderGroupRuntime {
                 .count(),
         )
         .unwrap_or(u32::MAX);
-        let preview_frame = ProducerFrame::Canvas(self.compose_preview(groups));
+        let preview_frame = self.compose_preview(groups);
         let layout = Arc::clone(&self.combined_layout);
 
         self.retained_frame = Some(RetainedRenderGroupFrame {
@@ -194,51 +197,78 @@ impl RenderGroupRuntime {
         }
     }
 
-    fn compose_preview(&mut self, groups: &[RenderGroup]) -> Canvas {
+    fn compose_preview(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
         let preview_ids = groups
             .iter()
             .filter(|group| group.enabled && group.effect_id.is_some())
             .map(|group| group.id)
             .collect::<Vec<_>>();
 
-        if preview_ids.len() == 1
-            && let Some(canvas) = self.target_canvases.get(&preview_ids[0])
-        {
-            return canvas.clone();
+        let Some(mut lease) = self.preview_surface_pool.dequeue() else {
+            let mut preview = Canvas::new(self.preview_width, self.preview_height);
+            compose_preview_canvas(
+                &mut preview,
+                &preview_ids,
+                &self.target_canvases,
+                self.preview_width,
+                self.preview_height,
+            );
+            return ProducerFrame::Canvas(preview);
+        };
+
+        compose_preview_canvas(
+            lease.canvas_mut(),
+            &preview_ids,
+            &self.target_canvases,
+            self.preview_width,
+            self.preview_height,
+        );
+
+        ProducerFrame::Surface(lease.submit(0, 0))
+    }
+}
+
+fn compose_preview_canvas(
+    preview: &mut Canvas,
+    preview_ids: &[RenderGroupId],
+    target_canvases: &HashMap<RenderGroupId, Canvas>,
+    preview_width: u32,
+    preview_height: u32,
+) {
+    preview.clear();
+
+    if preview_ids.is_empty() {
+        return;
+    }
+
+    if preview_ids.len() == 1
+        && let Some(source) = target_canvases.get(&preview_ids[0])
+    {
+        if source.width() == preview_width && source.height() == preview_height {
+            preview
+                .as_rgba_bytes_mut()
+                .copy_from_slice(source.as_rgba_bytes());
+            return;
         }
 
-        let mut preview = self
-            .preview_canvas
-            .take()
-            .filter(|canvas| {
-                canvas.width() == self.preview_width && canvas.height() == self.preview_height
-            })
-            .unwrap_or_else(|| Canvas::new(self.preview_width, self.preview_height));
-        preview.clear();
+        blit_scaled_tile(preview, source, 0, 0, preview_width, preview_height);
+        return;
+    }
 
-        if preview_ids.is_empty() {
-            self.preview_canvas = Some(preview.clone());
-            return preview;
-        }
+    let columns = tile_columns(preview_ids.len());
+    let rows = preview_ids.len().div_ceil(columns);
+    for (index, group_id) in preview_ids.iter().enumerate() {
+        let Some(source) = target_canvases.get(group_id) else {
+            continue;
+        };
 
-        let columns = tile_columns(preview_ids.len());
-        let rows = preview_ids.len().div_ceil(columns);
-        for (index, group_id) in preview_ids.iter().enumerate() {
-            let Some(source) = self.target_canvases.get(group_id) else {
-                continue;
-            };
-
-            let column = index % columns;
-            let row = index / columns;
-            let x0 = tile_origin(column, columns, self.preview_width);
-            let x1 = tile_origin(column + 1, columns, self.preview_width);
-            let y0 = tile_origin(row, rows, self.preview_height);
-            let y1 = tile_origin(row + 1, rows, self.preview_height);
-            blit_scaled_tile(&mut preview, source, x0, y0, x1, y1);
-        }
-
-        self.preview_canvas = Some(preview.clone());
-        preview
+        let column = index % columns;
+        let row = index / columns;
+        let x0 = tile_origin(column, columns, preview_width);
+        let x1 = tile_origin(column + 1, columns, preview_width);
+        let y0 = tile_origin(row, rows, preview_height);
+        let y1 = tile_origin(row + 1, rows, preview_height);
+        blit_scaled_tile(preview, source, x0, y0, x1, y1);
     }
 }
 
@@ -293,5 +323,90 @@ fn blit_scaled_tile(target: &mut Canvas, source: &Canvas, x0: u32, y0: u32, x1: 
             let nx = (x as f32 + 0.5) / width as f32;
             target.set_pixel(x0 + x, y0 + y, source.sample_bilinear(nx, ny));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use hypercolor_types::canvas::Rgba;
+    use hypercolor_types::effect::EffectId;
+    use uuid::Uuid;
+
+    use super::*;
+
+    fn sample_group(width: u32, height: u32) -> RenderGroup {
+        RenderGroup {
+            id: RenderGroupId::new(),
+            name: "Preview Group".into(),
+            description: None,
+            effect_id: Some(EffectId::from(Uuid::now_v7())),
+            controls: HashMap::new(),
+            preset_id: None,
+            layout: SpatialLayout {
+                id: "preview-group".into(),
+                name: "Preview Group".into(),
+                description: None,
+                canvas_width: width,
+                canvas_height: height,
+                zones: Vec::new(),
+                default_sampling_mode: SamplingMode::Bilinear,
+                default_edge_behavior: EdgeBehavior::Clamp,
+                spaces: None,
+                version: 1,
+            },
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+        }
+    }
+
+    #[test]
+    fn single_group_preview_publishes_surface_frame() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let group = sample_group(4, 4);
+        let mut source = Canvas::new(4, 4);
+        source.fill(Rgba::new(12, 34, 56, 255));
+        runtime.target_canvases.insert(group.id, source);
+
+        let preview = runtime.compose_preview(&[group]);
+        let ProducerFrame::Surface(surface) = preview else {
+            panic!("single-group preview should publish a pooled surface");
+        };
+
+        assert_eq!(surface.width(), 4);
+        assert_eq!(surface.height(), 4);
+        assert_eq!(surface.get_pixel(0, 0), Rgba::new(12, 34, 56, 255));
+        assert_eq!(surface.get_pixel(3, 3), Rgba::new(12, 34, 56, 255));
+    }
+
+    #[test]
+    fn single_group_preview_scales_group_canvas_to_preview_extent() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let group = sample_group(2, 2);
+        let mut source = Canvas::new(2, 2);
+        source.set_pixel(0, 0, Rgba::new(255, 0, 0, 255));
+        source.set_pixel(1, 0, Rgba::new(0, 255, 0, 255));
+        source.set_pixel(0, 1, Rgba::new(0, 0, 255, 255));
+        source.set_pixel(1, 1, Rgba::new(255, 255, 0, 255));
+        runtime.target_canvases.insert(group.id, source);
+
+        let preview = runtime.compose_preview(&[group]);
+        let ProducerFrame::Surface(surface) = preview else {
+            panic!("scaled single-group preview should publish a pooled surface");
+        };
+
+        let top_left = surface.get_pixel(0, 0);
+        let top_right = surface.get_pixel(3, 0);
+        let bottom_left = surface.get_pixel(0, 3);
+        let bottom_right = surface.get_pixel(3, 3);
+
+        assert_eq!(surface.width(), 4);
+        assert_eq!(surface.height(), 4);
+        assert!(top_left.r > top_left.g && top_left.r > top_left.b);
+        assert!(top_right.g > top_right.r && top_right.g > top_right.b);
+        assert!(bottom_left.b > bottom_left.r && bottom_left.b > bottom_left.g);
+        assert!(bottom_right.r > 180 && bottom_right.g > 180 && bottom_right.b < 120);
     }
 }
