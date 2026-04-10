@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
-#[path = "../src/ws.rs"]
+#[path = "../src/ws/mod.rs"]
 mod ws;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

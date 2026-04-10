@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use js_sys::{Array, Object, Reflect};
@@ -13,6 +13,53 @@ use web_sys::{
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
 use super::PreviewRenderOutcome;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DispatchDecision {
+    DispatchNow,
+    Deferred,
+}
+
+struct FrameDispatchState<T> {
+    in_flight: bool,
+    queued: Option<T>,
+}
+
+impl<T> Default for FrameDispatchState<T> {
+    fn default() -> Self {
+        Self {
+            in_flight: false,
+            queued: None,
+        }
+    }
+}
+
+impl<T> FrameDispatchState<T> {
+    fn push_or_defer(&mut self, frame: T) -> DispatchDecision {
+        if self.in_flight {
+            self.queued = Some(frame);
+            DispatchDecision::Deferred
+        } else {
+            self.in_flight = true;
+            self.queued = Some(frame);
+            DispatchDecision::DispatchNow
+        }
+    }
+
+    fn take_for_dispatch(&mut self) -> Option<T> {
+        self.queued.take()
+    }
+
+    fn next_after_present(&mut self) -> Option<T> {
+        if self.queued.is_some() {
+            self.in_flight = true;
+            return self.queued.take();
+        }
+
+        self.in_flight = false;
+        None
+    }
+}
 
 const PREVIEW_WORKER_SOURCE: &str = r#"
 let canvas = null;
@@ -126,6 +173,7 @@ pub(super) struct PreviewWorkerRuntime {
     worker: Worker,
     worker_url: String,
     failed: Rc<Cell<bool>>,
+    dispatch_state: Rc<RefCell<FrameDispatchState<CanvasFrame>>>,
     last_shape: Option<(u32, u32, CanvasPixelFormat)>,
     _onmessage: Closure<dyn FnMut(MessageEvent)>,
 }
@@ -150,12 +198,23 @@ impl PreviewWorkerRuntime {
         let worker_url = create_worker_url().map_err(|_| ())?;
         let worker = Worker::new(&worker_url).map_err(|_| ())?;
         let failed = Rc::new(Cell::new(false));
+        let dispatch_state = Rc::new(RefCell::new(FrameDispatchState::default()));
         let failed_handle = Rc::clone(&failed);
+        let dispatch_state_handle = Rc::clone(&dispatch_state);
         let canvas_handle = canvas.clone();
         let bitmap_ctx_handle = bitmap_ctx.clone();
+        let worker_handle = worker.clone();
 
         let onmessage = Closure::<dyn FnMut(MessageEvent)>::new(move |event| {
             if !present_bitmap(&canvas_handle, &bitmap_ctx_handle, &event) {
+                failed_handle.set(true);
+                return;
+            }
+
+            let next_frame = dispatch_state_handle.borrow_mut().next_after_present();
+            if let Some(frame) = next_frame
+                && post_frame(&worker_handle, &frame).is_err()
+            {
                 failed_handle.set(true);
             }
         });
@@ -166,6 +225,7 @@ impl PreviewWorkerRuntime {
             worker,
             worker_url,
             failed,
+            dispatch_state,
             last_shape: None,
             _onmessage: onmessage,
         })
@@ -182,9 +242,20 @@ impl PreviewWorkerRuntime {
             return PreviewRenderOutcome::Reinitialize;
         }
 
-        if post_frame(&self.worker, frame).is_err() {
-            self.failed.set(true);
-            return PreviewRenderOutcome::Reinitialize;
+        let decision = self
+            .dispatch_state
+            .borrow_mut()
+            .push_or_defer(frame.clone());
+        if decision == DispatchDecision::DispatchNow {
+            let next_frame = self
+                .dispatch_state
+                .borrow_mut()
+                .take_for_dispatch()
+                .expect("dispatch-now state should hold the frame being sent");
+            if post_frame(&self.worker, &next_frame).is_err() {
+                self.failed.set(true);
+                return PreviewRenderOutcome::Reinitialize;
+            }
         }
 
         self.last_shape = Some(next_shape);
@@ -296,4 +367,21 @@ fn present_bitmap(
     bitmap_ctx.transfer_from_image_bitmap(&bitmap);
     bitmap.close();
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DispatchDecision, FrameDispatchState};
+
+    #[test]
+    fn dispatch_state_coalesces_frames_while_one_is_in_flight() {
+        let mut state = FrameDispatchState::default();
+
+        assert_eq!(state.push_or_defer(1), DispatchDecision::DispatchNow);
+        assert_eq!(state.take_for_dispatch(), Some(1));
+        assert_eq!(state.push_or_defer(2), DispatchDecision::Deferred);
+        assert_eq!(state.push_or_defer(3), DispatchDecision::Deferred);
+        assert_eq!(state.next_after_present(), Some(3));
+        assert_eq!(state.next_after_present(), None);
+    }
 }
