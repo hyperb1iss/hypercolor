@@ -21,7 +21,7 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::{RwLock, broadcast, watch};
+use tokio::sync::{broadcast, watch};
 use tower::ServiceExt;
 use tracing::{debug, warn};
 
@@ -696,20 +696,18 @@ async fn handle_socket(
 ) {
     let _client_guard = WsClientGuard::register();
 
-    // Default subscriptions: events only.
-    // Wrapped in Arc<RwLock<_>> so the relay task sees subscription changes.
-    let subscriptions = Arc::new(RwLock::new(SubscriptionState::default()));
-    let (subscription_revision_tx, subscription_revision_rx) = watch::channel(0_u64);
+    let initial_subscriptions = SubscriptionState::default();
+    let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
+    let mut subscriptions = initial_subscriptions;
 
     // Send hello message.
     let hello = {
-        let subs = subscriptions.read().await;
         ServerMessage::Hello {
             version: WS_PROTOCOL_VERSION.to_owned(),
             server: state.server_identity.clone(),
             state: build_hello_state(&state).await,
             capabilities: ws_capabilities(),
-            subscriptions: sorted_channel_names(&subs.channels),
+            subscriptions: sorted_channel_names(&subscriptions.channels),
         }
     };
     if send_json(&mut socket, &hello).await.is_err() {
@@ -725,48 +723,40 @@ async fn handle_socket(
     let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<String>(WS_BUFFER_SIZE);
     let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(WS_BUFFER_SIZE);
 
-    // Spawn event relay task — shares the subscription set via Arc<RwLock<_>>.
-    let relay_subs = Arc::clone(&subscriptions);
-    let relay_handle = tokio::spawn(relay_events(event_rx, json_tx.clone(), relay_subs));
-    let frame_subs = Arc::clone(&subscriptions);
+    // Spawn event relay tasks — each watches immutable subscription snapshots.
+    let relay_handle = tokio::spawn(relay_events(
+        event_rx,
+        json_tx.clone(),
+        subscriptions_rx.clone(),
+    ));
     let frame_relay_handle = tokio::spawn(relay_frames(
         frame_rx,
         json_tx.clone(),
         binary_tx.clone(),
-        frame_subs,
+        subscriptions_rx.clone(),
     ));
-    let spectrum_subs = Arc::clone(&subscriptions);
     let spectrum_relay_handle = tokio::spawn(relay_spectrum(
         spectrum_rx,
         json_tx.clone(),
         binary_tx.clone(),
-        spectrum_subs,
+        subscriptions_rx.clone(),
     ));
-    let canvas_subs = Arc::clone(&subscriptions);
     let canvas_power_rx = state.power_state.subscribe();
     let canvas_relay_handle = tokio::spawn(relay_canvas(
         Arc::clone(&state.preview_runtime),
         canvas_power_rx,
         json_tx.clone(),
         binary_tx.clone(),
-        canvas_subs,
-        subscription_revision_rx.clone(),
+        subscriptions_rx.clone(),
     ));
-    let screen_canvas_subs = Arc::clone(&subscriptions);
     let screen_canvas_relay_handle = tokio::spawn(relay_screen_canvas(
         Arc::clone(&state.preview_runtime),
         json_tx.clone(),
         binary_tx.clone(),
-        screen_canvas_subs,
-        subscription_revision_rx.clone(),
+        subscriptions_rx.clone(),
     ));
-    let metrics_subs = Arc::clone(&subscriptions);
-    let metrics_relay_handle = tokio::spawn(relay_metrics(
-        Arc::clone(&state),
-        json_tx,
-        metrics_subs,
-        subscription_revision_rx,
-    ));
+    let metrics_relay_handle =
+        tokio::spawn(relay_metrics(Arc::clone(&state), json_tx, subscriptions_rx));
 
     let mut ping_interval = tokio::time::interval(WS_PING_INTERVAL);
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -828,8 +818,8 @@ async fn handle_socket(
                             &text,
                             &state,
                             auth_context,
-                            &subscriptions,
-                            &subscription_revision_tx,
+                            &mut subscriptions,
+                            &subscriptions_tx,
                             &mut socket,
                         )
                         .await;
@@ -867,13 +857,13 @@ async fn handle_socket(
 async fn relay_events(
     mut event_rx: broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
     json_tx: tokio::sync::mpsc::Sender<String>,
-    subscriptions: Arc<RwLock<SubscriptionState>>,
+    subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     loop {
         match event_rx.recv().await {
             Ok(timestamped) => {
                 let should_relay = {
-                    let subs = subscriptions.read().await;
+                    let subs = subscriptions.borrow();
                     should_relay_event(&timestamped.event, &subs.channels)
                 };
                 if !should_relay {
@@ -933,7 +923,7 @@ async fn relay_frames(
     mut frame_rx: watch::Receiver<hypercolor_types::event::FrameData>,
     json_tx: tokio::sync::mpsc::Sender<String>,
     binary_tx: tokio::sync::mpsc::Sender<Bytes>,
-    subscriptions: Arc<RwLock<SubscriptionState>>,
+    subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut last_sent = Instant::now()
         .checked_sub(Duration::from_secs(1))
@@ -945,7 +935,7 @@ async fn relay_frames(
         }
 
         let frame_config = {
-            let subs = subscriptions.read().await;
+            let subs = subscriptions.borrow();
             if !subs.channels.contains(&WsChannel::Frames) {
                 continue;
             }
@@ -978,7 +968,7 @@ async fn relay_spectrum(
     mut spectrum_rx: watch::Receiver<hypercolor_types::event::SpectrumData>,
     json_tx: tokio::sync::mpsc::Sender<String>,
     binary_tx: tokio::sync::mpsc::Sender<Bytes>,
-    subscriptions: Arc<RwLock<SubscriptionState>>,
+    subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut last_sent = Instant::now()
         .checked_sub(Duration::from_secs(1))
@@ -990,7 +980,7 @@ async fn relay_spectrum(
         }
 
         let spectrum_config = {
-            let subs = subscriptions.read().await;
+            let subs = subscriptions.borrow();
             if !subs.channels.contains(&WsChannel::Spectrum) {
                 continue;
             }
@@ -1018,8 +1008,7 @@ async fn relay_canvas(
     mut power_state_rx: watch::Receiver<OutputPowerState>,
     json_tx: tokio::sync::mpsc::Sender<String>,
     binary_tx: tokio::sync::mpsc::Sender<Bytes>,
-    subscriptions: Arc<RwLock<SubscriptionState>>,
-    mut subscription_rx: watch::Receiver<u64>,
+    mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut canvas_rx = None::<watch::Receiver<hypercolor_core::bus::CanvasFrame>>;
     let mut latest_canvas = None::<hypercolor_core::bus::CanvasFrame>;
@@ -1031,7 +1020,7 @@ async fn relay_canvas(
 
     loop {
         let canvas_config = {
-            let subs = subscriptions.read().await;
+            let subs = subscriptions.borrow();
             if subs.channels.contains(&WsChannel::Canvas) {
                 Some(subs.config.canvas.clone())
             } else {
@@ -1053,11 +1042,11 @@ async fn relay_canvas(
                     }
                     let _ = power_state_rx.borrow_and_update();
                 }
-                changed = subscription_rx.changed() => {
+                changed = subscriptions.changed() => {
                     if changed.is_err() {
                         break;
                     }
-                    let _ = subscription_rx.borrow_and_update();
+                    let _ = subscriptions.borrow_and_update();
                 }
             }
             continue;
@@ -1088,11 +1077,11 @@ async fn relay_canvas(
                 }
                 let _ = power_state_rx.borrow_and_update();
             }
-            changed = subscription_rx.changed() => {
+            changed = subscriptions.changed() => {
                 if changed.is_err() {
                     break;
                 }
-                let _ = subscription_rx.borrow_and_update();
+                let _ = subscriptions.borrow_and_update();
             }
             _ = ticker.tick() => {
                 let Some(latest_canvas) = latest_canvas.as_ref() else {
@@ -1131,8 +1120,7 @@ async fn relay_screen_canvas(
     preview_runtime: Arc<crate::preview_runtime::PreviewRuntime>,
     json_tx: tokio::sync::mpsc::Sender<String>,
     binary_tx: tokio::sync::mpsc::Sender<Bytes>,
-    subscriptions: Arc<RwLock<SubscriptionState>>,
-    mut subscription_rx: watch::Receiver<u64>,
+    mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut canvas_rx = None::<watch::Receiver<hypercolor_core::bus::CanvasFrame>>;
     let mut latest_canvas = None::<hypercolor_core::bus::CanvasFrame>;
@@ -1143,7 +1131,7 @@ async fn relay_screen_canvas(
 
     loop {
         let canvas_config = {
-            let subs = subscriptions.read().await;
+            let subs = subscriptions.borrow();
             if subs.channels.contains(&WsChannel::ScreenCanvas) {
                 Some(subs.config.screen_canvas.clone())
             } else {
@@ -1157,10 +1145,10 @@ async fn relay_screen_canvas(
         let Some(canvas_config) = canvas_config else {
             last_sent_frame_number = None;
             latest_canvas = None;
-            if subscription_rx.changed().await.is_err() {
+            if subscriptions.changed().await.is_err() {
                 break;
             }
-            let _ = subscription_rx.borrow_and_update();
+            let _ = subscriptions.borrow_and_update();
             continue;
         };
         let canvas_rx = canvas_rx
@@ -1183,11 +1171,11 @@ async fn relay_screen_canvas(
                 }
                 latest_canvas = Some(canvas_rx.borrow_and_update().clone());
             }
-            changed = subscription_rx.changed() => {
+            changed = subscriptions.changed() => {
                 if changed.is_err() {
                     break;
                 }
-                let _ = subscription_rx.borrow_and_update();
+                let _ = subscriptions.borrow_and_update();
             }
             _ = ticker.tick() => {
                 let Some(latest_canvas) = latest_canvas.as_ref() else {
@@ -1234,14 +1222,13 @@ fn sync_preview_receiver(
 async fn relay_metrics(
     state: Arc<AppState>,
     json_tx: tokio::sync::mpsc::Sender<String>,
-    subscriptions: Arc<RwLock<SubscriptionState>>,
-    mut subscription_rx: watch::Receiver<u64>,
+    mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut last_total_bytes = WS_TOTAL_BYTES_SENT.load(Ordering::Relaxed);
 
     loop {
         let interval_ms = {
-            let subs = subscriptions.read().await;
+            let subs = subscriptions.borrow();
             if subs.channels.contains(&WsChannel::Metrics) {
                 Some(subs.config.metrics.interval_ms)
             } else {
@@ -1250,25 +1237,25 @@ async fn relay_metrics(
         };
 
         let Some(interval_ms) = interval_ms else {
-            if subscription_rx.changed().await.is_err() {
+            if subscriptions.changed().await.is_err() {
                 break;
             }
-            let _ = subscription_rx.borrow_and_update();
+            let _ = subscriptions.borrow_and_update();
             continue;
         };
         tokio::select! {
-            changed = subscription_rx.changed() => {
+            changed = subscriptions.changed() => {
                 if changed.is_err() {
                     break;
                 }
-                let _ = subscription_rx.borrow_and_update();
+                let _ = subscriptions.borrow_and_update();
                 continue;
             }
             _ = tokio::time::sleep(Duration::from_millis(u64::from(interval_ms))) => {}
         }
 
         let still_subscribed = {
-            let subs = subscriptions.read().await;
+            let subs = subscriptions.borrow();
             subs.channels.contains(&WsChannel::Metrics)
         };
         if !still_subscribed {
@@ -1316,8 +1303,8 @@ async fn handle_client_message(
     text: &str,
     state: &Arc<AppState>,
     auth_context: RequestAuthContext,
-    subscriptions: &Arc<RwLock<SubscriptionState>>,
-    subscription_revision_tx: &watch::Sender<u64>,
+    subscriptions: &mut SubscriptionState,
+    subscriptions_tx: &watch::Sender<SubscriptionState>,
     socket: &mut WebSocket,
 ) {
     let msg = match serde_json::from_str::<ClientMessage>(text) {
@@ -1343,24 +1330,22 @@ async fn handle_client_message(
                 }
             };
 
-            let mut subs = subscriptions.write().await;
-
             if let Some(config_patch) = config
-                && let Err(error) = subs.config.apply_patch(config_patch)
+                && let Err(error) = subscriptions.config.apply_patch(config_patch)
             {
                 let _ = send_json(socket, &error.into_message()).await;
                 return;
             }
 
             for channel in &parsed_channels {
-                subs.channels.insert(*channel);
+                subscriptions.channels.insert(*channel);
             }
 
             let ack = ServerMessage::Subscribed {
                 channels: unique_sorted_channel_names(&parsed_channels),
-                config: subs.config.filtered_json(&subs.channels),
+                config: subscriptions.config.filtered_json(&subscriptions.channels),
             };
-            bump_subscription_revision(subscription_revision_tx);
+            publish_subscriptions(subscriptions_tx, subscriptions);
             let _ = send_json(socket, &ack).await;
         }
         ClientMessage::Unsubscribe { channels } => {
@@ -1372,19 +1357,16 @@ async fn handle_client_message(
                 }
             };
 
-            let remaining = {
-                let mut subs = subscriptions.write().await;
-                for channel in &parsed_channels {
-                    subs.channels.remove(channel);
-                }
-                sorted_channel_names(&subs.channels)
-            };
+            for channel in &parsed_channels {
+                subscriptions.channels.remove(channel);
+            }
+            let remaining = sorted_channel_names(&subscriptions.channels);
 
             let ack = ServerMessage::Unsubscribed {
                 channels: unique_sorted_channel_names(&parsed_channels),
                 remaining,
             };
-            bump_subscription_revision(subscription_revision_tx);
+            publish_subscriptions(subscriptions_tx, subscriptions);
             let _ = send_json(socket, &ack).await;
         }
         ClientMessage::Command {
@@ -1399,9 +1381,11 @@ async fn handle_client_message(
     }
 }
 
-fn bump_subscription_revision(subscription_revision_tx: &watch::Sender<u64>) {
-    let current = *subscription_revision_tx.borrow();
-    let _ = subscription_revision_tx.send(current.wrapping_add(1));
+fn publish_subscriptions(
+    subscriptions_tx: &watch::Sender<SubscriptionState>,
+    subscriptions: &SubscriptionState,
+) {
+    let _ = subscriptions_tx.send(subscriptions.clone());
 }
 
 async fn dispatch_command(
@@ -2344,13 +2328,13 @@ async fn send_json(socket: &mut WebSocket, msg: &impl Serialize) -> Result<(), a
 mod tests {
     use super::{
         ChannelConfig, ChannelConfigPatch, FrameFormat, FrameRelayMessage, FramesConfig,
-        ServerMessage, SubscriptionState, WsChannel, build_metrics_message,
-        bump_subscription_revision, cached_frame_payload, command_response_from_http,
-        dispatch_command, encode_cached_canvas_preview_binary, encode_canvas_preview_binary,
-        encode_frame_binary, encode_spectrum_binary, event_message_parts, filter_frame_zones,
-        normalize_command_path, parse_channels, parse_command_method, relay_metrics,
-        should_relay_event, sync_preview_receiver, to_snake_case, try_enqueue_json,
-        unique_sorted_channel_names, ws_capabilities,
+        ServerMessage, SubscriptionState, WsChannel, build_metrics_message, cached_frame_payload,
+        command_response_from_http, dispatch_command, encode_cached_canvas_preview_binary,
+        encode_canvas_preview_binary, encode_frame_binary, encode_spectrum_binary,
+        event_message_parts, filter_frame_zones, normalize_command_path, parse_channels,
+        parse_command_method, publish_subscriptions, relay_metrics, should_relay_event,
+        sync_preview_receiver, to_snake_case, try_enqueue_json, unique_sorted_channel_names,
+        ws_capabilities,
     };
     use crate::api::AppState;
     use crate::api::security::{RequestAuthContext, SecurityState};
@@ -2364,7 +2348,7 @@ mod tests {
     };
     use std::collections::HashSet;
     use std::sync::{Arc, LazyLock, Mutex as StdMutex};
-    use tokio::sync::{RwLock, watch};
+    use tokio::sync::watch;
 
     static WS_CACHE_TEST_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
 
@@ -2496,23 +2480,17 @@ mod tests {
     #[tokio::test]
     async fn relay_metrics_wakes_when_subscription_changes() {
         let state = Arc::new(AppState::new());
-        let subscriptions = Arc::new(RwLock::new(SubscriptionState::default()));
+        let initial_subscriptions = SubscriptionState::default();
+        let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
         let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<String>(1);
-        let (subscription_revision_tx, subscription_revision_rx) = watch::channel(0_u64);
 
-        let relay_handle = tokio::spawn(relay_metrics(
-            Arc::clone(&state),
-            json_tx,
-            Arc::clone(&subscriptions),
-            subscription_revision_rx,
-        ));
+        let relay_handle =
+            tokio::spawn(relay_metrics(Arc::clone(&state), json_tx, subscriptions_rx));
 
-        {
-            let mut subs = subscriptions.write().await;
-            subs.channels.insert(WsChannel::Metrics);
-            subs.config.metrics.interval_ms = 100;
-        }
-        bump_subscription_revision(&subscription_revision_tx);
+        let mut subscriptions = initial_subscriptions;
+        subscriptions.channels.insert(WsChannel::Metrics);
+        subscriptions.config.metrics.interval_ms = 100;
+        publish_subscriptions(&subscriptions_tx, &subscriptions);
 
         let message = tokio::time::timeout(std::time::Duration::from_millis(250), json_rx.recv())
             .await
