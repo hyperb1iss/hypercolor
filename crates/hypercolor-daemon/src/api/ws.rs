@@ -307,6 +307,54 @@ struct FramesConfig {
     zones: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+enum FrameZoneSelection {
+    All,
+    Named(HashSet<String>),
+}
+
+impl FrameZoneSelection {
+    fn new(selected: &[String]) -> Self {
+        if selected.iter().any(|zone| zone == "all") {
+            Self::All
+        } else {
+            Self::Named(selected.iter().cloned().collect())
+        }
+    }
+
+    fn select<'a>(
+        &self,
+        zones: &'a [hypercolor_types::event::ZoneColors],
+    ) -> Vec<&'a hypercolor_types::event::ZoneColors> {
+        match self {
+            Self::All => zones.iter().collect(),
+            Self::Named(selected) => zones
+                .iter()
+                .filter(|zone| selected.contains(zone.zone_id.as_str()))
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ActiveFramesConfig {
+    config: FramesConfig,
+    selection_hash: u64,
+    selection: FrameZoneSelection,
+}
+
+impl ActiveFramesConfig {
+    fn new(config: FramesConfig) -> Self {
+        let selection_hash = frame_selection_hash(&config.zones);
+        let selection = FrameZoneSelection::new(&config.zones);
+        Self {
+            config,
+            selection_hash,
+            selection,
+        }
+    }
+}
+
 impl Default for FramesConfig {
     fn default() -> Self {
         Self {
@@ -983,7 +1031,7 @@ async fn relay_frames(
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut frame_rx = None::<watch::Receiver<hypercolor_types::event::FrameData>>;
-    let mut active_frame_config = None::<FramesConfig>;
+    let mut active_frame_config = None::<ActiveFramesConfig>;
     let mut last_sent = Instant::now()
         .checked_sub(Duration::from_secs(1))
         .unwrap_or_else(Instant::now);
@@ -996,7 +1044,7 @@ async fn relay_frames(
                 if !subs.channels.contains(WsChannel::Frames) {
                     None
                 } else {
-                    Some(subs.config.frames.clone())
+                    Some(ActiveFramesConfig::new(subs.config.frames.clone()))
                 }
             };
         }
@@ -1037,7 +1085,7 @@ async fn relay_frames(
         }
 
         let frame = frame_rx.borrow();
-        if !should_emit(&mut last_sent, frame_config.fps) {
+        if !should_emit(&mut last_sent, frame_config.config.fps) {
             continue;
         }
         let outbound = cached_frame_payload(&frame, &frame_config);
@@ -1048,7 +1096,7 @@ async fn relay_frames(
             }
             FrameRelayMessage::Binary(bytes) => {
                 if binary_tx.try_send(bytes).is_err() {
-                    enqueue_backpressure_notice(&json_tx, "frames", frame_config.fps);
+                    enqueue_backpressure_notice(&json_tx, "frames", frame_config.config.fps);
                     debug!("Dropping binary frame update for slow WebSocket consumer");
                 }
             }
@@ -1705,19 +1753,12 @@ fn parse_channels(channels: &[String]) -> Result<Vec<WsChannel>, WsProtocolError
     Ok(parsed)
 }
 
+#[cfg(test)]
 fn selected_frame_zones<'a>(
     zones: &'a [hypercolor_types::event::ZoneColors],
     selected: &[String],
 ) -> Vec<&'a hypercolor_types::event::ZoneColors> {
-    if selected.iter().any(|zone| zone == "all") {
-        return zones.iter().collect();
-    }
-
-    let selected_set: HashSet<&str> = selected.iter().map(String::as_str).collect();
-    zones
-        .iter()
-        .filter(|zone| selected_set.contains(zone.zone_id.as_str()))
-        .collect()
+    FrameZoneSelection::new(selected).select(zones)
 }
 
 #[cfg(test)]
@@ -1746,13 +1787,13 @@ fn frame_selection_hash(selected: &[String]) -> u64 {
 
 fn cached_frame_payload(
     frame: &hypercolor_types::event::FrameData,
-    config: &FramesConfig,
+    config: &ActiveFramesConfig,
 ) -> FrameRelayMessage {
     let key = FramePayloadCacheKey {
         frame_number: frame.frame_number,
         timestamp_ms: frame.timestamp_ms,
-        selection_hash: frame_selection_hash(&config.zones),
-        format: config.format,
+        selection_hash: config.selection_hash,
+        format: config.config.format,
     };
 
     if let Some(cached) = frame_payload_cache_get(key) {
@@ -1760,12 +1801,12 @@ fn cached_frame_payload(
         return cached;
     }
 
-    let payload = match config.format {
+    let payload = match config.config.format {
         FrameFormat::Binary => FrameRelayMessage::Binary(Bytes::from(
-            encode_frame_binary_selected(frame, &config.zones),
+            encode_frame_binary_selected(frame, &config.selection),
         )),
         FrameFormat::Json => {
-            FrameRelayMessage::Json(encode_frame_json_selected(frame, &config.zones))
+            FrameRelayMessage::Json(encode_frame_json_selected(frame, &config.selection))
         }
     };
     WS_FRAME_PAYLOAD_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -1804,14 +1845,14 @@ fn track_ws_bytes_sent(sent_len: usize) {
 
 #[cfg(test)]
 fn encode_frame_binary(frame: &hypercolor_types::event::FrameData) -> Vec<u8> {
-    encode_frame_binary_selected(frame, &["all".to_owned()])
+    encode_frame_binary_selected(frame, &FrameZoneSelection::All)
 }
 
 fn encode_frame_binary_selected(
     frame: &hypercolor_types::event::FrameData,
-    selected: &[String],
+    selection: &FrameZoneSelection,
 ) -> Vec<u8> {
-    let selected_zones = selected_frame_zones(&frame.zones, selected);
+    let selected_zones = selection.select(&frame.zones);
     let max_zone_count = usize::from(u8::MAX);
     let included_zones = if selected_zones.len() > max_zone_count {
         &selected_zones[..max_zone_count]
@@ -1870,9 +1911,10 @@ struct BorrowedFrameMessage<'a> {
 
 fn encode_frame_json_selected(
     frame: &hypercolor_types::event::FrameData,
-    selected: &[String],
+    selection: &FrameZoneSelection,
 ) -> String {
-    let zones = selected_frame_zones(&frame.zones, selected)
+    let zones = selection
+        .select(&frame.zones)
         .into_iter()
         .map(|zone| BorrowedFrameZone {
             zone_id: zone.zone_id.as_str(),
@@ -2483,9 +2525,9 @@ async fn send_json(socket: &mut WebSocket, msg: &impl Serialize) -> Result<(), a
 #[cfg(test)]
 mod tests {
     use super::{
-        ChannelConfig, ChannelConfigPatch, ChannelSet, FrameFormat, FrameRelayMessage,
-        FramesConfig, ServerMessage, SubscriptionState, WsChannel, build_metrics_message,
-        cached_frame_payload, command_response_from_http, dispatch_command,
+        ActiveFramesConfig, ChannelConfig, ChannelConfigPatch, ChannelSet, FrameFormat,
+        FrameRelayMessage, FramesConfig, ServerMessage, SubscriptionState, WsChannel,
+        build_metrics_message, cached_frame_payload, command_response_from_http, dispatch_command,
         encode_cached_canvas_preview_binary, encode_canvas_preview_binary, encode_frame_binary,
         encode_spectrum_binary, event_message_parts, filter_frame_zones, normalize_command_path,
         parse_channels, parse_command_method, publish_subscriptions, relay_frames, relay_metrics,
@@ -3229,11 +3271,11 @@ mod tests {
         reset_ws_payload_caches();
 
         let frame = sample_frame();
-        let config = FramesConfig {
+        let config = ActiveFramesConfig::new(FramesConfig {
             fps: 30,
             format: FrameFormat::Binary,
             zones: vec!["right".to_owned()],
-        };
+        });
 
         let first = cached_frame_payload(&frame, &config);
         let second = cached_frame_payload(&frame, &config);
@@ -3266,27 +3308,27 @@ mod tests {
         let frame = sample_frame();
         let left_binary = cached_frame_payload(
             &frame,
-            &FramesConfig {
+            &ActiveFramesConfig::new(FramesConfig {
                 fps: 30,
                 format: FrameFormat::Binary,
                 zones: vec!["left".to_owned()],
-            },
+            }),
         );
         let right_binary = cached_frame_payload(
             &frame,
-            &FramesConfig {
+            &ActiveFramesConfig::new(FramesConfig {
                 fps: 30,
                 format: FrameFormat::Binary,
                 zones: vec!["right".to_owned()],
-            },
+            }),
         );
         let left_json = cached_frame_payload(
             &frame,
-            &FramesConfig {
+            &ActiveFramesConfig::new(FramesConfig {
                 fps: 30,
                 format: FrameFormat::Json,
                 zones: vec!["left".to_owned()],
-            },
+            }),
         );
 
         match (left_binary, right_binary, left_json) {
