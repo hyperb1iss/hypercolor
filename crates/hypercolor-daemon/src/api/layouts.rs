@@ -197,6 +197,10 @@ pub async fn update_layout(
     Path(id): Path<String>,
     Json(body): Json<UpdateLayoutRequest>,
 ) -> Response {
+    let active_layout_id = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().id.clone()
+    };
     let mut layouts = state.layouts.write().await;
     let key = match resolve_layout_key(&layouts, &id) {
         Ok(Some(key)) => key,
@@ -244,10 +248,6 @@ pub async fn update_layout(
         existing.zones = zones;
     }
 
-    let active_layout_id = {
-        let spatial = state.spatial_engine.read().await;
-        spatial.layout().id.clone()
-    };
     let summary = LayoutSummary {
         id: existing.id.clone(),
         name: existing.name.clone(),

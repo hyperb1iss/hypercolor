@@ -1,6 +1,6 @@
 # 33 · Deep Dive Plan — Post-Refactor Improvements
 
-**Status:** Ready · **Updated:** 2026-04-10
+**Status:** In Progress · **Updated:** 2026-04-10
 **Prerequisite:** `31-refactor-plan.md` Waves 1–7 complete
 
 This plan targets the seven highest-payoff improvements identified during
@@ -8,6 +8,14 @@ the 2026-04-10 codebase review and subsequent refactor session. Unlike the
 structural refactoring (which was mechanical move-only), these changes
 modify runtime behavior and require benchmarks, verification, and careful
 rollout.
+
+Reality check after review:
+- Item 2 is partially landed already. The daemon already emits
+  `backpressure` messages on relay drops, and the dashboard already renders
+  `BackpressureBanner`.
+- Item 4's `update_layout` lock-ordering bug was still real and is now fixed.
+- Item 7's current `derivable_impls` set is `SurfaceFormat`,
+  `SurfaceState`, and `UnassignedBehavior`.
 
 ---
 
@@ -112,13 +120,14 @@ Add `benches/api_handler_bench.rs`:
 ## Item 2 — WS Adaptive Backpressure
 
 **Why:** When the daemon's WS relay channels fill (bounded at 64), frames
-are silently dropped. Slow clients lose state awareness with no feedback.
-The `BackpressureNotice` type already exists in the UI but is never sent
-or displayed.
+are dropped for that client. The daemon already emits one-shot
+`backpressure` messages and the dashboard already renders
+`BackpressureBanner`, but the system still lacks adaptive per-client
+downsampling and lifecycle-aware notices.
 
 **Target state:** The daemon detects slow clients, downsamples their frame
-rate, and notifies them. The UI renders a dismissible warning banner when
-backpressure is active.
+rate, and notifies them. The existing UI banner reflects activation and
+recovery cleanly, and the header also surfaces reconnect-attempt context.
 
 ### Implementation Steps
 
@@ -132,8 +141,8 @@ backpressure is active.
    - If still slow after 5s, skip 3 of 4 (quarter FPS)
    - If recovered for 10s, restore full rate
 
-3. **Send BackpressureNotice** via the existing events channel when
-   downsampling activates or deactivates. Message format:
+3. **Extend the existing `backpressure` message** when downsampling
+   activates or deactivates. Message format:
    ```json
    {
      "type": "backpressure",
@@ -143,10 +152,10 @@ backpressure is active.
    }
    ```
 
-4. **Wire the UI banner.** `BackpressureNotice` is defined at
-   `ui/src/ws.rs:232-240` but never displayed. Add a dismissible
-   notification component in the dashboard that renders when
-   `backpressure_notice.get().is_some()`.
+4. **Update the existing UI banner only if payload semantics change.**
+   `BackpressureBanner` is already rendered on the dashboard, so this step
+   is limited to adapting the view model and copy if the daemon sends
+   activation/recovery state instead of drop snapshots.
 
 5. **Add connection status badge.** Show reconnect attempt count in the
    header bar alongside the backpressure indicator.
@@ -445,9 +454,9 @@ where the implementations are truly equivalent.
 ### Implementation Steps
 
 1. **Read the three flagged locations:**
-   - `crates/hypercolor-types/src/canvas.rs`
-   - `crates/hypercolor-types/src/scene.rs`
-   - (check for a third — agents mentioned 2-3 locations)
+   - `crates/hypercolor-types/src/canvas.rs` (`SurfaceFormat`)
+   - `crates/hypercolor-types/src/canvas.rs` (`SurfaceState`)
+   - `crates/hypercolor-types/src/scene.rs` (`UnassignedBehavior`)
 
 2. **For each, verify the manual impl matches derive semantics.** Compare
    field-by-field: does the manual impl set any field to a non-Default

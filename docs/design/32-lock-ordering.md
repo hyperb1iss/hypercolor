@@ -171,8 +171,8 @@ Sequential, no nesting. Correct.
 Sequential, no nesting. Correct.
 
 **`update_layout`** (`layouts.rs`):
-`layouts.write [L11]` -> **`spatial_engine.read [L6]` while L11 held** -> drop both.
-**VIOLATION**: L11 > L6. See Known Violations below.
+`spatial_engine.read [L6]` -> drop -> `layouts.write [L11]` -> drop.
+Correct.
 
 **`delete_layout`** (`layouts.rs`):
 `spatial_engine.read [L6]` -> drop -> `layouts.write [L11]` -> drop ->
@@ -200,43 +200,9 @@ branches, but always sequentially (never nested). Correct.
 
 ## Known Violations
 
-### V1: `update_layout` nests `spatial_engine.read` inside `layouts.write`
-
-**File:** `crates/hypercolor-daemon/src/api/layouts.rs:247-249`
-
-```rust
-// layouts.write() is held here (acquired at line 200)
-let active_layout_id = {
-    let spatial = state.spatial_engine.read().await;  // L6 under L11
-    spatial.layout().id.clone()
-};
-```
-
-**Risk:** Low-to-moderate. The render thread never holds `spatial_engine` while
-waiting on `layouts`, so this cannot currently deadlock. However, it violates the
-ordering invariant and could become a deadlock if future code acquires `layouts`
-while holding `spatial_engine`. The `delete_layout` and `list_layouts` handlers
-demonstrate the correct pattern: read `spatial_engine` first, then acquire `layouts`.
-
-**Fix:** Move the `spatial_engine.read()` call above the `layouts.write()` acquisition,
-matching the pattern used by `delete_layout`:
-
-```rust
-let active_layout_id = {
-    let spatial = state.spatial_engine.read().await;
-    spatial.layout().id.clone()
-};
-let mut layouts = state.layouts.write().await;
-// ... mutate layout ...
-```
-
-### V2: `update_layout` nested read is a latent hazard only
-
-No current code path acquires `layouts` while holding `spatial_engine`, so V1
-cannot deadlock today. The render thread uses `scene_transactions` (a std::Mutex
-queue) to communicate layout changes rather than holding `spatial_engine` and
-reaching for `layouts`, which is the key architectural decision that keeps this safe.
-The violation is still worth fixing to maintain the invariant.
+None currently. `update_layout` was the last known API-side ordering issue and
+now follows the same `spatial_engine`-before-`layouts` pattern as
+`delete_layout` and `list_layouts`.
 
 ## Design Notes
 

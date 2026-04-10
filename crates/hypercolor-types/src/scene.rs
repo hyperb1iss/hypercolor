@@ -154,21 +154,16 @@ fn control_value_parameter(value: &ControlValue) -> String {
 }
 
 /// How zones not claimed by any render group should behave.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum UnassignedBehavior {
     /// Unassigned zones render black.
+    #[default]
     Off,
     /// Unassigned zones retain their previous colors.
     Hold,
     /// Route unassigned zones to a fallback render group.
     Fallback(RenderGroupId),
-}
-
-impl Default for UnassignedBehavior {
-    fn default() -> Self {
-        Self::Off
-    }
 }
 
 fn is_default_unassigned_behavior(value: &UnassignedBehavior) -> bool {

@@ -748,17 +748,12 @@ impl std::fmt::Debug for Canvas {
 // ── Render Surfaces ───────────────────────────────────────────────────────
 
 /// Pixel storage format for published render surfaces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SurfaceFormat {
     /// Standard 8-bit RGBA surface.
+    #[default]
     Rgba8888,
-}
-
-impl Default for SurfaceFormat {
-    fn default() -> Self {
-        Self::Rgba8888
-    }
 }
 
 /// Immutable dimensions and format for a surface family.
@@ -936,20 +931,15 @@ impl PublishedSurface {
 }
 
 /// Lifecycle state for a slot in the render surface pool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SurfaceState {
     /// Available for dequeue.
+    #[default]
     Free,
     /// Currently leased for mutation.
     Dequeued,
     /// Published and still potentially shared by readers.
     Published,
-}
-
-impl Default for SurfaceState {
-    fn default() -> Self {
-        Self::Free
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
