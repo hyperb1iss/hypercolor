@@ -36,6 +36,7 @@ pub mod sparkleflinger;
 use std::any::Any;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -182,6 +183,11 @@ impl RenderThread {
     /// The thread runs until `RenderLoop::tick()` returns `false`
     /// (i.e., the render loop has been stopped or paused).
     pub fn spawn(state: RenderThreadState) -> Self {
+        Self::try_spawn(state).expect("render thread should spawn")
+    }
+
+    pub fn try_spawn(state: RenderThreadState) -> Result<Self> {
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let join_handle = std::thread::Builder::new()
             .name("hypercolor-render".to_owned())
             .spawn(move || {
@@ -193,13 +199,26 @@ impl RenderThread {
                     .enable_all()
                     .build()
                     .expect("render thread runtime should initialize");
-                runtime.block_on(run_pipeline(state));
+                let pipeline =
+                    runtime.block_on(pipeline_runtime::PipelineRuntime::from_state(&state));
+                match pipeline {
+                    Ok(runtime_state) => {
+                        let _ = ready_tx.send(Ok(()));
+                        runtime.block_on(run_pipeline(state, runtime_state));
+                    }
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error));
+                    }
+                }
             })
             .expect("render thread should spawn");
+        ready_rx
+            .recv()
+            .context("render thread exited before startup completed")??;
         info!("render thread spawned");
-        Self {
+        Ok(Self {
             join_handle: Some(join_handle),
-        }
+        })
     }
 
     /// Wait for the render thread to exit.

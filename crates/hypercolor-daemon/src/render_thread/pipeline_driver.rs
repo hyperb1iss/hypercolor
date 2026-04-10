@@ -10,20 +10,10 @@ use super::pipeline_runtime::PipelineRuntime;
 
 const PAUSED_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-pub(crate) async fn run_pipeline(state: RenderThreadState) {
+pub(crate) async fn run_pipeline(state: RenderThreadState, mut runtime: PipelineRuntime) {
     info!(
         mode = ?state.render_acceleration_mode,
         "render pipeline started"
-    );
-
-    let initial_spatial_engine = state.spatial_engine.read().await.clone();
-    let mut runtime = PipelineRuntime::new(
-        state.canvas_dims.width(),
-        state.canvas_dims.height(),
-        initial_spatial_engine,
-        state.screen_capture_configured,
-        state.render_acceleration_mode,
-        state.configured_max_fps_tier,
     );
     let mut skip_decision = SkipDecision::None;
     let mut next_frame_at = Instant::now();

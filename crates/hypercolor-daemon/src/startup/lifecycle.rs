@@ -95,7 +95,10 @@ impl DaemonState {
             render_acceleration_mode: render_acceleration.effective_mode,
             configured_max_fps_tier: FpsTier::from_fps(config.daemon.target_fps),
         };
-        self.render_thread = Some(RenderThread::spawn(rt_state));
+        self.render_thread = Some(
+            RenderThread::try_spawn(rt_state)
+                .context("failed to spawn render thread with resolved compositor mode")?,
+        );
         self.display_output_thread = Some(DisplayOutputThread::spawn(DisplayOutputState {
             backend_manager: Arc::clone(&self.backend_manager),
             device_registry: self.device_registry.clone(),

@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use anyhow::Result;
 use hypercolor_core::engine::FpsTier;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::audio::AudioData;
@@ -9,6 +10,7 @@ use hypercolor_core::types::canvas::{
 use hypercolor_core::types::event::FrameData;
 use hypercolor_types::config::RenderAccelerationMode;
 
+use super::RenderThreadState;
 use super::composition_planner::CompositionPlanner;
 use super::desired_render_surface_slots;
 use super::frame_admission::FrameAdmissionController;
@@ -143,6 +145,18 @@ pub(crate) struct PipelineRuntime {
 }
 
 impl PipelineRuntime {
+    pub(crate) async fn from_state(state: &RenderThreadState) -> Result<Self> {
+        let initial_spatial_engine = state.spatial_engine.read().await.clone();
+        Self::new(
+            state.canvas_dims.width(),
+            state.canvas_dims.height(),
+            initial_spatial_engine,
+            state.screen_capture_configured,
+            state.render_acceleration_mode,
+            state.configured_max_fps_tier,
+        )
+    }
+
     pub(crate) fn new(
         canvas_width: u32,
         canvas_height: u32,
@@ -150,8 +164,8 @@ impl PipelineRuntime {
         screen_capture_configured: bool,
         render_acceleration_mode: RenderAccelerationMode,
         configured_max_fps_tier: FpsTier,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        Ok(Self {
             frame_scheduler: FrameScheduler::new(),
             frame_loop: FrameLoopState {
                 cached_inputs: FrameInputs::silence(),
@@ -168,7 +182,7 @@ impl PipelineRuntime {
                 effect_queue: ProducerQueue::new(),
                 screen_queue: ProducerQueue::new(),
                 composition_planner: CompositionPlanner::new(),
-                sparkleflinger: SparkleFlinger::new(render_acceleration_mode),
+                sparkleflinger: SparkleFlinger::new(render_acceleration_mode)?,
                 render_group_runtime: RenderGroupRuntime::new(canvas_width, canvas_height),
                 render_surface_pool: RenderSurfacePool::with_slot_count(
                     SurfaceDescriptor::rgba8888(canvas_width, canvas_height),
@@ -182,6 +196,6 @@ impl PipelineRuntime {
                 recycled_frame: FrameData::empty(),
             },
             frame_admission: FrameAdmissionController::new(configured_max_fps_tier),
-        }
+        })
     }
 }

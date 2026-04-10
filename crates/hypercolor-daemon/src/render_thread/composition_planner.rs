@@ -195,7 +195,6 @@ mod tests {
     use std::collections::HashMap;
 
     use hypercolor_core::types::canvas::{Canvas, Rgba};
-    use hypercolor_types::config::RenderAccelerationMode;
     use hypercolor_types::effect::EffectId;
     use hypercolor_types::scene::{RenderGroup, RenderGroupId};
     use hypercolor_types::spatial::{
@@ -309,7 +308,7 @@ mod tests {
                 ),
             ],
         );
-        let mut sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Cpu);
+        let mut sparkleflinger = SparkleFlinger::cpu();
         let composed = sparkleflinger.compose(compiled.plan);
 
         assert_eq!(compiled.metadata.logical_layer_count, 2);
@@ -340,7 +339,7 @@ mod tests {
             active_render_group_count: 0,
         };
         let compiled = planner.compile_primary_frame(2, 2, &transition_runtime, entering);
-        let mut sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Cpu);
+        let mut sparkleflinger = SparkleFlinger::cpu();
         let composed = sparkleflinger.compose(compiled.plan);
 
         assert_eq!(compiled.metadata.logical_layer_count, 2);

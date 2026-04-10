@@ -2,6 +2,9 @@ mod cpu;
 #[cfg(feature = "wgpu")]
 pub(crate) mod gpu;
 
+use anyhow::Result;
+#[cfg(not(feature = "wgpu"))]
+use anyhow::bail;
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
 use hypercolor_types::config::RenderAccelerationMode;
 
@@ -139,14 +142,20 @@ pub struct SparkleFlinger {
 }
 
 impl SparkleFlinger {
-    pub fn new(mode: RenderAccelerationMode) -> Self {
+    pub fn cpu() -> Self {
+        Self {
+            backend: SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new()),
+        }
+    }
+
+    pub fn new(mode: RenderAccelerationMode) -> Result<Self> {
         let backend = match mode {
             RenderAccelerationMode::Cpu | RenderAccelerationMode::Auto => {
                 SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new())
             }
-            RenderAccelerationMode::Gpu => new_gpu_backend(),
+            RenderAccelerationMode::Gpu => new_gpu_backend()?,
         };
-        Self { backend }
+        Ok(Self { backend })
     }
 
     pub fn compose(&mut self, plan: CompositionPlan) -> ComposedFrameSet {
@@ -166,19 +175,19 @@ impl SparkleFlinger {
 }
 
 #[cfg(feature = "wgpu")]
-fn new_gpu_backend() -> SparkleFlingerBackend {
-    match gpu::GpuSparkleFlinger::new() {
-        Ok(gpu) => SparkleFlingerBackend::Gpu {
-            gpu,
-            cpu_fallback: cpu::CpuSparkleFlinger::new(),
-        },
-        Err(_) => SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new()),
-    }
+fn new_gpu_backend() -> Result<SparkleFlingerBackend> {
+    let gpu = gpu::GpuSparkleFlinger::new()?;
+    Ok(SparkleFlingerBackend::Gpu {
+        gpu,
+        cpu_fallback: cpu::CpuSparkleFlinger::new(),
+    })
 }
 
 #[cfg(not(feature = "wgpu"))]
-fn new_gpu_backend() -> SparkleFlingerBackend {
-    SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new())
+fn new_gpu_backend() -> Result<SparkleFlingerBackend> {
+    bail!(
+        "gpu compositor acceleration is not available yet; rebuild hypercolor-daemon with the `wgpu` feature or use cpu/auto"
+    )
 }
 
 pub(super) fn publish_composed_frame(frame: RenderFrame, bypassed: bool) -> ComposedFrameSet {
@@ -205,7 +214,6 @@ pub(super) fn publish_composed_frame(frame: RenderFrame, bypassed: bool) -> Comp
 #[cfg(test)]
 mod tests {
     use hypercolor_core::types::canvas::{BlendMode, Canvas, PublishedSurface, Rgba, RgbaF32};
-    use hypercolor_types::config::RenderAccelerationMode;
 
     use super::{CompositionLayer, CompositionPlan, SparkleFlinger};
     use crate::render_thread::producer_queue::ProducerFrame;
@@ -231,7 +239,7 @@ mod tests {
     fn sparkleflinger_bypasses_single_replace_surface() {
         let source =
             PublishedSurface::from_owned_canvas(solid_canvas(Rgba::new(32, 64, 96, 255)), 7, 11);
-        let mut sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Cpu);
+        let mut sparkleflinger = SparkleFlinger::cpu();
         let composed = sparkleflinger.compose(CompositionPlan::single(
             2,
             2,
@@ -254,7 +262,7 @@ mod tests {
         let base = Rgba::new(255, 0, 0, 255);
         let overlay = Rgba::new(0, 0, 255, 255);
         let opacity = 0.25;
-        let mut sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Cpu);
+        let mut sparkleflinger = SparkleFlinger::cpu();
         let composed = sparkleflinger.compose(CompositionPlan::with_layers(
             2,
             2,
@@ -293,7 +301,7 @@ mod tests {
     fn sparkleflinger_add_layers_use_additive_blend() {
         let base = Rgba::new(64, 0, 0, 255);
         let glow = Rgba::new(0, 96, 64, 255);
-        let mut sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Cpu);
+        let mut sparkleflinger = SparkleFlinger::cpu();
         let composed = sparkleflinger.compose(CompositionPlan::with_layers(
             2,
             2,
@@ -313,7 +321,7 @@ mod tests {
     fn sparkleflinger_screen_layers_use_screen_blend() {
         let base = Rgba::new(32, 64, 96, 255);
         let overlay = Rgba::new(96, 64, 32, 255);
-        let mut sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Cpu);
+        let mut sparkleflinger = SparkleFlinger::cpu();
         let composed = sparkleflinger.compose(CompositionPlan::with_layers(
             2,
             2,
@@ -334,7 +342,7 @@ mod tests {
         let base = solid_canvas(Rgba::new(255, 0, 0, 255));
         let base_ptr = base.as_rgba_bytes().as_ptr();
         let overlay = solid_canvas(Rgba::new(0, 0, 255, 255));
-        let mut sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Cpu);
+        let mut sparkleflinger = SparkleFlinger::cpu();
         let composed = sparkleflinger.compose(CompositionPlan::with_layers(
             2,
             2,

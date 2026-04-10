@@ -622,6 +622,23 @@ async fn render_thread_exits_when_loop_not_started() {
     rt.shutdown().await.expect("shutdown should succeed");
 }
 
+#[cfg(not(feature = "wgpu"))]
+#[tokio::test]
+async fn render_thread_try_spawn_rejects_explicit_gpu_without_feature() {
+    let mut state = make_render_state(
+        EffectEngine::new(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+
+    let error = match RenderThread::try_spawn(state) {
+        Ok(_) => panic!("explicit gpu mode should fail before the render thread starts"),
+        Err(error) => error,
+    };
+    assert!(format!("{error:#}").contains("rebuild hypercolor-daemon with the `wgpu` feature"));
+}
+
 #[tokio::test]
 async fn render_thread_exits_on_stop() {
     let state = make_render_state(
