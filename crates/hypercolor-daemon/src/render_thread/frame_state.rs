@@ -59,10 +59,6 @@ async fn current_scene_runtime_snapshot(
 ) -> SceneRuntimeSnapshot {
     let mut manager = state.scene_manager.write().await;
     manager.tick_transition(delta_secs);
-    let active_groups = manager
-        .active_scene()
-        .map(|scene| scene.groups.clone())
-        .unwrap_or_default();
     SceneRuntimeSnapshot {
         active_scene_id: manager.active_scene_id().copied(),
         active_transition: manager
@@ -73,7 +69,8 @@ async fn current_scene_runtime_snapshot(
                 progress: transition.progress,
                 eased_progress: transition.eased_progress(),
             }),
-        active_render_groups: active_groups,
+        active_render_groups: manager.active_render_groups(),
+        active_render_groups_revision: manager.active_render_groups_revision(),
     }
 }
 
@@ -116,7 +113,7 @@ async fn current_render_group_effect_scene_snapshot(
     let mut audio_capture_active = false;
     let mut screen_capture_active = false;
 
-    for group in &scene_runtime.active_render_groups {
+    for group in scene_runtime.active_render_groups.iter() {
         if !group.enabled || group.layout.zones.is_empty() {
             continue;
         }

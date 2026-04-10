@@ -179,18 +179,24 @@ impl<'a> ComposeContext<'a> {
     async fn compose_render_group_frame_set(&mut self, stage_start: Instant) -> RenderStageStats {
         let (render_group_result, effect_retained) =
             if self.skip_decision == SkipDecision::ReuseCanvas {
-                if let Some(retained) = self
-                    .render
-                    .render_group_runtime
-                    .reuse_scene(&self.scene_snapshot.scene_runtime.active_render_groups)
-                {
+                if let Some(retained) = self.render.render_group_runtime.reuse_scene(
+                    self.scene_snapshot
+                        .scene_runtime
+                        .active_render_groups_revision,
+                ) {
                     (Ok(retained), true)
                 } else {
                     let producer_start = Instant::now();
                     let result = {
                         let registry = self.state.effect_registry.read().await;
                         self.render.render_group_runtime.render_scene(
-                            &self.scene_snapshot.scene_runtime.active_render_groups,
+                            self.scene_snapshot
+                                .scene_runtime
+                                .active_render_groups
+                                .as_ref(),
+                            self.scene_snapshot
+                                .scene_runtime
+                                .active_render_groups_revision,
                             &registry,
                             self.delta_secs,
                             &self.inputs.audio,
@@ -213,7 +219,13 @@ impl<'a> ComposeContext<'a> {
                 let result = {
                     let registry = self.state.effect_registry.read().await;
                     self.render.render_group_runtime.render_scene(
-                        &self.scene_snapshot.scene_runtime.active_render_groups,
+                        self.scene_snapshot
+                            .scene_runtime
+                            .active_render_groups
+                            .as_ref(),
+                        self.scene_snapshot
+                            .scene_runtime
+                            .active_render_groups_revision,
                         &registry,
                         self.delta_secs,
                         &self.inputs.audio,

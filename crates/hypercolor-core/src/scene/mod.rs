@@ -20,10 +20,11 @@ pub use priority::{PriorityStack, StackEntry};
 pub use transition::{TransitionState, interpolate_color, interpolate_oklab, interpolate_srgb};
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::{Result, bail};
 
-use crate::types::scene::{Scene, SceneId, ScenePriority, TransitionSpec};
+use crate::types::scene::{RenderGroup, Scene, SceneId, ScenePriority, TransitionSpec};
 
 // ── SceneManager ────────────────────────────────────────────────────────
 
@@ -46,6 +47,12 @@ pub struct SceneManager {
     /// History of previously active scene IDs, most recent first.
     /// Used for restore-previous semantics.
     activation_history: Vec<SceneId>,
+
+    /// Cached active render groups for cheap frame snapshot reads.
+    active_render_groups: Arc<[RenderGroup]>,
+
+    /// Monotonic revision for the active render-group cache.
+    active_render_groups_revision: u64,
 }
 
 impl SceneManager {
@@ -57,6 +64,8 @@ impl SceneManager {
             priority_stack: PriorityStack::new(),
             active_transition: None,
             activation_history: Vec::new(),
+            active_render_groups: Arc::default(),
+            active_render_groups_revision: 0,
         }
     }
 
@@ -104,7 +113,12 @@ impl SceneManager {
                 conflicts.join("; ")
             );
         }
-        self.scenes.insert(scene.id, scene);
+        let scene_id = scene.id;
+        let active_scene_id = self.active_scene_id().copied();
+        self.scenes.insert(scene_id, scene);
+        if active_scene_id == Some(scene_id) {
+            self.refresh_active_render_groups();
+        }
         Ok(())
     }
 
@@ -118,6 +132,7 @@ impl SceneManager {
 
         self.priority_stack.remove(id);
         self.activation_history.retain(|sid| sid != id);
+        self.refresh_active_render_groups();
 
         Ok(scene)
     }
@@ -183,6 +198,8 @@ impl SceneManager {
             self.active_transition = None;
         }
 
+        self.refresh_active_render_groups();
+
         Ok(())
     }
 
@@ -200,6 +217,8 @@ impl SceneManager {
             // Remove from history if present.
             self.activation_history.retain(|sid| *sid != entry.scene_id);
         }
+
+        self.refresh_active_render_groups();
     }
 
     /// Get the currently active scene ID (top of the priority stack).
@@ -212,6 +231,18 @@ impl SceneManager {
     #[must_use]
     pub fn active_scene(&self) -> Option<&Scene> {
         self.active_scene_id().and_then(|id| self.scenes.get(id))
+    }
+
+    /// Get the cached active render groups for cheap frame snapshots.
+    #[must_use]
+    pub fn active_render_groups(&self) -> Arc<[RenderGroup]> {
+        Arc::clone(&self.active_render_groups)
+    }
+
+    /// Monotonic revision of the cached active render groups.
+    #[must_use]
+    pub fn active_render_groups_revision(&self) -> u64 {
+        self.active_render_groups_revision
     }
 
     // ── Transition ──────────────────────────────────────────────────
@@ -259,6 +290,18 @@ impl SceneManager {
     #[must_use]
     pub fn activation_history(&self) -> &[SceneId] {
         &self.activation_history
+    }
+
+    fn refresh_active_render_groups(&mut self) {
+        let next_groups = self
+            .active_scene()
+            .map(|scene| Arc::<[RenderGroup]>::from(scene.groups.clone()))
+            .unwrap_or_default();
+        if self.active_render_groups.as_ref() != next_groups.as_ref() {
+            self.active_render_groups_revision =
+                self.active_render_groups_revision.saturating_add(1);
+        }
+        self.active_render_groups = next_groups;
     }
 }
 

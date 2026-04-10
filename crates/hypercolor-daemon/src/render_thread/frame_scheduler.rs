@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::scene::{RenderGroup, SceneId};
 
@@ -17,7 +19,8 @@ pub(crate) struct SceneTransitionSnapshot {
 pub(crate) struct SceneRuntimeSnapshot {
     pub active_scene_id: Option<SceneId>,
     pub active_transition: Option<SceneTransitionSnapshot>,
-    pub active_render_groups: Vec<RenderGroup>,
+    pub active_render_groups: Arc<[RenderGroup]>,
+    pub active_render_groups_revision: u64,
 }
 
 impl SceneRuntimeSnapshot {
@@ -187,7 +190,8 @@ mod tests {
                     progress: 0.25,
                     eased_progress: 0.5,
                 }),
-                active_render_groups: vec![sample_group()],
+                active_render_groups: vec![sample_group()].into(),
+                active_render_groups_revision: 1,
             },
             spatial_engine: empty_spatial_engine(),
         });

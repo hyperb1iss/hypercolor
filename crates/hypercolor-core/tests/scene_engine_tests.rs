@@ -244,6 +244,54 @@ fn scene_manager_activate_and_active_tracking() {
 }
 
 #[test]
+fn scene_manager_caches_active_render_groups() {
+    let mut mgr = SceneManager::new();
+    let grouped = grouped_scene("Grouped", "desk:main", EffectId::from(Uuid::now_v7()));
+    let grouped_id = grouped.id;
+    let plain = make_scene("Plain");
+    let plain_id = plain.id;
+
+    mgr.create(grouped).expect("create grouped");
+    mgr.create(plain).expect("create plain");
+
+    assert!(mgr.active_render_groups().is_empty());
+    assert_eq!(mgr.active_render_groups_revision(), 0);
+
+    mgr.activate(&grouped_id, None).expect("activate grouped");
+    assert_eq!(mgr.active_render_groups().len(), 1);
+    let grouped_revision = mgr.active_render_groups_revision();
+    assert!(grouped_revision > 0);
+
+    mgr.activate(&plain_id, None).expect("activate plain");
+    assert!(mgr.active_render_groups().is_empty());
+    assert!(mgr.active_render_groups_revision() > grouped_revision);
+}
+
+#[test]
+fn scene_manager_refreshes_active_render_group_cache_on_update() {
+    let mut mgr = SceneManager::new();
+    let mut scene = grouped_scene("Grouped", "desk:main", EffectId::from(Uuid::now_v7()));
+    let id = scene.id;
+
+    mgr.create(scene.clone()).expect("create grouped");
+    mgr.activate(&id, None).expect("activate grouped");
+    let initial_revision = mgr.active_render_groups_revision();
+    assert_eq!(
+        mgr.active_render_groups()[0].layout.zones[0].id,
+        "desk:main"
+    );
+
+    scene.groups[0].layout = sample_layout("desk:updated");
+    mgr.update(scene).expect("update grouped");
+
+    assert_eq!(
+        mgr.active_render_groups()[0].layout.zones[0].id,
+        "desk:updated"
+    );
+    assert!(mgr.active_render_groups_revision() > initial_revision);
+}
+
+#[test]
 fn scene_manager_activate_nonexistent_fails() {
     let mut mgr = SceneManager::new();
     let id = SceneId::new();

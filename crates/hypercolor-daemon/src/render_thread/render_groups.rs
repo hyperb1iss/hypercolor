@@ -26,7 +26,7 @@ pub(crate) struct RenderGroupResult {
 
 #[derive(Clone)]
 struct RetainedRenderGroupFrame {
-    groups: Vec<RenderGroup>,
+    groups_revision: u64,
     preview_frame: ProducerFrame,
     zones: Vec<ZoneColors>,
     layout: Arc<SpatialLayout>,
@@ -61,9 +61,9 @@ impl RenderGroupRuntime {
         }
     }
 
-    pub(crate) fn reuse_scene(&self, groups: &[RenderGroup]) -> Option<RenderGroupResult> {
+    pub(crate) fn reuse_scene(&self, groups_revision: u64) -> Option<RenderGroupResult> {
         let retained = self.retained_frame.as_ref()?;
-        if retained.groups != groups {
+        if retained.groups_revision != groups_revision {
             return None;
         }
 
@@ -79,6 +79,7 @@ impl RenderGroupRuntime {
     pub(crate) fn render_scene(
         &mut self,
         groups: &[RenderGroup],
+        groups_revision: u64,
         registry: &EffectRegistry,
         delta_secs: f32,
         audio: &AudioData,
@@ -134,7 +135,7 @@ impl RenderGroupRuntime {
         let layout = Arc::clone(&self.combined_layout);
 
         self.retained_frame = Some(RetainedRenderGroupFrame {
-            groups: groups.to_vec(),
+            groups_revision,
             preview_frame: preview_frame.clone(),
             zones: zones.clone(),
             layout: Arc::clone(&layout),
