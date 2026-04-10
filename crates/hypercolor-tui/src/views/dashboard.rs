@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::action::Action;
@@ -92,6 +92,20 @@ impl DashboardView {
     // ── Panel renderers ─────────────────────────────────────────────
 
     /// Render the "Now Playing" panel — effect info + daemon gauges.
+    ///
+    /// Layout (top to bottom):
+    ///   ▶ Effect Name                               (1 row)
+    ///   description text wrapped natively           (0–3 rows)
+    ///   author · category                           (0–1 row)
+    ///   ─────────────                               (1 row)
+    ///   ♫ Audio  ⚙ N ctrl  ★ N pre                  (0–1 row)
+    ///   tag tag tag tag                             (0–2 rows, wrapped)
+    ///   ─────────────                               (1 row)
+    ///   Bright  ████░░░░ 100%                       (1 row)
+    ///   FPS     60 / 60                             (1 row)
+    ///
+    /// Each section is laid out top-down with bounds checks so partial
+    /// rendering survives narrow / short panel sizes.
     #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
     fn render_effect_panel(&self, frame: &mut Frame, area: Rect) {
         let block = Block::default()
@@ -106,121 +120,148 @@ impl DashboardView {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        if inner.width < 4 || inner.height < 2 {
+        if inner.width < 6 || inner.height < 2 {
             return;
         }
 
-        let content_w = inner.width.saturating_sub(2);
-        let x = inner.x + 1;
+        // 2-cell horizontal padding inside the block for breathing room
+        let pad_x = 2_u16;
+        let content_w = inner.width.saturating_sub(pad_x * 2);
+        let x = inner.x + pad_x;
         let max_y = inner.y + inner.height;
 
         let Some(effect) = self.active_effect() else {
             self.render_idle_state(
                 frame,
-                Rect::new(x, inner.y, content_w, max_y.saturating_sub(inner.y)),
+                Rect::new(x, inner.y + 1, content_w, max_y.saturating_sub(inner.y + 1)),
             );
             return;
         };
 
-        let mut y = inner.y;
-        y = Self::render_effect_info(frame, effect, x, y, max_y, content_w);
-        y = Self::render_effect_badges(frame, effect, x, y, max_y, content_w);
+        let mut y = inner.y + 1; // 1-row top padding
+
+        // ── Effect identity ──────────────────────────
+        y = Self::render_effect_header(frame, effect, x, y, max_y, content_w);
+        y = Self::render_effect_description(frame, effect, x, y, max_y, content_w);
+        y = Self::render_author_category(frame, effect, x, y, max_y, content_w);
+        y = Self::render_separator(frame, x, y, max_y, content_w);
+
+        // ── Effect features ──────────────────────────
+        y = Self::render_feature_badges(frame, effect, x, y, max_y, content_w);
+        y = Self::render_tags(frame, effect, x, y, max_y, content_w);
+        y = Self::render_separator(frame, x, y, max_y, content_w);
+
+        // ── Daemon gauges ────────────────────────────
         self.render_daemon_gauges(frame, x, y, max_y, content_w);
     }
 
-    /// Render effect name, description, author/category, and separator.
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::as_conversions,
-        clippy::cast_possible_truncation
-    )]
-    fn render_effect_info(
+    /// Effect name with play indicator.
+    fn render_effect_header(
         frame: &mut Frame,
         effect: &EffectSummary,
         x: u16,
-        mut y: u16,
+        y: u16,
         max_y: u16,
         w: u16,
     ) -> u16 {
-        // Effect name — bold, prominent
-        if y < max_y {
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled("\u{25B6} ", Style::default().fg(SUCCESS_GREEN)),
-                    Span::styled(
-                        truncate_str(&effect.name, w.saturating_sub(2).into()),
-                        Style::default().fg(BASE_WHITE).add_modifier(Modifier::BOLD),
-                    ),
-                ])),
-                Rect::new(x, y, w, 1),
-            );
-            y += 1;
+        if y >= max_y {
+            return y;
         }
-
-        // Description — up to 2 lines
-        if y < max_y && !effect.description.is_empty() {
-            let desc_lines = if effect.description.len() > w as usize && y + 1 < max_y {
-                let line1 = truncate_str(&effect.description, w.into());
-                let rest_start = line1.len().min(effect.description.len());
-                let line2 = truncate_str(effect.description[rest_start..].trim_start(), w.into());
-                vec![
-                    Line::from(Span::styled(line1, Style::default().fg(DIM_GRAY))),
-                    Line::from(Span::styled(line2, Style::default().fg(DIM_GRAY))),
-                ]
-            } else {
-                vec![Line::from(Span::styled(
-                    truncate_str(&effect.description, w.into()),
-                    Style::default().fg(DIM_GRAY),
-                ))]
-            };
-            let h = desc_lines.len() as u16;
-            frame.render_widget(Paragraph::new(desc_lines), Rect::new(x, y, w, h));
-            y += h;
-        }
-
-        // Author · category
-        if y < max_y {
-            let mut meta: Vec<Span<'_>> = Vec::new();
-            if !effect.author.is_empty() {
-                meta.push(Span::styled(&effect.author, Style::default().fg(CORAL)));
-            }
-            if !effect.category.is_empty() {
-                if !meta.is_empty() {
-                    meta.push(Span::styled(" \u{00B7} ", Style::default().fg(DIM_GRAY)));
-                }
-                meta.push(Span::styled(
-                    &effect.category,
-                    Style::default().fg(DIM_GRAY),
-                ));
-            }
-            if !meta.is_empty() {
-                frame.render_widget(Paragraph::new(Line::from(meta)), Rect::new(x, y, w, 1));
-                y += 1;
-            }
-        }
-
-        // Separator
-        if y < max_y {
-            let sep: String = "\u{2500}".repeat(w as usize);
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    sep,
-                    Style::default().fg(BORDER_DIM),
-                ))),
-                Rect::new(x, y, w, 1),
-            );
-            y += 1;
-        }
-
-        y
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("\u{25B6} ", Style::default().fg(SUCCESS_GREEN)),
+                Span::styled(
+                    truncate_str(&effect.name, w.saturating_sub(2).into()),
+                    Style::default().fg(BASE_WHITE).add_modifier(Modifier::BOLD),
+                ),
+            ])),
+            Rect::new(x, y, w, 1),
+        );
+        y + 1
     }
 
-    /// Render compact feature badges (audio, controls, presets, tags).
-    fn render_effect_badges(
+    /// Description text — natively wrapped via `Wrap { trim: false }`,
+    /// capped at 3 rows.
+    fn render_effect_description(
         frame: &mut Frame,
         effect: &EffectSummary,
         x: u16,
-        mut y: u16,
+        y: u16,
+        max_y: u16,
+        w: u16,
+    ) -> u16 {
+        if effect.description.is_empty() || y >= max_y {
+            return y;
+        }
+        let max_h = (max_y - y).min(3);
+        if max_h == 0 {
+            return y;
+        }
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                effect.description.as_str(),
+                Style::default().fg(DIM_GRAY),
+            ))
+            .wrap(Wrap { trim: false }),
+            Rect::new(x, y, w, max_h),
+        );
+        y + max_h
+    }
+
+    /// Author · category meta line.
+    fn render_author_category(
+        frame: &mut Frame,
+        effect: &EffectSummary,
+        x: u16,
+        y: u16,
+        max_y: u16,
+        w: u16,
+    ) -> u16 {
+        if y >= max_y {
+            return y;
+        }
+        let mut meta: Vec<Span<'_>> = Vec::new();
+        if !effect.author.is_empty() {
+            meta.push(Span::styled(&effect.author, Style::default().fg(CORAL)));
+        }
+        if !effect.category.is_empty() {
+            if !meta.is_empty() {
+                meta.push(Span::styled(" \u{00B7} ", Style::default().fg(DIM_GRAY)));
+            }
+            meta.push(Span::styled(
+                &effect.category,
+                Style::default().fg(DIM_GRAY),
+            ));
+        }
+        if meta.is_empty() {
+            return y;
+        }
+        frame.render_widget(Paragraph::new(Line::from(meta)), Rect::new(x, y, w, 1));
+        y + 1
+    }
+
+    /// Thin horizontal separator line.
+    fn render_separator(frame: &mut Frame, x: u16, y: u16, max_y: u16, w: u16) -> u16 {
+        if y >= max_y {
+            return y;
+        }
+        let sep: String = "\u{2500}".repeat(w as usize);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                sep,
+                Style::default().fg(BORDER_DIM),
+            ))),
+            Rect::new(x, y, w, 1),
+        );
+        y + 1
+    }
+
+    /// Audio / control count / preset count badges (no tags).
+    fn render_feature_badges(
+        frame: &mut Frame,
+        effect: &EffectSummary,
+        x: u16,
+        y: u16,
         max_y: u16,
         w: u16,
     ) -> u16 {
@@ -236,7 +277,7 @@ impl DashboardView {
         }
         if !effect.controls.is_empty() {
             if !badges.is_empty() {
-                badges.push(Span::styled(" \u{2502} ", Style::default().fg(BORDER_DIM)));
+                badges.push(Span::styled("  ", Style::default()));
             }
             badges.push(Span::styled(
                 format!("\u{2699} {} ctrl", effect.controls.len()),
@@ -245,36 +286,49 @@ impl DashboardView {
         }
         if !effect.presets.is_empty() {
             if !badges.is_empty() {
-                badges.push(Span::styled(" \u{2502} ", Style::default().fg(BORDER_DIM)));
+                badges.push(Span::styled("  ", Style::default()));
             }
             badges.push(Span::styled(
                 format!("\u{2605} {} pre", effect.presets.len()),
                 Style::default().fg(CORAL),
             ));
         }
-        if !effect.tags.is_empty() {
-            if !badges.is_empty() {
-                badges.push(Span::styled(" \u{2502} ", Style::default().fg(BORDER_DIM)));
-            }
-            let tag_str = effect
-                .tags
-                .iter()
-                .take(3)
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join(" ");
-            badges.push(Span::styled(tag_str, Style::default().fg(DIM_GRAY)));
+        if badges.is_empty() {
+            return y;
         }
-        if !badges.is_empty() {
-            frame.render_widget(Paragraph::new(Line::from(badges)), Rect::new(x, y, w, 1));
-            y += 1;
+        frame.render_widget(Paragraph::new(Line::from(badges)), Rect::new(x, y, w, 1));
+        y + 1
+    }
+
+    /// Tag list on its own line, natively wrapped, capped at 2 rows.
+    fn render_tags(
+        frame: &mut Frame,
+        effect: &EffectSummary,
+        x: u16,
+        y: u16,
+        max_y: u16,
+        w: u16,
+    ) -> u16 {
+        if effect.tags.is_empty() || y >= max_y {
+            return y;
         }
-        y
+        let max_h = (max_y - y).min(2);
+        if max_h == 0 {
+            return y;
+        }
+        let tag_str = effect.tags.join("  ");
+        frame.render_widget(
+            Paragraph::new(Span::styled(tag_str, Style::default().fg(DIM_GRAY)))
+                .wrap(Wrap { trim: false }),
+            Rect::new(x, y, w, max_h),
+        );
+        y + max_h
     }
 
     /// Render brightness gauge and FPS indicator.
-    fn render_daemon_gauges(&self, frame: &mut Frame, x: u16, mut y: u16, max_y: u16, w: u16) {
+    fn render_daemon_gauges(&self, frame: &mut Frame, x: u16, y: u16, max_y: u16, w: u16) {
         let Some(ds) = &self.daemon_state else { return };
+        let mut y = y;
 
         if y < max_y {
             let bright_norm = f32::from(ds.brightness) / 100.0;
@@ -293,7 +347,7 @@ impl DashboardView {
             };
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
-                    Span::styled("FPS   ", Style::default().fg(DIM_GRAY)),
+                    Span::styled("FPS     ", Style::default().fg(DIM_GRAY)),
                     Span::styled(
                         format!("{:.0}", ds.fps_actual),
                         Style::default().fg(fps_color).add_modifier(Modifier::BOLD),
