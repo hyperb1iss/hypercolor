@@ -136,16 +136,19 @@ pub(crate) fn publish_frame_updates(
         .preview_runtime
         .record_canvas_publication(&canvas_frame);
     let _ = state.event_bus.canvas_sender().send(canvas_frame);
-    let screen_frame = if let Some(surface) = screen_preview_surface {
-        CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
-    } else {
-        CanvasFrame::empty()
-    };
-    if should_publish_screen_frame(state, &screen_frame) {
-        state
-            .preview_runtime
-            .record_screen_canvas_publication(&screen_frame);
-        let _ = state.event_bus.screen_canvas_sender().send(screen_frame);
+    let screen_canvas_receivers = state.event_bus.screen_canvas_receiver_count();
+    if screen_canvas_receivers > 0 {
+        let screen_frame = if let Some(surface) = screen_preview_surface {
+            CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
+        } else {
+            CanvasFrame::empty()
+        };
+        if should_publish_screen_frame(state, &screen_frame) {
+            state
+                .preview_runtime
+                .record_screen_canvas_publication(&screen_frame);
+            let _ = state.event_bus.screen_canvas_sender().send(screen_frame);
+        }
     }
     if event_subscribers > 0 {
         state.event_bus.publish(HypercolorEvent::FrameRendered {
