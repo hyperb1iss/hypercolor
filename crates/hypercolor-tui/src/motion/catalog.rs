@@ -30,9 +30,7 @@ fn brand_gradient(t: f32) -> (u8, u8, u8) {
     let frac = scaled - idx as f32;
     let (r1, g1, b1) = stops[idx];
     let (r2, g2, b2) = stops[idx + 1];
-    let lerp = |a: u8, b: u8, f: f32| {
-        (f32::from(a) + (f32::from(b) - f32::from(a)) * f) as u8
-    };
+    let lerp = |a: u8, b: u8, f: f32| (f32::from(a) + (f32::from(b) - f32::from(a)) * f) as u8;
     (lerp(r1, r2, frac), lerp(g1, g2, frac), lerp(b1, b2, frac))
 }
 
@@ -173,17 +171,17 @@ pub fn panel_focus(panel_area: Rect, sensitivity: MotionSensitivity) -> Effect {
         .with_filter(CellFilter::Outer(Margin::new(1, 1)))
 }
 
-/// Dissolve + coalesce when switching screens.
+/// Smooth fade-in when switching screens.
 ///
-/// Spec 38 §6.6 — approximation of an offscreen-buffer crossfade since
-/// ratatui doesn't have true component-level offscreen rendering.
+/// The active screen swaps instantly at the action handler, then this
+/// effect fades the new content in from the panel background color.
+/// No destruction phase — the user never sees an empty frame, just a
+/// gentle reveal of the destination screen.
 pub fn screen_transition(content_area: Rect, sensitivity: MotionSensitivity) -> Effect {
-    let half = scale_ms(150, sensitivity);
-    fx::sequence(&[
-        fx::dissolve((half, Interpolation::QuadIn)),
-        fx::coalesce((half, Interpolation::QuadOut)),
-    ])
-    .with_area(content_area)
+    let total = scale_ms(220, sensitivity);
+    // Panel background color from theme.rs (`bg.panel` ≈ #181820)
+    let bg_panel = Color::Rgb(24, 24, 32);
+    fx::fade_from_fg(bg_panel, (total, Interpolation::CubicOut)).with_area(content_area)
 }
 
 /// Sleep-aware notification toast slide.
