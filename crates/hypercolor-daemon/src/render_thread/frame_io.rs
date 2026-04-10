@@ -53,16 +53,11 @@ pub(crate) async fn sample_inputs(state: &RenderThreadState, delta_secs: f32) ->
         }
     }
 
-    let screen_preview_surface = screen_data
-        .as_ref()
-        .and_then(|data| data.canvas_downscale.clone());
-
     FrameInputs {
         audio,
         interaction,
         screen_data,
         screen_canvas: None,
-        screen_preview_surface,
     }
 }
 

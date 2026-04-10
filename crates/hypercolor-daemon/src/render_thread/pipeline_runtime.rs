@@ -23,7 +23,6 @@ pub(crate) struct FrameInputs {
     pub(crate) interaction: hypercolor_core::input::InteractionData,
     pub(crate) screen_data: Option<hypercolor_core::input::ScreenData>,
     pub(crate) screen_canvas: Option<Canvas>,
-    pub(crate) screen_preview_surface: Option<PublishedSurface>,
 }
 
 impl FrameInputs {
@@ -33,7 +32,6 @@ impl FrameInputs {
             interaction: hypercolor_core::input::InteractionData::default(),
             screen_data: None,
             screen_canvas: None,
-            screen_preview_surface: None,
         }
     }
 

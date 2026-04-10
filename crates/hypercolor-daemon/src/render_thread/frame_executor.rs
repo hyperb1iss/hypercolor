@@ -195,9 +195,19 @@ pub(crate) async fn execute_frame(
     {
         preview_surface
             .or_else(|| sampling_surface.clone())
-            .or_else(|| inputs.screen_preview_surface.clone())
+            .or_else(|| {
+                inputs
+                    .screen_data
+                    .as_ref()
+                    .and_then(|data| data.canvas_downscale.clone())
+            })
     } else {
-        preview_surface.or_else(|| inputs.screen_preview_surface.clone())
+        preview_surface.or_else(|| {
+            inputs
+                .screen_data
+                .as_ref()
+                .and_then(|data| data.canvas_downscale.clone())
+        })
     };
     let publish_stats = publish_frame_updates(
         state,

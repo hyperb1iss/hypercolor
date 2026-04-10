@@ -354,7 +354,11 @@ impl<'a> ComposeContext<'a> {
     }
 
     fn latch_screen_frame(&mut self) -> Option<ProducedFrame> {
-        if let Some(screen_surface) = self.inputs.screen_preview_surface.as_ref()
+        if let Some(screen_surface) = self
+            .inputs
+            .screen_data
+            .as_ref()
+            .and_then(|data| data.canvas_downscale.as_ref())
             && screen_surface.width() == self.state.canvas_dims.width()
             && screen_surface.height() == self.state.canvas_dims.height()
         {
