@@ -147,11 +147,10 @@ impl SparkleFlinger {
             && layer.is_bypass_candidate()
         {
             let (sampling_canvas, sampling_surface) = layer.frame.into_render_frame();
-            let preview_surface = sampling_surface.clone();
             return ComposedFrameSet {
                 sampling_canvas,
                 sampling_surface,
-                preview_surface,
+                preview_surface: None,
                 bypassed: true,
             };
         }
@@ -243,14 +242,8 @@ mod tests {
         let surface = composed
             .sampling_surface
             .expect("single replace layer should bypass into a surface");
-        let preview_surface = composed
-            .preview_surface
-            .expect("bypassed surface should also be exposed for preview");
         assert_eq!(surface.rgba_bytes().as_ptr(), source.rgba_bytes().as_ptr());
-        assert_eq!(
-            preview_surface.rgba_bytes().as_ptr(),
-            source.rgba_bytes().as_ptr()
-        );
+        assert!(composed.preview_surface.is_none());
         assert_eq!(
             composed.sampling_canvas.as_rgba_bytes().as_ptr(),
             source.rgba_bytes().as_ptr()
