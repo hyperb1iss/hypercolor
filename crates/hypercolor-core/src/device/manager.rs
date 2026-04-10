@@ -9,6 +9,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -332,16 +333,142 @@ pub struct AsyncWriteFailure {
     pub error: String,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug)]
 struct OutputQueueMetrics {
-    frames_received: u64,
-    frames_sent: u64,
-    frames_dropped: u64,
-    total_latency: Duration,
-    total_queue_wait: Duration,
-    total_write_time: Duration,
-    last_error: Option<String>,
-    last_sent_at: Option<Instant>,
+    started_at: Instant,
+    frames_received: AtomicU64,
+    frames_sent: AtomicU64,
+    frames_dropped: AtomicU64,
+    total_latency_us: AtomicU64,
+    total_queue_wait_us: AtomicU64,
+    total_write_time_us: AtomicU64,
+    last_sent_offset_us: AtomicU64,
+    last_sequence: AtomicU64,
+    last_success_sequence: AtomicU64,
+    last_error_sequence: AtomicU64,
+    last_error: StdMutex<Option<String>>,
+}
+
+impl OutputQueueMetrics {
+    fn new(started_at: Instant) -> Self {
+        Self {
+            started_at,
+            frames_received: AtomicU64::new(0),
+            frames_sent: AtomicU64::new(0),
+            frames_dropped: AtomicU64::new(0),
+            total_latency_us: AtomicU64::new(0),
+            total_queue_wait_us: AtomicU64::new(0),
+            total_write_time_us: AtomicU64::new(0),
+            last_sent_offset_us: AtomicU64::new(0),
+            last_sequence: AtomicU64::new(0),
+            last_success_sequence: AtomicU64::new(0),
+            last_error_sequence: AtomicU64::new(0),
+            last_error: StdMutex::new(None),
+        }
+    }
+
+    fn record_received(&self, sequence: u64) {
+        self.frames_received.fetch_add(1, Ordering::Relaxed);
+        self.last_sequence.store(sequence, Ordering::Relaxed);
+    }
+
+    fn record_dropped(&self, dropped: u64) {
+        self.frames_dropped.fetch_add(dropped, Ordering::Relaxed);
+    }
+
+    fn record_write_success(
+        &self,
+        sequence: u64,
+        queue_wait: Duration,
+        write_time: Duration,
+        total_latency: Duration,
+        sent_at: Instant,
+    ) {
+        self.frames_sent.fetch_add(1, Ordering::Relaxed);
+        self.total_queue_wait_us
+            .fetch_add(duration_micros(queue_wait), Ordering::Relaxed);
+        self.total_write_time_us
+            .fetch_add(duration_micros(write_time), Ordering::Relaxed);
+        self.total_latency_us
+            .fetch_add(duration_micros(total_latency), Ordering::Relaxed);
+        self.last_sent_offset_us.store(
+            duration_micros(sent_at.saturating_duration_since(self.started_at)),
+            Ordering::Relaxed,
+        );
+        self.last_success_sequence
+            .store(sequence, Ordering::Relaxed);
+    }
+
+    fn record_write_error(&self, sequence: u64, sent_at: Instant, error: String) {
+        self.last_sent_offset_us.store(
+            duration_micros(sent_at.saturating_duration_since(self.started_at)),
+            Ordering::Relaxed,
+        );
+        self.last_error_sequence.store(sequence, Ordering::Relaxed);
+        if let Ok(mut last_error) = self.last_error.lock() {
+            *last_error = Some(error);
+        }
+    }
+
+    fn snapshot(
+        &self,
+        backend_id: &str,
+        device_id: DeviceId,
+        mapped_layout_ids: Vec<String>,
+        target_fps: u32,
+    ) -> OutputQueueDebugSnapshot {
+        let frames_received = self.frames_received.load(Ordering::Relaxed);
+        let frames_sent = self.frames_sent.load(Ordering::Relaxed);
+        let frames_dropped = self.frames_dropped.load(Ordering::Relaxed);
+        let avg_latency_ms =
+            average_micros_ms(self.total_latency_us.load(Ordering::Relaxed), frames_sent);
+        let avg_queue_wait_ms = average_micros_ms(
+            self.total_queue_wait_us.load(Ordering::Relaxed),
+            frames_sent,
+        );
+        let avg_write_ms = average_micros_ms(
+            self.total_write_time_us.load(Ordering::Relaxed),
+            frames_sent,
+        );
+        let last_sent_offset_us = self.last_sent_offset_us.load(Ordering::Relaxed);
+        let last_sent_ago_ms = (last_sent_offset_us > 0).then(|| {
+            let last_sent_at = self
+                .started_at
+                .checked_add(Duration::from_micros(last_sent_offset_us))
+                .unwrap_or(self.started_at);
+            let ms = Instant::now()
+                .saturating_duration_since(last_sent_at)
+                .as_millis();
+            u64::try_from(ms).unwrap_or(u64::MAX)
+        });
+        let last_error = (self.last_error_sequence.load(Ordering::Relaxed)
+            > self.last_success_sequence.load(Ordering::Relaxed))
+        .then(|| self.last_error.lock().ok().and_then(|guard| guard.clone()))
+        .flatten();
+
+        OutputQueueDebugSnapshot {
+            backend_id: backend_id.to_owned(),
+            device_id: device_id.to_string(),
+            mapped_layout_ids,
+            target_fps,
+            frames_received,
+            frames_sent,
+            frames_dropped,
+            avg_latency_ms,
+            avg_queue_wait_ms,
+            avg_write_ms,
+            last_error,
+            last_sent_ago_ms,
+            last_sequence: self.last_sequence.load(Ordering::Relaxed),
+        }
+    }
+
+    fn last_error(&self) -> Option<String> {
+        (self.last_error_sequence.load(Ordering::Relaxed)
+            > self.last_success_sequence.load(Ordering::Relaxed))
+        .then(|| self.last_error.lock().ok().and_then(|guard| guard.clone()))
+        .flatten()
+    }
 }
 
 // ── OutputQueue ─────────────────────────────────────────────────────────────
@@ -374,7 +501,7 @@ struct OutputQueue {
     tx: watch::Sender<Option<Arc<FramePayload>>>,
     _io_task: JoinHandle<()>,
     target_fps: u32,
-    metrics: Arc<StdMutex<OutputQueueMetrics>>,
+    metrics: Arc<OutputQueueMetrics>,
     next_sequence: u64,
 }
 
@@ -387,7 +514,7 @@ impl OutputQueue {
         target_fps: u32,
     ) -> Self {
         let (tx, mut rx) = watch::channel(None::<Arc<FramePayload>>);
-        let metrics = Arc::new(StdMutex::new(OutputQueueMetrics::default()));
+        let metrics = Arc::new(OutputQueueMetrics::new(Instant::now()));
         let metrics_for_task = Arc::clone(&metrics);
 
         let io_task = tokio::spawn(async move {
@@ -428,9 +555,7 @@ impl OutputQueue {
 
                 if frame.sequence > last_sent_sequence + 1 {
                     let dropped = frame.sequence - last_sent_sequence - 1;
-                    if let Ok(mut snapshot) = metrics_for_task.lock() {
-                        snapshot.frames_dropped = snapshot.frames_dropped.saturating_add(dropped);
-                    }
+                    metrics_for_task.record_dropped(dropped);
 
                     trace!(
                         backend_id = %backend_id,
@@ -447,22 +572,19 @@ impl OutputQueue {
                 let send_completed = Instant::now();
                 let write_time = send_completed.saturating_duration_since(write_started);
 
-                if let Ok(mut snapshot) = metrics_for_task.lock() {
-                    snapshot.last_sent_at = Some(send_completed);
-
-                    match &result {
-                        Ok(()) => {
-                            snapshot.frames_sent = snapshot.frames_sent.saturating_add(1);
-                            snapshot.total_queue_wait += queue_wait;
-                            snapshot.total_write_time += write_time;
-                            snapshot.total_latency +=
-                                send_completed.saturating_duration_since(frame.produced_at);
-                            snapshot.last_error = None;
-                        }
-                        Err(error) => {
-                            snapshot.last_error = Some(error.to_string());
-                        }
-                    }
+                match &result {
+                    Ok(()) => metrics_for_task.record_write_success(
+                        frame.sequence,
+                        queue_wait,
+                        write_time,
+                        send_completed.saturating_duration_since(frame.produced_at),
+                        send_completed,
+                    ),
+                    Err(error) => metrics_for_task.record_write_error(
+                        frame.sequence,
+                        send_completed,
+                        error.to_string(),
+                    ),
                 }
 
                 if let Err(error) = result {
@@ -493,11 +615,8 @@ impl OutputQueue {
 
     /// Push the latest payload for this device.
     fn push(&mut self, colors: Vec<[u8; 3]>) -> Option<Vec<[u8; 3]>> {
-        if let Ok(mut snapshot) = self.metrics.lock() {
-            snapshot.frames_received = snapshot.frames_received.saturating_add(1);
-        }
-
         self.next_sequence = self.next_sequence.saturating_add(1);
+        self.metrics.record_received(self.next_sequence);
 
         let replaced = self.tx.send_replace(Some(Arc::new(FramePayload {
             colors,
@@ -514,35 +633,8 @@ impl OutputQueue {
         device_id: DeviceId,
         mapped_layout_ids: Vec<String>,
     ) -> OutputQueueDebugSnapshot {
-        let metrics = self
-            .metrics
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
-        let avg_latency_ms = average_duration_ms(metrics.total_latency, metrics.frames_sent);
-        let avg_queue_wait_ms = average_duration_ms(metrics.total_queue_wait, metrics.frames_sent);
-        let avg_write_ms = average_duration_ms(metrics.total_write_time, metrics.frames_sent);
-        let now = Instant::now();
-        let last_sent_ago_ms = metrics.last_sent_at.map(|last| {
-            let ms = now.saturating_duration_since(last).as_millis();
-            u64::try_from(ms).unwrap_or(u64::MAX)
-        });
-
-        OutputQueueDebugSnapshot {
-            backend_id: backend_id.to_owned(),
-            device_id: device_id.to_string(),
-            mapped_layout_ids,
-            target_fps: self.target_fps,
-            frames_received: metrics.frames_received,
-            frames_sent: metrics.frames_sent,
-            frames_dropped: metrics.frames_dropped,
-            avg_latency_ms,
-            avg_queue_wait_ms,
-            avg_write_ms,
-            last_error: metrics.last_error,
-            last_sent_ago_ms,
-            last_sequence: self.next_sequence,
-        }
+        self.metrics
+            .snapshot(backend_id, device_id, mapped_layout_ids, self.target_fps)
     }
 }
 
@@ -1565,11 +1657,7 @@ impl BackendManager {
             .output_queues
             .iter()
             .filter_map(|((backend_id, device_id), queue)| {
-                let error = queue
-                    .metrics
-                    .lock()
-                    .ok()
-                    .and_then(|metrics| metrics.last_error.clone())?;
+                let error = queue.metrics.last_error()?;
 
                 Some(AsyncWriteFailure {
                     backend_id: backend_id.clone(),
@@ -1780,14 +1868,21 @@ fn target_interval_for_fps(target_fps: u32) -> Option<Duration> {
     Some(Duration::from_secs_f64(1.0 / f64::from(target_fps)))
 }
 
-fn average_duration_ms(total: Duration, sample_count: u64) -> u64 {
+fn average_micros_ms(total_micros: u64, sample_count: u64) -> u64 {
     if sample_count == 0 {
         return 0;
     }
 
-    let divisor = u32::try_from(sample_count).unwrap_or(u32::MAX);
-    let average = total.checked_div(divisor).unwrap_or_default().as_millis();
-    u64::try_from(average).unwrap_or(u64::MAX)
+    total_micros
+        .checked_div(sample_count)
+        .unwrap_or_default()
+        .checked_div(1_000)
+        .unwrap_or_default()
+}
+
+fn duration_micros(duration: Duration) -> u64 {
+    let micros = duration.as_micros();
+    u64::try_from(micros).unwrap_or(u64::MAX)
 }
 
 fn advance_deadline(previous_deadline: Instant, interval: Duration, now: Instant) -> Instant {
