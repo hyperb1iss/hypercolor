@@ -648,15 +648,34 @@ impl OutputQueue {
     /// Push the latest payload for this device.
     fn push(&mut self, colors: Vec<[u8; 3]>) -> Option<Vec<[u8; 3]>> {
         self.next_sequence = self.next_sequence.saturating_add(1);
-        self.metrics.record_received(self.next_sequence);
+        let sequence = self.next_sequence;
+        let produced_at = Instant::now();
+        self.metrics.record_received(sequence);
 
-        let replaced = self.tx.send_replace(Some(Arc::new(FramePayload {
-            colors,
-            sequence: self.next_sequence,
-            produced_at: Instant::now(),
-        })));
+        let mut next_colors = Some(colors);
+        let mut recycled = None;
+        self.tx.send_modify(|current| {
+            if let Some(payload) = current.as_mut().and_then(Arc::get_mut) {
+                recycled = Some(std::mem::replace(
+                    &mut payload.colors,
+                    next_colors
+                        .take()
+                        .expect("pending colors should exist before reuse"),
+                ));
+                payload.sequence = sequence;
+                payload.produced_at = produced_at;
+            } else {
+                *current = Some(Arc::new(FramePayload {
+                    colors: next_colors
+                        .take()
+                        .expect("pending colors should exist before allocation"),
+                    sequence,
+                    produced_at,
+                }));
+            }
+        });
 
-        replaced.and_then(|payload| Arc::try_unwrap(payload).ok().map(|payload| payload.colors))
+        recycled
     }
 
     fn snapshot(
