@@ -58,7 +58,14 @@ use hypercolor_types::config::RenderAccelerationMode;
 const RENDER_RUNTIME_WORKERS: usize = 2;
 const RENDER_RUNTIME_MAX_BLOCKING_THREADS: usize = 4;
 const RENDER_RUNTIME_THREAD_KEEP_ALIVE: Duration = Duration::from_secs(2);
-const MAX_RENDER_SURFACE_SLOTS: usize = 6;
+const DEFAULT_RENDER_SURFACE_SLOTS: usize = 8;
+const MAX_RENDER_SURFACE_SLOTS: usize = 12;
+
+fn desired_render_surface_slots(canvas_receiver_count: usize) -> usize {
+    DEFAULT_RENDER_SURFACE_SLOTS
+        .saturating_add(canvas_receiver_count.saturating_mul(2))
+        .min(MAX_RENDER_SURFACE_SLOTS)
+}
 
 // ── RenderThread ────────────────────────────────────────────────────────────
 

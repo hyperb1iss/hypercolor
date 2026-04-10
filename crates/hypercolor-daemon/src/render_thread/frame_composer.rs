@@ -17,7 +17,9 @@ use super::pipeline_runtime::{FrameInputs, RenderCaches};
 use super::producer_queue::{ProducerFrame, ProducerFrameState};
 use super::render_groups::RenderGroupResult;
 use super::sparkleflinger::ComposedFrameSet;
-use super::{MAX_RENDER_SURFACE_SLOTS, RenderThreadState, micros_u32};
+use super::{
+    MAX_RENDER_SURFACE_SLOTS, RenderThreadState, desired_render_surface_slots, micros_u32,
+};
 
 pub(crate) struct RenderStageStats {
     pub(crate) composed_frame: ComposedFrameSet,
@@ -356,14 +358,17 @@ impl<'a> ComposeContext<'a> {
             None => {
                 if self.render.render_surface_pool.slot_count() < MAX_RENDER_SURFACE_SLOTS {
                     let previous_slots = self.render.render_surface_pool.slot_count();
-                    let expanded_slots = (previous_slots + 1).min(MAX_RENDER_SURFACE_SLOTS);
+                    let receiver_count = self.state.event_bus.canvas_receiver_count();
+                    let expanded_slots = desired_render_surface_slots(receiver_count)
+                        .max(previous_slots.saturating_add(1))
+                        .min(MAX_RENDER_SURFACE_SLOTS);
                     self.render
                         .render_surface_pool
                         .ensure_slot_count(expanded_slots);
                     debug!(
                         previous_slots,
                         expanded_slots,
-                        canvas_receivers = self.state.event_bus.canvas_receiver_count(),
+                        canvas_receivers = receiver_count,
                         "expanded render surface pool under retention pressure"
                     );
                 }

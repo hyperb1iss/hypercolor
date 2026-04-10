@@ -1004,7 +1004,7 @@ async fn relay_canvas(
     binary_tx: tokio::sync::mpsc::Sender<Bytes>,
     subscriptions: Arc<RwLock<SubscriptionState>>,
 ) {
-    let mut latest_canvas = canvas_rx.borrow().clone();
+    let mut latest_canvas = None::<hypercolor_core::bus::CanvasFrame>;
     let mut latest_power_state = *power_state_rx.borrow();
     let mut last_sent_frame_number: Option<u32> = None;
     let mut last_sent_brightness_bits: Option<u32> = None;
@@ -1025,12 +1025,13 @@ async fn relay_canvas(
         let Some(canvas_config) = canvas_config else {
             last_sent_frame_number = None;
             last_sent_brightness_bits = None;
+            latest_canvas = None;
             tokio::select! {
                 changed = canvas_rx.changed() => {
                     if changed.is_err() {
                         break;
                     }
-                    latest_canvas = canvas_rx.borrow().clone();
+                    let _ = canvas_rx.borrow_and_update();
                 }
                 changed = power_state_rx.changed() => {
                     if changed.is_err() {
@@ -1047,13 +1048,16 @@ async fn relay_canvas(
             ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         }
+        if latest_canvas.is_none() {
+            latest_canvas = Some(canvas_rx.borrow_and_update().clone());
+        }
 
         tokio::select! {
             changed = canvas_rx.changed() => {
                 if changed.is_err() {
                     break;
                 }
-                latest_canvas = canvas_rx.borrow().clone();
+                latest_canvas = Some(canvas_rx.borrow_and_update().clone());
             }
             changed = power_state_rx.changed() => {
                 if changed.is_err() {
@@ -1062,6 +1066,9 @@ async fn relay_canvas(
                 latest_power_state = *power_state_rx.borrow_and_update();
             }
             _ = ticker.tick() => {
+                let Some(latest_canvas) = latest_canvas.as_ref() else {
+                    continue;
+                };
                 let brightness = latest_power_state.effective_brightness();
                 let brightness_bits = brightness.to_bits();
                 if last_sent_frame_number == Some(latest_canvas.frame_number)
@@ -1097,7 +1104,7 @@ async fn relay_screen_canvas(
     binary_tx: tokio::sync::mpsc::Sender<Bytes>,
     subscriptions: Arc<RwLock<SubscriptionState>>,
 ) {
-    let mut latest_canvas = canvas_rx.borrow().clone();
+    let mut latest_canvas = None::<hypercolor_core::bus::CanvasFrame>;
     let mut last_sent_frame_number: Option<u32> = None;
     let mut active_fps = 15_u32;
     let mut ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
@@ -1114,10 +1121,11 @@ async fn relay_screen_canvas(
         };
 
         let Some(canvas_config) = canvas_config else {
+            latest_canvas = None;
             if canvas_rx.changed().await.is_err() {
                 break;
             }
-            latest_canvas = canvas_rx.borrow().clone();
+            let _ = canvas_rx.borrow_and_update();
             continue;
         };
 
@@ -1126,15 +1134,21 @@ async fn relay_screen_canvas(
             ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         }
+        if latest_canvas.is_none() {
+            latest_canvas = Some(canvas_rx.borrow_and_update().clone());
+        }
 
         tokio::select! {
             changed = canvas_rx.changed() => {
                 if changed.is_err() {
                     break;
                 }
-                latest_canvas = canvas_rx.borrow().clone();
+                latest_canvas = Some(canvas_rx.borrow_and_update().clone());
             }
             _ = ticker.tick() => {
+                let Some(latest_canvas) = latest_canvas.as_ref() else {
+                    continue;
+                };
                 if last_sent_frame_number == Some(latest_canvas.frame_number) {
                     continue;
                 }

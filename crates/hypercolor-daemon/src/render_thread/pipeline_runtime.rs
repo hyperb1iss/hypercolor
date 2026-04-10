@@ -8,6 +8,7 @@ use hypercolor_core::types::canvas::{
 use hypercolor_core::types::event::FrameData;
 
 use super::composition_planner::CompositionPlanner;
+use super::desired_render_surface_slots;
 use super::frame_scheduler::FrameScheduler;
 use super::producer_queue::ProducerQueue;
 use super::render_groups::RenderGroupRuntime;
@@ -140,10 +141,10 @@ impl PipelineRuntime {
                 composition_planner: CompositionPlanner::new(),
                 sparkleflinger: SparkleFlinger::new(),
                 render_group_runtime: RenderGroupRuntime::new(canvas_width, canvas_height),
-                render_surface_pool: RenderSurfacePool::new(SurfaceDescriptor::rgba8888(
-                    canvas_width,
-                    canvas_height,
-                )),
+                render_surface_pool: RenderSurfacePool::with_slot_count(
+                    SurfaceDescriptor::rgba8888(canvas_width, canvas_height),
+                    desired_render_surface_slots(0),
+                ),
                 render_scene_state: RenderSceneState::new(
                     initial_spatial_engine,
                     screen_capture_configured,
