@@ -1515,9 +1515,47 @@ async fn write_frame_reuses_compiled_routing_plan_for_stable_layout() {
 
     manager.write_frame(&zone_colors, &layout).await;
     assert_eq!(manager.routing_plan_rebuild_count(), 1);
+    assert_eq!(manager.ordered_routing_zone_count(&layout), 1);
 
     manager.write_frame(&zone_colors, &layout).await;
     assert_eq!(manager.routing_plan_rebuild_count(), 1);
+}
+
+#[tokio::test]
+async fn ordered_routing_excludes_display_helper_zones() {
+    let device_id = DeviceId::new();
+    let mock_config = MockDeviceConfig {
+        name: "Display Helper Strip".into(),
+        led_count: 5,
+        topology: LedTopology::Strip {
+            count: 5,
+            direction: hypercolor_types::spatial::StripDirection::LeftToRight,
+        },
+        id: Some(device_id),
+    };
+
+    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    backend.connect(&device_id).await.expect("connect");
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device("mock:display-helper", "mock", device_id);
+
+    let mut display_zone = make_zone("display_helper", "mock:display-helper", 16);
+    display_zone.zone_name = Some("Display".to_owned());
+    let layout = make_layout(vec![
+        make_zone("zone_0", "mock:display-helper", 5),
+        display_zone,
+    ]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[255, 0, 0]; 5],
+    }];
+
+    manager.write_frame(&zone_colors, &layout).await;
+
+    assert_eq!(manager.routing_plan_rebuild_count(), 1);
+    assert_eq!(manager.ordered_routing_zone_count(&layout), 1);
 }
 
 #[tokio::test]
@@ -1650,15 +1688,6 @@ async fn write_frame_unmapped_zones_are_silently_skipped() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn write_frame_unmapped_zone_warns_once_until_mapping_changes() {
-    let buffer = SharedLogBuffer::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(buffer.clone())
-        .with_ansi(false)
-        .without_time()
-        .with_target(false)
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
-
     let mut manager = BackendManager::new();
     manager.register_backend(Box::new(MockDeviceBackend::new()));
 
@@ -1668,20 +1697,18 @@ async fn write_frame_unmapped_zone_warns_once_until_mapping_changes() {
         zone_id: "zone_0".into(),
         colors: vec![[0, 255, 0]; 5],
     }];
-    let warning =
-        "zone skipped because the target layout device is not mapped to a connected backend device";
 
     manager.write_frame(&zone_colors, &layout).await;
     manager.write_frame(&zone_colors, &layout).await;
 
-    assert_eq!(buffer.contents().matches(warning).count(), 1);
+    assert_eq!(manager.unmapped_layout_warning_count(), 1);
 
     manager.map_device(layout_device_id, "mock", DeviceId::new());
     assert!(manager.unmap_device(layout_device_id));
 
     manager.write_frame(&zone_colors, &layout).await;
 
-    assert_eq!(buffer.contents().matches(warning).count(), 2);
+    assert_eq!(manager.unmapped_layout_warning_count(), 2);
 }
 
 #[tokio::test]

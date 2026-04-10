@@ -21,7 +21,7 @@ use tracing::{debug, trace, warn};
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{DeviceId, DeviceInfo, ZoneInfo};
 use hypercolor_types::event::ZoneColors;
-use hypercolor_types::spatial::{SpatialLayout, ZoneAttachment};
+use hypercolor_types::spatial::{DeviceZone, SpatialLayout, ZoneAttachment};
 
 use super::traits::DeviceBackend;
 
@@ -589,6 +589,9 @@ pub struct BackendManager {
     /// Layout device IDs already warned as unmapped in the current layout state.
     warned_unmapped_layout_devices: HashSet<String>,
 
+    /// Number of unmapped-layout warnings emitted since process start.
+    unmapped_layout_warning_count: u64,
+
     /// Last warning time for zone-to-segment color length mismatches.
     last_segment_mismatch_warn_at: HashMap<String, Instant>,
 
@@ -621,17 +624,18 @@ struct RoutingPlan {
     mapping_generation: u64,
     active_layout_device_ids: HashSet<String>,
     zone_routes: HashMap<String, PlannedZoneRoute>,
+    ordered_zone_routes: Vec<OrderedZoneRoute>,
     inactive_devices: Vec<BackendDeviceKey>,
     mapped_layout_ids_by_device: HashMap<BackendDeviceKey, Vec<String>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum PlannedZoneRoute {
     Mapped(CompiledZoneRoute),
     Unmapped { layout_device_id: String },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct CompiledZoneRoute {
     layout_device_id: String,
     target_key: BackendDeviceKey,
@@ -639,6 +643,12 @@ struct CompiledZoneRoute {
     segment: Option<SegmentRange>,
     attachment: Option<ZoneAttachment>,
     physical_led_count: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct OrderedZoneRoute {
+    zone_id: String,
+    route: PlannedZoneRoute,
 }
 
 // ── FrameWriteStats ─────────────────────────────────────────────────────────
@@ -1053,6 +1063,18 @@ impl BackendManager {
         self.routing_plan_rebuild_count
     }
 
+    #[doc(hidden)]
+    #[must_use]
+    pub fn ordered_routing_zone_count(&mut self, layout: &SpatialLayout) -> usize {
+        self.routing_plan(layout).ordered_zone_routes.len()
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn unmapped_layout_warning_count(&self) -> u64 {
+        self.unmapped_layout_warning_count
+    }
+
     /// List registered backend IDs.
     #[must_use]
     pub fn backend_ids(&self) -> Vec<&str> {
@@ -1132,6 +1154,7 @@ impl BackendManager {
     fn compile_routing_plan(&self, layout: &SpatialLayout, layout_signature: u64) -> RoutingPlan {
         let mut active_layout_device_ids = HashSet::with_capacity(layout.zones.len());
         let mut zone_routes = HashMap::with_capacity(layout.zones.len());
+        let mut ordered_zone_routes = Vec::with_capacity(layout.zones.len());
 
         for zone in &layout.zones {
             active_layout_device_ids.insert(zone.device_id.clone());
@@ -1155,6 +1178,12 @@ impl BackendManager {
                 }
             };
 
+            if should_use_ordered_routing(zone) {
+                ordered_zone_routes.push(OrderedZoneRoute {
+                    zone_id: zone.id.clone(),
+                    route: route.clone(),
+                });
+            }
             zone_routes.insert(zone.id.clone(), route);
         }
 
@@ -1198,6 +1227,7 @@ impl BackendManager {
             mapping_generation: self.routing_mapping_generation,
             active_layout_device_ids,
             zone_routes,
+            ordered_zone_routes,
             inactive_devices,
             mapped_layout_ids_by_device,
         }
@@ -1319,103 +1349,26 @@ impl BackendManager {
         }
         self.warned_inactive_layout_devices = inactive_keys;
 
-        for zc in zone_colors {
-            let Some(route) = plan.zone_routes.get(zc.zone_id.as_str()) else {
-                warn!(zone_id = %zc.zone_id, "zone not found in spatial layout");
-                continue;
-            };
-
-            let PlannedZoneRoute::Mapped(route) = route else {
-                let PlannedZoneRoute::Unmapped { layout_device_id } = route else {
-                    unreachable!("only mapped or unmapped zone routes are compiled");
-                };
-                if self
-                    .warned_unmapped_layout_devices
-                    .insert(layout_device_id.clone())
-                {
-                    warn!(
-                        zone_id = %zc.zone_id,
-                        layout_device_id = %layout_device_id,
-                        "zone skipped because the target layout device is not mapped to a connected backend device"
-                    );
-                }
-                continue;
-            };
-
-            self.warned_unmapped_layout_devices
-                .remove(route.layout_device_id.as_str());
-
-            let segment = attachment_segment_for_zone(
-                &zc.zone_id,
-                route.segment,
-                route.attachment.as_ref(),
-                zc.colors.len(),
-            );
-            let mismatch = {
-                let staging = self.staging_buffer(&route.target_key);
-                staging.required_len = staging
-                    .required_len
-                    .max(route.physical_led_count.unwrap_or_default());
-                let remapped_colors = remap_zone_colors(
-                    &zc.zone_id,
-                    &zc.colors,
-                    route.led_mapping.as_deref(),
-                    &mut staging.remap_scratch,
+        if zone_colors.len() == plan.ordered_zone_routes.len()
+            && zone_colors
+                .iter()
+                .zip(&plan.ordered_zone_routes)
+                .all(|(zone_colors, ordered)| zone_colors.zone_id == ordered.zone_id)
+        {
+            for (zone_colors, ordered) in zone_colors.iter().zip(&plan.ordered_zone_routes) {
+                self.route_zone_colors(
+                    zone_colors.zone_id.as_str(),
+                    &zone_colors.colors,
+                    &ordered.route,
                 );
-                let remapped_len = remapped_colors.len();
-
-                if let Some(segment) = segment {
-                    staging.has_segmented_write = true;
-                    let segment_end = segment.end();
-                    if staging.output.len() < segment_end {
-                        staging.output.resize(segment_end, [0, 0, 0]);
-                    }
-
-                    let copy_len = segment.length.min(remapped_len);
-                    if copy_len > 0 {
-                        let start = segment.start;
-                        let end = start.saturating_add(copy_len);
-                        staging.output[start..end].copy_from_slice(&remapped_colors[..copy_len]);
-                    }
-
-                    (copy_len != segment.length).then_some((
-                        segment.start,
-                        segment.length,
-                        remapped_len,
-                    ))
-                } else {
-                    if staging.has_segmented_write {
-                        warn!(
-                            zone_id = %zc.zone_id,
-                            "mixed segmented and non-segmented mappings for the same physical device"
-                        );
-                    }
-                    staging.output.extend_from_slice(remapped_colors);
-                    None
-                }
-            };
-
-            if let Some((segment_start, expected, received)) = mismatch {
-                let warn_key = format!("{}:{}", route.layout_device_id, zc.zone_id);
-                let should_warn = self
-                    .last_segment_mismatch_warn_at
-                    .get(&warn_key)
-                    .is_none_or(|last_warn_at| {
-                        last_warn_at.elapsed() >= UNMAPPED_LAYOUT_WARN_INTERVAL
-                    });
-
-                if should_warn {
-                    warn!(
-                        zone_id = %zc.zone_id,
-                        layout_device_id = %route.layout_device_id,
-                        segment_start,
-                        expected,
-                        received,
-                        "zone color count does not match mapped segment length"
-                    );
-                    self.last_segment_mismatch_warn_at
-                        .insert(warn_key, Instant::now());
-                }
+            }
+        } else {
+            for zc in zone_colors {
+                let Some(route) = plan.zone_routes.get(zc.zone_id.as_str()) else {
+                    warn!(zone_id = %zc.zone_id, "zone not found in spatial layout");
+                    continue;
+                };
+                self.route_zone_colors(&zc.zone_id, &zc.colors, route);
             }
         }
 
@@ -1486,6 +1439,101 @@ impl BackendManager {
         self.active_staging_keys = active_staging_keys;
 
         stats
+    }
+
+    fn route_zone_colors(&mut self, zone_id: &str, colors: &[[u8; 3]], route: &PlannedZoneRoute) {
+        let PlannedZoneRoute::Mapped(route) = route else {
+            let PlannedZoneRoute::Unmapped { layout_device_id } = route else {
+                unreachable!("only mapped or unmapped zone routes are compiled");
+            };
+            if self
+                .warned_unmapped_layout_devices
+                .insert(layout_device_id.clone())
+            {
+                self.unmapped_layout_warning_count =
+                    self.unmapped_layout_warning_count.saturating_add(1);
+                warn!(
+                    zone_id = %zone_id,
+                    layout_device_id = %layout_device_id,
+                    "zone skipped because the target layout device is not mapped to a connected backend device"
+                );
+            }
+            return;
+        };
+
+        self.warned_unmapped_layout_devices
+            .remove(route.layout_device_id.as_str());
+
+        let segment = attachment_segment_for_zone(
+            zone_id,
+            route.segment,
+            route.attachment.as_ref(),
+            colors.len(),
+        );
+        let mismatch = {
+            let staging = self.staging_buffer(&route.target_key);
+            staging.required_len = staging
+                .required_len
+                .max(route.physical_led_count.unwrap_or_default());
+            let remapped_colors = remap_zone_colors(
+                zone_id,
+                colors,
+                route.led_mapping.as_deref(),
+                &mut staging.remap_scratch,
+            );
+            let remapped_len = remapped_colors.len();
+
+            if let Some(segment) = segment {
+                staging.has_segmented_write = true;
+                let segment_end = segment.end();
+                if staging.output.len() < segment_end {
+                    staging.output.resize(segment_end, [0, 0, 0]);
+                }
+
+                let copy_len = segment.length.min(remapped_len);
+                if copy_len > 0 {
+                    let start = segment.start;
+                    let end = start.saturating_add(copy_len);
+                    staging.output[start..end].copy_from_slice(&remapped_colors[..copy_len]);
+                }
+
+                (copy_len != segment.length).then_some((
+                    segment.start,
+                    segment.length,
+                    remapped_len,
+                ))
+            } else {
+                if staging.has_segmented_write {
+                    warn!(
+                        zone_id = %zone_id,
+                        "mixed segmented and non-segmented mappings for the same physical device"
+                    );
+                }
+                staging.output.extend_from_slice(remapped_colors);
+                None
+            }
+        };
+
+        if let Some((segment_start, expected, received)) = mismatch {
+            let warn_key = format!("{}:{zone_id}", route.layout_device_id);
+            let should_warn = self
+                .last_segment_mismatch_warn_at
+                .get(&warn_key)
+                .is_none_or(|last_warn_at| last_warn_at.elapsed() >= UNMAPPED_LAYOUT_WARN_INTERVAL);
+
+            if should_warn {
+                warn!(
+                    zone_id = %zone_id,
+                    layout_device_id = %route.layout_device_id,
+                    segment_start,
+                    expected,
+                    received,
+                    "zone color count does not match mapped segment length"
+                );
+                self.last_segment_mismatch_warn_at
+                    .insert(warn_key, Instant::now());
+            }
+        }
     }
 
     fn ensure_output_queue(
@@ -1648,6 +1696,10 @@ fn prepare_output_for_leds(colors: &mut [[u8; 3]], brightness: f32) {
         let compensated = apply_led_perceptual_compensation(linear);
         *color = encode_led_pwm(scale_linear_rgb(compensated, brightness));
     }
+}
+
+fn should_use_ordered_routing(zone: &DeviceZone) -> bool {
+    zone.zone_name.as_deref() != Some("Display")
 }
 
 fn scale_linear_rgb(mut color: [f32; 3], brightness: f32) -> [f32; 3] {
