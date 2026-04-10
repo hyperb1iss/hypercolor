@@ -92,6 +92,13 @@ impl PresenterState {
     fn reset(&mut self) {
         *self = Self::default();
     }
+
+    fn mode_label(&self) -> Option<&'static str> {
+        match self {
+            Self::Ready { runtime, .. } => Some(runtime.mode_label()),
+            Self::Uninitialized { .. } | Self::CoolingDown { .. } => None,
+        }
+    }
 }
 
 impl Default for PresenterState {
@@ -121,6 +128,7 @@ pub fn CanvasPreview(
     let animation_frame_id = Rc::new(RefCell::new(None::<i32>));
     let last_presented_frame = Rc::new(RefCell::new(None::<u32>));
     let schedule_present: PresentScheduler = Rc::new(RefCell::new(None));
+    let runtime_mode = RwSignal::new(None::<&'static str>);
     let ws = use_context::<WsContext>();
     let preview_registered = Arc::new(AtomicBool::new(false));
     let consumer_count = consumer_count.or_else(|| ws.map(|ws| ws.set_preview_consumers));
@@ -132,6 +140,7 @@ pub fn CanvasPreview(
         let animation = Rc::clone(&animation);
         let animation_frame_id = Rc::clone(&animation_frame_id);
         let last_presented_frame = Rc::clone(&last_presented_frame);
+        let runtime_mode = runtime_mode;
 
         let schedule = Rc::new(move || {
             if animation.borrow().is_some() {
@@ -159,6 +168,7 @@ pub fn CanvasPreview(
                 if !canvas_handle.is_connected() {
                     presenter_handle.borrow_mut().reset();
                     last_presented_frame.borrow_mut().take();
+                    runtime_mode.set(None);
                     animation_handle.borrow_mut().take();
                     return;
                 }
@@ -167,20 +177,24 @@ pub fn CanvasPreview(
                     && Some(frame.frame_number) != *last_presented_frame.borrow()
                 {
                     let mut presenter_state = presenter_handle.borrow_mut();
-                    if presenter_state.ensure_runtime(&canvas_handle, frame.frame_number)
-                        && let PresenterState::Ready {
+                    if presenter_state.ensure_runtime(&canvas_handle, frame.frame_number) {
+                        runtime_mode.set(presenter_state.mode_label());
+                        if let PresenterState::Ready {
                             runtime: presenter,
                             webgl_unavailable_streak,
                         } = &mut *presenter_state
-                    {
-                        match presenter.render(&canvas_handle, &frame) {
-                            PreviewRenderOutcome::Presented => {
-                                *last_presented_frame.borrow_mut() = Some(frame.frame_number);
-                            }
-                            PreviewRenderOutcome::Reinitialize => {
-                                let retry_streak = *webgl_unavailable_streak;
-                                presenter_state.schedule_retry(frame.frame_number, retry_streak);
-                                last_presented_frame.borrow_mut().take();
+                        {
+                            match presenter.render(&canvas_handle, &frame) {
+                                PreviewRenderOutcome::Presented => {
+                                    *last_presented_frame.borrow_mut() = Some(frame.frame_number);
+                                }
+                                PreviewRenderOutcome::Reinitialize => {
+                                    let retry_streak = *webgl_unavailable_streak;
+                                    presenter_state
+                                        .schedule_retry(frame.frame_number, retry_streak);
+                                    last_presented_frame.borrow_mut().take();
+                                    runtime_mode.set(None);
+                                }
                             }
                         }
                     }
@@ -269,11 +283,13 @@ pub fn CanvasPreview(
             let animation = Rc::clone(&animation);
             let animation_frame_id = Rc::clone(&animation_frame_id);
             let last_presented_frame = Rc::clone(&last_presented_frame);
+            let runtime_mode = runtime_mode;
 
             move |event: web_sys::Event| {
                 event.prevent_default();
                 presenter.borrow_mut().reset();
                 last_presented_frame.borrow_mut().take();
+                runtime_mode.set(None);
                 if let Some(request_id) = animation_frame_id.borrow_mut().take()
                     && let Some(window) = web_sys::window()
                 {
@@ -293,10 +309,12 @@ pub fn CanvasPreview(
             let last_presented_frame = Rc::clone(&last_presented_frame);
             let latest_frame = Rc::clone(&latest_frame);
             let schedule_present = Rc::clone(&schedule_present);
+            let runtime_mode = runtime_mode;
 
             move |_: web_sys::Event| {
                 presenter.borrow_mut().reset();
                 last_presented_frame.borrow_mut().take();
+                runtime_mode.set(None);
 
                 if latest_frame.borrow().is_some()
                     && let Some(schedule) = schedule_present.borrow().as_ref()
@@ -325,7 +343,11 @@ pub fn CanvasPreview(
     });
 
     view! {
-        <div class="relative bg-black" style=move || wrapper_style.get()>
+        <div
+            class="relative bg-black"
+            style=move || wrapper_style.get()
+            data-preview-runtime=move || runtime_mode.get().unwrap_or("pending")
+        >
             <canvas
                 node_ref=canvas_ref
                 class="w-full h-full block bg-black"
@@ -337,10 +359,11 @@ pub fn CanvasPreview(
                                 transition-all duration-300 animate-fade-in">
                         {move || {
                             let target = fps_target.get();
+                            let mode = runtime_mode.get().unwrap_or("pending");
                             if target > 0 {
-                                format!("{fps_label} {:.0}/{target} fps", fps.get())
+                                format!("{fps_label} {:.0}/{target} fps [{mode}]", fps.get())
                             } else {
-                                format!("{fps_label} {:.0} fps", fps.get())
+                                format!("{fps_label} {:.0} fps [{mode}]", fps.get())
                             }
                         }}
                     </div>

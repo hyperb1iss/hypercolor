@@ -79,4 +79,12 @@ impl PreviewRuntime {
     pub(super) fn preserves_webgl_unavailable_streak(&self) -> bool {
         matches!(self.0, PreviewRuntimeBackend::Canvas2d(_))
     }
+
+    pub(super) fn mode_label(&self) -> &'static str {
+        match self.0 {
+            PreviewRuntimeBackend::Worker(_) => "worker",
+            PreviewRuntimeBackend::WebGl(_) => "webgl",
+            PreviewRuntimeBackend::Canvas2d(_) => "canvas2d",
+        }
+    }
 }
