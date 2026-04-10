@@ -18,6 +18,7 @@ use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
 use axum::extract::{Extension, State, WebSocketUpgrade};
 use axum::http::{Method, Request, header};
 use axum::response::Response;
+use serde::ser::SerializeSeq;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::mpsc::error::TrySendError;
@@ -2040,43 +2041,51 @@ struct BorrowedFrameZone<'a> {
     colors: &'a [[u8; 3]],
 }
 
+struct SelectedFrameZones<'a> {
+    zones: &'a [hypercolor_types::event::ZoneColors],
+    selection: &'a FrameZoneSelection,
+}
+
+impl Serialize for SelectedFrameZones<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut seq = serializer.serialize_seq(None)?;
+        for zone in self.zones {
+            if !self.selection.includes(zone.zone_id.as_str()) {
+                continue;
+            }
+            seq.serialize_element(&BorrowedFrameZone {
+                zone_id: zone.zone_id.as_str(),
+                colors: zone.colors.as_slice(),
+            })?;
+        }
+        seq.end()
+    }
+}
+
 #[derive(Serialize)]
 struct BorrowedFrameMessage<'a> {
     #[serde(rename = "type")]
     kind: &'static str,
     frame_number: u32,
     timestamp_ms: u32,
-    zones: Vec<BorrowedFrameZone<'a>>,
+    zones: SelectedFrameZones<'a>,
 }
 
 fn encode_frame_json_selected(
     frame: &hypercolor_types::event::FrameData,
     selection: &FrameZoneSelection,
 ) -> Utf8Bytes {
-    let zones = match selection {
-        FrameZoneSelection::All => frame
-            .zones
-            .iter()
-            .map(|zone| BorrowedFrameZone {
-                zone_id: zone.zone_id.as_str(),
-                colors: zone.colors.as_slice(),
-            })
-            .collect(),
-        FrameZoneSelection::Named(_) => frame
-            .zones
-            .iter()
-            .filter(|zone| selection.includes(zone.zone_id.as_str()))
-            .map(|zone| BorrowedFrameZone {
-                zone_id: zone.zone_id.as_str(),
-                colors: zone.colors.as_slice(),
-            })
-            .collect(),
-    };
     serde_json::to_string(&BorrowedFrameMessage {
         kind: "frame",
         frame_number: frame.frame_number,
         timestamp_ms: frame.timestamp_ms,
-        zones,
+        zones: SelectedFrameZones {
+            zones: &frame.zones,
+            selection,
+        },
     })
     .unwrap_or_default()
     .into()
