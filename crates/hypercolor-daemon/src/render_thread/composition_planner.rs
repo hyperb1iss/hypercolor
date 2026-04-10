@@ -282,6 +282,7 @@ mod tests {
                 }),
                 active_render_groups: vec![sample_group()].into(),
                 active_render_groups_revision: 1,
+                active_render_group_count: 1,
             },
             vec![PlannedSceneLayer::replace(ProducerFrame::Canvas(
                 solid_canvas(Rgba::new(12, 34, 56, 255)),
@@ -339,6 +340,7 @@ mod tests {
             }),
             active_render_groups: Vec::new().into(),
             active_render_groups_revision: 0,
+            active_render_group_count: 0,
         };
         let compiled = planner.compile_primary_frame(2, 2, &transition_runtime, entering);
         let mut sparkleflinger = SparkleFlinger::new();

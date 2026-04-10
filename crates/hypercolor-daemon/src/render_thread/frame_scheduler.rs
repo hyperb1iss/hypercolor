@@ -21,23 +21,16 @@ pub(crate) struct SceneRuntimeSnapshot {
     pub active_transition: Option<SceneTransitionSnapshot>,
     pub active_render_groups: Arc<[RenderGroup]>,
     pub active_render_groups_revision: u64,
+    pub active_render_group_count: u32,
 }
 
 impl SceneRuntimeSnapshot {
     pub(crate) fn has_active_render_groups(&self) -> bool {
-        self.active_render_group_count() > 0
+        self.active_render_group_count > 0
     }
 
     pub(crate) fn active_render_group_count(&self) -> u32 {
-        u32::try_from(
-            self.active_render_groups
-                .iter()
-                .filter(|group| {
-                    group.enabled && group.effect_id.is_some() && !group.layout.zones.is_empty()
-                })
-                .count(),
-        )
-        .unwrap_or(u32::MAX)
+        self.active_render_group_count
     }
 }
 
@@ -192,6 +185,7 @@ mod tests {
                 }),
                 active_render_groups: vec![sample_group()].into(),
                 active_render_groups_revision: 1,
+                active_render_group_count: 1,
             },
             spatial_engine: empty_spatial_engine(),
         });

@@ -83,6 +83,16 @@ async fn current_scene_runtime_snapshot(
 }
 
 fn snapshot_scene_runtime(manager: &SceneManager) -> SceneRuntimeSnapshot {
+    let active_render_groups = manager.active_render_groups();
+    let active_render_group_count = u32::try_from(
+        active_render_groups
+            .iter()
+            .filter(|group| {
+                group.enabled && group.effect_id.is_some() && !group.layout.zones.is_empty()
+            })
+            .count(),
+    )
+    .unwrap_or(u32::MAX);
     SceneRuntimeSnapshot {
         active_scene_id: manager.active_scene_id().copied(),
         active_transition: manager
@@ -93,8 +103,9 @@ fn snapshot_scene_runtime(manager: &SceneManager) -> SceneRuntimeSnapshot {
                 progress: transition.progress,
                 eased_progress: transition.eased_progress(),
             }),
-        active_render_groups: manager.active_render_groups(),
+        active_render_groups,
         active_render_groups_revision: manager.active_render_groups_revision(),
+        active_render_group_count,
     }
 }
 
