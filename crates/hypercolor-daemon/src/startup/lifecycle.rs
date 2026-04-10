@@ -8,7 +8,6 @@ use tracing::{debug, info, warn};
 use hypercolor_core::device::{UsbHotplugEvent, UsbHotplugMonitor};
 use hypercolor_core::effect::{
     EffectRegistry, EffectWatchEvent, EffectWatcher, create_renderer_for_metadata_with_mode,
-    resolve_render_acceleration_mode,
 };
 use hypercolor_core::engine::FpsTier;
 use hypercolor_types::config::HypercolorConfig;
@@ -25,6 +24,7 @@ use crate::session::{SessionController, current_global_brightness, set_global_br
 
 use super::DaemonState;
 use super::discovery_worker::DiscoveryWorkerContext;
+use super::resolve_compositor_acceleration_mode;
 
 impl DaemonState {
     /// Start all subsystems — render loop, render thread, backend discovery.
@@ -73,8 +73,8 @@ impl DaemonState {
 
         // Spawn the render thread.
         let render_acceleration =
-            resolve_render_acceleration_mode(config.effect_engine.render_acceleration_mode)
-                .context("failed to resolve render acceleration mode while starting daemon")?;
+            resolve_compositor_acceleration_mode(config.effect_engine.render_acceleration_mode)
+                .context("failed to resolve compositor acceleration mode while starting daemon")?;
         let rt_state = RenderThreadState {
             effect_engine: Arc::clone(&self.effect_engine),
             effect_registry: Arc::clone(&self.effect_registry),

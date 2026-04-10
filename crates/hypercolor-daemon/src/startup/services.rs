@@ -23,7 +23,6 @@ use hypercolor_core::device::{
 use hypercolor_core::effect::builtin::register_builtin_effects;
 use hypercolor_core::effect::{
     EffectEngine, EffectRegistry, default_effect_search_paths, register_html_effects,
-    resolve_render_acceleration_mode,
 };
 use hypercolor_core::engine::RenderLoop;
 #[cfg(target_os = "linux")]
@@ -52,6 +51,7 @@ use crate::session::{OutputPowerState, set_global_brightness};
 
 use super::DaemonState;
 use super::config::resolve_server_identity;
+use super::resolve_compositor_acceleration_mode;
 
 impl DaemonState {
     /// Initialize all subsystems from a loaded configuration.
@@ -71,19 +71,19 @@ impl DaemonState {
     pub fn initialize(config: &HypercolorConfig, config_path: PathBuf) -> Result<Self> {
         info!("Initializing daemon subsystems");
         let render_acceleration =
-            resolve_render_acceleration_mode(config.effect_engine.render_acceleration_mode)
-                .context("failed to resolve render acceleration mode")?;
+            resolve_compositor_acceleration_mode(config.effect_engine.render_acceleration_mode)
+                .context("failed to resolve compositor acceleration mode")?;
         if let Some(reason) = render_acceleration.fallback_reason {
             warn!(
                 requested_mode = ?render_acceleration.requested_mode,
                 effective_mode = ?render_acceleration.effective_mode,
                 reason,
-                "Requested render acceleration is unavailable; using CPU path"
+                "Requested compositor acceleration is unavailable; using CPU path"
             );
         } else {
             info!(
                 effective_mode = ?render_acceleration.effective_mode,
-                "Render acceleration resolved"
+                "Compositor acceleration resolved"
             );
         }
 

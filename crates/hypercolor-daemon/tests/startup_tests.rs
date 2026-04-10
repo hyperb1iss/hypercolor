@@ -238,7 +238,7 @@ async fn initialize_rejects_explicit_gpu_render_acceleration_until_supported() {
         Err(error) => error,
     };
 
-    assert!(format!("{error:#}").contains("gpu render acceleration is not available yet"));
+    assert!(format!("{error:#}").contains("gpu compositor acceleration is not available yet"));
 }
 
 #[tokio::test]

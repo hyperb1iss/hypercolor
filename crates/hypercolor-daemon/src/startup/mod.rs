@@ -47,6 +47,7 @@ use crate::render_thread::RenderThread;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::{OutputPowerState, SessionController};
 
+mod acceleration;
 pub mod banner;
 mod config;
 mod discovery_worker;
@@ -54,6 +55,7 @@ mod lifecycle;
 mod services;
 mod signals;
 
+pub(crate) use acceleration::resolve_compositor_acceleration_mode;
 pub use config::{default_config, load_config, parse_config_toml};
 pub use discovery_worker::collect_unmapped_prefixed_layout_targets;
 pub use signals::install_signal_handlers;
