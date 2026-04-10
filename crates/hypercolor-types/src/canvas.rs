@@ -498,7 +498,7 @@ impl Canvas {
         Self {
             width: surface.width(),
             height: surface.height(),
-            pixels: Arc::clone(&surface.rgba),
+            pixels: Arc::clone(surface.storage.cpu_rgba()),
         }
     }
 
@@ -792,7 +792,20 @@ pub struct PublishedSurface {
     generation: u64,
     frame_number: u32,
     timestamp_ms: u32,
-    rgba: Arc<Vec<u8>>,
+    storage: PublishedSurfaceStorage,
+}
+
+#[derive(Clone, Debug)]
+enum PublishedSurfaceStorage {
+    CpuRgba(Arc<Vec<u8>>),
+}
+
+impl PublishedSurfaceStorage {
+    fn cpu_rgba(&self) -> &Arc<Vec<u8>> {
+        match self {
+            Self::CpuRgba(rgba) => rgba,
+        }
+    }
 }
 
 impl PublishedSurface {
@@ -804,7 +817,7 @@ impl PublishedSurface {
             generation: 0,
             frame_number: 0,
             timestamp_ms: 0,
-            rgba: Arc::new(Vec::new()),
+            storage: PublishedSurfaceStorage::CpuRgba(Arc::new(Vec::new())),
         }
     }
 
@@ -816,7 +829,7 @@ impl PublishedSurface {
             generation: 0,
             frame_number,
             timestamp_ms,
-            rgba: Arc::new(canvas.as_rgba_bytes().to_vec()),
+            storage: PublishedSurfaceStorage::CpuRgba(Arc::new(canvas.as_rgba_bytes().to_vec())),
         }
     }
 
@@ -845,7 +858,7 @@ impl PublishedSurface {
                 generation: 0,
                 frame_number,
                 timestamp_ms,
-                rgba: pixels,
+                storage: PublishedSurfaceStorage::CpuRgba(pixels),
             },
             false,
         )
@@ -896,13 +909,13 @@ impl PublishedSurface {
     /// Published RGBA bytes.
     #[must_use]
     pub fn rgba_bytes(&self) -> &[u8] {
-        self.rgba.as_slice()
+        self.storage.cpu_rgba().as_slice()
     }
 
     /// Published RGBA byte length.
     #[must_use]
     pub fn rgba_len(&self) -> usize {
-        self.rgba.len()
+        self.storage.cpu_rgba().len()
     }
 
     /// Read a single pixel. Returns opaque black for out-of-bounds coordinates.
@@ -913,11 +926,12 @@ impl PublishedSurface {
             return Rgba::BLACK;
         }
         let idx = (y as usize * self.width() as usize + x as usize) * BYTES_PER_PIXEL;
+        let rgba = self.storage.cpu_rgba();
         Rgba {
-            r: self.rgba[idx],
-            g: self.rgba[idx + 1],
-            b: self.rgba[idx + 2],
-            a: self.rgba[idx + 3],
+            r: rgba[idx],
+            g: rgba[idx + 1],
+            b: rgba[idx + 2],
+            a: rgba[idx + 3],
         }
     }
 
@@ -929,7 +943,7 @@ impl PublishedSurface {
             generation: self.generation,
             frame_number,
             timestamp_ms,
-            rgba: Arc::clone(&self.rgba),
+            storage: self.storage.clone(),
         }
     }
 }
@@ -1144,7 +1158,7 @@ impl SurfaceLease<'_> {
             generation: self.slot.generation,
             frame_number,
             timestamp_ms,
-            rgba: Arc::clone(&self.slot.canvas.pixels),
+            storage: PublishedSurfaceStorage::CpuRgba(Arc::clone(&self.slot.canvas.pixels)),
         }
     }
 
