@@ -466,9 +466,13 @@ impl QueuedFrameInput {
         self.time_secs = input.time_secs;
         self.delta_secs = input.delta_secs;
         self.frame_number = input.frame_number;
-        self.audio = input.audio.clone();
-        self.interaction = input.interaction.clone();
-        self.screen = input.screen.cloned();
+        self.audio.clone_from(input.audio);
+        self.interaction.clone_from(input.interaction);
+        match (&mut self.screen, input.screen) {
+            (Some(current), Some(next)) => current.clone_from(next),
+            (slot, Some(next)) => *slot = Some(next.clone()),
+            (slot, None) => *slot = None,
+        }
         merge_unique_strings(
             &mut self.interaction.keyboard.recent_keys,
             prior_recent_keys.into_iter(),
