@@ -11,6 +11,7 @@ use crate::api::{self, EffectSummary, SystemStatus};
 use crate::app::{EffectsContext, WsContext};
 use crate::components::canvas_preview::CanvasPreview;
 use crate::icons::*;
+use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
 use crate::style_utils::category_style;
 use crate::ws::{BackpressureNotice, PerformanceMetrics};
 
@@ -18,6 +19,7 @@ use crate::ws::{BackpressureNotice, PerformanceMetrics};
 #[component]
 pub fn DashboardPage() -> impl IntoView {
     let ws = expect_context::<WsContext>();
+    let preview_telemetry = expect_context::<PreviewTelemetryContext>();
     let status_resource = LocalResource::new(api::fetch_status);
 
     view! {
@@ -46,6 +48,7 @@ pub fn DashboardPage() -> impl IntoView {
                             fps=ws.preview_fps
                             show_fps=true
                             fps_target=ws.preview_target_fps
+                            report_presenter_telemetry=true
                         />
                     </div>
                 </div>
@@ -74,6 +77,7 @@ pub fn DashboardPage() -> impl IntoView {
             <PerformancePanel
                 preview_fps=ws.preview_fps
                 preview_target_fps=ws.preview_target_fps
+                preview_present=preview_telemetry.presenter
                 metrics=ws.metrics
                 backpressure=ws.backpressure_notice
             />
@@ -330,6 +334,7 @@ fn FavoriteRow(effect: EffectSummary, delay: String) -> impl IntoView {
 fn PerformancePanel(
     #[prop(into)] preview_fps: Signal<f32>,
     #[prop(into)] preview_target_fps: Signal<u32>,
+    #[prop(into)] preview_present: Signal<PreviewPresenterTelemetry>,
     #[prop(into)] metrics: Signal<Option<PerformanceMetrics>>,
     #[prop(into)] backpressure: Signal<Option<BackpressureNotice>>,
 ) -> impl IntoView {
@@ -394,11 +399,33 @@ fn PerformancePanel(
         })
     });
 
-    let preview_text =
-        Memo::new(move |_| format!("{:.1}/{} fps", preview_fps.get(), preview_target_fps.get()));
+    let preview_present_fps = Memo::new(move |_| {
+        let present = preview_present.get().present_fps;
+        if present > 0.0 {
+            present
+        } else {
+            preview_fps.get()
+        }
+    });
+    let preview_text = Memo::new(move |_| {
+        format!(
+            "{:.1}/{} fps",
+            preview_present_fps.get(),
+            preview_target_fps.get()
+        )
+    });
     let preview_hint = Memo::new(move |_| {
         if preview_target_fps.get() <= 15 {
             "debug preview cap".to_string()
+        } else if preview_present.get().last_frame_number.is_some() {
+            let present = preview_present.get();
+            format!(
+                "{} · deliver {:.1} fps · present {:.2} ms · skip {}",
+                present.runtime_mode.unwrap_or("pending"),
+                preview_fps.get(),
+                present.arrival_to_present_ms,
+                present.skipped_frames
+            )
         } else if let Some(metrics) = metrics.get() {
             format!(
                 "jitter p95 {:.2} ms · wake p95 {:.2} ms",
@@ -414,7 +441,7 @@ fn PerformancePanel(
         if target == 0 {
             return Health::Neutral;
         }
-        let ratio = preview_fps.get() / (target as f32);
+        let ratio = preview_present_fps.get() / (target as f32);
         if ratio >= 0.85 {
             Health::Good
         } else if ratio >= 0.6 {

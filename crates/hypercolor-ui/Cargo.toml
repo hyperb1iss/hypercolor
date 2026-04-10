@@ -44,6 +44,7 @@ web-sys = { version = "0.3", features = [
     "ImageBitmapRenderingContext",
     "MouseEvent",
     "OffscreenCanvas",
+    "Performance",
     "Storage",
     "Touch",
     "TouchEvent",

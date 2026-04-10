@@ -13,6 +13,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
 use crate::app::WsContext;
+use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
 use crate::ws::CanvasFrame;
 
 use super::preview_runtime::{PreviewRenderOutcome, PreviewRuntime, PreviewRuntimeInitError};
@@ -21,6 +22,12 @@ type PresentCallback = Rc<dyn Fn()>;
 type PresentScheduler = Rc<RefCell<Option<PresentCallback>>>;
 const PREVIEW_RUNTIME_RETRY_DELAY_FRAMES: u32 = 30;
 const CANVAS2D_FALLBACK_THRESHOLD: u8 = 3;
+
+fn browser_now_ms() -> f64 {
+    web_sys::window()
+        .and_then(|window| window.performance())
+        .map_or_else(js_sys::Date::now, |performance| performance.now())
+}
 
 enum PresenterState {
     Uninitialized {
@@ -119,27 +126,40 @@ pub fn CanvasPreview(
     #[prop(into)] fps_target: Signal<u32>,
     #[prop(default = "100%".to_string())] max_width: String,
     #[prop(optional)] aspect_ratio: Option<String>,
+    #[prop(default = false)] report_presenter_telemetry: bool,
     #[prop(optional)] consumer_count: Option<WriteSignal<u32>>,
 ) -> impl IntoView {
     let canvas_ref = NodeRef::<Canvas>::new();
     let latest_frame = Rc::new(RefCell::new(None::<CanvasFrame>));
+    let latest_frame_received_at = Rc::new(RefCell::new(None::<f64>));
     let presenter = Rc::new(RefCell::new(PresenterState::default()));
     let animation = Rc::new(RefCell::new(None::<Closure<dyn FnMut(f64)>>));
     let animation_frame_id = Rc::new(RefCell::new(None::<i32>));
     let last_presented_frame = Rc::new(RefCell::new(None::<u32>));
+    let last_presented_at = Rc::new(RefCell::new(None::<f64>));
+    let skipped_frames = Rc::new(RefCell::new(0_u32));
     let schedule_present: PresentScheduler = Rc::new(RefCell::new(None));
+    let presented_fps = RwSignal::new(0.0_f32);
     let runtime_mode = RwSignal::new(None::<&'static str>);
     let ws = use_context::<WsContext>();
+    let preview_telemetry = use_context::<PreviewTelemetryContext>()
+        .filter(|_| report_presenter_telemetry)
+        .map(|context| context.set_presenter);
     let preview_registered = Arc::new(AtomicBool::new(false));
     let consumer_count = consumer_count.or_else(|| ws.map(|ws| ws.set_preview_consumers));
 
     {
         let schedule_canvas_ref = canvas_ref;
         let latest_frame = Rc::clone(&latest_frame);
+        let latest_frame_received_at = Rc::clone(&latest_frame_received_at);
         let presenter = Rc::clone(&presenter);
         let animation = Rc::clone(&animation);
         let animation_frame_id = Rc::clone(&animation_frame_id);
         let last_presented_frame = Rc::clone(&last_presented_frame);
+        let last_presented_at = Rc::clone(&last_presented_at);
+        let skipped_frames = Rc::clone(&skipped_frames);
+        let presented_fps = presented_fps;
+        let preview_telemetry = preview_telemetry;
         let runtime_mode = runtime_mode;
 
         let schedule = Rc::new(move || {
@@ -159,16 +179,25 @@ pub fn CanvasPreview(
             let animation_frame_id_handle = Rc::clone(&animation_frame_id);
             let presenter_handle = Rc::clone(&presenter);
             let latest_frame = Rc::clone(&latest_frame);
+            let latest_frame_received_at = Rc::clone(&latest_frame_received_at);
             let last_presented_frame = Rc::clone(&last_presented_frame);
+            let last_presented_at = Rc::clone(&last_presented_at);
+            let skipped_frames = Rc::clone(&skipped_frames);
             let canvas_handle = canvas.clone();
 
-            let callback = Closure::<dyn FnMut(f64)>::new(move |_| {
+            let callback = Closure::<dyn FnMut(f64)>::new(move |raf_time_ms| {
                 animation_frame_id_handle.borrow_mut().take();
 
                 if !canvas_handle.is_connected() {
                     presenter_handle.borrow_mut().reset();
                     last_presented_frame.borrow_mut().take();
+                    last_presented_at.borrow_mut().take();
+                    *skipped_frames.borrow_mut() = 0;
+                    presented_fps.set(0.0);
                     runtime_mode.set(None);
+                    if let Some(telemetry) = preview_telemetry {
+                        telemetry.set(PreviewPresenterTelemetry::default());
+                    }
                     animation_handle.borrow_mut().take();
                     return;
                 }
@@ -178,7 +207,8 @@ pub fn CanvasPreview(
                 {
                     let mut presenter_state = presenter_handle.borrow_mut();
                     if presenter_state.ensure_runtime(&canvas_handle, frame.frame_number) {
-                        runtime_mode.set(presenter_state.mode_label());
+                        let mode = presenter_state.mode_label();
+                        runtime_mode.set(mode);
                         if let PresenterState::Ready {
                             runtime: presenter,
                             webgl_unavailable_streak,
@@ -186,6 +216,58 @@ pub fn CanvasPreview(
                         {
                             match presenter.render(&canvas_handle, &frame) {
                                 PreviewRenderOutcome::Presented => {
+                                    let skipped =
+                                        last_presented_frame.borrow().map_or(0, |previous_frame| {
+                                            frame
+                                                .frame_number
+                                                .saturating_sub(previous_frame.saturating_add(1))
+                                        });
+                                    if skipped > 0 {
+                                        let mut skipped_total = skipped_frames.borrow_mut();
+                                        *skipped_total = skipped_total.saturating_add(skipped);
+                                    }
+
+                                    let next_present_fps = if let Some(previous_presented_at) =
+                                        last_presented_at.borrow_mut().replace(raf_time_ms)
+                                    {
+                                        let elapsed_ms =
+                                            (raf_time_ms - previous_presented_at).max(0.0);
+                                        if elapsed_ms > 0.0 {
+                                            let instant_fps =
+                                                (1000.0 / elapsed_ms).clamp(0.0, 120.0);
+                                            let previous_fps =
+                                                f64::from(presented_fps.get_untracked());
+                                            let next_fps = if previous_fps <= 0.0 {
+                                                instant_fps
+                                            } else {
+                                                previous_fps * 0.82 + instant_fps * 0.18
+                                            };
+                                            #[allow(clippy::cast_possible_truncation)]
+                                            {
+                                                next_fps as f32
+                                            }
+                                        } else {
+                                            presented_fps.get_untracked()
+                                        }
+                                    } else {
+                                        0.0
+                                    };
+                                    presented_fps.set(next_present_fps);
+
+                                    if let Some(telemetry) = preview_telemetry {
+                                        let arrival_to_present_ms = latest_frame_received_at
+                                            .borrow()
+                                            .map_or(0.0, |received_at_ms| {
+                                                (raf_time_ms - received_at_ms).max(0.0)
+                                            });
+                                        telemetry.set(PreviewPresenterTelemetry {
+                                            runtime_mode: mode,
+                                            present_fps: next_present_fps,
+                                            arrival_to_present_ms,
+                                            skipped_frames: *skipped_frames.borrow(),
+                                            last_frame_number: Some(frame.frame_number),
+                                        });
+                                    }
                                     *last_presented_frame.borrow_mut() = Some(frame.frame_number);
                                 }
                                 PreviewRenderOutcome::Reinitialize => {
@@ -193,7 +275,13 @@ pub fn CanvasPreview(
                                     presenter_state
                                         .schedule_retry(frame.frame_number, retry_streak);
                                     last_presented_frame.borrow_mut().take();
+                                    last_presented_at.borrow_mut().take();
+                                    *skipped_frames.borrow_mut() = 0;
+                                    presented_fps.set(0.0);
                                     runtime_mode.set(None);
+                                    if let Some(telemetry) = preview_telemetry {
+                                        telemetry.set(PreviewPresenterTelemetry::default());
+                                    }
                                 }
                             }
                         }
@@ -220,10 +308,12 @@ pub fn CanvasPreview(
     // Stash the newest frame immediately and queue a single browser-timed present.
     Effect::new({
         let latest_frame = Rc::clone(&latest_frame);
+        let latest_frame_received_at = Rc::clone(&latest_frame_received_at);
         let schedule_present = Rc::clone(&schedule_present);
         move |_| {
             let next_frame = frame.get();
             *latest_frame.borrow_mut() = next_frame.clone();
+            *latest_frame_received_at.borrow_mut() = next_frame.as_ref().map(|_| browser_now_ms());
 
             if next_frame.is_some()
                 && let Some(schedule) = schedule_present.borrow().as_ref()
@@ -266,11 +356,15 @@ pub fn CanvasPreview(
 
     on_cleanup({
         let preview_registered = Arc::clone(&preview_registered);
+        let preview_telemetry = preview_telemetry;
         move || {
             if let Some(counter) = consumer_count
                 && preview_registered.load(Ordering::Relaxed)
             {
                 counter.update(|count| *count = count.saturating_sub(1));
+            }
+            if let Some(telemetry) = preview_telemetry {
+                telemetry.set(PreviewPresenterTelemetry::default());
             }
         }
     });
@@ -283,13 +377,23 @@ pub fn CanvasPreview(
             let animation = Rc::clone(&animation);
             let animation_frame_id = Rc::clone(&animation_frame_id);
             let last_presented_frame = Rc::clone(&last_presented_frame);
+            let last_presented_at = Rc::clone(&last_presented_at);
+            let skipped_frames = Rc::clone(&skipped_frames);
+            let presented_fps = presented_fps;
+            let preview_telemetry = preview_telemetry;
             let runtime_mode = runtime_mode;
 
             move |event: web_sys::Event| {
                 event.prevent_default();
                 presenter.borrow_mut().reset();
                 last_presented_frame.borrow_mut().take();
+                last_presented_at.borrow_mut().take();
+                *skipped_frames.borrow_mut() = 0;
+                presented_fps.set(0.0);
                 runtime_mode.set(None);
+                if let Some(telemetry) = preview_telemetry {
+                    telemetry.set(PreviewPresenterTelemetry::default());
+                }
                 if let Some(request_id) = animation_frame_id.borrow_mut().take()
                     && let Some(window) = web_sys::window()
                 {
@@ -307,14 +411,24 @@ pub fn CanvasPreview(
         {
             let presenter = Rc::clone(&presenter);
             let last_presented_frame = Rc::clone(&last_presented_frame);
+            let last_presented_at = Rc::clone(&last_presented_at);
             let latest_frame = Rc::clone(&latest_frame);
             let schedule_present = Rc::clone(&schedule_present);
+            let skipped_frames = Rc::clone(&skipped_frames);
+            let presented_fps = presented_fps;
+            let preview_telemetry = preview_telemetry;
             let runtime_mode = runtime_mode;
 
             move |_: web_sys::Event| {
                 presenter.borrow_mut().reset();
                 last_presented_frame.borrow_mut().take();
+                last_presented_at.borrow_mut().take();
+                *skipped_frames.borrow_mut() = 0;
+                presented_fps.set(0.0);
                 runtime_mode.set(None);
+                if let Some(telemetry) = preview_telemetry {
+                    telemetry.set(PreviewPresenterTelemetry::default());
+                }
 
                 if latest_frame.borrow().is_some()
                     && let Some(schedule) = schedule_present.borrow().as_ref()
@@ -360,10 +474,14 @@ pub fn CanvasPreview(
                         {move || {
                             let target = fps_target.get();
                             let mode = runtime_mode.get().unwrap_or("pending");
+                            let display_fps = {
+                                let present = presented_fps.get();
+                                if present > 0.0 { present } else { fps.get() }
+                            };
                             if target > 0 {
-                                format!("{fps_label} {:.0}/{target} fps [{mode}]", fps.get())
+                                format!("{fps_label} {:.0}/{target} fps [{mode}]", display_fps)
                             } else {
-                                format!("{fps_label} {:.0} fps [{mode}]", fps.get())
+                                format!("{fps_label} {:.0} fps [{mode}]", display_fps)
                             }
                         }}
                     </div>

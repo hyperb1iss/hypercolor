@@ -8,6 +8,7 @@ mod icons;
 mod layout_geometry;
 mod layout_utils;
 mod pages;
+mod preview_telemetry;
 mod style_utils;
 mod toasts;
 mod ws;

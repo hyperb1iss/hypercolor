@@ -14,6 +14,7 @@ use crate::pages::devices::DevicesPage;
 use crate::pages::effects::EffectsPage;
 use crate::pages::layout::LayoutPage;
 use crate::pages::settings::SettingsPage;
+use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
 use crate::ws::{
     AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, DeviceEventHint,
     PerformanceMetrics, WsManager,
@@ -316,6 +317,7 @@ pub fn App() -> impl IntoView {
     // Global WebSocket connection
     let ws = WsManager::new();
     let (audio_enabled, set_audio_enabled) = signal(false);
+    let (preview_presenter, set_preview_presenter) = signal(PreviewPresenterTelemetry::default());
 
     // Seed audio_enabled from daemon config
     leptos::task::spawn_local(async move {
@@ -342,6 +344,10 @@ pub fn App() -> impl IntoView {
         set_audio_enabled,
     };
     provide_context(ws_ctx);
+    provide_context(PreviewTelemetryContext {
+        presenter: preview_presenter,
+        set_presenter: set_preview_presenter,
+    });
 
     // Global effects state — shared between sidebar player + effects page
     let effects_resource = LocalResource::new(api::fetch_effects);
