@@ -5,8 +5,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use leptos::ev::Custom;
 use leptos::html::Canvas;
 use leptos::prelude::*;
+use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
@@ -81,6 +83,7 @@ pub fn CanvasPreview(
     let latest_frame = Rc::new(RefCell::new(None::<CanvasFrame>));
     let presenter = Rc::new(RefCell::new(PresenterState::Uninitialized));
     let animation = Rc::new(RefCell::new(None::<Closure<dyn FnMut(f64)>>));
+    let animation_frame_id = Rc::new(RefCell::new(None::<i32>));
     let last_presented_frame = Rc::new(RefCell::new(None::<u32>));
     let schedule_present: PresentScheduler = Rc::new(RefCell::new(None));
     let ws = use_context::<WsContext>();
@@ -92,6 +95,7 @@ pub fn CanvasPreview(
         let latest_frame = Rc::clone(&latest_frame);
         let presenter = Rc::clone(&presenter);
         let animation = Rc::clone(&animation);
+        let animation_frame_id = Rc::clone(&animation_frame_id);
         let last_presented_frame = Rc::clone(&last_presented_frame);
 
         let schedule = Rc::new(move || {
@@ -108,12 +112,15 @@ pub fn CanvasPreview(
             };
 
             let animation_handle = Rc::clone(&animation);
+            let animation_frame_id_handle = Rc::clone(&animation_frame_id);
             let presenter_handle = Rc::clone(&presenter);
             let latest_frame = Rc::clone(&latest_frame);
             let last_presented_frame = Rc::clone(&last_presented_frame);
             let canvas_handle = canvas.clone();
 
             let callback = Closure::<dyn FnMut(f64)>::new(move |_| {
+                animation_frame_id_handle.borrow_mut().take();
+
                 if !canvas_handle.is_connected() {
                     presenter_handle.borrow_mut().reset();
                     last_presented_frame.borrow_mut().take();
@@ -145,6 +152,9 @@ pub fn CanvasPreview(
 
             if window
                 .request_animation_frame(callback.as_ref().unchecked_ref())
+                .map(|request_id| {
+                    *animation_frame_id.borrow_mut() = Some(request_id);
+                })
                 .is_ok()
             {
                 *animation.borrow_mut() = Some(callback);
@@ -211,6 +221,53 @@ pub fn CanvasPreview(
             }
         }
     });
+
+    let _ = use_event_listener_with_options(
+        canvas_ref,
+        Custom::new("webglcontextlost"),
+        {
+            let presenter = Rc::clone(&presenter);
+            let animation = Rc::clone(&animation);
+            let animation_frame_id = Rc::clone(&animation_frame_id);
+            let last_presented_frame = Rc::clone(&last_presented_frame);
+
+            move |event: web_sys::Event| {
+                event.prevent_default();
+                presenter.borrow_mut().reset();
+                last_presented_frame.borrow_mut().take();
+                if let Some(request_id) = animation_frame_id.borrow_mut().take()
+                    && let Some(window) = web_sys::window()
+                {
+                    let _ = window.cancel_animation_frame(request_id);
+                }
+                animation.borrow_mut().take();
+            }
+        },
+        UseEventListenerOptions::default().passive(false),
+    );
+
+    let _ = use_event_listener_with_options(
+        canvas_ref,
+        Custom::new("webglcontextrestored"),
+        {
+            let presenter = Rc::clone(&presenter);
+            let last_presented_frame = Rc::clone(&last_presented_frame);
+            let latest_frame = Rc::clone(&latest_frame);
+            let schedule_present = Rc::clone(&schedule_present);
+
+            move |_: web_sys::Event| {
+                presenter.borrow_mut().reset();
+                last_presented_frame.borrow_mut().take();
+
+                if latest_frame.borrow().is_some()
+                    && let Some(schedule) = schedule_present.borrow().as_ref()
+                {
+                    schedule();
+                }
+            }
+        },
+        UseEventListenerOptions::default(),
+    );
 
     let canvas_style = format!("max-width: {max_width}; image-rendering: pixelated;");
     let resolved_aspect_ratio = Memo::new(move |_| {
