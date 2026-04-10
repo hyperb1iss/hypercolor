@@ -121,7 +121,9 @@ pub(crate) async fn execute_frame(
     let render_us = render_stage.total_us;
 
     let layout = if let Some(sampled_layout) = render_stage.sampled_layout.clone() {
-        render.recycled_frame.zones = render_stage.sampled_zones.take().unwrap_or_default();
+        if let Some(sampled_zones) = render_stage.sampled_zones.take() {
+            render.recycled_frame.zones = sampled_zones;
+        }
         sampled_layout
     } else {
         let sample_start = Instant::now();
@@ -132,7 +134,14 @@ pub(crate) async fn execute_frame(
         render_stage.sampled_us = micros_u32(sample_start.elapsed());
         scene_snapshot.spatial_engine.layout()
     };
-    let zone_colors = &render.recycled_frame.zones;
+    let retained_frame = render_stage
+        .reuse_published_frame
+        .then(|| state.event_bus.frame_sender().borrow());
+    let zone_colors = retained_frame
+        .as_ref()
+        .map_or(render.recycled_frame.zones.as_slice(), |frame| {
+            frame.zones.as_slice()
+        });
     let sample_us = render_stage.sampled_us;
     let sample_done_us = micros_u32(frame_start.elapsed());
 
@@ -195,6 +204,7 @@ pub(crate) async fn execute_frame(
         frame_num_u32,
         scene_snapshot.elapsed_ms,
         &mut frame_loop.last_audio_level_update_ms,
+        render_stage.reuse_published_frame,
         FrameTiming {
             producer_us: render_stage.producer_us,
             composition_us: render_stage.composition_us,

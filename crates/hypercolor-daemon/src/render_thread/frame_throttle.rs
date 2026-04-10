@@ -100,6 +100,7 @@ pub(crate) async fn maybe_sleep_throttle(
             frame_num_u32,
             scene_snapshot.elapsed_ms,
             last_audio_level_update_ms,
+            false,
             FrameTiming {
                 producer_us: 0,
                 composition_us: 0,
@@ -169,6 +170,7 @@ pub(crate) async fn maybe_sleep_throttle(
         frame_num_u32,
         scene_snapshot.elapsed_ms,
         last_audio_level_update_ms,
+        false,
         FrameTiming {
             producer_us: 0,
             composition_us: 0,

@@ -18,19 +18,20 @@ use super::producer_queue::ProducerFrame;
 
 pub(crate) struct RenderGroupResult {
     pub preview_frame: ProducerFrame,
-    pub zones: Vec<ZoneColors>,
+    pub zones: Option<Vec<ZoneColors>>,
     pub layout: Arc<SpatialLayout>,
     pub sample_us: u32,
     pub logical_layer_count: u32,
+    pub reuse_published_zones: bool,
 }
 
 #[derive(Clone)]
 struct RetainedRenderGroupFrame {
     groups_revision: u64,
     preview_frame: ProducerFrame,
-    zones: Vec<ZoneColors>,
     layout: Arc<SpatialLayout>,
     logical_layer_count: u32,
+    zones: Vec<ZoneColors>,
 }
 
 pub(crate) struct RenderGroupRuntime {
@@ -71,10 +72,11 @@ impl RenderGroupRuntime {
 
         Some(RenderGroupResult {
             preview_frame: retained.preview_frame.clone(),
-            zones: retained.zones.clone(),
+            zones: None,
             layout: Arc::clone(&retained.layout),
             sample_us: 0,
             logical_layer_count: retained.logical_layer_count,
+            reuse_published_zones: true,
         })
     }
 
@@ -105,7 +107,7 @@ impl RenderGroupRuntime {
         }
 
         let sample_start = Instant::now();
-        let mut zones = self.take_zone_scratch(groups_revision);
+        let mut zones = self.take_zone_scratch();
         let mut next_index = 0;
         for group in groups {
             if !group.enabled || group.effect_id.is_none() || group.layout.zones.is_empty() {
@@ -135,24 +137,23 @@ impl RenderGroupRuntime {
         self.retained_frame = Some(RetainedRenderGroupFrame {
             groups_revision,
             preview_frame: preview_frame.clone(),
-            zones: zones.clone(),
             layout: Arc::clone(&layout),
             logical_layer_count,
+            zones: zones.clone(),
         });
 
         Ok(RenderGroupResult {
             preview_frame,
-            zones,
+            zones: Some(zones),
             layout,
             sample_us,
             logical_layer_count,
+            reuse_published_zones: false,
         })
     }
 
-    fn take_zone_scratch(&mut self, groups_revision: u64) -> Vec<ZoneColors> {
-        if let Some(retained) = self.retained_frame.as_mut()
-            && retained.groups_revision == groups_revision
-        {
+    fn take_zone_scratch(&mut self) -> Vec<ZoneColors> {
+        if let Some(retained) = self.retained_frame.as_mut() {
             return std::mem::take(&mut retained.zones);
         }
 

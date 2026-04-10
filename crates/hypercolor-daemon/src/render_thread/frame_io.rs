@@ -83,6 +83,7 @@ pub(crate) fn publish_frame_updates(
     frame_number: u32,
     elapsed_ms: u32,
     last_audio_level_update_ms: &mut Option<u32>,
+    reuse_existing_frame: bool,
     timing: FrameTiming,
 ) -> PublishFrameStats {
     let publish_start = Instant::now();
@@ -97,14 +98,16 @@ pub(crate) fn publish_frame_updates(
         .then(|| AudioSignalSnapshot::from_audio(audio));
     let mut full_frame_copy_count = 0_u32;
     let mut full_frame_copy_bytes = 0_u32;
-    recycled_frame.frame_number = frame_number;
-    recycled_frame.timestamp_ms = elapsed_ms;
-    let published_frame = FrameData::new(
-        std::mem::take(&mut recycled_frame.zones),
-        frame_number,
-        elapsed_ms,
-    );
-    *recycled_frame = state.event_bus.frame_sender().send_replace(published_frame);
+    if !reuse_existing_frame {
+        recycled_frame.frame_number = frame_number;
+        recycled_frame.timestamp_ms = elapsed_ms;
+        let published_frame = FrameData::new(
+            std::mem::take(&mut recycled_frame.zones),
+            frame_number,
+            elapsed_ms,
+        );
+        *recycled_frame = state.event_bus.frame_sender().send_replace(published_frame);
+    }
     if spectrum_receivers > 0 {
         let _ = state.event_bus.spectrum_sender().send(spectrum_from_audio(
             audio,
