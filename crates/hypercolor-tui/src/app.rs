@@ -380,6 +380,12 @@ impl App {
                 self.state.favorites.clone_from(favorites.as_ref());
             }
             Action::CanvasFrameReceived(frame) => {
+                // Sample border pixels for the canvas bleed reactive layer
+                if let Some((r, g, b)) =
+                    crate::motion::sample_canvas_border(frame.width, frame.height, &frame.pixels)
+                {
+                    self.motion.canvas_color_channel().write(r, g, b);
+                }
                 self.state.canvas_frame = Some(frame.as_ref().clone());
             }
             Action::SpectrumUpdated(spectrum) => {

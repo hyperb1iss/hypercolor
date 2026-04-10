@@ -51,7 +51,10 @@ pub fn device_departure(row_area: Rect, sensitivity: MotionSensitivity) -> Effec
     let total_ms = scale_ms(400, sensitivity);
     fx::parallel(&[
         fx::dissolve((total_ms, Interpolation::ExpoOut)),
-        fx::fade_to_fg(ERROR_RED, (scale_ms(300, sensitivity), Interpolation::Linear)),
+        fx::fade_to_fg(
+            ERROR_RED,
+            (scale_ms(300, sensitivity), Interpolation::Linear),
+        ),
     ])
     .with_area(row_area)
 }
@@ -119,11 +122,9 @@ pub fn connection_restored(area: Rect, sensitivity: MotionSensitivity) -> Effect
 /// red on borders. Phase 5 polish can swap in the full glitch effect.
 pub fn connection_lost(area: Rect, sensitivity: MotionSensitivity) -> Effect {
     let in_ms = scale_ms(400, sensitivity);
-    fx::never_complete(
-        fx::fade_to_fg(ERROR_RED, (in_ms, Interpolation::SineInOut))
-    )
-    .with_area(area)
-    .with_filter(CellFilter::Outer(Margin::new(1, 1)))
+    fx::never_complete(fx::fade_to_fg(ERROR_RED, (in_ms, Interpolation::SineInOut)))
+        .with_area(area)
+        .with_filter(CellFilter::Outer(Margin::new(1, 1)))
 }
 
 /// Border glow when keyboard focus moves to a new panel.

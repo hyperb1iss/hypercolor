@@ -17,7 +17,7 @@ pub mod reactive;
 pub mod sensitivity;
 
 pub use keys::MotionKey;
-pub use reactive::SpectrumChannel;
+pub use reactive::{CanvasColorChannel, SpectrumChannel, sample_canvas_border};
 pub use sensitivity::MotionSensitivity;
 
 use std::time::Instant;
@@ -39,6 +39,9 @@ pub struct MotionSystem {
     /// Lock-free shared spectrum state, written by the App on each
     /// `SpectrumUpdated` action and read by the spectrum pulse effect.
     spectrum: SpectrumChannel,
+    /// Lock-free shared canvas color, written on each `CanvasFrameReceived`
+    /// and read by the ambient bleed effect.
+    canvas_color: CanvasColorChannel,
 }
 
 impl MotionSystem {
@@ -46,16 +49,20 @@ impl MotionSystem {
     #[must_use]
     pub fn new(sensitivity: MotionSensitivity) -> Self {
         let spectrum = SpectrumChannel::new();
+        let canvas_color = CanvasColorChannel::new();
         let mut manager = EffectManager::<MotionKey>::default();
 
-        // Install the spectrum reactive layer immediately. It's a
-        // never_complete effect that reads from the shared spectrum channel
-        // every frame, so it's safe to spawn now and let App write into
-        // the channel as snapshots arrive.
+        // Install reactive layers immediately. They're never_complete effects
+        // that read from shared channels every frame, so it's safe to spawn
+        // now and let App write into the channels as data arrives.
         if sensitivity != MotionSensitivity::Off {
             manager.add_unique_effect(
                 MotionKey::SpectrumPulse,
                 reactive::spectrum_border_pulse(spectrum.clone(), sensitivity),
+            );
+            manager.add_unique_effect(
+                MotionKey::CanvasBleed,
+                reactive::canvas_ambient_bleed(canvas_color.clone(), sensitivity),
             );
         }
 
@@ -65,6 +72,7 @@ impl MotionSystem {
             last_tick: Instant::now(),
             last_process_us: 0,
             spectrum,
+            canvas_color,
         }
     }
 
@@ -73,6 +81,12 @@ impl MotionSystem {
     #[must_use]
     pub fn spectrum_channel(&self) -> SpectrumChannel {
         self.spectrum.clone()
+    }
+
+    /// Get a clone of the canvas color channel for writing fresh samples.
+    #[must_use]
+    pub fn canvas_color_channel(&self) -> CanvasColorChannel {
+        self.canvas_color.clone()
     }
 
     /// Tick the motion system. Call once per render frame, after all widgets
@@ -139,10 +153,15 @@ impl MotionSystem {
     fn refresh_reactive_layers(&mut self) {
         if self.sensitivity == MotionSensitivity::Off {
             self.manager.cancel_unique_effect(MotionKey::SpectrumPulse);
+            self.manager.cancel_unique_effect(MotionKey::CanvasBleed);
         } else {
             self.manager.add_unique_effect(
                 MotionKey::SpectrumPulse,
                 reactive::spectrum_border_pulse(self.spectrum.clone(), self.sensitivity),
+            );
+            self.manager.add_unique_effect(
+                MotionKey::CanvasBleed,
+                reactive::canvas_ambient_bleed(self.canvas_color.clone(), self.sensitivity),
             );
         }
     }
