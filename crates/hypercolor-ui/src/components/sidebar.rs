@@ -136,6 +136,79 @@ fn rgb_string(c: (f64, f64, f64)) -> String {
     format!("{:.0}, {:.0}, {:.0}", c.0, c.1, c.2)
 }
 
+/// Convert RGB (0-255) to HSL (h: 0-360, s/l: 0-1).
+fn rgb_to_hsl(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
+    let rf = r / 255.0;
+    let gf = g / 255.0;
+    let bf = b / 255.0;
+    let max = rf.max(gf).max(bf);
+    let min = rf.min(gf).min(bf);
+    let l = (max + min) / 2.0;
+
+    let d = max - min;
+    if d < f64::EPSILON {
+        return (0.0, 0.0, l);
+    }
+
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+
+    let h = if (max - rf).abs() < f64::EPSILON {
+        60.0 * ((gf - bf) / d).rem_euclid(6.0)
+    } else if (max - gf).abs() < f64::EPSILON {
+        60.0 * (((bf - rf) / d) + 2.0)
+    } else {
+        60.0 * (((rf - gf) / d) + 4.0)
+    };
+
+    (h, s, l)
+}
+
+/// Convert HSL (h: 0-360, s/l: 0-1) to RGB (0-255).
+fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (f64, f64, f64) {
+    if s < f64::EPSILON {
+        let v = l * 255.0;
+        return (v, v, v);
+    }
+
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let h_prime = (h / 60.0).rem_euclid(6.0);
+    let x = c * (1.0 - (h_prime.rem_euclid(2.0) - 1.0).abs());
+    let m = l - c / 2.0;
+
+    let (r1, g1, b1) = if h_prime < 1.0 {
+        (c, x, 0.0)
+    } else if h_prime < 2.0 {
+        (x, c, 0.0)
+    } else if h_prime < 3.0 {
+        (0.0, c, x)
+    } else if h_prime < 4.0 {
+        (0.0, x, c)
+    } else if h_prime < 5.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+
+    ((r1 + m) * 255.0, (g1 + m) * 255.0, (b1 + m) * 255.0)
+}
+
+/// Normalize a palette color into a readable, cohesive band.
+///
+/// Locks lightness to a fixed target so all palette colors sit in the same
+/// visual register (looks coordinated instead of one bright + one black),
+/// and clamps saturation to avoid both neon-scream and washed-out-mud.
+/// Preserves hue so the effect's color identity carries through.
+fn harmonize_rgb(c: (f64, f64, f64)) -> (f64, f64, f64) {
+    let (h, s, _) = rgb_to_hsl(c.0, c.1, c.2);
+    let target_l = 0.72;
+    let target_s = (s * 0.5 + 0.4).clamp(0.55, 0.85);
+    hsl_to_rgb(h, target_s, target_l)
+}
+
 // ── Sidebar Component ──────────────────────────────────────────────────────
 
 /// Navigation sidebar with manual toggle.
@@ -548,7 +621,9 @@ pub fn Sidebar() -> impl IntoView {
                 }
                 let push_global_brightness = push_global_brightness.clone();
 
-                // Derived signals for palette RGB — read inside style: closures, not here
+                // Derived signals for palette RGB — read inside style: closures, not here.
+                // All live-palette colors pass through harmonize_rgb so the three hues
+                // sit in a cohesive L/S band (readable on dark + visually coordinated).
                 let primary_rgb = move || {
                     let cat = fx.active_effect_category.get();
                     if uses_sidebar_preview.get() {
@@ -556,7 +631,7 @@ pub fn Sidebar() -> impl IntoView {
                     } else {
                         live_palette.get().map_or_else(
                             || category_accent_rgb(&cat).to_string(),
-                            |p| rgb_string(p.primary),
+                            |p| rgb_string(harmonize_rgb(p.primary)),
                         )
                     }
                 };
@@ -567,7 +642,7 @@ pub fn Sidebar() -> impl IntoView {
                     } else {
                         live_palette.get().map_or_else(
                             || category_accent_rgb(&cat).to_string(),
-                            |p| rgb_string(p.secondary),
+                            |p| rgb_string(harmonize_rgb(p.secondary)),
                         )
                     }
                 };
@@ -578,7 +653,7 @@ pub fn Sidebar() -> impl IntoView {
                     } else {
                         live_palette.get().map_or_else(
                             || category_accent_rgb(&cat).to_string(),
-                            |p| rgb_string(p.tertiary),
+                            |p| rgb_string(harmonize_rgb(p.tertiary)),
                         )
                     }
                 };
@@ -605,7 +680,7 @@ pub fn Sidebar() -> impl IntoView {
                         // Now Playing label
                         <div
                             class="px-4 text-[9px] font-mono uppercase tracking-[0.15em]"
-                            style:color=move || format!("rgba({}, 0.55)", primary_rgb())
+                            style:color=move || format!("rgba({}, 0.85)", primary_rgb())
                         >
                             {move || if fx.is_playing.get() { "Now Playing" } else { "Stopped" }}
                         </div>
@@ -655,7 +730,7 @@ pub fn Sidebar() -> impl IntoView {
                                 </div>
                                 <div
                                     class="text-[10px] capitalize mt-0.5"
-                                    style:color=move || format!("rgba({}, 0.6)", secondary_rgb())
+                                    style:color=move || format!("rgba({}, 0.85)", secondary_rgb())
                                 >
                                     {move || fx.active_effect_category.get()}
                                 </div>
