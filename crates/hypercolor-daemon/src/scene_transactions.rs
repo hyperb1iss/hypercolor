@@ -10,6 +10,7 @@ use hypercolor_types::spatial::SpatialLayout;
 pub enum SceneTransaction {
     ReplaceLayout(SpatialLayout),
     SetScreenCaptureConfigured(bool),
+    ResizeCanvas { width: u32, height: u32 },
 }
 
 #[derive(Clone, Default)]

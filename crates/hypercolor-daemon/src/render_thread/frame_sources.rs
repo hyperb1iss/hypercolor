@@ -59,8 +59,10 @@ pub(crate) async fn render_effect_into(
             expected_generation,
             actual_generation, "deferred effect render until next frame after scene change"
         );
-        if target.width() != state.canvas_width || target.height() != state.canvas_height {
-            *target = Canvas::new(state.canvas_width, state.canvas_height);
+        if target.width() != state.canvas_dims.width()
+            || target.height() != state.canvas_dims.height()
+        {
+            *target = Canvas::new(state.canvas_dims.width(), state.canvas_dims.height());
         } else {
             target.clear();
         }
@@ -71,8 +73,10 @@ pub(crate) async fn render_effect_into(
         Ok(()) => {}
         Err(error) => {
             warn!(%error, "effect render failed, producing black canvas");
-            if target.width() != state.canvas_width || target.height() != state.canvas_height {
-                *target = Canvas::new(state.canvas_width, state.canvas_height);
+            if target.width() != state.canvas_dims.width()
+                || target.height() != state.canvas_dims.height()
+            {
+                *target = Canvas::new(state.canvas_dims.width(), state.canvas_dims.height());
             } else {
                 target.clear();
             }

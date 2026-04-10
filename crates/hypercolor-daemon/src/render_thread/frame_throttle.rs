@@ -86,8 +86,8 @@ pub(crate) async fn maybe_sleep_throttle(
         let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
         let surface = static_surface(
             static_surface_cache,
-            state.canvas_width,
-            state.canvas_height,
+            state.canvas_dims.width(),
+            state.canvas_dims.height(),
             [0, 0, 0],
         );
         let publish_stats = publish_frame_updates(
@@ -130,8 +130,8 @@ pub(crate) async fn maybe_sleep_throttle(
 
     let surface = static_surface(
         static_surface_cache,
-        state.canvas_width,
-        state.canvas_height,
+        state.canvas_dims.width(),
+        state.canvas_dims.height(),
         power_state.off_output_color,
     );
     let canvas = Canvas::from_published_surface(&surface);

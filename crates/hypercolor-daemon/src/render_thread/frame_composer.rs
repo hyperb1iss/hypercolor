@@ -105,8 +105,8 @@ impl<'a> ComposeContext<'a> {
                 ProducedFrame {
                     frame: ProducerFrame::Surface(static_surface(
                         &mut self.render.static_surface_cache,
-                        self.state.canvas_width,
-                        self.state.canvas_height,
+                        self.state.canvas_dims.width(),
+                        self.state.canvas_dims.height(),
                         [0, 0, 0],
                     )),
                     producer_us: 0,
@@ -152,8 +152,8 @@ impl<'a> ComposeContext<'a> {
         let producer_done_us = micros_u32(stage_start.elapsed());
         let composition_start = Instant::now();
         let compiled_plan = self.render.composition_planner.compile_primary_frame(
-            self.state.canvas_width,
-            self.state.canvas_height,
+            self.state.canvas_dims.width(),
+            self.state.canvas_dims.height(),
             &self.scene_snapshot.scene_runtime,
             source_frame,
         );
@@ -277,8 +277,8 @@ impl<'a> ComposeContext<'a> {
             Ok(render_group_result) => {
                 let composition_start = Instant::now();
                 let compiled_plan = self.render.composition_planner.compile_primary_frame(
-                    self.state.canvas_width,
-                    self.state.canvas_height,
+                    self.state.canvas_dims.width(),
+                    self.state.canvas_dims.height(),
                     &self.scene_snapshot.scene_runtime,
                     render_group_result.preview_frame,
                 );
@@ -314,14 +314,14 @@ impl<'a> ComposeContext<'a> {
                 warn!(%error, "failed to render active scene groups; publishing black frame");
                 let source_frame = ProducerFrame::Surface(static_surface(
                     &mut self.render.static_surface_cache,
-                    self.state.canvas_width,
-                    self.state.canvas_height,
+                    self.state.canvas_dims.width(),
+                    self.state.canvas_dims.height(),
                     [0, 0, 0],
                 ));
                 let composition_start = Instant::now();
                 let compiled_plan = self.render.composition_planner.compile_primary_frame(
-                    self.state.canvas_width,
-                    self.state.canvas_height,
+                    self.state.canvas_dims.width(),
+                    self.state.canvas_dims.height(),
                     &self.scene_snapshot.scene_runtime,
                     source_frame,
                 );
@@ -355,17 +355,17 @@ impl<'a> ComposeContext<'a> {
 
     fn latch_screen_frame(&mut self) -> Option<ProducedFrame> {
         if let Some(screen_surface) = self.inputs.screen_preview_surface.as_ref()
-            && screen_surface.width() == self.state.canvas_width
-            && screen_surface.height() == self.state.canvas_height
+            && screen_surface.width() == self.state.canvas_dims.width()
+            && screen_surface.height() == self.state.canvas_dims.height()
         {
             let _ = self
                 .render
                 .screen_queue
                 .submit_latest(ProducerFrame::Surface(screen_surface.clone()));
-        } else if let Some(screen_canvas) = self
-            .inputs
-            .screen_canvas_for_frame(self.state.canvas_width, self.state.canvas_height)
-        {
+        } else if let Some(screen_canvas) = self.inputs.screen_canvas_for_frame(
+            self.state.canvas_dims.width(),
+            self.state.canvas_dims.height(),
+        ) {
             let _ = self
                 .render
                 .screen_queue
@@ -449,9 +449,10 @@ async fn render_effect_frame(
         .effect_target_canvas
         .take()
         .filter(|canvas| {
-            canvas.width() == state.canvas_width && canvas.height() == state.canvas_height
+            canvas.width() == state.canvas_dims.width()
+                && canvas.height() == state.canvas_dims.height()
         })
-        .unwrap_or_else(|| Canvas::new(state.canvas_width, state.canvas_height));
+        .unwrap_or_else(|| Canvas::new(state.canvas_dims.width(), state.canvas_dims.height()));
     render_effect_into(
         state,
         effect_generation,
@@ -468,7 +469,8 @@ async fn render_effect_frame(
         .submit_for_generation(frame.clone(), effect_generation);
     render.effect_target_canvas = recycled.and_then(|previous| match previous {
         ProducerFrame::Canvas(canvas)
-            if canvas.width() == state.canvas_width && canvas.height() == state.canvas_height =>
+            if canvas.width() == state.canvas_dims.width()
+                && canvas.height() == state.canvas_dims.height() =>
         {
             Some(canvas)
         }

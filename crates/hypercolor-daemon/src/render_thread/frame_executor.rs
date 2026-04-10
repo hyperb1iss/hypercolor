@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use tracing::{trace, warn};
+use tracing::{info, trace, warn};
 
 use hypercolor_core::types::event::FrameTiming;
 
@@ -39,9 +39,16 @@ pub(crate) async fn execute_frame(
     );
     let reused_canvas = matches!(skip_decision, SkipDecision::ReuseCanvas);
 
-    render
+    let pending_resize = render
         .render_scene_state
         .apply_transactions(&state.scene_transactions);
+    if let Some((width, height)) = pending_resize {
+        info!(width, height, "Applying live canvas resize");
+        state.canvas_dims.set(width, height);
+        render.apply_canvas_resize(width, height);
+        let mut engine = state.effect_engine.lock().await;
+        engine.set_canvas_size(width, height);
+    }
     let scene_snapshot = build_frame_scene_snapshot(
         state,
         frame_scheduler,

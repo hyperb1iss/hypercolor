@@ -16,17 +16,27 @@ impl RenderSceneState {
         }
     }
 
-    pub(crate) fn apply_transactions(&mut self, scene_transactions: &SceneTransactionQueue) {
+    /// Drain queued transactions and return a pending canvas resize if one was
+    /// enqueued. Multiple resizes in a single drain coalesce to the last one.
+    pub(crate) fn apply_transactions(
+        &mut self,
+        scene_transactions: &SceneTransactionQueue,
+    ) -> Option<(u32, u32)> {
+        let mut pending_resize = None;
         for transaction in scene_transactions.drain() {
             match transaction {
                 SceneTransaction::ReplaceLayout(layout) => {
-                    self.spatial_engine.update_layout(layout)
+                    self.spatial_engine.update_layout(layout);
                 }
                 SceneTransaction::SetScreenCaptureConfigured(configured) => {
                     self.screen_capture_configured = configured;
                 }
+                SceneTransaction::ResizeCanvas { width, height } => {
+                    pending_resize = Some((width, height));
+                }
             }
         }
+        pending_resize
     }
 
     pub(crate) fn spatial_engine(&self) -> &SpatialEngine {

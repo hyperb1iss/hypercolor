@@ -347,19 +347,20 @@ fn noise_gate_to_db(noise_gate: f32) -> f32 {
     20.0 * linear.log10()
 }
 
-/// Keys that can be retuned without a daemon restart on the render side.
-/// Canvas dimensions are intentionally NOT live-applicable yet — the surface
-/// pool and active renderer bake them in at construction.
-fn should_reconfigure_render_loop(key: Option<&str>) -> bool {
-    matches!(key, Some("daemon.target_fps"))
+fn should_reconfigure_render(key: Option<&str>) -> bool {
+    matches!(
+        key,
+        Some("daemon.target_fps" | "daemon.canvas_width" | "daemon.canvas_height")
+    )
 }
 
-/// Apply render-loop config changes (target FPS) to the live `RenderLoop`.
+/// Apply render config changes live: FPS retune and canvas resize.
 ///
-/// Returns `true` if the change was applied in-process. Canvas dimension
-/// changes still require a restart and return `false`.
+/// FPS changes go directly to the `RenderLoop`. Canvas dimension changes
+/// are pushed as a `SceneTransaction::ResizeCanvas` and take effect at
+/// the next frame boundary without blocking the pipeline.
 async fn maybe_apply_render_config_change(state: &Arc<AppState>, key: Option<&str>) -> bool {
-    if !should_reconfigure_render_loop(key) {
+    if !should_reconfigure_render(key) {
         return false;
     }
 
@@ -367,16 +368,37 @@ async fn maybe_apply_render_config_change(state: &Arc<AppState>, key: Option<&st
         return false;
     };
 
-    let target_fps = manager.get().daemon.target_fps;
-    let tier = FpsTier::from_fps(target_fps);
+    let config = manager.get();
+    let mut applied = false;
 
-    let mut loop_guard = state.render_loop.write().await;
-    loop_guard.set_tier(tier);
-    loop_guard.fps_controller_mut().set_max_tier(tier);
-    info!(
-        target_fps,
-        resolved_tier = %tier,
-        "Applied live render FPS change"
-    );
-    true
+    if key.is_none_or(|k| k == "daemon.target_fps") {
+        let tier = FpsTier::from_fps(config.daemon.target_fps);
+        let mut loop_guard = state.render_loop.write().await;
+        loop_guard.set_tier(tier);
+        loop_guard.fps_controller_mut().set_max_tier(tier);
+        info!(
+            target_fps = config.daemon.target_fps,
+            resolved_tier = %tier,
+            "Applied live render FPS change"
+        );
+        applied = true;
+    }
+
+    if key.is_none_or(|k| k == "daemon.canvas_width" || k == "daemon.canvas_height") {
+        use crate::scene_transactions::SceneTransaction;
+        state
+            .scene_transactions
+            .push(SceneTransaction::ResizeCanvas {
+                width: config.daemon.canvas_width,
+                height: config.daemon.canvas_height,
+            });
+        info!(
+            canvas_width = config.daemon.canvas_width,
+            canvas_height = config.daemon.canvas_height,
+            "Queued live canvas resize (takes effect next frame)"
+        );
+        applied = true;
+    }
+
+    applied
 }

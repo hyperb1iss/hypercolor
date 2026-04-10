@@ -18,8 +18,8 @@ pub(crate) async fn run_pipeline(state: RenderThreadState) {
 
     let initial_spatial_engine = state.spatial_engine.read().await.clone();
     let mut runtime = PipelineRuntime::new(
-        state.canvas_width,
-        state.canvas_height,
+        state.canvas_dims.width(),
+        state.canvas_dims.height(),
         initial_spatial_engine,
         state.screen_capture_configured,
         state.configured_max_fps_tier,

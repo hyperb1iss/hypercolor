@@ -18,7 +18,7 @@ use crate::discovery::{self, DiscoveryBackend};
 use crate::display_output::{
     DEFAULT_STATIC_HOLD_REFRESH_INTERVAL, DisplayOutputState, DisplayOutputThread,
 };
-use crate::render_thread::{RenderThread, RenderThreadState};
+use crate::render_thread::{CanvasDims, RenderThread, RenderThreadState};
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
 use crate::scene_transactions::apply_layout_update;
 use crate::session::{SessionController, current_global_brightness, set_global_brightness};
@@ -91,8 +91,7 @@ impl DaemonState {
             device_settings: Arc::clone(&self.device_settings),
             scene_transactions: self.scene_transactions.clone(),
             screen_capture_configured: config.capture.enabled,
-            canvas_width: config.daemon.canvas_width,
-            canvas_height: config.daemon.canvas_height,
+            canvas_dims: CanvasDims::new(config.daemon.canvas_width, config.daemon.canvas_height),
             render_acceleration_mode: render_acceleration.effective_mode,
             configured_max_fps_tier: FpsTier::from_fps(config.daemon.target_fps),
         };

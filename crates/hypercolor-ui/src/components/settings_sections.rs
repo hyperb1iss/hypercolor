@@ -685,7 +685,6 @@ pub fn RenderingSection(
                 value=canvas_preset
                 options=Signal::stored(preset_options)
                 on_change=apply_preset
-                restart_required=true
             />
             <Show when=move || canvas_preset.get() == "custom">
                 <SettingNumberInput
@@ -695,7 +694,6 @@ pub fn RenderingSection(
                     value=canvas_width
                     on_change=on_change
                     min=32.0 max=1920.0 step=16.0
-                    restart_required=true
                 />
                 <SettingNumberInput
                     label="Canvas Height"
@@ -704,7 +702,6 @@ pub fn RenderingSection(
                     value=canvas_height
                     on_change=on_change
                     min=32.0 max=1080.0 step=16.0
-                    restart_required=true
                 />
             </Show>
             <SettingDropdown

@@ -84,6 +84,28 @@ impl EffectEngine {
         self
     }
 
+    /// Update the canvas resolution for subsequent frames.
+    ///
+    /// The active renderer (if any) continues running — it picks up the new
+    /// dimensions from `FrameInput` on the next tick. No teardown/re-init
+    /// needed because renderers read canvas size from the input, not from
+    /// their initialization parameters.
+    pub fn set_canvas_size(&mut self, width: u32, height: u32) {
+        if self.canvas_width == width && self.canvas_height == height {
+            return;
+        }
+        info!(
+            old_width = self.canvas_width,
+            old_height = self.canvas_height,
+            new_width = width,
+            new_height = height,
+            "Canvas resize"
+        );
+        self.canvas_width = width;
+        self.canvas_height = height;
+        self.touch_scene();
+    }
+
     /// Returns the current lifecycle state.
     #[must_use]
     pub fn state(&self) -> EffectState {

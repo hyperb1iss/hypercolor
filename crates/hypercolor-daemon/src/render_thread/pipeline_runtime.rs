@@ -96,6 +96,21 @@ pub(crate) struct RenderSurfaceSnapshot {
 }
 
 impl RenderCaches {
+    /// Rebuild surface pools and clear cached canvases for a canvas resize.
+    ///
+    /// Called at the frame boundary when a `ResizeCanvas` transaction is drained.
+    /// Existing published surfaces stay valid until their leases drop; new
+    /// dequeues get the updated dimensions.
+    pub(crate) fn apply_canvas_resize(&mut self, width: u32, height: u32) {
+        self.render_surface_pool = RenderSurfacePool::with_slot_count(
+            SurfaceDescriptor::rgba8888(width, height),
+            desired_render_surface_slots(0),
+        );
+        self.render_group_runtime = RenderGroupRuntime::new(width, height);
+        self.effect_target_canvas = None;
+        self.static_surface_cache = None;
+    }
+
     pub(crate) fn render_surface_snapshot(
         &mut self,
         canvas_receiver_count: usize,

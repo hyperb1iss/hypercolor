@@ -35,6 +35,7 @@ pub mod sparkleflinger;
 
 use std::any::Any;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -67,6 +68,33 @@ fn desired_render_surface_slots(canvas_receiver_count: usize) -> usize {
     DEFAULT_RENDER_SURFACE_SLOTS
         .saturating_add(canvas_receiver_count.saturating_mul(2))
         .min(MAX_RENDER_SURFACE_SLOTS)
+}
+
+/// Shared, atomically-updatable canvas dimensions.
+///
+/// Cloning shares the same underlying atomics so the render thread and
+/// API handler see the same live values. Reads use `Relaxed` ordering —
+/// the `SceneTransactionQueue` provides the actual synchronisation boundary.
+#[derive(Clone)]
+pub struct CanvasDims(Arc<(AtomicU32, AtomicU32)>);
+
+impl CanvasDims {
+    pub fn new(width: u32, height: u32) -> Self {
+        Self(Arc::new((AtomicU32::new(width), AtomicU32::new(height))))
+    }
+
+    pub fn width(&self) -> u32 {
+        self.0.0.load(Ordering::Relaxed)
+    }
+
+    pub fn height(&self) -> u32 {
+        self.0.1.load(Ordering::Relaxed)
+    }
+
+    pub fn set(&self, width: u32, height: u32) {
+        self.0.0.store(width, Ordering::Relaxed);
+        self.0.1.store(height, Ordering::Relaxed);
+    }
 }
 
 // ── RenderThread ────────────────────────────────────────────────────────────
@@ -132,11 +160,8 @@ pub struct RenderThreadState {
     /// Whether screen capture is configured for direct passthrough / effects.
     pub screen_capture_configured: bool,
 
-    /// Target render canvas width.
-    pub canvas_width: u32,
-
-    /// Target render canvas height.
-    pub canvas_height: u32,
+    /// Live render canvas dimensions (atomically updated on resize).
+    pub canvas_dims: CanvasDims,
 
     /// Requested render acceleration mode for the pipeline.
     pub render_acceleration_mode: RenderAccelerationMode,

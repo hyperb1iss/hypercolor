@@ -46,7 +46,7 @@ use hypercolor_daemon::discovery::DiscoveryRuntime;
 use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::performance::PerformanceTracker;
 use hypercolor_daemon::preview_runtime::PreviewRuntime;
-use hypercolor_daemon::render_thread::{RenderThread, RenderThreadState};
+use hypercolor_daemon::render_thread::{CanvasDims, RenderThread, RenderThreadState};
 use hypercolor_daemon::scene_transactions::{SceneTransaction, SceneTransactionQueue};
 use hypercolor_daemon::session::OutputPowerState;
 
@@ -571,8 +571,7 @@ fn make_render_state(
         )))),
         scene_transactions: SceneTransactionQueue::default(),
         screen_capture_configured: false,
-        canvas_width: 320,
-        canvas_height: 200,
+        canvas_dims: CanvasDims::new(320, 200),
         render_acceleration_mode: RenderAccelerationMode::Cpu,
         configured_max_fps_tier: FpsTier::Full,
     }
@@ -1567,8 +1566,7 @@ async fn pipeline_renders_active_effect_to_devices() {
         )))),
         scene_transactions: SceneTransactionQueue::default(),
         screen_capture_configured: false,
-        canvas_width: 320,
-        canvas_height: 200,
+        canvas_dims: CanvasDims::new(320, 200),
         render_acceleration_mode: RenderAccelerationMode::Cpu,
         configured_max_fps_tier: FpsTier::Full,
     };
@@ -1882,8 +1880,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         )))),
         scene_transactions: SceneTransactionQueue::default(),
         screen_capture_configured: false,
-        canvas_width: 320,
-        canvas_height: 200,
+        canvas_dims: CanvasDims::new(320, 200),
         render_acceleration_mode: RenderAccelerationMode::Cpu,
         configured_max_fps_tier: FpsTier::Full,
     };
@@ -2673,8 +2670,7 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         )))),
         scene_transactions: SceneTransactionQueue::default(),
         screen_capture_configured: false,
-        canvas_width: 320,
-        canvas_height: 200,
+        canvas_dims: CanvasDims::new(320, 200),
         render_acceleration_mode: RenderAccelerationMode::Cpu,
         configured_max_fps_tier: FpsTier::Full,
     };

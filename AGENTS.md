@@ -225,10 +225,11 @@ Response envelope: `{ data: T, meta: { api_version, request_id, timestamp } }`.
 - **EffectRenderer is Send not Sync.** Wrap in `Mutex`, not `RwLock`. This is by design —
   Servo's renderer is single-threaded.
 - **Canvas defaults to 640x480 but is configurable.** Flow dimensions from `daemon.canvas_width`
-  and `daemon.canvas_height` through the engine — never hardcode. Spatial coordinates are
-  normalized `[0.0, 1.0]`, so effects stay resolution-independent. LED positions are generated
-  once from topology and cached; call `update_layout()` to regenerate. Changing canvas size
-  still requires a daemon restart (target FPS can be retuned live).
+  and `daemon.canvas_height` through the engine — never hardcode. Both canvas size and target
+  FPS retune live via `SceneTransaction::ResizeCanvas` (frame-boundary) and `RenderLoop::set_tier`
+  respectively. Spatial coordinates are normalized `[0.0, 1.0]`, so effects stay resolution-
+  independent. LED positions are generated once from topology and cached; call `update_layout()`
+  to regenerate.
 - **Watch vs broadcast.** Don't use broadcast for high-frequency data (frame colors, spectrum).
   Watch gives latest-value semantics; broadcast queues every event.
 - **Cargo deny exceptions.** Three transitive Servo/Tauri vulns are allow-listed in `deny.toml`
