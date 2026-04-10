@@ -472,14 +472,15 @@ pub fn Sidebar() -> impl IntoView {
                 href="https://github.com/sponsors/hyperb1iss"
                 target="_blank"
                 rel="noopener"
-                class="flex items-center gap-2 mx-2 rounded-lg
+                class="flex items-center mx-2 rounded-lg
                        text-fg-tertiary hover:text-fg-primary
                        bg-accent/5 hover:bg-accent/10
                        border border-accent/10 hover:border-accent/20
                        transition-all duration-200"
                 class:justify-center=move || collapsed.get()
+                class:gap-2=move || !collapsed.get()
                 class:px-3=move || !collapsed.get()
-                class:py-1.5=move || !collapsed.get()
+                class:py-2=move || !collapsed.get()
                 class:p-2=move || collapsed.get()
                 title="Support Hypercolor development"
             >
