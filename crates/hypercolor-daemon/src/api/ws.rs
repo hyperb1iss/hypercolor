@@ -2039,6 +2039,7 @@ fn encode_canvas_binary_with_header_and_brightness(
     let rgba = canvas.rgba_bytes();
     let payload_len = px_count.saturating_mul(bpp);
     let payload = &mut out[CANVAS_HEADER_LEN..CANVAS_HEADER_LEN.saturating_add(payload_len)];
+    let scale_lut = (brightness < 0.999).then(|| build_preview_scale_lut(brightness));
     match format {
         CanvasFormat::Rgb => {
             if brightness >= 0.999 {
@@ -2049,13 +2050,16 @@ fn encode_canvas_binary_with_header_and_brightness(
                     dst.copy_from_slice(&pixel[..3]);
                 }
             } else {
+                let scale_lut = scale_lut
+                    .as_ref()
+                    .expect("dimmed preview path should precompute scale table");
                 for (dst, pixel) in payload
                     .chunks_exact_mut(3)
                     .zip(rgba.chunks_exact(4).take(px_count))
                 {
-                    dst[0] = scale_preview_channel(pixel[0], brightness);
-                    dst[1] = scale_preview_channel(pixel[1], brightness);
-                    dst[2] = scale_preview_channel(pixel[2], brightness);
+                    dst[0] = scale_lut[usize::from(pixel[0])];
+                    dst[1] = scale_lut[usize::from(pixel[1])];
+                    dst[2] = scale_lut[usize::from(pixel[2])];
                 }
             }
         }
@@ -2063,13 +2067,16 @@ fn encode_canvas_binary_with_header_and_brightness(
             if brightness >= 0.999 {
                 payload.copy_from_slice(&rgba[..payload_len]);
             } else {
+                let scale_lut = scale_lut
+                    .as_ref()
+                    .expect("dimmed preview path should precompute scale table");
                 for (dst, pixel) in payload
                     .chunks_exact_mut(4)
                     .zip(rgba.chunks_exact(4).take(px_count))
                 {
-                    dst[0] = scale_preview_channel(pixel[0], brightness);
-                    dst[1] = scale_preview_channel(pixel[1], brightness);
-                    dst[2] = scale_preview_channel(pixel[2], brightness);
+                    dst[0] = scale_lut[usize::from(pixel[0])];
+                    dst[1] = scale_lut[usize::from(pixel[1])];
+                    dst[2] = scale_lut[usize::from(pixel[2])];
                     dst[3] = pixel[3];
                 }
             }
@@ -2079,14 +2086,18 @@ fn encode_canvas_binary_with_header_and_brightness(
     out
 }
 
-fn scale_preview_channel(channel: u8, brightness: f32) -> u8 {
-    if brightness >= 0.999 {
-        return channel;
-    }
+fn build_preview_scale_lut(brightness: f32) -> [u8; 256] {
+    let mut lut = [0_u8; 256];
     if brightness <= 0.0 {
-        return 0;
+        return lut;
     }
-    linear_to_srgb_u8(srgb_u8_to_linear(channel) * brightness)
+
+    for channel in 0_u16..=255 {
+        lut[usize::from(channel)] =
+            linear_to_srgb_u8(srgb_u8_to_linear(channel as u8) * brightness);
+    }
+
+    lut
 }
 
 fn cached_canvas_binary<F>(
