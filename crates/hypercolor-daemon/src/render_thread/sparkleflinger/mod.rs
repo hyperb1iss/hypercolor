@@ -1,4 +1,6 @@
 mod cpu;
+#[cfg(feature = "wgpu")]
+pub(crate) mod gpu;
 
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
 use hypercolor_types::config::RenderAccelerationMode;

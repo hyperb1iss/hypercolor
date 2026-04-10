@@ -149,6 +149,8 @@ open = "5"
 # Imaging
 image = { version = "0.25.9", default-features = false, features = ["jpeg"] }
 turbojpeg = { version = "1.4.0", default-features = false, features = ["cmake", "require-simd"] }
+wgpu = { version = "29.0.1", default-features = false, features = ["std", "vulkan", "metal", "dx12", "gles", "wgsl"] }
+pollster = "0.4.0"
 
 # Testing
 tempfile = "3.14"

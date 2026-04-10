@@ -86,6 +86,21 @@ impl DaemonState {
                 "Compositor acceleration resolved"
             );
         }
+        #[cfg(feature = "wgpu")]
+        match crate::render_thread::sparkleflinger::gpu::probe_gpu_compositor() {
+            Ok(probe) => {
+                info!(
+                    adapter = %probe.adapter_name,
+                    backend = probe.backend,
+                    max_texture_dimension_2d = probe.max_texture_dimension_2d,
+                    max_storage_textures_per_shader_stage = probe.max_storage_textures_per_shader_stage,
+                    "SparkleFlinger GPU probe succeeded"
+                );
+            }
+            Err(error) => {
+                warn!(%error, "SparkleFlinger GPU probe failed");
+            }
+        }
 
         let server_identity =
             resolve_server_identity(config).context("failed to resolve server identity")?;
