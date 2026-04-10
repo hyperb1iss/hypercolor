@@ -188,6 +188,39 @@ pub trait DeviceBackend: Send + Sync {
         let _ = id;
         None
     }
+
+    /// Non-destructive health probe for a connected device.
+    ///
+    /// Backends that can cheaply verify connectivity without side effects
+    /// (for example an HTTP ping or a cached keepalive timestamp) should
+    /// override this. The default implementation assumes the device is
+    /// healthy as long as the manager still considers it connected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if probing fails unexpectedly. Returning
+    /// [`HealthStatus::Degraded`] or [`HealthStatus::Unreachable`] is the
+    /// preferred way to signal a known-bad state.
+    async fn health_check(&self, id: &DeviceId) -> Result<HealthStatus> {
+        let _ = id;
+        Ok(HealthStatus::Healthy)
+    }
+}
+
+// ── HealthStatus ─────────────────────────────────────────────────────────
+
+/// High-level connectivity state reported by [`DeviceBackend::health_check`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthStatus {
+    /// Device is reachable and behaving normally.
+    Healthy,
+    /// Device is reachable but exhibiting latency, dropped frames, or
+    /// other signs of partial failure.
+    Degraded,
+    /// Device is currently unreachable. Callers should treat the device
+    /// as disconnected even if no explicit disconnect event has fired.
+    Unreachable,
 }
 
 // ── DevicePlugin ─────────────────────────────────────────────────────────

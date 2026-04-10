@@ -10,8 +10,9 @@ use hypercolor_core::device::net::{CredentialStore, Credentials};
 use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_driver_api::support::{
     activate_if_requested, disconnect_after_unpair, metadata_value, network_ip_from_metadata,
-    push_lookup_key,
+    network_port_from_metadata, push_lookup_key,
 };
+use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
     ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest,
     DiscoveryResult, DriverDescriptor, DriverDiscoveredDevice, DriverHost, DriverTrackedDevice,
@@ -157,11 +158,8 @@ impl PairingCapability for HueDriverFactory {
                 activated: false,
             });
         };
-        let bridge_port = device
-            .metadata
-            .and_then(|values| values.get("api_port"))
-            .and_then(|value| value.parse::<u16>().ok())
-            .unwrap_or(DEFAULT_HUE_API_PORT);
+        let bridge_port =
+            network_port_from_metadata(device.metadata, "api_port").unwrap_or(DEFAULT_HUE_API_PORT);
 
         match pair_hue_bridge_at_ip(&self.credential_store, bridge_ip, bridge_port).await? {
             Some(_) => {
@@ -228,14 +226,12 @@ pub fn resolve_hue_probe_bridges_from_sources(
             .metadata
             .get("ip")
             .and_then(|value| value.parse::<IpAddr>().ok())
+            .and_then(|addr| validate_ip(addr).ok())
         else {
             continue;
         };
 
-        let api_port = tracked
-            .metadata
-            .get("api_port")
-            .and_then(|value| value.parse::<u16>().ok())
+        let api_port = network_port_from_metadata(Some(&tracked.metadata), "api_port")
             .unwrap_or(DEFAULT_HUE_API_PORT);
         let bridge_id = tracked
             .metadata

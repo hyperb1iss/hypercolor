@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use hypercolor_driver_api::{DriverDescriptor, NetworkDriverFactory};
+use hypercolor_driver_api::{DRIVER_API_SCHEMA_VERSION, DriverDescriptor, NetworkDriverFactory};
 use thiserror::Error;
 
 /// Registry of all compiled-in network drivers.
@@ -42,13 +42,22 @@ impl DriverRegistry {
     /// # Errors
     ///
     /// Returns an error if another driver is already registered with the same
-    /// descriptor ID.
+    /// descriptor ID, or if the driver reports a schema version that does not
+    /// match [`DRIVER_API_SCHEMA_VERSION`].
     pub fn register_shared(
         &mut self,
         driver: Arc<dyn NetworkDriverFactory>,
     ) -> Result<(), DriverRegistryError> {
         let descriptor = driver.descriptor();
         let id = descriptor.id.to_owned();
+
+        if descriptor.schema_version != DRIVER_API_SCHEMA_VERSION {
+            return Err(DriverRegistryError::SchemaVersionMismatch {
+                id,
+                expected: DRIVER_API_SCHEMA_VERSION,
+                found: descriptor.schema_version,
+            });
+        }
 
         if self.drivers.contains_key(&id) {
             return Err(DriverRegistryError::DuplicateDriverId { id });
@@ -106,4 +115,11 @@ pub enum DriverRegistryError {
     /// A second driver tried to register the same ID.
     #[error("duplicate driver id: {id}")]
     DuplicateDriverId { id: String },
+    /// The driver advertised a schema version the host does not understand.
+    #[error("driver '{id}' schema version {found} does not match host version {expected}")]
+    SchemaVersionMismatch {
+        id: String,
+        expected: u32,
+        found: u32,
+    },
 }

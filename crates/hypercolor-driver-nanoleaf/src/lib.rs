@@ -12,8 +12,9 @@ use hypercolor_core::device::net::{CredentialStore, Credentials};
 use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_driver_api::support::{
     activate_if_requested, disconnect_after_unpair, metadata_value, network_ip_from_metadata,
-    push_lookup_key,
+    network_port_from_metadata, push_lookup_key,
 };
+use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
     ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest,
     DiscoveryResult, DriverDescriptor, DriverDiscoveredDevice, DriverHost, DriverTrackedDevice,
@@ -164,10 +165,7 @@ impl PairingCapability for NanoleafDriverFactory {
                 activated: false,
             });
         };
-        let api_port = device
-            .metadata
-            .and_then(|values| values.get("api_port"))
-            .and_then(|value| value.parse::<u16>().ok())
+        let api_port = network_port_from_metadata(device.metadata, "api_port")
             .unwrap_or(DEFAULT_NANOLEAF_API_PORT);
 
         match pair_nanoleaf_device_at_ip(&self.credential_store, device_ip, api_port).await? {
@@ -238,11 +236,11 @@ pub fn resolve_nanoleaf_probe_devices_from_sources(
         let Ok(ip) = ip_raw.parse::<IpAddr>() else {
             continue;
         };
+        let Ok(ip) = validate_ip(ip) else {
+            continue;
+        };
 
-        let port = tracked
-            .metadata
-            .get("api_port")
-            .and_then(|value| value.parse::<u16>().ok())
+        let port = network_port_from_metadata(Some(&tracked.metadata), "api_port")
             .unwrap_or(DEFAULT_NANOLEAF_API_PORT);
         let device_key = tracked
             .metadata

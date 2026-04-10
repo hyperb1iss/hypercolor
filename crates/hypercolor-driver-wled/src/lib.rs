@@ -7,6 +7,7 @@ use hypercolor_core::device::wled::{
     WledBackend, WledDeviceInfo, WledKnownTarget, WledProtocol, WledScanner,
 };
 use hypercolor_core::device::{DeviceBackend, TransportScanner};
+use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
     DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverDescriptor,
     DriverDiscoveredDevice, DriverHost, DriverTrackedDevice, DriverTransport, NetworkDriverFactory,
@@ -121,6 +122,9 @@ pub fn resolve_wled_probe_ips_from_sources(
         let Ok(ip) = ip_raw.parse::<IpAddr>() else {
             continue;
         };
+        let Ok(ip) = validate_ip(ip) else {
+            continue;
+        };
         known_ips.insert(ip);
     }
 
@@ -163,6 +167,9 @@ pub fn resolve_wled_probe_targets_from_sources(
             continue;
         };
         let Ok(ip) = ip_raw.parse::<IpAddr>() else {
+            continue;
+        };
+        let Ok(ip) = validate_ip(ip) else {
             continue;
         };
 

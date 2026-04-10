@@ -40,7 +40,7 @@ pub use state_machine::{
     DeviceStateMachine, DeviceStateMachineDebugSnapshot, ReconnectPolicy, ReconnectStatus,
     StateTransitionRecord,
 };
-pub use traits::{BackendInfo, DeviceBackend, DevicePlugin};
+pub use traits::{BackendInfo, DeviceBackend, DevicePlugin, HealthStatus};
 pub use usb_backend::{UsbBackend, UsbProtocolConfigStore};
 pub use usb_hotplug::{UsbHotplugEvent, UsbHotplugMonitor};
 pub use usb_scanner::UsbScanner;

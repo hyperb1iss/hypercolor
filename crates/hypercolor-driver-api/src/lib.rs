@@ -14,6 +14,12 @@ use hypercolor_core::device::{DeviceBackend, DiscoveredDevice, DiscoveryConnectB
 use hypercolor_types::device::{DeviceFingerprint, DeviceId, DeviceInfo, DeviceState};
 use serde::{Deserialize, Serialize};
 
+pub mod validation;
+
+/// Current driver API schema version. Bump this on any breaking change to
+/// the [`DriverHost`] trait, [`DriverDescriptor`] fields, or related types.
+pub const DRIVER_API_SCHEMA_VERSION: u32 = 1;
+
 /// Stable transport category for a driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,10 +41,14 @@ pub struct DriverDescriptor {
     pub supports_discovery: bool,
     /// Whether the driver contributes pairing support.
     pub supports_pairing: bool,
+    /// Schema version of the driver API contract this driver implements.
+    /// The host rejects load if this does not match [`DRIVER_API_SCHEMA_VERSION`].
+    pub schema_version: u32,
 }
 
 impl DriverDescriptor {
-    /// Create a new static descriptor.
+    /// Create a new static descriptor tagged with the current
+    /// [`DRIVER_API_SCHEMA_VERSION`].
     #[must_use]
     pub const fn new(
         id: &'static str,
@@ -47,12 +57,38 @@ impl DriverDescriptor {
         supports_discovery: bool,
         supports_pairing: bool,
     ) -> Self {
+        Self::with_schema_version(
+            id,
+            display_name,
+            transport,
+            supports_discovery,
+            supports_pairing,
+            DRIVER_API_SCHEMA_VERSION,
+        )
+    }
+
+    /// Create a new static descriptor with an explicit schema version.
+    ///
+    /// Out-of-tree drivers should prefer [`DriverDescriptor::new`] so they
+    /// automatically pick up the current schema version at compile time.
+    /// This constructor exists so the host can synthesise descriptors at
+    /// other versions in tests and version-mismatch error paths.
+    #[must_use]
+    pub const fn with_schema_version(
+        id: &'static str,
+        display_name: &'static str,
+        transport: DriverTransport,
+        supports_discovery: bool,
+        supports_pairing: bool,
+        schema_version: u32,
+    ) -> Self {
         Self {
             id,
             display_name,
             transport,
             supports_discovery,
             supports_pairing,
+            schema_version,
         }
     }
 }
@@ -364,6 +400,7 @@ pub mod support {
     use tracing::warn;
 
     use crate::DriverHost;
+    use crate::validation::{validate_ip, validate_port};
     use hypercolor_types::device::DeviceId;
 
     /// Best-effort immediate activation after pairing.
@@ -428,12 +465,32 @@ pub mod support {
             .filter(|value| !value.is_empty())
     }
 
-    /// Parse a network IP from the standard `ip` metadata key.
+    /// Parse a routable network IP from the standard `ip` metadata key.
+    ///
+    /// Returns `None` if the key is missing, unparseable, or points at a
+    /// non-routable address such as loopback, multicast, or broadcast. See
+    /// [`crate::validation::validate_ip`] for the full list of rejected ranges.
     #[must_use]
     pub fn network_ip_from_metadata(metadata: Option<&HashMap<String, String>>) -> Option<IpAddr> {
         metadata
             .and_then(|values| values.get("ip"))
             .and_then(|value| value.parse::<IpAddr>().ok())
+            .and_then(|ip| validate_ip(ip).ok())
+    }
+
+    /// Parse a validated port from a metadata key.
+    ///
+    /// Returns `None` if the key is missing, unparseable, or fails
+    /// [`crate::validation::validate_port`] (port 0 or privileged ports).
+    #[must_use]
+    pub fn network_port_from_metadata(
+        metadata: Option<&HashMap<String, String>>,
+        key: &str,
+    ) -> Option<u16> {
+        metadata
+            .and_then(|values| values.get(key))
+            .and_then(|value| value.parse::<u16>().ok())
+            .and_then(|port| validate_port(port).ok())
     }
 
     /// Push a credential lookup key if it is not already present.

@@ -2,10 +2,10 @@ use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_core::device::{BackendInfo, DeviceBackend};
 use hypercolor_driver_api::{
-    ClearPairingOutcome, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest, DiscoveryResult,
-    DriverCredentialStore, DriverDescriptor, DriverDiscoveryState, DriverHost,
-    DriverRuntimeActions, DriverTransport, NetworkDriverFactory, PairDeviceOutcome,
-    PairDeviceRequest, PairingCapability, TrackedDeviceCtx,
+    ClearPairingOutcome, DRIVER_API_SCHEMA_VERSION, DeviceAuthSummary, DiscoveryCapability,
+    DiscoveryRequest, DiscoveryResult, DriverCredentialStore, DriverDescriptor,
+    DriverDiscoveryState, DriverHost, DriverRuntimeActions, DriverTransport, NetworkDriverFactory,
+    PairDeviceOutcome, PairDeviceRequest, PairingCapability, TrackedDeviceCtx,
 };
 use hypercolor_network::{DriverRegistry, DriverRegistryError};
 use hypercolor_types::device::{DeviceId, DeviceInfo};
@@ -296,6 +296,45 @@ fn registry_can_return_registered_driver() {
         .get("discovery-only")
         .expect("driver should be returned");
     assert_eq!(driver.descriptor().display_name, "Discovery Only");
+}
+
+struct MismatchedSchemaDriver;
+
+static MISMATCHED_DESCRIPTOR: DriverDescriptor = DriverDescriptor::with_schema_version(
+    "mismatch",
+    "Schema Mismatch",
+    DriverTransport::Network,
+    true,
+    false,
+    u32::MAX,
+);
+
+impl NetworkDriverFactory for MismatchedSchemaDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &MISMATCHED_DESCRIPTOR
+    }
+
+    fn build_backend(&self, host: &dyn DriverHost) -> Result<Option<Box<dyn DeviceBackend>>> {
+        let _ = host;
+        Ok(None)
+    }
+}
+
+#[test]
+fn registry_rejects_schema_version_mismatch() {
+    let mut registry = DriverRegistry::new();
+    let error = registry
+        .register(MismatchedSchemaDriver)
+        .expect_err("mismatched schema should fail");
+
+    assert_eq!(
+        error,
+        DriverRegistryError::SchemaVersionMismatch {
+            id: "mismatch".to_owned(),
+            expected: DRIVER_API_SCHEMA_VERSION,
+            found: u32::MAX,
+        }
+    );
 }
 
 #[test]
