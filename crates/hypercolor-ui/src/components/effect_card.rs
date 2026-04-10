@@ -11,6 +11,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::api::EffectSummary;
+use crate::color;
 use crate::icons::*;
 use crate::style_utils::category_style;
 use crate::thumbnails::{Thumbnail, ThumbnailStore};
@@ -70,6 +71,14 @@ pub fn EffectCard(
                 .unwrap_or_else(|| fallback.clone())
         })
     };
+
+    // Tinted text colors derived from the palette primary. Same hue as the
+    // accent but locked to a readable lightness band so titles/descriptions
+    // feel like they belong to this specific card rather than being generic
+    // white. Re-computes only when the accent changes (Memo caches the String).
+    let title_tint = Memo::new(move |_| color::accent_text_tint(&accent_rgb.get(), 0.94, 0.35));
+    let body_tint = Memo::new(move |_| color::accent_text_tint(&accent_rgb.get(), 0.84, 0.45));
+    let meta_tint = Memo::new(move |_| color::accent_text_tint(&accent_rgb.get(), 0.76, 0.55));
 
     let click_id = effect.id.clone();
     let fav_id = effect.id.clone();
@@ -189,15 +198,21 @@ pub fn EffectCard(
                     }
                 }
             >
-                // Title
-                <h3 class="text-[15px] font-semibold text-white line-clamp-2 leading-tight \
-                           mb-1 drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)]">
+                // Title — tinted with palette primary, pushed near-white for legibility
+                <h3
+                    class="text-[15px] font-semibold line-clamp-2 leading-tight \
+                           mb-1 drop-shadow-[0_2px_8px_rgba(0,0,0,0.85)]"
+                    style:color=move || format!("rgb({})", title_tint.get())
+                >
                     {name}
                 </h3>
 
-                // Description
-                <p class="text-[11px] text-white/80 line-clamp-2 leading-relaxed mb-2.5 \
-                          drop-shadow-[0_1px_4px_rgba(0,0,0,0.8)]">
+                // Description — softer tint so the title stays dominant
+                <p
+                    class="text-[11px] line-clamp-2 leading-relaxed mb-2.5 \
+                           drop-shadow-[0_1px_4px_rgba(0,0,0,0.85)]"
+                    style:color=move || format!("rgba({}, 0.88)", body_tint.get())
+                >
                     {description}
                 </p>
 
@@ -210,7 +225,10 @@ pub fn EffectCard(
                             style:background=move || format!("rgb({})", accent_rgb.get())
                             style:box-shadow=move || format!("0 0 6px rgba({}, 0.7)", accent_rgb.get())
                         />
-                        <span class="text-[10px] font-mono uppercase tracking-wider text-white/85 capitalize truncate">
+                        <span
+                            class="text-[10px] font-mono uppercase tracking-wider capitalize truncate drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]"
+                            style:color=move || format!("rgb({})", meta_tint.get())
+                        >
                             {category.clone()}
                         </span>
                     </div>
@@ -226,8 +244,8 @@ pub fn EffectCard(
                             view! {
                                 <span
                                     class="inline-flex items-center gap-1 text-[9px] font-mono \
-                                           text-white/75 px-1.5 py-0.5 rounded-full \
-                                           bg-white/5 backdrop-blur-sm"
+                                           px-1.5 py-0.5 rounded-full bg-white/5 backdrop-blur-sm"
+                                    style:color=move || format!("rgba({}, 0.85)", meta_tint.get())
                                     title=source_label_text
                                 >
                                     {icon_view}

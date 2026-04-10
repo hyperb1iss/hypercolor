@@ -39,6 +39,42 @@ pub fn rgb_string(c: (f64, f64, f64)) -> String {
     format!("{:.0}, {:.0}, {:.0}", c.0, c.1, c.2)
 }
 
+/// Parse an "r, g, b" string (what palettes and category accents use) back into RGB.
+pub fn parse_rgb_string(s: &str) -> Option<(f64, f64, f64)> {
+    let mut parts = s.split(',');
+    let r = parts.next()?.trim().parse::<f64>().ok()?;
+    let g = parts.next()?.trim().parse::<f64>().ok()?;
+    let b = parts.next()?.trim().parse::<f64>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((r, g, b))
+}
+
+/// Derive a text tint from an accent RGB tuple.
+///
+/// Locks lightness to `target_l` and scales saturation so text sits in a
+/// cohesive band regardless of the input accent's vibrance. Preserves hue
+/// so each card/preview gets a subtle color identity while staying readable
+/// on the dark scrim.
+pub fn text_tint_rgb(
+    accent: (f64, f64, f64),
+    target_l: f64,
+    saturation_scale: f64,
+) -> (f64, f64, f64) {
+    let (h, s, _) = rgb_to_hsl(accent.0, accent.1, accent.2);
+    let s = (s * saturation_scale).clamp(0.0, 1.0);
+    hsl_to_rgb(h, s, target_l.clamp(0.0, 1.0))
+}
+
+/// Convenience: parse an accent string, derive a text tint, and format it back
+/// as an "r, g, b" string suitable for `rgb(...)` / `rgba(...)` in CSS. Falls
+/// back to near-white when the accent can't be parsed so text is never invisible.
+pub fn accent_text_tint(accent_rgb_str: &str, target_l: f64, saturation_scale: f64) -> String {
+    let accent = parse_rgb_string(accent_rgb_str).unwrap_or((225.0, 225.0, 235.0));
+    rgb_string(text_tint_rgb(accent, target_l, saturation_scale))
+}
+
 /// Convert RGB (0-255) to HSL (h: 0-360, s/l: 0-1).
 pub fn rgb_to_hsl(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
     let rf = r / 255.0;

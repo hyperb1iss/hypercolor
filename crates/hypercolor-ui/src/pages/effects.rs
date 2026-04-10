@@ -7,7 +7,9 @@ use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::app::{EffectsContext, WsContext};
+use crate::color;
 use crate::components::canvas_preview::CanvasPreview;
+use crate::thumbnails::ThumbnailStore;
 use crate::components::control_panel::ControlPanel;
 use crate::components::effect_card::EffectCard;
 use crate::components::preset_panel::PresetToolbar;
@@ -142,6 +144,32 @@ pub fn EffectsPage() -> impl IntoView {
     let accent_rgb =
         Signal::derive(move || category_accent_rgb(&fx.active_effect_category.get()).to_string());
 
+    // Palette-aware accent for preview overlay text — prefers the thumbnail's extracted
+    // primary color so text matches the card, falling back to category accent.
+    let thumb_store = use_context::<ThumbnailStore>();
+    let preview_accent_rgb = Memo::new(move |_| {
+        if let Some(store) = thumb_store {
+            if let Some(id) = fx.active_effect_id.get() {
+                let palette_primary = fx.effects_index.with(|effects| {
+                    effects.iter().find(|e| e.effect.id == id).and_then(|e| {
+                        store.get(&id, &e.effect.version).map(|t| t.palette.primary)
+                    })
+                });
+                if let Some(primary) = palette_primary {
+                    return primary;
+                }
+            }
+        }
+        category_accent_rgb(&fx.active_effect_category.get()).to_string()
+    });
+
+    let preview_title_tint =
+        Memo::new(move |_| color::accent_text_tint(&preview_accent_rgb.get(), 0.94, 0.35));
+    let preview_body_tint =
+        Memo::new(move |_| color::accent_text_tint(&preview_accent_rgb.get(), 0.84, 0.45));
+    let preview_meta_tint =
+        Memo::new(move |_| color::accent_text_tint(&preview_accent_rgb.get(), 0.76, 0.55));
+
     let has_active = Memo::new(move |_| fx.active_effect_id.get().is_some());
 
     // Derive the full active effect metadata from the index
@@ -272,10 +300,10 @@ pub fn EffectsPage() -> impl IntoView {
     });
 
     view! {
-        <div class="flex flex-col h-full animate-fade-in">
-            // Fixed header — title + search + filters on one line
-            <div class="shrink-0 px-6 pt-5 pb-3 bg-surface-base z-10">
-                <div class="flex items-center gap-3">
+        <div class="flex h-full min-h-0 px-6 pt-5 pb-6 animate-fade-in">
+            // Left column — search header locked above the grid, both share width
+            <div class="flex-1 min-w-0 flex flex-col" style="min-width: 120px">
+                <div class="shrink-0 pb-3 flex items-center gap-3">
                     <h1 class="text-lg font-medium text-fg-primary shrink-0">"Effects"</h1>
 
                     // Search bar — fills available space
@@ -488,12 +516,9 @@ pub fn EffectsPage() -> impl IntoView {
                         })}
                     </div>
                 </div>
-            </div>
 
-            // Resizable multi-column layout — grid | handle | preview [| handle | controls]
-            <div class="flex-1 flex min-h-0 px-6 pb-6">
-                // Effect grid — independently scrollable left column
-                <div class="flex-1 min-w-0 overflow-y-auto" style="min-width: 120px">
+                // Effect grid — independently scrollable, below the locked header
+                <div class="flex-1 min-h-0 overflow-y-auto">
                     <Suspense fallback=move || view! { <LoadingSkeleton /> }>
                         {move || {
                             let effects = filtered_effects.get();
@@ -541,12 +566,13 @@ pub fn EffectsPage() -> impl IntoView {
                         }}
                     </Suspense>
                 </div>
+            </div>
 
-                // Detail panel(s) — right side, visible when an effect is selected
-                //
-                // IMPORTANT: Only read active_effect_id here so that accent color
-                // changes don't rebuild the DOM (which destroys CanvasPreview and
-                // causes a burst of re-paints). All dynamic styles use reactive bindings.
+            // Detail panel(s) — right side, visible when an effect is selected
+            //
+            // IMPORTANT: Only read active_effect_id here so that accent color
+            // changes don't rebuild the DOM (which destroys CanvasPreview and
+            // causes a burst of re-paints). All dynamic styles use reactive bindings.
                 {move || {
                     fx.active_effect_id.get().map(|_| {
                         view! {
@@ -563,58 +589,122 @@ pub fn EffectsPage() -> impl IntoView {
                                     class="shrink-0 flex flex-col min-h-0 animate-slide-in-right"
                                     style=move || format!("width: {}px", detail_width.get())
                                 >
-                                    // Info card + live preview
-                                    <div class="shrink-0 space-y-2 pb-2">
+                                    // Cinematic live preview — canvas as background, effect info overlaid on the bottom
+                                    <div class="shrink-0 pb-3">
                                         <div
-                                            class="rounded-lg bg-surface-overlay/40 border border-edge-subtle px-3 py-2.5 space-y-2 relative"
-                                            style="overflow: visible; z-index: 20"
-                                            style:border-top=move || format!("2px solid rgba({}, 0.2)", accent_rgb.get())
+                                            class="relative rounded-xl overflow-hidden border border-edge-subtle bg-black edge-glow group"
+                                            style:--glow-rgb=move || accent_rgb.get()
+                                            style:border-top=move || format!("2px solid rgba({}, 0.45)", accent_rgb.get())
                                         >
-                                            <div class="flex items-center gap-2 min-w-0">
-                                                <div
-                                                    class="w-2 h-2 rounded-full dot-alive shrink-0"
-                                                    style:background=move || format!("rgb({})", accent_rgb.get())
-                                                    style:box-shadow=move || format!("0 0 8px rgba({}, 0.6)", accent_rgb.get())
-                                                />
-                                                <span class="text-[13px] font-medium text-fg-primary truncate">
-                                                    {move || fx.active_effect_name.get().unwrap_or_default()}
-                                                </span>
-                                                {move || {
-                                                    active_effect_meta.get().map(|meta| {
-                                                        view! {
-                                                            <span class="ml-auto text-[10px] text-fg-tertiary/50 shrink-0 truncate max-w-[120px]">
-                                                                {meta.author.clone()}
-                                                            </span>
-                                                        }
-                                                    })
-                                                }}
-                                            </div>
-                                            {move || {
-                                                active_effect_meta.get().and_then(|meta| {
-                                                    (!meta.description.is_empty()).then(|| view! {
-                                                        <p class="text-[10px] text-fg-tertiary/40 truncate pl-4 -mt-1">
-                                                            {meta.description.clone()}
-                                                        </p>
-                                                    })
-                                                })
-                                            }}
-                                            <div class="h-px bg-edge-subtle/50" />
-                                            <PresetToolbar
-                                                effect_id=Signal::derive(move || fx.active_effect_id.get())
-                                                control_values=control_values
-                                                accent_rgb=accent_rgb
-                                                on_preset_applied=Callback::new(move |()| fx.refresh_active_effect())
-                                                active_preset_id_signal=Signal::derive(move || fx.active_preset_id.get())
-                                            />
-                                        </div>
-
-                                        <div class="rounded-lg bg-black overflow-hidden edge-glow">
                                             <CanvasPreview
                                                 frame=ws.canvas_frame
                                                 fps=ws.preview_fps
                                                 show_fps=true
                                                 fps_target=ws.preview_target_fps
                                             />
+
+                                            // Scrim — transparent at the top, fades dark at the bottom so the overlay stays legible
+                                            <div
+                                                class="absolute inset-0 pointer-events-none"
+                                                style="background: linear-gradient(180deg, \
+                                                       rgba(0, 0, 0, 0) 0%, \
+                                                       rgba(0, 0, 0, 0) 45%, \
+                                                       rgba(0, 0, 0, 0.78) 78%, \
+                                                       rgba(0, 0, 0, 0.95) 100%)"
+                                            />
+
+                                            // Top accent wash — a subtle colored highlight along the top edge
+                                            <div
+                                                class="absolute top-0 left-0 right-0 h-px pointer-events-none"
+                                                style=move || format!(
+                                                    "background: linear-gradient(90deg, transparent 0%, rgba({0}, 0.8) 50%, transparent 100%); box-shadow: 0 0 14px rgba({0}, 0.55)",
+                                                    accent_rgb.get()
+                                                )
+                                            />
+
+                                            // Info overlay — title, description, meta row (card-style)
+                                            <div class="absolute left-0 right-0 bottom-0 px-4 pb-3.5 pt-10 pointer-events-none">
+                                                <div class="flex items-baseline justify-between gap-3 mb-1">
+                                                    <h3
+                                                        class="text-[15px] font-semibold line-clamp-1 leading-tight drop-shadow-[0_2px_8px_rgba(0,0,0,0.85)]"
+                                                        style:color=move || format!("rgb({})", preview_title_tint.get())
+                                                    >
+                                                        {move || fx.active_effect_name.get().unwrap_or_default()}
+                                                    </h3>
+                                                    {move || active_effect_meta.get().and_then(|meta| {
+                                                        (!meta.author.is_empty()).then(|| view! {
+                                                            <span
+                                                                class="text-[10px] font-mono uppercase tracking-wider shrink-0 truncate max-w-[140px] drop-shadow-[0_1px_4px_rgba(0,0,0,0.85)]"
+                                                                style:color=move || format!("rgba({}, 0.65)", preview_meta_tint.get())
+                                                            >
+                                                                {meta.author.clone()}
+                                                            </span>
+                                                        })
+                                                    })}
+                                                </div>
+
+                                                {move || active_effect_meta.get().and_then(|meta| {
+                                                    (!meta.description.is_empty()).then(|| view! {
+                                                        <p
+                                                            class="text-[11px] line-clamp-2 leading-relaxed mb-2.5 drop-shadow-[0_1px_4px_rgba(0,0,0,0.85)]"
+                                                            style:color=move || format!("rgba({}, 0.88)", preview_body_tint.get())
+                                                        >
+                                                            {meta.description.clone()}
+                                                        </p>
+                                                    })
+                                                })}
+
+                                                // Meta row — category dot + source/audio badges
+                                                {move || active_effect_meta.get().map(|meta| {
+                                                    let category = meta.category.clone();
+                                                    let source = meta.source.clone();
+                                                    let audio_reactive = meta.audio_reactive;
+                                                    let show_source_icon = source != "native";
+                                                    let is_html = source == "html";
+                                                    view! {
+                                                        <div class="flex items-center justify-between gap-2">
+                                                            <div class="flex items-center gap-1.5 min-w-0">
+                                                                <div
+                                                                    class="w-1.5 h-1.5 rounded-full shrink-0 dot-alive"
+                                                                    style:background=move || format!("rgb({})", accent_rgb.get())
+                                                                    style:box-shadow=move || format!("0 0 6px rgba({}, 0.75)", accent_rgb.get())
+                                                                />
+                                                                <span
+                                                                    class="text-[10px] font-mono uppercase tracking-wider capitalize truncate drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]"
+                                                                    style:color=move || format!("rgb({})", preview_meta_tint.get())
+                                                                >
+                                                                    {category}
+                                                                </span>
+                                                            </div>
+                                                            <div class="flex items-center gap-1.5 shrink-0">
+                                                                {show_source_icon.then(|| {
+                                                                    let icon_view = if is_html {
+                                                                        view! { <Icon icon=LuGlobe width="11px" height="11px" /> }.into_any()
+                                                                    } else {
+                                                                        view! { <Icon icon=LuCode width="11px" height="11px" /> }.into_any()
+                                                                    };
+                                                                    view! {
+                                                                        <span
+                                                                            class="inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-white/5 backdrop-blur-sm"
+                                                                            style:color=move || format!("rgba({}, 0.85)", preview_meta_tint.get())
+                                                                        >
+                                                                            {icon_view}
+                                                                        </span>
+                                                                    }
+                                                                })}
+                                                                {audio_reactive.then(|| view! {
+                                                                    <span
+                                                                        class="inline-flex items-center text-coral/90 px-1.5 py-0.5 rounded-full bg-coral/15 backdrop-blur-sm"
+                                                                        title="Audio-reactive"
+                                                                    >
+                                                                        <Icon icon=LuAudioLines width="11px" height="11px" />
+                                                                    </span>
+                                                                })}
+                                                            </div>
+                                                        </div>
+                                                    }
+                                                })}
+                                            </div>
                                         </div>
                                     </div>
 
@@ -656,6 +746,14 @@ pub fn EffectsPage() -> impl IntoView {
                                                             <Icon icon=LuUnlink width="11px" height="11px" />
                                                         </button>
                                                     </div>
+                                                    <PresetToolbar
+                                                        effect_id=Signal::derive(move || fx.active_effect_id.get())
+                                                        control_values=control_values
+                                                        accent_rgb=accent_rgb
+                                                        on_preset_applied=Callback::new(move |()| fx.refresh_active_effect())
+                                                        active_preset_id_signal=Signal::derive(move || fx.active_preset_id.get())
+                                                    />
+                                                    <div class="h-px bg-edge-subtle/40 my-3" />
                                                     <ControlPanel
                                                         controls=controls
                                                         control_values=control_values
@@ -716,6 +814,14 @@ pub fn EffectsPage() -> impl IntoView {
                                                                 <Icon icon=LuLink width="11px" height="11px" />
                                                             </button>
                                                         </div>
+                                                        <PresetToolbar
+                                                            effect_id=Signal::derive(move || fx.active_effect_id.get())
+                                                            control_values=control_values
+                                                            accent_rgb=accent_rgb
+                                                            on_preset_applied=Callback::new(move |()| fx.refresh_active_effect())
+                                                            active_preset_id_signal=Signal::derive(move || fx.active_preset_id.get())
+                                                        />
+                                                        <div class="h-px bg-edge-subtle/40 my-3" />
                                                         <ControlPanel
                                                             controls=controls
                                                             control_values=control_values
@@ -732,7 +838,6 @@ pub fn EffectsPage() -> impl IntoView {
                         }
                     })
                 }}
-            </div>
         </div>
     }
 }
