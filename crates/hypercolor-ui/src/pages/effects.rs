@@ -746,13 +746,15 @@ pub fn EffectsPage() -> impl IntoView {
                                                             <Icon icon=LuUnlink width="11px" height="11px" />
                                                         </button>
                                                     </div>
-                                                    <PresetToolbar
-                                                        effect_id=Signal::derive(move || fx.active_effect_id.get())
-                                                        control_values=control_values
-                                                        accent_rgb=accent_rgb
-                                                        on_preset_applied=Callback::new(move |()| fx.refresh_active_effect())
-                                                        active_preset_id_signal=Signal::derive(move || fx.active_preset_id.get())
-                                                    />
+                                                    <div class="relative z-50">
+                                                        <PresetToolbar
+                                                            effect_id=Signal::derive(move || fx.active_effect_id.get())
+                                                            control_values=control_values
+                                                            accent_rgb=accent_rgb
+                                                            on_preset_applied=Callback::new(move |()| fx.refresh_active_effect())
+                                                            active_preset_id_signal=Signal::derive(move || fx.active_preset_id.get())
+                                                        />
+                                                    </div>
                                                     <div class="h-px bg-edge-subtle/40 my-3" />
                                                     <ControlPanel
                                                         controls=controls
