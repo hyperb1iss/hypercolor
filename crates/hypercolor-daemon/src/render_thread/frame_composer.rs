@@ -400,17 +400,22 @@ impl ComposeContext<'_> {
     }
 
     fn requires_cpu_sampling_canvas(&self) -> bool {
-        if self.state.preview_canvas_receiver_count() > 0
-            || self.state.event_bus.screen_canvas_receiver_count() > 0
-        {
-            return true;
-        }
-
-        !self
-            .render
-            .sparkleflinger
-            .can_sample_zone_plan(self.scene_snapshot.spatial_engine.sampling_plan().as_ref())
+        requires_cpu_sampling_canvas(
+            self.state.preview_canvas_receiver_count(),
+            self.render
+                .sparkleflinger
+                .can_sample_zone_plan(
+                    self.scene_snapshot.spatial_engine.sampling_plan().as_ref(),
+                ),
+        )
     }
+}
+
+fn requires_cpu_sampling_canvas(
+    preview_canvas_receivers: usize,
+    can_gpu_sample: bool,
+) -> bool {
+    preview_canvas_receivers > 0 || !can_gpu_sample
 }
 
 async fn render_effect_frame(
@@ -515,11 +520,18 @@ async fn render_effect_frame(
 
 #[cfg(test)]
 mod tests {
-    use super::effective_render_group_layer_count;
+    use super::{effective_render_group_layer_count, requires_cpu_sampling_canvas};
 
     #[test]
     fn render_group_layer_count_adds_transition_base_once() {
         assert_eq!(effective_render_group_layer_count(1, 4), 4);
         assert_eq!(effective_render_group_layer_count(2, 4), 5);
+    }
+
+    #[test]
+    fn cpu_sampling_canvas_only_depends_on_preview_receivers_and_gpu_sampling() {
+        assert!(!requires_cpu_sampling_canvas(0, true));
+        assert!(requires_cpu_sampling_canvas(1, true));
+        assert!(requires_cpu_sampling_canvas(0, false));
     }
 }
