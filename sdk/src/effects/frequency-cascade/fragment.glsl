@@ -83,15 +83,24 @@ float spectralEnvelope(float freq) {
     float highLobe  = exp(-pow((freq - 0.76) * 2.85, 2.0));
     float airLobe   = exp(-pow((freq - 0.94) * 3.20, 2.0));
 
-    float lowMix  = mix(iAudioBass, iAudioMid, 0.40);
-    float highMix = mix(iAudioMid, iAudioTreble, 0.55);
+    // Temper raw bands toward smoothed level. Mix factor scales with iSmoothing
+    // so the control actually governs temporal responsiveness. Raw bands still
+    // shape which frequency region is dominant; iAudioLevel damps transients.
+    float bassDamp   = mix(0.42, 0.80, smoothAmt);
+    float bandDamp   = mix(0.32, 0.68, smoothAmt);
+    float bass   = mix(iAudioBass,   iAudioLevel, bassDamp);
+    float mid    = mix(iAudioMid,    iAudioLevel, bandDamp);
+    float treble = mix(iAudioTreble, iAudioLevel, bandDamp);
+
+    float lowMix  = mix(bass, mid, 0.40);
+    float highMix = mix(mid, treble, 0.55);
 
     return
-        iAudioBass   * bassLobe  * 1.05 +
-        lowMix       * lowLobe   * 0.92 +
-        iAudioMid    * midLobe   * 1.00 +
-        highMix      * highLobe  * 0.95 +
-        iAudioTreble * airLobe   * 0.82;
+        bass   * bassLobe  * 1.05 +
+        lowMix * lowLobe   * 0.92 +
+        mid    * midLobe   * 1.00 +
+        highMix* highLobe  * 0.95 +
+        treble * airLobe   * 0.82;
 }
 
 float barEnergy(float freq, float barId, float time, float smoothAmt) {
@@ -105,18 +114,18 @@ float barEnergy(float freq, float barId, float time, float smoothAmt) {
     float smoothed = (spectrum * 2.0 + neighborLeft + neighborRight) * 0.25;
     spectrum = mix(spectrum, smoothed, smoothAmt);
 
-    // Global breath from already-smoothed envelopes
-    float breath = iAudioLevel * 0.55 + iAudioSwell * 0.45;
+    // Subtle breath — keeps bars alive without heaving the whole screen
+    float breath = iAudioLevel * 0.22 + iAudioSwell * 0.14;
 
     // Organic per-bar variation — continuous fBm, no time-stepping
     float organicTime = time * mix(0.55, 0.22, smoothAmt);
     float organic = fbm(vec2(freq * 3.2 + barId * 0.035, organicTime)) - 0.5;
 
-    float energy = spectrum + breath * 0.55 + organic * (0.32 + breath * 0.45);
+    float energy = spectrum + breath * 0.30 + organic * (0.28 + breath * 0.18);
 
     // Minimum baseline so bars breathe even when silent — high enough
     // that the visualizer looks alive with no audio input
-    float floor_ = 0.22 + organic * 0.14;
+    float floor_ = 0.42 + organic * 0.09;
     energy = max(energy, floor_);
 
     return clamp(energy, 0.0, 1.7);
@@ -217,8 +226,6 @@ void main() {
     // ── Energy ──────────────────────────────────────────────────────
     float energy = barEnergy(freq, barId, time, smoothAmt);
 
-    // Gentle, capped beat lift — never pops
-    energy += iAudioBeatPulse * mix(0.20, 0.08, smoothAmt);
     energy = clamp(energy, 0.0, 1.75);
 
     // ── Bar height ──────────────────────────────────────────────────
@@ -247,7 +254,9 @@ void main() {
     // ── Rim + beam glow ─────────────────────────────────────────────
     float rim = exp(-abs(scn.visualY - barHeight) * mix(85.0, 28.0, glow));
     float beam = exp(-pow((barCell - 0.5) * 2.1, 2.0) * mix(24.0, 7.0, glow));
-    float bloom = (rim * 0.85 + haze * 0.55) * beam * (0.22 + glow * 1.20);
+    // Beat pulse flares the bloom, not bar height — ripple of light, not a heave
+    float beatFlare = iAudioBeatPulse * (0.55 + glow * 0.45);
+    float bloom = (rim * 0.85 + haze * 0.55) * beam * (0.22 + glow * 1.20 + beatFlare * 0.40);
 
     // ── Color ───────────────────────────────────────────────────────
     // Palette walks with frequency so neighbors are chromatically related.
@@ -271,8 +280,9 @@ void main() {
     vec3 barTint = mix(baseColor, peakColor, peakBlend);
     color += barTint * bar * (0.42 + energy * 1.50) * (0.55 + intensity * 1.45) * scn.mirror;
 
-    // Rim glow in accent
-    color += accentColor * rim * barMask * (0.18 + intensity * 0.95) * scn.mirror;
+    // Rim glow — beat pulse weighted toward bass frequencies (1.0 at freq=0, falls off at highs)
+    float beatRim = beatFlare * (1.0 - freq * 0.65);
+    color += accentColor * rim * barMask * (0.18 + intensity * 0.95 + beatRim * 0.50) * scn.mirror;
 
     // Haze trail tint
     color += mix(baseColor, accentColor, 0.55) * haze * (0.30 + intensity * 0.80) * scn.mirror;

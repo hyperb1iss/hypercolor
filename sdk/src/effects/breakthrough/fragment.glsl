@@ -98,8 +98,10 @@ void main() {
     angle = mod(angle + sector * 0.5, sector) - sector * 0.5;
     angle = abs(angle);
 
-    float twist = clamp(iTwist / 100.0, 0.0, 1.0) * (0.6 + 0.4 * sin(time * 0.5));
-    float twistedAngle = angle + radius * twist * 2.0 + time * twist * 0.4;
+    float twistBase = clamp(iTwist / 100.0, 0.0, 1.0);
+    float twist = twistBase * (0.6 + 0.4 * sin(time * 0.5));
+    float twistPhase = time * twistBase * 0.4;
+    float twistedAngle = angle + radius * twist * 2.0 + twistPhase;
 
     float waveAngular = sin(twistedAngle * (6.0 + segments * 0.5) - time * 1.6);
     float waveRadial = sin(radius * (18.0 + segments * 0.8) - time * 1.2);

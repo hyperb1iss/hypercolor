@@ -20,9 +20,9 @@ use crate::screen::ScreenId;
 use crate::state::{AppState, ConnectionStatus, ControlValue, Notification, NotificationLevel};
 use crate::theme_picker::ThemePicker;
 use opaline::widgets::ThemeSelectorAction;
-use ratatui_image::StatefulImage;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
+use ratatui_image::{Resize, StatefulImage};
 
 /// Top-level application that owns all screens and drives the event loop.
 pub struct App {
@@ -746,7 +746,11 @@ impl App {
             && area.height > 0
             && let Some(protocol) = self.canvas_protocol.as_mut()
         {
-            frame.render_stateful_widget(StatefulImage::default(), area, protocol);
+            frame.render_stateful_widget(
+                StatefulImage::default().resize(Resize::Scale(None)),
+                area,
+                protocol,
+            );
         }
 
         // Render notification toast (centered, overlays content bottom)
@@ -893,7 +897,11 @@ impl App {
         // Picker is auto-selected at startup so this branch always works once
         // a frame has arrived.
         if let Some(protocol) = self.canvas_protocol.as_mut() {
-            frame.render_stateful_widget(StatefulImage::default(), canvas_area, protocol);
+            frame.render_stateful_widget(
+                StatefulImage::default().resize(Resize::Scale(None)),
+                canvas_area,
+                protocol,
+            );
         } else {
             // No canvas — fill with dark background
             let block = Block::default().style(Style::default().bg(Color::Rgb(20, 20, 30)));
