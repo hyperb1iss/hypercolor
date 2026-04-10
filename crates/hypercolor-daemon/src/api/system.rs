@@ -51,6 +51,7 @@ pub struct RenderLoopStatus {
     pub state: String,
     pub fps_tier: String,
     pub target_fps: u32,
+    pub ceiling_fps: u32,
     pub actual_fps: f64,
     pub consecutive_misses: u32,
     pub total_frames: u64,
@@ -124,6 +125,7 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
             state: snapshot.state.to_string(),
             fps_tier: snapshot.tier.to_string(),
             target_fps: snapshot.tier.fps(),
+            ceiling_fps: snapshot.max_tier.fps(),
             actual_fps: round_1(paced_fps(
                 snapshot.avg_frame_time.as_secs_f64(),
                 snapshot.tier.fps(),
@@ -400,6 +402,7 @@ mod tests {
         let json: Value = serde_json::from_slice(&body).expect("status should serialize");
 
         assert_eq!(json["data"]["render_loop"]["target_fps"], 60);
+        assert_eq!(json["data"]["render_loop"]["ceiling_fps"], 60);
         assert_eq!(json["data"]["render_loop"]["actual_fps"], 60.0);
         assert_eq!(json["data"]["latest_frame"]["frame_token"], 77);
         assert_eq!(

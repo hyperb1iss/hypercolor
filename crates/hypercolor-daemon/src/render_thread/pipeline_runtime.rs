@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use hypercolor_core::engine::FpsTier;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{
@@ -9,6 +10,7 @@ use hypercolor_core::types::event::FrameData;
 
 use super::composition_planner::CompositionPlanner;
 use super::desired_render_surface_slots;
+use super::frame_admission::FrameAdmissionController;
 use super::frame_scheduler::FrameScheduler;
 use super::producer_queue::ProducerQueue;
 use super::render_groups::RenderGroupRuntime;
@@ -114,6 +116,7 @@ pub(crate) struct PipelineRuntime {
     pub(crate) frame_scheduler: FrameScheduler,
     pub(crate) frame_loop: FrameLoopState,
     pub(crate) render: RenderCaches,
+    pub(crate) frame_admission: FrameAdmissionController,
 }
 
 impl PipelineRuntime {
@@ -122,6 +125,7 @@ impl PipelineRuntime {
         canvas_height: u32,
         initial_spatial_engine: SpatialEngine,
         screen_capture_configured: bool,
+        configured_max_fps_tier: FpsTier,
     ) -> Self {
         Self {
             frame_scheduler: FrameScheduler::new(),
@@ -152,6 +156,7 @@ impl PipelineRuntime {
                 static_surface_cache: None,
                 recycled_frame: FrameData::empty(),
             },
+            frame_admission: FrameAdmissionController::new(configured_max_fps_tier),
         }
     }
 }

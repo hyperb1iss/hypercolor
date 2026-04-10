@@ -16,6 +16,7 @@
 //! ```
 
 mod composition_planner;
+mod frame_admission;
 mod frame_composer;
 mod frame_executor;
 mod frame_io;
@@ -49,7 +50,7 @@ use crate::session::OutputPowerState;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::BackendManager;
 use hypercolor_core::effect::{EffectEngine, EffectRegistry};
-use hypercolor_core::engine::RenderLoop;
+use hypercolor_core::engine::{FpsTier, RenderLoop};
 use hypercolor_core::input::InputManager;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
@@ -135,6 +136,9 @@ pub struct RenderThreadState {
 
     /// Requested render acceleration mode for the pipeline.
     pub render_acceleration_mode: RenderAccelerationMode,
+
+    /// Ceiling derived from user configuration before runtime admission.
+    pub configured_max_fps_tier: FpsTier,
 }
 
 impl RenderThread {

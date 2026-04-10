@@ -22,6 +22,7 @@ pub(crate) async fn run_pipeline(state: RenderThreadState) {
         state.canvas_height,
         initial_spatial_engine,
         state.screen_capture_configured,
+        state.configured_max_fps_tier,
     );
     let mut skip_decision = SkipDecision::None;
     let mut next_frame_at = Instant::now();

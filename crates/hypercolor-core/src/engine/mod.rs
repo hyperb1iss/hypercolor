@@ -65,6 +65,9 @@ pub struct RenderLoopStats {
     /// Current FPS tier.
     pub tier: FpsTier,
 
+    /// Current runtime ceiling for automatic upshifts.
+    pub max_tier: FpsTier,
+
     /// EWMA-smoothed frame time.
     pub avg_frame_time: Duration,
 
@@ -269,6 +272,7 @@ impl RenderLoop {
         RenderLoopStats {
             total_frames: self.frame_number,
             tier: self.fps_controller.tier(),
+            max_tier: self.fps_controller.max_tier(),
             avg_frame_time: self.fps_controller.ewma_frame_time(),
             consecutive_misses: self.fps_controller.consecutive_misses(),
             state: self.state,

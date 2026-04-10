@@ -499,6 +499,7 @@ struct MetricsPayload {
 #[derive(Debug, Serialize)]
 struct MetricsFps {
     target: u32,
+    ceiling: u32,
     actual: f64,
     dropped: u32,
 }
@@ -1906,6 +1907,7 @@ async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> Ser
     };
     let performance_snapshot = state.performance.read().await.snapshot();
     let target_fps = render_stats.tier.fps();
+    let ceiling_fps = render_stats.max_tier.fps();
     let avg_frame_secs = render_stats.avg_frame_time.as_secs_f64();
     let actual_fps = paced_fps(avg_frame_secs, target_fps);
     let avg_ms = avg_frame_secs * 1000.0;
@@ -1942,6 +1944,7 @@ async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> Ser
         data: MetricsPayload {
             fps: MetricsFps {
                 target: target_fps,
+                ceiling: ceiling_fps,
                 actual: round_1(actual_fps),
                 dropped: render_stats.consecutive_misses,
             },
@@ -2380,6 +2383,7 @@ mod tests {
         assert_eq!(json["timeline"]["scene_snapshot_done_ms"], 0.12);
         assert_eq!(json["timeline"]["composition_done_ms"], 1.34);
         assert_eq!(json["timeline"]["frame_done_ms"], 1.85);
+        assert_eq!(json["fps"]["ceiling"], 60);
         assert_eq!(json["render_surfaces"]["slot_count"], 6);
         assert_eq!(json["render_surfaces"]["published_slots"], 4);
         assert_eq!(json["render_surfaces"]["canvas_receivers"], 2);

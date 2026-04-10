@@ -4,6 +4,7 @@ use tracing::{trace, warn};
 
 use hypercolor_core::types::event::FrameTiming;
 
+use super::frame_admission::FrameAdmissionSample;
 use super::frame_composer::{ComposeRequest, compose_frame};
 use super::frame_io::{publish_frame_updates, sample_inputs};
 use super::frame_pacing::{FrameExecution, NextWake, SkipDecision};
@@ -295,6 +296,15 @@ pub(crate) async fn execute_frame(
 
     let (next_wake, next_skip_decision) = {
         let mut rl = state.render_loop.write().await;
+        let admission = runtime.frame_admission.record_frame(FrameAdmissionSample {
+            total_us,
+            producer_us: render_stage.producer_us,
+            composition_us: render_stage.composition_us,
+            full_frame_copy_count,
+        });
+        if rl.fps_controller().max_tier() != admission.ceiling_tier {
+            rl.fps_controller_mut().set_max_tier(admission.ceiling_tier);
+        }
         match rl.frame_complete() {
             Some(frame_stats) => (
                 NextWake::Interval(rl.target_interval()),

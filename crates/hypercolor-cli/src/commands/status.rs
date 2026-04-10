@@ -105,6 +105,11 @@ fn status_table_lines(data: &serde_json::Value, color: bool) -> Vec<String> {
         .and_then(|r| r.get("actual_fps"))
         .and_then(serde_json::Value::as_f64)
         .unwrap_or(0.0);
+    let ceiling_fps = data
+        .get("render_loop")
+        .and_then(|r| r.get("ceiling_fps"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(target_fps);
     let consecutive_misses = data
         .get("render_loop")
         .and_then(|r| r.get("consecutive_misses"))
@@ -143,7 +148,7 @@ fn status_table_lines(data: &serde_json::Value, color: bool) -> Vec<String> {
         format!("Daemon     {status_dot} {daemon_status:<16} {version}"),
         format!("Uptime     {uptime}s"),
         format!(
-            "Render     tier={fps_tier} fps={actual_fps:.1}/{target_fps} misses={consecutive_misses} frames={total_frames}"
+            "Render     tier={fps_tier} fps={actual_fps:.1}/{target_fps} ceiling={ceiling_fps} misses={consecutive_misses} frames={total_frames}"
         ),
         format!("Effect     {effect_name}"),
         format!("Catalog    {effect_count} effects"),
@@ -222,6 +227,7 @@ mod tests {
             "render_loop": {
                 "fps_tier": "60fps",
                 "target_fps": 60,
+                "ceiling_fps": 60,
                 "actual_fps": 59.8,
                 "consecutive_misses": 0,
                 "total_frames": 1234
@@ -247,11 +253,9 @@ mod tests {
         });
 
         let lines = status_table_lines(&data, false);
-        assert!(
-            lines
-                .iter()
-                .any(|line| { line == "Render     tier=60fps fps=59.8/60 misses=0 frames=1234" })
-        );
+        assert!(lines.iter().any(|line| {
+            line == "Render     tier=60fps fps=59.8/60 ceiling=60 misses=0 frames=1234"
+        }));
         assert!(lines.iter().any(|line| {
             line == "Surfaces   slots=6 free=0 published=4 dequeued=2 canvas_rx=2"
         }));

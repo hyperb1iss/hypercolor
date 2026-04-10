@@ -35,7 +35,7 @@ use hypercolor_core::effect::{
     create_renderer_for_metadata_with_mode, default_effect_search_paths, register_html_effects,
     resolve_render_acceleration_mode,
 };
-use hypercolor_core::engine::RenderLoop;
+use hypercolor_core::engine::{FpsTier, RenderLoop};
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::EvdevKeyboardInput;
 use hypercolor_core::input::audio::AudioInput;
@@ -685,6 +685,7 @@ impl DaemonState {
             canvas_width: config.daemon.canvas_width,
             canvas_height: config.daemon.canvas_height,
             render_acceleration_mode: render_acceleration.effective_mode,
+            configured_max_fps_tier: FpsTier::from_fps(config.daemon.target_fps),
         };
         self.render_thread = Some(RenderThread::spawn(rt_state));
         self.display_output_thread = Some(DisplayOutputThread::spawn(DisplayOutputState {

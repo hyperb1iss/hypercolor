@@ -21,7 +21,7 @@ use hypercolor_core::device::{
     UsbProtocolConfigStore,
 };
 use hypercolor_core::effect::{EffectEngine, EffectRegistry, builtin::register_builtin_effects};
-use hypercolor_core::engine::RenderLoop;
+use hypercolor_core::engine::{FpsTier, RenderLoop};
 use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData};
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
@@ -571,6 +571,7 @@ fn make_render_state(
         canvas_width: 320,
         canvas_height: 200,
         render_acceleration_mode: RenderAccelerationMode::Cpu,
+        configured_max_fps_tier: FpsTier::Full,
     }
 }
 
@@ -1485,6 +1486,7 @@ async fn pipeline_renders_active_effect_to_devices() {
         canvas_width: 320,
         canvas_height: 200,
         render_acceleration_mode: RenderAccelerationMode::Cpu,
+        configured_max_fps_tier: FpsTier::Full,
     };
 
     // Start.
@@ -1798,6 +1800,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         canvas_width: 320,
         canvas_height: 200,
         render_acceleration_mode: RenderAccelerationMode::Cpu,
+        configured_max_fps_tier: FpsTier::Full,
     };
 
     {
@@ -2333,6 +2336,7 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         canvas_width: 320,
         canvas_height: 200,
         render_acceleration_mode: RenderAccelerationMode::Cpu,
+        configured_max_fps_tier: FpsTier::Full,
     };
 
     let mut frame_rx = state.event_bus.frame_receiver();
