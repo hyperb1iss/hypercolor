@@ -209,6 +209,8 @@ pub(crate) async fn maybe_sleep_throttle(
             retained_effect: false,
             retained_screen: false,
             composition_bypassed: false,
+            gpu_zone_sampling: false,
+            cpu_readback_skipped: false,
             compositor_backend: CompositorBackendKind::Cpu,
             logical_layer_count: 0,
             render_group_count: scene_snapshot.scene_runtime.active_render_group_count(),

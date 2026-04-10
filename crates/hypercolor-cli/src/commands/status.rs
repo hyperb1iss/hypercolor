@@ -213,6 +213,14 @@ fn status_table_lines(data: &serde_json::Value, p: &Painter) -> Vec<String> {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
         let copy_kb = f64_field(latest_frame, "full_frame_copy_kb");
+        let gpu_zone_sampling = latest_frame
+            .get("gpu_zone_sampling")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let cpu_readback_skipped = latest_frame
+            .get("cpu_readback_skipped")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
 
         lines.push(format!(
             "  {}   {} total  {} wake  {} age",
@@ -225,6 +233,20 @@ fn status_table_lines(data: &serde_json::Value, p: &Painter) -> Vec<String> {
             "  {}   {} compose",
             p.muted(&pad("", 10)),
             p.keyword(&compositor_backend.replace('_', " ")),
+        ));
+        lines.push(format!(
+            "  {}   {} gpu sample  {} readback",
+            p.muted(&pad("", 10)),
+            if gpu_zone_sampling {
+                p.success("on")
+            } else {
+                p.muted("off")
+            },
+            if cpu_readback_skipped {
+                p.success("skipped")
+            } else {
+                p.muted("materialized")
+            },
         ));
 
         // ── Pipeline ────────────────────────────────────────────────
@@ -467,6 +489,8 @@ mod tests {
             "latest_frame": {
                 "frame_token": 77,
                 "compositor_backend": "gpu_fallback",
+                "gpu_zone_sampling": true,
+                "cpu_readback_skipped": true,
                 "total_ms": 4.32,
                 "wake_late_ms": 0.15,
                 "frame_age_ms": 8.5,
@@ -507,6 +531,10 @@ mod tests {
         assert!(
             joined.contains("gpu fallback compose"),
             "backend mode present"
+        );
+        assert!(
+            joined.contains("on gpu sample  skipped readback"),
+            "gpu sampling telemetry present"
         );
         assert!(joined.contains("5 devices"), "device count present");
         assert!(joined.contains("18 effects"), "effect count present");

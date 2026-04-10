@@ -133,6 +133,7 @@ pub(crate) async fn execute_frame(
     .await;
     let render_us = render_stage.total_us;
 
+    let mut gpu_zone_sampling = false;
     let layout = if let Some(sampled_layout) = render_stage.sampled_layout.take() {
         if let Some(sampled_zones) = render_stage.sampled_zones.take() {
             render.recycled_frame.zones = sampled_zones;
@@ -140,7 +141,7 @@ pub(crate) async fn execute_frame(
         sampled_layout
     } else {
         let sample_start = Instant::now();
-        let gpu_sampled = if matches!(
+        gpu_zone_sampling = if matches!(
             render_stage.composed_frame.backend,
             crate::performance::CompositorBackendKind::Gpu
         ) {
@@ -157,7 +158,7 @@ pub(crate) async fn execute_frame(
         } else {
             false
         };
-        if !gpu_sampled {
+        if !gpu_zone_sampling {
             scene_snapshot.spatial_engine.sample_into(
                 render_stage
                     .composed_frame
@@ -205,6 +206,10 @@ pub(crate) async fn execute_frame(
     let postprocess_us = 0;
     let mut full_frame_copy_count = 0_u32;
     let mut full_frame_copy_bytes = 0_u32;
+    let cpu_readback_skipped = matches!(
+        render_stage.composed_frame.backend,
+        crate::performance::CompositorBackendKind::Gpu
+    ) && render_stage.composed_frame.sampling_canvas.is_none();
 
     let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
     let timing_total_us = micros_u32(frame_start.elapsed());
@@ -296,6 +301,8 @@ pub(crate) async fn execute_frame(
             retained_effect: render_stage.effect_retained,
             retained_screen: render_stage.screen_retained,
             composition_bypassed: render_stage.composition_bypassed,
+            gpu_zone_sampling,
+            cpu_readback_skipped,
             compositor_backend,
             logical_layer_count: render_stage.logical_layer_count,
             render_group_count: render_stage.render_group_count,

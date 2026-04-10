@@ -63,6 +63,8 @@ pub struct RenderLoopStatus {
 pub struct LatestFrameStatus {
     pub frame_token: u64,
     pub compositor_backend: String,
+    pub gpu_zone_sampling: bool,
+    pub cpu_readback_skipped: bool,
     pub total_ms: f64,
     pub wake_late_ms: f64,
     pub frame_age_ms: f64,
@@ -309,6 +311,8 @@ fn latest_frame_status(frame: LatestFrameMetrics, render_elapsed_ms: f64) -> Lat
     LatestFrameStatus {
         frame_token: frame.timeline.frame_token,
         compositor_backend: frame.compositor_backend.as_str().to_owned(),
+        gpu_zone_sampling: frame.gpu_zone_sampling,
+        cpu_readback_skipped: frame.cpu_readback_skipped,
         total_ms: round_2(us_to_ms(frame.total_us)),
         wake_late_ms: round_2(us_to_ms(frame.wake_late_us)),
         frame_age_ms: round_2(frame_age_ms),
@@ -416,6 +420,8 @@ mod tests {
                 retained_effect: false,
                 retained_screen: false,
                 composition_bypassed: false,
+                gpu_zone_sampling: true,
+                cpu_readback_skipped: true,
                 compositor_backend: CompositorBackendKind::GpuFallback,
                 logical_layer_count: 2,
                 render_group_count: 1,
@@ -458,6 +464,8 @@ mod tests {
             json["data"]["latest_frame"]["compositor_backend"],
             "gpu_fallback"
         );
+        assert_eq!(json["data"]["latest_frame"]["gpu_zone_sampling"], true);
+        assert_eq!(json["data"]["latest_frame"]["cpu_readback_skipped"], true);
         assert_eq!(
             json["data"]["latest_frame"]["render_surfaces"]["slot_count"],
             6
