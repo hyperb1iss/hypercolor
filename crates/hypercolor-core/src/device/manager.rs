@@ -1855,6 +1855,7 @@ fn prepare_output_for_led_ranges(
     brightness: f32,
 ) {
     let brightness = brightness.clamp(0.0, 1.0);
+    let full_brightness = brightness >= 0.999;
     if brightness <= 0.0 {
         colors.fill([0, 0, 0]);
         return;
@@ -1867,7 +1868,7 @@ fn prepare_output_for_led_ranges(
     if written_ranges.len() == 1 {
         let range = &written_ranges[0];
         if range.start == 0 && range.end == colors.len() {
-            prepare_output_for_leds(colors, brightness);
+            prepare_output_for_leds(colors, brightness, full_brightness);
             return;
         }
     }
@@ -1878,12 +1879,20 @@ fn prepare_output_for_led_ranges(
         if start >= end {
             continue;
         }
-        prepare_output_for_leds(&mut colors[start..end], brightness);
+        prepare_output_for_leds(&mut colors[start..end], brightness, full_brightness);
     }
 }
 
-fn prepare_output_for_leds(colors: &mut [[u8; 3]], brightness: f32) {
-    let scale_brightness = brightness < 1.0;
+fn prepare_output_for_leds(colors: &mut [[u8; 3]], brightness: f32, full_brightness: bool) {
+    if full_brightness {
+        prepare_output_for_leds_full_brightness(colors);
+        return;
+    }
+
+    prepare_output_for_leds_scaled(colors, brightness);
+}
+
+fn prepare_output_for_leds_full_brightness(colors: &mut [[u8; 3]]) {
     for color in colors {
         let [red_u8, green_u8, blue_u8] = *color;
         if red_u8 == 0 && green_u8 == 0 && blue_u8 == 0 {
@@ -1894,11 +1903,28 @@ fn prepare_output_for_leds(colors: &mut [[u8; 3]], brightness: f32) {
         let mut green = decode_srgb_channel(green_u8);
         let mut blue = decode_srgb_channel(blue_u8);
         apply_led_perceptual_compensation_channels(&mut red, &mut green, &mut blue);
-        if scale_brightness {
-            red *= brightness;
-            green *= brightness;
-            blue *= brightness;
+        *color = [
+            linear_to_output_u8(red),
+            linear_to_output_u8(green),
+            linear_to_output_u8(blue),
+        ];
+    }
+}
+
+fn prepare_output_for_leds_scaled(colors: &mut [[u8; 3]], brightness: f32) {
+    for color in colors {
+        let [red_u8, green_u8, blue_u8] = *color;
+        if red_u8 == 0 && green_u8 == 0 && blue_u8 == 0 {
+            continue;
         }
+
+        let mut red = decode_srgb_channel(red_u8);
+        let mut green = decode_srgb_channel(green_u8);
+        let mut blue = decode_srgb_channel(blue_u8);
+        apply_led_perceptual_compensation_channels(&mut red, &mut green, &mut blue);
+        red *= brightness;
+        green *= brightness;
+        blue *= brightness;
         *color = [
             linear_to_output_u8(red),
             linear_to_output_u8(green),
