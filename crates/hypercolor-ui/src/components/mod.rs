@@ -16,6 +16,7 @@ pub mod layout_palette;
 pub mod layout_zone_properties;
 pub mod preset_matching;
 pub mod preset_panel;
+mod preview_runtime;
 pub mod resize_handle;
 pub mod settings_controls;
 pub mod settings_sections;

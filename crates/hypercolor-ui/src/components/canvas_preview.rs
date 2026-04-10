@@ -9,196 +9,60 @@ use leptos::html::Canvas;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
-use web_sys::{
-    HtmlCanvasElement, WebGlBuffer, WebGlProgram, WebGlRenderingContext as Gl, WebGlShader,
-    WebGlTexture,
-};
 
 use crate::app::WsContext;
-use crate::ws::{CanvasFrame, CanvasPixelFormat};
+use crate::ws::CanvasFrame;
+
+use super::preview_runtime::{PreviewRenderOutcome, WebGlPreviewRuntime};
 
 type PresentCallback = Rc<dyn Fn()>;
 type PresentScheduler = Rc<RefCell<Option<PresentCallback>>>;
+const WEBGL_RETRY_DELAY_FRAMES: u32 = 30;
 
-const PREVIEW_VERTEX_SHADER: &str = r#"
-attribute vec2 a_position;
-attribute vec2 a_tex_coord;
-varying vec2 v_tex_coord;
-
-void main() {
-    gl_Position = vec4(a_position, 0.0, 1.0);
-    v_tex_coord = a_tex_coord;
-}
-"#;
-
-const PREVIEW_FRAGMENT_SHADER: &str = r#"
-precision mediump float;
-varying vec2 v_tex_coord;
-uniform sampler2D u_texture;
-
-void main() {
-    gl_FragColor = texture2D(u_texture, v_tex_coord);
-}
-"#;
-
-struct WebGlPreview {
-    gl: Gl,
-    program: WebGlProgram,
-    vertex_buffer: WebGlBuffer,
-    texture: WebGlTexture,
-    width: u32,
-    height: u32,
-    format: CanvasPixelFormat,
+enum PresenterState {
+    Uninitialized,
+    Ready(WebGlPreviewRuntime),
+    CoolingDown { retry_at_frame: u32 },
 }
 
-impl WebGlPreview {
-    fn new(canvas: &HtmlCanvasElement) -> Option<Self> {
-        let gl = canvas
-            .get_context("webgl")
-            .ok()
-            .flatten()
-            .or_else(|| canvas.get_context("experimental-webgl").ok().flatten())
-            .and_then(|ctx| ctx.dyn_into::<Gl>().ok())?;
-
-        let vertex_shader = compile_shader(&gl, Gl::VERTEX_SHADER, PREVIEW_VERTEX_SHADER)?;
-        let fragment_shader = compile_shader(&gl, Gl::FRAGMENT_SHADER, PREVIEW_FRAGMENT_SHADER)?;
-        let program = link_program(&gl, &vertex_shader, &fragment_shader)?;
-        gl.use_program(Some(&program));
-
-        let vertex_buffer = gl.create_buffer()?;
-        gl.bind_buffer(Gl::ARRAY_BUFFER, Some(&vertex_buffer));
-
-        let vertices: [f32; 16] = [
-            -1.0, -1.0, 0.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0,
-        ];
-        let vertex_array = js_sys::Float32Array::from(vertices.as_slice());
-        gl.buffer_data_with_array_buffer_view(Gl::ARRAY_BUFFER, &vertex_array, Gl::STATIC_DRAW);
-
-        let position_attrib = u32::try_from(gl.get_attrib_location(&program, "a_position")).ok()?;
-        let tex_coord_attrib =
-            u32::try_from(gl.get_attrib_location(&program, "a_tex_coord")).ok()?;
-        gl.enable_vertex_attrib_array(position_attrib);
-        gl.vertex_attrib_pointer_with_i32(position_attrib, 2, Gl::FLOAT, false, 16, 0);
-        gl.enable_vertex_attrib_array(tex_coord_attrib);
-        gl.vertex_attrib_pointer_with_i32(tex_coord_attrib, 2, Gl::FLOAT, false, 16, 8);
-
-        let texture = gl.create_texture()?;
-        gl.active_texture(Gl::TEXTURE0);
-        gl.bind_texture(Gl::TEXTURE_2D, Some(&texture));
-        gl.pixel_storei(Gl::UNPACK_ALIGNMENT, 1);
-        gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_WRAP_S, Gl::CLAMP_TO_EDGE as i32);
-        gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_WRAP_T, Gl::CLAMP_TO_EDGE as i32);
-        gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_MIN_FILTER, Gl::NEAREST as i32);
-        gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_MAG_FILTER, Gl::NEAREST as i32);
-
-        if let Some(location) = gl.get_uniform_location(&program, "u_texture") {
-            gl.uniform1i(Some(&location), 0);
-        }
-
-        Some(Self {
-            gl,
-            program,
-            vertex_buffer,
-            texture,
-            width: 0,
-            height: 0,
-            format: CanvasPixelFormat::Rgb,
-        })
+impl PresenterState {
+    fn schedule_retry(&mut self, frame_number: u32) {
+        *self = Self::CoolingDown {
+            retry_at_frame: frame_number.saturating_add(WEBGL_RETRY_DELAY_FRAMES),
+        };
     }
 
-    fn reinitialize_for_frame(
-        &mut self,
-        canvas: &HtmlCanvasElement,
-        width: u32,
-        height: u32,
-        format: CanvasPixelFormat,
-    ) -> bool {
-        if canvas.width() != width {
-            canvas.set_width(width);
+    fn ready_for_retry(&self, frame_number: u32) -> bool {
+        match self {
+            Self::CoolingDown { retry_at_frame } => frame_number >= *retry_at_frame,
+            Self::Uninitialized | Self::Ready(_) => true,
         }
-        if canvas.height() != height {
-            canvas.set_height(height);
-        }
+    }
 
-        let Some(mut replacement) = Self::new(canvas) else {
+    fn ensure_runtime(&mut self, canvas: &web_sys::HtmlCanvasElement, frame_number: u32) -> bool {
+        if !self.ready_for_retry(frame_number) {
             return false;
-        };
-        replacement.width = width;
-        replacement.height = height;
-        replacement.format = format;
-        *self = replacement;
-        true
-    }
-
-    fn render(&mut self, canvas: &HtmlCanvasElement, frame: &CanvasFrame) {
-        let frame_format = frame.pixel_format();
-        let needs_reinit = self.width != frame.width
-            || self.height != frame.height
-            || self.format != frame_format
-            || canvas.width() != frame.width
-            || canvas.height() != frame.height;
-        if needs_reinit
-            && !self.reinitialize_for_frame(canvas, frame.width, frame.height, frame_format)
-        {
-            return;
         }
 
-        let Ok(width) = i32::try_from(frame.width) else {
-            return;
-        };
-        let Ok(height) = i32::try_from(frame.height) else {
-            return;
-        };
+        if matches!(self, Self::Ready(_)) {
+            return true;
+        }
 
-        self.gl.viewport(0, 0, width, height);
-        self.gl.use_program(Some(&self.program));
-        self.gl
-            .bind_buffer(Gl::ARRAY_BUFFER, Some(&self.vertex_buffer));
-        self.gl.active_texture(Gl::TEXTURE0);
-        self.gl.bind_texture(Gl::TEXTURE_2D, Some(&self.texture));
-        let gl_format = match frame_format {
-            CanvasPixelFormat::Rgb => Gl::RGB,
-            CanvasPixelFormat::Rgba => Gl::RGBA,
-        };
-
-        let _ = self
-            .gl
-            .tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_js_u8_array(
-                Gl::TEXTURE_2D,
-                0,
-                gl_format as i32,
-                width,
-                height,
-                0,
-                gl_format,
-                Gl::UNSIGNED_BYTE,
-                Some(frame.pixels_js()),
-            );
-        self.gl.draw_arrays(Gl::TRIANGLE_STRIP, 0, 4);
+        match WebGlPreviewRuntime::new(canvas) {
+            Some(runtime) => {
+                *self = Self::Ready(runtime);
+                true
+            }
+            None => {
+                self.schedule_retry(frame_number);
+                false
+            }
+        }
     }
-}
 
-fn compile_shader(gl: &Gl, shader_type: u32, source: &str) -> Option<WebGlShader> {
-    let shader = gl.create_shader(shader_type)?;
-    gl.shader_source(&shader, source);
-    gl.compile_shader(&shader);
-
-    gl.get_shader_parameter(&shader, Gl::COMPILE_STATUS)
-        .as_bool()
-        .filter(|success| *success)
-        .map(|_| shader)
-}
-
-fn link_program(gl: &Gl, vertex: &WebGlShader, fragment: &WebGlShader) -> Option<WebGlProgram> {
-    let program = gl.create_program()?;
-    gl.attach_shader(&program, vertex);
-    gl.attach_shader(&program, fragment);
-    gl.link_program(&program);
-
-    gl.get_program_parameter(&program, Gl::LINK_STATUS)
-        .as_bool()
-        .filter(|success| *success)
-        .map(|_| program)
+    fn reset(&mut self) {
+        *self = Self::Uninitialized;
+    }
 }
 
 /// Live canvas preview that paints authoritative canvas pixels from WebSocket frames.
@@ -215,7 +79,7 @@ pub fn CanvasPreview(
 ) -> impl IntoView {
     let canvas_ref = NodeRef::<Canvas>::new();
     let latest_frame = Rc::new(RefCell::new(None::<CanvasFrame>));
-    let presenter = Rc::new(RefCell::new(None::<WebGlPreview>));
+    let presenter = Rc::new(RefCell::new(PresenterState::Uninitialized));
     let animation = Rc::new(RefCell::new(None::<Closure<dyn FnMut(f64)>>));
     let last_presented_frame = Rc::new(RefCell::new(None::<u32>));
     let schedule_present: PresentScheduler = Rc::new(RefCell::new(None));
@@ -239,13 +103,6 @@ pub fn CanvasPreview(
                 return;
             };
 
-            if presenter.borrow().is_none() {
-                *presenter.borrow_mut() = WebGlPreview::new(&canvas);
-                if presenter.borrow().is_none() {
-                    return;
-                }
-            }
-
             let Some(window) = web_sys::window() else {
                 return;
             };
@@ -258,7 +115,7 @@ pub fn CanvasPreview(
 
             let callback = Closure::<dyn FnMut(f64)>::new(move |_| {
                 if !canvas_handle.is_connected() {
-                    presenter_handle.borrow_mut().take();
+                    presenter_handle.borrow_mut().reset();
                     last_presented_frame.borrow_mut().take();
                     animation_handle.borrow_mut().take();
                     return;
@@ -266,10 +123,21 @@ pub fn CanvasPreview(
 
                 if let Some(frame) = latest_frame.borrow().clone()
                     && Some(frame.frame_number) != *last_presented_frame.borrow()
-                    && let Some(presenter) = presenter_handle.borrow_mut().as_mut()
                 {
-                    presenter.render(&canvas_handle, &frame);
-                    *last_presented_frame.borrow_mut() = Some(frame.frame_number);
+                    let mut presenter_state = presenter_handle.borrow_mut();
+                    if presenter_state.ensure_runtime(&canvas_handle, frame.frame_number)
+                        && let PresenterState::Ready(presenter) = &mut *presenter_state
+                    {
+                        match presenter.render(&canvas_handle, &frame) {
+                            PreviewRenderOutcome::Presented => {
+                                *last_presented_frame.borrow_mut() = Some(frame.frame_number);
+                            }
+                            PreviewRenderOutcome::Reinitialize => {
+                                presenter_state.schedule_retry(frame.frame_number);
+                                last_presented_frame.borrow_mut().take();
+                            }
+                        }
+                    }
                 }
 
                 animation_handle.borrow_mut().take();
