@@ -71,6 +71,16 @@ async fn async_main() -> Result<()> {
         .log_internal_errors(false)
         .init();
 
+    let listen_addr = args.bind.as_deref().map_or_else(
+        || format!("{}:{}", config.daemon.listen_address, config.daemon.port),
+        String::from,
+    );
+    hypercolor_daemon::startup::banner::print(
+        env!("CARGO_PKG_VERSION"),
+        (config.daemon.canvas_width, config.daemon.canvas_height),
+        &listen_addr,
+    );
+
     info!(
         version = env!("CARGO_PKG_VERSION"),
         bind = ?args.bind,

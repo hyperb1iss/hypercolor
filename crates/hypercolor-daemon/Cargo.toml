@@ -50,6 +50,7 @@ image = { workspace = true }
 turbojpeg = { workspace = true }
 tokio-util = { workspace = true }
 mdns-sd = { workspace = true }
+owo-colors = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 sd-notify = "0.4"

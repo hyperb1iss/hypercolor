@@ -36,6 +36,7 @@ use hypercolor_types::spatial::SpatialLayout;
 
 use crate::attachment_profiles::AttachmentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
+use crate::discovery;
 use crate::display_output::DisplayOutputThread;
 use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
@@ -45,8 +46,8 @@ use crate::preview_runtime::PreviewRuntime;
 use crate::render_thread::RenderThread;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::{OutputPowerState, SessionController};
-use crate::discovery;
 
+pub mod banner;
 mod config;
 mod discovery_worker;
 mod lifecycle;
