@@ -684,16 +684,18 @@ fn js_true_object_literal(values: &[String]) -> String {
         return "{}".to_owned();
     }
 
-    let entries = values
-        .iter()
-        .map(|value| {
-            let key = serde_json::to_string(value).unwrap_or_else(|_| "\"invalid\"".to_owned());
-            format!("{key}:true")
-        })
-        .collect::<Vec<String>>()
-        .join(",");
-
-    format!("{{{entries}}}")
+    let mut object = String::with_capacity(values.len().saturating_mul(16));
+    object.push('{');
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            object.push(',');
+        }
+        let key = serde_json::to_string(value).unwrap_or_else(|_| "\"invalid\"".to_owned());
+        object.push_str(&key);
+        object.push_str(":true");
+    }
+    object.push('}');
+    object
 }
 
 fn keyboard_lookup_keys(pressed_keys: &[String]) -> Vec<String> {
