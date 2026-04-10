@@ -125,14 +125,11 @@ impl FrameAdmissionController {
         let copy_pressure = self.consecutive_copy_frames >= FULL_TIER_COPY_PRESSURE_THRESHOLD;
         let percentile_window_ready =
             self.recent_total_us.len() >= FULL_TIER_REVOKE_PERCENTILE_MIN_SAMPLES;
-        let p95_total_us = percentile_window_ready
-            .then(|| percentile_us(&self.recent_total_us, 95, 100))
-            .flatten()
-            .unwrap_or(0.0);
-        let p99_total_us = percentile_window_ready
-            .then(|| percentile_us(&self.recent_total_us, 99, 100))
-            .flatten()
-            .unwrap_or(0.0);
+        let (p95_total_us, p99_total_us) = if percentile_window_ready {
+            percentile_pair_us(&self.recent_total_us).unwrap_or((0.0, 0.0))
+        } else {
+            (0.0, 0.0)
+        };
 
         copy_pressure
             || self.consecutive_over_budget_frames >= FULL_TIER_REVOKE_MISS_THRESHOLD
@@ -156,8 +153,8 @@ impl FrameAdmissionController {
         let total_ewma_us = self.total_ewma_us.unwrap_or(full_budget_us);
         let producer_ewma_us = self.producer_ewma_us.unwrap_or(0.0);
         let composition_ewma_us = self.composition_ewma_us.unwrap_or(0.0);
-        let p95_total_us = percentile_us(&self.recent_total_us, 95, 100).unwrap_or(full_budget_us);
-        let p99_total_us = percentile_us(&self.recent_total_us, 99, 100).unwrap_or(full_budget_us);
+        let (p95_total_us, p99_total_us) =
+            percentile_pair_us(&self.recent_total_us).unwrap_or((full_budget_us, full_budget_us));
 
         self.consecutive_copy_frames == 0
             && self.consecutive_over_budget_frames == 0
@@ -184,16 +181,23 @@ fn full_tier_budget_us_u32() -> u32 {
     u32::try_from(FpsTier::Full.frame_interval().as_micros()).unwrap_or(u32::MAX)
 }
 
-fn percentile_us(samples: &VecDeque<u32>, numerator: usize, denominator: usize) -> Option<f64> {
-    if samples.is_empty() || denominator == 0 {
+fn percentile_pair_us(samples: &VecDeque<u32>) -> Option<(f64, f64)> {
+    if samples.is_empty() {
         return None;
     }
 
     let mut sorted: Vec<u32> = samples.iter().copied().collect();
     sorted.sort_unstable();
+    Some((
+        percentile_from_sorted(&sorted, 95, 100),
+        percentile_from_sorted(&sorted, 99, 100),
+    ))
+}
+
+fn percentile_from_sorted(sorted: &[u32], numerator: usize, denominator: usize) -> f64 {
     let max_index = sorted.len().saturating_sub(1);
     let rank = max_index.saturating_mul(numerator) / denominator;
-    sorted.get(rank).map(|value| f64::from(*value))
+    sorted.get(rank).copied().map(f64::from).unwrap_or_default()
 }
 
 #[cfg(test)]
