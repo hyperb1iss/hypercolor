@@ -155,7 +155,12 @@ impl SparkleFlinger {
             };
         }
 
-        let mut sampling_canvas = Canvas::new(width, height);
+        let mut layers = layers.into_iter();
+        let mut sampling_canvas = if let Some(first_layer) = layers.next() {
+            take_base_canvas(first_layer, width, height)
+        } else {
+            Canvas::new(width, height)
+        };
         for layer in layers {
             compose_layer(&mut sampling_canvas, layer);
         }
@@ -167,6 +172,17 @@ impl SparkleFlinger {
             bypassed: false,
         }
     }
+}
+
+fn take_base_canvas(layer: CompositionLayer, width: u32, height: u32) -> Canvas {
+    if layer.mode == CompositionMode::Replace && layer.opacity >= 1.0 {
+        let (canvas, _) = layer.frame.into_render_frame();
+        return canvas;
+    }
+
+    let mut canvas = Canvas::new(width, height);
+    compose_layer(&mut canvas, layer);
+    canvas
 }
 
 fn compose_layer(target: &mut Canvas, layer: CompositionLayer) {
@@ -321,5 +337,23 @@ mod tests {
             composed.sampling_canvas.get_pixel(0, 0),
             expected_blend(base, overlay, BlendMode::Screen, 1.0)
         );
+    }
+
+    #[test]
+    fn sparkleflinger_reuses_first_replace_canvas_for_multi_layer_plans() {
+        let base = solid_canvas(Rgba::new(255, 0, 0, 255));
+        let base_ptr = base.as_rgba_bytes().as_ptr();
+        let overlay = solid_canvas(Rgba::new(0, 0, 255, 255));
+        let mut sparkleflinger = SparkleFlinger::new();
+        let composed = sparkleflinger.compose(CompositionPlan::with_layers(
+            2,
+            2,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(base)),
+                CompositionLayer::alpha(ProducerFrame::Canvas(overlay), 0.5),
+            ],
+        ));
+
+        assert_eq!(composed.sampling_canvas.as_rgba_bytes().as_ptr(), base_ptr);
     }
 }
