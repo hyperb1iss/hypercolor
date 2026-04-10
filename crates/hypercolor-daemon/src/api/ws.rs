@@ -1891,6 +1891,49 @@ fn encode_frame_binary_selected(
     frame: &hypercolor_types::event::FrameData,
     selection: &FrameZoneSelection,
 ) -> Vec<u8> {
+    if matches!(selection, FrameZoneSelection::All) {
+        return encode_frame_binary_all(frame);
+    }
+
+    encode_filtered_frame_binary(frame, selection)
+}
+
+fn encode_frame_binary_all(frame: &hypercolor_types::event::FrameData) -> Vec<u8> {
+    let max_zone_count = usize::from(u8::MAX);
+    let included_zones = frame.zones.len().min(max_zone_count);
+    let payload_bytes =
+        frame
+            .zones
+            .iter()
+            .take(included_zones)
+            .fold(0_usize, |payload_bytes, zone| {
+                let zone_id_len = zone.zone_id.len().min(usize::from(u16::MAX));
+                let led_count = zone.colors.len().min(usize::from(u16::MAX));
+                payload_bytes.saturating_add(
+                    2_usize
+                        .saturating_add(zone_id_len)
+                        .saturating_add(2)
+                        .saturating_add(led_count.saturating_mul(3)),
+                )
+            });
+
+    let mut out = Vec::with_capacity(10_usize.saturating_add(payload_bytes));
+    out.push(0x01);
+    out.extend_from_slice(&frame.frame_number.to_le_bytes());
+    out.extend_from_slice(&frame.timestamp_ms.to_le_bytes());
+    out.push(u8::try_from(included_zones).unwrap_or(u8::MAX));
+
+    for zone in frame.zones.iter().take(included_zones) {
+        encode_frame_zone_binary(&mut out, zone);
+    }
+
+    out
+}
+
+fn encode_filtered_frame_binary(
+    frame: &hypercolor_types::event::FrameData,
+    selection: &FrameZoneSelection,
+) -> Vec<u8> {
     let max_zone_count = usize::from(u8::MAX);
     let mut included_zone_count = 0_usize;
     let mut payload_bytes = 0_usize;
@@ -1938,6 +1981,21 @@ fn encode_frame_binary_selected(
     out
 }
 
+fn encode_frame_zone_binary(out: &mut Vec<u8>, zone: &hypercolor_types::event::ZoneColors) {
+    let zone_id_bytes = zone.zone_id.as_bytes();
+    let zone_id_len_u16 = u16::try_from(zone_id_bytes.len()).unwrap_or(u16::MAX);
+    let zone_id_len = usize::from(zone_id_len_u16);
+    out.extend_from_slice(&zone_id_len_u16.to_le_bytes());
+    out.extend_from_slice(&zone_id_bytes[..zone_id_len]);
+
+    let led_count_u16 = u16::try_from(zone.colors.len()).unwrap_or(u16::MAX);
+    out.extend_from_slice(&led_count_u16.to_le_bytes());
+    let led_count = usize::from(led_count_u16);
+    for color in zone.colors.iter().take(led_count) {
+        out.extend_from_slice(color);
+    }
+}
+
 #[derive(Serialize)]
 struct BorrowedFrameZone<'a> {
     zone_id: &'a str,
@@ -1957,15 +2015,25 @@ fn encode_frame_json_selected(
     frame: &hypercolor_types::event::FrameData,
     selection: &FrameZoneSelection,
 ) -> String {
-    let zones = frame
-        .zones
-        .iter()
-        .filter(|zone| selection.includes(zone.zone_id.as_str()))
-        .map(|zone| BorrowedFrameZone {
-            zone_id: zone.zone_id.as_str(),
-            colors: zone.colors.as_slice(),
-        })
-        .collect();
+    let zones = match selection {
+        FrameZoneSelection::All => frame
+            .zones
+            .iter()
+            .map(|zone| BorrowedFrameZone {
+                zone_id: zone.zone_id.as_str(),
+                colors: zone.colors.as_slice(),
+            })
+            .collect(),
+        FrameZoneSelection::Named(_) => frame
+            .zones
+            .iter()
+            .filter(|zone| selection.includes(zone.zone_id.as_str()))
+            .map(|zone| BorrowedFrameZone {
+                zone_id: zone.zone_id.as_str(),
+                colors: zone.colors.as_slice(),
+            })
+            .collect(),
+    };
     serde_json::to_string(&BorrowedFrameMessage {
         kind: "frame",
         frame_number: frame.frame_number,
