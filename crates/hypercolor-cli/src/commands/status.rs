@@ -69,6 +69,14 @@ fn render_status(data: &serde_json::Value, ctx: &OutputContext) -> Result<()> {
 
 /// Render the human-readable status display.
 fn print_status_table(data: &serde_json::Value, ctx: &OutputContext) {
+    println!();
+    for line in status_table_lines(data, ctx.color) {
+        ctx.info(&line);
+    }
+    println!();
+}
+
+fn status_table_lines(data: &serde_json::Value, color: bool) -> Vec<String> {
     let running = data
         .get("running")
         .and_then(serde_json::Value::as_bool)
@@ -87,6 +95,21 @@ fn print_status_table(data: &serde_json::Value, ctx: &OutputContext) {
         .and_then(|r| r.get("fps_tier"))
         .and_then(serde_json::Value::as_str)
         .unwrap_or("?");
+    let target_fps = data
+        .get("render_loop")
+        .and_then(|r| r.get("target_fps"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let actual_fps = data
+        .get("render_loop")
+        .and_then(|r| r.get("actual_fps"))
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    let consecutive_misses = data
+        .get("render_loop")
+        .and_then(|r| r.get("consecutive_misses"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
     let total_frames = data
         .get("render_loop")
         .and_then(|r| r.get("total_frames"))
@@ -104,7 +127,7 @@ fn print_status_table(data: &serde_json::Value, ctx: &OutputContext) {
         .get("effect_count")
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
-    let status_dot = if ctx.color {
+    let status_dot = if color {
         if daemon_status == "running" {
             "\x1b[38;2;80;250;123m\u{25cf}\x1b[0m"
         } else {
@@ -116,15 +139,121 @@ fn print_status_table(data: &serde_json::Value, ctx: &OutputContext) {
         "(x)"
     };
 
-    println!();
-    ctx.info(&format!(
-        "Daemon     {status_dot} {daemon_status:<16} {version}"
-    ));
-    ctx.info(&format!("Uptime     {uptime}s"));
-    ctx.info(&format!("Render     tier={fps_tier} frames={total_frames}"));
-    ctx.info(&format!("Effect     {effect_name}"));
-    ctx.info(&format!("Catalog    {effect_count} effects"));
-    ctx.info(&format!("Devices    {device_count} tracked"));
+    let mut lines = vec![
+        format!("Daemon     {status_dot} {daemon_status:<16} {version}"),
+        format!("Uptime     {uptime}s"),
+        format!(
+            "Render     tier={fps_tier} fps={actual_fps:.1}/{target_fps} misses={consecutive_misses} frames={total_frames}"
+        ),
+        format!("Effect     {effect_name}"),
+        format!("Catalog    {effect_count} effects"),
+        format!("Devices    {device_count} tracked"),
+    ];
 
-    println!();
+    if let Some(latest_frame) = data.get("latest_frame") {
+        let frame_token = latest_frame
+            .get("frame_token")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let total_ms = latest_frame
+            .get("total_ms")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
+        let wake_late_ms = latest_frame
+            .get("wake_late_ms")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
+        let frame_age_ms = latest_frame
+            .get("frame_age_ms")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
+        let full_frame_copy_count = latest_frame
+            .get("full_frame_copy_count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let full_frame_copy_kb = latest_frame
+            .get("full_frame_copy_kb")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
+        let surfaces = latest_frame.get("render_surfaces");
+        let slot_count = surfaces
+            .and_then(|value| value.get("slot_count"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let free_slots = surfaces
+            .and_then(|value| value.get("free_slots"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let published_slots = surfaces
+            .and_then(|value| value.get("published_slots"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let dequeued_slots = surfaces
+            .and_then(|value| value.get("dequeued_slots"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let canvas_receivers = surfaces
+            .and_then(|value| value.get("canvas_receivers"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+
+        lines.push(format!(
+            "Frame      token={frame_token} total={total_ms:.2}ms wake={wake_late_ms:.2}ms age={frame_age_ms:.2}ms copies={full_frame_copy_count} ({full_frame_copy_kb:.1} KiB)"
+        ));
+        lines.push(format!(
+            "Surfaces   slots={slot_count} free={free_slots} published={published_slots} dequeued={dequeued_slots} canvas_rx={canvas_receivers}"
+        ));
+    }
+
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::status_table_lines;
+    use serde_json::json;
+
+    #[test]
+    fn status_table_lines_include_latest_frame_stats() {
+        let data = json!({
+            "running": true,
+            "version": "1.0.0",
+            "uptime_seconds": 42,
+            "render_loop": {
+                "fps_tier": "60fps",
+                "target_fps": 60,
+                "actual_fps": 59.8,
+                "consecutive_misses": 0,
+                "total_frames": 1234
+            },
+            "active_effect": "Breakthrough",
+            "device_count": 5,
+            "effect_count": 18,
+            "latest_frame": {
+                "frame_token": 77,
+                "total_ms": 4.32,
+                "wake_late_ms": 0.15,
+                "frame_age_ms": 8.5,
+                "full_frame_copy_count": 1,
+                "full_frame_copy_kb": 250.0,
+                "render_surfaces": {
+                    "slot_count": 6,
+                    "free_slots": 0,
+                    "published_slots": 4,
+                    "dequeued_slots": 2,
+                    "canvas_receivers": 2
+                }
+            }
+        });
+
+        let lines = status_table_lines(&data, false);
+        assert!(
+            lines
+                .iter()
+                .any(|line| { line == "Render     tier=60fps fps=59.8/60 misses=0 frames=1234" })
+        );
+        assert!(lines.iter().any(|line| {
+            line == "Surfaces   slots=6 free=0 published=4 dequeued=2 canvas_rx=2"
+        }));
+    }
 }

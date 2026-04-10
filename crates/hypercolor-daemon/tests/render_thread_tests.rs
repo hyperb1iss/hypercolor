@@ -1617,6 +1617,71 @@ async fn pipeline_keeps_slot_backed_canvas_when_recent_frames_are_retained() {
 }
 
 #[tokio::test]
+async fn pipeline_keeps_slot_backed_canvas_with_multiple_receivers() {
+    let mut effect_engine = EffectEngine::new();
+    effect_engine
+        .activate(
+            Box::new(MockEffectRenderer::solid(255, 0, 0)),
+            MockEffectRenderer::sample_metadata("multi-receiver-slot-backed-canvas"),
+        )
+        .expect("activate");
+
+    let state = make_render_state(
+        effect_engine,
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    let mut primary_canvas_rx = state.event_bus.canvas_receiver();
+    let mut secondary_canvas_rx = state.event_bus.canvas_receiver();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+    let mut primary_retained_frames = VecDeque::new();
+    let mut secondary_retained_frames = VecDeque::new();
+
+    for _ in 0..8 {
+        tokio::time::timeout(Duration::from_secs(2), primary_canvas_rx.changed())
+            .await
+            .expect("expected primary receiver canvas within 2 seconds")
+            .expect("primary canvas sender should remain connected");
+        tokio::time::timeout(Duration::from_secs(2), secondary_canvas_rx.changed())
+            .await
+            .expect("expected secondary receiver canvas within 2 seconds")
+            .expect("secondary canvas sender should remain connected");
+
+        let primary_canvas = primary_canvas_rx.borrow().clone();
+        let secondary_canvas = secondary_canvas_rx.borrow().clone();
+        assert!(
+            primary_canvas.surface().generation() > 0,
+            "primary receiver should keep receiving slot-backed canvases"
+        );
+        assert!(
+            secondary_canvas.surface().generation() > 0,
+            "secondary receiver should keep receiving slot-backed canvases"
+        );
+
+        primary_retained_frames.push_back(primary_canvas);
+        secondary_retained_frames.push_back(secondary_canvas);
+        if primary_retained_frames.len() > 3 {
+            let _ = primary_retained_frames.pop_front();
+        }
+        if secondary_retained_frames.len() > 3 {
+            let _ = secondary_retained_frames.pop_front();
+        }
+    }
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "this integration test exercises the full reconnect flow through render, write failure detection, and lifecycle recovery"

@@ -3,7 +3,7 @@ use std::time::Instant;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{
-    Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor,
+    Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceState,
 };
 use hypercolor_core::types::event::FrameData;
 
@@ -68,6 +68,45 @@ pub(crate) struct RenderCaches {
     pub(crate) render_scene_state: RenderSceneState,
     pub(crate) static_surface_cache: Option<CachedStaticSurface>,
     pub(crate) recycled_frame: FrameData,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RenderSurfaceSnapshot {
+    pub(crate) slot_count: u32,
+    pub(crate) free_slots: u32,
+    pub(crate) published_slots: u32,
+    pub(crate) dequeued_slots: u32,
+    pub(crate) canvas_receivers: u32,
+}
+
+impl RenderCaches {
+    pub(crate) fn render_surface_snapshot(
+        &mut self,
+        canvas_receiver_count: usize,
+    ) -> RenderSurfaceSnapshot {
+        let slot_states = self.render_surface_pool.slot_states();
+        let mut snapshot = RenderSurfaceSnapshot {
+            slot_count: u32::try_from(slot_states.len()).unwrap_or(u32::MAX),
+            canvas_receivers: u32::try_from(canvas_receiver_count).unwrap_or(u32::MAX),
+            ..RenderSurfaceSnapshot::default()
+        };
+
+        for state in slot_states {
+            match state {
+                SurfaceState::Free => {
+                    snapshot.free_slots = snapshot.free_slots.saturating_add(1);
+                }
+                SurfaceState::Published => {
+                    snapshot.published_slots = snapshot.published_slots.saturating_add(1);
+                }
+                SurfaceState::Dequeued => {
+                    snapshot.dequeued_slots = snapshot.dequeued_slots.saturating_add(1);
+                }
+            }
+        }
+
+        snapshot
+    }
 }
 
 pub(crate) struct PipelineRuntime {

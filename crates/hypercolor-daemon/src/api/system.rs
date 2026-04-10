@@ -15,6 +15,7 @@ use crate::api::AppState;
 use crate::api::envelope::ApiResponse;
 use crate::api::security;
 use crate::api::settings;
+use crate::performance::LatestFrameMetrics;
 use crate::session::current_global_brightness;
 
 use hypercolor_core::config::ConfigManager;
@@ -41,6 +42,7 @@ pub struct SystemStatus {
     pub audio_available: bool,
     pub capture_available: bool,
     pub render_loop: RenderLoopStatus,
+    pub latest_frame: Option<LatestFrameStatus>,
     pub event_bus_subscribers: usize,
 }
 
@@ -48,7 +50,32 @@ pub struct SystemStatus {
 pub struct RenderLoopStatus {
     pub state: String,
     pub fps_tier: String,
+    pub target_fps: u32,
+    pub actual_fps: f64,
+    pub consecutive_misses: u32,
     pub total_frames: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LatestFrameStatus {
+    pub frame_token: u64,
+    pub total_ms: f64,
+    pub wake_late_ms: f64,
+    pub frame_age_ms: f64,
+    pub logical_layer_count: u32,
+    pub render_group_count: u32,
+    pub full_frame_copy_count: u32,
+    pub full_frame_copy_kb: f64,
+    pub render_surfaces: RenderSurfaceStatus,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RenderSurfaceStatus {
+    pub slot_count: u32,
+    pub free_slots: u32,
+    pub published_slots: u32,
+    pub dequeued_slots: u32,
+    pub canvas_receivers: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -96,10 +123,20 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         RenderLoopStatus {
             state: snapshot.state.to_string(),
             fps_tier: snapshot.tier.to_string(),
+            target_fps: snapshot.tier.fps(),
+            actual_fps: round_1(paced_fps(
+                snapshot.avg_frame_time.as_secs_f64(),
+                snapshot.tier.fps(),
+            )),
+            consecutive_misses: snapshot.consecutive_misses,
             total_frames: snapshot.total_frames,
         }
     };
     let running = render_loop_is_operational(render_loop_status.state.as_str());
+    let performance = state.performance.read().await.snapshot();
+    let latest_frame = performance
+        .latest_frame
+        .map(|frame| latest_frame_status(frame, state.start_time.elapsed().as_secs_f64() * 1000.0));
 
     let uptime_seconds = state.start_time.elapsed().as_secs();
     let config_path = config_path(&state).display().to_string();
@@ -122,6 +159,7 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         audio_available: settings::audio_input_available(),
         capture_available: settings::capture_input_available(),
         render_loop: render_loop_status,
+        latest_frame,
         event_bus_subscribers: subscribers,
     })
 }
@@ -242,4 +280,137 @@ fn overall_health(checks: &HealthChecks) -> &'static str {
 
 fn render_loop_is_operational(state: &str) -> bool {
     state != "stopped"
+}
+
+fn latest_frame_status(frame: LatestFrameMetrics, render_elapsed_ms: f64) -> LatestFrameStatus {
+    let frame_age_ms = if frame.timestamp_ms > 0 {
+        (render_elapsed_ms - f64::from(frame.timestamp_ms)).max(0.0)
+    } else {
+        0.0
+    };
+
+    LatestFrameStatus {
+        frame_token: frame.timeline.frame_token,
+        total_ms: round_2(us_to_ms(frame.total_us)),
+        wake_late_ms: round_2(us_to_ms(frame.wake_late_us)),
+        frame_age_ms: round_2(frame_age_ms),
+        logical_layer_count: frame.logical_layer_count,
+        render_group_count: frame.render_group_count,
+        full_frame_copy_count: frame.full_frame_copy_count,
+        full_frame_copy_kb: round_2(bytes_to_kib(frame.full_frame_copy_bytes)),
+        render_surfaces: RenderSurfaceStatus {
+            slot_count: frame.render_surface_slot_count,
+            free_slots: frame.render_surface_free_slots,
+            published_slots: frame.render_surface_published_slots,
+            dequeued_slots: frame.render_surface_dequeued_slots,
+            canvas_receivers: frame.canvas_receiver_count,
+        },
+    }
+}
+
+fn paced_fps(avg_frame_secs: f64, target_fps: u32) -> f64 {
+    if avg_frame_secs <= 0.0 {
+        return f64::from(target_fps);
+    }
+
+    (1.0 / avg_frame_secs).clamp(0.0, f64::from(target_fps))
+}
+
+fn us_to_ms(value: u32) -> f64 {
+    f64::from(value) / 1000.0
+}
+
+fn bytes_to_kib(value: u32) -> f64 {
+    f64::from(value) / 1024.0
+}
+
+fn round_1(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
+fn round_2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_status;
+    use crate::api::AppState;
+    use crate::performance::{FrameTimeline, LatestFrameMetrics};
+    use axum::body::to_bytes;
+    use axum::extract::State;
+    use serde_json::Value;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn status_includes_latest_frame_surface_stats() {
+        let state = Arc::new(AppState::new());
+        {
+            let mut performance = state.performance.write().await;
+            performance.record_frame(LatestFrameMetrics {
+                timestamp_ms: 40,
+                input_us: 100,
+                producer_us: 500,
+                composition_us: 200,
+                render_us: 700,
+                sample_us: 150,
+                push_us: 250,
+                postprocess_us: 0,
+                publish_us: 120,
+                overhead_us: 50,
+                total_us: 1_270,
+                wake_late_us: 90,
+                jitter_us: 30,
+                reused_inputs: false,
+                reused_canvas: false,
+                retained_effect: false,
+                retained_screen: false,
+                composition_bypassed: false,
+                logical_layer_count: 2,
+                render_group_count: 1,
+                scene_active: true,
+                scene_transition_active: false,
+                render_surface_slot_count: 6,
+                render_surface_free_slots: 1,
+                render_surface_published_slots: 4,
+                render_surface_dequeued_slots: 1,
+                canvas_receiver_count: 2,
+                full_frame_copy_count: 1,
+                full_frame_copy_bytes: 256_000,
+                output_errors: 0,
+                timeline: FrameTimeline {
+                    frame_token: 77,
+                    budget_us: 16_666,
+                    scene_snapshot_done_us: 80,
+                    input_done_us: 180,
+                    producer_done_us: 680,
+                    composition_done_us: 880,
+                    sample_done_us: 1_030,
+                    output_done_us: 1_280,
+                    publish_done_us: 1_400,
+                    frame_done_us: 1_450,
+                },
+            });
+        }
+
+        let response = get_status(State(state)).await;
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("status body should read");
+        let json: Value = serde_json::from_slice(&body).expect("status should serialize");
+
+        assert_eq!(json["data"]["render_loop"]["target_fps"], 60);
+        assert_eq!(json["data"]["render_loop"]["actual_fps"], 60.0);
+        assert_eq!(json["data"]["latest_frame"]["frame_token"], 77);
+        assert_eq!(
+            json["data"]["latest_frame"]["render_surfaces"]["slot_count"],
+            6
+        );
+        assert_eq!(
+            json["data"]["latest_frame"]["render_surfaces"]["canvas_receivers"],
+            2
+        );
+        assert_eq!(json["data"]["latest_frame"]["full_frame_copy_count"], 1);
+        assert_eq!(json["data"]["latest_frame"]["full_frame_copy_kb"], 250.0);
+    }
 }

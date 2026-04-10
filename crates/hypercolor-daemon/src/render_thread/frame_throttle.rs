@@ -213,6 +213,12 @@ pub(crate) async fn maybe_sleep_throttle(
             render_group_count: scene_snapshot.scene_runtime.active_render_group_count(),
             scene_active: scene_snapshot.scene_runtime.active_scene_id.is_some(),
             scene_transition_active: scene_snapshot.scene_runtime.active_transition.is_some(),
+            render_surface_slot_count: 0,
+            render_surface_free_slots: 0,
+            render_surface_published_slots: 0,
+            render_surface_dequeued_slots: 0,
+            canvas_receiver_count: u32::try_from(state.event_bus.canvas_receiver_count())
+                .unwrap_or(u32::MAX),
             full_frame_copy_count: publish_stats.full_frame_copy_count,
             full_frame_copy_bytes: publish_stats.full_frame_copy_bytes,
             output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),

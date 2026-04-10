@@ -202,6 +202,7 @@ pub(crate) async fn execute_frame(
         full_frame_copy_count.saturating_add(publish_stats.full_frame_copy_count);
     full_frame_copy_bytes =
         full_frame_copy_bytes.saturating_add(publish_stats.full_frame_copy_bytes);
+    let render_surfaces = render.render_surface_snapshot(state.event_bus.canvas_receiver_count());
     let total_us = micros_u32(frame_start.elapsed());
     let known_stage_us = input_us
         .saturating_add(render_us)
@@ -237,6 +238,11 @@ pub(crate) async fn execute_frame(
             render_group_count: render_stage.render_group_count,
             scene_active: render_stage.scene_active,
             scene_transition_active: render_stage.scene_transition_active,
+            render_surface_slot_count: render_surfaces.slot_count,
+            render_surface_free_slots: render_surfaces.free_slots,
+            render_surface_published_slots: render_surfaces.published_slots,
+            render_surface_dequeued_slots: render_surfaces.dequeued_slots,
+            canvas_receiver_count: render_surfaces.canvas_receivers,
             full_frame_copy_count,
             full_frame_copy_bytes,
             output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),

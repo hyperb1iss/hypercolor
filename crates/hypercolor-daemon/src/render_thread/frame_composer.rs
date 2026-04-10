@@ -123,6 +123,7 @@ impl<'a> ComposeContext<'a> {
                 .await
             }
         } else {
+            self.render.effect_queue.clear();
             self.render_effect_frame(
                 self.scene_snapshot.effect_generation,
                 &self.inputs.audio,

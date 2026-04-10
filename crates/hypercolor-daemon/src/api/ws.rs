@@ -489,6 +489,7 @@ struct MetricsPayload {
     stages: MetricsStages,
     pacing: MetricsPacing,
     timeline: MetricsTimeline,
+    render_surfaces: MetricsRenderSurfaces,
     copies: MetricsCopies,
     memory: MetricsMemory,
     devices: MetricsDevices,
@@ -582,6 +583,15 @@ struct MetricsTimeline {
 struct MetricsCopies {
     full_frame_count: u32,
     full_frame_kb: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct MetricsRenderSurfaces {
+    slot_count: u32,
+    free_slots: u32,
+    published_slots: u32,
+    dequeued_slots: u32,
+    canvas_receivers: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -1971,6 +1981,13 @@ async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> Ser
                 publish_done_ms: round_2(us_to_ms(latest_frame.timeline.publish_done_us)),
                 frame_done_ms: round_2(us_to_ms(latest_frame.timeline.frame_done_us)),
             },
+            render_surfaces: MetricsRenderSurfaces {
+                slot_count: latest_frame.render_surface_slot_count,
+                free_slots: latest_frame.render_surface_free_slots,
+                published_slots: latest_frame.render_surface_published_slots,
+                dequeued_slots: latest_frame.render_surface_dequeued_slots,
+                canvas_receivers: latest_frame.canvas_receiver_count,
+            },
             copies: MetricsCopies {
                 full_frame_count: latest_frame.full_frame_copy_count,
                 full_frame_kb: round_2(bytes_to_kib(latest_frame.full_frame_copy_bytes)),
@@ -2311,6 +2328,11 @@ mod tests {
                 render_group_count: 1,
                 scene_active: true,
                 scene_transition_active: true,
+                render_surface_slot_count: 6,
+                render_surface_free_slots: 1,
+                render_surface_published_slots: 4,
+                render_surface_dequeued_slots: 1,
+                canvas_receiver_count: 2,
                 full_frame_copy_count: 0,
                 full_frame_copy_bytes: 0,
                 output_errors: 0,
@@ -2344,6 +2366,9 @@ mod tests {
         assert_eq!(json["timeline"]["scene_snapshot_done_ms"], 0.12);
         assert_eq!(json["timeline"]["composition_done_ms"], 1.34);
         assert_eq!(json["timeline"]["frame_done_ms"], 1.85);
+        assert_eq!(json["render_surfaces"]["slot_count"], 6);
+        assert_eq!(json["render_surfaces"]["published_slots"], 4);
+        assert_eq!(json["render_surfaces"]["canvas_receivers"], 2);
     }
 
     #[test]
