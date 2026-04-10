@@ -1435,6 +1435,36 @@ async fn pipeline_publishes_canvas_data_via_watch() {
 }
 
 #[tokio::test]
+async fn pipeline_publishes_canvas_data_via_preview_runtime() {
+    let state = make_render_state(
+        EffectEngine::new(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+
+    let mut canvas_rx = state.preview_runtime.canvas_receiver();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    let result = tokio::time::timeout(Duration::from_secs(1), canvas_rx.changed()).await;
+    assert!(result.is_ok(), "expected preview runtime canvas data within 1 second");
+    let canvas = canvas_rx.borrow().clone();
+    assert_eq!(canvas.width, 320);
+    assert_eq!(canvas.height, 200);
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
 async fn pipeline_renders_active_effect_to_devices() {
     // Set up a mock device.
     let device_id = DeviceId::new();
