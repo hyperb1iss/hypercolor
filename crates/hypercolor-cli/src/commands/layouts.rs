@@ -221,7 +221,10 @@ async fn execute_create(
     let mut body: serde_json::Value =
         serde_json::from_str(&args.data).map_err(|e| anyhow::anyhow!("Invalid JSON data: {e}"))?;
     if let Some(obj) = body.as_object_mut() {
-        obj.insert("name".to_string(), serde_json::Value::String(args.name.clone()));
+        obj.insert(
+            "name".to_string(),
+            serde_json::Value::String(args.name.clone()),
+        );
     }
     let response = client.post("/layouts", &body).await?;
 

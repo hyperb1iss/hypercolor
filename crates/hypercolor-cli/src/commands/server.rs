@@ -22,11 +22,7 @@ pub enum ServerCommand {
     Health,
 }
 
-pub async fn execute(
-    args: &ServerArgs,
-    client: &DaemonClient,
-    ctx: &OutputContext,
-) -> Result<()> {
+pub async fn execute(args: &ServerArgs, client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
     match &args.command {
         ServerCommand::Info => execute_info(client, ctx).await,
         ServerCommand::Health => execute_health(client, ctx).await,
@@ -45,7 +41,9 @@ async fn execute_info(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
             println!();
             ctx.info(&format!("Version    {}", extract_str(&response, "version")));
             ctx.info(&format!("Name       {}", extract_str(&response, "name")));
-            if let Some(features) = response.get("features").and_then(serde_json::Value::as_array)
+            if let Some(features) = response
+                .get("features")
+                .and_then(serde_json::Value::as_array)
             {
                 let feature_list: Vec<&str> = features
                     .iter()

@@ -656,10 +656,7 @@ async fn execute_playlists(
             }
         }
         PlaylistsCommand::Update(update_args) => {
-            let path = format!(
-                "/library/playlists/{}",
-                urlencoded(&update_args.playlist)
-            );
+            let path = format!("/library/playlists/{}", urlencoded(&update_args.playlist));
             let body: serde_json::Value = serde_json::from_str(&update_args.data)
                 .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
             let response = client.put(&path, &body).await?;

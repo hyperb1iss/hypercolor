@@ -146,8 +146,8 @@ pub fn resolve_connection(
         .or_else(|| std::env::var("HYPERCOLOR_PROFILE").ok())
         .unwrap_or(config.defaults.profile.clone());
 
-    let explicitly_requested = flag_profile.is_some()
-        || std::env::var("HYPERCOLOR_PROFILE").is_ok();
+    let explicitly_requested =
+        flag_profile.is_some() || std::env::var("HYPERCOLOR_PROFILE").is_ok();
 
     let profile = config.profiles.get(&profile_name);
 
@@ -185,14 +185,7 @@ pub fn resolve_connection(
     let api_key = flag_api_key
         .map(ToOwned::to_owned)
         .or_else(|| std::env::var("HYPERCOLOR_API_KEY").ok())
-        .or_else(|| {
-            profile.and_then(|p| {
-                p.api_key
-                    .as_ref()
-                    .filter(|k| !k.is_empty())
-                    .cloned()
-            })
-        });
+        .or_else(|| profile.and_then(|p| p.api_key.as_ref().filter(|k| !k.is_empty()).cloned()));
 
     Ok(ResolvedConnection {
         host,

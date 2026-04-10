@@ -20,11 +20,7 @@ pub enum AudioCommand {
     Devices,
 }
 
-pub async fn execute(
-    args: &AudioArgs,
-    client: &DaemonClient,
-    ctx: &OutputContext,
-) -> Result<()> {
+pub async fn execute(args: &AudioArgs, client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
     match &args.command {
         AudioCommand::Devices => execute_devices(client, ctx).await,
     }

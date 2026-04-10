@@ -334,9 +334,7 @@ async fn execute_patch(
     }
 
     let body = serde_json::json!({ "controls": controls });
-    let response = client
-        .patch("/effects/current/controls", &body)
-        .await?;
+    let response = client.patch("/effects/current/controls", &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
