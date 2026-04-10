@@ -87,22 +87,28 @@ impl DaemonState {
             );
         }
         #[cfg(feature = "wgpu")]
-        match crate::render_thread::sparkleflinger::gpu::GpuSparkleFlinger::new() {
-            Ok(mut compositor) => {
-                compositor
-                    .ensure_surface_size(config.daemon.canvas_width, config.daemon.canvas_height);
-                let probe = compositor.describe();
-                info!(
-                    adapter = %probe.adapter_name,
-                    backend = probe.backend,
-                    texture_format = probe.texture_format,
-                    max_texture_dimension_2d = probe.max_texture_dimension_2d,
-                    max_storage_textures_per_shader_stage = probe.max_storage_textures_per_shader_stage,
-                    "SparkleFlinger GPU probe succeeded"
-                );
-            }
-            Err(error) => {
-                warn!(%error, "SparkleFlinger GPU probe failed");
+        if render_acceleration.effective_mode
+            == hypercolor_types::config::RenderAccelerationMode::Gpu
+        {
+            match crate::render_thread::sparkleflinger::gpu::GpuSparkleFlinger::new() {
+                Ok(mut compositor) => {
+                    compositor.ensure_surface_size(
+                        config.daemon.canvas_width,
+                        config.daemon.canvas_height,
+                    );
+                    let probe = compositor.describe();
+                    info!(
+                        adapter = %probe.adapter_name,
+                        backend = probe.backend,
+                        texture_format = probe.texture_format,
+                        max_texture_dimension_2d = probe.max_texture_dimension_2d,
+                        max_storage_textures_per_shader_stage = probe.max_storage_textures_per_shader_stage,
+                        "SparkleFlinger GPU probe succeeded"
+                    );
+                }
+                Err(error) => {
+                    warn!(%error, "SparkleFlinger GPU probe failed");
+                }
             }
         }
 

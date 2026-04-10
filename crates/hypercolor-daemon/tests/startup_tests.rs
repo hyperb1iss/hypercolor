@@ -226,19 +226,38 @@ listen_address = "0.0.0.0"
     assert_eq!(path, temp.path());
 }
 
+#[cfg(not(feature = "wgpu"))]
 #[tokio::test]
-async fn initialize_rejects_explicit_gpu_render_acceleration_until_supported() {
+async fn initialize_rejects_explicit_gpu_render_acceleration_without_wgpu_feature() {
     let _guard = TestDataDirGuard::new().await;
     let temp = temp_config_file();
     let mut config = default_config();
     config.effect_engine.render_acceleration_mode = RenderAccelerationMode::Gpu;
 
     let error = match DaemonState::initialize(&config, temp.path().to_path_buf()) {
-        Ok(_) => panic!("gpu render acceleration should fail explicitly"),
+        Ok(_) => panic!("gpu render acceleration should fail explicitly without wgpu support"),
         Err(error) => error,
     };
 
-    assert!(format!("{error:#}").contains("gpu compositor acceleration is not available yet"));
+    assert!(format!("{error:#}").contains("rebuild hypercolor-daemon with the `wgpu` feature"));
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn initialize_handles_explicit_gpu_render_acceleration_when_wgpu_is_enabled() {
+    let _guard = TestDataDirGuard::new().await;
+    let temp = temp_config_file();
+    let mut config = default_config();
+    config.effect_engine.render_acceleration_mode = RenderAccelerationMode::Gpu;
+
+    match DaemonState::initialize(&config, temp.path().to_path_buf()) {
+        Ok(daemon) => drop(daemon),
+        Err(error) => {
+            assert!(
+                format!("{error:#}").contains("gpu compositor acceleration is not available yet")
+            );
+        }
+    }
 }
 
 #[tokio::test]
