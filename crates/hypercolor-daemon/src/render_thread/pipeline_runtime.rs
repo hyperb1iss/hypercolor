@@ -36,6 +36,17 @@ impl FrameInputs {
             screen_preview_surface: None,
         }
     }
+
+    pub(crate) fn screen_canvas_for_frame(&mut self, width: u32, height: u32) -> Option<Canvas> {
+        if self.screen_canvas.is_none() {
+            self.screen_canvas = self
+                .screen_data
+                .as_ref()
+                .and_then(|data| super::frame_io::screen_data_to_canvas(data, width, height));
+        }
+
+        self.screen_canvas.clone()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

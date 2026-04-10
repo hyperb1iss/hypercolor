@@ -53,9 +53,6 @@ pub(crate) async fn sample_inputs(state: &RenderThreadState, delta_secs: f32) ->
         }
     }
 
-    let screen_canvas = screen_data
-        .as_ref()
-        .and_then(|data| screen_data_to_canvas(data, state.canvas_width, state.canvas_height));
     let screen_preview_surface = screen_data
         .as_ref()
         .and_then(|data| data.canvas_downscale.clone());
@@ -64,7 +61,7 @@ pub(crate) async fn sample_inputs(state: &RenderThreadState, delta_secs: f32) ->
         audio,
         interaction,
         screen_data,
-        screen_canvas,
+        screen_canvas: None,
         screen_preview_surface,
     }
 }

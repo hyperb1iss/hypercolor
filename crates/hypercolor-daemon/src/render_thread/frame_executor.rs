@@ -102,9 +102,9 @@ pub(crate) async fn execute_frame(
     let inputs = match skip_decision {
         SkipDecision::None => {
             frame_loop.cached_inputs = sample_inputs(state, delta_secs).await;
-            &frame_loop.cached_inputs
+            &mut frame_loop.cached_inputs
         }
-        SkipDecision::ReuseInputs | SkipDecision::ReuseCanvas => &frame_loop.cached_inputs,
+        SkipDecision::ReuseInputs | SkipDecision::ReuseCanvas => &mut frame_loop.cached_inputs,
     };
     let input_us = micros_u32(input_start.elapsed());
     let input_done_us = micros_u32(frame_start.elapsed());

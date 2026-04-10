@@ -46,7 +46,7 @@ pub(crate) struct ComposeRequest<'a> {
     pub(crate) render: &'a mut RenderCaches,
     pub(crate) scene_snapshot: &'a FrameSceneSnapshot,
     pub(crate) skip_decision: SkipDecision,
-    pub(crate) inputs: &'a FrameInputs,
+    pub(crate) inputs: &'a mut FrameInputs,
     pub(crate) delta_secs: f32,
 }
 
@@ -61,7 +61,7 @@ struct ComposeContext<'a> {
     render: &'a mut RenderCaches,
     scene_snapshot: &'a FrameSceneSnapshot,
     skip_decision: SkipDecision,
-    inputs: &'a FrameInputs,
+    inputs: &'a mut FrameInputs,
     delta_secs: f32,
 }
 
@@ -125,7 +125,10 @@ impl<'a> ComposeContext<'a> {
                     state: Some(frame.state),
                 }
             } else {
-                self.render_effect_frame(
+                render_effect_frame(
+                    self.state,
+                    self.render,
+                    self.delta_secs,
                     self.scene_snapshot.effect_generation,
                     &self.inputs.audio,
                     &self.inputs.interaction,
@@ -135,7 +138,10 @@ impl<'a> ComposeContext<'a> {
             }
         } else {
             self.render.effect_queue.clear();
-            self.render_effect_frame(
+            render_effect_frame(
+                self.state,
+                self.render,
+                self.delta_secs,
                 self.scene_snapshot.effect_generation,
                 &self.inputs.audio,
                 &self.inputs.interaction,
@@ -356,7 +362,10 @@ impl<'a> ComposeContext<'a> {
                 .render
                 .screen_queue
                 .submit_latest(ProducerFrame::Surface(screen_surface.clone()));
-        } else if let Some(screen_canvas) = self.inputs.screen_canvas.clone() {
+        } else if let Some(screen_canvas) = self
+            .inputs
+            .screen_canvas_for_frame(self.state.canvas_width, self.state.canvas_height)
+        {
             let _ = self
                 .render
                 .screen_queue
@@ -372,108 +381,103 @@ impl<'a> ComposeContext<'a> {
                 state: Some(frame.state),
             })
     }
+}
 
-    async fn render_effect_frame(
-        &mut self,
-        effect_generation: u64,
-        audio: &AudioData,
-        interaction: &InteractionData,
-        screen_data: Option<&ScreenData>,
-    ) -> ProducedFrame {
-        let render_start = Instant::now();
-        let lease = match self.render.render_surface_pool.dequeue() {
-            lease @ Some(_) => lease,
-            None => {
-                if self.render.render_surface_pool.slot_count() < MAX_RENDER_SURFACE_SLOTS {
-                    let previous_slots = self.render.render_surface_pool.slot_count();
-                    let receiver_count = self.state.preview_canvas_receiver_count();
-                    let expanded_slots = desired_render_surface_slots(receiver_count)
-                        .max(previous_slots.saturating_add(1))
-                        .min(MAX_RENDER_SURFACE_SLOTS);
-                    self.render
-                        .render_surface_pool
-                        .ensure_slot_count(expanded_slots);
-                    debug!(
-                        previous_slots,
-                        expanded_slots,
-                        canvas_receivers = receiver_count,
-                        "expanded render surface pool under retention pressure"
-                    );
-                }
-                self.render.render_surface_pool.dequeue()
+async fn render_effect_frame(
+    state: &RenderThreadState,
+    render: &mut RenderCaches,
+    delta_secs: f32,
+    effect_generation: u64,
+    audio: &AudioData,
+    interaction: &InteractionData,
+    screen_data: Option<&ScreenData>,
+) -> ProducedFrame {
+    let render_start = Instant::now();
+    let lease = match render.render_surface_pool.dequeue() {
+        lease @ Some(_) => lease,
+        None => {
+            if render.render_surface_pool.slot_count() < MAX_RENDER_SURFACE_SLOTS {
+                let previous_slots = render.render_surface_pool.slot_count();
+                let receiver_count = state.preview_canvas_receiver_count();
+                let expanded_slots = desired_render_surface_slots(receiver_count)
+                    .max(previous_slots.saturating_add(1))
+                    .min(MAX_RENDER_SURFACE_SLOTS);
+                render.render_surface_pool.ensure_slot_count(expanded_slots);
+                debug!(
+                    previous_slots,
+                    expanded_slots,
+                    canvas_receivers = receiver_count,
+                    "expanded render surface pool under retention pressure"
+                );
             }
-        };
-
-        if let Some(mut lease) = lease {
-            {
-                let target = lease.canvas_mut();
-                render_effect_into(
-                    self.state,
-                    effect_generation,
-                    self.delta_secs,
-                    audio,
-                    interaction,
-                    screen_data,
-                    target,
-                )
-                .await;
-            }
-            let surface = lease.submit(0, 0);
-            let frame = ProducerFrame::Surface(surface);
-            let _ = self
-                .render
-                .effect_queue
-                .submit_for_generation(frame.clone(), effect_generation);
-            return ProducedFrame {
-                frame,
-                producer_us: micros_u32(render_start.elapsed()),
-                state: Some(ProducerFrameState::Fresh),
-            };
+            render.render_surface_pool.dequeue()
         }
+    };
 
-        debug!(
-            slot_count = self.render.render_surface_pool.slot_count(),
-            canvas_receivers = self.state.preview_canvas_receiver_count(),
-            "render surface pool exhausted, falling back to owned canvas publish path"
-        );
-        let mut rendered = self
-            .render
-            .effect_target_canvas
-            .take()
-            .filter(|canvas| {
-                canvas.width() == self.state.canvas_width
-                    && canvas.height() == self.state.canvas_height
-            })
-            .unwrap_or_else(|| Canvas::new(self.state.canvas_width, self.state.canvas_height));
-        render_effect_into(
-            self.state,
-            effect_generation,
-            self.delta_secs,
-            audio,
-            interaction,
-            screen_data,
-            &mut rendered,
-        )
-        .await;
-        let frame = ProducerFrame::Canvas(rendered);
-        let recycled = self
-            .render
+    if let Some(mut lease) = lease {
+        {
+            let target = lease.canvas_mut();
+            render_effect_into(
+                state,
+                effect_generation,
+                delta_secs,
+                audio,
+                interaction,
+                screen_data,
+                target,
+            )
+            .await;
+        }
+        let surface = lease.submit(0, 0);
+        let frame = ProducerFrame::Surface(surface);
+        let _ = render
             .effect_queue
             .submit_for_generation(frame.clone(), effect_generation);
-        self.render.effect_target_canvas = recycled.and_then(|previous| match previous {
-            ProducerFrame::Canvas(canvas)
-                if canvas.width() == self.state.canvas_width
-                    && canvas.height() == self.state.canvas_height =>
-            {
-                Some(canvas)
-            }
-            ProducerFrame::Canvas(_) | ProducerFrame::Surface(_) => None,
-        });
-        ProducedFrame {
+        return ProducedFrame {
             frame,
             producer_us: micros_u32(render_start.elapsed()),
             state: Some(ProducerFrameState::Fresh),
+        };
+    }
+
+    debug!(
+        slot_count = render.render_surface_pool.slot_count(),
+        canvas_receivers = state.preview_canvas_receiver_count(),
+        "render surface pool exhausted, falling back to owned canvas publish path"
+    );
+    let mut rendered = render
+        .effect_target_canvas
+        .take()
+        .filter(|canvas| {
+            canvas.width() == state.canvas_width && canvas.height() == state.canvas_height
+        })
+        .unwrap_or_else(|| Canvas::new(state.canvas_width, state.canvas_height));
+    render_effect_into(
+        state,
+        effect_generation,
+        delta_secs,
+        audio,
+        interaction,
+        screen_data,
+        &mut rendered,
+    )
+    .await;
+    let frame = ProducerFrame::Canvas(rendered);
+    let recycled = render
+        .effect_queue
+        .submit_for_generation(frame.clone(), effect_generation);
+    render.effect_target_canvas = recycled.and_then(|previous| match previous {
+        ProducerFrame::Canvas(canvas)
+            if canvas.width() == state.canvas_width && canvas.height() == state.canvas_height =>
+        {
+            Some(canvas)
         }
+        ProducerFrame::Canvas(_) | ProducerFrame::Surface(_) => None,
+    });
+    ProducedFrame {
+        frame,
+        producer_us: micros_u32(render_start.elapsed()),
+        state: Some(ProducerFrameState::Fresh),
     }
 }
 
