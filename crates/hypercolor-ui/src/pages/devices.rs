@@ -11,6 +11,7 @@ use crate::app::DevicesContext;
 use crate::components::device_card::DeviceCard;
 use crate::components::device_detail::DeviceDetail;
 use crate::components::device_pairing_modal::{DevicePairingModal, ForgetCredentialsModal};
+use crate::components::page_header::PageHeader;
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::style_utils::filter_chips;
@@ -215,31 +216,32 @@ pub fn DevicesPage() -> impl IntoView {
 
     view! {
         <div class="flex flex-col h-full animate-fade-in">
-            // Header
-            <div class="shrink-0 px-6 pt-5 pb-3 bg-surface-base z-10">
-                <div class="flex items-center gap-3">
-                    <div class="flex items-center gap-2 shrink-0">
-                        <span style="color: #80ffea; filter: drop-shadow(0 0 8px rgba(128, 255, 234, 0.75))">
-                            <Icon icon=LuCpu width="20px" height="20px" />
+            <div class="shrink-0 glass-subtle border-b border-edge-subtle/15">
+                <div class="px-6 pt-5 pb-4">
+                    <div class="flex items-end justify-between gap-4">
+                        <PageHeader
+                            icon=LuCpu
+                            title="Devices"
+                            subtitle="Scan, inspect, and pair hardware without losing the thread of the page."
+                            accent_rgb="128, 255, 234"
+                            gradient="linear-gradient(105deg,#80ffea 0%,#e8f4ff 55%,#80ffea 100%)"
+                        />
+
+                        <span class="shrink-0 text-[11px] font-mono text-fg-tertiary/55 tabular-nums">
+                            {move || {
+                                let total = device_count.get();
+                                let filtered = filtered_devices.get().len();
+                                if filtered == total {
+                                    format!("{total} devices")
+                                } else {
+                                    format!("{filtered}/{total} devices")
+                                }
+                            }}
                         </span>
-                        <h1
-                            class="leading-none logo-gradient-text"
-                            style="font-family:'Orbitron',sans-serif; font-weight:900; font-size:22px; \
-                                   letter-spacing:-0.01em; \
-                                   background-image:linear-gradient(105deg,#80ffea 0%,#e8f4ff 55%,#80ffea 100%)"
-                        >
-                            "Devices"
-                        </h1>
                     </div>
+                </div>
 
-                    <span class="text-[10px] font-mono text-fg-tertiary/40 tabular-nums shrink-0">
-                        {move || {
-                            let total = device_count.get();
-                            let filtered = filtered_devices.get().len();
-                            if filtered == total { format!("{total}") } else { format!("{filtered}/{total}") }
-                        }}
-                    </span>
-
+                <div class="px-6 pb-3 flex items-center gap-3">
                     <div class="relative flex-1 min-w-0">
                         <span class="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-fg-tertiary">
                             <Icon icon=LuSearch width="14px" height="14px" />
@@ -343,7 +345,7 @@ pub fn DevicesPage() -> impl IntoView {
             // Grid + resizable sidebar
             <div class="flex-1 overflow-hidden">
                 <div class="flex h-full">
-                    <div class="flex-1 min-w-0 overflow-y-auto px-6 pb-6">
+                    <div class="flex-1 min-w-0 overflow-y-auto px-6 pb-6 pt-4">
                         <Suspense fallback=move || view! { <DevicesLoadingSkeleton /> }>
                             {move || {
                                 let devices = filtered_devices.get();
@@ -384,7 +386,7 @@ pub fn DevicesPage() -> impl IntoView {
                         view! {
                             <ResizeHandle on_drag_start=on_drag_start on_drag=on_drag on_drag_end=on_drag_end />
                             <aside
-                                class="shrink-0 overflow-y-auto pb-6 pr-6 scrollbar-none animate-slide-in-right"
+                                class="shrink-0 overflow-y-auto pb-6 pr-6 pt-4 scrollbar-none animate-slide-in-right"
                                 style=move || format!("width: {:.0}px", sidebar_width.get())
                             >
                                 <DeviceDetail device_id=device_id on_pair=on_pair_device on_forget=on_forget_device />

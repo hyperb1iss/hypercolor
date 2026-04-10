@@ -9,12 +9,13 @@ use crate::api;
 use crate::app::{EffectsContext, WsContext};
 use crate::color;
 use crate::components::canvas_preview::CanvasPreview;
-use crate::thumbnails::ThumbnailStore;
 use crate::components::control_panel::ControlPanel;
 use crate::components::effect_card::EffectCard;
+use crate::components::page_header::PageHeader;
 use crate::components::preset_panel::PresetToolbar;
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
+use crate::thumbnails::ThumbnailStore;
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
 
 use crate::style_utils::{category_accent_rgb, filter_chips};
@@ -203,6 +204,7 @@ pub fn EffectsPage() -> impl IntoView {
                 .collect::<Vec<_>>()
         })
     });
+    let total_effects = Memo::new(move |_| fx.effects_index.get().len());
 
     // Apply effect handler — delegates to shared context
     let on_apply = Callback::new(move |id: String| {
@@ -288,24 +290,33 @@ pub fn EffectsPage() -> impl IntoView {
     });
 
     view! {
-        <div class="flex h-full min-h-0 px-6 pt-5 pb-6 animate-fade-in">
-            // Left column — search header locked above the grid, both share width
-            <div class="flex-1 min-w-0 flex flex-col" style="min-width: 120px">
-                <div class="shrink-0 pb-3 flex items-center gap-3">
-                    <div class="flex items-center gap-2 shrink-0">
-                        <span style="color: #e135ff; filter: drop-shadow(0 0 8px rgba(225, 53, 255, 0.75))">
-                            <Icon icon=LuZap width="20px" height="20px" />
-                        </span>
-                        <h1
-                            class="leading-none logo-gradient-text"
-                            style="font-family:'Orbitron',sans-serif; font-weight:900; font-size:22px; \
-                                   letter-spacing:-0.01em; \
-                                   background-image:linear-gradient(105deg,#80ffea 0%,#c8d4ff 48%,#e135ff 100%)"
-                        >
-                            "Effects"
-                        </h1>
-                    </div>
+        <div class="flex h-full min-h-0 flex-col animate-fade-in">
+            <div class="shrink-0 glass-subtle border-b border-edge-subtle/15">
+                <div class="px-6 pt-5 pb-4">
+                    <div class="flex items-end justify-between gap-4">
+                        <PageHeader
+                            icon=LuZap
+                            title="Effects"
+                            subtitle="Browse, preview, and tune the active effect from one consistent workspace."
+                            accent_rgb="225, 53, 255"
+                            gradient="linear-gradient(105deg,#80ffea 0%,#c8d4ff 48%,#e135ff 100%)"
+                        />
 
+                        <span class="shrink-0 text-[11px] font-mono text-fg-tertiary/55">
+                            {move || {
+                                let total = total_effects.get();
+                                let filtered = filtered_effects.get().len();
+                                if filtered == total {
+                                    format!("{total} effects")
+                                } else {
+                                    format!("{filtered}/{total} effects")
+                                }
+                            }}
+                        </span>
+                    </div>
+                </div>
+
+                <div class="px-6 pb-3 flex items-center gap-3">
                     // Search bar — fills available space
                     <div class="relative flex-1 min-w-0">
                         <span class="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-fg-tertiary">
@@ -516,6 +527,11 @@ pub fn EffectsPage() -> impl IntoView {
                         })}
                     </div>
                 </div>
+            </div>
+
+            <div class="flex-1 min-h-0 px-6 pb-6 pt-4 flex">
+                // Left column — effect grid, independent from the detail panels
+                <div class="flex-1 min-w-0 flex flex-col" style="min-width: 120px">
 
                 // Effect grid — independently scrollable, below the locked header
                 <div class="flex-1 min-h-0 overflow-y-auto">
@@ -840,6 +856,7 @@ pub fn EffectsPage() -> impl IntoView {
                         }
                     })
                 }}
+            </div>
         </div>
     }
 }

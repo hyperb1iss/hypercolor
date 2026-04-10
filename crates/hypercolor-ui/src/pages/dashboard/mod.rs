@@ -8,10 +8,10 @@
 use std::collections::VecDeque;
 
 use leptos::prelude::*;
-use leptos_icons::Icon;
 
 use crate::api;
 use crate::app::WsContext;
+use crate::components::page_header::PageHeader;
 use crate::components::perf_charts::PhaseFrame;
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
@@ -198,106 +198,105 @@ pub fn DashboardPage() -> impl IntoView {
     });
 
     view! {
-        <div class="h-full overflow-y-auto animate-fade-in">
-            <div class="p-5 flex gap-0 items-stretch min-h-full">
-                // ── Sticky sidebar column (preview + favorites + resize handle).
-                // Wrapping both the aside and the handle keeps them pinned
-                // together while the data column scrolls underneath. ──
-                <div
-                    class="sticky top-0 self-start shrink-0 flex items-stretch"
-                    style="height: calc(100vh - 2.5rem)"
-                >
-                    <aside
-                        class="flex flex-col gap-4 min-h-0"
-                        style=move || format!("width: {}px", preview_width.get())
-                    >
-                        <PreviewCard />
-                        <FavoritesPanel />
-                        <ResizeHint />
-                    </aside>
-
-                    // Resize handle — visible grip between sidebar and data.
-                    <ResizeHandle
-                        on_drag_start=on_drag_start
-                        on_drag=on_drag
-                        on_drag_end=on_drag_end
+        <div class="flex h-full min-h-0 flex-col overflow-hidden animate-fade-in">
+            <header class="shrink-0 glass-subtle border-b border-edge-subtle/15">
+                <div class="px-6 pt-5 pb-4">
+                    <PageHeader
+                        icon=LuActivity
+                        title="Dashboard"
+                        subtitle="Live render preview, system health, and frame pipeline telemetry."
+                        accent_rgb="128, 255, 234"
+                        gradient="linear-gradient(105deg,#80ffea 0%,#d4eaff 50%,#50fa7b 100%)"
                     />
                 </div>
 
-                // ── Right column: all the juicy data ──
-                <section class="flex-1 min-w-0 flex flex-col gap-4">
-                    // Page title
-                    <div class="flex items-center gap-2 shrink-0">
-                        <span style="color: #80ffea; filter: drop-shadow(0 0 8px rgba(128, 255, 234, 0.75))">
-                            <Icon icon=LuActivity width="20px" height="20px" />
-                        </span>
-                        <h1
-                            class="leading-none logo-gradient-text"
-                            style="font-family:'Orbitron',sans-serif; font-weight:900; font-size:22px; \
-                                   letter-spacing:-0.01em; \
-                                   background-image:linear-gradient(105deg,#80ffea 0%,#d4eaff 50%,#50fa7b 100%)"
+                <Suspense fallback=move || view! { <StatusSkeleton /> }>
+                    {move || status_resource.get().map(|result| {
+                        match result {
+                            Ok(status) => view! { <StatusStrip status=status metrics=ws.metrics /> }.into_any(),
+                            Err(e) => view! {
+                                <div class="px-6 py-3 text-sm text-status-error border-t border-edge-subtle/10">
+                                    "Failed to connect: " {e}
+                                </div>
+                            }.into_any(),
+                        }
+                    })}
+                </Suspense>
+            </header>
+
+            <div class="flex-1 min-h-0 overflow-y-auto">
+                <div class="p-6 pt-4 flex gap-0 items-stretch min-h-full">
+                    // ── Sticky sidebar column (preview + favorites + resize handle).
+                    // Wrapping both the aside and the handle keeps them pinned
+                    // together while the data column scrolls underneath. ──
+                    <div
+                        class="sticky top-0 self-start shrink-0 flex items-stretch"
+                        style="height: calc(100vh - 10rem)"
+                    >
+                        <aside
+                            class="flex flex-col gap-4 min-h-0"
+                            style=move || format!("width: {}px", preview_width.get())
                         >
-                            "Dashboard"
-                        </h1>
-                    </div>
+                            <PreviewCard />
+                            <FavoritesPanel />
+                            <ResizeHint />
+                        </aside>
 
-                    <Suspense fallback=move || view! { <StatusSkeleton /> }>
-                        {move || status_resource.get().map(|result| {
-                            match result {
-                                Ok(status) => view! { <StatusStrip status=status metrics=ws.metrics /> }.into_any(),
-                                Err(e) => view! {
-                                    <div class="text-sm text-status-error bg-status-error/[0.05] border border-status-error/10 rounded-lg px-4 py-3">
-                                        "Failed to connect: " {e}
-                                    </div>
-                                }.into_any(),
-                            }
-                        })}
-                    </Suspense>
-
-                    <HeroGauges
-                        metrics=ws.metrics
-                        preview_fps=ws.preview_fps
-                        preview_target_fps=ws.preview_target_fps
-                        preview_present=preview_telemetry.presenter
-                        engine_fps_series=Signal::derive(move || series_engine_fps.get())
-                        frame_time_series=Signal::derive(move || series_frame_avg.get())
-                        preview_fps_series=Signal::derive(move || series_preview_fps.get())
-                    />
-
-                    <PipelinePanel metrics=ws.metrics />
-
-                    <FrameTimelinePanel
-                        metrics=ws.metrics
-                        phase_history=Signal::derive(move || series_phase.get())
-                    />
-
-                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                        <DistributionPanel metrics=ws.metrics />
-                        <PacingPanel
-                            metrics=ws.metrics
-                            jitter_series=Signal::derive(move || series_jitter.get())
-                            wake_series=Signal::derive(move || series_wake.get())
-                            frame_age_series=Signal::derive(move || series_frame_age.get())
-                            frame_p95_series=Signal::derive(move || series_frame_p95.get())
+                        // Resize handle — visible grip between sidebar and data.
+                        <ResizeHandle
+                            on_drag_start=on_drag_start
+                            on_drag=on_drag
+                            on_drag_end=on_drag_end
                         />
                     </div>
 
-                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                        <ReuseRatesPanel metrics=ws.metrics />
-                        <MemoryAndDevicesPanel metrics=ws.metrics />
-                    </div>
+                    // ── Right column: all the juicy data ──
+                    <section class="flex-1 min-w-0 flex flex-col gap-4">
+                        <HeroGauges
+                            metrics=ws.metrics
+                            preview_fps=ws.preview_fps
+                            preview_target_fps=ws.preview_target_fps
+                            preview_present=preview_telemetry.presenter
+                            engine_fps_series=Signal::derive(move || series_engine_fps.get())
+                            frame_time_series=Signal::derive(move || series_frame_avg.get())
+                            preview_fps_series=Signal::derive(move || series_preview_fps.get())
+                        />
 
-                    <ThroughputPanel
-                        metrics=ws.metrics
-                        ws_bytes_series=Signal::derive(move || series_ws_bytes.get())
-                    />
+                        <PipelinePanel metrics=ws.metrics />
 
-                    <LatestFramePanel metrics=ws.metrics />
+                        <FrameTimelinePanel
+                            metrics=ws.metrics
+                            phase_history=Signal::derive(move || series_phase.get())
+                        />
 
-                    {move || ws.backpressure_notice.get().map(|notice| view! {
-                        <BackpressureBanner notice=notice />
-                    })}
-                </section>
+                        <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                            <DistributionPanel metrics=ws.metrics />
+                            <PacingPanel
+                                metrics=ws.metrics
+                                jitter_series=Signal::derive(move || series_jitter.get())
+                                wake_series=Signal::derive(move || series_wake.get())
+                                frame_age_series=Signal::derive(move || series_frame_age.get())
+                                frame_p95_series=Signal::derive(move || series_frame_p95.get())
+                            />
+                        </div>
+
+                        <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                            <ReuseRatesPanel metrics=ws.metrics />
+                            <MemoryAndDevicesPanel metrics=ws.metrics />
+                        </div>
+
+                        <ThroughputPanel
+                            metrics=ws.metrics
+                            ws_bytes_series=Signal::derive(move || series_ws_bytes.get())
+                        />
+
+                        <LatestFramePanel metrics=ws.metrics />
+
+                        {move || ws.backpressure_notice.get().map(|notice| view! {
+                            <BackpressureBanner notice=notice />
+                        })}
+                    </section>
+                </div>
             </div>
         </div>
     }

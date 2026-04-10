@@ -14,6 +14,7 @@ use crate::app::DevicesContext;
 use crate::components::layout_canvas::LayoutCanvas;
 use crate::components::layout_palette::LayoutPalette;
 use crate::components::layout_zone_properties::LayoutZoneProperties;
+use crate::components::page_header::PageHeader;
 use crate::icons::*;
 use crate::layout_geometry;
 use crate::toasts;
@@ -231,6 +232,13 @@ pub fn LayoutBuilder() -> impl IntoView {
         selected_layout_summary
             .get()
             .is_some_and(|entry| entry.is_active)
+    });
+    let layout_header_meta = Memo::new(move |_| {
+        layout.get().map(|current| {
+            let zone_count = current.zones.len();
+            let zone_label = if zone_count == 1 { "zone" } else { "zones" };
+            format!("{} • {} {}", current.name, zone_count, zone_label)
+        })
     });
 
     // Derive dirty state by comparing working layout to saved snapshot.
@@ -577,23 +585,29 @@ pub fn LayoutBuilder() -> impl IntoView {
 
     view! {
         <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-            // Toolbar — glass background with edge glow
-            <div class="shrink-0 px-5 py-2.5 flex items-center gap-3 glass-subtle border-b border-edge-subtle">
-                // Layout selector / rename
-                <div class="flex items-center gap-3">
-                    <div class="flex items-center gap-2 shrink-0">
-                        <span style="color: #ff6ac1; filter: drop-shadow(0 0 8px rgba(255, 106, 193, 0.75))">
-                            <Icon icon=LuLayoutTemplate width="20px" height="20px" />
-                        </span>
-                        <h1
-                            class="leading-none logo-gradient-text"
-                            style="font-family:'Orbitron',sans-serif; font-weight:900; font-size:22px; \
-                                   letter-spacing:-0.01em; \
-                                   background-image:linear-gradient(105deg,#80ffea 0%,#e8d4ff 50%,#ff6ac1 100%)"
-                        >
-                            "Layout"
-                        </h1>
+            <div class="shrink-0 glass-subtle border-b border-edge-subtle/15">
+                <div class="px-6 pt-5 pb-4">
+                    <div class="flex items-end justify-between gap-4">
+                        <PageHeader
+                            icon=LuLayoutTemplate
+                            title="Layout"
+                            subtitle="Arrange devices, zones, and compound groups against the live preview canvas."
+                            accent_rgb="255, 106, 193"
+                            gradient="linear-gradient(105deg,#80ffea 0%,#e8d4ff 50%,#ff6ac1 100%)"
+                        />
+
+                        {move || layout_header_meta.get().map(|meta| view! {
+                            <span class="shrink-0 rounded-full border border-edge-subtle/60 bg-surface-overlay/45 px-3 py-1 text-[11px] font-mono text-fg-tertiary/70">
+                                {meta}
+                            </span>
+                        })}
                     </div>
+                </div>
+
+                // Toolbar — glass background with edge glow
+                <div class="px-6 pb-3 flex flex-wrap items-center gap-3">
+                    // Layout selector / rename
+                    <div class="flex items-center gap-3">
 
                     {move || if renaming.get() {
                         // Inline rename input
@@ -818,6 +832,7 @@ pub fn LayoutBuilder() -> impl IntoView {
                         </div>
                     }
                 })}
+                </div>
             </div>
 
             // Three-column layout

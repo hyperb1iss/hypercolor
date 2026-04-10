@@ -170,7 +170,7 @@ pub(super) fn StatusStrip(
     });
 
     view! {
-        <div class="px-4 py-3 flex flex-wrap items-center gap-5 animate-fade-in-up border-b border-edge-subtle/50">
+        <div class="px-6 py-3 flex flex-wrap items-center gap-5 animate-fade-in-up border-t border-edge-subtle/10">
             <StatusPill
                 label="Status"
                 value=if running { "Running" } else { "Stopped" }
@@ -265,7 +265,7 @@ fn StatusPillDynamic(
 #[component]
 pub(super) fn StatusSkeleton() -> impl IntoView {
     view! {
-        <div class="rounded-xl bg-surface-overlay/40 border border-edge-subtle px-4 py-3 animate-pulse">
+        <div class="px-6 py-3 border-t border-edge-subtle/10 animate-pulse">
             <div class="flex gap-5">
                 {(0..5).map(|_| view! {
                     <div class="flex items-center gap-2.5">

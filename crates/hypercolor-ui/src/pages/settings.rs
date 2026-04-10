@@ -8,6 +8,7 @@ use wasm_bindgen::prelude::*;
 use hypercolor_types::config::HypercolorConfig;
 
 use crate::api;
+use crate::components::page_header::PageHeader;
 use crate::components::settings_sections::*;
 use crate::icons::*;
 
@@ -283,23 +284,17 @@ pub fn SettingsPage() -> impl IntoView {
     view! {
         <div class="flex flex-col h-full animate-fade-in">
             // Sticky header with title + tab bar
-            <div class="sticky top-0 z-10 shrink-0 glass-dense">
-                <div class="flex items-center justify-between px-6 pt-5 pb-3">
-                    <div class="flex items-center gap-2">
-                        <span style="color: #f1fa8c; filter: drop-shadow(0 0 8px rgba(241, 250, 140, 0.65))">
-                            <Icon icon=LuSettings2 width="20px" height="20px" />
-                        </span>
-                        <h1
-                            class="leading-none logo-gradient-text"
-                            style="font-family:'Orbitron',sans-serif; font-weight:900; font-size:22px; \
-                                   letter-spacing:-0.01em; \
-                                   background-image:linear-gradient(105deg,#80ffea 0%,#e8f0ff 50%,#f1fa8c 100%)"
-                        >
-                            "Settings"
-                        </h1>
-                    </div>
+            <div class="sticky top-0 z-10 shrink-0 glass-dense border-b border-edge-subtle/15">
+                <div class="flex items-end justify-between gap-4 px-6 pt-5 pb-4">
+                    <PageHeader
+                        icon=LuSettings2
+                        title="Settings"
+                        subtitle="Tune engine behavior, capture sources, and diagnostics with the same chrome as the rest of the app."
+                        accent_rgb="241, 250, 140"
+                        gradient="linear-gradient(105deg,#80ffea 0%,#e8f0ff 50%,#f1fa8c 100%)"
+                    />
                     <div
-                        class="flex items-center gap-1.5 text-xs"
+                        class="flex shrink-0 items-center gap-1.5 text-xs"
                         style="color: rgba(128, 255, 234, 0.4)"
                     >
                         <Icon icon=LuInfo width="12px" height="12px" />
@@ -308,7 +303,7 @@ pub fn SettingsPage() -> impl IntoView {
                 </div>
 
                 // Tab bar
-                <div class="flex items-center gap-0.5 px-5 overflow-x-auto scrollbar-none border-b border-edge-subtle/15">
+                <div class="flex items-center gap-0.5 px-6 overflow-x-auto scrollbar-none border-t border-edge-subtle/10">
                     {tabs.into_iter().map(|tab| {
                         let id = tab.id;
                         let is_active = Memo::new(move |_| active_section.get() == id);
