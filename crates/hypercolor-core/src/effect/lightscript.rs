@@ -4,6 +4,7 @@
 //! runtime injection without binding directly to any specific web engine.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use hypercolor_types::audio::{AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
 use hypercolor_types::effect::ControlValue;
@@ -427,17 +428,12 @@ impl LightscriptRuntime {
         let onset_pulse = clamp_unit(audio.onset_pulse);
 
         let spectrum = pad_and_sanitize_f32(&audio.spectrum, SPECTRUM_BINS);
-        let frequency_raw = spectrum
-            .iter()
-            .copied()
-            .map(normalized_to_int8)
-            .collect::<Vec<i8>>();
         let mel_bands = pad_and_sanitize_f32(&audio.mel_bands, MEL_BANDS);
         let chromagram = pad_and_sanitize_f32(&audio.chromagram, CHROMA_BINS);
         let spectral_flux_bands = [bass, mid, treble];
 
         let spectrum_csv = join_f32_csv(&spectrum);
-        let frequency_raw_csv = join_i8_csv(&frequency_raw);
+        let frequency_raw_csv = join_normalized_i8_csv(&spectrum);
         let mel_csv = join_f32_csv(&mel_bands);
         let chroma_csv = join_f32_csv(&chromagram);
         let flux_bands_csv = join_f32_csv(&spectral_flux_bands);
@@ -652,20 +648,29 @@ fn normalized_to_int8(value: f32) -> i8 {
 }
 
 fn join_f32_csv(values: &[f32]) -> String {
-    values
-        .iter()
-        .copied()
-        .map(js_number)
-        .collect::<Vec<String>>()
-        .join(",")
+    let mut csv = String::with_capacity(values.len().saturating_mul(8));
+    for (index, value) in values.iter().copied().enumerate() {
+        if index > 0 {
+            csv.push(',');
+        }
+        if value.is_finite() {
+            let _ = write!(&mut csv, "{value}");
+        } else {
+            csv.push('0');
+        }
+    }
+    csv
 }
 
-fn join_i8_csv(values: &[i8]) -> String {
-    values
-        .iter()
-        .map(std::string::ToString::to_string)
-        .collect::<Vec<String>>()
-        .join(",")
+fn join_normalized_i8_csv(values: &[f32]) -> String {
+    let mut csv = String::with_capacity(values.len().saturating_mul(4));
+    for (index, value) in values.iter().copied().enumerate() {
+        if index > 0 {
+            csv.push(',');
+        }
+        let _ = write!(&mut csv, "{}", normalized_to_int8(value));
+    }
+    csv
 }
 
 fn js_true_object_literal(values: &[String]) -> String {
