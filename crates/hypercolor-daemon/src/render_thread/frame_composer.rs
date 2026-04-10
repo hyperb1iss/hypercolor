@@ -352,11 +352,13 @@ impl<'a> ComposeContext<'a> {
             && screen_surface.width() == self.state.canvas_width
             && screen_surface.height() == self.state.canvas_height
         {
-            self.render
+            let _ = self
+                .render
                 .screen_queue
                 .submit_latest(ProducerFrame::Surface(screen_surface.clone()));
         } else if let Some(screen_canvas) = self.inputs.screen_canvas.clone() {
-            self.render
+            let _ = self
+                .render
                 .screen_queue
                 .submit_latest(ProducerFrame::Canvas(screen_canvas));
         }
@@ -418,7 +420,8 @@ impl<'a> ComposeContext<'a> {
             }
             let surface = lease.submit(0, 0);
             let frame = ProducerFrame::Surface(surface);
-            self.render
+            let _ = self
+                .render
                 .effect_queue
                 .submit_for_generation(frame.clone(), effect_generation);
             return ProducedFrame {
@@ -452,11 +455,20 @@ impl<'a> ComposeContext<'a> {
             &mut rendered,
         )
         .await;
-        self.render.effect_target_canvas = Some(rendered.clone());
         let frame = ProducerFrame::Canvas(rendered);
-        self.render
+        let recycled = self
+            .render
             .effect_queue
             .submit_for_generation(frame.clone(), effect_generation);
+        self.render.effect_target_canvas = recycled.and_then(|previous| match previous {
+            ProducerFrame::Canvas(canvas)
+                if canvas.width() == self.state.canvas_width
+                    && canvas.height() == self.state.canvas_height =>
+            {
+                Some(canvas)
+            }
+            ProducerFrame::Canvas(_) | ProducerFrame::Surface(_) => None,
+        });
         ProducedFrame {
             frame,
             producer_us: micros_u32(render_start.elapsed()),

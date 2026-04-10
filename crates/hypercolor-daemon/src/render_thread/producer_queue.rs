@@ -54,20 +54,24 @@ impl ProducerQueue {
         self.latest = None;
     }
 
-    pub(crate) fn submit_latest(&mut self, frame: ProducerFrame) {
-        self.latest = Some(ProducerSubmission {
+    pub(crate) fn submit_latest(&mut self, frame: ProducerFrame) -> Option<ProducerFrame> {
+        self.replace_latest(ProducerSubmission {
             frame,
             generation: ProducerGeneration::Latest,
             fresh: true,
-        });
+        })
     }
 
-    pub(crate) fn submit_for_generation(&mut self, frame: ProducerFrame, generation: u64) {
-        self.latest = Some(ProducerSubmission {
+    pub(crate) fn submit_for_generation(
+        &mut self,
+        frame: ProducerFrame,
+        generation: u64,
+    ) -> Option<ProducerFrame> {
+        self.replace_latest(ProducerSubmission {
             frame,
             generation: ProducerGeneration::Tagged(generation),
             fresh: true,
-        });
+        })
     }
 
     pub(crate) fn latch_latest(&mut self) -> Option<LatchedProducerFrame> {
@@ -108,6 +112,12 @@ impl ProducerQueue {
             state,
             frame: submission.frame.clone(),
         })
+    }
+
+    fn replace_latest(&mut self, submission: ProducerSubmission) -> Option<ProducerFrame> {
+        self.latest
+            .replace(submission)
+            .map(|previous| previous.frame)
     }
 }
 
@@ -171,5 +181,20 @@ mod tests {
         queue.submit_latest(ProducerFrame::Canvas(Canvas::new(3, 5)));
 
         assert!(queue.latch_for_generation(0).is_none());
+    }
+
+    #[test]
+    fn producer_queue_submit_returns_replaced_frame() {
+        let mut queue = ProducerQueue::new();
+        let first = Canvas::new(3, 5);
+        let second = Canvas::new(3, 5);
+        queue.submit_for_generation(ProducerFrame::Canvas(first.clone()), 1);
+
+        let replaced = queue.submit_for_generation(ProducerFrame::Canvas(second), 1);
+        let Some(ProducerFrame::Canvas(replaced)) = replaced else {
+            panic!("expected replaced canvas frame");
+        };
+        assert_eq!(replaced.width(), first.width());
+        assert_eq!(replaced.height(), first.height());
     }
 }
