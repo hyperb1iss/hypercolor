@@ -43,6 +43,7 @@ const WS_SCREEN_CANVAS_HEADER: u8 = 0x05;
 const WS_CANVAS_BINARY_CACHE_CAPACITY: usize = 32;
 const WS_FRAME_PAYLOAD_CACHE_CAPACITY: usize = 64;
 const WS_SPECTRUM_PAYLOAD_CACHE_CAPACITY: usize = 32;
+const WS_PREVIEW_SCALE_LUT_CACHE_CAPACITY: usize = 8;
 const WS_CACHE_SHARD_COUNT: usize = 8;
 
 static WS_CLIENT_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -85,6 +86,8 @@ static WS_SPECTRUM_PAYLOAD_CACHE: LazyLock<
         })
         .collect()
 });
+static WS_PREVIEW_SCALE_LUT_CACHE: LazyLock<StdMutex<VecDeque<(u32, [u8; 256])>>> =
+    LazyLock::new(|| StdMutex::new(VecDeque::with_capacity(WS_PREVIEW_SCALE_LUT_CACHE_CAPACITY)));
 
 struct WsClientGuard;
 
@@ -2112,7 +2115,7 @@ fn encode_canvas_binary_with_header_and_brightness(
     let rgba = canvas.rgba_bytes();
     let payload_len = px_count.saturating_mul(bpp);
     let payload = &mut out[CANVAS_HEADER_LEN..CANVAS_HEADER_LEN.saturating_add(payload_len)];
-    let scale_lut = (brightness < 0.999).then(|| build_preview_scale_lut(brightness));
+    let scale_lut = (brightness < 0.999).then(|| preview_scale_lut(brightness));
     match format {
         CanvasFormat::Rgb => {
             if brightness >= 0.999 {
@@ -2159,10 +2162,28 @@ fn encode_canvas_binary_with_header_and_brightness(
     out
 }
 
-fn build_preview_scale_lut(brightness: f32) -> [u8; 256] {
+fn preview_scale_lut(brightness: f32) -> [u8; 256] {
+    let brightness_bits = brightness.to_bits();
+    {
+        let mut cache = WS_PREVIEW_SCALE_LUT_CACHE
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if let Some(index) = cache
+            .iter()
+            .position(|(cached_bits, _)| *cached_bits == brightness_bits)
+        {
+            let (cached_bits, lut) = cache
+                .remove(index)
+                .expect("cached preview LUT should exist");
+            let cached_lut = lut;
+            cache.push_front((cached_bits, lut));
+            return cached_lut;
+        }
+    }
+
     let mut lut = [0_u8; 256];
     if brightness <= 0.0 {
-        return lut;
+        return remember_preview_scale_lut(brightness_bits, lut);
     }
 
     for channel in 0_u16..=255 {
@@ -2170,6 +2191,23 @@ fn build_preview_scale_lut(brightness: f32) -> [u8; 256] {
             linear_to_srgb_u8(srgb_u8_to_linear(channel as u8) * brightness);
     }
 
+    remember_preview_scale_lut(brightness_bits, lut)
+}
+
+fn remember_preview_scale_lut(brightness_bits: u32, lut: [u8; 256]) -> [u8; 256] {
+    let mut cache = WS_PREVIEW_SCALE_LUT_CACHE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    if let Some(index) = cache
+        .iter()
+        .position(|(cached_bits, _)| *cached_bits == brightness_bits)
+    {
+        let _ = cache.remove(index);
+    }
+    cache.push_front((brightness_bits, lut));
+    while cache.len() > WS_PREVIEW_SCALE_LUT_CACHE_CAPACITY {
+        let _ = cache.pop_back();
+    }
     lut
 }
 
