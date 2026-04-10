@@ -482,6 +482,22 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                 );
             });
         });
+        group.bench_function("gpu_alpha_two_layer_compose_no_readback", |b| {
+            b.iter(|| {
+                let composed = sparkleflinger.compose_with_cpu_readback(
+                    CompositionPlan::with_layers(
+                        CANVAS_WIDTH,
+                        CANVAS_HEIGHT,
+                        vec![
+                            CompositionLayer::replace_canvas(black_box(base.clone())),
+                            CompositionLayer::alpha_canvas(black_box(overlay.clone()), 0.35),
+                        ],
+                    ),
+                    false,
+                );
+                black_box(composed.bypassed);
+            });
+        });
 
         let mut preview_sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Gpu)
             .expect("GPU SparkleFlinger should initialize for the preview benchmark");
@@ -503,6 +519,25 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                         .expect("GPU preview compose benchmark expects a materialized canvas")
                         .get_pixel(0, 0),
                 );
+            });
+        });
+        group.bench_function("gpu_alpha_two_layer_compose_640x480_no_readback", |b| {
+            b.iter(|| {
+                let composed = preview_sparkleflinger.compose_with_cpu_readback(
+                    CompositionPlan::with_layers(
+                        PREVIEW_WIDTH,
+                        PREVIEW_HEIGHT,
+                        vec![
+                            CompositionLayer::replace_canvas(black_box(preview_base.clone())),
+                            CompositionLayer::alpha_canvas(
+                                black_box(preview_overlay.clone()),
+                                0.35,
+                            ),
+                        ],
+                    ),
+                    false,
+                );
+                black_box(composed.bypassed);
             });
         });
         preview_sparkleflinger.compose(preview_plan.clone());
