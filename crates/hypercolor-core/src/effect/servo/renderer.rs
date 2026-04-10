@@ -462,7 +462,7 @@ impl QueuedFrameInput {
     }
 
     fn merge_from_input(&mut self, input: &FrameInput<'_>) {
-        let prior_recent_keys = self.interaction.keyboard.recent_keys.clone();
+        let prior_recent_keys = std::mem::take(&mut self.interaction.keyboard.recent_keys);
         self.time_secs = input.time_secs;
         self.delta_secs = input.delta_secs;
         self.frame_number = input.frame_number;
