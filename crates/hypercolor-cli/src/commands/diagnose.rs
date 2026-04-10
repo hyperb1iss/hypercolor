@@ -105,7 +105,7 @@ fn print_diagnostics_table(data: &serde_json::Value, ctx: &OutputContext) {
                 current_category = category.to_string();
             }
 
-            let icon = status_icon(status, ctx.color);
+            let icon = ctx.painter.diagnose_icon(status);
             let display_name = name.replace('_', " ");
             println!("  {icon} {display_name:<30} {detail}");
         }
@@ -135,21 +135,3 @@ fn print_summary(data: &serde_json::Value) {
     }
 }
 
-/// Return a status icon based on check result.
-fn status_icon(status: &str, color: bool) -> &'static str {
-    if color {
-        match status {
-            "pass" => "\x1b[38;2;80;250;123m\u{2713}\x1b[0m",
-            "warning" => "\x1b[38;2;241;250;140m!\x1b[0m",
-            "fail" => "\x1b[38;2;255;99;99m\u{2717}\x1b[0m",
-            _ => "?",
-        }
-    } else {
-        match status {
-            "pass" => "[OK]",
-            "warning" => "[!!]",
-            "fail" => "[FAIL]",
-            _ => "[??]",
-        }
-    }
-}

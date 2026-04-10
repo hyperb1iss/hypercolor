@@ -70,13 +70,13 @@ fn render_status(data: &serde_json::Value, ctx: &OutputContext) -> Result<()> {
 /// Render the human-readable status display.
 fn print_status_table(data: &serde_json::Value, ctx: &OutputContext) {
     println!();
-    for line in status_table_lines(data, ctx.color) {
+    for line in status_table_lines(data, &ctx.painter) {
         ctx.info(&line);
     }
     println!();
 }
 
-fn status_table_lines(data: &serde_json::Value, color: bool) -> Vec<String> {
+fn status_table_lines(data: &serde_json::Value, painter: &crate::output::Painter) -> Vec<String> {
     let running = data
         .get("running")
         .and_then(serde_json::Value::as_bool)
@@ -132,16 +132,12 @@ fn status_table_lines(data: &serde_json::Value, color: bool) -> Vec<String> {
         .get("effect_count")
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
-    let status_dot = if color {
-        if daemon_status == "running" {
-            "\x1b[38;2;80;250;123m\u{25cf}\x1b[0m"
-        } else {
-            "\x1b[38;2;255;99;99m\u{25cf}\x1b[0m"
-        }
-    } else if daemon_status == "running" {
-        "(*)"
+    let status_dot = if painter.is_enabled() {
+        painter.status_dot(running)
+    } else if running {
+        "(*)".to_string()
     } else {
-        "(x)"
+        "(x)".to_string()
     };
 
     let mut lines = vec![
@@ -216,6 +212,7 @@ fn status_table_lines(data: &serde_json::Value, color: bool) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::status_table_lines;
+    use crate::output::Painter;
     use serde_json::json;
 
     #[test]
@@ -252,7 +249,8 @@ mod tests {
             }
         });
 
-        let lines = status_table_lines(&data, false);
+        let painter = Painter::plain();
+        let lines = status_table_lines(&data, &painter);
         assert!(lines.iter().any(|line| {
             line == "Render     tier=60fps fps=59.8/60 ceiling=60 misses=0 frames=1234"
         }));

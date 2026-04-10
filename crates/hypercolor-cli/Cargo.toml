@@ -26,6 +26,9 @@ clap = { workspace = true }
 clap_complete = { workspace = true }
 reqwest = { workspace = true }
 dirs = { workspace = true }
+opaline = { workspace = true }
+owo-colors = { workspace = true }
+unicode-width = { workspace = true }
 
 [dev-dependencies]
 hypercolor-core = { path = "../hypercolor-core" }

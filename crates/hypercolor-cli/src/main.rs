@@ -35,6 +35,10 @@ pub struct Cli {
     #[arg(long, global = true, env = "HYPERCOLOR_API_KEY")]
     api_key: Option<String>,
 
+    /// Color theme name (default: silkcircuit-neon).
+    #[arg(long, global = true, env = "HYPERCOLOR_THEME")]
+    theme: Option<String>,
+
     /// JSON output (shorthand for --format json).
     #[arg(long, short = 'j', global = true)]
     json: bool,
@@ -92,7 +96,13 @@ async fn main() -> Result<()> {
     init_tracing(cli.verbose);
 
     // Build shared context
-    let ctx = OutputContext::new(cli.format, cli.json, cli.quiet, cli.no_color);
+    let ctx = OutputContext::new(
+        cli.format,
+        cli.json,
+        cli.quiet,
+        cli.no_color,
+        cli.theme.as_deref(),
+    );
     let client = DaemonClient::new(&cli.host, cli.port, cli.api_key.as_deref());
 
     // Dispatch to subcommand handlers

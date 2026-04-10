@@ -3877,12 +3877,15 @@ dependencies = [
  "dirs",
  "hypercolor-core",
  "hypercolor-daemon",
+ "opaline",
+ "owo-colors",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tracing-subscriber",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]
@@ -6745,6 +6748,7 @@ name = "opaline"
 version = "0.3.0"
 source = "git+https://github.com/hyperb1iss/opaline#226c5341b0ed994555309885d0df66dcef4887fc"
 dependencies = [
+ "owo-colors",
  "parking_lot",
  "ratatui-core",
  "serde",
@@ -6865,6 +6869,12 @@ name = "ordermap"
 version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a86ed3f5f244b372d6b1a00b72ef7f8876d0bc6a78a4c9985c53614041512063"
+
+[[package]]
+name = "owo-colors"
+version = "4.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
 
 [[package]]
 name = "p256"
