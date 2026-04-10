@@ -3,9 +3,14 @@
 //! Sweeps through the hue spectrum in HSV space, producing vivid,
 //! fully-saturated rainbow bands that animate over time.
 
-use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas};
-use hypercolor_types::effect::{ControlValue, EffectMetadata};
+use std::path::PathBuf;
 
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas};
+use hypercolor_types::effect::{
+    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource,
+};
+
+use super::common::{builtin_effect_id, slider_control};
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// Cycling rainbow pattern using HSV hue rotation.
@@ -136,4 +141,69 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
         ((g1 + m) * 255.0).round() as u8,
         ((b1 + m) * 255.0).round() as u8,
     )
+}
+
+fn controls() -> Vec<ControlDefinition> {
+    vec![
+        slider_control(
+            "speed",
+            "Speed",
+            60.0,
+            -180.0,
+            180.0,
+            1.0,
+            "Motion",
+            "Hue rotation speed in degrees per second.",
+        ),
+        slider_control(
+            "scale",
+            "Band Density",
+            1.0,
+            0.1,
+            4.0,
+            0.01,
+            "Shape",
+            "Lower values create broad rainbow bands; higher values add more stripes.",
+        ),
+        slider_control(
+            "saturation",
+            "Saturation",
+            1.0,
+            0.0,
+            1.0,
+            0.01,
+            "Colors",
+            "Color intensity. Lower values soften the rainbow; 1.0 gives fully saturated hues.",
+        ),
+        slider_control(
+            "brightness",
+            "Brightness",
+            0.75,
+            0.0,
+            1.0,
+            0.01,
+            "Output",
+            "Master output brightness.",
+        ),
+    ]
+}
+
+pub(super) fn metadata() -> EffectMetadata {
+    EffectMetadata {
+        id: builtin_effect_id("rainbow"),
+        name: "Rainbow".into(),
+        author: "Hypercolor".into(),
+        version: "0.1.0".into(),
+        description: "Vivid full-spectrum rainbow cycle with animated hue bands".into(),
+        category: EffectCategory::Ambient,
+        tags: vec!["rainbow".into(), "hue".into(), "colorful".into()],
+        controls: controls(),
+        presets: Vec::new(),
+        audio_reactive: false,
+        screen_reactive: false,
+        source: EffectSource::Native {
+            path: PathBuf::from("builtin/rainbow"),
+        },
+        license: Some("Apache-2.0".into()),
+    }
 }

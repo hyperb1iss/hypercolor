@@ -3,9 +3,16 @@
 //! Produces spawned rectangular wave bands that sweep across the canvas,
 //! with configurable direction, width, spawn rate, trail fade, and color modes.
 
-use hypercolor_types::canvas::{Canvas, Oklch, Rgba, RgbaF32};
-use hypercolor_types::effect::{ControlValue, EffectMetadata};
+use std::path::PathBuf;
 
+use hypercolor_types::canvas::{Canvas, Oklch, Rgba, RgbaF32};
+use hypercolor_types::effect::{
+    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
+};
+
+use super::common::{
+    builtin_effect_id, color_control, dropdown_control, preset_with_desc, slider_control,
+};
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -521,5 +528,359 @@ fn fill_rect(canvas: &mut Canvas, x: i32, y: i32, width: i32, height: i32, color
             };
             canvas.set_pixel(col, row, color);
         }
+    }
+}
+
+fn controls() -> Vec<ControlDefinition> {
+    vec![
+        color_control(
+            "wave_color",
+            "Wave Color",
+            [0.5, 1.0, 0.92, 1.0],
+            "Colors",
+            "Primary color for the traveling wavefront.",
+        ),
+        color_control(
+            "background_color",
+            "Background Color",
+            [0.0, 0.02, 0.08, 1.0],
+            "Colors",
+            "Base fill color that the trail fades back toward.",
+        ),
+        dropdown_control(
+            "color_mode",
+            "Color Mode",
+            "Custom",
+            &["Custom", "Random", "Color Cycle"],
+            "Colors",
+            "Use a fixed color, randomize each wave, or continuously hue-cycle the wavefronts.",
+        ),
+        slider_control(
+            "cycle_speed",
+            "Color Cycle Speed",
+            50.0,
+            0.0,
+            100.0,
+            1.0,
+            "Colors",
+            "Hue rotation speed when Color Cycle mode is enabled.",
+        ),
+        slider_control(
+            "speed",
+            "Effect Speed",
+            85.0,
+            0.0,
+            100.0,
+            1.0,
+            "Motion",
+            "How quickly each wavefront moves across the canvas.",
+        ),
+        slider_control(
+            "spawn_delay",
+            "Wave Spawn Speed",
+            50.0,
+            0.0,
+            100.0,
+            1.0,
+            "Motion",
+            "How often new wavefronts are emitted.",
+        ),
+        dropdown_control(
+            "direction",
+            "Wave Direction",
+            "Right",
+            &[
+                "Right",
+                "Left",
+                "Up",
+                "Down",
+                "Vertical Pass",
+                "Horizontal Pass",
+            ],
+            "Motion",
+            "Direction and pass mode for spawned wavefronts.",
+        ),
+        slider_control(
+            "wave_width",
+            "Wave Width",
+            50.0,
+            1.0,
+            100.0,
+            1.0,
+            "Shape",
+            "Thickness of each rectangular wave band.",
+        ),
+        slider_control(
+            "trail",
+            "Wave Trail",
+            50.0,
+            0.0,
+            100.0,
+            1.0,
+            "Output",
+            "How much of the previous frame remains visible behind each wave.",
+        ),
+        slider_control(
+            "brightness",
+            "Brightness",
+            1.0,
+            0.0,
+            1.0,
+            0.01,
+            "Output",
+            "Master output brightness.",
+        ),
+    ]
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "preset catalog is intentionally data-heavy and easier to maintain as one table"
+)]
+fn presets() -> Vec<PresetTemplate> {
+    vec![
+        // ── Signature ────────────────────────────────────────────────────
+        preset_with_desc(
+            "Neon Scanner",
+            "Fast cyan scan lines bouncing across the rig",
+            &[
+                ("wave_color", ControlValue::Color([0.5, 1.0, 0.92, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.0, 0.01, 0.04, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Custom".to_owned())),
+                ("speed", ControlValue::Float(95.0)),
+                ("wave_width", ControlValue::Float(20.0)),
+                ("spawn_delay", ControlValue::Float(65.0)),
+                ("trail", ControlValue::Float(30.0)),
+                (
+                    "direction",
+                    ControlValue::Enum("Horizontal Pass".to_owned()),
+                ),
+            ],
+        ),
+        preset_with_desc(
+            "SilkCircuit Pulse",
+            "Electric purple waves on deep void",
+            &[
+                ("wave_color", ControlValue::Color([0.88, 0.21, 1.0, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.02, 0.0, 0.06, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Custom".to_owned())),
+                ("speed", ControlValue::Float(70.0)),
+                ("wave_width", ControlValue::Float(35.0)),
+                ("spawn_delay", ControlValue::Float(55.0)),
+                ("trail", ControlValue::Float(60.0)),
+                ("direction", ControlValue::Enum("Right".to_owned())),
+            ],
+        ),
+        // ── Cinematic ────────────────────────────────────────────────────
+        preset_with_desc(
+            "Lava Flow",
+            "Slow molten waves with long ember trails",
+            &[
+                ("wave_color", ControlValue::Color([1.0, 0.3, 0.0, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.15, 0.02, 0.0, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Custom".to_owned())),
+                ("speed", ControlValue::Float(25.0)),
+                ("wave_width", ControlValue::Float(80.0)),
+                ("spawn_delay", ControlValue::Float(30.0)),
+                ("trail", ControlValue::Float(90.0)),
+                ("direction", ControlValue::Enum("Right".to_owned())),
+            ],
+        ),
+        preset_with_desc(
+            "Ocean Drift",
+            "Gentle blue-green waves rolling downward",
+            &[
+                ("wave_color", ControlValue::Color([0.1, 0.5, 0.9, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.0, 0.03, 0.1, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Custom".to_owned())),
+                ("speed", ControlValue::Float(35.0)),
+                ("wave_width", ControlValue::Float(60.0)),
+                ("spawn_delay", ControlValue::Float(40.0)),
+                ("trail", ControlValue::Float(75.0)),
+                ("direction", ControlValue::Enum("Down".to_owned())),
+            ],
+        ),
+        preset_with_desc(
+            "Arctic Cascade",
+            "Cool white-blue bands falling like snow",
+            &[
+                ("wave_color", ControlValue::Color([0.7, 0.85, 1.0, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.02, 0.04, 0.1, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Custom".to_owned())),
+                ("speed", ControlValue::Float(45.0)),
+                ("wave_width", ControlValue::Float(25.0)),
+                ("spawn_delay", ControlValue::Float(60.0)),
+                ("trail", ControlValue::Float(50.0)),
+                ("direction", ControlValue::Enum("Down".to_owned())),
+            ],
+        ),
+        // ── Intense ──────────────────────────────────────────────────────
+        preset_with_desc(
+            "Blade Runner",
+            "Fast pink slices on noir darkness",
+            &[
+                ("wave_color", ControlValue::Color([1.0, 0.1, 0.6, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.01, 0.0, 0.03, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Custom".to_owned())),
+                ("speed", ControlValue::Float(90.0)),
+                ("wave_width", ControlValue::Float(12.0)),
+                ("spawn_delay", ControlValue::Float(75.0)),
+                ("trail", ControlValue::Float(15.0)),
+                (
+                    "direction",
+                    ControlValue::Enum("Horizontal Pass".to_owned()),
+                ),
+            ],
+        ),
+        preset_with_desc(
+            "Laser Grid",
+            "Rapid thin beams crisscrossing vertically",
+            &[
+                ("wave_color", ControlValue::Color([0.0, 1.0, 0.4, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.0, 0.02, 0.0, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Custom".to_owned())),
+                ("speed", ControlValue::Float(85.0)),
+                ("wave_width", ControlValue::Float(8.0)),
+                ("spawn_delay", ControlValue::Float(80.0)),
+                ("trail", ControlValue::Float(10.0)),
+                ("direction", ControlValue::Enum("Vertical Pass".to_owned())),
+            ],
+        ),
+        preset_with_desc(
+            "Warning Strobe",
+            "Amber hazard bands sweeping left",
+            &[
+                ("wave_color", ControlValue::Color([1.0, 0.7, 0.0, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.08, 0.03, 0.0, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Custom".to_owned())),
+                ("speed", ControlValue::Float(80.0)),
+                ("wave_width", ControlValue::Float(40.0)),
+                ("spawn_delay", ControlValue::Float(70.0)),
+                ("trail", ControlValue::Float(20.0)),
+                ("direction", ControlValue::Enum("Left".to_owned())),
+            ],
+        ),
+        // ── Rainbow / Color Cycling ──────────────────────────────────────
+        preset_with_desc(
+            "Prism Parade",
+            "Rainbow waves cycling through the full spectrum",
+            &[
+                ("wave_color", ControlValue::Color([1.0, 0.2, 0.3, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.01, 0.01, 0.02, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Color Cycle".to_owned())),
+                ("cycle_speed", ControlValue::Float(60.0)),
+                ("speed", ControlValue::Float(55.0)),
+                ("wave_width", ControlValue::Float(45.0)),
+                ("spawn_delay", ControlValue::Float(55.0)),
+                ("trail", ControlValue::Float(65.0)),
+                ("direction", ControlValue::Enum("Right".to_owned())),
+            ],
+        ),
+        preset_with_desc(
+            "Confetti Storm",
+            "Random-colored bands flying in all directions",
+            &[
+                ("wave_color", ControlValue::Color([1.0, 0.4, 0.8, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.02, 0.01, 0.04, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Random".to_owned())),
+                ("speed", ControlValue::Float(75.0)),
+                ("wave_width", ControlValue::Float(18.0)),
+                ("spawn_delay", ControlValue::Float(85.0)),
+                ("trail", ControlValue::Float(25.0)),
+                (
+                    "direction",
+                    ControlValue::Enum("Horizontal Pass".to_owned()),
+                ),
+            ],
+        ),
+        // ── Ambient ──────────────────────────────────────────────────────
+        preset_with_desc(
+            "Meditation",
+            "Ultra-slow deep indigo wash",
+            &[
+                ("wave_color", ControlValue::Color([0.25, 0.1, 0.7, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.01, 0.0, 0.04, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Custom".to_owned())),
+                ("speed", ControlValue::Float(12.0)),
+                ("wave_width", ControlValue::Float(100.0)),
+                ("spawn_delay", ControlValue::Float(15.0)),
+                ("trail", ControlValue::Float(95.0)),
+                ("direction", ControlValue::Enum("Up".to_owned())),
+                ("brightness", ControlValue::Float(0.7)),
+            ],
+        ),
+        preset_with_desc(
+            "Candlelight",
+            "Warm flickering gold on soft amber",
+            &[
+                ("wave_color", ControlValue::Color([1.0, 0.65, 0.15, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.12, 0.04, 0.0, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Random".to_owned())),
+                ("speed", ControlValue::Float(20.0)),
+                ("wave_width", ControlValue::Float(70.0)),
+                ("spawn_delay", ControlValue::Float(25.0)),
+                ("trail", ControlValue::Float(88.0)),
+                ("direction", ControlValue::Enum("Vertical Pass".to_owned())),
+                ("brightness", ControlValue::Float(0.8)),
+            ],
+        ),
+    ]
+}
+
+pub(super) fn metadata() -> EffectMetadata {
+    EffectMetadata {
+        id: builtin_effect_id("color_wave"),
+        name: "Color Wave".into(),
+        author: "Hypercolor".into(),
+        version: "0.1.0".into(),
+        description:
+            "Traveling wavefront strips with directional passes and configurable fade trails"
+                .into(),
+        category: EffectCategory::Ambient,
+        tags: vec!["wave".into(), "animation".into(), "pattern".into()],
+        controls: controls(),
+        presets: presets(),
+        audio_reactive: false,
+        screen_reactive: false,
+        source: EffectSource::Native {
+            path: PathBuf::from("builtin/color_wave"),
+        },
+        license: Some("Apache-2.0".into()),
     }
 }

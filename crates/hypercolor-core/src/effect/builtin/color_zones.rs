@@ -4,9 +4,16 @@
 //! columns, or a 2D grid. Blend softness creates smooth Oklab transitions
 //! between adjacent zones.
 
-use hypercolor_types::canvas::{Canvas, Oklab, RgbaF32};
-use hypercolor_types::effect::{ControlValue, EffectMetadata};
+use std::path::PathBuf;
 
+use hypercolor_types::canvas::{Canvas, Oklab, RgbaF32};
+use hypercolor_types::effect::{
+    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
+};
+
+use super::common::{
+    builtin_effect_id, color_control, dropdown_control, preset_with_desc, slider_control,
+};
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// Zone arrangement on the canvas.
@@ -272,4 +279,478 @@ fn normalize_choice(value: &str) -> String {
     }
 
     normalized.trim_matches('_').to_owned()
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "zone control list is intentionally authored inline for readability"
+)]
+fn controls() -> Vec<ControlDefinition> {
+    vec![
+        dropdown_control(
+            "zone_count",
+            "Zone Count",
+            "3",
+            &["2", "3", "4", "5", "6", "7", "8", "9"],
+            "Layout",
+            "Number of active color zones.",
+        ),
+        dropdown_control(
+            "layout",
+            "Layout",
+            "Columns",
+            &["Columns", "Rows", "Grid"],
+            "Layout",
+            "Arrange zones as vertical columns, horizontal rows, or a 2D grid.",
+        ),
+        slider_control(
+            "blend",
+            "Blend Softness",
+            0.15,
+            0.0,
+            1.0,
+            0.01,
+            "Layout",
+            "Smoothness of transitions between adjacent zones. 0 = hard edges.",
+        ),
+        color_control(
+            "zone_1",
+            "Zone 1",
+            [0.88, 0.08, 1.0, 1.0],
+            "Zone Colors",
+            "Color for zone 1.",
+        ),
+        color_control(
+            "zone_2",
+            "Zone 2",
+            [0.0, 1.0, 0.85, 1.0],
+            "Zone Colors",
+            "Color for zone 2.",
+        ),
+        color_control(
+            "zone_3",
+            "Zone 3",
+            [1.0, 0.25, 0.55, 1.0],
+            "Zone Colors",
+            "Color for zone 3.",
+        ),
+        color_control(
+            "zone_4",
+            "Zone 4",
+            [0.31, 0.98, 0.48, 1.0],
+            "Zone Colors",
+            "Color for zone 4.",
+        ),
+        color_control(
+            "zone_5",
+            "Zone 5",
+            [0.95, 0.98, 0.55, 1.0],
+            "Zone Colors",
+            "Color for zone 5.",
+        ),
+        color_control(
+            "zone_6",
+            "Zone 6",
+            [1.0, 0.39, 0.39, 1.0],
+            "Zone Colors",
+            "Color for zone 6.",
+        ),
+        color_control(
+            "zone_7",
+            "Zone 7",
+            [0.0, 0.4, 1.0, 1.0],
+            "Zone Colors",
+            "Color for zone 7.",
+        ),
+        color_control(
+            "zone_8",
+            "Zone 8",
+            [1.0, 0.6, 0.0, 1.0],
+            "Zone Colors",
+            "Color for zone 8.",
+        ),
+        color_control(
+            "zone_9",
+            "Zone 9",
+            [0.6, 0.0, 1.0, 1.0],
+            "Zone Colors",
+            "Color for zone 9.",
+        ),
+        slider_control(
+            "brightness",
+            "Brightness",
+            1.0,
+            0.0,
+            1.0,
+            0.01,
+            "Output",
+            "Master output brightness.",
+        ),
+    ]
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "preset catalogs are maintained as one readable static table"
+)]
+fn presets() -> Vec<PresetTemplate> {
+    vec![
+        // ── Signature ────────────────────────────────────────────────────
+        preset_with_desc(
+            "SilkCircuit",
+            "Electric purple, neon cyan, and coral",
+            &[
+                ("zone_count", ControlValue::Enum("3".to_owned())),
+                ("layout", ControlValue::Enum("Columns".to_owned())),
+                ("zone_1", ControlValue::Color([0.88, 0.08, 1.0, 1.0])),
+                ("zone_2", ControlValue::Color([0.0, 1.0, 0.85, 1.0])),
+                ("zone_3", ControlValue::Color([1.0, 0.25, 0.55, 1.0])),
+                ("blend", ControlValue::Float(0.1)),
+            ],
+        ),
+        preset_with_desc(
+            "Fire & Ice",
+            "Warm and cool contrast across the system",
+            &[
+                ("zone_count", ControlValue::Enum("3".to_owned())),
+                ("layout", ControlValue::Enum("Columns".to_owned())),
+                ("zone_1", ControlValue::Color([1.0, 0.15, 0.0, 1.0])),
+                ("zone_2", ControlValue::Color([1.0, 0.6, 0.0, 1.0])),
+                ("zone_3", ControlValue::Color([0.0, 0.3, 1.0, 1.0])),
+                ("blend", ControlValue::Float(0.1)),
+            ],
+        ),
+        preset_with_desc(
+            "RGB Diagnostic",
+            "Pure red, green, blue columns",
+            &[
+                ("zone_count", ControlValue::Enum("3".to_owned())),
+                ("layout", ControlValue::Enum("Columns".to_owned())),
+                ("zone_1", ControlValue::Color([1.0, 0.0, 0.0, 1.0])),
+                ("zone_2", ControlValue::Color([0.0, 1.0, 0.0, 1.0])),
+                ("zone_3", ControlValue::Color([0.0, 0.0, 1.0, 1.0])),
+                ("blend", ControlValue::Float(0.0)),
+            ],
+        ),
+        preset_with_desc(
+            "Ocean Layers",
+            "Horizontal depth bands from surface to deep",
+            &[
+                ("zone_count", ControlValue::Enum("4".to_owned())),
+                ("layout", ControlValue::Enum("Rows".to_owned())),
+                ("zone_1", ControlValue::Color([0.4, 0.85, 1.0, 1.0])),
+                ("zone_2", ControlValue::Color([0.1, 0.5, 0.9, 1.0])),
+                ("zone_3", ControlValue::Color([0.0, 0.2, 0.6, 1.0])),
+                ("zone_4", ControlValue::Color([0.0, 0.05, 0.2, 1.0])),
+                ("blend", ControlValue::Float(0.15)),
+            ],
+        ),
+        preset_with_desc(
+            "Neon Matrix",
+            "9-zone grid with vibrant neon palette",
+            &[
+                ("zone_count", ControlValue::Enum("9".to_owned())),
+                ("layout", ControlValue::Enum("Grid".to_owned())),
+                ("blend", ControlValue::Float(0.1)),
+            ],
+        ),
+        // ── Nature & Atmosphere ──────────────────────────────────────────
+        preset_with_desc(
+            "Sunset Boulevard",
+            "Golden hour fading into deep twilight",
+            &[
+                ("zone_count", ControlValue::Enum("4".to_owned())),
+                ("layout", ControlValue::Enum("Rows".to_owned())),
+                ("zone_1", ControlValue::Color([1.0, 0.85, 0.1, 1.0])),
+                ("zone_2", ControlValue::Color([1.0, 0.4, 0.0, 1.0])),
+                ("zone_3", ControlValue::Color([0.9, 0.1, 0.0, 1.0])),
+                ("zone_4", ControlValue::Color([0.3, 0.0, 0.4, 1.0])),
+                ("blend", ControlValue::Float(0.2)),
+            ],
+        ),
+        preset_with_desc(
+            "Arctic Aurora",
+            "Northern lights dancing across the sky",
+            &[
+                ("zone_count", ControlValue::Enum("5".to_owned())),
+                ("layout", ControlValue::Enum("Columns".to_owned())),
+                ("zone_1", ControlValue::Color([0.0, 0.9, 0.3, 1.0])),
+                ("zone_2", ControlValue::Color([0.0, 0.8, 0.7, 1.0])),
+                ("zone_3", ControlValue::Color([0.0, 0.3, 0.9, 1.0])),
+                ("zone_4", ControlValue::Color([0.4, 0.0, 0.8, 1.0])),
+                ("zone_5", ControlValue::Color([0.8, 0.1, 0.5, 1.0])),
+                ("blend", ControlValue::Float(0.15)),
+            ],
+        ),
+        preset_with_desc(
+            "Cherry Blossom",
+            "Spring pinks from deep rose to soft bloom",
+            &[
+                ("zone_count", ControlValue::Enum("3".to_owned())),
+                ("layout", ControlValue::Enum("Rows".to_owned())),
+                ("zone_1", ControlValue::Color([1.0, 0.4, 0.55, 1.0])),
+                ("zone_2", ControlValue::Color([1.0, 0.7, 0.75, 1.0])),
+                ("zone_3", ControlValue::Color([0.85, 0.15, 0.4, 1.0])),
+                ("blend", ControlValue::Float(0.15)),
+            ],
+        ),
+        preset_with_desc(
+            "Tropical Reef",
+            "Coral, turquoise, deep blue, and sandy gold",
+            &[
+                ("zone_count", ControlValue::Enum("4".to_owned())),
+                ("layout", ControlValue::Enum("Columns".to_owned())),
+                ("zone_1", ControlValue::Color([1.0, 0.35, 0.25, 1.0])),
+                ("zone_2", ControlValue::Color([0.0, 0.85, 0.7, 1.0])),
+                ("zone_3", ControlValue::Color([0.0, 0.2, 0.7, 1.0])),
+                ("zone_4", ControlValue::Color([0.95, 0.75, 0.2, 1.0])),
+                ("blend", ControlValue::Float(0.15)),
+            ],
+        ),
+        preset_with_desc(
+            "Lava Flow",
+            "Molten orange cooling into deep obsidian",
+            &[
+                ("zone_count", ControlValue::Enum("3".to_owned())),
+                ("layout", ControlValue::Enum("Rows".to_owned())),
+                ("zone_1", ControlValue::Color([1.0, 0.5, 0.0, 1.0])),
+                ("zone_2", ControlValue::Color([0.8, 0.1, 0.0, 1.0])),
+                ("zone_3", ControlValue::Color([0.3, 0.02, 0.0, 1.0])),
+                ("blend", ControlValue::Float(0.15)),
+            ],
+        ),
+        preset_with_desc(
+            "Deep Space",
+            "Dark cosmic nebula in a 2x3 grid",
+            &[
+                ("zone_count", ControlValue::Enum("6".to_owned())),
+                ("layout", ControlValue::Enum("Grid".to_owned())),
+                ("zone_1", ControlValue::Color([0.0, 0.02, 0.15, 1.0])),
+                ("zone_2", ControlValue::Color([0.15, 0.0, 0.3, 1.0])),
+                ("zone_3", ControlValue::Color([0.0, 0.1, 0.2, 1.0])),
+                ("zone_4", ControlValue::Color([0.2, 0.0, 0.15, 1.0])),
+                ("zone_5", ControlValue::Color([0.0, 0.05, 0.25, 1.0])),
+                ("zone_6", ControlValue::Color([0.1, 0.0, 0.2, 1.0])),
+                ("blend", ControlValue::Float(0.2)),
+            ],
+        ),
+        preset_with_desc(
+            "Emerald City",
+            "Dark forest, bright emerald, and gold",
+            &[
+                ("zone_count", ControlValue::Enum("3".to_owned())),
+                ("layout", ControlValue::Enum("Columns".to_owned())),
+                ("zone_1", ControlValue::Color([0.0, 0.4, 0.1, 1.0])),
+                ("zone_2", ControlValue::Color([0.1, 0.9, 0.3, 1.0])),
+                ("zone_3", ControlValue::Color([0.9, 0.75, 0.0, 1.0])),
+                ("blend", ControlValue::Float(0.15)),
+            ],
+        ),
+        // ── Neon & Cyber ─────────────────────────────────────────────────
+        preset_with_desc(
+            "Vaporwave",
+            "Hot pink, purple, and teal retrowave",
+            &[
+                ("zone_count", ControlValue::Enum("3".to_owned())),
+                ("layout", ControlValue::Enum("Columns".to_owned())),
+                ("zone_1", ControlValue::Color([1.0, 0.2, 0.6, 1.0])),
+                ("zone_2", ControlValue::Color([0.5, 0.1, 0.9, 1.0])),
+                ("zone_3", ControlValue::Color([0.0, 0.9, 0.8, 1.0])),
+                ("blend", ControlValue::Float(0.1)),
+            ],
+        ),
+        preset_with_desc(
+            "Cyberpunk Alley",
+            "Neon pink, blue, purple, and toxic green grid",
+            &[
+                ("zone_count", ControlValue::Enum("4".to_owned())),
+                ("layout", ControlValue::Enum("Grid".to_owned())),
+                ("zone_1", ControlValue::Color([1.0, 0.0, 0.5, 1.0])),
+                ("zone_2", ControlValue::Color([0.0, 0.4, 1.0, 1.0])),
+                ("zone_3", ControlValue::Color([0.6, 0.0, 1.0, 1.0])),
+                ("zone_4", ControlValue::Color([0.2, 1.0, 0.0, 1.0])),
+                ("blend", ControlValue::Float(0.08)),
+            ],
+        ),
+        preset_with_desc(
+            "Hacker Terminal",
+            "Matrix green and void black",
+            &[
+                ("zone_count", ControlValue::Enum("2".to_owned())),
+                ("layout", ControlValue::Enum("Columns".to_owned())),
+                ("zone_1", ControlValue::Color([0.0, 0.9, 0.1, 1.0])),
+                ("zone_2", ControlValue::Color([0.0, 0.15, 0.02, 1.0])),
+                ("blend", ControlValue::Float(0.05)),
+            ],
+        ),
+        preset_with_desc(
+            "Midnight Jazz",
+            "Deep navy, purple, gold accent, warm ivory",
+            &[
+                ("zone_count", ControlValue::Enum("4".to_owned())),
+                ("layout", ControlValue::Enum("Columns".to_owned())),
+                ("zone_1", ControlValue::Color([0.02, 0.02, 0.2, 1.0])),
+                ("zone_2", ControlValue::Color([0.35, 0.0, 0.6, 1.0])),
+                ("zone_3", ControlValue::Color([0.85, 0.7, 0.0, 1.0])),
+                ("zone_4", ControlValue::Color([1.0, 0.9, 0.7, 1.0])),
+                ("blend", ControlValue::Float(0.1)),
+            ],
+        ),
+        preset_with_desc(
+            "Stealth",
+            "Barely-there dim blue and purple",
+            &[
+                ("zone_count", ControlValue::Enum("2".to_owned())),
+                ("layout", ControlValue::Enum("Columns".to_owned())),
+                ("zone_1", ControlValue::Color([0.0, 0.02, 0.12, 1.0])),
+                ("zone_2", ControlValue::Color([0.05, 0.0, 0.1, 1.0])),
+                ("blend", ControlValue::Float(0.2)),
+                ("brightness", ControlValue::Float(0.5)),
+            ],
+        ),
+        // ── Pastel & Soft ────────────────────────────────────────────────
+        preset_with_desc(
+            "Candy Pastel",
+            "Bright candy colors in a 2x3 grid",
+            &[
+                ("zone_count", ControlValue::Enum("6".to_owned())),
+                ("layout", ControlValue::Enum("Grid".to_owned())),
+                ("zone_1", ControlValue::Color([1.0, 0.5, 0.6, 1.0])),
+                ("zone_2", ControlValue::Color([1.0, 0.95, 0.4, 1.0])),
+                ("zone_3", ControlValue::Color([0.4, 0.65, 1.0, 1.0])),
+                ("zone_4", ControlValue::Color([0.4, 1.0, 0.6, 1.0])),
+                ("zone_5", ControlValue::Color([0.7, 0.45, 1.0, 1.0])),
+                ("zone_6", ControlValue::Color([1.0, 0.65, 0.35, 1.0])),
+                ("blend", ControlValue::Float(0.1)),
+            ],
+        ),
+        preset_with_desc(
+            "Lavender Dream",
+            "Soft purples and rose in layered rows",
+            &[
+                ("zone_count", ControlValue::Enum("4".to_owned())),
+                ("layout", ControlValue::Enum("Rows".to_owned())),
+                ("zone_1", ControlValue::Color([0.7, 0.5, 1.0, 1.0])),
+                ("zone_2", ControlValue::Color([0.5, 0.15, 0.85, 1.0])),
+                ("zone_3", ControlValue::Color([0.9, 0.3, 0.6, 1.0])),
+                ("zone_4", ControlValue::Color([0.75, 0.45, 0.95, 1.0])),
+                ("blend", ControlValue::Float(0.15)),
+            ],
+        ),
+        // ── Pride Flags ──────────────────────────────────────────────────
+        preset_with_desc(
+            "Trans Pride",
+            "Light blue, pink, white, pink, blue stripes",
+            &[
+                ("zone_count", ControlValue::Enum("5".to_owned())),
+                ("layout", ControlValue::Enum("Columns".to_owned())),
+                ("zone_1", ControlValue::Color([0.357, 0.808, 0.98, 1.0])), // #5BCEFA
+                ("zone_2", ControlValue::Color([0.961, 0.663, 0.722, 1.0])), // #F5A9B8
+                ("zone_3", ControlValue::Color([1.0, 1.0, 1.0, 1.0])),      // #FFFFFF
+                ("zone_4", ControlValue::Color([0.961, 0.663, 0.722, 1.0])), // #F5A9B8
+                ("zone_5", ControlValue::Color([0.357, 0.808, 0.98, 1.0])), // #5BCEFA
+                ("blend", ControlValue::Float(0.05)),
+            ],
+        ),
+        preset_with_desc(
+            "Bi Pride",
+            "Magenta, purple, and blue bands",
+            &[
+                ("zone_count", ControlValue::Enum("3".to_owned())),
+                ("layout", ControlValue::Enum("Columns".to_owned())),
+                ("zone_1", ControlValue::Color([0.839, 0.008, 0.439, 1.0])), // #D60270
+                ("zone_2", ControlValue::Color([0.608, 0.31, 0.588, 1.0])),  // #9B4F96
+                ("zone_3", ControlValue::Color([0.0, 0.22, 0.659, 1.0])),    // #0038A8
+                ("blend", ControlValue::Float(0.05)),
+            ],
+        ),
+        preset_with_desc(
+            "Lesbian Pride",
+            "Orange, white, and pink sunset stripes",
+            &[
+                ("zone_count", ControlValue::Enum("5".to_owned())),
+                ("layout", ControlValue::Enum("Columns".to_owned())),
+                ("zone_1", ControlValue::Color([0.839, 0.161, 0.0, 1.0])), // #D62900
+                ("zone_2", ControlValue::Color([1.0, 0.608, 0.333, 1.0])), // #FF9B55
+                ("zone_3", ControlValue::Color([1.0, 1.0, 1.0, 1.0])),     // #FFFFFF
+                ("zone_4", ControlValue::Color([0.831, 0.38, 0.651, 1.0])), // #D461A6
+                ("zone_5", ControlValue::Color([0.647, 0.0, 0.384, 1.0])), // #A50062
+                ("blend", ControlValue::Float(0.05)),
+            ],
+        ),
+        preset_with_desc(
+            "Non-Binary Pride",
+            "Yellow, white, purple, and black stripes",
+            &[
+                ("zone_count", ControlValue::Enum("4".to_owned())),
+                ("layout", ControlValue::Enum("Columns".to_owned())),
+                ("zone_1", ControlValue::Color([0.988, 0.957, 0.204, 1.0])), // #FCF434
+                ("zone_2", ControlValue::Color([1.0, 1.0, 1.0, 1.0])),       // #FFFFFF
+                ("zone_3", ControlValue::Color([0.612, 0.349, 0.82, 1.0])),  // #9C59D1
+                ("zone_4", ControlValue::Color([0.0, 0.0, 0.0, 1.0])),       // #000000
+                ("blend", ControlValue::Float(0.05)),
+            ],
+        ),
+        preset_with_desc(
+            "Rainbow Pride",
+            "Classic six-stripe rainbow flag",
+            &[
+                ("zone_count", ControlValue::Enum("6".to_owned())),
+                ("layout", ControlValue::Enum("Columns".to_owned())),
+                ("zone_1", ControlValue::Color([0.894, 0.012, 0.012, 1.0])), // #E40303
+                ("zone_2", ControlValue::Color([1.0, 0.549, 0.0, 1.0])),     // #FF8C00
+                ("zone_3", ControlValue::Color([1.0, 0.929, 0.0, 1.0])),     // #FFED00
+                ("zone_4", ControlValue::Color([0.0, 0.502, 0.149, 1.0])),   // #008026
+                ("zone_5", ControlValue::Color([0.0, 0.302, 1.0, 1.0])),     // #004DFF
+                ("zone_6", ControlValue::Color([0.459, 0.027, 0.529, 1.0])), // #750787
+                ("blend", ControlValue::Float(0.05)),
+            ],
+        ),
+        // ── Bold Blocks ──────────────────────────────────────────────────
+        preset_with_desc(
+            "Rainbow Blocks",
+            "Full spectrum 3x3 grid with hard edges",
+            &[
+                ("zone_count", ControlValue::Enum("9".to_owned())),
+                ("layout", ControlValue::Enum("Grid".to_owned())),
+                ("zone_1", ControlValue::Color([1.0, 0.0, 0.0, 1.0])),
+                ("zone_2", ControlValue::Color([1.0, 0.5, 0.0, 1.0])),
+                ("zone_3", ControlValue::Color([1.0, 1.0, 0.0, 1.0])),
+                ("zone_4", ControlValue::Color([0.0, 1.0, 0.0, 1.0])),
+                ("zone_5", ControlValue::Color([0.0, 1.0, 1.0, 1.0])),
+                ("zone_6", ControlValue::Color([0.0, 0.0, 1.0, 1.0])),
+                ("zone_7", ControlValue::Color([0.3, 0.0, 0.5, 1.0])),
+                ("zone_8", ControlValue::Color([0.6, 0.0, 1.0, 1.0])),
+                ("zone_9", ControlValue::Color([1.0, 0.0, 0.6, 1.0])),
+                ("blend", ControlValue::Float(0.0)),
+            ],
+        ),
+    ]
+}
+
+pub(super) fn metadata() -> EffectMetadata {
+    EffectMetadata {
+        id: builtin_effect_id("color_zones"),
+        name: "Color Zones".into(),
+        author: "Hypercolor".into(),
+        version: "0.1.0".into(),
+        description:
+            "Multi-zone color grid with per-zone colors, flexible layouts, and smooth blending"
+                .into(),
+        category: EffectCategory::Ambient,
+        tags: vec![
+            "zones".into(),
+            "grid".into(),
+            "static".into(),
+            "scene".into(),
+        ],
+        controls: controls(),
+        presets: presets(),
+        audio_reactive: false,
+        screen_reactive: false,
+        source: EffectSource::Native {
+            path: PathBuf::from("builtin/color_zones"),
+        },
+        license: Some("Apache-2.0".into()),
+    }
 }

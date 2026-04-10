@@ -4,9 +4,14 @@
 //! and flashes bright white on detected beats. The bread-and-butter
 //! audio-reactive effect.
 
-use hypercolor_types::canvas::{Canvas, RgbaF32};
-use hypercolor_types::effect::{ControlValue, EffectMetadata};
+use std::path::PathBuf;
 
+use hypercolor_types::canvas::{Canvas, RgbaF32};
+use hypercolor_types::effect::{
+    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
+};
+
+use super::common::{builtin_effect_id, color_control, preset, preset_with_desc, slider_control};
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// Audio-reactive effect that pulses color intensity with sound.
@@ -122,5 +127,103 @@ impl EffectRenderer for AudioPulseRenderer {
 
     fn destroy(&mut self) {
         self.beat_flash = 0.0;
+    }
+}
+
+fn controls() -> Vec<ControlDefinition> {
+    vec![
+        color_control(
+            "base_color",
+            "Base Color",
+            [0.0, 0.1, 0.3, 1.0],
+            "Colors",
+            "Color shown during silence or very quiet audio.",
+        ),
+        color_control(
+            "peak_color",
+            "Peak Color",
+            [1.0, 0.2, 0.5, 1.0],
+            "Colors",
+            "Color reached at peak RMS intensity.",
+        ),
+        slider_control(
+            "sensitivity",
+            "Sensitivity",
+            2.0,
+            0.1,
+            4.0,
+            0.01,
+            "Audio",
+            "Higher values react harder to quieter input.",
+        ),
+        slider_control(
+            "beat_decay",
+            "Beat Decay",
+            0.85,
+            0.5,
+            0.99,
+            0.01,
+            "Audio",
+            "How long the beat flash lingers after a detected beat.",
+        ),
+        slider_control(
+            "brightness",
+            "Brightness",
+            1.0,
+            0.0,
+            1.0,
+            0.01,
+            "Output",
+            "Master output brightness.",
+        ),
+    ]
+}
+
+fn presets() -> Vec<PresetTemplate> {
+    vec![
+        preset_with_desc(
+            "Cyberpunk",
+            "Hot pink on dark blue",
+            &[
+                ("base_color", ControlValue::Color([0.0, 0.02, 0.12, 1.0])),
+                ("peak_color", ControlValue::Color([1.0, 0.1, 0.6, 1.0])),
+                ("sensitivity", ControlValue::Float(2.5)),
+                ("beat_decay", ControlValue::Float(0.88)),
+            ],
+        ),
+        preset(
+            "Fire Response",
+            &[
+                ("base_color", ControlValue::Color([0.08, 0.02, 0.0, 1.0])),
+                ("peak_color", ControlValue::Color([1.0, 0.4, 0.0, 1.0])),
+                ("sensitivity", ControlValue::Float(3.0)),
+                ("beat_decay", ControlValue::Float(0.82)),
+            ],
+        ),
+    ]
+}
+
+pub(super) fn metadata() -> EffectMetadata {
+    EffectMetadata {
+        id: builtin_effect_id("audio_pulse"),
+        name: "Audio Pulse".into(),
+        author: "Hypercolor".into(),
+        version: "0.1.0".into(),
+        description: "Audio-reactive effect driven by RMS level and beat detection".into(),
+        category: EffectCategory::Audio,
+        tags: vec![
+            "audio".into(),
+            "reactive".into(),
+            "beat".into(),
+            "pulse".into(),
+        ],
+        controls: controls(),
+        presets: presets(),
+        audio_reactive: true,
+        screen_reactive: false,
+        source: EffectSource::Native {
+            path: PathBuf::from("builtin/audio_pulse"),
+        },
+        license: Some("Apache-2.0".into()),
     }
 }

@@ -3,9 +3,14 @@
 //! The renderer consumes a downscaled screen snapshot from the input pipeline,
 //! applies a normalized crop rect, and fits that region into the output canvas.
 
-use hypercolor_types::canvas::{Canvas, RgbaF32};
-use hypercolor_types::effect::{ControlValue, EffectMetadata};
+use std::path::PathBuf;
 
+use hypercolor_types::canvas::{Canvas, RgbaF32};
+use hypercolor_types::effect::{
+    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource,
+};
+
+use super::common::{builtin_effect_id, dropdown_control, slider_control};
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,4 +265,92 @@ fn sample_source(
         pixel.a,
     );
     scaled.to_srgba()
+}
+
+fn controls() -> Vec<ControlDefinition> {
+    vec![
+        slider_control(
+            "frame_x",
+            "Frame X",
+            0.0,
+            0.0,
+            1.0,
+            0.01,
+            "Frame",
+            "Normalized left edge of the capture frame.",
+        ),
+        slider_control(
+            "frame_y",
+            "Frame Y",
+            0.0,
+            0.0,
+            1.0,
+            0.01,
+            "Frame",
+            "Normalized top edge of the capture frame.",
+        ),
+        slider_control(
+            "frame_width",
+            "Frame Width",
+            1.0,
+            0.05,
+            1.0,
+            0.01,
+            "Frame",
+            "Normalized width of the captured region.",
+        ),
+        slider_control(
+            "frame_height",
+            "Frame Height",
+            1.0,
+            0.05,
+            1.0,
+            0.01,
+            "Frame",
+            "Normalized height of the captured region.",
+        ),
+        dropdown_control(
+            "fit_mode",
+            "Fit Mode",
+            "Contain",
+            &["Contain", "Cover", "Stretch"],
+            "Frame",
+            "How the selected capture frame maps onto the effect canvas.",
+        ),
+        slider_control(
+            "brightness",
+            "Brightness",
+            1.0,
+            0.0,
+            1.0,
+            0.01,
+            "Output",
+            "Master output brightness for the sampled screen image.",
+        ),
+    ]
+}
+
+pub(super) fn metadata() -> EffectMetadata {
+    EffectMetadata {
+        id: builtin_effect_id("screen_cast"),
+        name: "Screen Cast".into(),
+        author: "Hypercolor".into(),
+        version: "0.1.0".into(),
+        description: "Live Wayland screen crop with contain, cover, and stretch fit modes".into(),
+        category: EffectCategory::Utility,
+        tags: vec![
+            "screen".into(),
+            "capture".into(),
+            "utility".into(),
+            "wayland".into(),
+        ],
+        controls: controls(),
+        presets: Vec::new(),
+        audio_reactive: false,
+        screen_reactive: true,
+        source: EffectSource::Native {
+            path: PathBuf::from("builtin/screen_cast"),
+        },
+        license: Some("Apache-2.0".into()),
+    }
 }

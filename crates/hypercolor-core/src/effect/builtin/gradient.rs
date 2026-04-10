@@ -4,9 +4,17 @@
 //! space for rich transitions. Supports an optional middle stop, geometry
 //! controls, motion animation, and post-process saturation and easing.
 
-use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, Oklab, Oklch, RgbaF32};
-use hypercolor_types::effect::{ControlValue, EffectMetadata};
+use std::path::PathBuf;
 
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, Oklab, Oklch, RgbaF32};
+use hypercolor_types::effect::{
+    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
+};
+
+use super::common::{
+    builtin_effect_id, color_control, dropdown_control, preset, preset_with_desc, slider_control,
+    toggle_control,
+};
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// High-level gradient shape.
@@ -564,4 +572,280 @@ fn normalize_choice(value: &str) -> String {
     }
 
     normalized.trim_matches('_').to_owned()
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the gradient preset control list is intentionally authored inline for readability"
+)]
+fn controls() -> Vec<ControlDefinition> {
+    vec![
+        color_control(
+            "color_start",
+            "Color A",
+            [0.88, 0.08, 1.0, 1.0],
+            "Colors",
+            "Start color for the gradient.",
+        ),
+        toggle_control(
+            "use_mid_color",
+            "Use Middle Color",
+            false,
+            "Colors",
+            "Insert a third color stop between Color A and Color C.",
+        ),
+        color_control(
+            "color_mid",
+            "Color B",
+            [1.0, 0.25, 0.55, 1.0],
+            "Colors",
+            "Optional middle color stop for three-color gradients.",
+        ),
+        slider_control(
+            "midpoint",
+            "Middle Position",
+            0.5,
+            0.05,
+            0.95,
+            0.01,
+            "Colors",
+            "Placement of the middle color stop along the gradient.",
+        ),
+        color_control(
+            "color_end",
+            "Color C",
+            [0.0, 1.0, 0.85, 1.0],
+            "Colors",
+            "End color for the gradient.",
+        ),
+        dropdown_control(
+            "interpolation",
+            "Color Blend",
+            "Vivid",
+            &["Vivid", "Smooth", "Direct"],
+            "Colors",
+            "Vivid (Oklch) keeps hues vibrant; Smooth (Oklab) blends evenly; Direct mixes RGB.",
+        ),
+        slider_control(
+            "saturation",
+            "Saturation",
+            1.0,
+            0.5,
+            1.5,
+            0.01,
+            "Colors",
+            "Boost or reduce color intensity. Values above 1.0 push chroma for vivid output.",
+        ),
+        dropdown_control(
+            "mode",
+            "Gradient Type",
+            "Linear",
+            &["Linear", "Radial"],
+            "Shape",
+            "Choose a directional sweep or a center-out radial gradient.",
+        ),
+        slider_control(
+            "angle",
+            "Angle",
+            0.0,
+            0.0,
+            360.0,
+            1.0,
+            "Shape",
+            "Direction of the linear gradient in degrees.",
+        ),
+        slider_control(
+            "center_x",
+            "Center X",
+            0.5,
+            0.0,
+            1.0,
+            0.01,
+            "Shape",
+            "Horizontal origin for radial gradients and linear gradient pivots.",
+        ),
+        slider_control(
+            "center_y",
+            "Center Y",
+            0.5,
+            0.0,
+            1.0,
+            0.01,
+            "Shape",
+            "Vertical origin for radial gradients and linear gradient pivots.",
+        ),
+        slider_control(
+            "scale",
+            "Scale",
+            1.0,
+            0.1,
+            2.5,
+            0.01,
+            "Shape",
+            "Tighten or spread the gradient without changing the colors.",
+        ),
+        dropdown_control(
+            "easing",
+            "Distribution",
+            "Linear",
+            &["Linear", "Ease In", "Ease Out", "Smooth"],
+            "Shape",
+            "Curve that controls how colors are distributed along the gradient.",
+        ),
+        dropdown_control(
+            "repeat_mode",
+            "Repeat",
+            "Clamp",
+            &["Clamp", "Repeat", "Mirror"],
+            "Motion",
+            "Control how the gradient behaves beyond its natural 0-1 range.",
+        ),
+        slider_control(
+            "offset",
+            "Offset",
+            0.0,
+            -1.0,
+            1.0,
+            0.01,
+            "Motion",
+            "Static shift along the gradient axis or radius.",
+        ),
+        slider_control(
+            "speed",
+            "Scroll Speed",
+            0.0,
+            -1.0,
+            1.0,
+            0.01,
+            "Motion",
+            "Animate the gradient position; negative values reverse direction.",
+        ),
+        slider_control(
+            "brightness",
+            "Brightness",
+            1.0,
+            0.0,
+            1.0,
+            0.01,
+            "Output",
+            "Master output brightness.",
+        ),
+    ]
+}
+
+fn presets() -> Vec<PresetTemplate> {
+    vec![
+        preset_with_desc(
+            "Neon Blaze",
+            "Electric SilkCircuit palette with vivid hue sweep",
+            &[
+                ("color_start", ControlValue::Color([0.88, 0.08, 1.0, 1.0])),
+                ("color_end", ControlValue::Color([0.0, 1.0, 0.85, 1.0])),
+                ("use_mid_color", ControlValue::Boolean(true)),
+                ("color_mid", ControlValue::Color([1.0, 0.25, 0.55, 1.0])),
+                ("interpolation", ControlValue::Enum("Vivid".to_owned())),
+                ("speed", ControlValue::Float(0.2)),
+                ("repeat_mode", ControlValue::Enum("Mirror".to_owned())),
+            ],
+        ),
+        preset_with_desc(
+            "Sunset",
+            "Warm horizon gradient",
+            &[
+                ("color_start", ControlValue::Color([1.0, 0.3, 0.1, 1.0])),
+                ("color_end", ControlValue::Color([0.4, 0.0, 0.6, 1.0])),
+                ("use_mid_color", ControlValue::Boolean(true)),
+                ("color_mid", ControlValue::Color([1.0, 0.6, 0.2, 1.0])),
+                ("interpolation", ControlValue::Enum("Vivid".to_owned())),
+                ("angle", ControlValue::Float(0.0)),
+            ],
+        ),
+        preset_with_desc(
+            "Aurora",
+            "Northern lights with gentle motion",
+            &[
+                ("color_start", ControlValue::Color([0.0, 1.0, 0.5, 1.0])),
+                ("color_end", ControlValue::Color([0.3, 0.0, 1.0, 1.0])),
+                ("use_mid_color", ControlValue::Boolean(true)),
+                ("color_mid", ControlValue::Color([0.0, 0.8, 1.0, 1.0])),
+                ("interpolation", ControlValue::Enum("Vivid".to_owned())),
+                ("speed", ControlValue::Float(0.15)),
+                ("repeat_mode", ControlValue::Enum("Mirror".to_owned())),
+            ],
+        ),
+        preset_with_desc(
+            "Molten Core",
+            "Deep orange through red to dark, smooth interpolation",
+            &[
+                ("color_start", ControlValue::Color([1.0, 0.7, 0.0, 1.0])),
+                ("color_end", ControlValue::Color([0.3, 0.0, 0.0, 1.0])),
+                ("use_mid_color", ControlValue::Boolean(true)),
+                ("color_mid", ControlValue::Color([1.0, 0.15, 0.0, 1.0])),
+                ("interpolation", ControlValue::Enum("Smooth".to_owned())),
+                ("saturation", ControlValue::Float(1.2)),
+                ("easing", ControlValue::Enum("Ease Out".to_owned())),
+            ],
+        ),
+        preset_with_desc(
+            "Cyberpunk Skyline",
+            "Deep blue to magenta to electric pink",
+            &[
+                ("color_start", ControlValue::Color([0.0, 0.02, 0.2, 1.0])),
+                ("color_end", ControlValue::Color([1.0, 0.08, 0.58, 1.0])),
+                ("use_mid_color", ControlValue::Boolean(true)),
+                ("color_mid", ControlValue::Color([0.5, 0.0, 0.8, 1.0])),
+                ("interpolation", ControlValue::Enum("Vivid".to_owned())),
+                ("angle", ControlValue::Float(90.0)),
+            ],
+        ),
+        preset_with_desc(
+            "Forest Canopy",
+            "Dark green through emerald to golden light",
+            &[
+                ("color_start", ControlValue::Color([0.0, 0.15, 0.05, 1.0])),
+                ("color_end", ControlValue::Color([0.95, 0.85, 0.2, 1.0])),
+                ("use_mid_color", ControlValue::Boolean(true)),
+                ("color_mid", ControlValue::Color([0.0, 0.7, 0.3, 1.0])),
+                ("interpolation", ControlValue::Enum("Vivid".to_owned())),
+                ("saturation", ControlValue::Float(1.1)),
+            ],
+        ),
+        preset(
+            "Deep Ocean",
+            &[
+                ("color_start", ControlValue::Color([0.0, 0.02, 0.15, 1.0])),
+                ("color_end", ControlValue::Color([0.0, 0.2, 0.5, 1.0])),
+                ("mode", ControlValue::Enum("Radial".to_owned())),
+                ("interpolation", ControlValue::Enum("Smooth".to_owned())),
+                ("speed", ControlValue::Float(0.08)),
+            ],
+        ),
+    ]
+}
+
+pub(super) fn metadata() -> EffectMetadata {
+    EffectMetadata {
+        id: builtin_effect_id("gradient"),
+        name: "Gradient".into(),
+        author: "Hypercolor".into(),
+        version: "0.1.0".into(),
+        description:
+            "Rich configurable gradient with vivid Oklch blending, saturation boost, and motion"
+                .into(),
+        category: EffectCategory::Ambient,
+        tags: vec![
+            "gradient".into(),
+            "scene".into(),
+            "diagnostic".into(),
+            "smooth".into(),
+        ],
+        controls: controls(),
+        presets: presets(),
+        audio_reactive: false,
+        screen_reactive: false,
+        source: EffectSource::Native {
+            path: PathBuf::from("builtin/gradient"),
+        },
+        license: Some("Apache-2.0".into()),
+    }
 }

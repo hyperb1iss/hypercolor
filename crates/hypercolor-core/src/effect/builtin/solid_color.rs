@@ -3,9 +3,14 @@
 //! The simplest possible effect, extended with a few utility scene layouts
 //! so it also works as a diagnostic and quick composition tool.
 
-use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, RgbaF32};
-use hypercolor_types::effect::{ControlValue, EffectMetadata};
+use std::path::PathBuf;
 
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, RgbaF32};
+use hypercolor_types::effect::{
+    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource,
+};
+
+use super::common::{builtin_effect_id, color_control, dropdown_control, slider_control};
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// Utility scene patterns layered on top of the solid fill renderer.
@@ -245,4 +250,102 @@ fn normalize_choice(value: &str) -> String {
     }
 
     normalized.trim_matches('_').to_owned()
+}
+
+fn controls() -> Vec<ControlDefinition> {
+    vec![
+        dropdown_control(
+            "pattern",
+            "Pattern",
+            "Solid",
+            &[
+                "Solid",
+                "Vertical Split",
+                "Horizontal Split",
+                "Checker",
+                "Quadrants",
+            ],
+            "Pattern",
+            "Switch between a plain fill and simple diagnostic scene layouts.",
+        ),
+        color_control(
+            "color",
+            "Primary Color",
+            [1.0, 1.0, 1.0, 1.0],
+            "Colors",
+            "Main fill color for the scene.",
+        ),
+        color_control(
+            "secondary_color",
+            "Secondary Color",
+            [0.0, 0.0, 0.0, 1.0],
+            "Colors",
+            "Used for split, checker, and quadrant diagnostic patterns.",
+        ),
+        slider_control(
+            "position",
+            "Split Position",
+            0.5,
+            0.0,
+            1.0,
+            0.01,
+            "Pattern",
+            "Boundary position for split and quadrant patterns.",
+        ),
+        slider_control(
+            "softness",
+            "Blend Softness",
+            0.0,
+            0.0,
+            0.35,
+            0.01,
+            "Pattern",
+            "Feather the split boundary into a soft scene blend.",
+        ),
+        slider_control(
+            "scale",
+            "Pattern Scale",
+            6.0,
+            1.0,
+            16.0,
+            1.0,
+            "Pattern",
+            "Checker cell count across the canvas width.",
+        ),
+        slider_control(
+            "brightness",
+            "Brightness",
+            1.0,
+            0.0,
+            1.0,
+            0.01,
+            "Output",
+            "Master output brightness.",
+        ),
+    ]
+}
+
+pub(super) fn metadata() -> EffectMetadata {
+    EffectMetadata {
+        id: builtin_effect_id("solid_color"),
+        name: "Solid Color".into(),
+        author: "Hypercolor".into(),
+        version: "0.1.0".into(),
+        description: "Solid fills plus split and checker diagnostic scene patterns".into(),
+        category: EffectCategory::Ambient,
+        tags: vec![
+            "solid".into(),
+            "scene".into(),
+            "diagnostic".into(),
+            "utility".into(),
+        ],
+        controls: controls(),
+        presets: Vec::new(),
+        audio_reactive: false,
+        screen_reactive: false,
+        source: EffectSource::Native {
+            path: PathBuf::from("builtin/solid_color"),
+        },
+        license: Some("Apache-2.0".into()),
+    }
 }

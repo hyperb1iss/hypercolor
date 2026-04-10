@@ -4,9 +4,14 @@
 //! with a smooth sine curve. Configurable speed (BPM), color, and
 //! brightness range.
 
-use hypercolor_types::canvas::{Canvas, RgbaF32};
-use hypercolor_types::effect::{ControlValue, EffectMetadata};
+use std::path::PathBuf;
 
+use hypercolor_types::canvas::{Canvas, RgbaF32};
+use hypercolor_types::effect::{
+    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
+};
+
+use super::common::{builtin_effect_id, color_control, preset, preset_with_desc, slider_control};
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// Pulsing brightness effect with sinusoidal modulation.
@@ -95,4 +100,100 @@ impl EffectRenderer for BreathingRenderer {
     }
 
     fn destroy(&mut self) {}
+}
+
+fn controls() -> Vec<ControlDefinition> {
+    vec![
+        color_control(
+            "color",
+            "Color",
+            [1.0, 0.6, 0.2, 1.0],
+            "Colors",
+            "Base color that breathes in and out.",
+        ),
+        slider_control(
+            "speed",
+            "Speed",
+            15.0,
+            1.0,
+            120.0,
+            1.0,
+            "Motion",
+            "Breathing rate in beats per minute.",
+        ),
+        slider_control(
+            "min_brightness",
+            "Minimum Brightness",
+            0.1,
+            0.0,
+            1.0,
+            0.01,
+            "Output",
+            "Brightness at the trough of the cycle.",
+        ),
+        slider_control(
+            "max_brightness",
+            "Maximum Brightness",
+            1.0,
+            0.0,
+            1.0,
+            0.01,
+            "Output",
+            "Brightness at the peak of the cycle.",
+        ),
+    ]
+}
+
+fn presets() -> Vec<PresetTemplate> {
+    vec![
+        preset_with_desc(
+            "Warm Ember",
+            "Slow amber glow like dying embers",
+            &[
+                ("color", ControlValue::Color([1.0, 0.4, 0.1, 1.0])),
+                ("speed", ControlValue::Float(8.0)),
+                ("min_brightness", ControlValue::Float(0.05)),
+                ("max_brightness", ControlValue::Float(0.8)),
+            ],
+        ),
+        preset_with_desc(
+            "Ocean Calm",
+            "Deep blue with slow tidal rhythm",
+            &[
+                ("color", ControlValue::Color([0.1, 0.3, 1.0, 1.0])),
+                ("speed", ControlValue::Float(6.0)),
+                ("min_brightness", ControlValue::Float(0.08)),
+                ("max_brightness", ControlValue::Float(0.7)),
+            ],
+        ),
+        preset(
+            "Alert Pulse",
+            &[
+                ("color", ControlValue::Color([1.0, 0.1, 0.1, 1.0])),
+                ("speed", ControlValue::Float(40.0)),
+                ("min_brightness", ControlValue::Float(0.2)),
+                ("max_brightness", ControlValue::Float(1.0)),
+            ],
+        ),
+    ]
+}
+
+pub(super) fn metadata() -> EffectMetadata {
+    EffectMetadata {
+        id: builtin_effect_id("breathing"),
+        name: "Breathing".into(),
+        author: "Hypercolor".into(),
+        version: "0.1.0".into(),
+        description: "Smooth sinusoidal brightness pulsation".into(),
+        category: EffectCategory::Ambient,
+        tags: vec!["breathing".into(), "pulse".into(), "calm".into()],
+        controls: controls(),
+        presets: presets(),
+        audio_reactive: false,
+        screen_reactive: false,
+        source: EffectSource::Native {
+            path: PathBuf::from("builtin/breathing"),
+        },
+        license: Some("Apache-2.0".into()),
+    }
 }
