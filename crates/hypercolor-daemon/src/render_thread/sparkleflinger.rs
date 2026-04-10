@@ -3,10 +3,6 @@ use hypercolor_core::types::canvas::{BlendMode, Canvas, PublishedSurface, Rgba, 
 use super::producer_queue::ProducerFrame;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "Wave 3 lands the compositor surface now; more layer modes get wired into plans in Wave 4"
-)]
 pub(crate) enum CompositionMode {
     Replace,
     Alpha,
@@ -69,10 +65,6 @@ impl CompositionLayer {
         }
     }
 
-    #[allow(
-        dead_code,
-        reason = "Wave 3 proves blend math in unit tests before live multi-layer plans arrive"
-    )]
     pub(crate) fn alpha(frame: ProducerFrame, opacity: f32) -> Self {
         Self {
             frame,
@@ -81,10 +73,6 @@ impl CompositionLayer {
         }
     }
 
-    #[allow(
-        dead_code,
-        reason = "Wave 3 proves blend math in unit tests before live multi-layer plans arrive"
-    )]
     pub(crate) fn add(frame: ProducerFrame, opacity: f32) -> Self {
         Self {
             frame,
@@ -93,10 +81,6 @@ impl CompositionLayer {
         }
     }
 
-    #[allow(
-        dead_code,
-        reason = "Wave 3 proves blend math in unit tests before live multi-layer plans arrive"
-    )]
     pub(crate) fn screen(frame: ProducerFrame, opacity: f32) -> Self {
         Self {
             frame,
@@ -126,10 +110,6 @@ impl CompositionPlan {
         }
     }
 
-    #[allow(
-        dead_code,
-        reason = "Wave 3 exercises layered plans in unit tests ahead of render-group wiring"
-    )]
     pub fn with_layers(width: u32, height: u32, layers: Vec<CompositionLayer>) -> Self {
         Self {
             width,
