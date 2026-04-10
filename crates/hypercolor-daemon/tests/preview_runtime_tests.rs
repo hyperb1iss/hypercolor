@@ -1,13 +1,18 @@
-use hypercolor_core::bus::CanvasFrame;
+use std::sync::Arc;
+
+use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_daemon::preview_runtime::PreviewRuntime;
 use hypercolor_types::canvas::Canvas;
 
 #[test]
 fn preview_runtime_snapshot_tracks_canvas_publication_and_receivers() {
-    let runtime = PreviewRuntime::new();
+    let bus = Arc::new(HypercolorBus::new());
+    let runtime = PreviewRuntime::new(Arc::clone(&bus));
     let _canvas_rx = runtime.canvas_receiver();
+    let frame = CanvasFrame::from_canvas(&Canvas::new(2, 1), 9, 33);
+    let _ = bus.canvas_sender().send(frame.clone());
 
-    runtime.publish_canvas(CanvasFrame::from_canvas(&Canvas::new(2, 1), 9, 33));
+    runtime.record_canvas_publication(&frame);
 
     let snapshot = runtime.snapshot();
     assert_eq!(snapshot.canvas_receivers, 1);
@@ -20,10 +25,13 @@ fn preview_runtime_snapshot_tracks_canvas_publication_and_receivers() {
 
 #[test]
 fn preview_runtime_snapshot_tracks_screen_publication_and_receivers() {
-    let runtime = PreviewRuntime::new();
+    let bus = Arc::new(HypercolorBus::new());
+    let runtime = PreviewRuntime::new(Arc::clone(&bus));
     let _screen_rx = runtime.screen_canvas_receiver();
+    let frame = CanvasFrame::from_canvas(&Canvas::new(1, 1), 17, 44);
+    let _ = bus.screen_canvas_sender().send(frame.clone());
 
-    runtime.publish_screen_canvas(CanvasFrame::from_canvas(&Canvas::new(1, 1), 17, 44));
+    runtime.record_screen_canvas_publication(&frame);
 
     let snapshot = runtime.snapshot();
     assert_eq!(snapshot.canvas_receivers, 0);

@@ -261,7 +261,7 @@ impl DaemonState {
 
         // ── Event Bus ───────────────────────────────────────────────────
         let event_bus = Arc::new(HypercolorBus::new());
-        let preview_runtime = Arc::new(PreviewRuntime::new());
+        let preview_runtime = Arc::new(PreviewRuntime::new(Arc::clone(&event_bus)));
         info!("Event bus created");
 
         let (power_state, _) = watch::channel(OutputPowerState::default());

@@ -376,12 +376,19 @@ mod tests {
         let state = Arc::new(AppState::new());
         let _preview_rx = state.preview_runtime.canvas_receiver();
         let _screen_preview_rx = state.preview_runtime.screen_canvas_receiver();
+        let canvas_frame = CanvasFrame::from_canvas(&Canvas::new(2, 1), 88, 44);
+        let screen_frame = CanvasFrame::from_canvas(&Canvas::new(1, 1), 45, 21);
+        let _ = state.event_bus.canvas_sender().send(canvas_frame.clone());
+        let _ = state
+            .event_bus
+            .screen_canvas_sender()
+            .send(screen_frame.clone());
         state
             .preview_runtime
-            .publish_canvas(CanvasFrame::from_canvas(&Canvas::new(2, 1), 88, 44));
+            .record_canvas_publication(&canvas_frame);
         state
             .preview_runtime
-            .publish_screen_canvas(CanvasFrame::from_canvas(&Canvas::new(1, 1), 45, 21));
+            .record_screen_canvas_publication(&screen_frame);
         {
             let mut performance = state.performance.write().await;
             performance.record_frame(LatestFrameMetrics {

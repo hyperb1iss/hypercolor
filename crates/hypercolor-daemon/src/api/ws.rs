@@ -1089,7 +1089,7 @@ async fn relay_canvas(
     binary_tx: tokio::sync::mpsc::Sender<Bytes>,
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
-    let mut canvas_rx = None::<watch::Receiver<hypercolor_core::bus::CanvasFrame>>;
+    let mut canvas_rx = None::<crate::preview_runtime::PreviewFrameReceiver>;
     let mut latest_canvas = None::<hypercolor_core::bus::CanvasFrame>;
     let mut last_sent_frame_number: Option<u32> = None;
     let mut last_sent_brightness_bits: Option<u32> = None;
@@ -1201,7 +1201,7 @@ async fn relay_screen_canvas(
     binary_tx: tokio::sync::mpsc::Sender<Bytes>,
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
-    let mut canvas_rx = None::<watch::Receiver<hypercolor_core::bus::CanvasFrame>>;
+    let mut canvas_rx = None::<crate::preview_runtime::PreviewFrameReceiver>;
     let mut latest_canvas = None::<hypercolor_core::bus::CanvasFrame>;
     let mut last_sent_frame_number: Option<u32> = None;
     let mut active_fps = 15_u32;
@@ -1284,9 +1284,9 @@ async fn relay_screen_canvas(
 }
 
 fn sync_preview_receiver(
-    receiver: &mut Option<watch::Receiver<hypercolor_core::bus::CanvasFrame>>,
+    receiver: &mut Option<crate::preview_runtime::PreviewFrameReceiver>,
     subscribed: bool,
-    subscribe: impl FnOnce() -> watch::Receiver<hypercolor_core::bus::CanvasFrame>,
+    subscribe: impl FnOnce() -> crate::preview_runtime::PreviewFrameReceiver,
 ) {
     if subscribed {
         if receiver.is_none() {
@@ -2435,10 +2435,11 @@ mod tests {
     use crate::api::AppState;
     use crate::api::security::{RequestAuthContext, SecurityState};
     use crate::performance::{FrameTimeline, LatestFrameMetrics};
-    use crate::preview_runtime::PreviewRuntime;
+    use crate::preview_runtime::{PreviewFrameReceiver, PreviewRuntime};
     use axum::body::Bytes;
     use axum::response::IntoResponse;
     use hypercolor_core::bus::CanvasFrame;
+    use hypercolor_core::bus::HypercolorBus;
     use hypercolor_types::canvas::{Canvas, Rgba, linear_to_srgb_u8, srgb_u8_to_linear};
     use hypercolor_types::event::{
         FrameData, FrameTiming, HypercolorEvent, SpectrumData, ZoneColors,
@@ -2497,12 +2498,19 @@ mod tests {
         let state = Arc::new(AppState::new());
         let _preview_rx = state.preview_runtime.canvas_receiver();
         let _screen_preview_rx = state.preview_runtime.screen_canvas_receiver();
+        let canvas_frame = CanvasFrame::from_canvas(&Canvas::new(2, 1), 88, 44);
+        let screen_frame = CanvasFrame::from_canvas(&Canvas::new(1, 1), 45, 21);
+        let _ = state.event_bus.canvas_sender().send(canvas_frame.clone());
+        let _ = state
+            .event_bus
+            .screen_canvas_sender()
+            .send(screen_frame.clone());
         state
             .preview_runtime
-            .publish_canvas(CanvasFrame::from_canvas(&Canvas::new(2, 1), 88, 44));
+            .record_canvas_publication(&canvas_frame);
         state
             .preview_runtime
-            .publish_screen_canvas(CanvasFrame::from_canvas(&Canvas::new(1, 1), 45, 21));
+            .record_screen_canvas_publication(&screen_frame);
         {
             let mut performance = state.performance.write().await;
             performance.record_frame(LatestFrameMetrics {
@@ -2856,8 +2864,8 @@ mod tests {
 
     #[test]
     fn sync_preview_receiver_subscribes_only_while_requested() {
-        let runtime = PreviewRuntime::new();
-        let mut receiver = None::<watch::Receiver<CanvasFrame>>;
+        let runtime = PreviewRuntime::new(Arc::new(HypercolorBus::new()));
+        let mut receiver = None::<PreviewFrameReceiver>;
 
         sync_preview_receiver(&mut receiver, true, || runtime.canvas_receiver());
         assert!(receiver.is_some());
@@ -2873,8 +2881,8 @@ mod tests {
 
     #[test]
     fn sync_preview_receiver_drops_screen_subscription_cleanly() {
-        let runtime = PreviewRuntime::new();
-        let mut receiver = None::<watch::Receiver<CanvasFrame>>;
+        let runtime = PreviewRuntime::new(Arc::new(HypercolorBus::new()));
+        let mut receiver = None::<PreviewFrameReceiver>;
 
         sync_preview_receiver(&mut receiver, true, || runtime.screen_canvas_receiver());
         assert!(receiver.is_some());

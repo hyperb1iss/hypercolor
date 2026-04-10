@@ -297,7 +297,7 @@ impl AppState {
         let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
         let scene_manager = Arc::new(RwLock::new(SceneManager::new()));
         let event_bus = Arc::new(HypercolorBus::new());
-        let preview_runtime = Arc::new(PreviewRuntime::new());
+        let preview_runtime = Arc::new(PreviewRuntime::new(Arc::clone(&event_bus)));
         let render_loop = Arc::new(RwLock::new(RenderLoop::new(60)));
         let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(default_layout)));
         let backend_manager = Arc::new(Mutex::new(BackendManager::new()));

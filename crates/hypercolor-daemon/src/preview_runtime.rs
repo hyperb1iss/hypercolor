@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use hypercolor_core::bus::CanvasFrame;
+use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use tokio::sync::watch;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -18,6 +18,8 @@ pub struct PreviewRuntimeSnapshot {
 
 #[derive(Debug, Default)]
 struct PreviewRuntimeTelemetry {
+    canvas_receivers: Arc<AtomicU32>,
+    screen_canvas_receivers: Arc<AtomicU32>,
     canvas_frames_published: AtomicU64,
     screen_canvas_frames_published: AtomicU64,
     latest_canvas_frame_number: AtomicU32,
@@ -26,26 +28,57 @@ struct PreviewRuntimeTelemetry {
     latest_screen_canvas_timestamp_ms: AtomicU32,
 }
 
+#[derive(Debug)]
+pub struct PreviewFrameReceiver {
+    receiver: watch::Receiver<CanvasFrame>,
+    counter: Arc<AtomicU32>,
+}
+
+impl PreviewFrameReceiver {
+    fn new(receiver: watch::Receiver<CanvasFrame>, counter: Arc<AtomicU32>) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Self { receiver, counter }
+    }
+
+    pub async fn changed(&mut self) -> Result<(), watch::error::RecvError> {
+        self.receiver.changed().await
+    }
+
+    pub fn borrow(&self) -> watch::Ref<'_, CanvasFrame> {
+        self.receiver.borrow()
+    }
+
+    pub fn borrow_and_update(&mut self) -> watch::Ref<'_, CanvasFrame> {
+        self.receiver.borrow_and_update()
+    }
+}
+
+impl Drop for PreviewFrameReceiver {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PreviewRuntime {
-    canvas: watch::Sender<CanvasFrame>,
-    screen_canvas: watch::Sender<CanvasFrame>,
+    event_bus: Arc<HypercolorBus>,
     telemetry: Arc<PreviewRuntimeTelemetry>,
 }
 
 impl PreviewRuntime {
     #[must_use]
-    pub fn new() -> Self {
-        let (canvas, _) = watch::channel(CanvasFrame::empty());
-        let (screen_canvas, _) = watch::channel(CanvasFrame::empty());
+    pub fn new(event_bus: Arc<HypercolorBus>) -> Self {
         Self {
-            canvas,
-            screen_canvas,
-            telemetry: Arc::new(PreviewRuntimeTelemetry::default()),
+            event_bus,
+            telemetry: Arc::new(PreviewRuntimeTelemetry {
+                canvas_receivers: Arc::new(AtomicU32::new(0)),
+                screen_canvas_receivers: Arc::new(AtomicU32::new(0)),
+                ..PreviewRuntimeTelemetry::default()
+            }),
         }
     }
 
-    pub fn publish_canvas(&self, frame: CanvasFrame) {
+    pub fn record_canvas_publication(&self, frame: &CanvasFrame) {
         self.telemetry
             .canvas_frames_published
             .fetch_add(1, Ordering::Relaxed);
@@ -55,20 +88,23 @@ impl PreviewRuntime {
         self.telemetry
             .latest_canvas_timestamp_ms
             .store(frame.timestamp_ms, Ordering::Relaxed);
-        let _ = self.canvas.send(frame);
     }
 
     #[must_use]
-    pub fn canvas_receiver(&self) -> watch::Receiver<CanvasFrame> {
-        self.canvas.subscribe()
+    pub fn canvas_receiver(&self) -> PreviewFrameReceiver {
+        PreviewFrameReceiver::new(
+            self.event_bus.canvas_receiver(),
+            Arc::clone(&self.telemetry.canvas_receivers),
+        )
     }
 
     #[must_use]
     pub fn canvas_receiver_count(&self) -> usize {
-        self.canvas.receiver_count()
+        usize::try_from(self.telemetry.canvas_receivers.load(Ordering::Relaxed))
+            .unwrap_or(usize::MAX)
     }
 
-    pub fn publish_screen_canvas(&self, frame: CanvasFrame) {
+    pub fn record_screen_canvas_publication(&self, frame: &CanvasFrame) {
         self.telemetry
             .screen_canvas_frames_published
             .fetch_add(1, Ordering::Relaxed);
@@ -78,25 +114,34 @@ impl PreviewRuntime {
         self.telemetry
             .latest_screen_canvas_timestamp_ms
             .store(frame.timestamp_ms, Ordering::Relaxed);
-        let _ = self.screen_canvas.send(frame);
     }
 
     #[must_use]
-    pub fn screen_canvas_receiver(&self) -> watch::Receiver<CanvasFrame> {
-        self.screen_canvas.subscribe()
+    pub fn screen_canvas_receiver(&self) -> PreviewFrameReceiver {
+        PreviewFrameReceiver::new(
+            self.event_bus.screen_canvas_receiver(),
+            Arc::clone(&self.telemetry.screen_canvas_receivers),
+        )
     }
 
     #[must_use]
     pub fn screen_canvas_receiver_count(&self) -> usize {
-        self.screen_canvas.receiver_count()
+        usize::try_from(
+            self.telemetry
+                .screen_canvas_receivers
+                .load(Ordering::Relaxed),
+        )
+        .unwrap_or(usize::MAX)
     }
 
     #[must_use]
     pub fn snapshot(&self) -> PreviewRuntimeSnapshot {
         PreviewRuntimeSnapshot {
-            canvas_receivers: u32::try_from(self.canvas.receiver_count()).unwrap_or(u32::MAX),
-            screen_canvas_receivers: u32::try_from(self.screen_canvas.receiver_count())
-                .unwrap_or(u32::MAX),
+            canvas_receivers: self.telemetry.canvas_receivers.load(Ordering::Relaxed),
+            screen_canvas_receivers: self
+                .telemetry
+                .screen_canvas_receivers
+                .load(Ordering::Relaxed),
             canvas_frames_published: self
                 .telemetry
                 .canvas_frames_published
@@ -127,6 +172,6 @@ impl PreviewRuntime {
 
 impl Default for PreviewRuntime {
     fn default() -> Self {
-        Self::new()
+        Self::new(Arc::new(HypercolorBus::new()))
     }
 }
