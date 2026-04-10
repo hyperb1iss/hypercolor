@@ -23,7 +23,7 @@ pub fn DashboardPage() -> impl IntoView {
     let status_resource = LocalResource::new(api::fetch_status);
 
     view! {
-        <div class="space-y-5 max-w-6xl animate-fade-in">
+        <div class="space-y-5 max-w-6xl p-6 animate-fade-in">
             // Top row: preview + favorites side by side
             <div class="grid grid-cols-1 lg:grid-cols-5 gap-5">
                 // Live preview — takes 3/5 width, ambient glow frame

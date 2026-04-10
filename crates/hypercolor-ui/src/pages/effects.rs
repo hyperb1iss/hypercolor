@@ -272,7 +272,7 @@ pub fn EffectsPage() -> impl IntoView {
     });
 
     view! {
-        <div class="flex flex-col h-full -m-6 animate-fade-in">
+        <div class="flex flex-col h-full animate-fade-in">
             // Fixed header — title + search + filters on one line
             <div class="shrink-0 px-6 pt-5 pb-3 bg-surface-base z-10">
                 <div class="flex items-center gap-3">

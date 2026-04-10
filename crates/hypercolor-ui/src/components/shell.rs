@@ -196,7 +196,7 @@ pub fn Shell(children: Children) -> impl IntoView {
                 if is_layout_route.get() {
                     "flex-1 min-h-0 min-w-0 overflow-hidden"
                 } else {
-                    "flex-1 min-h-0 min-w-0 overflow-auto p-6"
+                    "flex-1 min-h-0 min-w-0 overflow-auto"
                 }
             }>
                 {children()}

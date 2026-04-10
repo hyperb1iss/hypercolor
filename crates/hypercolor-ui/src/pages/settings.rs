@@ -274,7 +274,7 @@ pub fn SettingsPage() -> impl IntoView {
     ];
 
     view! {
-        <div class="flex flex-col h-full -m-6 animate-fade-in">
+        <div class="flex flex-col h-full animate-fade-in">
             // Sticky header with title + tab bar
             <div class="sticky top-0 z-10 shrink-0 glass-dense">
                 <div class="flex items-center justify-between px-6 pt-5 pb-3">
