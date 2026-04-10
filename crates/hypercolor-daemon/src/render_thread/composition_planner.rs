@@ -20,38 +20,10 @@ impl PlannedSceneLayer {
         }
     }
 
-    #[allow(
-        dead_code,
-        reason = "Wave 4 planner tests exercise layered compilation before multi-producer plans are live"
-    )]
     pub(crate) fn alpha(frame: ProducerFrame, opacity: f32) -> Self {
         Self {
             frame,
             mode: CompositionMode::Alpha,
-            opacity,
-        }
-    }
-
-    #[allow(
-        dead_code,
-        reason = "Wave 4 planner tests exercise layered compilation before multi-producer plans are live"
-    )]
-    pub(crate) fn add(frame: ProducerFrame, opacity: f32) -> Self {
-        Self {
-            frame,
-            mode: CompositionMode::Add,
-            opacity,
-        }
-    }
-
-    #[allow(
-        dead_code,
-        reason = "Wave 4 planner tests exercise layered compilation before multi-producer plans are live"
-    )]
-    pub(crate) fn screen(frame: ProducerFrame, opacity: f32) -> Self {
-        Self {
-            frame,
-            mode: CompositionMode::Screen,
             opacity,
         }
     }
