@@ -64,7 +64,8 @@ pub(crate) async fn execute_frame(
     )
     .await;
     let scene_snapshot_done_us = micros_u32(frame_start.elapsed());
-    let sleep_render_surfaces = render.render_surface_snapshot(state.event_bus.canvas_receiver_count());
+    let sleep_render_surfaces =
+        render.render_surface_snapshot(state.preview_canvas_receiver_count());
     if let Some(frame) = maybe_sleep_throttle(
         state,
         &scene_snapshot,
@@ -205,7 +206,7 @@ pub(crate) async fn execute_frame(
         full_frame_copy_count.saturating_add(publish_stats.full_frame_copy_count);
     full_frame_copy_bytes =
         full_frame_copy_bytes.saturating_add(publish_stats.full_frame_copy_bytes);
-    let render_surfaces = render.render_surface_snapshot(state.event_bus.canvas_receiver_count());
+    let render_surfaces = render.render_surface_snapshot(state.preview_canvas_receiver_count());
     let total_us = micros_u32(frame_start.elapsed());
     let known_stage_us = input_us
         .saturating_add(render_us)

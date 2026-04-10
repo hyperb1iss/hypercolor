@@ -64,6 +64,7 @@ use crate::logical_devices::LogicalDevice;
 use crate::network::{self, DaemonDriverHost};
 use crate::performance::PerformanceTracker;
 use crate::playlist_runtime::PlaylistRuntimeState;
+use crate::preview_runtime::PreviewRuntime;
 use crate::profile_store::ProfileStore;
 use crate::runtime_state;
 use crate::scene_transactions::SceneTransactionQueue;
@@ -100,6 +101,9 @@ pub struct AppState {
 
     /// System-wide event bus (broadcast + watch channels).
     pub event_bus: Arc<HypercolorBus>,
+
+    /// Dedicated preview fanout for browser-facing canvas consumers.
+    pub preview_runtime: Arc<PreviewRuntime>,
 
     /// Render loop — frame timing and pipeline skeleton.
     pub render_loop: Arc<RwLock<RenderLoop>>,
@@ -293,6 +297,7 @@ impl AppState {
         let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
         let scene_manager = Arc::new(RwLock::new(SceneManager::new()));
         let event_bus = Arc::new(HypercolorBus::new());
+        let preview_runtime = Arc::new(PreviewRuntime::new());
         let render_loop = Arc::new(RwLock::new(RenderLoop::new(60)));
         let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(default_layout)));
         let backend_manager = Arc::new(Mutex::new(BackendManager::new()));
@@ -349,6 +354,7 @@ impl AppState {
             effect_engine,
             scene_manager,
             event_bus,
+            preview_runtime,
             render_loop,
             spatial_engine,
             backend_manager,
@@ -427,6 +433,7 @@ impl AppState {
             effect_engine: Arc::clone(&daemon.effect_engine),
             scene_manager: Arc::clone(&daemon.scene_manager),
             event_bus: Arc::clone(&daemon.event_bus),
+            preview_runtime: Arc::clone(&daemon.preview_runtime),
             render_loop: Arc::clone(&daemon.render_loop),
             spatial_engine: Arc::clone(&daemon.spatial_engine),
             backend_manager: Arc::clone(&daemon.backend_manager),

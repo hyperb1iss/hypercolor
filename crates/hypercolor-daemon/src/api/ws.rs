@@ -709,8 +709,8 @@ async fn handle_socket(
     let event_rx = state.event_bus.subscribe_all();
     let frame_rx = state.event_bus.frame_receiver();
     let spectrum_rx = state.event_bus.spectrum_receiver();
-    let canvas_rx = state.event_bus.canvas_receiver();
-    let screen_canvas_rx = state.event_bus.screen_canvas_receiver();
+    let canvas_rx = state.preview_runtime.canvas_receiver();
+    let screen_canvas_rx = state.preview_runtime.screen_canvas_receiver();
 
     // Split outbound traffic: both queues are bounded so slow clients cannot
     // grow daemon memory without limit.

@@ -14,6 +14,7 @@ pub mod mdns;
 pub mod network;
 pub mod performance;
 pub mod playlist_runtime;
+pub mod preview_runtime;
 pub mod profile_store;
 pub mod render_thread;
 pub mod runtime_state;

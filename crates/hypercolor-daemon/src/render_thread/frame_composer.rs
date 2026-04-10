@@ -358,7 +358,7 @@ impl<'a> ComposeContext<'a> {
             None => {
                 if self.render.render_surface_pool.slot_count() < MAX_RENDER_SURFACE_SLOTS {
                     let previous_slots = self.render.render_surface_pool.slot_count();
-                    let receiver_count = self.state.event_bus.canvas_receiver_count();
+                    let receiver_count = self.state.preview_canvas_receiver_count();
                     let expanded_slots = desired_render_surface_slots(receiver_count)
                         .max(previous_slots.saturating_add(1))
                         .min(MAX_RENDER_SURFACE_SLOTS);
@@ -404,7 +404,7 @@ impl<'a> ComposeContext<'a> {
 
         debug!(
             slot_count = self.render.render_surface_pool.slot_count(),
-            canvas_receivers = self.state.event_bus.canvas_receiver_count(),
+            canvas_receivers = self.state.preview_canvas_receiver_count(),
             "render surface pool exhausted, falling back to owned canvas publish path"
         );
         let mut rendered = self

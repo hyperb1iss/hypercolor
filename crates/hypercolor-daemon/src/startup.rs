@@ -64,6 +64,7 @@ use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
 use crate::network::{self, DaemonDriverHost};
 use crate::performance::PerformanceTracker;
+use crate::preview_runtime::PreviewRuntime;
 use crate::render_thread::{RenderThread, RenderThreadState};
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
 use crate::scene_transactions::{SceneTransactionQueue, apply_layout_update};
@@ -112,6 +113,9 @@ pub struct DaemonState {
 
     /// Event bus — broadcast events, frame data, spectrum data.
     pub event_bus: Arc<HypercolorBus>,
+
+    /// Dedicated preview fanout for browser-facing canvas consumers.
+    pub preview_runtime: Arc<PreviewRuntime>,
 
     /// Render loop — frame timing and FPS tier management.
     pub render_loop: Arc<RwLock<RenderLoop>>,
@@ -257,6 +261,7 @@ impl DaemonState {
 
         // ── Event Bus ───────────────────────────────────────────────────
         let event_bus = Arc::new(HypercolorBus::new());
+        let preview_runtime = Arc::new(PreviewRuntime::new());
         info!("Event bus created");
 
         let (power_state, _) = watch::channel(OutputPowerState::default());
@@ -572,6 +577,7 @@ impl DaemonState {
             effect_registry,
             scene_manager,
             event_bus,
+            preview_runtime,
             render_loop,
             spatial_engine,
             backend_manager,
@@ -675,6 +681,7 @@ impl DaemonState {
             performance: Arc::clone(&self.performance),
             discovery_runtime: Some(self.discovery_runtime()),
             event_bus: Arc::clone(&self.event_bus),
+            preview_runtime: Arc::clone(&self.preview_runtime),
             render_loop: Arc::clone(&self.render_loop),
             scene_manager: Arc::clone(&self.scene_manager),
             input_manager: Arc::clone(&self.input_manager),

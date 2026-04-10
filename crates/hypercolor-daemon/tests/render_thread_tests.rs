@@ -45,6 +45,7 @@ use hypercolor_types::spatial::{
 use hypercolor_daemon::discovery::DiscoveryRuntime;
 use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::performance::PerformanceTracker;
+use hypercolor_daemon::preview_runtime::PreviewRuntime;
 use hypercolor_daemon::render_thread::{RenderThread, RenderThreadState};
 use hypercolor_daemon::scene_transactions::{SceneTransaction, SceneTransactionQueue};
 use hypercolor_daemon::session::OutputPowerState;
@@ -559,6 +560,7 @@ fn make_render_state(
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),
         discovery_runtime: None,
         event_bus: Arc::new(HypercolorBus::new()),
+        preview_runtime: Arc::new(PreviewRuntime::new()),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         scene_manager: Arc::new(RwLock::new(SceneManager::new())),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
@@ -1474,6 +1476,7 @@ async fn pipeline_renders_active_effect_to_devices() {
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),
         discovery_runtime: None,
         event_bus: Arc::new(HypercolorBus::new()),
+        preview_runtime: Arc::new(PreviewRuntime::new()),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         scene_manager: Arc::new(RwLock::new(SceneManager::new())),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
@@ -1788,6 +1791,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),
         discovery_runtime: Some(discovery_runtime.clone()),
         event_bus,
+        preview_runtime: Arc::new(PreviewRuntime::new()),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         scene_manager: Arc::new(RwLock::new(SceneManager::new())),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
@@ -2324,6 +2328,7 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),
         discovery_runtime: None,
         event_bus: Arc::new(HypercolorBus::new()),
+        preview_runtime: Arc::new(PreviewRuntime::new()),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         scene_manager: Arc::new(RwLock::new(SceneManager::new())),
         input_manager: Arc::new(Mutex::new(InputManager::new())),

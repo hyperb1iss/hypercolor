@@ -45,6 +45,7 @@ use self::pipeline_driver::run_pipeline;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::DiscoveryRuntime;
 use crate::performance::PerformanceTracker;
+use crate::preview_runtime::PreviewRuntime;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::OutputPowerState;
 use hypercolor_core::bus::HypercolorBus;
@@ -107,6 +108,9 @@ pub struct RenderThreadState {
     /// System-wide event bus — frame data and timing events.
     pub event_bus: Arc<HypercolorBus>,
 
+    /// Dedicated preview fanout for browser-facing canvas consumers.
+    pub preview_runtime: Arc<PreviewRuntime>,
+
     /// Render loop — frame timing, FPS control, tier transitions.
     pub render_loop: Arc<RwLock<RenderLoop>>,
 
@@ -139,6 +143,14 @@ pub struct RenderThreadState {
 
     /// Ceiling derived from user configuration before runtime admission.
     pub configured_max_fps_tier: FpsTier,
+}
+
+impl RenderThreadState {
+    pub(crate) fn preview_canvas_receiver_count(&self) -> usize {
+        self.event_bus
+            .canvas_receiver_count()
+            .saturating_add(self.preview_runtime.canvas_receiver_count())
+    }
 }
 
 impl RenderThread {
