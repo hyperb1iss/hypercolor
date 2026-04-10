@@ -269,16 +269,13 @@ impl ColorWaveRenderer {
         }
 
         let background = self.scaled_color(self.background_color);
-        let background_red = background.r;
-        let background_green = background.g;
-        let background_blue = background.b;
+        let red_lut = fade_lut(background.r, opacity);
+        let green_lut = fade_lut(background.g, opacity);
+        let blue_lut = fade_lut(background.b, opacity);
         for chunk in canvas.as_rgba_bytes_mut().chunks_exact_mut(4) {
-            let red = decode_srgb_channel(chunk[0]);
-            let green = decode_srgb_channel(chunk[1]);
-            let blue = decode_srgb_channel(chunk[2]);
-            chunk[0] = encode_srgb_channel(red + (background_red - red) * opacity);
-            chunk[1] = encode_srgb_channel(green + (background_green - green) * opacity);
-            chunk[2] = encode_srgb_channel(blue + (background_blue - blue) * opacity);
+            chunk[0] = red_lut[chunk[0] as usize];
+            chunk[1] = green_lut[chunk[1] as usize];
+            chunk[2] = blue_lut[chunk[2] as usize];
             chunk[3] = 255;
         }
     }
@@ -516,6 +513,13 @@ fn decode_srgb_channel(channel: u8) -> f32 {
 fn encode_srgb_channel(channel: f32) -> u8 {
     let index = (channel.clamp(0.0, 1.0) * LINEAR_ENCODE_LUT_SCALE).round() as usize;
     LINEAR_TO_SRGB_LUT[index.min(LINEAR_ENCODE_LUT_LAST_INDEX)]
+}
+
+fn fade_lut(background_channel: f32, opacity: f32) -> [u8; 256] {
+    array::from_fn(|channel| {
+        let source = decode_srgb_channel(channel as u8);
+        encode_srgb_channel(source + (background_channel - source) * opacity)
+    })
 }
 
 #[allow(
