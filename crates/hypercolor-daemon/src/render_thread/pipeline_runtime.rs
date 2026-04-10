@@ -23,6 +23,7 @@ pub(crate) struct FrameInputs {
     pub(crate) interaction: hypercolor_core::input::InteractionData,
     pub(crate) screen_data: Option<hypercolor_core::input::ScreenData>,
     pub(crate) screen_canvas: Option<Canvas>,
+    pub(crate) screen_sector_grid: Vec<[u8; 3]>,
 }
 
 impl FrameInputs {
@@ -32,15 +33,20 @@ impl FrameInputs {
             interaction: hypercolor_core::input::InteractionData::default(),
             screen_data: None,
             screen_canvas: None,
+            screen_sector_grid: Vec::new(),
         }
     }
 
     pub(crate) fn screen_canvas_for_frame(&mut self, width: u32, height: u32) -> Option<Canvas> {
         if self.screen_canvas.is_none() {
-            self.screen_canvas = self
-                .screen_data
-                .as_ref()
-                .and_then(|data| super::frame_io::screen_data_to_canvas(data, width, height));
+            self.screen_canvas = self.screen_data.as_ref().and_then(|data| {
+                super::frame_io::screen_data_to_canvas(
+                    data,
+                    width,
+                    height,
+                    &mut self.screen_sector_grid,
+                )
+            });
         }
 
         self.screen_canvas.clone()

@@ -58,6 +58,7 @@ pub(crate) async fn sample_inputs(state: &RenderThreadState, delta_secs: f32) ->
         interaction,
         screen_data,
         screen_canvas: None,
+        screen_sector_grid: Vec::new(),
     }
 }
 
@@ -248,6 +249,7 @@ pub(crate) fn screen_data_to_canvas(
     screen_data: &ScreenData,
     canvas_width: u32,
     canvas_height: u32,
+    sector_grid: &mut Vec<[u8; 3]>,
 ) -> Option<Canvas> {
     if let Some(surface) = &screen_data.canvas_downscale
         && surface.width() == canvas_width
@@ -286,7 +288,11 @@ pub(crate) fn screen_data_to_canvas(
             .and_then(|col_count| row_count.checked_mul(col_count))
     })?;
 
-    let mut grid = vec![[0, 0, 0]; cell_count];
+    if sector_grid.len() != cell_count {
+        sector_grid.resize(cell_count, [0, 0, 0]);
+    } else {
+        sector_grid.fill([0, 0, 0]);
+    }
     for zone in &screen_data.zone_colors {
         let Some((row, col)) = parse_sector_zone_id(&zone.zone_id) else {
             continue;
@@ -296,7 +302,7 @@ pub(crate) fn screen_data_to_canvas(
             .checked_mul(u64::from(cols))
             .and_then(|base| base.checked_add(u64::from(col)))?;
         let idx = usize::try_from(idx_u64).ok()?;
-        if let Some(cell) = grid.get_mut(idx) {
+        if let Some(cell) = sector_grid.get_mut(idx) {
             *cell = color;
         }
     }
@@ -324,7 +330,7 @@ pub(crate) fn screen_data_to_canvas(
                 .and_then(|base| base.checked_add(u64::from(col)))
                 .unwrap_or_default();
             let idx = usize::try_from(idx_u64).unwrap_or_default();
-            let [r, g, b] = grid.get(idx).copied().unwrap_or([0, 0, 0]);
+            let [r, g, b] = sector_grid.get(idx).copied().unwrap_or([0, 0, 0]);
             canvas.set_pixel(x, y, Rgba::new(r, g, b, 255));
         }
     }
