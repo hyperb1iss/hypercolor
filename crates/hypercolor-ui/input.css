@@ -684,7 +684,7 @@ input[type="range"].slider-silk::-moz-range-track {
 .content-auto-card {
     content-visibility: auto;
     contain: layout paint style;
-    contain-intrinsic-size: 220px 180px;
+    contain-intrinsic-size: 300px 225px;
 }
 
 /* Accent edge glow — for active/important panels */

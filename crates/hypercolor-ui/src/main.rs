@@ -1,6 +1,7 @@
 mod api;
 mod app;
 mod channel_names;
+mod color;
 mod components;
 mod compound_selection;
 mod control_geometry;
@@ -10,6 +11,7 @@ mod layout_utils;
 mod pages;
 mod preview_telemetry;
 mod style_utils;
+mod thumbnails;
 mod toasts;
 mod ws;
 

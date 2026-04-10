@@ -506,9 +506,9 @@ pub fn EffectsPage() -> impl IntoView {
                                 }.into_any()
                             } else {
                                 let grid_class = if has_active.get() {
-                                    "grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2.5"
+                                    "grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-3"
                                 } else {
-                                    "grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3"
+                                    "grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4"
                                 };
                                 view! {
                                     <div class=grid_class>
@@ -956,7 +956,7 @@ fn persist_to_storage(key: &str, value: &str) {
 #[component]
 fn LoadingSkeleton() -> impl IntoView {
     view! {
-        <div class="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3">
+        <div class="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
             {(0..12).map(|_| {
                 view! {
                     <div class="rounded-xl border border-edge-subtle bg-surface-overlay/40 px-4 py-3 animate-pulse space-y-3">

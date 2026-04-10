@@ -15,6 +15,7 @@ use crate::pages::effects::EffectsPage;
 use crate::pages::layout::LayoutPage;
 use crate::pages::settings::SettingsPage;
 use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
+use crate::thumbnails::{self, ThumbnailStore};
 use crate::ws::{
     AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, DeviceEventHint,
     PerformanceMetrics, WsManager,
@@ -390,6 +391,24 @@ pub fn App() -> impl IntoView {
         set_favorite_ids,
     };
     provide_context(effects_ctx);
+
+    // Effect thumbnail store — captures screenshots opportunistically while
+    // effects are playing and exposes them to the browse grid for card art.
+    let thumbnail_store = ThumbnailStore::new();
+    provide_context(thumbnail_store);
+    thumbnails::install_auto_capture(
+        thumbnail_store,
+        active_effect_id,
+        ws.canvas_frame,
+        move |effect_id| {
+            effects_index.with_untracked(|effects| {
+                effects
+                    .iter()
+                    .find(|entry| entry.effect.id == effect_id)
+                    .map(|entry| entry.effect.version.clone())
+            })
+        },
+    );
 
     // Initialize favorites from API on load
     Effect::new(move |_| {
