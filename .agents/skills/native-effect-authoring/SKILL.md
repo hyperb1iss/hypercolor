@@ -26,7 +26,7 @@ pub trait EffectRenderer: Send {
 ```
 
 - `init` — called once after construction, receives full metadata
-- `tick` — called every frame, must return a `Canvas` (default 320x200 Rgba pixels, sRGB; dimensions come from `FrameInput.canvas_width/height` and are configurable)
+- `tick` — called every frame, must return a `Canvas` (default 640x480 Rgba pixels, sRGB; dimensions come from `FrameInput.canvas_width/height` and are configurable)
 - `set_control` — called when user adjusts a control, can arrive between any two ticks
 - `destroy` — cleanup (rarely needed for native effects)
 
@@ -86,7 +86,7 @@ Color controls arrive as `[f32; 4]` in **linear RGBA** (0.0-1.0). Convert to sRG
 
 ## Canvas Output
 
-`Canvas` is `Rgba` pixels in **sRGB gamma space** (u8 per channel). Default dimensions are 320x200 (`DEFAULT_CANVAS_WIDTH/HEIGHT` constants), but always use `input.canvas_width/height` from `FrameInput` -- they are configurable. Available operations:
+`Canvas` is `Rgba` pixels in **sRGB gamma space** (u8 per channel). Default dimensions are 640x480 (`DEFAULT_CANVAS_WIDTH/HEIGHT` constants), but always use `input.canvas_width/height` from `FrameInput` -- they are configurable. Available operations:
 
 - `Canvas::new(width, height)` — opaque black canvas
 - `canvas.fill(rgba)` — solid fill

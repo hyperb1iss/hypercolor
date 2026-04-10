@@ -32,12 +32,12 @@ use serde::{Deserialize, Serialize};
 
 /// The canonical render surface for all effects.
 ///
-/// A 2D RGBA pixel buffer at a fixed resolution (default 320x200).
+/// A 2D RGBA pixel buffer sized from config (default 640x480).
 /// Both the wgpu and Servo render paths write to this format.
 /// The spatial sampler reads from it to produce LED colors.
 ///
 /// Memory layout: row-major, top-left origin, 4 bytes per pixel (R, G, B, A).
-/// Total size at 320x200: 256,000 bytes (250 KB).
+/// Size scales with canvas dims: ~256 KB at 320x200, ~1.17 MB at 640x480.
 #[derive(Clone)]
 pub struct Canvas {
     /// Horizontal pixel count.
@@ -52,9 +52,12 @@ pub struct Canvas {
     pixels: Vec<u8>,
 }
 
-/// The default canvas resolution, matching the LightScript standard.
-pub const DEFAULT_CANVAS_WIDTH: u32 = 320;
-pub const DEFAULT_CANVAS_HEIGHT: u32 = 200;
+/// The default canvas resolution. Used as a fallback when no canvas size
+/// is provided by the daemon's config (`daemon.canvas_width` /
+/// `daemon.canvas_height`). Effects must always read live dimensions from
+/// `FrameInput`/`canvas.width` rather than referencing these constants.
+pub const DEFAULT_CANVAS_WIDTH: u32 = 640;
+pub const DEFAULT_CANVAS_HEIGHT: u32 = 480;
 
 /// Bytes per pixel in the RGBA format.
 pub const BYTES_PER_PIXEL: usize = 4;

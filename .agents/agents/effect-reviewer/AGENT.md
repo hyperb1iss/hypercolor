@@ -54,7 +54,7 @@ You review RGB lighting effects for quality on physical LED hardware. Your job i
 
 ### Technical (HTML Effects)
 
-- [ ] **Canvas resolution**: 320x200 standard
+- [ ] **Canvas resolution**: Effects MUST read `ctx.canvas.width/height` every frame — never hardcode. Effects ported from the legacy 320x200 SDK grid should use `scaleContext(ctx.canvas, { width: 320, height: 200 })` from `@hypercolor/sdk`. The engine renders at 640x480 by default, configurable in Settings → Rendering.
 - [ ] **Meta tags**: All controls have id, label, type, default, and appropriate min/max
 - [ ] **Preset controls**: JSON in `preset-controls` attribute matches actual control IDs
 - [ ] **No blocking**: No synchronous operations in draw loop

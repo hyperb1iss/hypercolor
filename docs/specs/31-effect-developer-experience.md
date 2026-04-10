@@ -131,8 +131,12 @@ or warn on unsupported versions.
 
 **Canvas requirements:**
 - ID must be `exCanvas`
-- Default dimensions: 320x200 (daemon overrides at runtime via
-  `window.engine.width` / `window.engine.height`)
+- Dimensions are dictated by the daemon (640x480 by default, user-configurable).
+  The runtime injects them as `window.engine.width` / `window.engine.height` and
+  the SDK auto-resizes the canvas every frame. Read `ctx.canvas.width/height`
+  inside your draw function — never hardcode. For effects ported from the
+  legacy 320x200 SDK grid, use `scaleContext(ctx.canvas, { width: 320, height: 200 })`
+  from `@hypercolor/sdk` to translate design-space coordinates.
 - Background: black (`#000000`)
 
 ### 3.3 Title and Description
@@ -811,8 +815,8 @@ colors. Grouped by the `group` option. Changes are injected into the iframe's
 **Preset switcher:** Buttons for each declared preset. Clicking a preset
 updates all controls to the preset values.
 
-**Canvas sizing:** Defaults to 320x200 (standard LED matrix). Configurable via
-the preview shell for testing different hardware layouts.
+**Canvas sizing:** Defaults to the daemon's configured canvas (640x480 by default).
+Configurable via the preview shell for testing different hardware layouts.
 
 ### 7.3 Vite Integration
 

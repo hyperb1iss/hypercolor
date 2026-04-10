@@ -23,7 +23,7 @@
 
 ### The Core Challenge
 
-Every effect in Hypercolor renders to a single 320x200 RGBA canvas -- a flat, continuous, pixel-perfect
+Every effect in Hypercolor renders to a single RGBA canvas (640x480 by default, configurable) -- a flat, continuous, pixel-perfect
 rectangle. But the LEDs that consume those pixels exist in a wildly different reality:
 
 - **Scattered across 3D space** -- inside a PC case, behind a monitor, along a desk edge, across a ceiling
@@ -32,11 +32,12 @@ rectangle. But the LEDs that consume those pixels exist in a wildly different re
 - **Multiple devices on different protocols** -- USB HID, network DDP, HTTP REST, all needing color data simultaneously
 
 The spatial layout engine solves one deceptively simple question: **for each physical LED, where on the
-320x200 canvas should we sample its color?**
+effect canvas should we sample its color?** (Zone positions are stored in normalized [0,1] coordinates
+so layouts stay valid across canvas resolution changes.)
 
 ```mermaid
 graph TD
-    Canvas["Effect Canvas (320 x 200)"]
+    Canvas["Effect Canvas (640 x 480 default)"]
     Sampler["Spatial Sampler"]
     Strip["Strip (1D)<br/>60 LEDs, linear"]
     Strimer["Strimer<br/>20x6 matrix"]
@@ -83,8 +84,8 @@ canvas region. A strip is 1D but maps to a 2D canvas area. The mapping must feel
 sweeping left-to-right on the canvas should sweep around a fan ring smoothly, not jump erratically.
 
 **Scale mismatch.** One person's setup is 6 devices in a PC case. Another's is 30 devices across a
-house. The canvas is always 320x200, but the physical space it represents can range from 40cm to 40
-meters.
+house. The canvas resolution is a tunable quality/perf knob (640x480 by default), but the physical
+space it represents can range from 40cm to 40 meters.
 
 ---
 
@@ -811,7 +812,7 @@ When an effect with a layout hint is activated, Hypercolor shows a subtle prompt
 ### The Scale Problem
 
 Hypercolor isn't just a PC lighting tool. With WLED strips on ESP32s and Hue bulbs on bridges,
-a single Hypercolor instance can orchestrate lighting across an entire home. The 320x200 canvas
+a single Hypercolor instance can orchestrate lighting across an entire home. The effect canvas
 must stretch from "6 fans in a PC case" to "47 devices across 4 rooms" without breaking.
 
 ### Space Hierarchy
@@ -1375,7 +1376,7 @@ Serpentine Wiring:
 
 ### Overview
 
-Sampling is the act of reading a color from the 320x200 canvas at a specific (possibly fractional)
+Sampling is the act of reading a color from the effect canvas at a specific (possibly fractional)
 coordinate. Different sampling strategies trade off between speed, quality, and appropriateness for
 different device types.
 
@@ -1573,8 +1574,8 @@ impl SummedAreaTable {
 }
 ```
 
-Building the summed area table is O(width * height) = O(64000) for a 320x200 canvas -- negligible
-at 60fps. After that, every area average query is O(1).
+Building the summed area table is O(width * height) -- e.g. ~64K ops for 320x200 or ~307K for
+640x480 -- still negligible at 60fps. After that, every area average query is O(1).
 
 ### Gaussian-Weighted Area Average
 

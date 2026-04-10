@@ -27,14 +27,17 @@
 
 ## 1. Overview
 
-The effect system renders visual content to a 320x200 RGBA canvas. Everything downstream -- spatial sampling, device color output, UI preview -- consumes that canvas. Two rendering paths coexist:
+The effect system renders visual content to an RGBA canvas whose dimensions are loaded from
+`daemon.canvas_width` / `daemon.canvas_height` (defaults: 640x480). Everything downstream -- spatial sampling, device color output, UI preview -- consumes that canvas. Two rendering paths coexist:
 
 | Path | Renderer | Input Format | Use Case |
 |---|---|---|---|
 | **Fast path** | `WgpuRenderer` | `.wgsl` / `.glsl` shaders | Native effects, maximum throughput |
 | **Compat path** | `ServoRenderer` | `.html` (Canvas 2D / WebGL) | Community HTML effects, Lightscript |
 
-Both paths produce the same output: a `Canvas` struct containing a 320x200 RGBA pixel buffer (256 KB/frame). The effect engine selects the appropriate renderer based on the `EffectSource` variant declared in metadata.
+Both paths produce the same output: a `Canvas` struct containing an RGBA pixel buffer sized
+from the configured canvas dimensions (~1.17 MB/frame at the 640x480 default). The effect engine
+selects the appropriate renderer based on the `EffectSource` variant declared in metadata.
 
 ```mermaid
 graph TD
@@ -42,7 +45,7 @@ graph TD
     Registry --> Html[EffectSource::Html]
     Wgsl --> WgpuRenderer
     Html --> ServoRenderer
-    WgpuRenderer --> Canvas["Canvas (320x200 RGBA)"]
+    WgpuRenderer --> Canvas["Canvas (640x480 RGBA default)"]
     ServoRenderer --> Canvas
     Canvas --> SpatialSampler
     SpatialSampler --> DeviceBackends
@@ -694,8 +697,10 @@ The universal output type for all renderers.
 ```rust
 /// RGBA pixel buffer. The fundamental output of the effect system.
 ///
-/// Fixed at 320x200 (256 KB). This matches the LightScript standard
-/// resolution and keeps readback overhead trivial.
+/// Dimensions come from `daemon.canvas_width` / `daemon.canvas_height`
+/// (default 640x480, ~1.17 MB). The historical LightScript grid of
+/// 320x200 remains the canonical SDK target — effects should read
+/// `canvas.width`/`height` every frame rather than hardcoding.
 #[derive(Debug, Clone)]
 pub struct Canvas {
     pub width: u32,

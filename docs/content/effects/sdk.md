@@ -226,14 +226,18 @@ uniform sampler2D iAudioSpectrum; // 200-bin FFT as a 1D texture
 
 The render pipeline for Canvas effects:
 
-1. Your render function receives a `CanvasRenderingContext2D` for a 320x200 canvas
+1. Your render function receives a `CanvasRenderingContext2D` whose size matches the daemon's
+   configured render canvas (640x480 by default, user-tunable in Settings → Rendering)
 2. You draw whatever you want — shapes, gradients, images, text
 3. The SDK reads the canvas pixels after your function returns
 4. Pixel data is sent to the daemon's spatial sampler
 5. The sampler maps canvas positions to physical LED positions
 6. Colors are pushed to hardware
 
-The 320x200 resolution is intentional — it matches the spatial mapping resolution and keeps pixel readback fast (256KB/frame). Don't fight the resolution; design for it.
+Always read `canvas.width` and `canvas.height` on every frame — don't hardcode. Historical effects
+were authored against a 320x200 grid and scale via normalized coordinates; writing new effects the
+same way keeps them resolution-independent. Readback cost scales with the configured canvas:
+~256 KB/frame at 320x200, ~1.17 MB/frame at 640x480, both trivially fast on modern hardware.
 
 ## Building and Distribution
 

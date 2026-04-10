@@ -117,7 +117,7 @@ Perceptual 50% brightness = PWM 55/255 (21.6%), not 128/255.
 
 ## Rendering Model
 
-All community effects use Canvas 2D at **320x200** with `requestAnimationFrame`. This resolution provides ample headroom for smooth gradients that survive downsampling to LED positions.
+The Hypercolor engine renders at **640x480 by default** (user-configurable in Settings → Rendering). Effects use Canvas 2D with `requestAnimationFrame` and must always read `ctx.canvas.width` / `ctx.canvas.height` on every frame — never hardcode dimensions. The SDK ships a `scaleContext(canvas, designBasis?)` helper for effects authored against a fixed coordinate system (pass `{ width: 320, height: 200 }` if you're porting an effect designed at the historical SDK grid). Higher canvas resolutions give smoother gradients that survive downsampling to LED positions.
 
 Use `globalCompositeOperation = 'lighter'` for additive blending of overlapping light sources.
 

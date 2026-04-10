@@ -2597,7 +2597,7 @@ hypercolor diagnose --check daemon --check render
   ✓ wgpu initialized                  Vulkan 1.3 (AMD Radeon RX 7900 XTX)
   ✓ Render loop active                60.0 fps (target: 60)
   ✓ Frame budget                      16.4ms / 16.7ms (1.8% headroom)
-  ! Canvas resolution                 320x200 (consider 640x400 for 5000+ LEDs)
+  ✓ Canvas resolution                 640x480 (default; 1280x800 suggested for 5000+ LEDs)
 
   ── Devices ───────────────────────────────────────
   ✓ WLED Living Room                  connected, 0.8ms latency
@@ -2643,8 +2643,8 @@ hypercolor diagnose --check daemon --check render
     {
       "category": "render",
       "name": "canvas_resolution",
-      "status": "warning",
-      "detail": "320x200 (consider 640x400 for 5000+ LEDs)"
+      "status": "pass",
+      "detail": "640x480 (default; 1280x800 suggested for 5000+ LEDs)"
     }
   ],
   "summary": {

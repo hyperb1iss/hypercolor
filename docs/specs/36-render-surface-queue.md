@@ -88,9 +88,10 @@ The audit found five structural issues:
 
 ### 2.2 Why This Matters
 
-At 320x200 RGBA, a single full-frame canvas is about 256 KB. One hidden clone
-per frame at 60 FPS is about 15 MB/s of memory traffic before transport
-encoding, display cropping, or screen-capture duplication. That is not fatal on
+A full-frame canvas is ~256 KB at 320x200 or ~1.17 MB at the 640x480 default.
+One hidden clone per frame at 60 FPS is 15-70 MB/s of memory traffic before
+transport encoding, display cropping, or screen-capture duplication. That is
+not fatal on
 desktop hardware, but it is exactly the kind of accidental bandwidth burn that
 makes future scaling harder:
 

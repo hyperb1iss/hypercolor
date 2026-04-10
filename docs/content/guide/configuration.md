@@ -124,7 +124,7 @@ curl -X POST http://localhost:9420/api/v1/scenes/<id>/activate
 
 ## Spatial Layouts
 
-Layouts define how the effect canvas maps to physical LED positions. Each device zone has a position, size, and rotation on the 320x200 virtual canvas.
+Layouts define how the effect canvas maps to physical LED positions. Each device zone has a position, size, and rotation expressed in normalized [0.0, 1.0] coordinates, so layouts stay valid regardless of the configured canvas resolution (640x480 by default).
 
 ```bash
 # List layouts

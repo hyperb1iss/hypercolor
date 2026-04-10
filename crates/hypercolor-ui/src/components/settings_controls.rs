@@ -142,6 +142,71 @@ pub fn SettingSlider(
     }
 }
 
+// ── Setting Segmented ──────────────────────────────────────────────────────
+
+/// A segmented-button picker for discrete presets. Values are strings so it can
+/// back either textual or numeric keys (numeric values should be stringified in
+/// the `options` slot and the caller should set `numeric=true`).
+#[component]
+pub fn SettingSegmented(
+    label: &'static str,
+    description: &'static str,
+    key: &'static str,
+    #[prop(into)] value: Signal<String>,
+    #[prop(into)] options: Signal<Vec<(String, String)>>,
+    on_change: Callback<(String, serde_json::Value)>,
+    #[prop(default = false)] restart_required: bool,
+    #[prop(default = false)] numeric: bool,
+) -> impl IntoView {
+    let key_owned = key.to_string();
+    view! {
+        <div class="flex items-start justify-between gap-4 py-3 setting-row">
+            <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2">
+                    <span class="text-sm text-fg-primary font-medium">{label}</span>
+                    {restart_required.then(restart_badge)}
+                </div>
+                <div class="text-xs text-fg-tertiary/70 mt-0.5">{description}</div>
+            </div>
+            <div
+                class="flex items-center gap-0.5 p-0.5 rounded-lg shrink-0"
+                style="background: rgba(139, 133, 160, 0.08); border: 1px solid rgba(139, 133, 160, 0.12)"
+            >
+                {move || {
+                    let current = value.get();
+                    options.get().into_iter().map(|(val, label)| {
+                        let is_selected = current == val;
+                        let key_click = key_owned.clone();
+                        let val_click = val.clone();
+                        view! {
+                            <button
+                                class="px-2.5 py-1 text-xs font-mono rounded-md transition-all duration-150 cursor-pointer tabular-nums"
+                                style=move || if is_selected {
+                                    "color: rgb(230, 237, 243); background: rgba(225, 53, 255, 0.18); box-shadow: 0 0 8px rgba(225, 53, 255, 0.15)"
+                                } else {
+                                    "color: rgba(139, 133, 160, 0.7); background: transparent"
+                                }
+                                on:click=move |_| {
+                                    let json_val = if numeric {
+                                        val_click.parse::<i64>()
+                                            .map(|n| serde_json::json!(n))
+                                            .unwrap_or_else(|_| serde_json::json!(val_click))
+                                    } else {
+                                        serde_json::json!(val_click)
+                                    };
+                                    on_change.run((key_click.clone(), json_val));
+                                }
+                            >
+                                {label}
+                            </button>
+                        }
+                    }).collect_view()
+                }}
+            </div>
+        </div>
+    }
+}
+
 // ── Setting Dropdown ───────────────────────────────────────────────────────
 
 #[component]

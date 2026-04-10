@@ -3,22 +3,39 @@
  *
  * Provides canvas management, animation loop, FPS capping,
  * and the control update contract.
+ *
+ * Canvas dimensions are adaptive: on every frame the base effect reads
+ * `window.engine.width/height` (injected by the Hypercolor daemon) and
+ * resizes the backing canvas to match. Effects that want to author in a
+ * fixed coordinate space should set [`designBasis`] and use [`scaleContext`]
+ * / [`this.scaleContext()`] to translate design coords to live pixels.
+ * Nothing in the SDK treats any specific resolution as canonical.
  */
 
+import { type DesignBasis, type ScaleContext, scaleContext } from '../math/scale'
 import { createDebugLogger } from '../utils/debug'
 
-/** Default canvas width used by the render pipeline (design resolution). */
-export const DEFAULT_CANVAS_WIDTH = 320
-
-/** Default canvas height used by the render pipeline (design resolution). */
-export const DEFAULT_CANVAS_HEIGHT = 200
+/**
+ * Initial placeholder canvas dimensions used during effect construction, before
+ * the animation loop runs and [`syncCanvasSizeFromEngine`] replaces them with
+ * the live engine dimensions (or the browser window in standalone preview).
+ *
+ * Intentionally private and modest so that no effect can anchor itself to
+ * these numbers — the moment the first frame renders, they are gone.
+ */
+const INITIAL_PLACEHOLDER_WIDTH = 1
+const INITIAL_PLACEHOLDER_HEIGHT = 1
 
 export interface EffectConfig {
     id: string
     name: string
     debug?: boolean
-    canvasWidth?: number
-    canvasHeight?: number
+    /**
+     * Coordinate system this effect is authored in. When set, [`scaleContext`]
+     * uses it to translate design coords to live canvas pixels. Omit for
+     * pure-adaptive effects that use `canvas.width/height` directly.
+     */
+    designBasis?: DesignBasis
 }
 
 export abstract class BaseEffect<T> {
@@ -30,6 +47,12 @@ export abstract class BaseEffect<T> {
     protected canvasHeight: number
     protected canvas: HTMLCanvasElement | null = null
     protected stage: HTMLDivElement | null = null
+    /**
+     * Design-space coordinate system for this effect. Subclasses may set this
+     * to author against a fixed grid (e.g. `{ width: 320, height: 200 }`);
+     * leave undefined for pure-adaptive effects.
+     */
+    protected designBasis?: DesignBasis
 
     private fpsCapLastFrameTime = 0
     private lastControlPollTime = Number.NEGATIVE_INFINITY
@@ -41,9 +64,23 @@ export abstract class BaseEffect<T> {
         this.id = config.id
         this.name = config.name
         this.debug = createDebugLogger(this.name, config.debug ?? false)
-        this.canvasWidth = config.canvasWidth ?? DEFAULT_CANVAS_WIDTH
-        this.canvasHeight = config.canvasHeight ?? DEFAULT_CANVAS_HEIGHT
+        this.designBasis = config.designBasis
+        this.canvasWidth = INITIAL_PLACEHOLDER_WIDTH
+        this.canvasHeight = INITIAL_PLACEHOLDER_HEIGHT
         this.debug('info', 'Effect created', { id: this.id })
+    }
+
+    /**
+     * Build a [`ScaleContext`] snapshot for the current frame, bound to the
+     * live canvas size and this effect's [`designBasis`] (if any). Call this
+     * inside your draw method — it's a handful of arithmetic ops, so per-frame
+     * construction is the idiomatic pattern.
+     */
+    protected scaleContext(): ScaleContext {
+        return scaleContext(
+            this.canvas ?? { height: this.canvasHeight, width: this.canvasWidth },
+            this.designBasis,
+        )
     }
 
     /** Initialize the effect — canvas, renderer, controls, animation. */

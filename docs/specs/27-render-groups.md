@@ -45,7 +45,7 @@ the internal type could become `Zone` too.
 Today the render pipeline is strictly linear:
 
 ```
-1 Effect → 1 Canvas (320×200) → N DeviceZones → N Devices
+1 Effect → 1 Canvas (640×480 default) → N DeviceZones → N Devices
 ```
 
 Every device sees the same effect. Users cannot run screen-mirror on their keyboard while
@@ -71,8 +71,9 @@ A **Zone** is the atomic unit of the multi-effect pipeline. It binds three thing
 | **Layout** | A `SpatialLayout` defining device positions on the canvas | Device positions are effect-relative — a keyboard "centered" on the screen-mirror canvas is positioned differently than "centered" on a plasma canvas |
 | **Controls** | Effect parameter overrides | Same effect can run with different settings per zone |
 
-Each zone produces its own full-resolution `Canvas` (320×200 by default). The spatial
-sampler runs independently per zone, sampling that zone's canvas for that zone's devices.
+Each zone produces its own full-resolution `Canvas` (sized from the daemon's configured
+canvas dimensions — 640×480 by default). The spatial sampler runs independently per zone,
+sampling that zone's canvas for that zone's devices.
 Downstream device routing is unchanged.
 
 ### 2.2 Scene as Container

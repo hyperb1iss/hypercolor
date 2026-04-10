@@ -2260,7 +2260,7 @@ By default, only `events` is subscribed. The client explicitly subscribes to hig
 |---------|-----------|-------------|-------------|
 | `frames` | Binary (0x01) | 30 | Per-zone LED colors |
 | `spectrum` | Binary (0x02) | 30 | Audio FFT spectrum |
-| `canvas` | Binary (0x03) | 15 | Raw 320x200 canvas pixels |
+| `canvas` | Binary (0x03) | 15 | Raw canvas pixels (640x480 default, configurable) |
 | `events` | JSON | N/A (push) | Discrete state change events |
 | `metrics` | JSON | 1 | Performance metrics |
 

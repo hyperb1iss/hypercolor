@@ -9,3 +9,5 @@ export {
     smoothAsymmetric,
 } from './easing'
 export { clamp, inverseLerp, lerp, mix, saturate, smoothstep, step } from './lerp'
+export type { CanvasSize, DesignBasis, ScaleContext } from './scale'
+export { scaleContext } from './scale'

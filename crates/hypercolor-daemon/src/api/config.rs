@@ -8,6 +8,7 @@ use axum::response::Response;
 use serde::Deserialize;
 use tracing::{info, warn};
 
+use hypercolor_core::engine::FpsTier;
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::HypercolorConfig;
 
@@ -109,8 +110,10 @@ pub async fn set_config_value(
         return ApiError::internal(format!("Failed to persist config: {e}"));
     }
 
-    let live_applied =
+    let audio_live_applied =
         maybe_apply_audio_config_change(&state, Some(&body.key), body.live.unwrap_or(false)).await;
+    let render_live_applied = maybe_apply_render_config_change(&state, Some(&body.key)).await;
+    let live_applied = audio_live_applied || render_live_applied;
 
     ApiResponse::ok(serde_json::json!({
         "key": body.key,
@@ -160,9 +163,11 @@ pub async fn reset_config_value(
         return ApiError::internal(format!("Failed to persist config: {e}"));
     }
 
-    let live_applied =
+    let audio_live_applied =
         maybe_apply_audio_config_change(&state, body.key.as_deref(), body.live.unwrap_or(false))
             .await;
+    let render_live_applied = maybe_apply_render_config_change(&state, body.key.as_deref()).await;
+    let live_applied = audio_live_applied || render_live_applied;
 
     ApiResponse::ok(serde_json::json!({
         "key": body.key,
@@ -340,4 +345,38 @@ fn audio_source_from_device(device: &str, enabled: bool) -> AudioSourceType {
 fn noise_gate_to_db(noise_gate: f32) -> f32 {
     let linear = noise_gate.clamp(0.000_001, 1.0);
     20.0 * linear.log10()
+}
+
+/// Keys that can be retuned without a daemon restart on the render side.
+/// Canvas dimensions are intentionally NOT live-applicable yet — the surface
+/// pool and active renderer bake them in at construction.
+fn should_reconfigure_render_loop(key: Option<&str>) -> bool {
+    matches!(key, Some("daemon.target_fps"))
+}
+
+/// Apply render-loop config changes (target FPS) to the live `RenderLoop`.
+///
+/// Returns `true` if the change was applied in-process. Canvas dimension
+/// changes still require a restart and return `false`.
+async fn maybe_apply_render_config_change(state: &Arc<AppState>, key: Option<&str>) -> bool {
+    if !should_reconfigure_render_loop(key) {
+        return false;
+    }
+
+    let Some(manager) = state.config_manager.as_ref() else {
+        return false;
+    };
+
+    let target_fps = manager.get().daemon.target_fps;
+    let tier = FpsTier::from_fps(target_fps);
+
+    let mut loop_guard = state.render_loop.write().await;
+    loop_guard.set_tier(tier);
+    loop_guard.fps_controller_mut().set_max_tier(tier);
+    info!(
+        target_fps,
+        resolved_tier = %tier,
+        "Applied live render FPS change"
+    );
+    true
 }

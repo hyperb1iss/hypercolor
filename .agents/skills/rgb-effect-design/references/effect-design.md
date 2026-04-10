@@ -129,18 +129,21 @@ Maximum representable spatial frequency = `1 / (2 * LED_pitch)`. On a keyboard w
 
 ## Rendering Pipeline
 
-### Canvas 2D at 320x200
+### Canvas 2D at the daemon's configured resolution
 
-The universal standard across all 210 community effects:
+The universal format across all 210 community effects:
 - Canvas 2D context (not WebGL)
-- 320x200 resolution
+- Resolution is **whatever the daemon is configured for** — 640x480 by default
 - `requestAnimationFrame` for the render loop
 - Engine samples canvas pixels at LED positions
+- Effects MUST read `ctx.canvas.width` / `ctx.canvas.height` every frame — never hardcode
+- Effects ported from the historical 320x200 SDK grid use
+  `scaleContext(ctx.canvas, { width: 320, height: 200 })` to translate design coords to live pixels
 
 Why Canvas 2D over WebGL:
 1. Simpler mental model — draw calls map to visual intent
 2. No shader compilation — instant effect loading
-3. Adequate performance — 320x200 is trivial; USB transfer is the bottleneck
+3. Adequate performance — even 640x480 is trivial; USB transfer is the bottleneck
 4. Better portability — no driver issues
 
 ### Compositing Modes

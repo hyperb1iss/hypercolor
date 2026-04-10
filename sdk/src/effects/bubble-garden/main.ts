@@ -1,4 +1,6 @@
-import { canvas, color, combo, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, num } from '@hypercolor/sdk'
+import { canvas, color, combo, num, scaleContext, type ScaleContext } from '@hypercolor/sdk'
+
+const BUBBLE_DESIGN_BASIS = { height: 200, width: 320 } as const
 
 interface Bubble {
     x: number
@@ -43,12 +45,6 @@ function clamp(value: number, min: number, max: number): number {
 
 function rand(min: number, max: number): number {
     return Math.random() * (max - min) + min
-}
-
-function canvasScale(width: number, height: number): number {
-    const sx = width / DEFAULT_CANVAS_WIDTH
-    const sy = height / DEFAULT_CANVAS_HEIGHT
-    return Math.max(0.5, Math.min(sx, sy))
 }
 
 function randomVelocity(): number {
@@ -139,11 +135,13 @@ function polishBubbleColors(colors: { aura: RGB; body: RGB; rim: RGB; gloss: RGB
     }
 }
 
-function createBubbles(count: number, width: number, height: number): Bubble[] {
+function createBubbles(count: number, s: ScaleContext): Bubble[] {
     const bubbles: Bubble[] = []
-    const scale = canvasScale(width, height)
+    // Keep bubbles visually sensible even if the canvas shrinks below the
+    // design basis; 0.5 matches the original lower bound on the scale factor.
+    const sizeScale = Math.max(0.5, s.scale)
     for (let i = 0; i < count; i++) {
-        const radius = rand(14, 28) * scale
+        const radius = rand(14, 28) * sizeScale
         bubbles.push({
             alpha: 0.22 + (i / Math.max(1, count - 1)) * 0.24,
             baseSize: radius,
@@ -154,8 +152,8 @@ function createBubbles(count: number, width: number, height: number): Bubble[] {
             phase: Math.random() * Math.PI * 2,
             vx: randomVelocity(),
             vy: randomVelocity(),
-            x: rand(radius, Math.max(radius + 1, width - radius)),
-            y: rand(radius, Math.max(radius + 1, height - radius)),
+            x: rand(radius, Math.max(radius + 1, s.width - radius)),
+            y: rand(radius, Math.max(radius + 1, s.height - radius)),
         })
     }
     return bubbles
@@ -346,11 +344,12 @@ export default canvas.stateful(
             const color = c.color as string
             const color2 = c.color2 as string
             const color3 = c.color3 as string
-            const width = ctx.canvas.width
-            const height = ctx.canvas.height
+            const s = scaleContext(ctx.canvas, BUBBLE_DESIGN_BASIS)
+            const width = s.width
+            const height = s.height
 
             if (width !== lastWidth || height !== lastHeight || count !== prevCount || bubbles.length === 0) {
-                bubbles = createBubbles(count, width, height)
+                bubbles = createBubbles(count, s)
                 prevCount = count
                 prevSpeed = speed
                 lastWidth = width
@@ -432,6 +431,7 @@ export default canvas.stateful(
     {
         description:
             'Drift through a luminous bubble field — glossy spheres rise with colored rims catching light as they float, collide, and shimmer',
+        designBasis: BUBBLE_DESIGN_BASIS,
         presets: [
             {
                 controls: {

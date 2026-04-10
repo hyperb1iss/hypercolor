@@ -1,4 +1,6 @@
-import { canvas, color, combo, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, num } from '@hypercolor/sdk'
+import { canvas, color, combo, num, scaleContext } from '@hypercolor/sdk'
+
+const POISONOUS_DESIGN_BASIS = { height: 200, width: 320 } as const
 
 interface RGB {
     r: number
@@ -93,9 +95,7 @@ function mixRgb(a: RGB, b: RGB, t: number): RGB {
 }
 
 function canvasScale(width: number, height: number): number {
-    const sx = width / DEFAULT_CANVAS_WIDTH
-    const sy = height / DEFAULT_CANVAS_HEIGHT
-    return Math.max(0.5, Math.min(sx, sy))
+    return Math.max(0.5, scaleContext({ height, width }, POISONOUS_DESIGN_BASIS).scale)
 }
 
 function fillRingBand(
@@ -261,6 +261,7 @@ export default canvas.stateful(
         author: 'Hypercolor',
         description:
             'Neon toxin rings pulse through dark chemical haze — luminous venom drifting in slow vertical procession',
+        designBasis: POISONOUS_DESIGN_BASIS,
         presets: [
             {
                 controls: {

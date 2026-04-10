@@ -3,17 +3,30 @@
  *
  * Write a draw function, declare controls, ship.
  *
+ * The canvas is sized by the Hypercolor daemon (640x480 by default, user-tunable).
+ * Always read `ctx.canvas.width` / `ctx.canvas.height` inside your draw function —
+ * never hardcode dimensions. For effects authored against a fixed design grid,
+ * pass [`CanvasFnOptions.designBasis`] and call [`scaleContext`] per frame.
+ *
  * @example
  * ```typescript
- * // Stateless (called every frame)
+ * import { canvas, scaleContext } from '@hypercolor/sdk'
+ *
+ * // Pure-adaptive: read canvas size directly
  * export default canvas('Particles', {
  *     speed: [1, 10, 5],
  *     palette: ['SilkCircuit', 'Fire', 'Aurora'],
- * }, (ctx, time, { speed, palette }) => {
- *     ctx.clearRect(0, 0, 320, 200)
+ * }, (ctx, time, { palette }) => {
+ *     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height)
  *     ctx.fillStyle = palette(0.5)
- *     ctx.fillRect(0, 0, 320, 200)
+ *     ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height)
  * })
+ *
+ * // Fixed design basis: author in 320x200, scale to whatever the daemon renders at
+ * export default canvas('Aurora', controls, (ctx, time, controls) => {
+ *     const s = scaleContext(ctx.canvas, { width: 320, height: 200 })
+ *     ctx.fillRect(s.dx(20), s.dy(30), s.dw(60), s.dh(40))
+ * }, { designBasis: { width: 320, height: 200 } })
  *
  * // Stateful (factory returns draw function)
  * export default canvas('Fireflies', controls, () => {
@@ -29,6 +42,7 @@ import { inferControl } from '../controls/infer'
 import { deriveLabel, hasMagicTransform, resolveControlNames } from '../controls/names'
 import { isControlSpec } from '../controls/specs'
 import { initializeEffect } from '../init'
+import type { DesignBasis } from '../math/scale'
 import type { PaletteFn } from '../palette'
 import { createPaletteFn } from '../palette'
 import { CanvasEffect } from './canvas-effect'
@@ -43,8 +57,13 @@ export type FactoryFn = () => DrawFn
 export interface CanvasFnOptions {
     description?: string
     author?: string
-    width?: number
-    height?: number
+    /**
+     * Coordinate system this effect is authored in. Pass to keep the effect
+     * pixel-identical at its original design resolution while automatically
+     * scaling to the daemon's configured canvas size. Omit for pure-adaptive
+     * effects that use `ctx.canvas.width/height` directly.
+     */
+    designBasis?: DesignBasis
     /** Effect-defined presets — named control snapshots bundled with the effect. */
     presets?: PresetDef[]
 }
@@ -151,8 +170,7 @@ class GeneratedCanvasEffect extends CanvasEffect<Record<string, unknown>> {
         options: CanvasFnOptions,
     ) {
         super({
-            canvasHeight: options.height,
-            canvasWidth: options.width,
+            designBasis: options.designBasis,
             id: name.toLowerCase().replace(/\s+/g, '-'),
             name,
         })
@@ -207,8 +225,7 @@ interface CanvasDef {
     resolvedControls: ResolvedCanvasControl[]
     description?: string
     author?: string
-    width?: number
-    height?: number
+    designBasis?: DesignBasis
     presets?: PresetDef[]
 }
 
@@ -243,12 +260,11 @@ export function canvas(
             author: opts.author,
             controls,
             description: opts.description,
-            height: opts.height,
+            designBasis: opts.designBasis,
             name,
             presets: opts.presets,
             resolvedControls: resolved,
             type: 'canvas',
-            width: opts.width,
         })
         return
     }
@@ -272,12 +288,11 @@ canvas.stateful = function stateful(
             author: opts.author,
             controls,
             description: opts.description,
-            height: opts.height,
+            designBasis: opts.designBasis,
             name,
             presets: opts.presets,
             resolvedControls: resolved,
             type: 'canvas',
-            width: opts.width,
         })
         return
     }

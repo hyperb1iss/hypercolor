@@ -1060,7 +1060,7 @@ gantt
 | **FFT computation** | < 0.5 ms | Deterministic | 1024-point FFT is ~20 microseconds on modern hardware. Negligible. |
 | **Feature extraction** | < 1 ms | Deterministic | Mel bands, chromagram, spectral features, beat detection. All O(N) on FFT output. |
 | **Effect render** | 1-5 ms | Variable | wgpu shaders: < 1ms. Servo Canvas 2D: ~3-5ms. WebGL: ~2-4ms. |
-| **Pixel sampling** | < 0.5 ms | Deterministic | 320x200 canvas, bilinear sampling at LED positions. Trivial. |
+| **Pixel sampling** | < 0.5 ms | Deterministic | 640x480 canvas (default), bilinear sampling at LED positions. Still trivial. |
 | **USB HID write** | 5-10 ms | Semi-deterministic | PrismRGB: 48 packets + commit at ~125 microseconds each. Worst case with USB scheduling jitter. |
 | **WLED DDP** | 3-5 ms | Semi-deterministic | Single UDP packet for < 480 LEDs. Network latency on LAN. |
 | **Hue Entertainment** | 20-40 ms | Variable | DTLS encrypted UDP. Bridge processing. Unavoidable. |

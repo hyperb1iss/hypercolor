@@ -60,7 +60,7 @@ export {
 // ── Base Classes ────────────────────────────────────────────────────────
 
 export type { CanvasEffectConfig, EffectConfig, UniformValue, WebGLEffectConfig } from './effects'
-export { BaseEffect, CanvasEffect, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, WebGLEffect } from './effects'
+export { BaseEffect, CanvasEffect, WebGLEffect } from './effects'
 
 // ── Audio ───────────────────────────────────────────────────────────────
 
@@ -97,6 +97,7 @@ export { createDebugLogger, debug, printStartupBanner } from './utils'
 
 // ── Math ────────────────────────────────────────────────────────────────
 
+export type { CanvasSize, DesignBasis, ScaleContext } from './math'
 export {
     clamp,
     easeInCubic,
@@ -109,6 +110,7 @@ export {
     lerp,
     mix,
     saturate,
+    scaleContext,
     smoothApproach,
     smoothAsymmetric,
     smoothstep,

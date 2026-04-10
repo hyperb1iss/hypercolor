@@ -257,7 +257,7 @@ Browse, search, and preview all available effects.
 **Effect Browser content:**
 - **Effect list** (left pane) -- grouped by engine type (native/web/community), with search filter (`/` to activate)
 - **Preview pane** (right pane) -- canvas preview rendered as half-block pixels, effect metadata, inline parameter controls
-- **Canvas preview** -- a 24-column by 12-row half-block grid showing a downsampled view of the 320x200 effect canvas. Updates at the TUI frame rate
+- **Canvas preview** -- a 24-column by 12-row half-block grid showing a downsampled view of the effect canvas (640x480 by default). Updates at the TUI frame rate
 - **Interaction** -- `j/k` or arrows to browse list, `Enter` to activate, `Tab` to switch to preview pane for parameter editing
 
 ### 3.3 Effect Control

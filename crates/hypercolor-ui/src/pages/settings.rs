@@ -15,6 +15,7 @@ use crate::icons::*;
 const SECTION_IDS: &[&str] = &[
     "audio",
     "capture",
+    "rendering",
     "network",
     "session",
     "discovery",
@@ -242,6 +243,12 @@ pub fn SettingsPage() -> impl IntoView {
             separator_before: false,
         },
         TabEntry {
+            id: "rendering",
+            label: "Rendering",
+            icon: LuGauge,
+            separator_before: false,
+        },
+        TabEntry {
             id: "network",
             label: "Network",
             icon: LuGlobe,
@@ -396,6 +403,12 @@ pub fn SettingsPage() -> impl IntoView {
                                 style="animation: fade-in 0.4s ease-out 0.1s both"
                             >
                                 <CaptureSection config=config on_change=on_change on_reset=on_reset />
+                            </div>
+                            <div
+                                class="settings-card"
+                                style="animation: fade-in 0.4s ease-out 0.125s both"
+                            >
+                                <RenderingSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div
                                 class="settings-card"

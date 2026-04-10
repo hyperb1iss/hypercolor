@@ -571,6 +571,164 @@ pub fn DiscoverySection(
     }
 }
 
+// ── Rendering ──────────────────────────────────────────────────────────────
+
+/// Canvas resolution presets. A matching entry in the preset dropdown selects
+/// the exact WxH; "custom" reveals free-form width/height inputs.
+const CANVAS_PRESETS: &[(&str, u32, u32)] = &[
+    ("320x200", 320, 200),
+    ("480x320", 480, 320),
+    ("640x400", 640, 400),
+    ("640x480", 640, 480),
+    ("800x600", 800, 600),
+    ("1024x768", 1024, 768),
+    ("1280x800", 1280, 800),
+];
+
+fn canvas_preset_key(width: u32, height: u32) -> String {
+    for (label, w, h) in CANVAS_PRESETS {
+        if *w == width && *h == height {
+            return (*label).to_string();
+        }
+    }
+    "custom".to_string()
+}
+
+#[component]
+pub fn RenderingSection(
+    #[prop(into)] config: Signal<Option<HypercolorConfig>>,
+    on_change: Callback<(String, serde_json::Value)>,
+    on_reset: Callback<String>,
+) -> impl IntoView {
+    let target_fps =
+        Signal::derive(move || read_config(config, |cfg| cfg.daemon.target_fps.to_string()));
+    let canvas_width =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.canvas_width)));
+    let canvas_height =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.canvas_height)));
+    let canvas_preset = Signal::derive(move || {
+        read_config(config, |cfg| {
+            canvas_preset_key(cfg.daemon.canvas_width, cfg.daemon.canvas_height)
+        })
+    });
+    let render_acceleration = Signal::derive(move || {
+        read_config(config, |cfg| {
+            match cfg.effect_engine.render_acceleration_mode {
+                hypercolor_types::config::RenderAccelerationMode::Cpu => "cpu".to_string(),
+                hypercolor_types::config::RenderAccelerationMode::Auto => "auto".to_string(),
+                hypercolor_types::config::RenderAccelerationMode::Gpu => "gpu".to_string(),
+            }
+        })
+    });
+
+    // FpsTier values: Minimal(10), Low(20), Medium(30), High(45), Full(60).
+    let fps_tier_options = vec![
+        ("10".to_string(), "10".to_string()),
+        ("20".to_string(), "20".to_string()),
+        ("30".to_string(), "30".to_string()),
+        ("45".to_string(), "45".to_string()),
+        ("60".to_string(), "60".to_string()),
+    ];
+
+    let preset_options: Vec<(String, String)> = CANVAS_PRESETS
+        .iter()
+        .map(|(label, _, _)| ((*label).to_string(), (*label).to_string()))
+        .chain(std::iter::once((
+            "custom".to_string(),
+            "Custom…".to_string(),
+        )))
+        .collect();
+
+    let accel_options = vec![
+        ("cpu".to_string(), "CPU".to_string()),
+        ("auto".to_string(), "Auto (prefer GPU)".to_string()),
+        ("gpu".to_string(), "GPU (require)".to_string()),
+    ];
+
+    // Apply a preset by issuing two config writes. "custom" is a UI-only
+    // sentinel — don't echo it back to the daemon.
+    let apply_preset = Callback::new(move |(_, value): (String, serde_json::Value)| {
+        let Some(selected) = value.as_str() else {
+            return;
+        };
+        if selected == "custom" {
+            return;
+        }
+        if let Some((_, w, h)) = CANVAS_PRESETS
+            .iter()
+            .find(|(label, _, _)| *label == selected)
+        {
+            on_change.run(("daemon.canvas_width".to_string(), serde_json::json!(*w)));
+            on_change.run(("daemon.canvas_height".to_string(), serde_json::json!(*h)));
+        }
+    });
+
+    view! {
+        <section id="section-rendering" class="pt-5 pb-3 space-y-0">
+            <SectionHeader title="Rendering" icon=LuGauge />
+            <div class="text-xs text-fg-tertiary/50 -mt-2 mb-4">
+                "Frame rate, canvas resolution, and render acceleration for the lighting engine"
+            </div>
+            <SettingSegmented
+                label="Target FPS"
+                description="Render loop frame rate. 30 is the balanced default; 60 uses more CPU but gives smoother motion"
+                key="daemon.target_fps"
+                value=target_fps
+                options=Signal::stored(fps_tier_options)
+                on_change=on_change
+                numeric=true
+            />
+            <SettingDropdown
+                label="Canvas Resolution"
+                description="Internal render surface size. Higher values improve gradient smoothness on large layouts at the cost of CPU"
+                key="daemon.canvas_preset"
+                value=canvas_preset
+                options=Signal::stored(preset_options)
+                on_change=apply_preset
+                restart_required=true
+            />
+            <Show when=move || canvas_preset.get() == "custom">
+                <SettingNumberInput
+                    label="Canvas Width"
+                    description="Pixels wide"
+                    key="daemon.canvas_width"
+                    value=canvas_width
+                    on_change=on_change
+                    min=32.0 max=1920.0 step=16.0
+                    restart_required=true
+                />
+                <SettingNumberInput
+                    label="Canvas Height"
+                    description="Pixels tall"
+                    key="daemon.canvas_height"
+                    value=canvas_height
+                    on_change=on_change
+                    min=32.0 max=1080.0 step=16.0
+                    restart_required=true
+                />
+            </Show>
+            <SettingDropdown
+                label="Render Acceleration"
+                description="CPU is the safest default. Auto prefers GPU when available; GPU requires it (may fall back with a warning)"
+                key="effect_engine.render_acceleration_mode"
+                value=render_acceleration
+                options=Signal::stored(accel_options)
+                on_change=on_change
+                restart_required=true
+            />
+            <SectionReset section_label="Rendering" on_reset=Callback::new(move |()| {
+                for key in &[
+                    "daemon.target_fps",
+                    "daemon.canvas_width", "daemon.canvas_height",
+                    "effect_engine.render_acceleration_mode",
+                ] {
+                    on_reset.run(key.to_string());
+                }
+            }) />
+        </section>
+    }
+}
+
 // ── Developer ──────────────────────────────────────────────────────────────
 
 #[component]
@@ -584,12 +742,6 @@ pub fn DeveloperSection(
             format!("{:?}", cfg.daemon.log_level).to_lowercase()
         })
     });
-    let target_fps =
-        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.target_fps)));
-    let canvas_width =
-        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.canvas_width)));
-    let canvas_height =
-        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.canvas_height)));
     let extra_dirs = Signal::derive(move || {
         read_config(config, |cfg| {
             cfg.effect_engine
@@ -620,34 +772,6 @@ pub fn DeveloperSection(
                 options=Signal::stored(log_options)
                 on_change=on_change
             />
-            <SettingSlider
-                label="Target FPS"
-                description="Render loop frame rate for the lighting engine"
-                key="daemon.target_fps"
-                value=target_fps
-                on_change=on_change
-                min=1.0 max=120.0 step=1.0
-                decimals=0
-                integer=true
-            />
-            <SettingNumberInput
-                label="Canvas Width"
-                description="Internal render canvas width in pixels"
-                key="daemon.canvas_width"
-                value=canvas_width
-                on_change=on_change
-                min=32.0 max=1920.0 step=16.0
-                restart_required=true
-            />
-            <SettingNumberInput
-                label="Canvas Height"
-                description="Internal render canvas height in pixels"
-                key="daemon.canvas_height"
-                value=canvas_height
-                on_change=on_change
-                min=32.0 max=1080.0 step=16.0
-                restart_required=true
-            />
             <SettingPathList
                 label="Extra Effect Directories"
                 description="Additional directories to scan for custom effects"
@@ -657,8 +781,7 @@ pub fn DeveloperSection(
             />
             <SectionReset section_label="Developer" on_reset=Callback::new(move |()| {
                 for key in &[
-                    "daemon.log_level", "daemon.target_fps",
-                    "daemon.canvas_width", "daemon.canvas_height",
+                    "daemon.log_level",
                     "effect_engine.extra_effect_dirs",
                 ] {
                     on_reset.run(key.to_string());

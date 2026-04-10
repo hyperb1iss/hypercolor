@@ -1,5 +1,7 @@
 import type { DrawFn } from '@hypercolor/sdk'
-import { canvas, combo, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, normalizeSpeed, num } from '@hypercolor/sdk'
+import { canvas, combo, normalizeSpeed, num, scaleContext } from '@hypercolor/sdk'
+
+const NYAN_DESIGN_BASIS = { height: 200, width: 320 } as const
 import { CAT_FRAME_SVG_TEMPLATES, CAT_SPRITE_HEIGHT, CAT_SPRITE_WIDTH } from './cat-frames'
 
 type MotionMode = 'Original' | 'Dash' | 'Hyper'
@@ -202,8 +204,6 @@ const CSS_SPARK_PHASES: readonly (readonly RectSpec[])[] = [
 const CAT_FRAME_RATE = 1 / 0.07
 const RAINBOW_STEP_RATE = 1 / 0.35
 const CSS_CAT_HEIGHT = 122
-const DESIGN_HEIGHT = DEFAULT_CANVAS_HEIGHT
-const DESIGN_WIDTH = DEFAULT_CANVAS_WIDTH
 const SPRITE_SCALE_BASE = 0.55
 const CAT_RAINBOW_ANCHOR_X = 8
 const FACE_FRAME_LAYOUTS = [
@@ -1029,7 +1029,7 @@ canvas(
                 stars = buildStars(starCount)
             }
 
-            const sceneScale = Math.max(0.75, Math.min(width / DESIGN_WIDTH, height / DESIGN_HEIGHT))
+            const sceneScale = Math.max(0.75, scaleContext({ height, width }, NYAN_DESIGN_BASIS).scale)
             const unit = Math.max(1, Math.round(6 * SPRITE_SCALE_BASE * sceneScale * (scaleControl / 100)))
             const cssScale = unit / 6
             const spriteScale = (CSS_CAT_HEIGHT * cssScale) / CAT_SPRITE_HEIGHT
@@ -1076,6 +1076,7 @@ canvas(
     {
         description:
             'A tiny pop-tart space cat with sweet presets, playful faces, and stars that can go from cozy to gloriously over the top.',
+        designBasis: NYAN_DESIGN_BASIS,
         presets: [
             {
                 name: 'Original Loop',

@@ -85,7 +85,7 @@ Single endpoint at `/api/v1/ws`. Five channel types:
 |---------|------|--------|
 | `events` | State changes (effect applied, device connected) | JSON |
 | `frames` | LED color output per device | Binary |
-| `canvas` | Render canvas pixels (320x200) | Binary (header `0x03`) |
+| `canvas` | Render canvas pixels (default 640x480, configurable) | Binary (header `0x03`) |
 | `spectrum` | Audio analysis (FFT, beats) | JSON |
 | `metrics` | Performance telemetry (FPS, frame times) | JSON |
 

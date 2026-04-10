@@ -110,7 +110,7 @@ fn default_edge_behavior() -> EdgeBehavior {
 
 ### Invariants
 
-- `canvas_width` and `canvas_height` MUST be positive non-zero. Standard canvas is 320x200.
+- `canvas_width` and `canvas_height` MUST be positive non-zero. Default canvas is 640x480 (user-tunable via `daemon.canvas_width` / `daemon.canvas_height`).
 - Every `DeviceZone` in `zones` MUST have a unique `id`. Duplicate IDs are a deserialization error.
 - `zones` may be empty (valid layout with no devices mapped -- useful as a starting point).
 - When `spaces` is `Some`, every zone's `id` SHOULD appear in exactly one space's `zone_ids` list. Orphaned zones (not in any space) are permitted but produce a warning.

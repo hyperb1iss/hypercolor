@@ -8,7 +8,7 @@
 
 Hypercolor is the open-source, Linux-native RGB lighting engine that doesn't exist yet. A daemon-first lighting engine that runs HTML/Canvas effects at 60fps, samples pixels at LED positions, and pushes colors to every RGB device in your setup — WLED strips, Philips Hue bulbs, and raw USB HID devices like PrismRGB.
 
-**Core premise:** Effects are web pages. A 320×200 canvas renders visual effects (shaders, animations, particle systems). A spatial mapping engine samples that canvas at each LED's position. Color data flows to hardware over multiple transport protocols. The entire system is controllable via a gorgeous web UI, a snappy TUI, a scriptable CLI, or pure headless daemon mode.
+**Core premise:** Effects are web pages. A configurable canvas (640×480 by default, user-tunable) renders visual effects (shaders, animations, particle systems). A spatial mapping engine samples that canvas at each LED's position using normalized coordinates, so effects stay resolution-independent. Color data flows to hardware over multiple transport protocols. The entire system is controllable via a gorgeous web UI, a snappy TUI, a scriptable CLI, or pure headless daemon mode.
 
 ---
 
@@ -30,7 +30,7 @@ graph TD
             servo["Servo Path<br/>(HTML/Canvas/WebGL)<br/>Lightscript API compatibility<br/>Runs HTML effects unmodified"]
         end
 
-        RGBA["RGBA pixel buffer (320x200)"]
+        RGBA["RGBA pixel buffer (640x480 default, configurable)"]
 
         subgraph spatial["Spatial Layout Engine"]
             SpatialDesc["Canvas pixel coords → physical LED positions<br/>Per-zone sampling with interpolation<br/>Arbitrary topology: strips, fans, rings, matrices, Strimers"]
@@ -268,7 +268,7 @@ pub struct WgpuRenderer {
     queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
     staging_buffer: wgpu::Buffer,       // MAP_READ for pixel readback
-    output_texture: wgpu::Texture,      // Render target (320×200)
+    output_texture: wgpu::Texture,      // Render target sized from config
 }
 
 impl WgpuRenderer {
@@ -277,12 +277,13 @@ impl WgpuRenderer {
         // 2. Execute render/compute pass
         // 3. Copy output texture → staging buffer
         // 4. Map staging buffer → CPU-accessible RGBA pixels
-        // Returns Canvas { width: 320, height: 200, pixels: Vec<u8> }
+        // Returns Canvas { width, height, pixels: Vec<u8> } sized from config
     }
 }
 ```
 
-At 320×200, readback is 256KB/frame — trivially fast. wgpu abstracts Vulkan/OpenGL, so it works everywhere.
+Readback scales with the configured canvas: ~256 KB/frame at 320×200, ~1.17 MB/frame at the
+640×480 default — both trivially fast. wgpu abstracts Vulkan/OpenGL, so it works everywhere.
 
 #### Path 2: Servo Embedded (Compatibility Path)
 
@@ -759,7 +760,7 @@ Servo is a git dependency (not on crates.io). Requires pinned revision + matchin
 ### Phase 0: Foundation
 - Cargo workspace scaffold
 - `hypercolor-core` with effect engine trait, device backend trait, event bus
-- wgpu renderer: load WGSL shader → render 320×200 → read pixels
+- wgpu renderer: load WGSL shader → render the configured canvas → read pixels
 - Basic spatial sampler (linear strip mapping)
 - DDP output to one WLED device
 - CLI: `hypercolor daemon` + `hypercolor set <shader>`
@@ -808,5 +809,5 @@ Servo is a git dependency (not on crates.io). Requires pinned revision + matchin
 | **Audio** | cpal + spectrum-analyzer | Cross-platform capture, efficient FFT |
 | **IPC** | tokio broadcast/watch channels | Multi-consumer events + latest-value state — perfect for real-time LED data |
 | **Config format** | TOML | Rust ecosystem standard, human-readable |
-| **Canvas resolution** | 320×200 | LightScript standard; 256KB/frame readback is negligible |
+| **Canvas resolution** | 640×480 default, configurable | Historical LightScript SDK grid is 320×200; engine defaults to 640×480 for smoother gradients on large layouts. Readback cost is still negligible (≤1.2 MB/frame). |
 | **License** | MIT/Apache-2.0 (dual) | Maximum openness, GPL-2.0 components isolated behind process boundaries |

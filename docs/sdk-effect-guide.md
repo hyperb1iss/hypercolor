@@ -652,7 +652,7 @@ The Hypercolor runtime loads effects as self-contained HTML files. The `@hyperco
 
 ### Canvas Resolution
 
-The standard canvas is **320 x 200 pixels**. Effects may use any resolution, but this is the default that the spatial engine samples from. The runtime sets `window.engine.width` and `window.engine.height` to the active canvas dimensions.
+The daemon renders at whatever canvas resolution is configured (640x480 by default; users tune this in Settings → Rendering). The SDK auto-resizes your canvas every frame to match — read `ctx.canvas.width` / `ctx.canvas.height` inside your draw function and never hardcode dimensions. For effects ported from the legacy 320x200 SDK grid, import `scaleContext` from `@hypercolor/sdk` and pass `{ width: 320, height: 200 }` as the design basis to get scale helpers (`s.dx(x)`, `s.dy(y)`, `s.dw(w)`, `s.dh(h)`, `s.ds(value)`, `s.scale`).
 
 ### Metadata Tags
 

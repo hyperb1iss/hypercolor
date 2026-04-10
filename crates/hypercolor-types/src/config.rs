@@ -30,10 +30,10 @@ mod defaults {
         30
     }
     pub fn canvas_width() -> u32 {
-        320
+        640
     }
     pub fn canvas_height() -> u32 {
-        200
+        480
     }
     pub fn max_devices() -> u32 {
         32

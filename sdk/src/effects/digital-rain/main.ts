@@ -1,4 +1,6 @@
-import { canvas, clamp, color, combo, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, num, toggle } from '@hypercolor/sdk'
+import { canvas, clamp, color, combo, num, scaleContext, toggle } from '@hypercolor/sdk'
+
+const RAIN_DESIGN_BASIS = { height: 200, width: 320 } as const
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -137,9 +139,7 @@ function randomGlyphIndex(): number {
 }
 
 function canvasScale(width: number, height: number): number {
-    const sx = width / DEFAULT_CANVAS_WIDTH
-    const sy = height / DEFAULT_CANVAS_HEIGHT
-    return Math.max(0.5, Math.min(sx, sy))
+    return Math.max(0.5, scaleContext({ height, width }, RAIN_DESIGN_BASIS).scale)
 }
 
 function hexToRgb(hex: string): Rgb {
@@ -487,6 +487,7 @@ export default canvas.stateful(
     {
         description:
             'Katakana glyphs cascade in phosphor-bright columns — discrete streaks step through darkness, each stream crowned in white heat',
+        designBasis: RAIN_DESIGN_BASIS,
         presets: [
             {
                 controls: {

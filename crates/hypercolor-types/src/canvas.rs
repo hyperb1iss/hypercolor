@@ -11,10 +11,10 @@ use serde::{Deserialize, Serialize};
 // ── Canvas Constants ───────────────────────────────────────────────────────
 
 /// The default canvas width used by the render pipeline.
-pub const DEFAULT_CANVAS_WIDTH: u32 = 320;
+pub const DEFAULT_CANVAS_WIDTH: u32 = 640;
 
 /// The default canvas height used by the render pipeline.
-pub const DEFAULT_CANVAS_HEIGHT: u32 = 200;
+pub const DEFAULT_CANVAS_HEIGHT: u32 = 480;
 
 /// Bytes per pixel in the RGBA format.
 pub const BYTES_PER_PIXEL: usize = 4;

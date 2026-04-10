@@ -1,4 +1,6 @@
-import { canvas, color, combo, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, num } from '@hypercolor/sdk'
+import { canvas, color, combo, num, scaleContext } from '@hypercolor/sdk'
+
+const ROLLER_DESIGN_BASIS = { height: 200, width: 320 } as const
 
 type ThemeName = 'Blacklight' | 'Bus Seat' | 'Laser Lime' | 'Cotton Candy' | 'Arcade Heat' | 'Custom'
 type SceneName = 'Pattern 1' | 'Pattern 2' | 'Pattern 3'
@@ -600,9 +602,7 @@ function drawPatternOne(
     moveScale: number,
     glow: number,
 ): void {
-    const sx = w / DEFAULT_CANVAS_WIDTH
-    const sy = h / DEFAULT_CANVAS_HEIGHT
-    const scale = Math.min(sx, sy)
+    const { scale, sx, sy } = scaleContext({ height: h, width: w }, ROLLER_DESIGN_BASIS)
     const lineWidth = Math.max(8, 16 * scale)
     const bandY = [0.18, 0.46, 0.74]
 
@@ -881,6 +881,7 @@ export default canvas.stateful(
         author: 'Hypercolor',
         description:
             'Step onto blacklight carpet geometry — retro arcade patterns glow under ultraviolet, pulsing and shifting in warm nostalgic haze',
+        designBasis: ROLLER_DESIGN_BASIS,
         presets: [
             {
                 controls: {
