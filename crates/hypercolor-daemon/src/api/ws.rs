@@ -709,9 +709,6 @@ async fn handle_socket(
     let event_rx = state.event_bus.subscribe_all();
     let frame_rx = state.event_bus.frame_receiver();
     let spectrum_rx = state.event_bus.spectrum_receiver();
-    let canvas_rx = state.preview_runtime.canvas_receiver();
-    let screen_canvas_rx = state.preview_runtime.screen_canvas_receiver();
-
     // Split outbound traffic: both queues are bounded so slow clients cannot
     // grow daemon memory without limit.
     let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<String>(WS_BUFFER_SIZE);
@@ -737,7 +734,7 @@ async fn handle_socket(
     let canvas_subs = Arc::clone(&subscriptions);
     let canvas_power_rx = state.power_state.subscribe();
     let canvas_relay_handle = tokio::spawn(relay_canvas(
-        canvas_rx,
+        Arc::clone(&state.preview_runtime),
         canvas_power_rx,
         json_tx.clone(),
         binary_tx.clone(),
@@ -745,7 +742,7 @@ async fn handle_socket(
     ));
     let screen_canvas_subs = Arc::clone(&subscriptions);
     let screen_canvas_relay_handle = tokio::spawn(relay_screen_canvas(
-        screen_canvas_rx,
+        Arc::clone(&state.preview_runtime),
         json_tx.clone(),
         binary_tx.clone(),
         screen_canvas_subs,
@@ -999,14 +996,14 @@ async fn relay_spectrum(
 
 /// Relay raw canvas updates to the WebSocket client.
 async fn relay_canvas(
-    mut canvas_rx: watch::Receiver<hypercolor_core::bus::CanvasFrame>,
+    preview_runtime: Arc<crate::preview_runtime::PreviewRuntime>,
     mut power_state_rx: watch::Receiver<OutputPowerState>,
     json_tx: tokio::sync::mpsc::Sender<String>,
     binary_tx: tokio::sync::mpsc::Sender<Bytes>,
     subscriptions: Arc<RwLock<SubscriptionState>>,
 ) {
+    let mut canvas_rx = None::<watch::Receiver<hypercolor_core::bus::CanvasFrame>>;
     let mut latest_canvas = None::<hypercolor_core::bus::CanvasFrame>;
-    let mut latest_power_state = *power_state_rx.borrow();
     let mut last_sent_frame_number: Option<u32> = None;
     let mut last_sent_brightness_bits: Option<u32> = None;
     let mut active_fps = 15_u32;
@@ -1022,27 +1019,28 @@ async fn relay_canvas(
                 None
             }
         };
+        sync_preview_receiver(&mut canvas_rx, canvas_config.is_some(), || {
+            preview_runtime.canvas_receiver()
+        });
 
         let Some(canvas_config) = canvas_config else {
             last_sent_frame_number = None;
             last_sent_brightness_bits = None;
             latest_canvas = None;
             tokio::select! {
-                changed = canvas_rx.changed() => {
-                    if changed.is_err() {
-                        break;
-                    }
-                    let _ = canvas_rx.borrow_and_update();
-                }
                 changed = power_state_rx.changed() => {
                     if changed.is_err() {
                         break;
                     }
-                    latest_power_state = *power_state_rx.borrow_and_update();
+                    let _ = power_state_rx.borrow_and_update();
                 }
+                _ = tokio::time::sleep(WS_METRICS_IDLE_POLL_INTERVAL) => {}
             }
             continue;
         };
+        let canvas_rx = canvas_rx
+            .as_mut()
+            .expect("preview canvas receiver should exist while subscribed");
 
         if canvas_config.fps != active_fps {
             active_fps = canvas_config.fps.max(1);
@@ -1064,13 +1062,13 @@ async fn relay_canvas(
                 if changed.is_err() {
                     break;
                 }
-                latest_power_state = *power_state_rx.borrow_and_update();
+                let _ = power_state_rx.borrow_and_update();
             }
             _ = ticker.tick() => {
                 let Some(latest_canvas) = latest_canvas.as_ref() else {
                     continue;
                 };
-                let brightness = latest_power_state.effective_brightness();
+                let brightness = power_state_rx.borrow().effective_brightness();
                 let brightness_bits = brightness.to_bits();
                 if last_sent_frame_number == Some(latest_canvas.frame_number)
                     && last_sent_brightness_bits == Some(brightness_bits)
@@ -1100,11 +1098,12 @@ async fn relay_canvas(
 
 /// Relay raw screen-source canvas updates to the WebSocket client.
 async fn relay_screen_canvas(
-    mut canvas_rx: watch::Receiver<hypercolor_core::bus::CanvasFrame>,
+    preview_runtime: Arc<crate::preview_runtime::PreviewRuntime>,
     json_tx: tokio::sync::mpsc::Sender<String>,
     binary_tx: tokio::sync::mpsc::Sender<Bytes>,
     subscriptions: Arc<RwLock<SubscriptionState>>,
 ) {
+    let mut canvas_rx = None::<watch::Receiver<hypercolor_core::bus::CanvasFrame>>;
     let mut latest_canvas = None::<hypercolor_core::bus::CanvasFrame>;
     let mut last_sent_frame_number: Option<u32> = None;
     let mut active_fps = 15_u32;
@@ -1120,15 +1119,18 @@ async fn relay_screen_canvas(
                 None
             }
         };
+        sync_preview_receiver(&mut canvas_rx, canvas_config.is_some(), || {
+            preview_runtime.screen_canvas_receiver()
+        });
 
         let Some(canvas_config) = canvas_config else {
             latest_canvas = None;
-            if canvas_rx.changed().await.is_err() {
-                break;
-            }
-            let _ = canvas_rx.borrow_and_update();
+            tokio::time::sleep(WS_METRICS_IDLE_POLL_INTERVAL).await;
             continue;
         };
+        let canvas_rx = canvas_rx
+            .as_mut()
+            .expect("screen preview receiver should exist while subscribed");
 
         if canvas_config.fps != active_fps {
             active_fps = canvas_config.fps.max(1);
@@ -1170,6 +1172,20 @@ async fn relay_screen_canvas(
                 last_sent_frame_number = Some(latest_canvas.frame_number);
             }
         }
+    }
+}
+
+fn sync_preview_receiver(
+    receiver: &mut Option<watch::Receiver<hypercolor_core::bus::CanvasFrame>>,
+    subscribed: bool,
+    subscribe: impl FnOnce() -> watch::Receiver<hypercolor_core::bus::CanvasFrame>,
+) {
+    if subscribed {
+        if receiver.is_none() {
+            *receiver = Some(subscribe());
+        }
+    } else {
+        let _ = receiver.take();
     }
 }
 
@@ -2261,12 +2277,13 @@ mod tests {
         command_response_from_http, dispatch_command, encode_cached_canvas_preview_binary,
         encode_canvas_preview_binary, encode_frame_binary, encode_spectrum_binary,
         event_message_parts, filter_frame_zones, normalize_command_path, parse_channels,
-        parse_command_method, should_relay_event, to_snake_case, try_enqueue_json,
-        unique_sorted_channel_names, ws_capabilities,
+        parse_command_method, should_relay_event, sync_preview_receiver, to_snake_case,
+        try_enqueue_json, unique_sorted_channel_names, ws_capabilities,
     };
     use crate::api::AppState;
     use crate::api::security::{RequestAuthContext, SecurityState};
     use crate::performance::{FrameTimeline, LatestFrameMetrics};
+    use crate::preview_runtime::PreviewRuntime;
     use axum::response::IntoResponse;
     use hypercolor_core::bus::CanvasFrame;
     use hypercolor_types::canvas::{Canvas, Rgba, linear_to_srgb_u8, srgb_u8_to_linear};
@@ -2275,6 +2292,7 @@ mod tests {
     };
     use std::collections::HashSet;
     use std::sync::{Arc, LazyLock, Mutex as StdMutex};
+    use tokio::sync::watch;
 
     static WS_CACHE_TEST_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
 
@@ -2549,6 +2567,37 @@ mod tests {
         assert_eq!(rx.recv().await.as_deref(), Some("first"));
         drop(tx);
         assert!(rx.recv().await.is_none());
+    }
+
+    #[test]
+    fn sync_preview_receiver_subscribes_only_while_requested() {
+        let runtime = PreviewRuntime::new();
+        let mut receiver = None::<watch::Receiver<CanvasFrame>>;
+
+        sync_preview_receiver(&mut receiver, true, || runtime.canvas_receiver());
+        assert!(receiver.is_some());
+        assert_eq!(runtime.canvas_receiver_count(), 1);
+
+        sync_preview_receiver(&mut receiver, true, || runtime.canvas_receiver());
+        assert_eq!(runtime.canvas_receiver_count(), 1);
+
+        sync_preview_receiver(&mut receiver, false, || runtime.canvas_receiver());
+        assert!(receiver.is_none());
+        assert_eq!(runtime.canvas_receiver_count(), 0);
+    }
+
+    #[test]
+    fn sync_preview_receiver_drops_screen_subscription_cleanly() {
+        let runtime = PreviewRuntime::new();
+        let mut receiver = None::<watch::Receiver<CanvasFrame>>;
+
+        sync_preview_receiver(&mut receiver, true, || runtime.screen_canvas_receiver());
+        assert!(receiver.is_some());
+        assert_eq!(runtime.screen_canvas_receiver_count(), 1);
+
+        sync_preview_receiver(&mut receiver, false, || runtime.screen_canvas_receiver());
+        assert!(receiver.is_none());
+        assert_eq!(runtime.screen_canvas_receiver_count(), 0);
     }
 
     #[test]
