@@ -77,6 +77,7 @@ pub(crate) fn publish_frame_updates(
     timing: FrameTiming,
 ) -> PublishFrameStats {
     let publish_start = Instant::now();
+    let event_subscribers = state.event_bus.subscriber_count();
     let mut full_frame_copy_count = 0_u32;
     let mut full_frame_copy_bytes = 0_u32;
     recycled_frame.frame_number = frame_number;
@@ -91,7 +92,13 @@ pub(crate) fn publish_frame_updates(
         .event_bus
         .spectrum_sender()
         .send(spectrum_from_audio(audio, elapsed_ms));
-    maybe_publish_audio_level_event(state, audio, elapsed_ms, last_audio_level_update_ms);
+    maybe_publish_audio_level_event(
+        state,
+        audio,
+        elapsed_ms,
+        last_audio_level_update_ms,
+        event_subscribers > 0,
+    );
     let canvas_frame = if let Some(surface) = frame_surface {
         CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
     } else {
@@ -104,26 +111,25 @@ pub(crate) fn publish_frame_updates(
         }
         frame
     };
-    let _ = state.event_bus.canvas_sender().send(canvas_frame.clone());
     state
         .preview_runtime
         .record_canvas_publication(&canvas_frame);
+    let _ = state.event_bus.canvas_sender().send(canvas_frame);
     let screen_frame = if let Some(surface) = screen_preview_surface {
         CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
     } else {
         CanvasFrame::empty()
     };
-    let _ = state
-        .event_bus
-        .screen_canvas_sender()
-        .send(screen_frame.clone());
     state
         .preview_runtime
         .record_screen_canvas_publication(&screen_frame);
-    state.event_bus.publish(HypercolorEvent::FrameRendered {
-        frame_number,
-        timing,
-    });
+    let _ = state.event_bus.screen_canvas_sender().send(screen_frame);
+    if event_subscribers > 0 {
+        state.event_bus.publish(HypercolorEvent::FrameRendered {
+            frame_number,
+            timing,
+        });
+    }
     PublishFrameStats {
         elapsed_us: micros_u32(publish_start.elapsed()),
         full_frame_copy_count,
@@ -136,7 +142,12 @@ fn maybe_publish_audio_level_event(
     audio: &AudioData,
     elapsed_ms: u32,
     last_audio_level_update_ms: &mut Option<u32>,
+    has_event_subscribers: bool,
 ) {
+    if !has_event_subscribers {
+        return;
+    }
+
     if last_audio_level_update_ms.is_some_and(|last_sent| {
         elapsed_ms.saturating_sub(last_sent) < AUDIO_LEVEL_EVENT_INTERVAL_MS
     }) {
