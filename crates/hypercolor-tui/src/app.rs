@@ -888,15 +888,12 @@ impl App {
         let canvas_area = Rect::new(area.x, area.y, area.width, area.height - 1);
         let info_area = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
 
-        // Render canvas — use the live ratatui-image protocol if available
-        // (Kitty graphics on Ghostty, Sixel on supporting terminals, halfblocks
-        // elsewhere). Falls through to the legacy half-block widget if no
-        // protocol has been built yet.
+        // Render canvas via the live ratatui-image protocol — Kitty graphics
+        // on Ghostty/Kitty, Sixel on supporting terminals, halfblocks elsewhere.
+        // Picker is auto-selected at startup so this branch always works once
+        // a frame has arrived.
         if let Some(protocol) = self.canvas_protocol.as_mut() {
             frame.render_stateful_widget(StatefulImage::default(), canvas_area, protocol);
-        } else if let Some(cf) = &self.state.canvas_frame {
-            let canvas = crate::widgets::HalfBlockCanvas::new(&cf.pixels, cf.width, cf.height);
-            frame.render_widget(canvas, canvas_area);
         } else {
             // No canvas — fill with dark background
             let block = Block::default().style(Style::default().bg(Color::Rgb(20, 20, 30)));

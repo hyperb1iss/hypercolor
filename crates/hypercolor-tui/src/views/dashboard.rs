@@ -14,7 +14,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::action::Action;
 use crate::component::Component;
 use crate::state::{CanvasFrame, ConnectionStatus, DaemonState, DeviceSummary, EffectSummary};
-use crate::widgets::{ParamSlider, Split, SplitDirection};
+use crate::widgets::{ParamSlider, Split, SplitDirection, aspect_fit};
 
 // ── SilkCircuit Neon palette ───────────────────────────────────────────
 
@@ -456,12 +456,15 @@ impl DashboardView {
             return;
         }
 
-        // Always record the inner area so App's overlay knows where to draw.
-        self.preview_inner.set(Some(inner));
-
-        if self.canvas_frame.is_none() {
-            // No data yet — show a centered "no signal" hint. App's image
-            // overlay will be a no-op since canvas_protocol is also None.
+        if let Some(cf) = &self.canvas_frame {
+            // Aspect-fit the canvas inside the inner area so the live image
+            // overlay (rendered by App) fills exactly its preserved-ratio rect
+            // without leaving empty pads on one axis.
+            let fitted = aspect_fit(cf.width, cf.height, inner);
+            self.preview_inner.set(Some(fitted));
+        } else {
+            // No data yet — clear the cached rect and show a centered hint.
+            self.preview_inner.set(None);
             let placeholder = Paragraph::new(Line::from(Span::styled(
                 "No canvas data",
                 Style::default().fg(Color::Rgb(50, 50, 70)),

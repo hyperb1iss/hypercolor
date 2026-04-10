@@ -18,7 +18,7 @@ use crate::action::Action;
 use crate::component::Component;
 use crate::state::{ControlDefinition, ControlValue, EffectSummary};
 use crate::widgets::{
-    ColorPickerPopup, ParamSlider, Split, SplitDirection, hsl_to_rgb, rgb_to_hsl,
+    ColorPickerPopup, ParamSlider, Split, SplitDirection, aspect_fit, hsl_to_rgb, rgb_to_hsl,
 };
 
 // ── SilkCircuit Neon palette ───────────────────────────────────────────
@@ -1300,32 +1300,6 @@ fn adjust_hsl_channel(hsl: &mut [f32; 3], channel: usize, delta: f32) {
 /// Compute the largest sub-rect of `area` that preserves `src_w:src_h` aspect ratio.
 /// Accounts for half-block rendering (2 vertical pixels per terminal row).
 #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
-fn aspect_fit(src_w: u16, src_h: u16, area: Rect) -> Rect {
-    if src_w == 0 || src_h == 0 || area.width == 0 || area.height == 0 {
-        return area;
-    }
-    let sw = u32::from(src_w);
-    let sh = u32::from(src_h);
-    let tw = u32::from(area.width);
-    let th = u32::from(area.height);
-
-    // Each terminal row = 2 pixel rows (half-block)
-    let fit_h_pixels = sh * tw / sw;
-    let fit_h_rows = fit_h_pixels.div_ceil(2);
-
-    let (rw, rh) = if fit_h_rows <= th {
-        (tw as u16, fit_h_rows as u16)
-    } else {
-        let th2 = th * 2;
-        let fit_w = sw * th2 / sh;
-        (fit_w.min(tw) as u16, th as u16)
-    };
-
-    let x = area.x + (area.width.saturating_sub(rw)) / 2;
-    let y = area.y + (area.height.saturating_sub(rh)) / 2;
-    Rect::new(x, y, rw, rh)
-}
-
 fn rect_contains(r: Rect, col: u16, row: u16) -> bool {
     col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
 }
