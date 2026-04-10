@@ -253,10 +253,7 @@ fn ScreenCastFrameWidget(
         accent_rgb
     );
     let preview_dot_rgb = accent_rgb.clone();
-    let label_style = format!(
-        "color: rgba({}, 0.56); letter-spacing: 0.14em;",
-        accent_rgb
-    );
+    let label_style = format!("color: rgba({}, 0.56); letter-spacing: 0.14em;", accent_rgb);
     let pill_style = format!(
         "border-color: rgba({0}, 0.12); background: rgba({0}, 0.08); box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);",
         accent_rgb
@@ -310,25 +307,23 @@ fn ScreenCastFrameWidget(
         }
     });
 
-    let start_interaction = Callback::new(move |(handle, ev): (FrameHandle, web_sys::MouseEvent)| {
-        let start_rect = frame_rect.get_untracked();
-        ev.prevent_default();
-        ev.stop_propagation();
-        set_interaction.set(Some(ScreenCastInteractionState {
-            handle,
-            start_rect,
-            start_client_x: f64::from(ev.client_x()),
-            start_client_y: f64::from(ev.client_y()),
-        }));
-    });
+    let start_interaction =
+        Callback::new(move |(handle, ev): (FrameHandle, web_sys::MouseEvent)| {
+            let start_rect = frame_rect.get_untracked();
+            ev.prevent_default();
+            ev.stop_propagation();
+            set_interaction.set(Some(ScreenCastInteractionState {
+                handle,
+                start_rect,
+                start_client_x: f64::from(ev.client_x()),
+                start_client_y: f64::from(ev.client_y()),
+            }));
+        });
 
     let reset_frame = {
         let on_change = on_change.clone();
         move |_| {
-            emit_screen_cast_frame_update(
-                &on_change,
-                FrameRect::new(0.0, 0.0, 1.0, 1.0),
-            );
+            emit_screen_cast_frame_update(&on_change, FrameRect::new(0.0, 0.0, 1.0, 1.0));
         }
     };
 
@@ -657,9 +652,12 @@ fn is_screen_cast_frame_control(control_id: &str) -> bool {
     SCREEN_CAST_FRAME_CONTROL_IDS.contains(&control_id)
 }
 
-fn screen_cast_frame_config(items: &[(ControlDefinition, String)]) -> Option<ScreenCastFrameConfig> {
+fn screen_cast_frame_config(
+    items: &[(ControlDefinition, String)],
+) -> Option<ScreenCastFrameConfig> {
     let find = |control_id: &str| {
-        items.iter()
+        items
+            .iter()
             .find_map(|(def, _)| (def.control_id() == control_id).then_some(def))
     };
 

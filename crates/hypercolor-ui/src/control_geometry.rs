@@ -55,7 +55,12 @@ pub(crate) fn drag_frame_rect(
     min_height: f32,
 ) -> FrameRect {
     clamp_frame_rect(
-        FrameRect::new(start.x + delta_x, start.y + delta_y, start.width, start.height),
+        FrameRect::new(
+            start.x + delta_x,
+            start.y + delta_y,
+            start.width,
+            start.height,
+        ),
         min_width,
         min_height,
     )

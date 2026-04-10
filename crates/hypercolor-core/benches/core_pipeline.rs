@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::hint::black_box;
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -9,8 +10,9 @@ use hypercolor_core::bus::CanvasFrame;
 use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend};
 use hypercolor_core::effect::builtin::{
     ColorWaveRenderer, GradientRenderer, RainbowRenderer, SolidColorRenderer,
+    register_builtin_effects,
 };
-use hypercolor_core::effect::{EffectRenderer, FrameInput};
+use hypercolor_core::effect::{EffectPool, EffectRegistry, EffectRenderer, FrameInput};
 use hypercolor_core::input::InteractionData;
 use hypercolor_core::input::audio::beat::{BeatDetector, BeatFrame};
 use hypercolor_core::input::audio::fft::FftPipeline;
@@ -18,8 +20,11 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
+use hypercolor_types::effect::{
+    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
+};
 use hypercolor_types::event::ZoneColors;
+use hypercolor_types::scene::{RenderGroup, RenderGroupId};
 use hypercolor_types::spatial::{
     Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
@@ -168,6 +173,40 @@ fn layout_with_zone(zone: DeviceZone) -> SpatialLayout {
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
         version: 1,
+    }
+}
+
+fn registry_with_builtins() -> EffectRegistry {
+    let mut registry = EffectRegistry::new(Vec::new());
+    register_builtin_effects(&mut registry);
+    registry
+}
+
+fn builtin_effect_id(registry: &EffectRegistry, stem: &str) -> EffectId {
+    registry
+        .iter()
+        .find_map(|(id, entry)| (entry.metadata.source.source_stem() == Some(stem)).then_some(*id))
+        .expect("builtin effect should be registered")
+}
+
+fn render_group(
+    zone_id: &str,
+    device_id: &str,
+    led_count: u32,
+    color: [f32; 4],
+    effect_id: EffectId,
+) -> RenderGroup {
+    RenderGroup {
+        id: RenderGroupId::new(),
+        name: zone_id.to_owned(),
+        description: None,
+        effect_id: Some(effect_id),
+        controls: HashMap::from([("color".to_owned(), ControlValue::Color(color))]),
+        preset_id: None,
+        layout: layout_with_zone(bench_routing_zone(zone_id, device_id, led_count, None)),
+        brightness: 1.0,
+        enabled: true,
+        color: None,
     }
 }
 
@@ -463,6 +502,69 @@ fn bench_spatial_sampling(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_render_groups(c: &mut Criterion) {
+    let mut group = c.benchmark_group("core_render_groups");
+    let registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+
+    for group_count in [2_usize, 4_usize] {
+        let groups = (0..group_count)
+            .map(|index| {
+                let color = match index % 4 {
+                    0 => [1.0, 0.0, 0.0, 1.0],
+                    1 => [0.0, 1.0, 0.0, 1.0],
+                    2 => [0.0, 0.0, 1.0, 1.0],
+                    _ => [1.0, 1.0, 0.0, 1.0],
+                };
+                render_group(
+                    &format!("zone_group_{index}"),
+                    &format!("bench:group-{index}"),
+                    120,
+                    color,
+                    solid_id,
+                )
+            })
+            .collect::<Vec<_>>();
+        let throughput_leds = u64::try_from(group_count)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(120);
+        let mut pool = EffectPool::new();
+        pool.reconcile(&groups, &registry)
+            .expect("group pool should reconcile");
+        let mut canvases = groups
+            .iter()
+            .map(|group| Canvas::new(group.layout.canvas_width, group.layout.canvas_height))
+            .collect::<Vec<_>>();
+        let spatial_engines = groups
+            .iter()
+            .map(|group| SpatialEngine::new(group.layout.clone()))
+            .collect::<Vec<_>>();
+        let mut sampled = vec![Vec::<ZoneColors>::new(); group_count];
+
+        group.throughput(Throughput::Elements(throughput_leds));
+        group.bench_function(BenchmarkId::new("render_sample", group_count), |b| {
+            b.iter(|| {
+                for (index, render_group) in groups.iter().enumerate() {
+                    pool.render_group_into(
+                        black_box(render_group),
+                        FRAME_DT_SECONDS,
+                        black_box(&SILENCE),
+                        black_box(&DEFAULT_INTERACTION),
+                        None,
+                        black_box(&mut canvases[index]),
+                    )
+                    .expect("render group should render");
+                    spatial_engines[index]
+                        .sample_into(black_box(&canvases[index]), &mut sampled[index]);
+                }
+                black_box(&sampled);
+            });
+        });
+    }
+
+    group.finish();
+}
+
 fn bench_audio_pipeline(c: &mut Criterion) {
     let mut group = c.benchmark_group("core_audio");
 
@@ -624,6 +726,6 @@ fn bench_backend_routing(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = benchmark_config();
-    targets = bench_builtin_renderers, bench_spatial_sampling, bench_audio_pipeline, bench_canvas_handoff, bench_backend_routing
+    targets = bench_builtin_renderers, bench_spatial_sampling, bench_render_groups, bench_audio_pipeline, bench_canvas_handoff, bench_backend_routing
 }
 criterion_main!(benches);

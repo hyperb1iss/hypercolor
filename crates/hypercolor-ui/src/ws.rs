@@ -718,8 +718,7 @@ fn request_screen_preview_subscription(
     engine_target_fps: u32,
     page_visible: bool,
 ) {
-    let desired_fps =
-        desired_preview_fps(engine_target_fps, SCREEN_PREVIEW_FPS_CAP, page_visible);
+    let desired_fps = desired_preview_fps(engine_target_fps, SCREEN_PREVIEW_FPS_CAP, page_visible);
     if desired_fps == requested_preview_fps.get_value() {
         return;
     }
