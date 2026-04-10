@@ -11,7 +11,6 @@ use super::{
 pub(super) struct CpuSparkleFlinger;
 
 const LINEAR_ENCODE_LUT_SCALE: f32 = 65_535.0;
-const LINEAR_ENCODE_LUT_LAST_INDEX: usize = 65_535;
 
 static SRGB_TO_LINEAR_LUT: LazyLock<[f32; 256]> = LazyLock::new(|| {
     array::from_fn(|index| {
@@ -20,8 +19,8 @@ static SRGB_TO_LINEAR_LUT: LazyLock<[f32; 256]> = LazyLock::new(|| {
     })
 });
 static LINEAR_TO_SRGB_LUT: LazyLock<Vec<u8>> = LazyLock::new(|| {
-    (0..=LINEAR_ENCODE_LUT_LAST_INDEX)
-        .map(|index| linear_to_srgb_u8(index as f32 / LINEAR_ENCODE_LUT_SCALE))
+    (0_u16..=u16::MAX)
+        .map(|index| linear_to_srgb_u8(f32::from(index) / LINEAR_ENCODE_LUT_SCALE))
         .collect()
 });
 
@@ -30,6 +29,10 @@ impl CpuSparkleFlinger {
         Self
     }
 
+    #[allow(
+        clippy::unused_self,
+        reason = "the CPU compositor keeps an instance method to match the GPU flinger API"
+    )]
     pub(super) fn compose(&mut self, plan: CompositionPlan) -> ComposedFrameSet {
         let CompositionPlan {
             width,
@@ -91,7 +94,7 @@ fn compose_layer(target: &mut Canvas, layer: CompositionLayer) {
     let source_pixels = source_canvas.as_rgba_bytes();
     match layer.mode {
         CompositionMode::Replace | CompositionMode::Alpha => {
-            compose_normal_layer(target_pixels, source_pixels, opacity)
+            compose_normal_layer(target_pixels, source_pixels, opacity);
         }
         CompositionMode::Add => compose_add_layer(target_pixels, source_pixels, opacity),
         CompositionMode::Screen => compose_screen_layer(target_pixels, source_pixels, opacity),
@@ -102,10 +105,17 @@ fn compose_normal_layer(target_pixels: &mut [u8], source_pixels: &[u8], opacity:
     let fully_opaque_layer = opacity >= 1.0 - f32::EPSILON;
     let opaque_dst_weights: Option<[f32; 256]> = (!fully_opaque_layer).then(|| {
         let inverse_alpha = 1.0 - opacity;
-        array::from_fn(|channel| decode_srgb_channel(channel as u8) * inverse_alpha)
+        array::from_fn(|channel| {
+            decode_srgb_channel(u8::try_from(channel).expect("channel LUT index must fit in u8"))
+                * inverse_alpha
+        })
     });
-    let opaque_src_weights: Option<[f32; 256]> = (!fully_opaque_layer)
-        .then(|| array::from_fn(|channel| decode_srgb_channel(channel as u8) * opacity));
+    let opaque_src_weights: Option<[f32; 256]> = (!fully_opaque_layer).then(|| {
+        array::from_fn(|channel| {
+            decode_srgb_channel(u8::try_from(channel).expect("channel LUT index must fit in u8"))
+                * opacity
+        })
+    });
     for (dst_px, src_px) in target_pixels
         .chunks_exact_mut(4)
         .zip(source_pixels.chunks_exact(4))
@@ -256,14 +266,26 @@ fn screen_blend(dst: f32, src: f32) -> f32 {
 }
 
 fn decode_srgb_channel(channel: u8) -> f32 {
-    SRGB_TO_LINEAR_LUT[channel as usize]
+    SRGB_TO_LINEAR_LUT[usize::from(channel)]
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions,
+    reason = "channel is clamped to the 16-bit LUT domain before rounding to an index"
+)]
 fn encode_srgb_channel(channel: f32) -> u8 {
-    let index = (channel.clamp(0.0, 1.0) * LINEAR_ENCODE_LUT_SCALE).round() as usize;
-    LINEAR_TO_SRGB_LUT[index.min(LINEAR_ENCODE_LUT_LAST_INDEX)]
+    let index = (channel.clamp(0.0, 1.0) * LINEAR_ENCODE_LUT_SCALE).round() as u16;
+    LINEAR_TO_SRGB_LUT[usize::from(index)]
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions,
+    reason = "alpha is clamped to 0..=1 before conversion to an 8-bit channel"
+)]
 fn encode_alpha_channel(channel: f32) -> u8 {
     (channel * 255.0).round().clamp(0.0, 255.0) as u8
 }

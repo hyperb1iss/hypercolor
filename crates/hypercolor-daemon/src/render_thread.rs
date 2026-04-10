@@ -381,7 +381,12 @@ mod tests {
 
         let coarse = coarse_sleep_deadline(deadline, now).expect("guard band should apply");
 
-        assert_eq!(coarse, deadline - PRECISE_WAKE_GUARD);
+        assert_eq!(
+            coarse,
+            deadline
+                .checked_sub(PRECISE_WAKE_GUARD)
+                .expect("guard band should fit within deadline")
+        );
     }
 
     #[test]

@@ -92,12 +92,9 @@ impl CanvasColorChannel {
         if packed >> 24 == 0 {
             return None;
         }
-        #[allow(clippy::cast_possible_truncation)]
-        let r = ((packed >> 16) & 0xFF) as u8;
-        #[allow(clippy::cast_possible_truncation)]
-        let g = ((packed >> 8) & 0xFF) as u8;
-        #[allow(clippy::cast_possible_truncation)]
-        let b = (packed & 0xFF) as u8;
+        let r = u8::try_from((packed >> 16) & 0xFF).expect("masked red channel fits in u8");
+        let g = u8::try_from((packed >> 8) & 0xFF).expect("masked green channel fits in u8");
+        let b = u8::try_from(packed & 0xFF).expect("masked blue channel fits in u8");
         Some((r, g, b))
     }
 }
@@ -275,11 +272,10 @@ pub fn sample_canvas_border(width: u16, height: u16, pixels: &[u8]) -> Option<(u
     if count == 0 {
         return None;
     }
-    #[allow(clippy::cast_possible_truncation)]
     Some((
-        (sum_r / count) as u8,
-        (sum_g / count) as u8,
-        (sum_b / count) as u8,
+        u8::try_from(sum_r / count).expect("average red channel fits in u8"),
+        u8::try_from(sum_g / count).expect("average green channel fits in u8"),
+        u8::try_from(sum_b / count).expect("average blue channel fits in u8"),
     ))
 }
 

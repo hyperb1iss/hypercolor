@@ -87,7 +87,7 @@ pub struct ProfileAddArgs {
 pub struct ProfileSetArgs {
     /// Profile name.
     pub name: String,
-    /// Field to update (host, port, api_key, label, description).
+    /// Field to update (host, port, `api_key`, label, description).
     pub key: String,
     /// New value.
     pub value: String,
@@ -411,7 +411,7 @@ fn profile_set(args: &ProfileSetArgs, ctx: &OutputContext) -> Result<()> {
         .with_context(|| format!("profile {:?} not found", args.name))?;
 
     match args.key.as_str() {
-        "host" => profile.host = args.value.clone(),
+        "host" => profile.host.clone_from(&args.value),
         "port" => {
             profile.port = args
                 .value
@@ -453,7 +453,7 @@ fn profile_default(args: &ProfileDefaultArgs, ctx: &OutputContext) -> Result<()>
         anyhow::bail!("profile {:?} not found", args.name);
     }
 
-    cfg.defaults.profile = args.name.clone();
+    cfg.defaults.profile.clone_from(&args.name);
     config::save(&cfg)?;
     ctx.success(&format!("Default profile set to {:?}", args.name));
     Ok(())

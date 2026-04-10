@@ -290,6 +290,10 @@ fn synthetic_beat_frame(frame_number: u64) -> BeatFrame {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the benchmark wires up a representative matrix of renderer entry points"
+)]
 fn bench_builtin_renderers(c: &mut Criterion) {
     let mut group = c.benchmark_group("core_render");
     group.throughput(Throughput::Elements(

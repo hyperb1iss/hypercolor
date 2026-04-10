@@ -1,4 +1,4 @@
-//! Effect-related MCP tools: set_effect, list_effects, stop_effect, set_color.
+//! Effect-related MCP tools: `set_effect`, `list_effects`, `stop_effect`, `set_color`.
 
 use std::cmp::min;
 

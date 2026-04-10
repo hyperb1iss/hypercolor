@@ -10,8 +10,10 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use hypercolor_core::config::ConfigManager;
+use hypercolor_core::input::InputManager;
 use hypercolor_daemon::runtime_state::{self, RuntimeSessionSnapshot};
 use hypercolor_daemon::startup::{DaemonState, default_config, load_config};
+use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::config::{CURRENT_SCHEMA_VERSION, RenderAccelerationMode};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
@@ -128,6 +130,7 @@ async fn daemon_lifecycle_initialize_start_shutdown() {
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
         .expect("initialization should succeed");
+    *state.input_manager.lock().await = InputManager::new();
 
     // Verify initial state — all subsystems created but not started
     assert!(state.device_registry.is_empty().await);
@@ -176,6 +179,7 @@ async fn daemon_shutdown_publishes_events() {
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
         .expect("initialization should succeed");
+    *state.input_manager.lock().await = InputManager::new();
 
     let mut rx = state.event_bus.subscribe_all();
 
@@ -218,6 +222,7 @@ async fn daemon_double_shutdown_is_safe() {
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
         .expect("initialization should succeed");
+    *state.input_manager.lock().await = InputManager::new();
 
     state.start().await.expect("start");
     state.shutdown().await.expect("first shutdown");
@@ -234,6 +239,7 @@ async fn daemon_start_restores_last_runtime_session() {
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
         .expect("initialization should succeed");
+    *state.input_manager.lock().await = InputManager::new();
 
     let effect_id = {
         let registry = state.effect_registry.read().await;
@@ -284,8 +290,8 @@ async fn config_loading_defaults_have_correct_schema() {
     assert_eq!(config.daemon.target_fps, 30);
     assert_eq!(config.daemon.port, 9420);
     assert_eq!(config.daemon.listen_address, "127.0.0.1");
-    assert_eq!(config.daemon.canvas_width, 320);
-    assert_eq!(config.daemon.canvas_height, 200);
+    assert_eq!(config.daemon.canvas_width, DEFAULT_CANVAS_WIDTH);
+    assert_eq!(config.daemon.canvas_height, DEFAULT_CANVAS_HEIGHT);
     assert_eq!(config.daemon.max_devices, 32);
 }
 

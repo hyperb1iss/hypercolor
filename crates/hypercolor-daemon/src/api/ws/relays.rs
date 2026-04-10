@@ -45,7 +45,7 @@ pub(super) async fn relay_events(
             Ok(timestamped) => {
                 let should_relay = {
                     let subs = subscriptions.borrow();
-                    should_relay_event(&timestamped.event, &subs.channels)
+                    should_relay_event(&timestamped.event, subs.channels)
                 };
                 if !should_relay {
                     continue;
@@ -89,10 +89,10 @@ pub(super) async fn relay_frames(
         if active_frame_config.is_none() {
             active_frame_config = {
                 let subs = subscriptions.borrow();
-                if !subs.channels.contains(WsChannel::Frames) {
-                    None
-                } else {
+                if subs.channels.contains(WsChannel::Frames) {
                     Some(ActiveFramesConfig::new(subs.config.frames.clone()))
+                } else {
+                    None
                 }
             };
         }
@@ -136,7 +136,7 @@ pub(super) async fn relay_frames(
         if !should_emit(&mut last_sent, frame_config.config.fps) {
             continue;
         }
-        let outbound = cached_frame_payload(&frame, &frame_config);
+        let outbound = cached_frame_payload(&frame, frame_config);
 
         match outbound {
             FrameRelayMessage::Json(text) => {
@@ -170,10 +170,10 @@ pub(super) async fn relay_spectrum(
         if active_spectrum_config.is_none() {
             active_spectrum_config = {
                 let subs = subscriptions.borrow();
-                if !subs.channels.contains(WsChannel::Spectrum) {
-                    None
-                } else {
+                if subs.channels.contains(WsChannel::Spectrum) {
                     Some(subs.config.spectrum.clone())
+                } else {
+                    None
                 }
             };
         }
@@ -228,6 +228,10 @@ pub(super) async fn relay_spectrum(
 }
 
 /// Relay raw canvas updates to the WebSocket client.
+#[expect(
+    clippy::too_many_lines,
+    reason = "canvas relay interleaves subscription, power, tick, and cache state in one async loop"
+)]
 pub(super) async fn relay_canvas(
     preview_runtime: Arc<crate::preview_runtime::PreviewRuntime>,
     mut power_state_rx: watch::Receiver<OutputPowerState>,
@@ -327,7 +331,7 @@ pub(super) async fn relay_canvas(
 
                 if binary_tx
                     .try_send(encode_cached_canvas_preview_binary(
-                        &latest_canvas,
+                        latest_canvas,
                         canvas_config.format,
                         brightness,
                     ))
@@ -422,7 +426,7 @@ pub(super) async fn relay_screen_canvas(
 
                 if binary_tx
                     .try_send(encode_cached_canvas_binary_with_header(
-                        &latest_canvas,
+                        latest_canvas,
                         canvas_config.format,
                         WS_SCREEN_CANVAS_HEADER,
                     ))
@@ -490,7 +494,7 @@ pub(super) async fn relay_metrics(
                 active_interval_ms = None;
                 continue;
             }
-            _ = tokio::time::sleep(Duration::from_millis(u64::from(interval_ms))) => {}
+            () = tokio::time::sleep(Duration::from_millis(u64::from(interval_ms))) => {}
         }
 
         let still_subscribed = {
@@ -569,6 +573,10 @@ fn enqueue_backpressure_notice(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "metrics assembly mirrors the exported payload shape for the WebSocket protocol"
+)]
 pub(super) async fn build_metrics_message(
     state: &AppState,
     bytes_sent_per_sec: f64,

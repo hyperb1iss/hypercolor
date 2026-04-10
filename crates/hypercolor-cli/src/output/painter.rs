@@ -5,6 +5,7 @@
 //! touching individual command handlers.
 
 use opaline::adapters::owo_colors::OwoThemeExt;
+use opaline::{Gradient, OpalineColor};
 use owo_colors::OwoColorize;
 
 // ── Painter ─────────────────────────────────────────────────────────────
@@ -36,6 +37,7 @@ impl Painter {
     }
 
     /// Plain (no-color) painter for non-interactive use.
+    #[cfg(test)]
     pub fn plain() -> Self {
         Self {
             theme: load_theme(None),
@@ -117,32 +119,12 @@ impl Painter {
         }
     }
 
-    /// Effect activity state.
-    pub fn effect_state(&self, state: &str) -> String {
-        match state.to_ascii_lowercase().as_str() {
-            "running" | "active" => self.success(state),
-            "stopped" | "idle" => self.muted(state),
-            "error" | "failed" => self.error(state),
-            _ => self.warning(state),
-        }
-    }
-
     /// Boolean display with colored yes/no.
     pub fn yesno(&self, value: bool) -> String {
         if value {
             self.success("yes")
         } else {
             self.error("no")
-        }
-    }
-
-    /// Diagnostic check result.
-    pub fn check_status(&self, status: &str) -> String {
-        match status {
-            "pass" => self.success(status),
-            "warning" => self.warning(status),
-            "fail" => self.error(status),
-            _ => self.muted(status),
         }
     }
 
@@ -203,7 +185,7 @@ impl Painter {
 
 // ── Theme loading ──────────────────────────────────────────────────────
 
-/// Load a theme by name, falling back to the SilkCircuit Neon default.
+/// Load a theme by name, falling back to the `SilkCircuit Neon` default.
 fn load_theme(name: Option<&str>) -> opaline::Theme {
     let resolved = name.unwrap_or("silkcircuit-neon");
     opaline::load_by_name(resolved).unwrap_or_else(|| {
@@ -222,7 +204,6 @@ pub fn gradient_brand(text: &str, enabled: bool) -> String {
     if !enabled {
         return text.to_string();
     }
-    use opaline::{Gradient, OpalineColor};
     let gradient = Gradient::new(vec![
         OpalineColor {
             r: 225,
@@ -257,7 +238,7 @@ impl Painter {
 ///
 /// Composes the brand title with a muted separator line. Used by clap's
 /// `before_help` hook, so its color gating must match clap's own detection
-/// (NO_COLOR / CLICOLOR_FORCE / stdout TTY).
+/// (`NO_COLOR` / `CLICOLOR_FORCE` / stdout TTY).
 pub fn help_banner() -> String {
     let use_color = should_color_banner();
     let title = gradient_brand("H Y P E R C O L O R", use_color);

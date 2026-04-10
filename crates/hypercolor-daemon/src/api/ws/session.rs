@@ -68,7 +68,7 @@ async fn handle_socket(
             server: state.server_identity.clone(),
             state: build_hello_state(&state).await,
             capabilities: ws_capabilities(),
-            subscriptions: sorted_channel_names(&subscriptions.channels),
+            subscriptions: sorted_channel_names(subscriptions.channels),
         }
     };
     if send_json(&mut socket, &hello).await.is_err() {
@@ -146,7 +146,7 @@ async fn handle_socket(
                 match binary_msg {
                     Some(bytes) => {
                         let sent_len = bytes.len();
-                        if socket.send(Message::Binary(bytes.into())).await.is_err() {
+                        if socket.send(Message::Binary(bytes)).await.is_err() {
                             break;
                         }
                         track_ws_bytes_sent(sent_len);
@@ -256,7 +256,7 @@ async fn handle_client_message(
 
             let ack = ServerMessage::Subscribed {
                 channels: unique_sorted_channel_names(&parsed_channels),
-                config: subscriptions.config.filtered_json(&subscriptions.channels),
+                config: subscriptions.config.filtered_json(subscriptions.channels),
             };
             publish_subscriptions(subscriptions_tx, subscriptions);
             let _ = send_json(socket, &ack).await;
@@ -273,7 +273,7 @@ async fn handle_client_message(
             for channel in &parsed_channels {
                 subscriptions.channels.remove(*channel);
             }
-            let remaining = sorted_channel_names(&subscriptions.channels);
+            let remaining = sorted_channel_names(subscriptions.channels);
 
             let ack = ServerMessage::Unsubscribed {
                 channels: unique_sorted_channel_names(&parsed_channels),

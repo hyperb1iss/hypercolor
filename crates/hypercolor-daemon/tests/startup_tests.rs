@@ -18,6 +18,7 @@ use hypercolor_daemon::startup::{
     load_config, parse_config_toml,
 };
 use hypercolor_daemon::{layout_store, runtime_state};
+use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::config::{RenderAccelerationMode, WledProtocolConfig};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
@@ -234,9 +235,8 @@ async fn initialize_rejects_explicit_gpu_render_acceleration_without_wgpu_featur
     let mut config = default_config();
     config.effect_engine.render_acceleration_mode = RenderAccelerationMode::Gpu;
 
-    let error = match DaemonState::initialize(&config, temp.path().to_path_buf()) {
-        Ok(_) => panic!("gpu render acceleration should fail explicitly without wgpu support"),
-        Err(error) => error,
+    let Err(error) = DaemonState::initialize(&config, temp.path().to_path_buf()) else {
+        panic!("gpu render acceleration should fail explicitly without wgpu support");
     };
 
     assert!(format!("{error:#}").contains("rebuild hypercolor-daemon with the `wgpu` feature"));
@@ -334,8 +334,8 @@ fn default_config_has_sane_values() {
     assert_eq!(config.daemon.target_fps, 30);
     assert_eq!(config.daemon.port, 9420);
     assert_eq!(config.daemon.listen_address, "127.0.0.1");
-    assert_eq!(config.daemon.canvas_width, 320);
-    assert_eq!(config.daemon.canvas_height, 200);
+    assert_eq!(config.daemon.canvas_width, DEFAULT_CANVAS_WIDTH);
+    assert_eq!(config.daemon.canvas_height, DEFAULT_CANVAS_HEIGHT);
     assert_eq!(config.wled.default_protocol, WledProtocolConfig::Ddp);
     assert!(config.wled.realtime_http_enabled);
     assert!(config.wled.known_ips.is_empty());

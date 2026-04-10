@@ -10,12 +10,18 @@ pub(crate) enum CompositorBackendKind {
     Cpu,
     #[cfg_attr(
         not(feature = "wgpu"),
-        allow(dead_code, reason = "GPU compositor telemetry is only constructed on wgpu builds")
+        allow(
+            dead_code,
+            reason = "GPU compositor telemetry is only constructed on wgpu builds"
+        )
     )]
     Gpu,
     #[cfg_attr(
         not(feature = "wgpu"),
-        allow(dead_code, reason = "GPU compositor telemetry is only constructed on wgpu builds")
+        allow(
+            dead_code,
+            reason = "GPU compositor telemetry is only constructed on wgpu builds"
+        )
     )]
     GpuFallback,
 }
@@ -47,6 +53,10 @@ pub(crate) struct FrameTimeline {
 
 /// Most recent per-frame timings captured from the render thread.
 #[derive(Debug, Clone, Copy, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "render telemetry exports several independent booleans directly to metrics consumers"
+)]
 pub(crate) struct LatestFrameMetrics {
     pub timestamp_ms: u32,
     pub input_us: u32,
@@ -181,6 +191,10 @@ struct ShortSummary {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "reuse sampling tracks separate boolean reuse signals for pacing summaries"
+)]
 struct FrameReuseSample {
     inputs: bool,
     canvas: bool,

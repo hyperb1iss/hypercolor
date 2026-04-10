@@ -255,7 +255,7 @@ impl DashboardView {
         if y >= max_y {
             return y;
         }
-        let sep: String = "\u{2500}".repeat(w as usize);
+        let sep: String = "\u{2500}".repeat(usize::from(w));
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 sep,

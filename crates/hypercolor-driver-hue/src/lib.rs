@@ -9,8 +9,8 @@ use hypercolor_core::device::hue::{DEFAULT_HUE_API_PORT, HueBackend, HueBridgeCl
 use hypercolor_core::device::net::{CredentialStore, Credentials};
 use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_driver_api::support::{
-    activate_if_requested, disconnect_after_unpair, metadata_value, network_ip_from_metadata,
-    network_port_from_metadata, push_lookup_key,
+    activate_if_requested, disconnect_after_unpair, metadata_value, network_port_from_metadata,
+    push_lookup_key,
 };
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
@@ -150,7 +150,7 @@ impl PairingCapability for HueDriverFactory {
             });
         }
 
-        let Some(bridge_ip) = network_ip_from_metadata(device.metadata) else {
+        let Some(bridge_ip) = pairing_ip_from_metadata(device.metadata) else {
             return Ok(PairDeviceOutcome {
                 status: PairDeviceStatus::InvalidInput,
                 message: "Hue bridge is missing network address metadata".to_owned(),
@@ -365,6 +365,10 @@ async fn clear_hue_credentials(
         credential_store.remove(&key).await?;
     }
     Ok(())
+}
+
+fn pairing_ip_from_metadata(metadata: Option<&HashMap<String, String>>) -> Option<IpAddr> {
+    metadata_value(metadata, "ip").and_then(|value| value.parse::<IpAddr>().ok())
 }
 
 fn hue_pairing_descriptor() -> PairingDescriptor {

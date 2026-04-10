@@ -41,10 +41,10 @@ pub struct App {
     chrome: Chrome,
     /// Shared state accessible by all components.
     state: AppState,
-    /// Whether the app is running.
-    running: bool,
-    /// Help overlay visible.
-    help_visible: bool,
+    /// Lifecycle flags for the event loop and idle effects.
+    lifecycle: LifecycleState,
+    /// UI flags for overlays, redraws, and fullscreen mode.
+    view: ViewState,
     /// Active live theme picker, when modal is open.
     theme_picker: Option<ThemePicker>,
     /// Motion effects engine (tachyonfx-backed).
@@ -68,17 +68,11 @@ pub struct App {
     canvas_protocol_pending: Option<ThreadProtocol>,
     /// Last preview area requested by the active screen.
     canvas_preview_area: Option<Rect>,
-    /// Whether the UI needs a fresh draw for newly applied state.
-    render_dirty: bool,
     /// Last rendered frame area, cached so action handlers can scope effects.
     last_frame_area: Rect,
     /// Last user input or significant state event, used to trigger the idle
     /// breathing effect after a period of inactivity.
     last_activity: Instant,
-    /// Whether the idle breathing effect is currently active.
-    idle_active: bool,
-    /// Fullscreen canvas preview mode.
-    fullscreen_preview: bool,
     /// Current notification (auto-dismisses).
     notification: Option<(Notification, Instant)>,
     /// Action sender (cloned to components and bridge).
@@ -93,6 +87,19 @@ pub struct App {
     host: String,
     /// Daemon port.
     port: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LifecycleState {
+    running: bool,
+    idle_active: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ViewState {
+    help_visible: bool,
+    fullscreen_preview: bool,
+    render_dirty: bool,
 }
 
 impl App {
@@ -145,8 +152,15 @@ impl App {
                 show_donate: crate::theme_picker::load_config().show_donate,
                 ..AppState::default()
             },
-            running: true,
-            help_visible: false,
+            lifecycle: LifecycleState {
+                running: true,
+                idle_active: false,
+            },
+            view: ViewState {
+                help_visible: false,
+                fullscreen_preview: false,
+                render_dirty: true,
+            },
             theme_picker: None,
             motion: MotionSystem::new(MotionSensitivity::resolve(MotionSensitivity::Full)),
             picker,
@@ -157,11 +171,8 @@ impl App {
             canvas_protocol_current: None,
             canvas_protocol_pending: None,
             canvas_preview_area: None,
-            render_dirty: true,
             last_frame_area: Rect::new(0, 0, 80, 24),
             last_activity: Instant::now(),
-            idle_active: false,
-            fullscreen_preview: false,
             notification: None,
             action_tx,
             action_rx,
@@ -217,7 +228,7 @@ impl App {
 
         tracing::info!("TUI event loop started");
 
-        while self.running {
+        while self.lifecycle.running {
             let Some(event) = events.next().await else {
                 break;
             };
@@ -259,15 +270,15 @@ impl App {
                 }
 
                 self.process_action(&action);
-                self.render_dirty = true;
+                self.view.render_dirty = true;
             }
 
-            if self.render_dirty
-                || (render_requested && !self.fullscreen_preview && self.motion.is_active())
+            if self.view.render_dirty
+                || (render_requested && !self.view.fullscreen_preview && self.motion.is_active())
             {
                 self.drain_canvas_resize_results();
                 terminal.draw(|frame| self.render(frame))?;
-                self.render_dirty = false;
+                self.view.render_dirty = false;
             }
         }
 
@@ -293,9 +304,9 @@ impl App {
     /// Reset the idle timer and cancel the breathing effect if it's running.
     fn bump_activity(&mut self) {
         self.last_activity = Instant::now();
-        if self.idle_active {
+        if self.lifecycle.idle_active {
             self.motion.cancel(crate::motion::MotionKey::IdleBreathing);
-            self.idle_active = false;
+            self.lifecycle.idle_active = false;
         }
     }
 
@@ -303,7 +314,7 @@ impl App {
     fn check_idle(&mut self) {
         // 10s idle → start breathing
         const IDLE_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(10);
-        if !self.idle_active && self.last_activity.elapsed() >= IDLE_THRESHOLD {
+        if !self.lifecycle.idle_active && self.last_activity.elapsed() >= IDLE_THRESHOLD {
             self.motion.trigger(
                 crate::motion::MotionKey::IdleBreathing,
                 crate::motion::catalog::idle_breathing(
@@ -311,7 +322,7 @@ impl App {
                     self.motion.sensitivity(),
                 ),
             );
-            self.idle_active = true;
+            self.lifecycle.idle_active = true;
         }
     }
 
@@ -338,7 +349,7 @@ impl App {
             }
         }
 
-        if self.fullscreen_preview {
+        if self.view.fullscreen_preview {
             return match key.code {
                 KeyCode::Esc | KeyCode::Char('z' | 'Z') => Some(Action::ToggleFullscreenPreview),
                 KeyCode::Char('q') => Some(Action::Quit),
@@ -346,7 +357,7 @@ impl App {
             };
         }
 
-        if self.help_visible {
+        if self.view.help_visible {
             return match key.code {
                 KeyCode::Esc | KeyCode::Char('?') => Some(Action::ToggleHelp),
                 _ => None,
@@ -369,7 +380,7 @@ impl App {
                 }
             }
             KeyCode::Esc => {
-                if self.help_visible {
+                if self.view.help_visible {
                     return Some(Action::ToggleHelp);
                 }
                 return Some(Action::GoBack);
@@ -391,7 +402,7 @@ impl App {
     #[allow(clippy::too_many_lines)]
     fn process_action(&mut self, action: &Action) {
         match action {
-            Action::Quit => self.running = false,
+            Action::Quit => self.lifecycle.running = false,
 
             Action::SwitchScreen(screen_id) => {
                 if !self.screens.contains_key(screen_id) {
@@ -432,7 +443,7 @@ impl App {
             }
 
             Action::ToggleHelp => {
-                self.help_visible = !self.help_visible;
+                self.view.help_visible = !self.view.help_visible;
             }
             Action::ToggleThemePicker => {
                 self.theme_picker = if self.theme_picker.is_some() {
@@ -453,11 +464,11 @@ impl App {
                 ));
             }
             Action::ToggleFullscreenPreview => {
-                self.fullscreen_preview = !self.fullscreen_preview;
+                self.view.fullscreen_preview = !self.view.fullscreen_preview;
                 self.canvas_protocol_current = None;
                 self.canvas_protocol_pending = None;
                 self.canvas_preview_area = None;
-                self.render_dirty = true;
+                self.view.render_dirty = true;
             }
 
             // ── Connection state ────────────────────────────
@@ -731,7 +742,7 @@ impl App {
     }
 
     fn active_canvas_picker(&self) -> &Picker {
-        if self.fullscreen_preview {
+        if self.view.fullscreen_preview {
             &self.fullscreen_picker
         } else {
             &self.picker
@@ -749,7 +760,7 @@ impl App {
                     if let Some(protocol) = self.canvas_protocol_pending.as_mut()
                         && protocol.update_resized_protocol(completed)
                     {
-                        self.render_dirty = true;
+                        self.view.render_dirty = true;
                         let ready_for_current_area = self
                             .canvas_preview_area
                             .map(Self::canvas_resize_area)
@@ -844,7 +855,7 @@ impl App {
         self.last_frame_area = area;
 
         // Fullscreen canvas preview — bypass all chrome
-        if self.fullscreen_preview {
+        if self.view.fullscreen_preview {
             self.render_fullscreen_preview(frame, area);
             return;
         }
@@ -916,7 +927,7 @@ impl App {
         }
 
         // Help overlay (modal)
-        if self.help_visible {
+        if self.view.help_visible {
             self.render_help(frame, area);
         }
 

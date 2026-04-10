@@ -77,6 +77,10 @@ impl RenderGroupRuntime {
         })
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "render-scene orchestration needs the full frame context plus reusable zone storage"
+    )]
     pub(crate) fn render_scene(
         &mut self,
         groups: &[RenderGroup],
@@ -388,7 +392,10 @@ fn combine_group_layouts(groups: &[RenderGroup], width: u32, height: u32) -> Spa
 }
 
 fn tile_columns(count: usize) -> usize {
-    let side = (count as f32).sqrt().ceil() as usize;
+    let mut side = 1_usize;
+    while side.saturating_mul(side) < count.max(1) {
+        side = side.saturating_add(1);
+    }
     side.max(1)
 }
 
@@ -400,6 +407,11 @@ fn tile_origin(index: usize, count: usize, extent: u32) -> u32 {
     u32::try_from(numerator / denominator).unwrap_or(extent)
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::as_conversions,
+    reason = "preview tile coordinates are bounded canvas dimensions that fit comfortably in f32"
+)]
 fn blit_scaled_tile(target: &mut Canvas, source: &Canvas, x0: u32, y0: u32, x1: u32, y1: u32) {
     let width = x1.saturating_sub(x0);
     let height = y1.saturating_sub(y0);
@@ -578,7 +590,7 @@ mod tests {
 
         let result = runtime
             .render_scene(
-                &[group.clone()],
+                std::slice::from_ref(&group),
                 1,
                 &registry,
                 1.0 / 60.0,

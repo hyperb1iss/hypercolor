@@ -4,7 +4,7 @@
 //! path resolution. All paths append `"hypercolor"` as the final component.
 
 use std::path::PathBuf;
-use std::sync::{LazyLock, RwLock};
+use std::sync::{LazyLock, PoisonError, RwLock};
 
 /// Application directory name, appended to all platform base paths.
 const APP_DIR: &str = "hypercolor";
@@ -19,7 +19,7 @@ static CONFIG_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> = LazyLock::new(||
 pub fn config_dir() -> PathBuf {
     if let Some(override_path) = CONFIG_DIR_OVERRIDE
         .read()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .clone()
     {
         return override_path;
@@ -51,7 +51,7 @@ pub fn config_dir() -> PathBuf {
 pub fn set_config_dir_override(path: Option<PathBuf>) {
     let mut override_path = CONFIG_DIR_OVERRIDE
         .write()
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(PoisonError::into_inner);
     *override_path = path;
 }
 
@@ -62,7 +62,7 @@ pub fn set_config_dir_override(path: Option<PathBuf>) {
 pub fn data_dir() -> PathBuf {
     if let Some(override_path) = DATA_DIR_OVERRIDE
         .read()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .clone()
     {
         return override_path;
@@ -96,7 +96,9 @@ pub fn data_dir() -> PathBuf {
 /// process environment variables.
 #[doc(hidden)]
 pub fn set_data_dir_override(path: Option<PathBuf>) {
-    let mut override_path = DATA_DIR_OVERRIDE.write().unwrap_or_else(|e| e.into_inner());
+    let mut override_path = DATA_DIR_OVERRIDE
+        .write()
+        .unwrap_or_else(PoisonError::into_inner);
     *override_path = path;
 }
 

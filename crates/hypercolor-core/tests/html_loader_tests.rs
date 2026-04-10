@@ -70,7 +70,9 @@ fn register_html_effects_loads_effects_from_directory_tree() {
 
     match &aurora.metadata.source {
         EffectSource::Html { path } => {
-            assert_eq!(path, &root.join("community/aurora.html"));
+            let expected_path = fs::canonicalize(root.join("community/aurora.html"))
+                .expect("aurora effect path should canonicalize");
+            assert_eq!(path, &expected_path);
         }
         source => panic!("expected html source, got {source:?}"),
     }

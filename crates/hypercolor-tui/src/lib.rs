@@ -8,6 +8,7 @@ pub mod client;
 pub mod component;
 pub mod event;
 pub mod motion;
+mod preview;
 pub mod screen;
 pub mod state;
 pub mod theme;

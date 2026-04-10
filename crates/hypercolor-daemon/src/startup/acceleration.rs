@@ -62,6 +62,10 @@ fn resolve_auto_mode(
 }
 
 #[cfg(not(feature = "wgpu"))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the non-wgpu path keeps the same `Result` signature as wgpu builds"
+)]
 fn resolve_auto_mode(
     requested_mode: RenderAccelerationMode,
 ) -> Result<CompositorAccelerationResolution> {

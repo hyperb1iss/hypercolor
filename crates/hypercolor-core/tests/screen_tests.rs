@@ -6,6 +6,7 @@ use hypercolor_core::input::screen::sector::{LetterboxBars, SectorGrid};
 use hypercolor_core::input::screen::smooth::TemporalSmoother;
 use hypercolor_core::input::screen::{CaptureConfig, ScreenCaptureInput};
 use hypercolor_core::input::{InputData, InputSource};
+use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -531,8 +532,8 @@ fn screen_capture_input_produces_screen_data() {
                 .canvas_downscale
                 .as_ref()
                 .expect("screen data should include downscaled canvas");
-            assert_eq!(downscale.width(), 320);
-            assert_eq!(downscale.height(), 200);
+            assert_eq!(downscale.width(), DEFAULT_CANVAS_WIDTH);
+            assert_eq!(downscale.height(), DEFAULT_CANVAS_HEIGHT);
             assert_eq!(
                 downscale.get_pixel(0, 0),
                 hypercolor_core::types::canvas::Rgba::new(200, 100, 50, 255)

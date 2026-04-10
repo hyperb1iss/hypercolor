@@ -28,7 +28,7 @@ const DEFAULT_INSTANCE_NAME: &str = "hypercolor";
 /// Returns an error if an explicit config path is provided but the file
 /// cannot be read or parsed. When falling back to defaults, this always
 /// succeeds.
-#[expect(
+#[allow(
     clippy::unused_async,
     reason = "will be async when config loading gains network support"
 )]

@@ -1,4 +1,4 @@
-//! Device-related MCP tools: get_devices, set_brightness.
+//! Device-related MCP tools: `get_devices`, `set_brightness`.
 
 use serde_json::{Value, json};
 

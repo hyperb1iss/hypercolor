@@ -121,7 +121,7 @@ fn effect_pool_hot_swaps_effects_for_same_group() {
         .insert("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
 
     let mut pool = EffectPool::new();
-    pool.reconcile(&[solid_group.clone()], &registry)
+    pool.reconcile(std::slice::from_ref(&solid_group), &registry)
         .expect("solid group should reconcile");
     let mut solid_canvas = Canvas::new(1, 1);
     pool.render_group_into(
@@ -135,7 +135,7 @@ fn effect_pool_hot_swaps_effects_for_same_group() {
     .expect("solid group should render");
 
     let rainbow_group = render_group(group_id, rainbow_id);
-    pool.reconcile(&[rainbow_group.clone()], &registry)
+    pool.reconcile(std::slice::from_ref(&rainbow_group), &registry)
         .expect("rainbow group should reconcile");
     let mut rainbow_canvas = Canvas::new(1, 1);
     pool.render_group_into(

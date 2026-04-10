@@ -1,4 +1,4 @@
-//! Scene-related MCP tools: activate_scene, list_scenes, create_scene.
+//! Scene-related MCP tools: `activate_scene`, `list_scenes`, `create_scene`.
 
 use serde_json::{Value, json};
 

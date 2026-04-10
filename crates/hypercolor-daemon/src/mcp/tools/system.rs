@@ -1,4 +1,4 @@
-//! System-level MCP tools: get_status, get_audio_state, get_layout, diagnose.
+//! System-level MCP tools: `get_status`, `get_audio_state`, `get_layout`, `diagnose`.
 
 use serde_json::{Value, json};
 

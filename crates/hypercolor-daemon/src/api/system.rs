@@ -373,6 +373,10 @@ mod tests {
     use serde_json::Value;
     use std::sync::Arc;
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Status response assertions cover many nested metrics fields in one scenario"
+    )]
     #[tokio::test]
     async fn status_includes_latest_frame_surface_stats() {
         let state = Arc::new(AppState::new());

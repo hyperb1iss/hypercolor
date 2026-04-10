@@ -86,7 +86,6 @@ pub struct ColorWaveRenderer {
 }
 
 const LINEAR_ENCODE_LUT_SCALE: f32 = 65_535.0;
-const LINEAR_ENCODE_LUT_LAST_INDEX: usize = 65_535;
 
 static SRGB_TO_LINEAR_LUT: LazyLock<[f32; 256]> = LazyLock::new(|| {
     array::from_fn(|index| {
@@ -95,8 +94,8 @@ static SRGB_TO_LINEAR_LUT: LazyLock<[f32; 256]> = LazyLock::new(|| {
     })
 });
 static LINEAR_TO_SRGB_LUT: LazyLock<Vec<u8>> = LazyLock::new(|| {
-    (0..=LINEAR_ENCODE_LUT_LAST_INDEX)
-        .map(|index| linear_to_srgb_u8(index as f32 / LINEAR_ENCODE_LUT_SCALE))
+    (0_u16..=u16::MAX)
+        .map(|index| linear_to_srgb_u8(f32::from(index) / LINEAR_ENCODE_LUT_SCALE))
         .collect()
 });
 
@@ -273,9 +272,9 @@ impl ColorWaveRenderer {
         let green_lut = fade_lut(background.g, opacity);
         let blue_lut = fade_lut(background.b, opacity);
         for chunk in canvas.as_rgba_bytes_mut().chunks_exact_mut(4) {
-            chunk[0] = red_lut[chunk[0] as usize];
-            chunk[1] = green_lut[chunk[1] as usize];
-            chunk[2] = blue_lut[chunk[2] as usize];
+            chunk[0] = red_lut[usize::from(chunk[0])];
+            chunk[1] = green_lut[usize::from(chunk[1])];
+            chunk[2] = blue_lut[usize::from(chunk[2])];
             chunk[3] = 255;
         }
     }
@@ -507,17 +506,24 @@ fn hue_shift(color: [f32; 4], degrees: f32) -> [f32; 4] {
 }
 
 fn decode_srgb_channel(channel: u8) -> f32 {
-    SRGB_TO_LINEAR_LUT[channel as usize]
+    SRGB_TO_LINEAR_LUT[usize::from(channel)]
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions,
+    reason = "channel is clamped to the 16-bit LUT domain before rounding to an index"
+)]
 fn encode_srgb_channel(channel: f32) -> u8 {
-    let index = (channel.clamp(0.0, 1.0) * LINEAR_ENCODE_LUT_SCALE).round() as usize;
-    LINEAR_TO_SRGB_LUT[index.min(LINEAR_ENCODE_LUT_LAST_INDEX)]
+    let index = (channel.clamp(0.0, 1.0) * LINEAR_ENCODE_LUT_SCALE).round() as u16;
+    LINEAR_TO_SRGB_LUT[usize::from(index)]
 }
 
 fn fade_lut(background_channel: f32, opacity: f32) -> [u8; 256] {
     array::from_fn(|channel| {
-        let source = decode_srgb_channel(channel as u8);
+        let source =
+            decode_srgb_channel(u8::try_from(channel).expect("fade LUT index must fit in u8"));
         encode_srgb_channel(source + (background_channel - source) * opacity)
     })
 }

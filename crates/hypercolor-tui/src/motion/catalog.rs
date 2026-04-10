@@ -26,8 +26,11 @@ fn brand_gradient(t: f32) -> (u8, u8, u8) {
     let t = t.clamp(0.0, 1.0);
     let stops = [BRAND_PURPLE, BRAND_CORAL, BRAND_CYAN];
     let scaled = t * 2.0;
-    let idx = (scaled as usize).min(1);
-    let frac = scaled - idx as f32;
+    let (idx, frac) = if scaled >= 1.0 {
+        (1_usize, scaled - 1.0)
+    } else {
+        (0_usize, scaled)
+    };
     let (r1, g1, b1) = stops[idx];
     let (r2, g2, b2) = stops[idx + 1];
     let lerp = |a: u8, b: u8, f: f32| (f32::from(a) + (f32::from(b) - f32::from(a)) * f) as u8;
@@ -55,10 +58,13 @@ const WARNING_YELLOW: Color = Color::Rgb(241, 250, 140);
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn scale_ms(ms: u32, sensitivity: MotionSensitivity) -> u32 {
-    let scaled = (ms as f32) * sensitivity.duration_scale();
-    scaled.max(1.0) as u32
+    let scaled = match sensitivity {
+        MotionSensitivity::Off => 0,
+        MotionSensitivity::Subtle => ms.saturating_mul(3) / 5,
+        MotionSensitivity::Full => ms,
+    };
+    scaled.max(1)
 }
 
 // ── Discrete event effects ──────────────────────────────────────────────
@@ -226,7 +232,7 @@ struct ShimmerState {
 /// Animated brand-gradient shimmer for the title bar.
 ///
 /// Replaces the hand-rolled `TitleBar::tick()` phase advancement with a
-/// `never_complete` effect_fn that runs continuously and modulates each
+/// `never_complete` `effect_fn` that runs continuously and modulates each
 /// brand cell's foreground color through four animation layers:
 ///   1. Base position-based gradient (Purple → Coral → Cyan)
 ///   2. Primary fast traveling wave (sin)
@@ -234,7 +240,7 @@ struct ShimmerState {
 ///   4. Global drift (very slow)
 ///   + Traveling spark — gaussian highlight rolling across the brand
 ///
-/// The effect operates over the brand area only (CellFilter::Text excludes
+/// The effect operates over the brand area only (`CellFilter::Text` excludes
 /// the inter-character spaces). Time-based phase advancement uses
 /// `last_tick` so it stays smooth at any render rate.
 pub fn title_shimmer(brand_area: Rect, sensitivity: MotionSensitivity) -> Effect {

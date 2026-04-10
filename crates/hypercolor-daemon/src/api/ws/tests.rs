@@ -1,4 +1,4 @@
-use std::sync::{Arc, LazyLock, Mutex as StdMutex};
+use std::sync::{Arc, LazyLock, Mutex as StdMutex, PoisonError};
 
 use axum::body::Bytes;
 use axum::extract::ws::Utf8Bytes;
@@ -53,22 +53,13 @@ fn reset_ws_payload_caches() {
     WS_SPECTRUM_PAYLOAD_BUILD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
     WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
     for shard in WS_FRAME_PAYLOAD_CACHE.iter() {
-        shard
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clear();
+        shard.lock().unwrap_or_else(PoisonError::into_inner).clear();
     }
     for shard in WS_CANVAS_BINARY_CACHE.iter() {
-        shard
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clear();
+        shard.lock().unwrap_or_else(PoisonError::into_inner).clear();
     }
     for shard in WS_SPECTRUM_PAYLOAD_CACHE.iter() {
-        shard
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clear();
+        shard.lock().unwrap_or_else(PoisonError::into_inner).clear();
     }
 }
 
@@ -430,7 +421,7 @@ fn frame_rendered_events_are_suppressed_when_metrics_are_subscribed() {
         },
     };
 
-    assert!(!should_relay_event(&event, &channels));
+    assert!(!should_relay_event(&event, channels));
 }
 
 #[test]
@@ -449,7 +440,7 @@ fn frame_rendered_events_pass_through_for_event_only_clients() {
         },
     };
 
-    assert!(should_relay_event(&event, &channels));
+    assert!(should_relay_event(&event, channels));
 }
 
 #[test]
@@ -808,7 +799,7 @@ fn filter_frame_zones_respects_named_subset() {
 fn cached_frame_payload_reuses_binary_bytes_for_matching_requests() {
     let _guard = WS_CACHE_TEST_LOCK
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
+        .unwrap_or_else(PoisonError::into_inner);
     reset_ws_payload_caches();
 
     let frame = sample_frame();
@@ -843,7 +834,7 @@ fn cached_frame_payload_reuses_binary_bytes_for_matching_requests() {
 fn cached_frame_payload_keys_selection_and_format_separately() {
     let _guard = WS_CACHE_TEST_LOCK
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
+        .unwrap_or_else(PoisonError::into_inner);
     reset_ws_payload_caches();
 
     let frame = sample_frame();
@@ -899,7 +890,7 @@ fn cached_frame_payload_keys_selection_and_format_separately() {
 fn cached_spectrum_payload_reuses_bytes_for_matching_requests() {
     let _guard = WS_CACHE_TEST_LOCK
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
+        .unwrap_or_else(PoisonError::into_inner);
     reset_ws_payload_caches();
 
     let spectrum = SpectrumData {
@@ -933,7 +924,7 @@ fn cached_spectrum_payload_reuses_bytes_for_matching_requests() {
 fn cached_spectrum_payload_keys_bin_count_separately() {
     let _guard = WS_CACHE_TEST_LOCK
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
+        .unwrap_or_else(PoisonError::into_inner);
     reset_ws_payload_caches();
 
     let spectrum = SpectrumData {

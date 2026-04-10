@@ -102,10 +102,7 @@ impl MotionSystem {
 
         let start = Instant::now();
         self.manager.process_effects(elapsed.into(), buf, area);
-        #[allow(clippy::cast_possible_truncation)]
-        {
-            self.last_process_us = start.elapsed().as_micros() as u64;
-        }
+        self.last_process_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
 
         elapsed
     }

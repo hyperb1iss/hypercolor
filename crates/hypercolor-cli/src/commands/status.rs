@@ -91,6 +91,10 @@ fn print_status_table(data: &serde_json::Value, ctx: &OutputContext) {
 }
 
 /// Build the rendered status lines as a Vec so tests can inspect them.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the status table is a single rich formatter with intentionally linear output order"
+)]
 fn status_table_lines(data: &serde_json::Value, p: &Painter) -> Vec<String> {
     let mut lines = Vec::with_capacity(16);
 
@@ -166,13 +170,12 @@ fn status_table_lines(data: &serde_json::Value, p: &Painter) -> Vec<String> {
         .unwrap_or(0);
 
     let fps_ratio = if target_fps > 0 {
-        #[allow(clippy::cast_precision_loss)]
-        let r = (actual_fps / target_fps as f64).clamp(0.0, 1.0);
-        r
+        let target_fps = u32::try_from(target_fps).unwrap_or(u32::MAX);
+        (actual_fps / f64::from(target_fps)).clamp(0.0, 1.0)
     } else {
         0.0
     };
-    let fps_pct = (fps_ratio * 100.0).round() as u32;
+    let fps_pct = ratio_percent(fps_ratio);
     let bar = render_fps_bar(fps_ratio, 24, p);
     let fps_display = format!("{actual_fps:>4.1} {} {target_fps}", p.muted("/"));
     let health_word = format_fps_health(fps_pct, p);
@@ -329,7 +332,7 @@ fn format_count(n: u64) -> String {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, &b) in bytes.iter().enumerate() {
-        if i > 0 && (bytes.len() - i) % 3 == 0 {
+        if i > 0 && (bytes.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(char::from(b));
@@ -338,13 +341,15 @@ fn format_count(n: u64) -> String {
 }
 
 /// Render a progress bar for FPS ratio using cyan filled blocks and dim empty.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::as_conversions,
+    reason = "ratio is clamped to 0..=1 and width is a bounded display width before rounding"
+)]
 fn render_fps_bar(ratio: f64, width: usize, p: &Painter) -> String {
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::cast_precision_loss
-    )]
-    let filled = (ratio * width as f64).round() as usize;
+    let filled = (ratio.clamp(0.0, 1.0) * (width as f64)).round() as usize;
     let filled = filled.min(width);
     let empty = width - filled;
 
@@ -377,6 +382,16 @@ fn format_fps_health(pct: u32, p: &Painter) -> String {
     } else {
         p.error(&text)
     }
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions,
+    reason = "ratio is clamped to 0..=1 before conversion to a 0..=100 display percentage"
+)]
+fn ratio_percent(ratio: f64) -> u32 {
+    (ratio.clamp(0.0, 1.0) * 100.0).round() as u32
 }
 
 // ── JSON field extractors ──────────────────────────────────────────────

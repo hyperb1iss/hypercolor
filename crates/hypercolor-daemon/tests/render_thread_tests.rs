@@ -632,9 +632,8 @@ async fn render_thread_try_spawn_rejects_explicit_gpu_without_feature() {
     );
     state.render_acceleration_mode = RenderAccelerationMode::Gpu;
 
-    let error = match RenderThread::try_spawn(state) {
-        Ok(_) => panic!("explicit gpu mode should fail before the render thread starts"),
-        Err(error) => error,
+    let Err(error) = RenderThread::try_spawn(state) else {
+        panic!("explicit gpu mode should fail before the render thread starts");
     };
     assert!(format!("{error:#}").contains("rebuild hypercolor-daemon with the `wgpu` feature"));
 }
@@ -2148,6 +2147,10 @@ async fn pipeline_reuses_screen_preview_surface_for_canvas_and_screen_watch() {
     );
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "End-to-end screen preview retention coverage needs full pipeline setup"
+)]
 #[tokio::test]
 async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
     let layout = test_layout(vec![
@@ -2459,7 +2462,7 @@ async fn idle_pipeline_skips_spectrum_publication_without_receivers() {
 
     let published_spectrum = state.event_bus.spectrum_sender().borrow().clone();
     assert_eq!(published_spectrum.timestamp_ms, 0);
-    assert_eq!(published_spectrum.level, 0.0);
+    assert!(published_spectrum.level.abs() <= f32::EPSILON);
     assert_eq!(published_spectrum.bins.len(), 0);
 }
 

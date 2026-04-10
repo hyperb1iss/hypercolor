@@ -107,12 +107,10 @@ async fn ws_send_text(stream: &mut TcpStream, payload: &str) -> Result<()> {
 
     let len = payload.len();
     if len < 126 {
-        #[expect(clippy::cast_possible_truncation, reason = "len < 126")]
-        frame.push(0x80 | len as u8); // mask bit + 7-bit length
-    } else if len <= u16::MAX as usize {
-        frame.push(0x80 | 126);
-        #[expect(clippy::cast_possible_truncation, reason = "len fits in u16")]
-        frame.extend_from_slice(&(len as u16).to_be_bytes());
+        frame.push(0x80_u8 | u8::try_from(len).expect("len < 126")); // mask bit + 7-bit length
+    } else if u16::try_from(len).is_ok() {
+        frame.push(0x80_u8 | 0x7E);
+        frame.extend_from_slice(&u16::try_from(len).expect("len fits in u16").to_be_bytes());
     } else {
         bail!("test payloads should never exceed 65535 bytes");
     }

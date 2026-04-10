@@ -2,7 +2,7 @@
 //!
 //! Covers only the TL Fan hub (`0x7372`), which speaks a fundamentally
 //! different framed HID protocol from the ENE 6K77 UNI Hub family:
-//! 64-byte packets with an incrementing 16-bit counter, per-fan SetLight
+//! 64-byte packets with an incrementing 16-bit counter, per-fan `SetLight`
 //! commands carrying averaged colors, and handshake/product-info init
 //! responses that populate per-port fan counts and firmware strings.
 

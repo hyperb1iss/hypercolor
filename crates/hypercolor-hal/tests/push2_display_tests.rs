@@ -205,10 +205,7 @@ fn solid_red_frame_encodes_to_expected_rgb565_pattern() {
     // encoded = (0 << 11) | (0 << 5) | 31 = 0x001F (LE: [0x1F, 0x00])
     // After XOR with [0xE7, 0xF3, ...]: [0x1F^0xE7, 0x00^0xF3] = [0xF8, 0xF3]
     let first_pixel = &commands[1].data[..2];
-    let expected = [
-        0x1F ^ PUSH2_DISPLAY_XOR_MASK[0],
-        0x00 ^ PUSH2_DISPLAY_XOR_MASK[1],
-    ];
+    let expected = [0x1F ^ PUSH2_DISPLAY_XOR_MASK[0], PUSH2_DISPLAY_XOR_MASK[1]];
     assert_eq!(
         first_pixel, &expected,
         "solid red first pixel should be RGB565 0x001F XOR'd with mask"
@@ -253,7 +250,7 @@ fn solid_blue_frame_encodes_to_expected_rgb565_pattern() {
     // encoded = (31 << 11) | (0 << 5) | 0 = 0xF800 (LE: [0x00, 0xF8])
     // After XOR: [0x00^0xE7, 0xF8^0xF3] = [0xE7, 0x0B]
     let first_pixel = &commands[1].data[..2];
-    let expected_low = 0x00 ^ PUSH2_DISPLAY_XOR_MASK[0];
+    let expected_low = PUSH2_DISPLAY_XOR_MASK[0];
     let expected_high = 0xF8u8 ^ PUSH2_DISPLAY_XOR_MASK[1];
     let diff_low = first_pixel[0].abs_diff(expected_low);
     let diff_high = first_pixel[1].abs_diff(expected_high);
@@ -290,13 +287,13 @@ fn each_line_includes_128_byte_padding_after_pixel_data() {
         let padding_start = line_start + PUSH2_DISPLAY_LINE_PIXELS;
         let padding_end = padding_start + PUSH2_DISPLAY_LINE_PADDING;
 
-        // Padding region exists and is part of XOR masking
-        let _padding = &frame_data[padding_start..padding_end];
+        let padding = &frame_data[padding_start..padding_end];
         assert_eq!(
             padding_end - padding_start,
             PUSH2_DISPLAY_LINE_PADDING,
             "line {row} padding should be {PUSH2_DISPLAY_LINE_PADDING} bytes"
         );
+        assert_eq!(padding.len(), PUSH2_DISPLAY_LINE_PADDING);
     }
 }
 

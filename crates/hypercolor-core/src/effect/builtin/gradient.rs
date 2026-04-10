@@ -431,6 +431,10 @@ impl EffectRenderer for GradientRenderer {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "control dispatch mirrors the public schema and keeps cache invalidation local"
+    )]
     fn set_control(&mut self, name: &str, value: &ControlValue) {
         match name {
             "color_start" => {

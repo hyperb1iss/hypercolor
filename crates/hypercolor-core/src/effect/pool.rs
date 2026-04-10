@@ -163,6 +163,10 @@ impl EffectSlot {
         self.controls = desired;
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "rendering needs the full frame input plus a mutable target canvas"
+    )]
     fn render_into(
         &mut self,
         delta_secs: f32,

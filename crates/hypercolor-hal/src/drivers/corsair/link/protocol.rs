@@ -1,6 +1,6 @@
 //! Native Corsair iCUE LINK hub protocol.
 
-use std::sync::RwLock;
+use std::sync::{PoisonError, RwLock};
 use std::time::Duration;
 
 use hypercolor_types::device::{
@@ -78,7 +78,7 @@ impl CorsairLinkProtocol {
     pub fn children(&self) -> Vec<LinkChild> {
         self.state
             .read()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .children
             .clone()
     }
@@ -105,7 +105,7 @@ impl CorsairLinkProtocol {
         usize::try_from(
             self.state
                 .read()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(PoisonError::into_inner)
                 .total_leds,
         )
         .unwrap_or_default()
@@ -200,7 +200,7 @@ impl CorsairLinkProtocol {
 
     fn update_children(&self, children: Vec<LinkChild>) {
         let total_leds = children.iter().map(|child| child.led_count).sum();
-        let mut state = self.state.write().unwrap_or_else(|err| err.into_inner());
+        let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
         state.children = children;
         state.total_leds = total_leds;
     }
@@ -280,7 +280,7 @@ impl Protocol for CorsairLinkProtocol {
 
         self.state
             .write()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .last_frame_commands
             .clone_from(&commands);
 
@@ -297,7 +297,7 @@ impl Protocol for CorsairLinkProtocol {
     fn keepalive_commands(&self) -> Vec<ProtocolCommand> {
         self.state
             .read()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .last_frame_commands
             .clone()
     }
@@ -322,7 +322,7 @@ impl Protocol for CorsairLinkProtocol {
     fn zones(&self) -> Vec<ProtocolZone> {
         self.state
             .read()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .children
             .iter()
             .map(|child| ProtocolZone {
@@ -338,7 +338,7 @@ impl Protocol for CorsairLinkProtocol {
         let total_leds = self
             .state
             .read()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .total_leds;
         DeviceCapabilities {
             led_count: total_leds,
@@ -355,7 +355,7 @@ impl Protocol for CorsairLinkProtocol {
     fn total_leds(&self) -> u32 {
         self.state
             .read()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .total_leds
     }
 

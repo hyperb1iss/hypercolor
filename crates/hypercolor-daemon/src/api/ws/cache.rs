@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex as StdMutex};
+use std::sync::{Arc, LazyLock, Mutex as StdMutex, PoisonError};
 
 use axum::body::Bytes;
 use axum::extract::ws::Utf8Bytes;
@@ -40,46 +40,49 @@ pub(super) static WS_FRAME_PAYLOAD_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0
 pub(super) static WS_SPECTRUM_PAYLOAD_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(super) static WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 
-pub(super) static WS_CANVAS_BINARY_CACHE: LazyLock<
-    Vec<StdMutex<VecDeque<(CanvasBinaryCacheKey, Bytes)>>>,
-> = LazyLock::new(|| {
-    (0..WS_CACHE_SHARD_COUNT)
-        .map(|_| {
-            StdMutex::new(VecDeque::with_capacity(per_shard_capacity(
-                WS_CANVAS_BINARY_CACHE_CAPACITY,
-            )))
-        })
-        .collect()
-});
-pub(super) static WS_FRAME_PAYLOAD_CACHE: LazyLock<
-    Vec<StdMutex<VecDeque<(FramePayloadCacheKey, FrameRelayMessage)>>>,
-> = LazyLock::new(|| {
-    (0..WS_CACHE_SHARD_COUNT)
-        .map(|_| {
-            StdMutex::new(VecDeque::with_capacity(per_shard_capacity(
-                WS_FRAME_PAYLOAD_CACHE_CAPACITY,
-            )))
-        })
-        .collect()
-});
-pub(super) static WS_SPECTRUM_PAYLOAD_CACHE: LazyLock<
-    Vec<StdMutex<VecDeque<(SpectrumPayloadCacheKey, Bytes)>>>,
-> = LazyLock::new(|| {
-    (0..WS_CACHE_SHARD_COUNT)
-        .map(|_| {
-            StdMutex::new(VecDeque::with_capacity(per_shard_capacity(
-                WS_SPECTRUM_PAYLOAD_CACHE_CAPACITY,
-            )))
-        })
-        .collect()
-});
-static WS_PREVIEW_SCALE_LUT_CACHE: LazyLock<StdMutex<VecDeque<(u32, [u8; 256])>>> =
+type CanvasBinaryCacheShard = StdMutex<VecDeque<(CanvasBinaryCacheKey, Bytes)>>;
+type FramePayloadCacheShard = StdMutex<VecDeque<(FramePayloadCacheKey, FrameRelayMessage)>>;
+type SpectrumPayloadCacheShard = StdMutex<VecDeque<(SpectrumPayloadCacheKey, Bytes)>>;
+type PreviewScaleLutCache = StdMutex<VecDeque<(u32, [u8; 256])>>;
+type CommandRouterCache = StdMutex<Option<(usize, axum::Router)>>;
+
+pub(super) static WS_CANVAS_BINARY_CACHE: LazyLock<Vec<CanvasBinaryCacheShard>> =
+    LazyLock::new(|| {
+        (0..WS_CACHE_SHARD_COUNT)
+            .map(|_| {
+                StdMutex::new(VecDeque::with_capacity(per_shard_capacity(
+                    WS_CANVAS_BINARY_CACHE_CAPACITY,
+                )))
+            })
+            .collect()
+    });
+pub(super) static WS_FRAME_PAYLOAD_CACHE: LazyLock<Vec<FramePayloadCacheShard>> =
+    LazyLock::new(|| {
+        (0..WS_CACHE_SHARD_COUNT)
+            .map(|_| {
+                StdMutex::new(VecDeque::with_capacity(per_shard_capacity(
+                    WS_FRAME_PAYLOAD_CACHE_CAPACITY,
+                )))
+            })
+            .collect()
+    });
+pub(super) static WS_SPECTRUM_PAYLOAD_CACHE: LazyLock<Vec<SpectrumPayloadCacheShard>> =
+    LazyLock::new(|| {
+        (0..WS_CACHE_SHARD_COUNT)
+            .map(|_| {
+                StdMutex::new(VecDeque::with_capacity(per_shard_capacity(
+                    WS_SPECTRUM_PAYLOAD_CACHE_CAPACITY,
+                )))
+            })
+            .collect()
+    });
+static WS_PREVIEW_SCALE_LUT_CACHE: LazyLock<PreviewScaleLutCache> =
     LazyLock::new(|| StdMutex::new(VecDeque::with_capacity(WS_PREVIEW_SCALE_LUT_CACHE_CAPACITY)));
 
 /// Single-slot cache of the router used for WebSocket command dispatch. Keyed by
 /// the `AppState` pointer so parallel tests with distinct states invalidate the
 /// entry instead of crossing wires.
-pub(super) static WS_COMMAND_ROUTER_CACHE: LazyLock<StdMutex<Option<(usize, axum::Router)>>> =
+pub(super) static WS_COMMAND_ROUTER_CACHE: LazyLock<CommandRouterCache> =
     LazyLock::new(|| StdMutex::new(None));
 
 pub(super) struct WsClientGuard;
@@ -143,7 +146,7 @@ pub(super) enum FrameRelayMessage {
 }
 
 pub(super) fn cached_command_router(state: &Arc<AppState>) -> axum::Router {
-    let key = Arc::as_ptr(state) as usize;
+    let key = Arc::as_ptr(state).addr();
     if let Ok(mut guard) = WS_COMMAND_ROUTER_CACHE.lock() {
         if let Some((cached_key, router)) = guard.as_ref()
             && *cached_key == key
@@ -519,7 +522,7 @@ fn preview_scale_lut(brightness: f32) -> [u8; 256] {
     {
         let mut cache = WS_PREVIEW_SCALE_LUT_CACHE
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+            .unwrap_or_else(PoisonError::into_inner);
         if let Some(index) = cache
             .iter()
             .position(|(cached_bits, _)| *cached_bits == brightness_bits)
@@ -539,8 +542,8 @@ fn preview_scale_lut(brightness: f32) -> [u8; 256] {
     }
 
     for channel in 0_u16..=255 {
-        lut[usize::from(channel)] =
-            linear_to_srgb_u8(srgb_u8_to_linear(channel as u8) * brightness);
+        let channel_u8 = u8::try_from(channel).expect("preview LUT indices fit in u8");
+        lut[usize::from(channel)] = linear_to_srgb_u8(srgb_u8_to_linear(channel_u8) * brightness);
     }
 
     remember_preview_scale_lut(brightness_bits, lut)
@@ -549,7 +552,7 @@ fn preview_scale_lut(brightness: f32) -> [u8; 256] {
 fn remember_preview_scale_lut(brightness_bits: u32, lut: [u8; 256]) -> [u8; 256] {
     let mut cache = WS_PREVIEW_SCALE_LUT_CACHE
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
+        .unwrap_or_else(PoisonError::into_inner);
     if let Some(index) = cache
         .iter()
         .position(|(cached_bits, _)| *cached_bits == brightness_bits)
@@ -598,7 +601,7 @@ where
 fn frame_payload_cache_get(key: FramePayloadCacheKey) -> Option<FrameRelayMessage> {
     let mut cache = WS_FRAME_PAYLOAD_CACHE[cache_shard_index(&key)]
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
+        .unwrap_or_else(PoisonError::into_inner);
     let index = cache.iter().position(|(candidate, _)| *candidate == key)?;
     let (candidate, payload) = cache.remove(index)?;
     let cached = payload.clone();
@@ -609,7 +612,7 @@ fn frame_payload_cache_get(key: FramePayloadCacheKey) -> Option<FrameRelayMessag
 fn frame_payload_cache_put(key: FramePayloadCacheKey, payload: FrameRelayMessage) {
     let mut cache = WS_FRAME_PAYLOAD_CACHE[cache_shard_index(&key)]
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
+        .unwrap_or_else(PoisonError::into_inner);
     if let Some(index) = cache.iter().position(|(candidate, _)| *candidate == key) {
         let _ = cache.remove(index);
     }
@@ -622,7 +625,7 @@ fn frame_payload_cache_put(key: FramePayloadCacheKey, payload: FrameRelayMessage
 fn canvas_binary_cache_get(key: CanvasBinaryCacheKey) -> Option<Bytes> {
     let mut cache = WS_CANVAS_BINARY_CACHE[cache_shard_index(&key)]
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
+        .unwrap_or_else(PoisonError::into_inner);
     let index = cache.iter().position(|(candidate, _)| *candidate == key)?;
     let (candidate, payload) = cache.remove(index)?;
     let cached = payload.clone();
@@ -633,7 +636,7 @@ fn canvas_binary_cache_get(key: CanvasBinaryCacheKey) -> Option<Bytes> {
 fn canvas_binary_cache_put(key: CanvasBinaryCacheKey, payload: Bytes) {
     let mut cache = WS_CANVAS_BINARY_CACHE[cache_shard_index(&key)]
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
+        .unwrap_or_else(PoisonError::into_inner);
     if let Some(index) = cache.iter().position(|(candidate, _)| *candidate == key) {
         let _ = cache.remove(index);
     }
@@ -646,7 +649,7 @@ fn canvas_binary_cache_put(key: CanvasBinaryCacheKey, payload: Bytes) {
 fn spectrum_payload_cache_get(key: SpectrumPayloadCacheKey) -> Option<Bytes> {
     let mut cache = WS_SPECTRUM_PAYLOAD_CACHE[cache_shard_index(&key)]
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
+        .unwrap_or_else(PoisonError::into_inner);
     let index = cache.iter().position(|(candidate, _)| *candidate == key)?;
     let (candidate, payload) = cache.remove(index)?;
     let cached = payload.clone();
@@ -657,7 +660,7 @@ fn spectrum_payload_cache_get(key: SpectrumPayloadCacheKey) -> Option<Bytes> {
 fn spectrum_payload_cache_put(key: SpectrumPayloadCacheKey, payload: Bytes) {
     let mut cache = WS_SPECTRUM_PAYLOAD_CACHE[cache_shard_index(&key)]
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
+        .unwrap_or_else(PoisonError::into_inner);
     if let Some(index) = cache.iter().position(|(candidate, _)| *candidate == key) {
         let _ = cache.remove(index);
     }

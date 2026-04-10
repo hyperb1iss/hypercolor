@@ -197,6 +197,10 @@ async fn build_manager_with_backends(
     (manager, ids, write_counts, records)
 }
 
+fn u8_tag(value: usize) -> u8 {
+    u8::try_from(value).expect("test tag must fit in u8")
+}
+
 // ── Scenario 1: Concurrent writes to different backends ─────────────────────
 
 #[tokio::test]
@@ -223,7 +227,7 @@ async fn concurrent_writes_to_different_backends_do_not_block() {
     for (task_idx, (io, device_id)) in handles.into_iter().enumerate() {
         tasks.push(tokio::spawn(async move {
             for frame_idx in 0..PER_BACKEND_WRITES {
-                let tag = (task_idx * PER_BACKEND_WRITES + frame_idx) as u8;
+                let tag = u8_tag(task_idx * PER_BACKEND_WRITES + frame_idx);
                 io.write_colors(device_id, &[[tag, 0, 0]; 4])
                     .await
                     .expect("concurrent write should succeed");
@@ -283,9 +287,9 @@ async fn concurrent_writes_to_same_backend_serialize_in_order() {
         tasks.push(tokio::spawn(async move {
             // Pack `writer_idx` into pixel[0] and sequence into pixel[1] so
             // the recorder can reconstruct per-writer order.
-            let writer_tag = writer_idx as u8;
+            let writer_tag = u8_tag(writer_idx);
             for seq in 0..PER_WRITER_FRAMES {
-                let pixel = [writer_tag, seq as u8, 0];
+                let pixel = [writer_tag, u8_tag(seq), 0];
                 io.write_colors(dev, &[pixel; 4])
                     .await
                     .expect("serialized write should succeed");
@@ -331,7 +335,7 @@ async fn concurrent_writes_to_same_backend_serialize_in_order() {
             PER_WRITER_FRAMES,
             "writer {writer_idx} lost frames: {seen:?}"
         );
-        let expected: Vec<u8> = (0..PER_WRITER_FRAMES as u8).collect();
+        let expected: Vec<u8> = (0..PER_WRITER_FRAMES).map(u8_tag).collect();
         assert_eq!(
             seen, &expected,
             "writer {writer_idx} frames arrived out of order"
@@ -369,7 +373,7 @@ async fn slow_backend_does_not_block_fast_backend() {
         let io = slow_io.clone();
         tokio::spawn(async move {
             for i in 0..SLOW_WRITES {
-                io.write_colors(slow_device, &[[i as u8, 0, 0]; 4])
+                io.write_colors(slow_device, &[[u8_tag(i), 0, 0]; 4])
                     .await
                     .expect("slow write should succeed");
             }
@@ -381,7 +385,7 @@ async fn slow_backend_does_not_block_fast_backend() {
         tokio::spawn(async move {
             let fast_start = Instant::now();
             for i in 0..FAST_WRITES {
-                io.write_colors(fast_device, &[[i as u8, 0, 0]; 4])
+                io.write_colors(fast_device, &[[u8_tag(i), 0, 0]; 4])
                     .await
                     .expect("fast write should succeed");
             }
@@ -438,7 +442,7 @@ async fn write_during_disconnect_is_graceful() {
     // Perform pre-disconnect writes sequentially so we can assert on the
     // exact number that landed before teardown.
     for i in 0..PRE_DISCONNECT_WRITES {
-        io.write_colors(device_id, &[[i as u8, 0, 0]; 4])
+        io.write_colors(device_id, &[[u8_tag(i), 0, 0]; 4])
             .await
             .expect("pre-disconnect write should succeed");
     }
@@ -454,7 +458,7 @@ async fn write_during_disconnect_is_graceful() {
     // Post-disconnect writes must fail cleanly — no panics, typed errors.
     let mut failure_count = 0usize;
     for i in 0..POST_DISCONNECT_WRITES {
-        let tag = (PRE_DISCONNECT_WRITES + i) as u8;
+        let tag = u8_tag(PRE_DISCONNECT_WRITES + i);
         let result = io.write_colors(device_id, &[[tag, 0, 0]; 4]).await;
         match result {
             Ok(()) => {
@@ -499,7 +503,7 @@ async fn frame_pipeline_stress_test_accounts_for_every_frame() {
             for frame_idx in 0..WRITES_PER_BACKEND {
                 // Tag each payload with task + sequence so the recorder can
                 // verify uniqueness and ordering.
-                let first_byte = ((task_idx * 7) ^ frame_idx) as u8;
+                let first_byte = u8_tag((task_idx * 7) ^ frame_idx);
                 io.write_colors(device_id, &[[first_byte, 0, 0]; 4])
                     .await
                     .expect("stress write should succeed");

@@ -203,7 +203,7 @@ impl ChannelConfig {
         Ok(())
     }
 
-    pub(super) fn filtered_json(&self, channels: &ChannelSet) -> serde_json::Value {
+    pub(super) fn filtered_json(&self, channels: ChannelSet) -> serde_json::Value {
         let mut map = serde_json::Map::new();
 
         for channel in channels.iter() {
@@ -740,7 +740,7 @@ pub(super) fn parse_channels(channels: &[String]) -> Result<Vec<WsChannel>, WsPr
     Ok(parsed)
 }
 
-pub(super) fn sorted_channel_names(channels: &ChannelSet) -> Vec<String> {
+pub(super) fn sorted_channel_names(channels: ChannelSet) -> Vec<String> {
     let mut names: Vec<String> = channels
         .iter()
         .map(|channel| channel.as_str().to_owned())
@@ -750,7 +750,7 @@ pub(super) fn sorted_channel_names(channels: &ChannelSet) -> Vec<String> {
 }
 
 pub(super) fn unique_sorted_channel_names(channels: &[WsChannel]) -> Vec<String> {
-    sorted_channel_names(&ChannelSet::from_channels(channels))
+    sorted_channel_names(ChannelSet::from_channels(channels))
 }
 
 pub(super) fn ws_capabilities() -> Vec<String> {
@@ -805,7 +805,7 @@ pub(super) fn to_snake_case(input: &str) -> String {
 
 pub(super) fn should_relay_event(
     event: &hypercolor_types::event::HypercolorEvent,
-    channels: &ChannelSet,
+    channels: ChannelSet,
 ) -> bool {
     if !channels.contains(WsChannel::Events) {
         return false;

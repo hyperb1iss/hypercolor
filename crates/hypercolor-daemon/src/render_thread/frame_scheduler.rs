@@ -16,6 +16,10 @@ pub(crate) struct SceneTransitionSnapshot {
 }
 
 #[derive(Debug, Clone, Default)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the `active_` prefix keeps the runtime snapshot aligned with scene manager terminology"
+)]
 pub(crate) struct SceneRuntimeSnapshot {
     pub active_scene_id: Option<SceneId>,
     pub active_transition: Option<SceneTransitionSnapshot>,
@@ -65,6 +69,10 @@ impl FrameScheduler {
         Self
     }
 
+    #[allow(
+        clippy::unused_self,
+        reason = "FrameScheduler keeps a method-shaped API for future scheduling state"
+    )]
     pub fn build_snapshot(&mut self, inputs: FrameSceneSnapshotInputs) -> FrameSceneSnapshot {
         FrameSceneSnapshot {
             frame_token: inputs.frame_token,

@@ -1,6 +1,6 @@
 //! ASUS Aura ENE `SMBus` protocol helpers.
 
-use std::sync::RwLock;
+use std::sync::{PoisonError, RwLock};
 use std::time::Duration;
 
 use tracing::warn;
@@ -424,7 +424,7 @@ impl AuraSmBusProtocol {
     pub fn firmware_name(&self) -> Option<String> {
         self.state
             .read()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .firmware_name
             .clone()
     }
@@ -434,7 +434,7 @@ impl AuraSmBusProtocol {
     pub fn firmware_variant(&self) -> Option<EneFirmwareVariant> {
         self.state
             .read()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .variant
     }
 
@@ -443,7 +443,7 @@ impl AuraSmBusProtocol {
     pub fn supports_mode_14(&self) -> bool {
         self.state
             .read()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .supports_mode_14
     }
 }
@@ -503,7 +503,7 @@ impl Protocol for AuraSmBusProtocol {
                 let firmware = decode_ene_firmware_name(data)?;
                 let variant = lookup_ene_firmware_variant(&firmware);
 
-                let mut state = self.state.write().unwrap_or_else(|err| err.into_inner());
+                let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
                 state.firmware_name = Some(firmware.clone());
                 state.variant = variant;
 
@@ -513,7 +513,7 @@ impl Protocol for AuraSmBusProtocol {
                 })
             }
             ENE_CONFIG_TABLE_LEN => {
-                let mut state = self.state.write().unwrap_or_else(|err| err.into_inner());
+                let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
                 let Some(variant) = state.variant else {
                     return Err(ProtocolError::MalformedResponse {
                         detail: "ENE config table arrived before firmware variant was known"
@@ -542,7 +542,7 @@ impl Protocol for AuraSmBusProtocol {
     }
 
     fn zones(&self) -> Vec<ProtocolZone> {
-        let state = self.state.read().unwrap_or_else(|err| err.into_inner());
+        let state = self.state.read().unwrap_or_else(PoisonError::into_inner);
 
         if state.led_count == 0 {
             return Vec::new();
@@ -572,7 +572,7 @@ impl Protocol for AuraSmBusProtocol {
     fn total_leds(&self) -> u32 {
         self.state
             .read()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .led_count
     }
 
