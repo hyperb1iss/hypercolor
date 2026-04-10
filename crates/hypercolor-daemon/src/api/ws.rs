@@ -1064,21 +1064,24 @@ async fn relay_spectrum(
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut spectrum_rx = None::<watch::Receiver<hypercolor_types::event::SpectrumData>>;
+    let mut active_spectrum_config = None::<SpectrumConfig>;
     let mut last_sent = Instant::now()
         .checked_sub(Duration::from_secs(1))
         .unwrap_or_else(Instant::now);
     let mut was_subscribed = false;
 
     loop {
-        let spectrum_config = {
-            let subs = subscriptions.borrow();
-            if !subs.channels.contains(WsChannel::Spectrum) {
-                None
-            } else {
-                Some(subs.config.spectrum.clone())
-            }
-        };
-        let Some(spectrum_config) = spectrum_config else {
+        if active_spectrum_config.is_none() {
+            active_spectrum_config = {
+                let subs = subscriptions.borrow();
+                if !subs.channels.contains(WsChannel::Spectrum) {
+                    None
+                } else {
+                    Some(subs.config.spectrum.clone())
+                }
+            };
+        }
+        let Some(spectrum_config) = active_spectrum_config.as_ref() else {
             let _ = spectrum_rx.take();
             was_subscribed = false;
             if subscriptions.changed().await.is_err() {
@@ -1103,6 +1106,7 @@ async fn relay_spectrum(
                         break;
                     }
                     let _ = subscriptions.borrow_and_update();
+                    active_spectrum_config = None;
                     continue;
                 }
                 changed = spectrum_rx.changed() => {
@@ -1136,6 +1140,7 @@ async fn relay_canvas(
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut canvas_rx = None::<crate::preview_runtime::PreviewFrameReceiver>;
+    let mut active_canvas_config = None::<CanvasConfig>;
     let mut latest_canvas = None::<hypercolor_core::bus::CanvasFrame>;
     let mut last_sent_frame_number: Option<u32> = None;
     let mut last_sent_brightness_bits: Option<u32> = None;
@@ -1144,19 +1149,21 @@ async fn relay_canvas(
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        let canvas_config = {
-            let subs = subscriptions.borrow();
-            if subs.channels.contains(WsChannel::Canvas) {
-                Some(subs.config.canvas.clone())
-            } else {
-                None
-            }
-        };
-        sync_preview_receiver(&mut canvas_rx, canvas_config.is_some(), || {
+        if active_canvas_config.is_none() {
+            active_canvas_config = {
+                let subs = subscriptions.borrow();
+                if subs.channels.contains(WsChannel::Canvas) {
+                    Some(subs.config.canvas.clone())
+                } else {
+                    None
+                }
+            };
+        }
+        sync_preview_receiver(&mut canvas_rx, active_canvas_config.is_some(), || {
             preview_runtime.canvas_receiver()
         });
 
-        let Some(canvas_config) = canvas_config else {
+        let Some(canvas_config) = active_canvas_config.as_ref() else {
             last_sent_frame_number = None;
             last_sent_brightness_bits = None;
             latest_canvas = None;
@@ -1172,6 +1179,7 @@ async fn relay_canvas(
                         break;
                     }
                     let _ = subscriptions.borrow_and_update();
+                    active_canvas_config = None;
                 }
             }
             continue;
@@ -1207,6 +1215,7 @@ async fn relay_canvas(
                     break;
                 }
                 let _ = subscriptions.borrow_and_update();
+                active_canvas_config = None;
             }
             _ = ticker.tick() => {
                 let Some(latest_canvas) = latest_canvas.as_ref() else {
@@ -1248,6 +1257,7 @@ async fn relay_screen_canvas(
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut canvas_rx = None::<crate::preview_runtime::PreviewFrameReceiver>;
+    let mut active_canvas_config = None::<CanvasConfig>;
     let mut latest_canvas = None::<hypercolor_core::bus::CanvasFrame>;
     let mut last_sent_frame_number: Option<u32> = None;
     let mut active_fps = 15_u32;
@@ -1255,25 +1265,28 @@ async fn relay_screen_canvas(
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        let canvas_config = {
-            let subs = subscriptions.borrow();
-            if subs.channels.contains(WsChannel::ScreenCanvas) {
-                Some(subs.config.screen_canvas.clone())
-            } else {
-                None
-            }
-        };
-        sync_preview_receiver(&mut canvas_rx, canvas_config.is_some(), || {
+        if active_canvas_config.is_none() {
+            active_canvas_config = {
+                let subs = subscriptions.borrow();
+                if subs.channels.contains(WsChannel::ScreenCanvas) {
+                    Some(subs.config.screen_canvas.clone())
+                } else {
+                    None
+                }
+            };
+        }
+        sync_preview_receiver(&mut canvas_rx, active_canvas_config.is_some(), || {
             preview_runtime.screen_canvas_receiver()
         });
 
-        let Some(canvas_config) = canvas_config else {
+        let Some(canvas_config) = active_canvas_config.as_ref() else {
             last_sent_frame_number = None;
             latest_canvas = None;
             if subscriptions.changed().await.is_err() {
                 break;
             }
             let _ = subscriptions.borrow_and_update();
+            active_canvas_config = None;
             continue;
         };
         let canvas_rx = canvas_rx
@@ -1301,6 +1314,7 @@ async fn relay_screen_canvas(
                     break;
                 }
                 let _ = subscriptions.borrow_and_update();
+                active_canvas_config = None;
             }
             _ = ticker.tick() => {
                 let Some(latest_canvas) = latest_canvas.as_ref() else {
@@ -1350,18 +1364,21 @@ async fn relay_metrics(
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut last_total_bytes = WS_TOTAL_BYTES_SENT.load(Ordering::Relaxed);
+    let mut active_interval_ms = None::<u32>;
 
     loop {
-        let interval_ms = {
-            let subs = subscriptions.borrow();
-            if subs.channels.contains(WsChannel::Metrics) {
-                Some(subs.config.metrics.interval_ms)
-            } else {
-                None
-            }
-        };
+        if active_interval_ms.is_none() {
+            active_interval_ms = {
+                let subs = subscriptions.borrow();
+                if subs.channels.contains(WsChannel::Metrics) {
+                    Some(subs.config.metrics.interval_ms)
+                } else {
+                    None
+                }
+            };
+        }
 
-        let Some(interval_ms) = interval_ms else {
+        let Some(interval_ms) = active_interval_ms else {
             if subscriptions.changed().await.is_err() {
                 break;
             }
@@ -1374,6 +1391,7 @@ async fn relay_metrics(
                     break;
                 }
                 let _ = subscriptions.borrow_and_update();
+                active_interval_ms = None;
                 continue;
             }
             _ = tokio::time::sleep(Duration::from_millis(u64::from(interval_ms))) => {}
