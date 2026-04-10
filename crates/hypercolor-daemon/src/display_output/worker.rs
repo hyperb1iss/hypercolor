@@ -13,11 +13,11 @@ use hypercolor_core::device::BackendIo;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::session::OffOutputBehavior;
 
-use super::encode::{encode_canvas_frame, display_brightness_factor, DisplayEncodeState};
+use super::encode::{DisplayEncodeState, display_brightness_factor, encode_canvas_frame};
 use super::render::display_viewport_signature;
 use super::{
-    DisplayGeometry, DisplayTarget, DisplayViewport, DisplayViewportSignature, DisplayWorkItem,
-    DISPLAY_ERROR_WARN_INTERVAL,
+    DISPLAY_ERROR_WARN_INTERVAL, DisplayGeometry, DisplayTarget, DisplayViewport,
+    DisplayViewportSignature, DisplayWorkItem,
 };
 use crate::session::OutputPowerState;
 
@@ -121,7 +121,7 @@ async fn run_display_worker(
     let mut next_send_at = Instant::now();
     let mut last_warned_at = None::<Instant>;
     let mut last_delivered_input = None::<DisplayFrameInputState>;
-    let mut last_delivered_work = None::<DisplayWorkItem>;
+    let mut last_delivered_work = None::<Arc<DisplayWorkItem>>;
     let mut next_hold_refresh_at = None::<Instant>;
     let mut encode_state = match DisplayEncodeState::new() {
         Ok(state) => state,
@@ -155,8 +155,8 @@ async fn run_display_worker(
                     }
                     () = tokio::time::sleep_until(tokio::time::Instant::from_std(hold_deadline)) => {
                         if should_refresh_static_hold(&power_state)
-                            && let Some(work) = last_delivered_work.clone() {
-                            pending = Some(Arc::new(work));
+                            && let Some(work) = last_delivered_work.as_ref() {
+                            pending = Some(Arc::clone(work));
                             last_delivered_input = None;
                         }
                     }
@@ -284,7 +284,7 @@ async fn run_display_worker(
         last_delivered_input = Some(DisplayFrameInputState::capture(
             &source, &viewport, &geometry, brightness,
         ));
-        last_delivered_work = Some((*work).clone());
+        last_delivered_work = Some(Arc::clone(&work));
         next_hold_refresh_at = static_hold_refresh_deadline(
             &power_state,
             last_delivered_work.as_ref(),
@@ -328,7 +328,7 @@ fn should_refresh_static_hold(power_state: &watch::Receiver<OutputPowerState>) -
 
 fn static_hold_refresh_deadline(
     power_state: &watch::Receiver<OutputPowerState>,
-    last_delivered_work: Option<&DisplayWorkItem>,
+    last_delivered_work: Option<&Arc<DisplayWorkItem>>,
     refresh_interval: Duration,
 ) -> Option<Instant> {
     if !should_refresh_static_hold(power_state) || last_delivered_work.is_none() {
