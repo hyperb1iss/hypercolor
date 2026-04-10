@@ -1,9 +1,8 @@
 //! System status API.
 
-use gloo_net::http::Request;
 use serde::Deserialize;
 
-use super::ApiEnvelope;
+use super::client;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -25,17 +24,5 @@ pub struct SystemStatus {
 
 /// Fetch system status.
 pub async fn fetch_status() -> Result<SystemStatus, String> {
-    let resp = Request::get("/api/v1/status")
-        .send()
-        .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    let envelope: ApiEnvelope<SystemStatus> =
-        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
-
-    Ok(envelope.data)
+    client::fetch_json("/api/v1/status").await.map_err(Into::into)
 }

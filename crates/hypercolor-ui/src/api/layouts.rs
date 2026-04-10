@@ -3,7 +3,7 @@
 use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 
-use super::ApiEnvelope;
+use super::client;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -56,76 +56,29 @@ pub struct UpdateLayoutApiRequest {
 
 /// Fetch all spatial layouts.
 pub async fn fetch_layouts() -> Result<Vec<LayoutSummary>, String> {
-    let resp = Request::get("/api/v1/layouts")
-        .send()
-        .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    let envelope: ApiEnvelope<LayoutListResponse> =
-        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
-
-    Ok(envelope.data.items)
+    let list: LayoutListResponse = client::fetch_json("/api/v1/layouts").await?;
+    Ok(list.items)
 }
 
 /// Fetch a single layout with full zone data.
 pub async fn fetch_layout(id: &str) -> Result<hypercolor_types::spatial::SpatialLayout, String> {
-    let url = format!("/api/v1/layouts/{id}");
-    let resp = Request::get(&url)
-        .send()
+    client::fetch_json(&format!("/api/v1/layouts/{id}"))
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    let envelope: ApiEnvelope<hypercolor_types::spatial::SpatialLayout> =
-        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
-
-    Ok(envelope.data)
+        .map_err(Into::into)
 }
 
 /// Fetch the currently active layout.
 pub async fn fetch_active_layout() -> Result<hypercolor_types::spatial::SpatialLayout, String> {
-    let resp = Request::get("/api/v1/layouts/active")
-        .send()
+    client::fetch_json("/api/v1/layouts/active")
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    let envelope: ApiEnvelope<hypercolor_types::spatial::SpatialLayout> =
-        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
-
-    Ok(envelope.data)
+        .map_err(Into::into)
 }
 
 /// Create a new layout.
 pub async fn create_layout(req: &CreateLayoutRequest) -> Result<LayoutSummary, String> {
-    let body = serde_json::to_string(req).map_err(|e| format!("Serialize error: {e}"))?;
-
-    let resp = Request::post("/api/v1/layouts")
-        .header("Content-Type", "application/json")
-        .body(body)
-        .map_err(|e| format!("Request error: {e}"))?
-        .send()
+    client::post_json("/api/v1/layouts", req)
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 && resp.status() != 201 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    let envelope: ApiEnvelope<LayoutSummary> =
-        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
-
-    Ok(envelope.data)
+        .map_err(Into::into)
 }
 
 /// Update a layout (metadata + optionally zones).
@@ -133,62 +86,29 @@ pub async fn update_layout(
     id: &str,
     req: &UpdateLayoutApiRequest,
 ) -> Result<LayoutSummary, String> {
-    let url = format!("/api/v1/layouts/{id}");
-    let body = serde_json::to_string(req).map_err(|e| format!("Serialize error: {e}"))?;
-
-    let resp = Request::put(&url)
-        .header("Content-Type", "application/json")
-        .body(body)
-        .map_err(|e| format!("Request error: {e}"))?
-        .send()
+    client::put_json(&format!("/api/v1/layouts/{id}"), req)
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    let envelope: ApiEnvelope<LayoutSummary> =
-        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
-
-    Ok(envelope.data)
+        .map_err(Into::into)
 }
 
 /// Apply a layout to the spatial engine.
 pub async fn apply_layout(id: &str) -> Result<(), String> {
-    let url = format!("/api/v1/layouts/{id}/apply");
-    let resp = Request::post(&url)
-        .send()
+    client::post_empty(&format!("/api/v1/layouts/{id}/apply"))
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-    Ok(())
+        .map_err(Into::into)
 }
 
 /// Push a layout to the spatial engine for live preview (no persistence).
 pub async fn preview_layout(
     layout: &hypercolor_types::spatial::SpatialLayout,
 ) -> Result<(), String> {
-    let body = serde_json::to_string(layout).map_err(|e| format!("Serialize error: {e}"))?;
-
-    let resp = Request::put("/api/v1/layouts/active/preview")
-        .header("Content-Type", "application/json")
-        .body(body)
-        .map_err(|e| format!("Request error: {e}"))?
-        .send()
+    client::put_json_discard("/api/v1/layouts/active/preview", layout)
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-    Ok(())
+        .map_err(Into::into)
 }
 
-/// Delete a layout.
+/// Delete a layout. Uses raw request because the daemon returns a
+/// structured error body with a user-facing message on failure.
 pub async fn delete_layout(id: &str) -> Result<(), String> {
     let url = format!("/api/v1/layouts/{id}");
     let resp = Request::delete(&url)

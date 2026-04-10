@@ -1,10 +1,9 @@
 //! Library API — presets and favorites.
 
-use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use super::ApiEnvelope;
+use super::client;
 
 // ── Preset Types ────────────────────────────────────────────────────────────
 
@@ -63,141 +62,59 @@ pub struct FavoriteListResponse {
 
 /// Fetch all saved presets.
 pub async fn fetch_presets() -> Result<Vec<PresetSummary>, String> {
-    let resp = Request::get("/api/v1/library/presets")
-        .send()
-        .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    let envelope: ApiEnvelope<PresetListResponse> =
-        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
-
-    Ok(envelope.data.items)
+    let list: PresetListResponse = client::fetch_json("/api/v1/library/presets").await?;
+    Ok(list.items)
 }
 
 /// Create a new preset from current control values.
 pub async fn create_preset(req: &CreatePresetRequest) -> Result<PresetSummary, String> {
-    let body = serde_json::to_string(req).map_err(|e| format!("Serialize error: {e}"))?;
-
-    let resp = Request::post("/api/v1/library/presets")
-        .header("Content-Type", "application/json")
-        .body(body)
-        .map_err(|e| format!("Request error: {e}"))?
-        .send()
+    client::post_json("/api/v1/library/presets", req)
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 201 && resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    let envelope: ApiEnvelope<PresetSummary> =
-        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
-
-    Ok(envelope.data)
+        .map_err(Into::into)
 }
 
 /// Apply a saved preset by ID.
 pub async fn apply_preset(id: &str) -> Result<(), String> {
-    let url = format!("/api/v1/library/presets/{id}/apply");
-    let resp = Request::post(&url)
-        .send()
+    client::post_empty(&format!("/api/v1/library/presets/{id}/apply"))
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-    Ok(())
+        .map_err(Into::into)
 }
 
 /// Update an existing preset (name, controls, etc.).
 pub async fn update_preset(id: &str, req: &CreatePresetRequest) -> Result<PresetSummary, String> {
-    let url = format!("/api/v1/library/presets/{id}");
-    let body = serde_json::to_string(req).map_err(|e| format!("Serialize error: {e}"))?;
-
-    let resp = Request::put(&url)
-        .header("Content-Type", "application/json")
-        .body(body)
-        .map_err(|e| format!("Request error: {e}"))?
-        .send()
+    client::put_json(&format!("/api/v1/library/presets/{id}"), req)
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    let envelope: ApiEnvelope<PresetSummary> =
-        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
-
-    Ok(envelope.data)
+        .map_err(Into::into)
 }
 
 /// Delete a preset by ID.
 pub async fn delete_preset(id: &str) -> Result<(), String> {
-    let url = format!("/api/v1/library/presets/{id}");
-    let resp = Request::delete(&url)
-        .send()
+    client::delete_empty(&format!("/api/v1/library/presets/{id}"))
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-    Ok(())
+        .map_err(Into::into)
 }
 
 // ── Favorite Functions ──────────────────────────────────────────────────────
 
 /// Fetch all favorited effect IDs.
 pub async fn fetch_favorites() -> Result<Vec<FavoriteSummary>, String> {
-    let resp = Request::get("/api/v1/library/favorites")
-        .send()
-        .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    let envelope: ApiEnvelope<FavoriteListResponse> =
-        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
-
-    Ok(envelope.data.items)
+    let list: FavoriteListResponse = client::fetch_json("/api/v1/library/favorites").await?;
+    Ok(list.items)
 }
 
 /// Add an effect to favorites.
 pub async fn add_favorite(effect_id: &str) -> Result<(), String> {
-    let body = serde_json::json!({ "effect": effect_id });
-
-    let resp = Request::post("/api/v1/library/favorites")
-        .header("Content-Type", "application/json")
-        .body(serde_json::to_string(&body).map_err(|e| format!("Serialize error: {e}"))?)
-        .map_err(|e| format!("Request error: {e}"))?
-        .send()
-        .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-    Ok(())
+    client::post_json_discard(
+        "/api/v1/library/favorites",
+        &serde_json::json!({ "effect": effect_id }),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 /// Remove an effect from favorites.
 pub async fn remove_favorite(effect_id: &str) -> Result<(), String> {
-    let url = format!("/api/v1/library/favorites/{effect_id}");
-    let resp = Request::delete(&url)
-        .send()
+    client::delete_empty(&format!("/api/v1/library/favorites/{effect_id}"))
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-    Ok(())
+        .map_err(Into::into)
 }

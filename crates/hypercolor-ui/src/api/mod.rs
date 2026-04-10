@@ -7,6 +7,7 @@
 
 use serde::Deserialize;
 
+pub mod client;
 pub mod config;
 pub mod devices;
 pub mod effects;

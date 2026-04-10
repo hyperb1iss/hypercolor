@@ -1,12 +1,11 @@
 //! Effect-related API types and fetch functions.
 
-use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use hypercolor_types::effect::{ControlDefinition, ControlValue, PresetTemplate};
 
-use super::ApiEnvelope;
+use super::client;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -71,57 +70,22 @@ pub struct EffectDetailResponse {
 
 /// Fetch all registered effects.
 pub async fn fetch_effects() -> Result<Vec<EffectSummary>, String> {
-    let resp = Request::get("/api/v1/effects")
-        .send()
-        .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    let envelope: ApiEnvelope<EffectListResponse> =
-        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
-
-    Ok(envelope.data.items)
+    let list: EffectListResponse = client::fetch_json("/api/v1/effects").await?;
+    Ok(list.items)
 }
 
 /// Fetch the currently active effect, if any.
 pub async fn fetch_active_effect() -> Result<Option<ActiveEffectResponse>, String> {
-    let resp = Request::get("/api/v1/effects/active")
-        .send()
+    client::fetch_json_optional("/api/v1/effects/active")
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() == 404 {
-        return Ok(None);
-    }
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    let envelope: ApiEnvelope<ActiveEffectResponse> =
-        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
-
-    Ok(Some(envelope.data))
+        .map_err(Into::into)
 }
 
 /// Fetch detailed metadata for one effect.
 pub async fn fetch_effect_detail(id: &str) -> Result<EffectDetailResponse, String> {
-    let url = format!("/api/v1/effects/{id}");
-    let resp = Request::get(&url)
-        .send()
+    client::fetch_json(&format!("/api/v1/effects/{id}"))
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    let envelope: ApiEnvelope<EffectDetailResponse> =
-        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
-
-    Ok(envelope.data)
+        .map_err(Into::into)
 }
 
 /// Fetch the bundled (effect-defined) presets for an effect.
@@ -132,59 +96,29 @@ pub async fn fetch_bundled_presets(id: &str) -> Result<Vec<PresetTemplate>, Stri
 
 /// Apply an effect by ID or name.
 pub async fn apply_effect(id: &str) -> Result<(), String> {
-    let url = format!("/api/v1/effects/{id}/apply");
-    let resp = Request::post(&url)
-        .send()
+    client::post_empty(&format!("/api/v1/effects/{id}/apply"))
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-    Ok(())
+        .map_err(Into::into)
 }
 
 /// Stop the currently active effect.
 pub async fn stop_effect() -> Result<(), String> {
-    let resp = Request::post("/api/v1/effects/stop")
-        .send()
+    client::post_empty("/api/v1/effects/stop")
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-    Ok(())
+        .map_err(Into::into)
 }
 
 /// Update effect control parameters.
 pub async fn update_controls(controls: &serde_json::Value) -> Result<(), String> {
-    let url = "/api/v1/effects/current/controls";
     let body = serde_json::json!({ "controls": controls });
-
-    let resp = Request::patch(url)
-        .header("Content-Type", "application/json")
-        .body(serde_json::to_string(&body).map_err(|e| format!("Serialize error: {e}"))?)
-        .map_err(|e| format!("Request error: {e}"))?
-        .send()
+    client::patch_json_discard("/api/v1/effects/current/controls", &body)
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-    Ok(())
+        .map_err(Into::into)
 }
 
 /// Reset all controls on the active effect to their defaults.
 pub async fn reset_controls() -> Result<(), String> {
-    let resp = Request::post("/api/v1/effects/current/reset")
-        .send()
+    client::post_empty("/api/v1/effects/current/reset")
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-    Ok(())
+        .map_err(Into::into)
 }
