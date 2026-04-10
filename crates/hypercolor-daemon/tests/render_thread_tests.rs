@@ -2453,6 +2453,53 @@ async fn idle_pipeline_does_not_republish_empty_screen_canvas_frames() {
     );
 }
 
+#[tokio::test]
+async fn idle_pipeline_skips_canvas_publication_without_receivers() {
+    let mut effect_engine = EffectEngine::new();
+    effect_engine
+        .activate(
+            Box::new(MockEffectRenderer::solid(64, 32, 255)),
+            MockEffectRenderer::sample_metadata("canvas-idle"),
+        )
+        .expect("activate");
+    let state = make_render_state(
+        effect_engine,
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+
+    let mut frame_rx = state.event_bus.frame_receiver();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    let first_frame = tokio::time::timeout(Duration::from_secs(1), frame_rx.changed()).await;
+    assert!(
+        first_frame.is_ok(),
+        "expected initial frame before idle throttling"
+    );
+    let _ = frame_rx.borrow_and_update();
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let published_canvas = state.event_bus.canvas_sender().borrow().clone();
+    let preview_snapshot = state.preview_runtime.snapshot();
+    assert_eq!(published_canvas.width, 0);
+    assert_eq!(published_canvas.height, 0);
+    assert_eq!(preview_snapshot.canvas_frames_published, 0);
+    assert!(preview_snapshot.latest_canvas_frame_number > 0);
+}
+
 #[test]
 fn preview_runtime_receivers_share_event_bus_canvas_channel() {
     let state = make_render_state(

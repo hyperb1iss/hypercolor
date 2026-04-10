@@ -2507,10 +2507,10 @@ mod tests {
             .send(screen_frame.clone());
         state
             .preview_runtime
-            .record_canvas_publication(&canvas_frame);
+            .record_canvas_publication(canvas_frame.frame_number, canvas_frame.timestamp_ms);
         state
             .preview_runtime
-            .record_screen_canvas_publication(&screen_frame);
+            .record_screen_canvas_publication(screen_frame.frame_number, screen_frame.timestamp_ms);
         {
             let mut performance = state.performance.write().await;
             performance.record_frame(LatestFrameMetrics {

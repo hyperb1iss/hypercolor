@@ -120,22 +120,28 @@ pub(crate) fn publish_frame_updates(
         last_audio_level_update_ms,
         publish_audio_level,
     );
-    let canvas_frame = if let Some(surface) = frame_surface {
-        CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
-    } else {
-        let canvas_rgba_len = usize_to_u32(canvas.rgba_len());
-        let (frame, copied) =
-            CanvasFrame::from_owned_canvas_with_copy_info(canvas, frame_number, elapsed_ms);
-        if copied {
-            full_frame_copy_count = full_frame_copy_count.saturating_add(1);
-            full_frame_copy_bytes = full_frame_copy_bytes.saturating_add(canvas_rgba_len);
-        }
-        frame
-    };
     state
         .preview_runtime
-        .record_canvas_publication(&canvas_frame);
-    let _ = state.event_bus.canvas_sender().send(canvas_frame);
+        .note_canvas_frame(frame_number, elapsed_ms);
+    let canvas_receivers = state.preview_canvas_receiver_count();
+    if canvas_receivers > 0 {
+        let canvas_frame = if let Some(surface) = frame_surface {
+            CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
+        } else {
+            let canvas_rgba_len = usize_to_u32(canvas.rgba_len());
+            let (frame, copied) =
+                CanvasFrame::from_owned_canvas_with_copy_info(canvas, frame_number, elapsed_ms);
+            if copied {
+                full_frame_copy_count = full_frame_copy_count.saturating_add(1);
+                full_frame_copy_bytes = full_frame_copy_bytes.saturating_add(canvas_rgba_len);
+            }
+            frame
+        };
+        state
+            .preview_runtime
+            .record_canvas_publication(frame_number, elapsed_ms);
+        let _ = state.event_bus.canvas_sender().send(canvas_frame);
+    }
     let screen_canvas_receivers = state.event_bus.screen_canvas_receiver_count();
     if screen_canvas_receivers > 0 {
         let screen_frame = if let Some(surface) = screen_preview_surface {
@@ -146,7 +152,7 @@ pub(crate) fn publish_frame_updates(
         if should_publish_screen_frame(state, &screen_frame) {
             state
                 .preview_runtime
-                .record_screen_canvas_publication(&screen_frame);
+                .record_screen_canvas_publication(frame_number, elapsed_ms);
             let _ = state.event_bus.screen_canvas_sender().send(screen_frame);
         }
     }

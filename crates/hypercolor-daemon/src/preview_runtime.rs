@@ -78,16 +78,20 @@ impl PreviewRuntime {
         }
     }
 
-    pub fn record_canvas_publication(&self, frame: &CanvasFrame) {
+    pub fn note_canvas_frame(&self, frame_number: u32, timestamp_ms: u32) {
+        self.telemetry
+            .latest_canvas_frame_number
+            .store(frame_number, Ordering::Relaxed);
+        self.telemetry
+            .latest_canvas_timestamp_ms
+            .store(timestamp_ms, Ordering::Relaxed);
+    }
+
+    pub fn record_canvas_publication(&self, frame_number: u32, timestamp_ms: u32) {
         self.telemetry
             .canvas_frames_published
             .fetch_add(1, Ordering::Relaxed);
-        self.telemetry
-            .latest_canvas_frame_number
-            .store(frame.frame_number, Ordering::Relaxed);
-        self.telemetry
-            .latest_canvas_timestamp_ms
-            .store(frame.timestamp_ms, Ordering::Relaxed);
+        self.note_canvas_frame(frame_number, timestamp_ms);
     }
 
     #[must_use]
@@ -104,16 +108,20 @@ impl PreviewRuntime {
             .unwrap_or(usize::MAX)
     }
 
-    pub fn record_screen_canvas_publication(&self, frame: &CanvasFrame) {
+    pub fn note_screen_canvas_frame(&self, frame_number: u32, timestamp_ms: u32) {
+        self.telemetry
+            .latest_screen_canvas_frame_number
+            .store(frame_number, Ordering::Relaxed);
+        self.telemetry
+            .latest_screen_canvas_timestamp_ms
+            .store(timestamp_ms, Ordering::Relaxed);
+    }
+
+    pub fn record_screen_canvas_publication(&self, frame_number: u32, timestamp_ms: u32) {
         self.telemetry
             .screen_canvas_frames_published
             .fetch_add(1, Ordering::Relaxed);
-        self.telemetry
-            .latest_screen_canvas_frame_number
-            .store(frame.frame_number, Ordering::Relaxed);
-        self.telemetry
-            .latest_screen_canvas_timestamp_ms
-            .store(frame.timestamp_ms, Ordering::Relaxed);
+        self.note_screen_canvas_frame(frame_number, timestamp_ms);
     }
 
     #[must_use]
