@@ -686,6 +686,18 @@ fn desired_preview_fps(engine_target_fps: u32, client_cap: u32, page_visible: bo
     }
 }
 
+fn preview_canvas_format() -> &'static str {
+    let hostname = web_sys::window()
+        .map(|window| window.location())
+        .and_then(|location| location.hostname().ok())
+        .unwrap_or_default();
+
+    match hostname.as_str() {
+        "localhost" | "127.0.0.1" | "::1" => "rgba",
+        _ => "rgb",
+    }
+}
+
 fn request_preview_subscription(
     ws: &web_sys::WebSocket,
     requested_preview_fps: StoredValue<u32>,
@@ -706,7 +718,7 @@ fn request_preview_subscription(
         "type": "subscribe",
         "channels": ["canvas"],
         "config": {
-            "canvas": { "fps": desired_fps, "format": "rgb" }
+            "canvas": { "fps": desired_fps, "format": preview_canvas_format() }
         }
     });
     let _ = ws.send_with_str(&subscribe_msg.to_string());
