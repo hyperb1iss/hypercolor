@@ -314,14 +314,13 @@ fn compose_preview_canvas(
     preview_width: u32,
     preview_height: u32,
 ) {
-    preview.clear();
-
     let preview_count = groups
         .iter()
         .filter(|group| group.enabled && group.effect_id.is_some())
         .count();
 
     if preview_count == 0 {
+        preview.clear();
         return;
     }
 
