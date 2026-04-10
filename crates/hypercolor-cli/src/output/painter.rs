@@ -214,6 +214,49 @@ fn load_theme(name: Option<&str>) -> opaline::Theme {
 
 // ── Clap help styling ──────────────────────────────────────────────────
 
+/// Gradient-colored banner for the top of `--help` output.
+///
+/// Renders "H Y P E R C O L O R" through the brand gradient
+/// (Purple → Coral → Cyan) with a muted separator line underneath.
+/// Returns plain text when color is suppressed.
+pub fn help_banner() -> String {
+    use opaline::{Gradient, OpalineColor};
+
+    let use_color = should_color_banner();
+
+    if !use_color {
+        return "  H Y P E R C O L O R\n  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}".to_string();
+    }
+
+    let gradient = Gradient::new(vec![
+        OpalineColor { r: 225, g: 53, b: 255 },  // Electric Purple
+        OpalineColor { r: 255, g: 106, b: 193 }, // Coral
+        OpalineColor { r: 128, g: 255, b: 234 }, // Neon Cyan
+    ]);
+
+    let title = opaline::adapters::owo_colors::gradient_string(
+        "H Y P E R C O L O R",
+        &gradient,
+    );
+
+    let sep = format!(
+        "\x1b[38;2;130;135;159m{}\x1b[0m",
+        "\u{2500}".repeat(21)
+    );
+
+    format!("  {title}\n  {sep}")
+}
+
+fn should_color_banner() -> bool {
+    if std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    if std::env::var_os("CLICOLOR_FORCE").is_some_and(|v| v != "0") {
+        return true;
+    }
+    std::io::IsTerminal::is_terminal(&std::io::stdout())
+}
+
 /// SilkCircuit-themed styles for clap help output.
 ///
 /// Maps the project's visual identity onto clap's help categories:

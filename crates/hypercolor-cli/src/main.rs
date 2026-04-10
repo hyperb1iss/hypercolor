@@ -10,7 +10,7 @@ pub mod config;
 mod output;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use client::DaemonClient;
 use output::{OutputContext, OutputFormat};
@@ -101,7 +101,11 @@ pub enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = Cli::from_arg_matches(
+        &Cli::command()
+            .before_help(output::painter::help_banner())
+            .get_matches(),
+    )?;
 
     // Initialize tracing based on verbosity
     init_tracing(cli.verbose);
