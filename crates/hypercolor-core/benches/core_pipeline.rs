@@ -13,11 +13,13 @@ use hypercolor_core::effect::builtin::{
     register_builtin_effects,
 };
 use hypercolor_core::effect::{EffectPool, EffectRegistry, EffectRenderer, FrameInput};
+use hypercolor_core::input::InputSource;
 use hypercolor_core::input::InteractionData;
+use hypercolor_core::input::audio::AudioInput;
 use hypercolor_core::input::audio::beat::{BeatDetector, BeatFrame};
 use hypercolor_core::input::audio::fft::FftPipeline;
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_types::audio::AudioData;
+use hypercolor_types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{
@@ -117,6 +119,13 @@ fn frame_time(frame_number: u64) -> f32 {
 #[expect(clippy::cast_precision_loss, clippy::as_conversions)]
 fn frame_time_f64(frame_number: u64) -> f64 {
     frame_number as f64 * f64::from(FRAME_DT_SECONDS)
+}
+
+fn manual_audio_config() -> AudioPipelineConfig {
+    AudioPipelineConfig {
+        source: AudioSourceType::None,
+        ..AudioPipelineConfig::default()
+    }
 }
 
 fn patterned_canvas(width: u32, height: u32) -> Canvas {
@@ -607,6 +616,41 @@ fn bench_audio_pipeline(c: &mut Criterion) {
             let state = beat_detector.update(black_box(&frame));
             black_box(state.beat_pulse);
             black_box(state.bpm);
+        });
+    });
+
+    let config = manual_audio_config();
+    let signal_samples = sine_wave(440.0, SAMPLE_RATE_HZ, 2_048);
+    let silence_samples = vec![0.0_f32; 2_048];
+    let mut signal_input = AudioInput::new(&config);
+    signal_input.start().expect("audio input should start");
+    signal_input
+        .set_capture_active(true)
+        .expect("audio capture should enable");
+    let mut silence_input = AudioInput::new(&config);
+    silence_input.start().expect("audio input should start");
+    silence_input
+        .set_capture_active(true)
+        .expect("audio capture should enable");
+
+    group.throughput(Throughput::Elements(2_048));
+    group.bench_function("audio_input_sample_signal", |b| {
+        b.iter(|| {
+            signal_input.push_samples(black_box(&signal_samples));
+            let data = signal_input
+                .sample_with_delta_secs(FRAME_DT_SECONDS)
+                .expect("audio sample should succeed");
+            black_box(data);
+        });
+    });
+
+    group.bench_function("audio_input_sample_silence", |b| {
+        b.iter(|| {
+            silence_input.push_samples(black_box(&silence_samples));
+            let data = silence_input
+                .sample_with_delta_secs(FRAME_DT_SECONDS)
+                .expect("audio sample should succeed");
+            black_box(data);
         });
     });
 

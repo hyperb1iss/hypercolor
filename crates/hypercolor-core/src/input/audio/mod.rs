@@ -29,6 +29,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 #[cfg(target_os = "linux")]
 use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::{Context, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -333,10 +334,17 @@ impl AudioInput {
         } else {
             DEFAULT_AUDIO_FRAME_DT
         };
+        let lock_wait_started = Instant::now();
         let mut analyzer = self
             .analyzer
             .lock()
             .map_err(|_| anyhow!("audio analyzer mutex poisoned"))?;
+        let lock_wait = lock_wait_started.elapsed();
+        tracing::trace!(
+            input = %self.name,
+            lock_wait_us = u64::try_from(lock_wait.as_micros()).unwrap_or(u64::MAX),
+            "Audio analyzer lock acquired"
+        );
         match analyzer.analyze(dt)? {
             Some(data) => Ok(InputData::Audio(data)),
             None if self.degraded_to_silence

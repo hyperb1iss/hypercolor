@@ -13,6 +13,9 @@ Reality check after review:
 - Item 2 is partially landed already. The daemon already emits
   `backpressure` messages on relay drops, and the dashboard already renders
   `BackpressureBanner`.
+- Item 3 now has trace-level lock-wait instrumentation in
+  `AudioInput::sample_with_dt()` plus baseline `core_audio` sampling
+  benchmarks; live daemon p99 capture is still pending.
 - Item 4's `update_layout` lock-ordering bug was still real and is now fixed.
 - Item 7's current `derivable_impls` set is `SurfaceFormat`,
   `SurfaceState`, and `UnassignedBehavior`.
