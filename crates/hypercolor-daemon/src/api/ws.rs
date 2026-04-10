@@ -1257,9 +1257,7 @@ async fn relay_canvas(
     let mut latest_canvas = None::<hypercolor_core::bus::CanvasFrame>;
     let mut last_sent_frame_number: Option<u32> = None;
     let mut last_sent_brightness_bits: Option<u32> = None;
-    let mut active_fps = 15_u32;
-    let mut ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_sent_at = None::<tokio::time::Instant>;
 
     loop {
         if active_canvas_config.is_none() {
@@ -1280,6 +1278,7 @@ async fn relay_canvas(
             last_sent_frame_number = None;
             last_sent_brightness_bits = None;
             latest_canvas = None;
+            last_sent_at = None;
             tokio::select! {
                 changed = power_state_rx.changed() => {
                     if changed.is_err() {
@@ -1301,14 +1300,39 @@ async fn relay_canvas(
             .as_mut()
             .expect("preview canvas receiver should exist while subscribed");
 
-        if canvas_config.fps != active_fps {
-            active_fps = canvas_config.fps.max(1);
-            ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        }
         if latest_canvas.is_none() {
             latest_canvas = Some(canvas_rx.borrow_and_update().clone());
         }
+        let brightness = power_state_rx.borrow().effective_brightness();
+        let brightness_bits = brightness.to_bits();
+        let needs_emit = latest_canvas.as_ref().is_some_and(|canvas| {
+            last_sent_frame_number != Some(canvas.frame_number)
+                || last_sent_brightness_bits != Some(brightness_bits)
+        });
+        if needs_emit
+            && preview_emit_due(last_sent_at, canvas_config.fps)
+            && let Some(latest_canvas) = latest_canvas.as_ref()
+        {
+            if binary_tx
+                .try_send(encode_cached_canvas_preview_binary(
+                    latest_canvas,
+                    canvas_config.format,
+                    brightness,
+                ))
+                .is_err()
+            {
+                enqueue_backpressure_notice(&json_tx, "canvas", canvas_config.fps);
+                debug!("Dropping binary canvas update for slow WebSocket consumer");
+            } else {
+                last_sent_frame_number = Some(latest_canvas.frame_number);
+                last_sent_brightness_bits = Some(brightness_bits);
+                last_sent_at = Some(tokio::time::Instant::now());
+            }
+            continue;
+        }
+        let waiting_for_deadline = needs_emit && !preview_emit_due(last_sent_at, canvas_config.fps);
+        let emit_deadline = preview_emit_deadline(last_sent_at, canvas_config.fps)
+            .unwrap_or_else(tokio::time::Instant::now);
 
         tokio::select! {
             changed = canvas_rx.changed() => {
@@ -1330,34 +1354,7 @@ async fn relay_canvas(
                 let _ = subscriptions.borrow_and_update();
                 active_canvas_config = None;
             }
-            _ = ticker.tick() => {
-                let Some(latest_canvas) = latest_canvas.as_ref() else {
-                    continue;
-                };
-                let brightness = power_state_rx.borrow().effective_brightness();
-                let brightness_bits = brightness.to_bits();
-                if last_sent_frame_number == Some(latest_canvas.frame_number)
-                    && last_sent_brightness_bits == Some(brightness_bits)
-                {
-                    continue;
-                }
-
-                if binary_tx
-                    .try_send(encode_cached_canvas_preview_binary(
-                        &latest_canvas,
-                        canvas_config.format,
-                        brightness,
-                    ))
-                    .is_err()
-                {
-                    enqueue_backpressure_notice(&json_tx, "canvas", canvas_config.fps);
-                    debug!("Dropping binary canvas update for slow WebSocket consumer");
-                    continue;
-                }
-
-                last_sent_frame_number = Some(latest_canvas.frame_number);
-                last_sent_brightness_bits = Some(brightness_bits);
-            }
+            _ = tokio::time::sleep_until(emit_deadline), if waiting_for_deadline => {}
         }
     }
 }
@@ -1373,9 +1370,7 @@ async fn relay_screen_canvas(
     let mut active_canvas_config = None::<CanvasConfig>;
     let mut latest_canvas = None::<hypercolor_core::bus::CanvasFrame>;
     let mut last_sent_frame_number: Option<u32> = None;
-    let mut active_fps = 15_u32;
-    let mut ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_sent_at = None::<tokio::time::Instant>;
 
     loop {
         if active_canvas_config.is_none() {
@@ -1395,6 +1390,7 @@ async fn relay_screen_canvas(
         let Some(canvas_config) = active_canvas_config.as_ref() else {
             last_sent_frame_number = None;
             latest_canvas = None;
+            last_sent_at = None;
             if subscriptions.changed().await.is_err() {
                 break;
             }
@@ -1406,14 +1402,35 @@ async fn relay_screen_canvas(
             .as_mut()
             .expect("screen preview receiver should exist while subscribed");
 
-        if canvas_config.fps != active_fps {
-            active_fps = canvas_config.fps.max(1);
-            ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        }
         if latest_canvas.is_none() {
             latest_canvas = Some(canvas_rx.borrow_and_update().clone());
         }
+        let needs_emit = latest_canvas
+            .as_ref()
+            .is_some_and(|canvas| last_sent_frame_number != Some(canvas.frame_number));
+        if needs_emit
+            && preview_emit_due(last_sent_at, canvas_config.fps)
+            && let Some(latest_canvas) = latest_canvas.as_ref()
+        {
+            if binary_tx
+                .try_send(encode_cached_canvas_binary_with_header(
+                    latest_canvas,
+                    canvas_config.format,
+                    WS_SCREEN_CANVAS_HEADER,
+                ))
+                .is_err()
+            {
+                enqueue_backpressure_notice(&json_tx, "screen_canvas", canvas_config.fps);
+                debug!("Dropping binary screen_canvas update for slow WebSocket consumer");
+            } else {
+                last_sent_frame_number = Some(latest_canvas.frame_number);
+                last_sent_at = Some(tokio::time::Instant::now());
+            }
+            continue;
+        }
+        let waiting_for_deadline = needs_emit && !preview_emit_due(last_sent_at, canvas_config.fps);
+        let emit_deadline = preview_emit_deadline(last_sent_at, canvas_config.fps)
+            .unwrap_or_else(tokio::time::Instant::now);
 
         tokio::select! {
             changed = canvas_rx.changed() => {
@@ -1429,31 +1446,27 @@ async fn relay_screen_canvas(
                 let _ = subscriptions.borrow_and_update();
                 active_canvas_config = None;
             }
-            _ = ticker.tick() => {
-                let Some(latest_canvas) = latest_canvas.as_ref() else {
-                    continue;
-                };
-                if last_sent_frame_number == Some(latest_canvas.frame_number) {
-                    continue;
-                }
-
-                if binary_tx
-                    .try_send(encode_cached_canvas_binary_with_header(
-                        &latest_canvas,
-                        canvas_config.format,
-                        WS_SCREEN_CANVAS_HEADER,
-                    ))
-                    .is_err()
-                {
-                    enqueue_backpressure_notice(&json_tx, "screen_canvas", canvas_config.fps);
-                    debug!("Dropping binary screen_canvas update for slow WebSocket consumer");
-                    continue;
-                }
-
-                last_sent_frame_number = Some(latest_canvas.frame_number);
-            }
+            _ = tokio::time::sleep_until(emit_deadline), if waiting_for_deadline => {}
         }
     }
+}
+
+fn preview_emit_due(last_sent_at: Option<tokio::time::Instant>, fps: u32) -> bool {
+    let Some(deadline) = preview_emit_deadline(last_sent_at, fps) else {
+        return true;
+    };
+    tokio::time::Instant::now() >= deadline
+}
+
+fn preview_emit_deadline(
+    last_sent_at: Option<tokio::time::Instant>,
+    fps: u32,
+) -> Option<tokio::time::Instant> {
+    last_sent_at.map(|sent_at| {
+        sent_at
+            .checked_add(Duration::from_secs_f64(1.0 / f64::from(fps.max(1))))
+            .unwrap_or(sent_at)
+    })
 }
 
 fn sync_preview_receiver(
