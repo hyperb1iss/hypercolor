@@ -42,6 +42,7 @@ const WS_CANVAS_HEADER: u8 = 0x03;
 const WS_SCREEN_CANVAS_HEADER: u8 = 0x05;
 const WS_CANVAS_BINARY_CACHE_CAPACITY: usize = 32;
 const WS_FRAME_PAYLOAD_CACHE_CAPACITY: usize = 64;
+const WS_SPECTRUM_PAYLOAD_CACHE_CAPACITY: usize = 32;
 const WS_CACHE_SHARD_COUNT: usize = 8;
 
 static WS_CLIENT_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -50,6 +51,8 @@ static WS_CANVAS_PAYLOAD_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
 static WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 static WS_FRAME_PAYLOAD_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
 static WS_FRAME_PAYLOAD_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
+static WS_SPECTRUM_PAYLOAD_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
+static WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 static WS_CANVAS_BINARY_CACHE: LazyLock<Vec<StdMutex<VecDeque<(CanvasBinaryCacheKey, Bytes)>>>> =
     LazyLock::new(|| {
         (0..WS_CACHE_SHARD_COUNT)
@@ -67,6 +70,17 @@ static WS_FRAME_PAYLOAD_CACHE: LazyLock<
         .map(|_| {
             StdMutex::new(VecDeque::with_capacity(per_shard_capacity(
                 WS_FRAME_PAYLOAD_CACHE_CAPACITY,
+            )))
+        })
+        .collect()
+});
+static WS_SPECTRUM_PAYLOAD_CACHE: LazyLock<
+    Vec<StdMutex<VecDeque<(SpectrumPayloadCacheKey, Bytes)>>>,
+> = LazyLock::new(|| {
+    (0..WS_CACHE_SHARD_COUNT)
+        .map(|_| {
+            StdMutex::new(VecDeque::with_capacity(per_shard_capacity(
+                WS_SPECTRUM_PAYLOAD_CACHE_CAPACITY,
             )))
         })
         .collect()
@@ -443,6 +457,20 @@ struct FramePayloadCacheKey {
     timestamp_ms: u32,
     selection_hash: u64,
     format: FrameFormat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct SpectrumPayloadCacheKey {
+    timestamp_ms: u32,
+    source_bin_count: u16,
+    requested_bins: u16,
+    level_bits: u32,
+    bass_bits: u32,
+    mid_bits: u32,
+    treble_bits: u32,
+    beat: bool,
+    beat_confidence_bits: u32,
+    bpm_bits: u32,
 }
 
 /// Client-to-server subscription messages.
@@ -1178,7 +1206,7 @@ async fn relay_spectrum(
             continue;
         }
         if binary_tx
-            .try_send(encode_spectrum_binary(&spectrum, spectrum_config.bins).into())
+            .try_send(cached_spectrum_payload(&spectrum, spectrum_config.bins))
             .is_err()
         {
             enqueue_backpressure_notice(&json_tx, "spectrum", spectrum_config.fps);
@@ -1987,6 +2015,34 @@ fn encode_spectrum_binary(
     out
 }
 
+fn cached_spectrum_payload(
+    spectrum: &hypercolor_types::event::SpectrumData,
+    requested_bins: u16,
+) -> Bytes {
+    let key = SpectrumPayloadCacheKey {
+        timestamp_ms: spectrum.timestamp_ms,
+        source_bin_count: u16::try_from(spectrum.bins.len()).unwrap_or(u16::MAX),
+        requested_bins,
+        level_bits: spectrum.level.to_bits(),
+        bass_bits: spectrum.bass.to_bits(),
+        mid_bits: spectrum.mid.to_bits(),
+        treble_bits: spectrum.treble.to_bits(),
+        beat: spectrum.beat,
+        beat_confidence_bits: spectrum.beat_confidence.to_bits(),
+        bpm_bits: spectrum.bpm.unwrap_or_default().to_bits(),
+    };
+
+    if let Some(cached) = spectrum_payload_cache_get(key) {
+        WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+        return cached;
+    }
+
+    let payload = Bytes::from(encode_spectrum_binary(spectrum, requested_bins));
+    WS_SPECTRUM_PAYLOAD_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
+    spectrum_payload_cache_put(key, payload.clone());
+    payload
+}
+
 fn encode_canvas_preview_binary(
     canvas: &hypercolor_core::bus::CanvasFrame,
     format: CanvasFormat,
@@ -2193,6 +2249,30 @@ fn canvas_binary_cache_put(key: CanvasBinaryCacheKey, payload: Bytes) {
     }
     cache.push_front((key, payload));
     while cache.len() > per_shard_capacity(WS_CANVAS_BINARY_CACHE_CAPACITY) {
+        let _ = cache.pop_back();
+    }
+}
+
+fn spectrum_payload_cache_get(key: SpectrumPayloadCacheKey) -> Option<Bytes> {
+    let mut cache = WS_SPECTRUM_PAYLOAD_CACHE[cache_shard_index(&key)]
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let index = cache.iter().position(|(candidate, _)| *candidate == key)?;
+    let (candidate, payload) = cache.remove(index)?;
+    let cached = payload.clone();
+    cache.push_front((candidate, payload));
+    Some(cached)
+}
+
+fn spectrum_payload_cache_put(key: SpectrumPayloadCacheKey, payload: Bytes) {
+    let mut cache = WS_SPECTRUM_PAYLOAD_CACHE[cache_shard_index(&key)]
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    if let Some(index) = cache.iter().position(|(candidate, _)| *candidate == key) {
+        let _ = cache.remove(index);
+    }
+    cache.push_front((key, payload));
+    while cache.len() > per_shard_capacity(WS_SPECTRUM_PAYLOAD_CACHE_CAPACITY) {
         let _ = cache.pop_back();
     }
 }
@@ -2592,11 +2672,12 @@ mod tests {
     use super::{
         ActiveFramesConfig, ChannelConfig, ChannelConfigPatch, ChannelSet, FrameFormat,
         FrameRelayMessage, FramesConfig, ServerMessage, SubscriptionState, WsChannel,
-        build_metrics_message, cached_frame_payload, command_response_from_http, dispatch_command,
-        encode_cached_canvas_preview_binary, encode_canvas_preview_binary, encode_frame_binary,
-        encode_spectrum_binary, event_message_parts, filter_frame_zones, normalize_command_path,
-        parse_channels, parse_command_method, publish_subscriptions, relay_frames, relay_metrics,
-        relay_spectrum, should_relay_event, sync_preview_receiver, to_snake_case, try_enqueue_json,
+        build_metrics_message, cached_frame_payload, cached_spectrum_payload,
+        command_response_from_http, dispatch_command, encode_cached_canvas_preview_binary,
+        encode_canvas_preview_binary, encode_frame_binary, encode_spectrum_binary,
+        event_message_parts, filter_frame_zones, normalize_command_path, parse_channels,
+        parse_command_method, publish_subscriptions, relay_frames, relay_metrics, relay_spectrum,
+        should_relay_event, sync_preview_receiver, to_snake_case, try_enqueue_json,
         unique_sorted_channel_names, ws_capabilities,
     };
     use crate::api::AppState;
@@ -2628,6 +2709,8 @@ mod tests {
         super::WS_FRAME_PAYLOAD_CACHE_HIT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
         super::WS_CANVAS_PAYLOAD_BUILD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
         super::WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+        super::WS_SPECTRUM_PAYLOAD_BUILD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+        super::WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
         for shard in super::WS_FRAME_PAYLOAD_CACHE.iter() {
             shard
                 .lock()
@@ -2635,6 +2718,12 @@ mod tests {
                 .clear();
         }
         for shard in super::WS_CANVAS_BINARY_CACHE.iter() {
+            shard
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .clear();
+        }
+        for shard in super::WS_SPECTRUM_PAYLOAD_CACHE.iter() {
             shard
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner())
@@ -3415,6 +3504,73 @@ mod tests {
         );
         assert_eq!(
             super::WS_FRAME_PAYLOAD_CACHE_HIT_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[test]
+    fn cached_spectrum_payload_reuses_bytes_for_matching_requests() {
+        let _guard = WS_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        reset_ws_payload_caches();
+
+        let spectrum = SpectrumData {
+            timestamp_ms: 77,
+            level: 0.5,
+            bass: 0.4,
+            mid: 0.3,
+            treble: 0.2,
+            beat: true,
+            beat_confidence: 0.9,
+            bpm: None,
+            bins: vec![0.0; 64],
+        };
+
+        let first = cached_spectrum_payload(&spectrum, 16);
+        let second = cached_spectrum_payload(&spectrum, 16);
+
+        assert_eq!(first, second);
+        assert_eq!(first.as_ptr(), second.as_ptr());
+        assert_eq!(
+            super::WS_SPECTRUM_PAYLOAD_BUILD_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            super::WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn cached_spectrum_payload_keys_bin_count_separately() {
+        let _guard = WS_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        reset_ws_payload_caches();
+
+        let spectrum = SpectrumData {
+            timestamp_ms: 77,
+            level: 0.5,
+            bass: 0.4,
+            mid: 0.3,
+            treble: 0.2,
+            beat: true,
+            beat_confidence: 0.9,
+            bpm: None,
+            bins: vec![0.0; 64],
+        };
+
+        let small = cached_spectrum_payload(&spectrum, 16);
+        let large = cached_spectrum_payload(&spectrum, 32);
+
+        assert_ne!(small, large);
+        assert_eq!(
+            super::WS_SPECTRUM_PAYLOAD_BUILD_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+        assert_eq!(
+            super::WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT.load(std::sync::atomic::Ordering::Relaxed),
             0
         );
     }

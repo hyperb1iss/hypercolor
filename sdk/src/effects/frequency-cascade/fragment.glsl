@@ -16,6 +16,15 @@ uniform float iAudioSwell;        // positive swell envelope
 uniform float iAudioBrightness;   // spectral centroid 0..1
 uniform float iAudioHarmonicHue;  // harmonic color 0..360
 
+uniform float iCascadeLevel;
+uniform float iCascadeBass;
+uniform float iCascadeMid;
+uniform float iCascadeTreble;
+uniform float iCascadeSwell;
+uniform float iCascadePresence;
+uniform float iCascadeBeatBloom;
+uniform float iCascadeFloor;
+
 // Controls
 uniform float iSpeed;
 uniform float iIntensity;
@@ -74,23 +83,23 @@ vec3 paletteColor(float t, int id) {
 
 // ── Spectrum shaping ────────────────────────────────────────────────
 // Treats bass/mid/treble as *spatial* shape, not per-bar energy.
-// Temporal stability comes from iAudioLevel + iAudioSwell.
+// Temporal stability comes from effect-local smoothed envelopes.
 
-float spectralEnvelope(float freq) {
+// smoothAmt passed in so the Smoothing control governs temporal responsiveness
+float spectralEnvelope(float freq, float smoothAmt) {
     float bassLobe  = exp(-pow((freq - 0.08) * 2.55, 2.0));
     float lowLobe   = exp(-pow((freq - 0.28) * 2.85, 2.0));
     float midLobe   = exp(-pow((freq - 0.52) * 2.95, 2.0));
     float highLobe  = exp(-pow((freq - 0.76) * 2.85, 2.0));
     float airLobe   = exp(-pow((freq - 0.94) * 3.20, 2.0));
 
-    // Temper raw bands toward smoothed level. Mix factor scales with iSmoothing
-    // so the control actually governs temporal responsiveness. Raw bands still
-    // shape which frequency region is dominant; iAudioLevel damps transients.
-    float bassDamp   = mix(0.42, 0.80, smoothAmt);
-    float bandDamp   = mix(0.32, 0.68, smoothAmt);
-    float bass   = mix(iAudioBass,   iAudioLevel, bassDamp);
-    float mid    = mix(iAudioMid,    iAudioLevel, bandDamp);
-    float treble = mix(iAudioTreble, iAudioLevel, bandDamp);
+    // Temper raw bands toward smoothed level — prevents beat transients from
+    // spiking bar height. Raw bands still shape which frequency region lights up.
+    float bassDamp = mix(0.24, 0.54, smoothAmt);
+    float bandDamp = mix(0.16, 0.42, smoothAmt);
+    float bass   = mix(iCascadeBass,   iCascadeLevel, bassDamp);
+    float mid    = mix(iCascadeMid,    iCascadeLevel, bandDamp);
+    float treble = mix(iCascadeTreble, iCascadeLevel, bandDamp);
 
     float lowMix  = mix(bass, mid, 0.40);
     float highMix = mix(mid, treble, 0.55);
@@ -104,31 +113,29 @@ float spectralEnvelope(float freq) {
 }
 
 float barEnergy(float freq, float barId, float time, float smoothAmt) {
-    float spectrum = spectralEnvelope(freq);
+    float spectrum = spectralEnvelope(freq, smoothAmt);
 
     // Neighbor-blur in the frequency domain — sample envelope at neighbors
     // and blend in according to smoothing amount. Cheap, smoothstep-clean.
     float freqStep = 1.0 / 84.0;
-    float neighborLeft  = spectralEnvelope(clamp(freq - freqStep, 0.0, 1.0));
-    float neighborRight = spectralEnvelope(clamp(freq + freqStep, 0.0, 1.0));
+    float neighborLeft  = spectralEnvelope(clamp(freq - freqStep, 0.0, 1.0), smoothAmt);
+    float neighborRight = spectralEnvelope(clamp(freq + freqStep, 0.0, 1.0), smoothAmt);
     float smoothed = (spectrum * 2.0 + neighborLeft + neighborRight) * 0.25;
     spectrum = mix(spectrum, smoothed, smoothAmt);
 
-    // Subtle breath — keeps bars alive without heaving the whole screen
-    float breath = iAudioLevel * 0.22 + iAudioSwell * 0.14;
-
-    // Organic per-bar variation — continuous fBm, no time-stepping
-    float organicTime = time * mix(0.55, 0.22, smoothAmt);
+    float breath = iCascadePresence * 0.10 + iCascadeSwell * 0.06;
+    float organicTime = time * mix(0.42, 0.16, smoothAmt);
     float organic = fbm(vec2(freq * 3.2 + barId * 0.035, organicTime)) - 0.5;
 
-    float energy = spectrum + breath * 0.30 + organic * (0.28 + breath * 0.18);
+    float energy = spectrum * (0.86 + iCascadePresence * 0.22);
+    energy += breath * 0.22;
+    energy += organic * (0.10 + iCascadePresence * 0.08);
 
-    // Minimum baseline so bars breathe even when silent — high enough
-    // that the visualizer looks alive with no audio input
-    float floor_ = 0.42 + organic * 0.09;
+    float floor_ = iCascadeFloor + organic * 0.04;
     energy = max(energy, floor_);
+    energy = 1.18 * (1.0 - exp(-energy * 1.35));
 
-    return clamp(energy, 0.0, 1.7);
+    return clamp(energy, 0.0, 1.18);
 }
 
 // ── Scene geometry ──────────────────────────────────────────────────
@@ -229,8 +236,9 @@ void main() {
     energy = clamp(energy, 0.0, 1.75);
 
     // ── Bar height ──────────────────────────────────────────────────
-    float baseline = 0.045;
-    float barHeight = clamp(baseline + energy * mix(0.32, 1.05, intensity), 0.02, 1.1);
+    float baseline = 0.04 + iCascadeFloor * 0.12;
+    float heightCurve = 1.0 - exp(-energy * mix(1.05, 1.75, intensity));
+    float barHeight = clamp(baseline + heightCurve * mix(0.24, 0.78, intensity), 0.05, 0.92);
 
     // ── Bar body + edges ────────────────────────────────────────────
     float barTop = 1.0 - smoothstep(barHeight - 0.018, barHeight + 0.006, scn.visualY);
@@ -246,17 +254,17 @@ void main() {
 
     // ── Haze above the bar (fake waterfall — spatial, not temporal) ─
     float above = max(scn.visualY - barHeight, 0.0);
-    float hazeDecay = mix(26.0, 7.0, smoothAmt);
+    float hazeDecay = mix(30.0, 10.0, smoothAmt);
     float haze = exp(-above * hazeDecay);
     haze *= (1.0 - barTop) * barMask;
-    haze *= 0.25 + 0.75 * energy;
+    haze *= 0.16 + 0.56 * energy;
 
     // ── Rim + beam glow ─────────────────────────────────────────────
     float rim = exp(-abs(scn.visualY - barHeight) * mix(85.0, 28.0, glow));
     float beam = exp(-pow((barCell - 0.5) * 2.1, 2.0) * mix(24.0, 7.0, glow));
     // Beat pulse flares the bloom, not bar height — ripple of light, not a heave
-    float beatFlare = iAudioBeatPulse * (0.55 + glow * 0.45);
-    float bloom = (rim * 0.85 + haze * 0.55) * beam * (0.22 + glow * 1.20 + beatFlare * 0.40);
+    float beatFlare = iCascadeBeatBloom * (0.26 + glow * 0.24);
+    float bloom = (rim * 0.78 + haze * 0.48) * beam * (0.18 + glow * 1.02 + beatFlare * 0.24);
 
     // ── Color ───────────────────────────────────────────────────────
     // Palette walks with frequency so neighbors are chromatically related.
@@ -278,11 +286,11 @@ void main() {
     // Bar body — peaks warm toward peakColor for emphasis
     float peakBlend = smoothstep(0.45, 1.15, energy);
     vec3 barTint = mix(baseColor, peakColor, peakBlend);
-    color += barTint * bar * (0.42 + energy * 1.50) * (0.55 + intensity * 1.45) * scn.mirror;
+    color += barTint * bar * (0.38 + energy * 1.35) * (0.55 + intensity * 1.45) * scn.mirror;
 
     // Rim glow — beat pulse weighted toward bass frequencies (1.0 at freq=0, falls off at highs)
-    float beatRim = beatFlare * (1.0 - freq * 0.65);
-    color += accentColor * rim * barMask * (0.18 + intensity * 0.95 + beatRim * 0.50) * scn.mirror;
+    float beatRim = beatFlare * (1.0 - freq * 0.70);
+    color += accentColor * rim * barMask * (0.16 + intensity * 0.88 + beatRim * 0.36) * scn.mirror;
 
     // Haze trail tint
     color += mix(baseColor, accentColor, 0.55) * haze * (0.30 + intensity * 0.80) * scn.mirror;
@@ -295,17 +303,17 @@ void main() {
         // Mirror: center line glow
         float horizonLine = exp(-abs(uv.y - 0.5) * 52.0);
         color += mix(baseColor, accentColor, 0.5) *
-                 horizonLine * (0.20 + iAudioLevel * 0.45);
+                 horizonLine * (0.16 + iCascadePresence * 0.36 + iCascadeBeatBloom * 0.08);
     } else if (iScene == 2) {
         // Horizon: horizon line flare
         float horizonLine = exp(-abs(uv.y - 0.42) * 60.0);
         color += mix(accentColor, peakColor, 0.5) *
-                 horizonLine * (0.22 + iAudioLevel * 0.50);
+                 horizonLine * (0.18 + iCascadePresence * 0.38 + iCascadeBeatBloom * 0.10);
     } else if (iScene == 3) {
         // Tunnel: soft radial core
         vec2 cp = (uv - 0.5) * vec2(aspect, 1.0);
         float core = exp(-length(cp) * 4.5);
-        color += accentColor * core * (0.30 + iAudioLevel * 0.55);
+        color += accentColor * core * (0.26 + iCascadePresence * 0.42 + iCascadeBeatBloom * 0.08);
     }
 
     // ── Vignette ────────────────────────────────────────────────────
