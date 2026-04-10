@@ -307,6 +307,7 @@ pub struct GradientRenderer {
     /// Chroma multiplier applied in Oklch space (1.0 = neutral).
     saturation: f32,
     easing: EasingMode,
+    cached_frame: Option<Canvas>,
 }
 
 impl GradientRenderer {
@@ -331,7 +332,16 @@ impl GradientRenderer {
             interpolation: InterpolationMode::Vivid,
             saturation: 1.0,
             easing: EasingMode::Linear,
+            cached_frame: None,
         }
+    }
+
+    fn invalidate_cache(&mut self) {
+        self.cached_frame = None;
+    }
+
+    fn static_cache_eligible(&self) -> bool {
+        self.speed.abs() <= f32::EPSILON
     }
 
     /// Post-process: boost or reduce chroma in Oklch space.
@@ -359,6 +369,17 @@ impl EffectRenderer for GradientRenderer {
     #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
     fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> anyhow::Result<()> {
         prepare_target_canvas(canvas, input.canvas_width, input.canvas_height);
+        if self.static_cache_eligible()
+            && let Some(cached) = self.cached_frame.as_ref()
+            && cached.width() == input.canvas_width
+            && cached.height() == input.canvas_height
+        {
+            canvas
+                .as_rgba_bytes_mut()
+                .copy_from_slice(cached.as_rgba_bytes());
+            return Ok(());
+        }
+
         let width = input.canvas_width.max(1) as f32;
         let height = input.canvas_height.max(1) as f32;
         let animated_offset = self.offset + input.time_secs * self.speed;
@@ -401,6 +422,12 @@ impl EffectRenderer for GradientRenderer {
             }
         }
 
+        if self.static_cache_eligible() {
+            self.cached_frame = Some(canvas.clone());
+        } else {
+            self.invalidate_cache();
+        }
+
         Ok(())
     }
 
@@ -409,36 +436,43 @@ impl EffectRenderer for GradientRenderer {
             "color_start" => {
                 if let ControlValue::Color(c) = value {
                     self.color_start = *c;
+                    self.invalidate_cache();
                 }
             }
             "color_mid" => {
                 if let ControlValue::Color(c) = value {
                     self.color_mid = *c;
+                    self.invalidate_cache();
                 }
             }
             "color_end" => {
                 if let ControlValue::Color(c) = value {
                     self.color_end = *c;
+                    self.invalidate_cache();
                 }
             }
             "use_mid_color" => {
                 if let ControlValue::Boolean(flag) = value {
                     self.use_mid_color = *flag;
+                    self.invalidate_cache();
                 }
             }
             "midpoint" => {
                 if let Some(v) = value.as_f32() {
                     self.midpoint = v.clamp(0.05, 0.95);
+                    self.invalidate_cache();
                 }
             }
             "mode" => {
                 if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                     self.mode = GradientMode::from_str(choice);
+                    self.invalidate_cache();
                 }
             }
             "repeat_mode" => {
                 if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                     self.repeat_mode = RepeatMode::from_str(choice);
+                    self.invalidate_cache();
                 }
             }
             "direction" => {
@@ -449,63 +483,76 @@ impl EffectRenderer for GradientRenderer {
                     } else {
                         GradientMode::Linear
                     };
+                    self.invalidate_cache();
                 }
             }
             "angle" => {
                 if let Some(v) = value.as_f32() {
                     self.angle_degrees = v.rem_euclid(360.0);
+                    self.invalidate_cache();
                 }
             }
             "center_x" => {
                 if let Some(v) = value.as_f32() {
                     self.center_x = v.clamp(0.0, 1.0);
+                    self.invalidate_cache();
                 }
             }
             "center_y" => {
                 if let Some(v) = value.as_f32() {
                     self.center_y = v.clamp(0.0, 1.0);
+                    self.invalidate_cache();
                 }
             }
             "scale" => {
                 if let Some(v) = value.as_f32() {
                     self.scale = v.max(0.1);
+                    self.invalidate_cache();
                 }
             }
             "offset" => {
                 if let Some(v) = value.as_f32() {
                     self.offset = v;
+                    self.invalidate_cache();
                 }
             }
             "speed" => {
                 if let Some(v) = value.as_f32() {
                     self.speed = v;
+                    self.invalidate_cache();
                 }
             }
             "brightness" => {
                 if let Some(v) = value.as_f32() {
                     self.brightness = v.clamp(0.0, 1.0);
+                    self.invalidate_cache();
                 }
             }
             "interpolation" => {
                 if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                     self.interpolation = InterpolationMode::from_str(choice);
+                    self.invalidate_cache();
                 }
             }
             "saturation" => {
                 if let Some(v) = value.as_f32() {
                     self.saturation = v.clamp(0.5, 1.5);
+                    self.invalidate_cache();
                 }
             }
             "easing" => {
                 if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                     self.easing = EasingMode::from_str(choice);
+                    self.invalidate_cache();
                 }
             }
             _ => {}
         }
     }
 
-    fn destroy(&mut self) {}
+    fn destroy(&mut self) {
+        self.invalidate_cache();
+    }
 }
 
 // ── Color Conversion Helpers ─────────────────────────────────────────────────
