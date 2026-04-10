@@ -42,6 +42,7 @@ const WS_CANVAS_HEADER: u8 = 0x03;
 const WS_SCREEN_CANVAS_HEADER: u8 = 0x05;
 const WS_CANVAS_BINARY_CACHE_CAPACITY: usize = 32;
 const WS_FRAME_PAYLOAD_CACHE_CAPACITY: usize = 64;
+const WS_CACHE_SHARD_COUNT: usize = 8;
 
 static WS_CLIENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static WS_TOTAL_BYTES_SENT: AtomicU64 = AtomicU64::new(0);
@@ -49,11 +50,27 @@ static WS_CANVAS_PAYLOAD_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
 static WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 static WS_FRAME_PAYLOAD_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
 static WS_FRAME_PAYLOAD_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
-static WS_CANVAS_BINARY_CACHE: LazyLock<StdMutex<VecDeque<(CanvasBinaryCacheKey, Bytes)>>> =
-    LazyLock::new(|| StdMutex::new(VecDeque::with_capacity(WS_CANVAS_BINARY_CACHE_CAPACITY)));
+static WS_CANVAS_BINARY_CACHE: LazyLock<Vec<StdMutex<VecDeque<(CanvasBinaryCacheKey, Bytes)>>>> =
+    LazyLock::new(|| {
+        (0..WS_CACHE_SHARD_COUNT)
+            .map(|_| {
+                StdMutex::new(VecDeque::with_capacity(per_shard_capacity(
+                    WS_CANVAS_BINARY_CACHE_CAPACITY,
+                )))
+            })
+            .collect()
+    });
 static WS_FRAME_PAYLOAD_CACHE: LazyLock<
-    StdMutex<VecDeque<(FramePayloadCacheKey, FrameRelayMessage)>>,
-> = LazyLock::new(|| StdMutex::new(VecDeque::with_capacity(WS_FRAME_PAYLOAD_CACHE_CAPACITY)));
+    Vec<StdMutex<VecDeque<(FramePayloadCacheKey, FrameRelayMessage)>>>,
+> = LazyLock::new(|| {
+    (0..WS_CACHE_SHARD_COUNT)
+        .map(|_| {
+            StdMutex::new(VecDeque::with_capacity(per_shard_capacity(
+                WS_FRAME_PAYLOAD_CACHE_CAPACITY,
+            )))
+        })
+        .collect()
+});
 
 struct WsClientGuard;
 
@@ -1948,7 +1965,7 @@ where
 }
 
 fn frame_payload_cache_get(key: FramePayloadCacheKey) -> Option<FrameRelayMessage> {
-    let mut cache = WS_FRAME_PAYLOAD_CACHE
+    let mut cache = WS_FRAME_PAYLOAD_CACHE[cache_shard_index(&key)]
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     let index = cache.iter().position(|(candidate, _)| *candidate == key)?;
@@ -1959,20 +1976,20 @@ fn frame_payload_cache_get(key: FramePayloadCacheKey) -> Option<FrameRelayMessag
 }
 
 fn frame_payload_cache_put(key: FramePayloadCacheKey, payload: FrameRelayMessage) {
-    let mut cache = WS_FRAME_PAYLOAD_CACHE
+    let mut cache = WS_FRAME_PAYLOAD_CACHE[cache_shard_index(&key)]
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     if let Some(index) = cache.iter().position(|(candidate, _)| *candidate == key) {
         let _ = cache.remove(index);
     }
     cache.push_front((key, payload));
-    while cache.len() > WS_FRAME_PAYLOAD_CACHE_CAPACITY {
+    while cache.len() > per_shard_capacity(WS_FRAME_PAYLOAD_CACHE_CAPACITY) {
         let _ = cache.pop_back();
     }
 }
 
 fn canvas_binary_cache_get(key: CanvasBinaryCacheKey) -> Option<Bytes> {
-    let mut cache = WS_CANVAS_BINARY_CACHE
+    let mut cache = WS_CANVAS_BINARY_CACHE[cache_shard_index(&key)]
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     let index = cache.iter().position(|(candidate, _)| *candidate == key)?;
@@ -1983,16 +2000,33 @@ fn canvas_binary_cache_get(key: CanvasBinaryCacheKey) -> Option<Bytes> {
 }
 
 fn canvas_binary_cache_put(key: CanvasBinaryCacheKey, payload: Bytes) {
-    let mut cache = WS_CANVAS_BINARY_CACHE
+    let mut cache = WS_CANVAS_BINARY_CACHE[cache_shard_index(&key)]
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     if let Some(index) = cache.iter().position(|(candidate, _)| *candidate == key) {
         let _ = cache.remove(index);
     }
     cache.push_front((key, payload));
-    while cache.len() > WS_CANVAS_BINARY_CACHE_CAPACITY {
+    while cache.len() > per_shard_capacity(WS_CANVAS_BINARY_CACHE_CAPACITY) {
         let _ = cache.pop_back();
     }
+}
+
+const fn per_shard_capacity(total_capacity: usize) -> usize {
+    let shards = if WS_CACHE_SHARD_COUNT == 0 {
+        1
+    } else {
+        WS_CACHE_SHARD_COUNT
+    };
+    let per_shard = total_capacity.div_ceil(shards);
+    if per_shard == 0 { 1 } else { per_shard }
+}
+
+fn cache_shard_index(key: &impl Hash) -> usize {
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    usize::try_from(hasher.finish() % u64::try_from(WS_CACHE_SHARD_COUNT).unwrap_or(1))
+        .unwrap_or_default()
 }
 
 const fn canvas_format_tag(format: CanvasFormat) -> u8 {
@@ -2413,14 +2447,18 @@ mod tests {
         super::WS_FRAME_PAYLOAD_CACHE_HIT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
         super::WS_CANVAS_PAYLOAD_BUILD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
         super::WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
-        super::WS_FRAME_PAYLOAD_CACHE
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clear();
-        super::WS_CANVAS_BINARY_CACHE
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clear();
+        for shard in super::WS_FRAME_PAYLOAD_CACHE.iter() {
+            shard
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .clear();
+        }
+        for shard in super::WS_CANVAS_BINARY_CACHE.iter() {
+            shard
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .clear();
+        }
     }
 
     fn sample_frame() -> FrameData {
