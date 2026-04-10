@@ -332,32 +332,46 @@ pub fn StackedBar(
 
 // ── Gantt timeline (frame milestones) ────────────────────────────────
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TimelineMarker {
     pub label: &'static str,
     pub at_ms: f64,
     pub color: &'static str,
 }
 
-/// Horizontal frame timeline showing milestone ticks from frame start (0)
-/// to the frame budget. Budget is shown as a dashed end marker.
+/// Horizontal frame timeline with color-coded milestone ticks and a legend
+/// grid beneath. Auto-scales to the actual frame data with a floor so tiny
+/// values remain readable — budget is only drawn in-chart when it's close
+/// enough to the data to be visible, otherwise shown as an annotation.
 #[component]
 pub fn GanttTimeline(
     #[prop(into)] markers: Signal<Vec<TimelineMarker>>,
     #[prop(into)] budget_ms: Signal<f64>,
     #[prop(into)] actual_ms: Signal<f64>,
 ) -> impl IntoView {
-    const H: f64 = 56.0;
-
     view! {
-        <div class="relative w-full" style=format!("height: {H}px")>
+        <div class="space-y-2">
             {move || {
-                let budget = budget_ms.get().max(1.0);
+                let budget = budget_ms.get().max(0.1);
                 let actual = actual_ms.get().max(0.0);
-                let scale = budget.max(actual).max(1.0);
+                let ms_list = markers.get();
+
+                // Scale to whichever is biggest: actual frame, largest milestone,
+                // or a tiny floor so sub-millisecond data has breathing room.
+                let markers_max = ms_list.iter().map(|m| m.at_ms).fold(0.0_f64, f64::max);
+                let data_max = actual.max(markers_max);
+                let data_scale = (data_max * 1.35).max(0.2);
+
+                // If we're pushing the budget, extend the scale to keep the
+                // dashed end marker in view; otherwise zoom tight to the data.
+                let scale = if data_max >= budget * 0.5 {
+                    data_scale.max(budget * 1.05)
+                } else {
+                    data_scale
+                };
+                let budget_in_range = budget <= scale * 1.02;
+
                 let actual_pct = (actual / scale * 100.0).min(100.0);
-                let budget_pct = (budget / scale * 100.0).min(100.0);
-                let ms = markers.get();
 
                 let over_budget = actual > budget * 1.01;
                 let actual_color = if over_budget {
@@ -369,59 +383,91 @@ pub fn GanttTimeline(
                 };
 
                 view! {
-                    // Track background
-                    <div class="absolute inset-x-0 top-[22px] h-2 rounded-full bg-surface-overlay/60 border border-edge-subtle/60" />
+                    // Timeline bar
+                    <div class="relative w-full" style="height: 26px">
+                        // Track background
+                        <div class="absolute inset-x-0 top-[9px] h-2 rounded-full bg-surface-overlay/60 border border-edge-subtle/60" />
 
-                    // Actual frame duration fill
-                    <div
-                        class="absolute top-[22px] h-2 rounded-full transition-all duration-300"
-                        style=format!(
-                            "left: 0; width: {actual_pct:.2}%; \
-                             background: linear-gradient(90deg, {actual_color}88, {actual_color}ff); \
-                             box-shadow: 0 0 10px {actual_color}66"
-                        )
-                    />
+                        // Actual frame duration fill
+                        <div
+                            class="absolute top-[9px] h-2 rounded-full transition-all duration-300"
+                            style=format!(
+                                "left: 0; width: {actual_pct:.2}%; \
+                                 background: linear-gradient(90deg, {actual_color}88, {actual_color}ff); \
+                                 box-shadow: 0 0 10px {actual_color}66"
+                            )
+                        />
 
-                    // Budget end marker (dashed)
-                    <div
-                        class="absolute top-[16px] bottom-[16px] w-px"
-                        style=format!(
-                            "left: {budget_pct:.2}%; \
-                             background: repeating-linear-gradient(to bottom, var(--color-electric-yellow) 0 3px, transparent 3px 6px)"
-                        )
-                    />
-                    <div
-                        class="absolute -top-[1px] text-[8px] font-mono text-electric-yellow/80 -translate-x-1/2"
-                        style=format!("left: {budget_pct:.2}%")
-                    >
-                        {format!("budget {budget:.1}ms")}
+                        // Budget end marker — only drawn when within the zoomed range
+                        {budget_in_range.then(|| {
+                            let budget_pct = (budget / scale * 100.0).min(100.0);
+                            view! {
+                                <div
+                                    class="absolute top-[2px] bottom-[2px] w-px"
+                                    style=format!(
+                                        "left: {budget_pct:.2}%; \
+                                         background: repeating-linear-gradient(to bottom, var(--color-electric-yellow) 0 3px, transparent 3px 6px)"
+                                    )
+                                />
+                            }
+                        })}
+
+                        // Milestone ticks (labels live in the legend below)
+                        {ms_list.iter().map(|m| {
+                            let pos_pct = (m.at_ms / scale * 100.0).clamp(0.0, 100.0);
+                            let color = m.color;
+                            let label = m.label;
+                            let at = m.at_ms;
+                            view! {
+                                <div
+                                    class="absolute top-[4px] h-[18px] w-[2px] rounded-full"
+                                    style=format!(
+                                        "left: calc({pos_pct:.2}% - 1px); \
+                                         background: {color}; \
+                                         box-shadow: 0 0 6px {color}"
+                                    )
+                                    title=format!("{label}: {at:.2} ms")
+                                />
+                            }
+                        }).collect_view()}
                     </div>
 
-                    // Milestone ticks
-                    {ms.into_iter().map(|m| {
-                        let pos_pct = (m.at_ms / scale * 100.0).clamp(0.0, 100.0);
-                        view! {
-                            <div
-                                class="absolute top-[18px] h-[12px] w-[2px] rounded-full"
-                                style=format!(
-                                    "left: calc({pos_pct:.2}% - 1px); \
-                                     background: {color}; \
-                                     box-shadow: 0 0 6px {color}",
-                                    color = m.color,
-                                )
-                                title=format!("{}: {:.2} ms", m.label, m.at_ms)
-                            />
-                            <div
-                                class="absolute bottom-[2px] text-[8px] font-mono -translate-x-1/2 whitespace-nowrap"
-                                style=format!(
-                                    "left: {pos_pct:.2}%; color: {}; opacity: 0.75",
-                                    m.color
-                                )
-                            >
-                                {m.label}
-                            </div>
-                        }
-                    }).collect_view()}
+                    // Scale + budget annotation row
+                    <div class="flex items-center justify-between text-[9px] font-mono tabular-nums px-0.5">
+                        <span class="text-fg-tertiary/60">"0 ms"</span>
+                        {if budget_in_range {
+                            view! { <span class="text-fg-tertiary/60">{format!("{scale:.2} ms")}</span> }.into_any()
+                        } else {
+                            view! {
+                                <span class="text-electric-yellow/70">
+                                    {format!("scale {scale:.2}ms · budget {budget:.1}ms (headroom)")}
+                                </span>
+                            }.into_any()
+                        }}
+                    </div>
+
+                    // Legend: colored dot + label + value
+                    <div class="grid grid-cols-4 gap-x-3 gap-y-1 pt-1">
+                        {ms_list.iter().map(|m| {
+                            let color = m.color;
+                            let label = m.label;
+                            let at = m.at_ms;
+                            view! {
+                                <div class="flex items-center gap-1.5 min-w-0">
+                                    <span
+                                        class="w-1.5 h-1.5 rounded-full shrink-0"
+                                        style=format!("background: {color}; box-shadow: 0 0 4px {color}")
+                                    />
+                                    <span class="text-[9px] font-mono uppercase tracking-[0.08em] text-fg-tertiary truncate">
+                                        {label}
+                                    </span>
+                                    <span class="text-[9px] font-mono tabular-nums text-fg-secondary ml-auto shrink-0">
+                                        {format!("{at:.2}")}
+                                    </span>
+                                </div>
+                            }
+                        }).collect_view()}
+                    </div>
                 }
             }}
         </div>
@@ -430,8 +476,10 @@ pub fn GanttTimeline(
 
 // ── Distribution bar (percentile markers) ────────────────────────────
 
-/// A horizontal bar with markers for avg / p95 / p99 / max, with an optional
-/// budget line overlay. Used for frame time distribution.
+/// Horizontal percentile bars for avg / p95 / p99 / max. Auto-scales to
+/// the largest percentile so sub-millisecond data remains readable. The
+/// budget line is only drawn when it falls inside the zoomed range —
+/// otherwise it's shown as an off-chart annotation at the top.
 #[component]
 pub fn DistributionBar(
     #[prop(into)] avg: Signal<f64>,
@@ -448,11 +496,22 @@ pub fn DistributionBar(
                 let b99 = p99.get();
                 let mx = max.get();
                 let bg = budget.get().max(0.1);
-                let scale = mx.max(bg * 1.15).max(0.1);
-                let pct = |v: f64| (v / scale * 100.0).clamp(0.0, 100.0);
+
+                // Scale to the largest percentile with headroom. Floor at 0.2ms
+                // so sub-millisecond data doesn't hug the left edge.
+                let data_max = mx.max(b99).max(b95).max(a);
+                let data_scale = (data_max * 1.25).max(0.2);
+                // Only extend to include budget if we're actually pushing it.
+                let scale = if data_max >= bg * 0.5 {
+                    data_scale.max(bg * 1.05)
+                } else {
+                    data_scale
+                };
+                let budget_in_range = bg <= scale * 1.02;
+                let pct = move |v: f64| (v / scale * 100.0).clamp(0.0, 100.0);
                 let budget_pct = pct(bg);
 
-                let marker = |label: &'static str, v: f64, color: &'static str| {
+                let marker = move |label: &'static str, v: f64, color: &'static str| {
                     let p = pct(v);
                     view! {
                         <div class="relative h-5">
@@ -465,14 +524,16 @@ pub fn DistributionBar(
                                      box-shadow: 0 0 8px {color}66"
                                 )
                             />
-                            <div
-                                class="absolute inset-y-0 w-px"
-                                style=format!(
-                                    "left: {budget_pct:.2}%; \
-                                     background: repeating-linear-gradient(to bottom, var(--color-electric-yellow) 0 2px, transparent 2px 5px); \
-                                     opacity: 0.8"
-                                )
-                            />
+                            {budget_in_range.then(|| view! {
+                                <div
+                                    class="absolute inset-y-0 w-px"
+                                    style=format!(
+                                        "left: {budget_pct:.2}%; \
+                                         background: repeating-linear-gradient(to bottom, var(--color-electric-yellow) 0 2px, transparent 2px 5px); \
+                                         opacity: 0.8"
+                                    )
+                                />
+                            })}
                             <div class="absolute inset-y-0 left-2 flex items-center text-[9px] font-mono uppercase tracking-[0.1em] text-fg-tertiary">
                                 {label}
                             </div>
@@ -491,6 +552,18 @@ pub fn DistributionBar(
                     {marker("p95", b95, "var(--color-neon-cyan)")}
                     {marker("p99", b99, "var(--color-electric-purple)")}
                     {marker("max", mx, "var(--color-coral)")}
+                    <div class="flex items-center justify-between text-[9px] font-mono tabular-nums px-0.5 pt-0.5">
+                        <span class="text-fg-tertiary/60">"0 ms"</span>
+                        {if budget_in_range {
+                            view! { <span class="text-fg-tertiary/60">{format!("{scale:.2} ms")}</span> }.into_any()
+                        } else {
+                            view! {
+                                <span class="text-electric-yellow/70">
+                                    {format!("scale {scale:.2}ms · budget {bg:.1}ms (headroom)")}
+                                </span>
+                            }.into_any()
+                        }}
+                    </div>
                 }
             }}
         </div>
