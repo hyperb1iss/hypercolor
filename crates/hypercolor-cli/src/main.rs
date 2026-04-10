@@ -15,102 +15,169 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use client::DaemonClient;
 use output::{OutputContext, OutputFormat};
 
+// ── Help template ───────────────────────────────────────────────────────
+//
+// We render the command list ourselves (with group headings) and let clap
+// render options (with help_heading groups). The template stitches them
+// together: banner → about → usage → [our command groups] → [clap options].
+
+const HELP_TEMPLATE: &str = "\
+{before-help}
+{about-with-newline}
+{usage-heading} {usage}
+{after-help}
+{all-args}";
+
+// ── CLI definition ──────────────────────────────────────────────────────
+
 /// Hypercolor RGB lighting control.
 #[derive(Parser)]
-#[command(name = "hyper", version, about = "Hypercolor RGB lighting control")]
-#[command(propagate_version = true, styles = output::painter::help_styles())]
+#[command(
+    name = "hyper",
+    version,
+    about = "RGB lighting orchestration engine",
+    help_template = HELP_TEMPLATE,
+    styles = output::painter::help_styles(),
+    subcommand_required = true,
+    arg_required_else_help = true,
+)]
 pub struct Cli {
-    /// Output format.
-    #[arg(long, global = true, default_value = "table", value_enum)]
-    format: OutputFormat,
+    // ── Connection ──────────────────────────────────────────────────
 
-    /// Daemon host.
-    #[arg(long, global = true, default_value = "localhost")]
+    /// Daemon hostname or IP
+    #[arg(long, global = true, default_value = "localhost",
+          help_heading = "Connection")]
     host: String,
 
-    /// Daemon port.
-    #[arg(long, global = true, default_value_t = 9420)]
+    /// Daemon port
+    #[arg(long, global = true, default_value_t = 9420,
+          help_heading = "Connection")]
     port: u16,
 
-    /// API key used for authenticated daemon requests.
-    #[arg(long, global = true, env = "HYPERCOLOR_API_KEY")]
+    /// Bearer token for authenticated requests
+    #[arg(long, global = true, env = "HYPERCOLOR_API_KEY",
+          help_heading = "Connection")]
     api_key: Option<String>,
 
-    /// Connection profile name from ~/.config/hypercolor/cli.toml.
-    #[arg(long, global = true, env = "HYPERCOLOR_PROFILE")]
+    /// Named connection profile from cli.toml
+    #[arg(long, global = true, env = "HYPERCOLOR_PROFILE",
+          help_heading = "Connection")]
     profile: Option<String>,
 
-    /// Color theme name (default: silkcircuit-neon).
-    #[arg(long, global = true, env = "HYPERCOLOR_THEME")]
-    theme: Option<String>,
+    // ── Output ──────────────────────────────────────────────────────
 
-    /// JSON output (shorthand for --format json).
-    #[arg(long, short = 'j', global = true)]
+    /// Output format: table, json, plain
+    #[arg(long, global = true, default_value = "table", value_enum,
+          hide_possible_values = true,
+          help_heading = "Output")]
+    format: OutputFormat,
+
+    /// Shorthand for --format json
+    #[arg(long, short = 'j', global = true,
+          help_heading = "Output")]
     json: bool,
 
-    /// Suppress non-essential output.
-    #[arg(long, short, global = true)]
+    /// Suppress non-essential output
+    #[arg(long, short, global = true,
+          help_heading = "Output")]
     quiet: bool,
 
-    /// Disable colored output.
-    #[arg(long, global = true)]
+    /// Disable colored output
+    #[arg(long, global = true,
+          help_heading = "Output")]
     no_color: bool,
 
-    /// Increase verbosity (-v, -vv, -vvv).
-    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
+    /// Color theme name
+    #[arg(long, global = true, env = "HYPERCOLOR_THEME",
+          help_heading = "Output")]
+    theme: Option<String>,
+
+    /// Increase verbosity (-v, -vv, -vvv)
+    #[arg(short, long, global = true, action = clap::ArgAction::Count,
+          help_heading = "Output")]
     verbose: u8,
 
     #[command(subcommand)]
     command: Commands,
 }
 
-/// Top-level subcommands.
+/// Top-level subcommands (hidden from default help — rendered by help_commands).
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Show current system state.
+    #[command(hide = true)]
+    /// System state, render loop, and active effect
     Status(commands::status::StatusArgs),
-    /// Device discovery and management.
+
+    #[command(hide = true)]
+    /// Discovery, pairing, and hardware management
     Devices(commands::devices::DevicesArgs),
-    /// Effect browsing and control.
+
+    #[command(hide = true)]
+    /// Browse, activate, and control lighting effects
     Effects(commands::effects::EffectsArgs),
-    /// Scene management (automated lighting triggers).
+
+    #[command(hide = true)]
+    /// Automated lighting triggers and schedules
     Scenes(commands::scenes::ScenesArgs),
-    /// Profile management (save, apply, delete).
+
+    #[command(hide = true)]
+    /// Save and apply full system profiles
     Profiles(commands::profiles::ProfilesArgs),
-    /// Saved effect library (favorites, presets, playlists).
+
+    #[command(hide = true)]
+    /// Favorites, presets, and playlists
     Library(commands::library::LibraryArgs),
-    /// Spatial layout management.
+
+    #[command(hide = true)]
+    /// Spatial LED layout configuration
     Layouts(commands::layouts::LayoutsArgs),
-    /// Global output brightness control.
+
+    #[command(hide = true)]
+    /// Global output brightness (0\u{2013}100)
     Brightness(commands::brightness::BrightnessArgs),
-    /// Audio input device management.
+
+    #[command(hide = true)]
+    /// Audio input device selection
     Audio(commands::audio::AudioArgs),
-    /// Daemon identity and health.
+
+    #[command(hide = true)]
+    /// Daemon version, identity, and health
     Server(commands::server::ServerArgs),
-    /// Configuration management.
+
+    #[command(hide = true)]
+    /// Daemon and CLI configuration
     Config(commands::config::ConfigArgs),
-    /// Daemon service lifecycle management.
+
+    #[command(hide = true)]
+    /// Daemon lifecycle (start, stop, restart)
     Service(commands::service::ServiceArgs),
-    /// Run system diagnostics and health checks.
+
+    #[command(hide = true)]
+    /// Health checks and diagnostic reports
     Diagnose(commands::diagnose::DiagnoseArgs),
-    /// Discover Hypercolor daemons on the local network.
+
+    #[command(hide = true)]
+    /// Discover daemons on the local network
     Servers(commands::servers::ServersArgs),
-    /// Generate shell completion scripts.
+
+    #[command(hide = true)]
+    /// Generate shell completion scripts
     Completions(commands::completions::CompletionsArgs),
 }
+
+// ── Main ────────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::from_arg_matches(
         &Cli::command()
             .before_help(output::painter::help_banner())
+            .after_help(output::painter::help_commands())
             .get_matches(),
     )?;
 
-    // Initialize tracing based on verbosity
     init_tracing(cli.verbose);
 
-    // Resolve connection profile (flags > env > profile > defaults)
     let conn = config::resolve_connection(
         &cli.host,
         cli.port,
@@ -118,7 +185,6 @@ async fn main() -> Result<()> {
         cli.profile.as_deref(),
     )?;
 
-    // Build shared context
     let ctx = OutputContext::new(
         cli.format,
         cli.json,
@@ -128,7 +194,6 @@ async fn main() -> Result<()> {
     );
     let client = DaemonClient::new(&conn.host, conn.port, conn.api_key.as_deref());
 
-    // Dispatch to subcommand handlers
     let result = match &cli.command {
         Commands::Status(args) => commands::status::execute(args, &client, &ctx).await,
         Commands::Devices(args) => commands::devices::execute(args, &client, &ctx).await,
@@ -159,7 +224,6 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Initialize `tracing-subscriber` based on CLI verbosity level.
 fn init_tracing(verbosity: u8) {
     let level = match verbosity {
         0 => "warn",

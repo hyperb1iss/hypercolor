@@ -257,6 +257,63 @@ fn should_color_banner() -> bool {
     std::io::IsTerminal::is_terminal(&std::io::stdout())
 }
 
+/// Grouped command list for `--help` output.
+///
+/// Renders commands organized by domain with styled group headings.
+/// Injected via clap's `after_help` to appear between usage and options.
+pub fn help_commands() -> String {
+    let color = should_color_banner();
+
+    let purple_bold = if color { "\x1b[1m\x1b[38;2;225;53;255m" } else { "" };
+    let cyan = if color { "\x1b[38;2;128;255;234m" } else { "" };
+    let muted = if color { "\x1b[38;2;130;135;159m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
+
+    // Each group: (heading, [(name, description)])
+    let groups: &[(&str, &[(&str, &str)])] = &[
+        ("Lighting", &[
+            ("status",     "System state, render loop, and active effect"),
+            ("effects",    "Browse, activate, and control lighting effects"),
+            ("brightness", "Global output brightness (0\u{2013}100)"),
+            ("scenes",     "Automated lighting triggers and schedules"),
+        ]),
+        ("Devices", &[
+            ("devices",  "Discovery, pairing, and hardware management"),
+            ("layouts",  "Spatial LED layout configuration"),
+            ("audio",    "Audio input device selection"),
+        ]),
+        ("Library", &[
+            ("library",  "Favorites, presets, and playlists"),
+            ("profiles", "Save and apply full system profiles"),
+        ]),
+        ("Network", &[
+            ("server",  "Daemon version, identity, and health"),
+            ("servers", "Discover daemons on the local network"),
+            ("service", "Daemon lifecycle (start, stop, restart)"),
+        ]),
+        ("System", &[
+            ("config",      "Daemon and CLI configuration"),
+            ("diagnose",    "Health checks and diagnostic reports"),
+            ("completions", "Generate shell completion scripts"),
+        ]),
+    ];
+
+    let mut out = String::with_capacity(1024);
+
+    for (heading, commands) in groups {
+        out.push_str(&format!(
+            "\n{purple_bold}{heading}:{reset}\n"
+        ));
+        for (name, desc) in *commands {
+            out.push_str(&format!(
+                "  {cyan}{name:<14}{reset}{muted}{desc}{reset}\n"
+            ));
+        }
+    }
+
+    out
+}
+
 /// SilkCircuit-themed styles for clap help output.
 ///
 /// Maps the project's visual identity onto clap's help categories:
