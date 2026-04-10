@@ -1130,8 +1130,12 @@ impl BackendManager {
     /// Whether queued frame writes are currently suppressed for a device.
     #[must_use]
     pub fn is_direct_control_active(&self, backend_id: &str, device_id: DeviceId) -> bool {
+        self.is_direct_control_active_key(&(backend_id.to_owned(), device_id))
+    }
+
+    fn is_direct_control_active_key(&self, key: &BackendDeviceKey) -> bool {
         self.direct_control_locks
-            .get(&(backend_id.to_owned(), device_id))
+            .get(key)
             .is_some_and(|count| *count > 0)
     }
 
@@ -1509,7 +1513,7 @@ impl BackendManager {
         for key in active_staging_keys.iter().take(active_staging_len) {
             let (backend_id, device_id) = key;
 
-            if self.is_direct_control_active(backend_id.as_str(), *device_id) {
+            if self.is_direct_control_active_key(key) {
                 trace!(
                     backend_id = %backend_id,
                     device_id = %device_id,
@@ -1552,7 +1556,7 @@ impl BackendManager {
                 values
             };
 
-            let Some(queue) = self.ensure_output_queue(backend_id.as_str(), *device_id) else {
+            let Some(queue) = self.ensure_output_queue_for_key(key) else {
                 stats
                     .errors
                     .push(format!("backend '{backend_id}' not registered"));
@@ -1673,21 +1677,15 @@ impl BackendManager {
         }
     }
 
-    fn ensure_output_queue(
-        &mut self,
-        backend_id: &str,
-        device_id: DeviceId,
-    ) -> Option<&mut OutputQueue> {
-        let key = (backend_id.to_owned(), device_id);
-
-        if !self.output_queues.contains_key(&key) {
-            let backend = self.backends.get(backend_id)?.clone();
-            let target_fps = self.device_fps_cache.get(&key).copied().unwrap_or(60);
-            let queue = OutputQueue::spawn(backend_id.to_owned(), device_id, backend, target_fps);
+    fn ensure_output_queue_for_key(&mut self, key: &BackendDeviceKey) -> Option<&mut OutputQueue> {
+        if !self.output_queues.contains_key(key) {
+            let backend = self.backends.get(key.0.as_str())?.clone();
+            let target_fps = self.device_fps_cache.get(key).copied().unwrap_or(60);
+            let queue = OutputQueue::spawn(key.0.clone(), key.1, backend, target_fps);
             self.output_queues.insert(key.clone(), queue);
         }
 
-        self.output_queues.get_mut(&key)
+        self.output_queues.get_mut(key)
     }
 
     /// Return the cached target FPS for a connected physical device, if present.
