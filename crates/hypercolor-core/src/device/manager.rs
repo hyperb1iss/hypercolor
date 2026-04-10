@@ -501,6 +501,18 @@ impl DeviceStagingBuffer {
             return;
         }
 
+        if let Some(last) = self.written_ranges.last_mut() {
+            if start >= last.start && start <= last.end {
+                last.end = last.end.max(end);
+                return;
+            }
+
+            if start >= last.end {
+                self.written_ranges.push(start..end);
+                return;
+            }
+        }
+
         let mut new_start = start;
         let mut new_end = end;
         let mut index = 0;
