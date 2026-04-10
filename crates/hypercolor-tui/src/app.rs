@@ -541,6 +541,17 @@ impl App {
 
             // ── Notifications ───────────────────────────────
             Action::Notify(notif) => {
+                // Error notifications trigger a quick red flash over the
+                // full content area in addition to the toast.
+                if notif.level == NotificationLevel::Error {
+                    self.motion.trigger(
+                        crate::motion::MotionKey::ErrorFlash,
+                        crate::motion::catalog::error_flash(
+                            self.last_frame_area,
+                            self.motion.sensitivity(),
+                        ),
+                    );
+                }
                 self.notification = Some((notif.clone(), Instant::now()));
             }
             Action::DismissNotification => {
