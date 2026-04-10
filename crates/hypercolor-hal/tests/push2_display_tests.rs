@@ -205,7 +205,10 @@ fn solid_red_frame_encodes_to_expected_rgb565_pattern() {
     // encoded = (0 << 11) | (0 << 5) | 31 = 0x001F (LE: [0x1F, 0x00])
     // After XOR with [0xE7, 0xF3, ...]: [0x1F^0xE7, 0x00^0xF3] = [0xF8, 0xF3]
     let first_pixel = &commands[1].data[..2];
-    let expected = [0x1F ^ PUSH2_DISPLAY_XOR_MASK[0], 0x00 ^ PUSH2_DISPLAY_XOR_MASK[1]];
+    let expected = [
+        0x1F ^ PUSH2_DISPLAY_XOR_MASK[0],
+        0x00 ^ PUSH2_DISPLAY_XOR_MASK[1],
+    ];
     assert_eq!(
         first_pixel, &expected,
         "solid red first pixel should be RGB565 0x001F XOR'd with mask"
@@ -257,7 +260,8 @@ fn solid_blue_frame_encodes_to_expected_rgb565_pattern() {
     assert!(
         diff_low < 4 && diff_high < 4,
         "blue pixel: expected ~[{expected_low:#04X}, {expected_high:#04X}], got [{:#04X}, {:#04X}]",
-        first_pixel[0], first_pixel[1]
+        first_pixel[0],
+        first_pixel[1]
     );
 }
 

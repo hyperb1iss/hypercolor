@@ -8,8 +8,7 @@ use crate::registry::DeviceDescriptor;
 
 use super::{
     HID_REPORT_ID_DEFAULT, PID_HUNTSMAN_V2, RAZER_CONSUMER_USAGE, RAZER_CONSUMER_USAGE_PAGE,
-    build_huntsman_v2_protocol,
-    build_matrix_extended_extended_5x15_backlight_protocol,
+    build_huntsman_v2_protocol, build_matrix_extended_extended_5x15_backlight_protocol,
     build_matrix_extended_extended_6x17_backlight_protocol,
     build_matrix_extended_extended_6x18_backlight_protocol,
     build_matrix_extended_extended_6x19_backlight_protocol,
@@ -20,7 +19,8 @@ use super::{
     build_matrix_extended_modern_6x17_zero_protocol,
     build_matrix_extended_modern_6x18_backlight_protocol,
     build_matrix_extended_modern_6x22_backlight_protocol,
-    build_matrix_extended_modern_8x23_backlight_protocol, build_matrix_linear_extended_1x12_backlight_protocol,
+    build_matrix_extended_modern_8x23_backlight_protocol,
+    build_matrix_linear_extended_1x12_backlight_protocol,
     build_matrix_standard_extended_6x22_backlight_protocol,
     build_matrix_wireless_5x16_backlight_protocol, build_matrix_wireless_6x17_zero_protocol,
     build_matrix_wireless_6x22_zero_protocol, hidapi_descriptor, push_hidapi_group,

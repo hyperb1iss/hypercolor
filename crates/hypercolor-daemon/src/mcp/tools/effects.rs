@@ -4,7 +4,9 @@ use std::cmp::min;
 
 use serde_json::{Value, json};
 
-use super::{ToolDefinition, ToolError, apply_controls, default_output_schema, find_effect_metadata};
+use super::{
+    ToolDefinition, ToolError, apply_controls, default_output_schema, find_effect_metadata,
+};
 use crate::api::AppState;
 use hypercolor_core::effect::create_renderer_for_metadata_with_mode;
 use hypercolor_types::effect::ControlValue;

@@ -240,11 +240,7 @@ impl WledDevice {
 
 // ── Encoding + Dedup Helpers ────────────────────────────────────────────
 
-pub(super) fn pixels_match_with_threshold(
-    previous: &[u8],
-    current: &[u8],
-    threshold: u8,
-) -> bool {
+pub(super) fn pixels_match_with_threshold(previous: &[u8], current: &[u8], threshold: u8) -> bool {
     previous.len() == current.len()
         && previous
             .iter()

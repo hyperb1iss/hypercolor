@@ -413,9 +413,7 @@ pub(super) fn color_picker_panel_style(trigger: Option<web_sys::HtmlButtonElemen
 
 /// Close the color picker popover on any ancestor scroll (same rationale as
 /// `install_scroll_close_handler` but targets the expanded-picker signal).
-pub(super) fn install_scroll_close_handler_for_picker(
-    set_expanded: WriteSignal<Option<String>>,
-) {
+pub(super) fn install_scroll_close_handler_for_picker(set_expanded: WriteSignal<Option<String>>) {
     let Some(win) = web_sys::window() else {
         return;
     };

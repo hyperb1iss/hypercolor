@@ -40,10 +40,7 @@ impl std::fmt::Display for ActivateEffectError {
 
 // ── Shared Helpers ──────────────────────────────────────────────────────
 
-pub(crate) async fn resolve_preset_id(
-    state: &Arc<AppState>,
-    id_or_name: &str,
-) -> Option<PresetId> {
+pub(crate) async fn resolve_preset_id(state: &Arc<AppState>, id_or_name: &str) -> Option<PresetId> {
     if let Ok(id) = id_or_name.parse::<PresetId>() {
         return Some(id);
     }

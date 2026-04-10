@@ -12,8 +12,8 @@ use std::collections::HashMap;
 
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
-use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen::prelude::Closure;
+use wasm_bindgen::{JsCast, JsValue};
 
 use crate::color::{self, CanvasPalette};
 use crate::ws::CanvasFrame;
@@ -81,9 +81,8 @@ impl ThumbnailStore {
     /// the store updates.
     pub fn get(&self, effect_id: &str, version: &str) -> Option<Thumbnail> {
         self.store.with(|map| {
-            map.get(effect_id).and_then(|thumb| {
-                (thumb.version == version).then(|| thumb.clone())
-            })
+            map.get(effect_id)
+                .and_then(|thumb| (thumb.version == version).then(|| thumb.clone()))
         })
     }
 
@@ -158,17 +157,11 @@ fn encode_frame_to_webp(frame: &CanvasFrame) -> Result<String, JsValue> {
 
     let rgba = frame_to_rgba_vec(frame);
     let clamped = wasm_bindgen::Clamped(rgba.as_slice());
-    let image_data = web_sys::ImageData::new_with_u8_clamped_array_and_sh(
-        clamped,
-        frame.width,
-        frame.height,
-    )?;
+    let image_data =
+        web_sys::ImageData::new_with_u8_clamped_array_and_sh(clamped, frame.width, frame.height)?;
     ctx.put_image_data(&image_data, 0.0, 0.0)?;
 
-    canvas.to_data_url_with_type_and_encoder_options(
-        "image/webp",
-        &JsValue::from_f64(WEBP_QUALITY),
-    )
+    canvas.to_data_url_with_type_and_encoder_options("image/webp", &JsValue::from_f64(WEBP_QUALITY))
 }
 
 fn frame_to_rgba_vec(frame: &CanvasFrame) -> Vec<u8> {
@@ -243,9 +236,7 @@ pub fn install_auto_capture<F>(
         let version_for_capture = version.clone();
         let frame_for_capture = frame.clone();
         let cb = Closure::once_into_js(move || {
-            if let Some(thumbnail) =
-                capture_thumbnail(&frame_for_capture, version_for_capture)
-            {
+            if let Some(thumbnail) = capture_thumbnail(&frame_for_capture, version_for_capture) {
                 store.insert(effect_id_for_capture, thumbnail);
             }
         });

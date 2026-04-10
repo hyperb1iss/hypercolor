@@ -219,7 +219,13 @@ pub(super) fn sample_positions(
     edge_behavior: EdgeBehavior,
 ) -> Vec<[u8; 3]> {
     let mut colors = Vec::new();
-    sample_positions_into_buffer(canvas, positions, sampling_method, edge_behavior, &mut colors);
+    sample_positions_into_buffer(
+        canvas,
+        positions,
+        sampling_method,
+        edge_behavior,
+        &mut colors,
+    );
     colors
 }
 

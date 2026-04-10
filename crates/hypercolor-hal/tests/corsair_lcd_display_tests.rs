@@ -49,7 +49,10 @@ fn lcd_packet_final_flag_sets_correctly() {
 fn lcd_packet_zone_byte_propagates_to_header() {
     for zone in [0x01, 0x1F, 0x40, 0xFF] {
         let packet = build_lcd_display_packet(zone, true, 0, &[0x00]);
-        assert_eq!(packet[2], zone, "zone byte {zone:#04X} should appear at offset 2");
+        assert_eq!(
+            packet[2], zone,
+            "zone byte {zone:#04X} should appear at offset 2"
+        );
     }
 }
 
@@ -102,7 +105,10 @@ fn single_chunk_jpeg_produces_one_data_packet_plus_keepalive() {
     assert_eq!(commands.len(), 2);
     assert_eq!(commands[0].transfer_type, TransferType::Bulk);
     assert_eq!(commands[0].data.len(), LCD_PACKET_SIZE);
-    assert_eq!(commands[0].data[3], 0x01, "single packet is also the final packet");
+    assert_eq!(
+        commands[0].data[3], 0x01,
+        "single packet is also the final packet"
+    );
     assert_eq!(commands[0].data[4], 0x00, "first packet is sequence 0");
     assert_eq!(commands[1].transfer_type, TransferType::HidReport);
 }
@@ -162,7 +168,11 @@ fn multi_chunk_jpeg_has_correct_packet_count_and_sequence_numbers() {
 
     for (index, cmd) in data_commands.iter().enumerate() {
         assert_eq!(cmd.data.len(), LCD_PACKET_SIZE, "packet {index} size");
-        assert_eq!(cmd.data[4], u8::try_from(index).unwrap_or(u8::MAX), "sequence number for packet {index}");
+        assert_eq!(
+            cmd.data[4],
+            u8::try_from(index).unwrap_or(u8::MAX),
+            "sequence number for packet {index}"
+        );
 
         let is_last = index == data_commands.len() - 1;
         assert_eq!(
@@ -204,9 +214,15 @@ fn empty_jpeg_still_produces_one_packet() {
     // Verify this doesn't panic and check the invariant.
     match commands {
         Some(cmds) => {
-            let bulk_count = cmds.iter().filter(|c| c.transfer_type == TransferType::Bulk).count();
+            let bulk_count = cmds
+                .iter()
+                .filter(|c| c.transfer_type == TransferType::Bulk)
+                .count();
             // Zero-length JPEG has 0 chunks, so 0 bulk packets
-            assert_eq!(bulk_count, 0, "empty JPEG should produce no bulk data packets");
+            assert_eq!(
+                bulk_count, 0,
+                "empty JPEG should produce no bulk data packets"
+            );
         }
         None => panic!("encode_display_frame should always return Some for LCD protocols"),
     }
@@ -226,7 +242,9 @@ fn minimal_one_byte_jpeg_produces_one_data_packet() {
     assert_eq!(bulk_commands.len(), 1);
     assert_eq!(bulk_commands[0].data[8], 0xFF, "payload byte at offset 8");
     assert!(
-        bulk_commands[0].data[9..LCD_PACKET_SIZE].iter().all(|&b| b == 0),
+        bulk_commands[0].data[9..LCD_PACKET_SIZE]
+            .iter()
+            .all(|&b| b == 0),
         "remaining bytes should be zero-padded"
     );
 }
@@ -253,7 +271,11 @@ fn encode_display_frame_into_shrinks_oversized_buffer() {
         .expect("buffer reuse should succeed");
 
     // 1 data packet + 1 keepalive = 2 commands total
-    assert_eq!(commands.len(), 2, "buffer should be truncated to actual usage");
+    assert_eq!(
+        commands.len(),
+        2,
+        "buffer should be truncated to actual usage"
+    );
     assert_eq!(commands[0].transfer_type, TransferType::Bulk);
     assert_eq!(commands[1].transfer_type, TransferType::HidReport);
 }
@@ -268,7 +290,10 @@ fn encode_display_frame_into_grows_empty_buffer() {
         .encode_display_frame_into(&jpeg, &mut commands)
         .expect("buffer growth should succeed");
 
-    let bulk_count = commands.iter().filter(|c| c.transfer_type == TransferType::Bulk).count();
+    let bulk_count = commands
+        .iter()
+        .filter(|c| c.transfer_type == TransferType::Bulk)
+        .count();
     assert_eq!(bulk_count, 3, "3 full chunks should produce 3 bulk packets");
 }
 
@@ -399,7 +424,10 @@ fn second_encode_suppresses_keepalive_within_interval() {
         .iter()
         .filter(|c| c.transfer_type == TransferType::HidReport)
         .count();
-    assert_eq!(keepalive_count_1, 1, "first encode should include keepalive");
+    assert_eq!(
+        keepalive_count_1, 1,
+        "first encode should include keepalive"
+    );
 
     let second = protocol
         .encode_display_frame(&jpeg)
@@ -440,5 +468,8 @@ fn jpeg_payload_bytes_are_preserved_across_chunks() {
     }
 
     assert_eq!(reassembled.len(), jpeg.len());
-    assert_eq!(reassembled, jpeg, "reassembled payload should match original JPEG data");
+    assert_eq!(
+        reassembled, jpeg,
+        "reassembled payload should match original JPEG data"
+    );
 }

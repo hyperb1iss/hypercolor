@@ -10,7 +10,10 @@ use crate::ws::PerformanceMetrics;
 
 const EMA_ALPHA: f64 = 0.3;
 
-fn use_ema(source: impl Fn() -> Option<f64> + Copy + Send + Sync + 'static, alpha: f64) -> Signal<f64> {
+fn use_ema(
+    source: impl Fn() -> Option<f64> + Copy + Send + Sync + 'static,
+    alpha: f64,
+) -> Signal<f64> {
     let state = RwSignal::new(None::<f64>);
     Effect::new(move |_| {
         if let Some(raw) = source() {
@@ -38,7 +41,11 @@ pub(super) fn HeroGauges(
     // Engine FPS gauge values — EMA-smoothed for stable display
     let engine_raw = Memo::new(move |_| metrics.get().map(|m| m.fps.actual));
     let engine_value = use_ema(move || engine_raw.get(), EMA_ALPHA);
-    let engine_max = Memo::new(move |_| metrics.get().map_or(60.0, |m| f64::from(m.fps.target).max(1.0)));
+    let engine_max = Memo::new(move |_| {
+        metrics
+            .get()
+            .map_or(60.0, |m| f64::from(m.fps.target).max(1.0))
+    });
     let engine_primary = Memo::new(move |_| {
         if metrics.get().is_some() {
             format!("{:.1}", engine_value.get())
@@ -75,7 +82,16 @@ pub(super) fn HeroGauges(
     let frame_secondary = Memo::new(move |_| {
         metrics
             .get()
-            .map(|m| format!("/ {:.1} ms", if m.fps.target > 0 { 1000.0 / f64::from(m.fps.target) } else { 33.33 }))
+            .map(|m| {
+                format!(
+                    "/ {:.1} ms",
+                    if m.fps.target > 0 {
+                        1000.0 / f64::from(m.fps.target)
+                    } else {
+                        33.33
+                    }
+                )
+            })
             .unwrap_or_else(|| "ms".into())
     });
 
@@ -108,7 +124,13 @@ pub(super) fn HeroGauges(
     let dropped_text = Memo::new(move |_| {
         metrics
             .get()
-            .map(|m| format!("{} budget miss{}", m.fps.dropped, if m.fps.dropped == 1 { "" } else { "es" }))
+            .map(|m| {
+                format!(
+                    "{} budget miss{}",
+                    m.fps.dropped,
+                    if m.fps.dropped == 1 { "" } else { "es" }
+                )
+            })
             .unwrap_or_else(|| "metrics warming up".into())
     });
 
@@ -200,7 +222,9 @@ fn GaugeWithSparkline(
 // ── Reuse rates ──────────────────────────────────────────────────────
 
 #[component]
-pub(super) fn ReuseRatesPanel(#[prop(into)] metrics: Signal<Option<PerformanceMetrics>>) -> impl IntoView {
+pub(super) fn ReuseRatesPanel(
+    #[prop(into)] metrics: Signal<Option<PerformanceMetrics>>,
+) -> impl IntoView {
     // Max reuse count over a 120-frame window is 120.
     let window = Signal::derive(|| 120_u32);
 
@@ -208,7 +232,8 @@ pub(super) fn ReuseRatesPanel(#[prop(into)] metrics: Signal<Option<PerformanceMe
     let reused_canvas = Memo::new(move |_| metrics.get().map_or(0, |m| m.pacing.reused_canvas));
     let retained_effect = Memo::new(move |_| metrics.get().map_or(0, |m| m.pacing.retained_effect));
     let retained_screen = Memo::new(move |_| metrics.get().map_or(0, |m| m.pacing.retained_screen));
-    let composition_bypassed = Memo::new(move |_| metrics.get().map_or(0, |m| m.pacing.composition_bypassed));
+    let composition_bypassed =
+        Memo::new(move |_| metrics.get().map_or(0, |m| m.pacing.composition_bypassed));
 
     view! {
         <div

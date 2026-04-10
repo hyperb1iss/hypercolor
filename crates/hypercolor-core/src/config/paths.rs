@@ -96,9 +96,7 @@ pub fn data_dir() -> PathBuf {
 /// process environment variables.
 #[doc(hidden)]
 pub fn set_data_dir_override(path: Option<PathBuf>) {
-    let mut override_path = DATA_DIR_OVERRIDE
-        .write()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut override_path = DATA_DIR_OVERRIDE.write().unwrap_or_else(|e| e.into_inner());
     *override_path = path;
 }
 

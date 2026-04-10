@@ -21,9 +21,8 @@ pub(super) fn PreviewCard() -> impl IntoView {
     let ws = expect_context::<WsContext>();
     let fx = expect_context::<EffectsContext>();
 
-    let accent_rgb = Signal::derive(move || {
-        category_accent_rgb(&fx.active_effect_category.get()).to_string()
-    });
+    let accent_rgb =
+        Signal::derive(move || category_accent_rgb(&fx.active_effect_category.get()).to_string());
     let title_tint = Memo::new(move |_| color::accent_text_tint(&accent_rgb.get(), 0.86, 0.65));
     let body_tint = Memo::new(move |_| color::accent_text_tint(&accent_rgb.get(), 0.78, 0.22));
     let meta_tint = Memo::new(move |_| color::accent_text_tint(&accent_rgb.get(), 0.68, 0.65));
@@ -165,9 +164,7 @@ pub(super) fn StatusStrip(
     let device_count = status.device_count;
     let effect_count = status.effect_count;
 
-    let ws_clients = Memo::new(move |_| {
-        metrics.get().map_or(0, |m| m.websocket.client_count)
-    });
+    let ws_clients = Memo::new(move |_| metrics.get().map_or(0, |m| m.websocket.client_count));
 
     view! {
         <div class="px-6 py-3 flex flex-wrap items-center gap-5 animate-fade-in-up border-t border-edge-subtle/10">

@@ -8,8 +8,8 @@ use hypercolor_types::spatial::{
 };
 use tracing::{debug, info, warn};
 
-use super::device_helpers::backend_id_for_device;
 use super::DiscoveryRuntime;
+use super::device_helpers::backend_id_for_device;
 use crate::scene_transactions::apply_layout_update;
 
 #[doc(hidden)]

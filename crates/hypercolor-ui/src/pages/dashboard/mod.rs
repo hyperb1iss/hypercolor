@@ -170,7 +170,11 @@ pub fn DashboardPage() -> impl IntoView {
             .collect::<Vec<_>>()
     });
     let series_wake = Memo::new(move |_| {
-        history.read().iter().map(|s| s.wake_p95).collect::<Vec<_>>()
+        history
+            .read()
+            .iter()
+            .map(|s| s.wake_p95)
+            .collect::<Vec<_>>()
     });
     let series_frame_age = Memo::new(move |_| {
         history
@@ -193,9 +197,8 @@ pub fn DashboardPage() -> impl IntoView {
             .map(|s| s.ws_bytes_per_sec)
             .collect::<Vec<_>>()
     });
-    let series_phase = Memo::new(move |_| {
-        history.read().iter().map(|s| s.phase).collect::<Vec<_>>()
-    });
+    let series_phase =
+        Memo::new(move |_| history.read().iter().map(|s| s.phase).collect::<Vec<_>>());
 
     view! {
         <div class="flex h-full min-h-0 flex-col overflow-hidden animate-fade-in">

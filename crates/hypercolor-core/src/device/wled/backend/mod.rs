@@ -495,4 +495,3 @@ impl DeviceBackend for WledBackend {
             })
     }
 }
-

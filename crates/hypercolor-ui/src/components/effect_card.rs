@@ -54,9 +54,8 @@ pub fn EffectCard(
     let thumb_store = use_context::<ThumbnailStore>();
     let thumb_id = effect.id.clone();
     let thumb_version = effect.version.clone();
-    let thumbnail: Signal<Option<Thumbnail>> = Signal::derive(move || {
-        thumb_store.and_then(|store| store.get(&thumb_id, &thumb_version))
-    });
+    let thumbnail: Signal<Option<Thumbnail>> =
+        Signal::derive(move || thumb_store.and_then(|store| store.get(&thumb_id, &thumb_version)));
 
     // Accent color drives the glow ring and metadata pill tints. Prefer the
     // captured palette's primary; fall back to category accent otherwise.

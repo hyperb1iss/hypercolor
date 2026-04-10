@@ -14,21 +14,55 @@ use crate::ws::PerformanceMetrics;
 // ── Pipeline breakdown ───────────────────────────────────────────────
 
 #[component]
-pub(super) fn PipelinePanel(#[prop(into)] metrics: Signal<Option<PerformanceMetrics>>) -> impl IntoView {
+pub(super) fn PipelinePanel(
+    #[prop(into)] metrics: Signal<Option<PerformanceMetrics>>,
+) -> impl IntoView {
     let segments = Memo::new(move |_| {
         let Some(m) = metrics.get() else {
             return Vec::<StackSegment>::new();
         };
         let s = &m.stages;
         vec![
-            StackSegment { label: "Input", value: s.input_sampling_ms, color: "#80ffea" },
-            StackSegment { label: "Producer", value: s.producer_rendering_ms, color: "#e135ff" },
-            StackSegment { label: "Compose", value: s.composition_ms, color: "#ff6ac1" },
-            StackSegment { label: "Sample", value: s.spatial_sampling_ms, color: "#ff99ff" },
-            StackSegment { label: "Output", value: s.device_output_ms, color: "#f1fa8c" },
-            StackSegment { label: "Post", value: s.preview_postprocess_ms, color: "#82aaff" },
-            StackSegment { label: "Publish", value: s.event_bus_ms, color: "#50fa7b" },
-            StackSegment { label: "Overhead", value: s.coordination_overhead_ms, color: "#808090" },
+            StackSegment {
+                label: "Input",
+                value: s.input_sampling_ms,
+                color: "#80ffea",
+            },
+            StackSegment {
+                label: "Producer",
+                value: s.producer_rendering_ms,
+                color: "#e135ff",
+            },
+            StackSegment {
+                label: "Compose",
+                value: s.composition_ms,
+                color: "#ff6ac1",
+            },
+            StackSegment {
+                label: "Sample",
+                value: s.spatial_sampling_ms,
+                color: "#ff99ff",
+            },
+            StackSegment {
+                label: "Output",
+                value: s.device_output_ms,
+                color: "#f1fa8c",
+            },
+            StackSegment {
+                label: "Post",
+                value: s.preview_postprocess_ms,
+                color: "#82aaff",
+            },
+            StackSegment {
+                label: "Publish",
+                value: s.event_bus_ms,
+                color: "#50fa7b",
+            },
+            StackSegment {
+                label: "Overhead",
+                value: s.coordination_overhead_ms,
+                color: "#808090",
+            },
         ]
     });
     let total_label = Memo::new(move |_| {
@@ -44,7 +78,14 @@ pub(super) fn PipelinePanel(#[prop(into)] metrics: Signal<Option<PerformanceMetr
                     + s.preview_postprocess_ms
                     + s.event_bus_ms
                     + s.coordination_overhead_ms;
-                format!("Σ {total:.2} ms · budget {:.1} ms", if m.fps.target > 0 { 1000.0 / f64::from(m.fps.target) } else { 33.33 })
+                format!(
+                    "Σ {total:.2} ms · budget {:.1} ms",
+                    if m.fps.target > 0 {
+                        1000.0 / f64::from(m.fps.target)
+                    } else {
+                        33.33
+                    }
+                )
             })
             .unwrap_or_else(|| "collecting".into())
     });
@@ -77,7 +118,9 @@ pub(super) fn PipelinePanel(#[prop(into)] metrics: Signal<Option<PerformanceMetr
 // ── Distribution panel (frame time percentiles) ─────────────────────
 
 #[component]
-pub(super) fn DistributionPanel(#[prop(into)] metrics: Signal<Option<PerformanceMetrics>>) -> impl IntoView {
+pub(super) fn DistributionPanel(
+    #[prop(into)] metrics: Signal<Option<PerformanceMetrics>>,
+) -> impl IntoView {
     let avg = Memo::new(move |_| metrics.get().map_or(0.0, |m| m.frame_time.avg_ms));
     let p95 = Memo::new(move |_| metrics.get().map_or(0.0, |m| m.frame_time.p95_ms));
     let p99 = Memo::new(move |_| metrics.get().map_or(0.0, |m| m.frame_time.p99_ms));
@@ -124,7 +167,17 @@ pub(super) fn ThroughputPanel(
     let ws_clients = Memo::new(move |_| {
         metrics
             .get()
-            .map(|m| format!("{} client{}", m.websocket.client_count, if m.websocket.client_count == 1 { "" } else { "s" }))
+            .map(|m| {
+                format!(
+                    "{} client{}",
+                    m.websocket.client_count,
+                    if m.websocket.client_count == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                )
+            })
             .unwrap_or_else(|| "metrics channel".into())
     });
 

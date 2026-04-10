@@ -39,10 +39,7 @@ fn validate_port_rejects_zero_and_privileged_ports() {
 #[test]
 fn validate_port_accepts_registered_and_dynamic_ports() {
     assert_eq!(validate_port(1024).expect("1024 should be allowed"), 1024);
-    assert_eq!(
-        validate_port(4048).expect("4048 should be allowed"),
-        4048
-    );
+    assert_eq!(validate_port(4048).expect("4048 should be allowed"), 4048);
     assert_eq!(
         validate_port(u16::MAX).expect("65535 should be allowed"),
         u16::MAX
@@ -93,7 +90,6 @@ fn validation_error_display_is_human_readable() {
     assert!(message.contains("80"));
     assert!(message.contains("privileged"));
 
-    let ip_message =
-        ValidationError::InvalidIp(IpAddr::V4(Ipv4Addr::LOCALHOST)).to_string();
+    let ip_message = ValidationError::InvalidIp(IpAddr::V4(Ipv4Addr::LOCALHOST)).to_string();
     assert!(ip_message.contains("127.0.0.1"));
 }

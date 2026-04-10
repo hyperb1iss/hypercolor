@@ -24,5 +24,7 @@ pub struct SystemStatus {
 
 /// Fetch system status.
 pub async fn fetch_status() -> Result<SystemStatus, String> {
-    client::fetch_json("/api/v1/status").await.map_err(Into::into)
+    client::fetch_json("/api/v1/status")
+        .await
+        .map_err(Into::into)
 }

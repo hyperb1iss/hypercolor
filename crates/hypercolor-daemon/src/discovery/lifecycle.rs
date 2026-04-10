@@ -8,6 +8,7 @@ use hypercolor_types::device::{DeviceError, DeviceId, DeviceState};
 use hypercolor_types::event::{DisconnectReason, HypercolorEvent};
 use tracing::{debug, warn};
 
+use super::DiscoveryRuntime;
 use super::auto_layout::sync_active_layout_for_renderable_devices;
 use super::device_helpers::{
     active_layout_targets_enabled_device, connect_backend_device, desired_connect_behavior,
@@ -15,7 +16,6 @@ use super::device_helpers::{
     format_error_chain, publish_device_connected, refresh_connected_device_info,
     sync_logical_mappings_for_device, sync_registry_state,
 };
-use super::DiscoveryRuntime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserEnabledStateResult {
@@ -409,8 +409,7 @@ pub(super) async fn execute_lifecycle_actions(
                     continue;
                 };
 
-                let result =
-                    { disconnect_backend_device(&runtime, &backend_id, device_id).await };
+                let result = { disconnect_backend_device(&runtime, &backend_id, device_id).await };
                 if let Err(error) = result {
                     warn!(
                         device_id = %device_id,

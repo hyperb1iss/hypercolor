@@ -14,7 +14,11 @@ pub(super) fn FrameTimelinePanel(
     #[prop(into)] metrics: Signal<Option<PerformanceMetrics>>,
     #[prop(into)] phase_history: Signal<Vec<PhaseFrame>>,
 ) -> impl IntoView {
-    let budget = Memo::new(move |_| metrics.get().map_or(33.33, |m| m.timeline.budget_ms.max(0.1)));
+    let budget = Memo::new(move |_| {
+        metrics
+            .get()
+            .map_or(33.33, |m| m.timeline.budget_ms.max(0.1))
+    });
     let token_text = Memo::new(move |_| {
         metrics
             .get()
@@ -23,9 +27,17 @@ pub(super) fn FrameTimelinePanel(
                     "frame #{} · {} layer{} · {} group{}",
                     m.timeline.frame_token,
                     m.timeline.logical_layer_count,
-                    if m.timeline.logical_layer_count == 1 { "" } else { "s" },
+                    if m.timeline.logical_layer_count == 1 {
+                        ""
+                    } else {
+                        "s"
+                    },
                     m.timeline.render_group_count,
-                    if m.timeline.render_group_count == 1 { "" } else { "s" },
+                    if m.timeline.render_group_count == 1 {
+                        ""
+                    } else {
+                        "s"
+                    },
                 )
             })
             .unwrap_or_else(|| "waiting for frame".into())
@@ -91,13 +103,23 @@ pub(super) fn PacingPanel(
     let jitter_label = Memo::new(move |_| {
         metrics
             .get()
-            .map(|m| format!("p95 {:.2} ms · max {:.2} ms", m.pacing.jitter_p95_ms, m.pacing.jitter_max_ms))
+            .map(|m| {
+                format!(
+                    "p95 {:.2} ms · max {:.2} ms",
+                    m.pacing.jitter_p95_ms, m.pacing.jitter_max_ms
+                )
+            })
             .unwrap_or_else(|| "—".into())
     });
     let wake_label = Memo::new(move |_| {
         metrics
             .get()
-            .map(|m| format!("p95 {:.2} ms · max {:.2} ms", m.pacing.wake_delay_p95_ms, m.pacing.wake_delay_max_ms))
+            .map(|m| {
+                format!(
+                    "p95 {:.2} ms · max {:.2} ms",
+                    m.pacing.wake_delay_p95_ms, m.pacing.wake_delay_max_ms
+                )
+            })
             .unwrap_or_else(|| "—".into())
     });
     let age_label = Memo::new(move |_| {
@@ -174,7 +196,9 @@ fn PacingRow(
 // ── Latest frame detail ──────────────────────────────────────────────
 
 #[component]
-pub(super) fn LatestFramePanel(#[prop(into)] metrics: Signal<Option<PerformanceMetrics>>) -> impl IntoView {
+pub(super) fn LatestFramePanel(
+    #[prop(into)] metrics: Signal<Option<PerformanceMetrics>>,
+) -> impl IntoView {
     let line = Memo::new(move |_| {
         metrics
             .get()

@@ -85,8 +85,7 @@ impl WsManager {
         // same signal writers. Called once at startup and again on close/error
         // after a backoff delay.
 
-        let connect: StoredValue<Option<Rc<dyn Fn()>>, LocalStorage> =
-            StoredValue::new_local(None);
+        let connect: StoredValue<Option<Rc<dyn Fn()>>, LocalStorage> = StoredValue::new_local(None);
 
         let connect_fn: Rc<dyn Fn()> = Rc::new(move || {
             clear_reconnect_timer(reconnect_timeout_id);

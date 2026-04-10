@@ -10,10 +10,8 @@ use super::PaletteState;
 
 pub(super) fn render_offline_devices_section(state: PaletteState) -> Option<AnyView> {
     let devices = state.stable_devices.get();
-    let connected_ids: std::collections::HashSet<String> = devices
-        .iter()
-        .map(|d| d.layout_device_id.clone())
-        .collect();
+    let connected_ids: std::collections::HashSet<String> =
+        devices.iter().map(|d| d.layout_device_id.clone()).collect();
 
     let layout = state.layout;
     let hidden_zones = state.hidden_zones;
@@ -23,8 +21,8 @@ pub(super) fn render_offline_devices_section(state: PaletteState) -> Option<AnyV
     let set_hidden_zones = state.set_hidden_zones;
 
     // Collect unique offline device IDs from the layout
-    let offline_devices: Vec<(String, Vec<hypercolor_types::spatial::DeviceZone>)> = layout
-        .with(|current| {
+    let offline_devices: Vec<(String, Vec<hypercolor_types::spatial::DeviceZone>)> =
+        layout.with(|current| {
             let Some(l) = current.as_ref() else {
                 return Vec::new();
             };

@@ -57,9 +57,7 @@ pub fn Sparkline(
         }
         let range = (hi - lo).max(1e-9);
         let draw_w = W - PAD_X * 2.0;
-        let project_x = |i: usize| -> f64 {
-            PAD_X + (i as f64 / (n - 1).max(1) as f64) * draw_w
-        };
+        let project_x = |i: usize| -> f64 { PAD_X + (i as f64 / (n - 1).max(1) as f64) * draw_w };
         let project_y = |v: f64| -> f64 {
             let t = (v - lo) / range;
             H - PAD_Y - t * (H - PAD_Y * 2.0)

@@ -27,10 +27,7 @@ fn tauri_config_has_product_metadata() {
         "productName must be set"
     );
     assert!(config.get("version").is_some(), "version must be set");
-    assert!(
-        config.get("identifier").is_some(),
-        "identifier must be set"
-    );
+    assert!(config.get("identifier").is_some(), "identifier must be set");
 }
 
 #[test]

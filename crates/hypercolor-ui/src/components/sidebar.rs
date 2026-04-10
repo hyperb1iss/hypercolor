@@ -125,9 +125,9 @@ pub fn Sidebar() -> impl IntoView {
             set_last_palette_time.set(now);
 
             if let Some(new_palette) = color::extract_canvas_palette(&frame) {
-                let smoothed = live_palette
-                    .get_untracked()
-                    .map_or(new_palette, |old| color::lerp_palette(old, new_palette, 0.3));
+                let smoothed = live_palette.get_untracked().map_or(new_palette, |old| {
+                    color::lerp_palette(old, new_palette, 0.3)
+                });
                 set_live_palette.set(Some(smoothed));
             }
         });

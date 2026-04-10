@@ -150,11 +150,17 @@ async fn ws_recv_text(stream: &mut TcpStream) -> Result<String> {
         let mut len = u64::from(header[1] & 0x7F);
         if len == 126 {
             let mut ext = [0u8; 2];
-            stream.read_exact(&mut ext).await.context("read ext16 len")?;
+            stream
+                .read_exact(&mut ext)
+                .await
+                .context("read ext16 len")?;
             len = u64::from(u16::from_be_bytes(ext));
         } else if len == 127 {
             let mut ext = [0u8; 8];
-            stream.read_exact(&mut ext).await.context("read ext64 len")?;
+            stream
+                .read_exact(&mut ext)
+                .await
+                .context("read ext64 len")?;
             len = u64::from_be_bytes(ext);
         }
         let mut mask = [0u8; 4];
@@ -164,8 +170,7 @@ async fn ws_recv_text(stream: &mut TcpStream) -> Result<String> {
                 .await
                 .context("read mask key")?;
         }
-        let mut payload =
-            vec![0u8; usize::try_from(len).context("frame length exceeds usize")?];
+        let mut payload = vec![0u8; usize::try_from(len).context("frame length exceeds usize")?];
         stream
             .read_exact(&mut payload)
             .await
@@ -209,10 +214,7 @@ async fn recv_until_type(stream: &mut TcpStream, expected: &str) -> Result<Value
     // at most a handful, but startup event bursts can stack up.
     for _ in 0..16 {
         let msg = recv_json(stream).await?;
-        let ty = msg
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
+        let ty = msg.get("type").and_then(Value::as_str).unwrap_or_default();
         if ty == expected {
             return Ok(msg);
         }
@@ -294,9 +296,7 @@ async fn subscribe_unsubscribe_resubscribe_cycle_tracks_state() {
     let ack = recv_until_type(&mut stream, "subscribed")
         .await
         .expect("subscribed ack");
-    let channels = ack["channels"]
-        .as_array()
-        .expect("ack.channels is array");
+    let channels = ack["channels"].as_array().expect("ack.channels is array");
     assert_eq!(channels.len(), 1);
     assert_eq!(channels[0], "metrics");
     assert!(
@@ -315,9 +315,7 @@ async fn subscribe_unsubscribe_resubscribe_cycle_tracks_state() {
     let ack = recv_until_type(&mut stream, "unsubscribed")
         .await
         .expect("unsubscribed ack");
-    let removed = ack["channels"]
-        .as_array()
-        .expect("ack.channels is array");
+    let removed = ack["channels"].as_array().expect("ack.channels is array");
     assert_eq!(removed.len(), 1);
     assert_eq!(removed[0], "metrics");
     let remaining = ack["remaining"]
@@ -345,9 +343,7 @@ async fn subscribe_unsubscribe_resubscribe_cycle_tracks_state() {
     let ack = recv_until_type(&mut stream, "subscribed")
         .await
         .expect("re-subscribed ack");
-    let channels = ack["channels"]
-        .as_array()
-        .expect("ack.channels is array");
+    let channels = ack["channels"].as_array().expect("ack.channels is array");
     assert_eq!(channels.len(), 1);
     assert_eq!(channels[0], "metrics");
     assert!(
@@ -387,7 +383,11 @@ async fn multi_channel_subscribe_returns_all_requested_channels() {
     channels.sort();
     assert_eq!(
         channels,
-        vec!["events".to_owned(), "frames".to_owned(), "metrics".to_owned()],
+        vec![
+            "events".to_owned(),
+            "frames".to_owned(),
+            "metrics".to_owned()
+        ],
         "ack should echo the requested channels in sorted order"
     );
 
@@ -457,9 +457,7 @@ async fn unsupported_channel_subscribe_returns_error_without_closing() {
     let ack = recv_until_type(&mut stream, "subscribed")
         .await
         .expect("connection should still be alive after an error");
-    let channels = ack["channels"]
-        .as_array()
-        .expect("ack.channels is array");
+    let channels = ack["channels"].as_array().expect("ack.channels is array");
     assert_eq!(channels.len(), 1);
     assert_eq!(channels[0], "metrics");
 }

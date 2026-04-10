@@ -928,9 +928,12 @@ impl ServoWorkerRuntime {
 
         let mut script_buffer = std::mem::take(&mut self.script_buffer);
         combined_script(&mut script_buffer, scripts);
-        let result = self
-            .evaluate_script(&script_buffer)
-            .with_context(|| format!("failed to evaluate script batch: {}", batched_script_preview(scripts)));
+        let result = self.evaluate_script(&script_buffer).with_context(|| {
+            format!(
+                "failed to evaluate script batch: {}",
+                batched_script_preview(scripts)
+            )
+        });
         self.script_buffer = script_buffer;
         result
     }

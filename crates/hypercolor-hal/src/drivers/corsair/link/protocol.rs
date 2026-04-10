@@ -200,10 +200,7 @@ impl CorsairLinkProtocol {
 
     fn update_children(&self, children: Vec<LinkChild>) {
         let total_leds = children.iter().map(|child| child.led_count).sum();
-        let mut state = self
-            .state
-            .write()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut state = self.state.write().unwrap_or_else(|err| err.into_inner());
         state.children = children;
         state.total_leds = total_leds;
     }

@@ -478,10 +478,7 @@ fn summarize_logical_device(
     }
 }
 
-pub(super) async fn sync_live_logical_mappings_for_device(
-    state: &AppState,
-    physical_id: DeviceId,
-) {
+pub(super) async fn sync_live_logical_mappings_for_device(state: &AppState, physical_id: DeviceId) {
     let Some(tracked) = state.device_registry.get(&physical_id).await else {
         return;
     };

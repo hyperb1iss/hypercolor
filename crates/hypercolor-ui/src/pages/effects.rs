@@ -69,14 +69,20 @@ pub fn EffectsPage() -> impl IntoView {
         signal(crate::storage::get("hc-fx-audio").as_deref() == Some("true"));
 
     // Panel layout state (persisted to localStorage)
-    let (detail_width, set_detail_width) = signal(
-        crate::storage::get_clamped("hc-fx-detail-width", 380.0, MIN_DETAIL_WIDTH, MAX_DETAIL_WIDTH),
-    );
+    let (detail_width, set_detail_width) = signal(crate::storage::get_clamped(
+        "hc-fx-detail-width",
+        380.0,
+        MIN_DETAIL_WIDTH,
+        MAX_DETAIL_WIDTH,
+    ));
     let (controls_detached, set_controls_detached) =
         signal(crate::storage::get("hc-fx-controls-detached").as_deref() != Some("false"));
-    let (controls_width, set_controls_width) = signal(
-        crate::storage::get_clamped("hc-fx-controls-width", 320.0, MIN_CONTROLS_WIDTH, MAX_CONTROLS_WIDTH),
-    );
+    let (controls_width, set_controls_width) = signal(crate::storage::get_clamped(
+        "hc-fx-controls-width",
+        320.0,
+        MIN_CONTROLS_WIDTH,
+        MAX_CONTROLS_WIDTH,
+    ));
     let pending_control_updates =
         StoredValue::new(std::collections::HashMap::<String, serde_json::Value>::new());
     let flush_control_updates = use_debounce_fn(
@@ -140,9 +146,10 @@ pub fn EffectsPage() -> impl IntoView {
         if let Some(store) = thumb_store {
             if let Some(id) = fx.active_effect_id.get() {
                 let palette_primary = fx.effects_index.with(|effects| {
-                    effects.iter().find(|e| e.effect.id == id).and_then(|e| {
-                        store.get(&id, &e.effect.version).map(|t| t.palette.primary)
-                    })
+                    effects
+                        .iter()
+                        .find(|e| e.effect.id == id)
+                        .and_then(|e| store.get(&id, &e.effect.version).map(|t| t.palette.primary))
                 });
                 if let Some(primary) = palette_primary {
                     return primary;
