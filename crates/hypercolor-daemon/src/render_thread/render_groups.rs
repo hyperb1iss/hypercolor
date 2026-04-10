@@ -18,7 +18,6 @@ use super::producer_queue::ProducerFrame;
 
 pub(crate) struct RenderGroupResult {
     pub preview_frame: ProducerFrame,
-    pub zones: Option<Vec<ZoneColors>>,
     pub layout: Arc<SpatialLayout>,
     pub sample_us: u32,
     pub logical_layer_count: u32,
@@ -31,7 +30,6 @@ struct RetainedRenderGroupFrame {
     preview_frame: ProducerFrame,
     layout: Arc<SpatialLayout>,
     logical_layer_count: u32,
-    zones: Vec<ZoneColors>,
 }
 
 pub(crate) struct RenderGroupRuntime {
@@ -72,7 +70,6 @@ impl RenderGroupRuntime {
 
         Some(RenderGroupResult {
             preview_frame: retained.preview_frame.clone(),
-            zones: None,
             layout: Arc::clone(&retained.layout),
             sample_us: 0,
             logical_layer_count: retained.logical_layer_count,
@@ -89,6 +86,7 @@ impl RenderGroupRuntime {
         audio: &AudioData,
         interaction: &InteractionData,
         screen: Option<&ScreenData>,
+        zones: &mut Vec<ZoneColors>,
     ) -> Result<RenderGroupResult> {
         self.reconcile(groups, groups_revision, registry)?;
 
@@ -107,7 +105,6 @@ impl RenderGroupRuntime {
         }
 
         let sample_start = Instant::now();
-        let mut zones = self.take_zone_scratch();
         let mut next_index = 0;
         for group in groups {
             if !group.enabled || group.effect_id.is_none() || group.layout.zones.is_empty() {
@@ -120,7 +117,7 @@ impl RenderGroupRuntime {
             let Some(spatial_engine) = self.spatial_engines.get(&group.id) else {
                 continue;
             };
-            next_index = spatial_engine.sample_append_into_at(target, &mut zones, next_index);
+            next_index = spatial_engine.sample_append_into_at(target, zones, next_index);
         }
         zones.truncate(next_index);
         let sample_us = micros_u32(sample_start.elapsed());
@@ -139,25 +136,15 @@ impl RenderGroupRuntime {
             preview_frame: preview_frame.clone(),
             layout: Arc::clone(&layout),
             logical_layer_count,
-            zones: zones.clone(),
         });
 
         Ok(RenderGroupResult {
             preview_frame,
-            zones: Some(zones),
             layout,
             sample_us,
             logical_layer_count,
             reuse_published_zones: false,
         })
-    }
-
-    fn take_zone_scratch(&mut self) -> Vec<ZoneColors> {
-        if let Some(retained) = self.retained_frame.as_mut() {
-            return std::mem::take(&mut retained.zones);
-        }
-
-        Vec::new()
     }
 
     fn reconcile(

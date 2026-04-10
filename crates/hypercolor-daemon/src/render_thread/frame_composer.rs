@@ -204,6 +204,7 @@ impl<'a> ComposeContext<'a> {
                             &self.inputs.audio,
                             &self.inputs.interaction,
                             self.inputs.screen_data.as_ref(),
+                            &mut self.render.recycled_frame.zones,
                         )
                     };
                     let producer_us = micros_u32(producer_start.elapsed());
@@ -233,6 +234,7 @@ impl<'a> ComposeContext<'a> {
                         &self.inputs.audio,
                         &self.inputs.interaction,
                         self.inputs.screen_data.as_ref(),
+                        &mut self.render.recycled_frame.zones,
                     )
                 };
                 let producer_us = micros_u32(producer_start.elapsed());
@@ -282,7 +284,7 @@ impl<'a> ComposeContext<'a> {
                 RenderStageStats {
                     composed_frame: composed,
                     sampled_layout: Some(render_group_result.layout),
-                    sampled_zones: render_group_result.zones,
+                    sampled_zones: None,
                     reuse_published_frame: render_group_result.reuse_published_zones,
                     sampled_us: render_group_result.sample_us,
                     producer_us,
