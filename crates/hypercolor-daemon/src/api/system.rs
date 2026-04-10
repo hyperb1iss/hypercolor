@@ -16,6 +16,7 @@ use crate::api::envelope::ApiResponse;
 use crate::api::security;
 use crate::api::settings;
 use crate::performance::LatestFrameMetrics;
+use crate::preview_runtime::PreviewRuntimeSnapshot;
 use crate::session::current_global_brightness;
 
 use hypercolor_core::config::ConfigManager;
@@ -43,6 +44,7 @@ pub struct SystemStatus {
     pub capture_available: bool,
     pub render_loop: RenderLoopStatus,
     pub latest_frame: Option<LatestFrameStatus>,
+    pub preview_runtime: PreviewRuntimeStatus,
     pub event_bus_subscribers: usize,
 }
 
@@ -77,6 +79,16 @@ pub struct RenderSurfaceStatus {
     pub published_slots: u32,
     pub dequeued_slots: u32,
     pub canvas_receivers: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PreviewRuntimeStatus {
+    pub canvas_receivers: u32,
+    pub screen_canvas_receivers: u32,
+    pub canvas_frames_published: u64,
+    pub screen_canvas_frames_published: u64,
+    pub latest_canvas_frame_number: u32,
+    pub latest_screen_canvas_frame_number: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -139,6 +151,7 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     let latest_frame = performance
         .latest_frame
         .map(|frame| latest_frame_status(frame, state.start_time.elapsed().as_secs_f64() * 1000.0));
+    let preview_runtime = preview_runtime_status(state.preview_runtime.snapshot());
 
     let uptime_seconds = state.start_time.elapsed().as_secs();
     let config_path = config_path(&state).display().to_string();
@@ -162,6 +175,7 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         capture_available: settings::capture_input_available(),
         render_loop: render_loop_status,
         latest_frame,
+        preview_runtime,
         event_bus_subscribers: subscribers,
     })
 }
@@ -310,6 +324,17 @@ fn latest_frame_status(frame: LatestFrameMetrics, render_elapsed_ms: f64) -> Lat
     }
 }
 
+fn preview_runtime_status(snapshot: PreviewRuntimeSnapshot) -> PreviewRuntimeStatus {
+    PreviewRuntimeStatus {
+        canvas_receivers: snapshot.canvas_receivers,
+        screen_canvas_receivers: snapshot.screen_canvas_receivers,
+        canvas_frames_published: snapshot.canvas_frames_published,
+        screen_canvas_frames_published: snapshot.screen_canvas_frames_published,
+        latest_canvas_frame_number: snapshot.latest_canvas_frame_number,
+        latest_screen_canvas_frame_number: snapshot.latest_screen_canvas_frame_number,
+    }
+}
+
 fn paced_fps(avg_frame_secs: f64, target_fps: u32) -> f64 {
     if avg_frame_secs <= 0.0 {
         return f64::from(target_fps);
@@ -341,12 +366,22 @@ mod tests {
     use crate::performance::{FrameTimeline, LatestFrameMetrics};
     use axum::body::to_bytes;
     use axum::extract::State;
+    use hypercolor_core::bus::CanvasFrame;
+    use hypercolor_types::canvas::Canvas;
     use serde_json::Value;
     use std::sync::Arc;
 
     #[tokio::test]
     async fn status_includes_latest_frame_surface_stats() {
         let state = Arc::new(AppState::new());
+        let _preview_rx = state.preview_runtime.canvas_receiver();
+        let _screen_preview_rx = state.preview_runtime.screen_canvas_receiver();
+        state
+            .preview_runtime
+            .publish_canvas(CanvasFrame::from_canvas(&Canvas::new(2, 1), 88, 44));
+        state
+            .preview_runtime
+            .publish_screen_canvas(CanvasFrame::from_canvas(&Canvas::new(1, 1), 45, 21));
         {
             let mut performance = state.performance.write().await;
             performance.record_frame(LatestFrameMetrics {
@@ -415,5 +450,26 @@ mod tests {
         );
         assert_eq!(json["data"]["latest_frame"]["full_frame_copy_count"], 1);
         assert_eq!(json["data"]["latest_frame"]["full_frame_copy_kb"], 250.0);
+        assert_eq!(json["data"]["preview_runtime"]["canvas_receivers"], 1);
+        assert_eq!(
+            json["data"]["preview_runtime"]["screen_canvas_receivers"],
+            1
+        );
+        assert_eq!(
+            json["data"]["preview_runtime"]["canvas_frames_published"],
+            1
+        );
+        assert_eq!(
+            json["data"]["preview_runtime"]["screen_canvas_frames_published"],
+            1
+        );
+        assert_eq!(
+            json["data"]["preview_runtime"]["latest_canvas_frame_number"],
+            88
+        );
+        assert_eq!(
+            json["data"]["preview_runtime"]["latest_screen_canvas_frame_number"],
+            45
+        );
     }
 }

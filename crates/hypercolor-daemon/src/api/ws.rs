@@ -490,6 +490,7 @@ struct MetricsPayload {
     pacing: MetricsPacing,
     timeline: MetricsTimeline,
     render_surfaces: MetricsRenderSurfaces,
+    preview: MetricsPreview,
     copies: MetricsCopies,
     memory: MetricsMemory,
     devices: MetricsDevices,
@@ -593,6 +594,16 @@ struct MetricsRenderSurfaces {
     published_slots: u32,
     dequeued_slots: u32,
     canvas_receivers: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct MetricsPreview {
+    canvas_receivers: u32,
+    screen_canvas_receivers: u32,
+    canvas_frames_published: u64,
+    screen_canvas_frames_published: u64,
+    latest_canvas_frame_number: u32,
+    latest_screen_canvas_frame_number: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -1954,6 +1965,7 @@ async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> Ser
 
     let daemon_rss_mb = process_rss_mb().unwrap_or(0.0);
     let client_count = WS_CLIENT_COUNT.load(Ordering::Relaxed);
+    let preview_runtime = state.preview_runtime.snapshot();
 
     ServerMessage::Metrics {
         timestamp: format_iso8601_now(),
@@ -2020,6 +2032,15 @@ async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> Ser
                 published_slots: latest_frame.render_surface_published_slots,
                 dequeued_slots: latest_frame.render_surface_dequeued_slots,
                 canvas_receivers: latest_frame.canvas_receiver_count,
+            },
+            preview: MetricsPreview {
+                canvas_receivers: preview_runtime.canvas_receivers,
+                screen_canvas_receivers: preview_runtime.screen_canvas_receivers,
+                canvas_frames_published: preview_runtime.canvas_frames_published,
+                screen_canvas_frames_published: preview_runtime.screen_canvas_frames_published,
+                latest_canvas_frame_number: preview_runtime.latest_canvas_frame_number,
+                latest_screen_canvas_frame_number: preview_runtime
+                    .latest_screen_canvas_frame_number,
             },
             copies: MetricsCopies {
                 full_frame_count: latest_frame.full_frame_copy_count,
@@ -2338,6 +2359,14 @@ mod tests {
     #[tokio::test]
     async fn metrics_message_includes_latest_frame_timeline() {
         let state = Arc::new(AppState::new());
+        let _preview_rx = state.preview_runtime.canvas_receiver();
+        let _screen_preview_rx = state.preview_runtime.screen_canvas_receiver();
+        state
+            .preview_runtime
+            .publish_canvas(CanvasFrame::from_canvas(&Canvas::new(2, 1), 88, 44));
+        state
+            .preview_runtime
+            .publish_screen_canvas(CanvasFrame::from_canvas(&Canvas::new(1, 1), 45, 21));
         {
             let mut performance = state.performance.write().await;
             performance.record_frame(LatestFrameMetrics {
@@ -2405,6 +2434,12 @@ mod tests {
         assert_eq!(json["render_surfaces"]["slot_count"], 6);
         assert_eq!(json["render_surfaces"]["published_slots"], 4);
         assert_eq!(json["render_surfaces"]["canvas_receivers"], 2);
+        assert_eq!(json["preview"]["canvas_receivers"], 1);
+        assert_eq!(json["preview"]["screen_canvas_receivers"], 1);
+        assert_eq!(json["preview"]["canvas_frames_published"], 1);
+        assert_eq!(json["preview"]["screen_canvas_frames_published"], 1);
+        assert_eq!(json["preview"]["latest_canvas_frame_number"], 88);
+        assert_eq!(json["preview"]["latest_screen_canvas_frame_number"], 45);
     }
 
     #[test]

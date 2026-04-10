@@ -105,7 +105,7 @@ pub(crate) fn publish_frame_updates(
         frame
     };
     let _ = state.event_bus.canvas_sender().send(canvas_frame.clone());
-    let _ = state.preview_runtime.canvas_sender().send(canvas_frame);
+    state.preview_runtime.publish_canvas(canvas_frame);
     let screen_frame = if let Some(surface) = screen_preview_surface {
         CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
     } else {
@@ -115,10 +115,7 @@ pub(crate) fn publish_frame_updates(
         .event_bus
         .screen_canvas_sender()
         .send(screen_frame.clone());
-    let _ = state
-        .preview_runtime
-        .screen_canvas_sender()
-        .send(screen_frame);
+    state.preview_runtime.publish_screen_canvas(screen_frame);
     state.event_bus.publish(HypercolorEvent::FrameRendered {
         frame_number,
         timing,

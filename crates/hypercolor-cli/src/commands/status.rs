@@ -206,6 +206,29 @@ fn status_table_lines(data: &serde_json::Value, painter: &crate::output::Painter
         ));
     }
 
+    if let Some(preview_runtime) = data.get("preview_runtime") {
+        let canvas_receivers = preview_runtime
+            .get("canvas_receivers")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let screen_canvas_receivers = preview_runtime
+            .get("screen_canvas_receivers")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let canvas_frames_published = preview_runtime
+            .get("canvas_frames_published")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let screen_frames_published = preview_runtime
+            .get("screen_canvas_frames_published")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+
+        lines.push(format!(
+            "Preview    canvas_rx={canvas_receivers} screen_rx={screen_canvas_receivers} canvas_frames={canvas_frames_published} screen_frames={screen_frames_published}"
+        ));
+    }
+
     lines
 }
 
@@ -246,6 +269,14 @@ mod tests {
                     "dequeued_slots": 2,
                     "canvas_receivers": 2
                 }
+            },
+            "preview_runtime": {
+                "canvas_receivers": 1,
+                "screen_canvas_receivers": 0,
+                "canvas_frames_published": 88,
+                "screen_canvas_frames_published": 12,
+                "latest_canvas_frame_number": 77,
+                "latest_screen_canvas_frame_number": 45
             }
         });
 
@@ -256,6 +287,9 @@ mod tests {
         }));
         assert!(lines.iter().any(|line| {
             line == "Surfaces   slots=6 free=0 published=4 dequeued=2 canvas_rx=2"
+        }));
+        assert!(lines.iter().any(|line| {
+            line == "Preview    canvas_rx=1 screen_rx=0 canvas_frames=88 screen_frames=12"
         }));
     }
 }
