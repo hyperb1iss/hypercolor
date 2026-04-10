@@ -581,7 +581,19 @@ pub fn LayoutBuilder() -> impl IntoView {
             <div class="shrink-0 px-5 py-2.5 flex items-center gap-3 glass-subtle border-b border-edge-subtle">
                 // Layout selector / rename
                 <div class="flex items-center gap-3">
-                    <h1 class="text-lg font-medium text-fg-primary">"Layout"</h1>
+                    <div class="flex items-center gap-2 shrink-0">
+                        <span style="color: #ff6ac1; filter: drop-shadow(0 0 8px rgba(255, 106, 193, 0.75))">
+                            <Icon icon=LuLayoutTemplate width="20px" height="20px" />
+                        </span>
+                        <h1
+                            class="leading-none logo-gradient-text"
+                            style="font-family:'Orbitron',sans-serif; font-weight:900; font-size:22px; \
+                                   letter-spacing:-0.01em; \
+                                   background-image:linear-gradient(105deg,#80ffea 0%,#e8d4ff 50%,#ff6ac1 100%)"
+                        >
+                            "Layout"
+                        </h1>
+                    </div>
 
                     {move || if renaming.get() {
                         // Inline rename input
