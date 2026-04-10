@@ -9,6 +9,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -488,9 +489,40 @@ struct FramePayload {
 struct DeviceStagingBuffer {
     output: Vec<[u8; 3]>,
     remap_scratch: Vec<[u8; 3]>,
+    written_ranges: Vec<Range<usize>>,
     has_segmented_write: bool,
     required_len: usize,
     frame_generation: u64,
+}
+
+impl DeviceStagingBuffer {
+    fn mark_written_range(&mut self, start: usize, end: usize) {
+        if start >= end {
+            return;
+        }
+
+        let mut new_start = start;
+        let mut new_end = end;
+        let mut index = 0;
+
+        while index < self.written_ranges.len() {
+            let existing = &self.written_ranges[index];
+            if existing.end < new_start {
+                index += 1;
+                continue;
+            }
+
+            if existing.start > new_end {
+                break;
+            }
+
+            let existing = self.written_ranges.remove(index);
+            new_start = new_start.min(existing.start);
+            new_end = new_end.max(existing.end);
+        }
+
+        self.written_ranges.insert(index, new_start..new_end);
+    }
 }
 
 /// Latest-frame queue for a single `(backend_id, device_id)` target.
@@ -1338,6 +1370,7 @@ impl BackendManager {
             if staging.frame_generation != generation {
                 staging.output.clear();
                 staging.required_len = 0;
+                staging.written_ranges.clear();
                 staging.has_segmented_write = false;
                 staging.frame_generation = generation;
                 became_active = true;
@@ -1499,7 +1532,11 @@ impl BackendManager {
                     staging.output.resize(staging.required_len, [0, 0, 0]);
                 }
 
-                prepare_output_for_leds(&mut staging.output, brightness);
+                prepare_output_for_led_ranges(
+                    &mut staging.output,
+                    &staging.written_ranges,
+                    brightness,
+                );
 
                 let mut values = Vec::new();
                 std::mem::swap(&mut values, &mut staging.output);
@@ -1584,6 +1621,7 @@ impl BackendManager {
                     let start = segment.start;
                     let end = start.saturating_add(copy_len);
                     staging.output[start..end].copy_from_slice(&remapped_colors[..copy_len]);
+                    staging.mark_written_range(start, end);
                 }
 
                 (copy_len != segment.length).then_some((
@@ -1598,7 +1636,9 @@ impl BackendManager {
                         "mixed segmented and non-segmented mappings for the same physical device"
                     );
                 }
+                let start = staging.output.len();
                 staging.output.extend_from_slice(remapped_colors);
+                staging.mark_written_range(start, staging.output.len());
                 None
             }
         };
@@ -1765,13 +1805,26 @@ impl BackendManager {
     }
 }
 
-fn prepare_output_for_leds(colors: &mut [[u8; 3]], brightness: f32) {
+fn prepare_output_for_led_ranges(
+    colors: &mut [[u8; 3]],
+    written_ranges: &[Range<usize>],
+    brightness: f32,
+) {
     let brightness = brightness.clamp(0.0, 1.0);
     if brightness <= 0.0 {
         colors.fill([0, 0, 0]);
         return;
     }
 
+    for range in written_ranges {
+        let Some(slice) = colors.get_mut(range.clone()) else {
+            continue;
+        };
+        prepare_output_for_leds(slice, brightness);
+    }
+}
+
+fn prepare_output_for_leds(colors: &mut [[u8; 3]], brightness: f32) {
     for color in colors {
         let linear = [
             decode_srgb_channel(color[0]),
