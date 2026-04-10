@@ -224,11 +224,41 @@ fn compose_layer(target: &mut Canvas, layer: CompositionLayer) {
 }
 
 fn compose_normal_layer(target_pixels: &mut [u8], source_pixels: &[u8], opacity: f32) {
+    let fully_opaque_layer = opacity >= 1.0 - f32::EPSILON;
     for (dst_px, src_px) in target_pixels
         .chunks_exact_mut(4)
         .zip(source_pixels.chunks_exact(4))
     {
-        let source_alpha = alpha_weight(src_px[3], opacity);
+        let source_alpha_channel = src_px[3];
+        if source_alpha_channel == 0 {
+            continue;
+        }
+
+        if source_alpha_channel == 255 {
+            if fully_opaque_layer {
+                dst_px.copy_from_slice(src_px);
+                continue;
+            }
+
+            if dst_px[3] == 255 {
+                let inverse_alpha = 1.0 - opacity;
+                dst_px[0] = encode_srgb_channel(
+                    decode_srgb_channel(dst_px[0])
+                        .mul_add(inverse_alpha, decode_srgb_channel(src_px[0]) * opacity),
+                );
+                dst_px[1] = encode_srgb_channel(
+                    decode_srgb_channel(dst_px[1])
+                        .mul_add(inverse_alpha, decode_srgb_channel(src_px[1]) * opacity),
+                );
+                dst_px[2] = encode_srgb_channel(
+                    decode_srgb_channel(dst_px[2])
+                        .mul_add(inverse_alpha, decode_srgb_channel(src_px[2]) * opacity),
+                );
+                continue;
+            }
+        }
+
+        let source_alpha = alpha_weight(source_alpha_channel, opacity);
         if source_alpha <= 0.0 {
             continue;
         }
@@ -255,7 +285,12 @@ fn compose_add_layer(target_pixels: &mut [u8], source_pixels: &[u8], opacity: f3
         .chunks_exact_mut(4)
         .zip(source_pixels.chunks_exact(4))
     {
-        let source_alpha = alpha_weight(src_px[3], opacity);
+        let source_alpha_channel = src_px[3];
+        if source_alpha_channel == 0 {
+            continue;
+        }
+
+        let source_alpha = alpha_weight(source_alpha_channel, opacity);
         if source_alpha <= 0.0 {
             continue;
         }
@@ -277,6 +312,9 @@ fn compose_add_layer(target_pixels: &mut [u8], source_pixels: &[u8], opacity: f3
         dst_px[2] = encode_srgb_channel(
             dst_blue.mul_add(inverse_alpha, (dst_blue + src_blue).min(1.0) * source_alpha),
         );
+        if source_alpha_channel == 255 && dst_px[3] == 255 {
+            continue;
+        }
         dst_px[3] = encode_alpha_channel(composite_alpha(dst_px[3], source_alpha));
     }
 }
@@ -286,7 +324,12 @@ fn compose_screen_layer(target_pixels: &mut [u8], source_pixels: &[u8], opacity:
         .chunks_exact_mut(4)
         .zip(source_pixels.chunks_exact(4))
     {
-        let source_alpha = alpha_weight(src_px[3], opacity);
+        let source_alpha_channel = src_px[3];
+        if source_alpha_channel == 0 {
+            continue;
+        }
+
+        let source_alpha = alpha_weight(source_alpha_channel, opacity);
         if source_alpha <= 0.0 {
             continue;
         }
@@ -309,6 +352,9 @@ fn compose_screen_layer(target_pixels: &mut [u8], source_pixels: &[u8], opacity:
             inverse_alpha,
             screen_blend(dst_blue, src_blue) * source_alpha,
         ));
+        if source_alpha_channel == 255 && dst_px[3] == 255 {
+            continue;
+        }
         dst_px[3] = encode_alpha_channel(composite_alpha(dst_px[3], source_alpha));
     }
 }
