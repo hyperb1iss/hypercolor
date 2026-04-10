@@ -34,7 +34,7 @@ const FRAME_DT_SECONDS: f32 = 1.0 / 60.0;
 const FRAME_INTERVAL_MS: u32 = 16;
 const BENCH_DEVICE_COUNT: usize = 3;
 const BENCH_LEDS_PER_DEVICE: u32 = 120;
-const CANVAS_RGBA_BYTES: u64 = CANVAS_WIDTH as u64 * CANVAS_HEIGHT as u64 * 4;
+const CANVAS_RGBA_BYTES: u64 = 320_u64 * 200_u64 * 4;
 
 static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
 static DEFAULT_INTERACTION: LazyLock<InteractionData> = LazyLock::new(InteractionData::default);
@@ -197,7 +197,7 @@ fn inverse_patterned_canvas_for(width: u32, height: u32) -> Canvas {
                     / height.saturating_sub(1).max(1),
             )
             .expect("green fits");
-            let blue = u8::try_from(((x ^ y) & u32::from(u8::MAX)) as u64).expect("blue fits");
+            let blue = u8::try_from(u64::from((x ^ y) & u32::from(u8::MAX))).expect("blue fits");
             canvas.set_pixel(x, y, Rgba::new(red, green, blue, 255));
         }
     }
@@ -355,6 +355,10 @@ fn bench_render_pipeline(c: &mut Criterion) {
     group.finish();
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Bench wires several end-to-end compositor scenarios into one comparison group"
+)]
 fn bench_sparkleflinger(c: &mut Criterion) {
     let mut group = c.benchmark_group("daemon_sparkleflinger");
 
@@ -390,7 +394,13 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                     CompositionLayer::alpha_canvas(black_box(overlay.clone()), 0.35),
                 ],
             ));
-            black_box(composed.sampling_canvas.get_pixel(0, 0));
+            black_box(
+                composed
+                    .sampling_canvas
+                    .as_ref()
+                    .expect("compose benchmark expects a materialized canvas")
+                    .get_pixel(0, 0),
+            );
         });
     });
 
@@ -409,12 +419,47 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                     CompositionLayer::alpha_canvas(black_box(preview_overlay.clone()), 0.35),
                 ],
             ));
-            black_box(composed.sampling_canvas.get_pixel(0, 0));
+            black_box(
+                composed
+                    .sampling_canvas
+                    .as_ref()
+                    .expect("preview compose benchmark expects a materialized canvas")
+                    .get_pixel(0, 0),
+            );
         });
     });
 
     #[cfg(feature = "wgpu")]
     {
+        let sampling_engine = SpatialEngine::new(layout_with_zones(vec![
+            strip_zone("bench-zone-0", "bench-device-0", 120),
+            strip_zone("bench-zone-1", "bench-device-1", 120),
+            strip_zone("bench-zone-2", "bench-device-2", 120),
+        ]));
+        let sampling_plan = sampling_engine.sampling_plan();
+        let preview_plan = CompositionPlan::with_layers(
+            PREVIEW_WIDTH,
+            PREVIEW_HEIGHT,
+            vec![
+                CompositionLayer::replace_canvas(preview_base.clone()),
+                CompositionLayer::alpha_canvas(preview_overlay.clone(), 0.35),
+            ],
+        );
+        let cpu_preview = SparkleFlinger::cpu().compose(preview_plan.clone());
+        let mut cpu_sampled = Vec::new();
+        group.bench_function("cpu_zone_sample_640x480", |b| {
+            b.iter(|| {
+                sampling_engine.sample_into(
+                    cpu_preview
+                        .sampling_canvas
+                        .as_ref()
+                        .expect("CPU preview benchmark expects a materialized canvas"),
+                    &mut cpu_sampled,
+                );
+                black_box(cpu_sampled.first());
+            });
+        });
+
         let mut sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Gpu)
             .expect("GPU SparkleFlinger should initialize for the benchmark");
         group.throughput(Throughput::Bytes(CANVAS_RGBA_BYTES));
@@ -428,7 +473,13 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                         CompositionLayer::alpha_canvas(black_box(overlay.clone()), 0.35),
                     ],
                 ));
-                black_box(composed.sampling_canvas.get_pixel(0, 0));
+                black_box(
+                    composed
+                        .sampling_canvas
+                        .as_ref()
+                        .expect("GPU compose benchmark expects a materialized canvas")
+                        .get_pixel(0, 0),
+                );
             });
         });
 
@@ -445,7 +496,56 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                         CompositionLayer::alpha_canvas(black_box(preview_overlay.clone()), 0.35),
                     ],
                 ));
-                black_box(composed.sampling_canvas.get_pixel(0, 0));
+                black_box(
+                    composed
+                        .sampling_canvas
+                        .as_ref()
+                        .expect("GPU preview compose benchmark expects a materialized canvas")
+                        .get_pixel(0, 0),
+                );
+            });
+        });
+        preview_sparkleflinger.compose(preview_plan.clone());
+        group.bench_function("gpu_zone_sample_640x480", |b| {
+            b.iter(|| {
+                let sampled = preview_sparkleflinger
+                    .sample_zone_plan(sampling_plan.as_ref())
+                    .expect("GPU zone sampling should not fail")
+                    .expect("bilinear sampling plan should stay GPU-supported");
+                black_box(sampled.first());
+            });
+        });
+
+        let mut cpu_end_to_end = SparkleFlinger::cpu();
+        let mut cpu_end_to_end_sampled = Vec::new();
+        group.bench_function("cpu_compose_and_zone_sample_640x480", |b| {
+            b.iter(|| {
+                let composed = cpu_end_to_end.compose(preview_plan.clone());
+                sampling_engine.sample_into(
+                    composed
+                        .sampling_canvas
+                        .as_ref()
+                        .expect("CPU end-to-end benchmark expects a materialized canvas"),
+                    &mut cpu_end_to_end_sampled,
+                );
+                black_box(cpu_end_to_end_sampled.first());
+            });
+        });
+
+        let mut gpu_end_to_end = SparkleFlinger::new(RenderAccelerationMode::Gpu)
+            .expect("GPU SparkleFlinger should initialize for end-to-end sampling");
+        let mut gpu_end_to_end_sampled = Vec::new();
+        group.bench_function("gpu_compose_and_zone_sample_640x480", |b| {
+            b.iter(|| {
+                let composed =
+                    gpu_end_to_end.compose_with_cpu_readback(preview_plan.clone(), false);
+                black_box(composed.bypassed);
+                assert!(
+                    gpu_end_to_end
+                        .sample_zone_plan_into(sampling_plan.as_ref(), &mut gpu_end_to_end_sampled,)
+                        .expect("GPU end-to-end zone sampling should not fail")
+                );
+                black_box(gpu_end_to_end_sampled.first());
             });
         });
     }

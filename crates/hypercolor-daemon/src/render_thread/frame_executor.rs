@@ -144,15 +144,11 @@ pub(crate) async fn execute_frame(
             render_stage.composed_frame.backend,
             crate::performance::CompositorBackendKind::Gpu
         ) {
-            match render
-                .sparkleflinger
-                .sample_zone_plan(scene_snapshot.spatial_engine.sampling_plan().as_ref())
-            {
-                Ok(Some(zones)) => {
-                    render.recycled_frame.zones = zones;
-                    true
-                }
-                Ok(None) => false,
+            match render.sparkleflinger.sample_zone_plan_into(
+                scene_snapshot.spatial_engine.sampling_plan().as_ref(),
+                &mut render.recycled_frame.zones,
+            ) {
+                Ok(sampled) => sampled,
                 Err(error) => {
                     warn!(%error, "GPU spatial sampling failed; falling back to CPU");
                     false
@@ -163,7 +159,11 @@ pub(crate) async fn execute_frame(
         };
         if !gpu_sampled {
             scene_snapshot.spatial_engine.sample_into(
-                &render_stage.composed_frame.sampling_canvas,
+                render_stage
+                    .composed_frame
+                    .sampling_canvas
+                    .as_ref()
+                    .expect("CPU spatial sampling requires a materialized canvas"),
                 &mut render.recycled_frame.zones,
             );
         }

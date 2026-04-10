@@ -70,7 +70,7 @@ pub(crate) fn publish_frame_updates(
     state: &RenderThreadState,
     recycled_frame: &mut FrameData,
     audio: &AudioData,
-    canvas: Canvas,
+    canvas: Option<Canvas>,
     frame_surface: Option<PublishedSurface>,
     screen_preview_surface: Option<PublishedSurface>,
     frame_number: u32,
@@ -125,7 +125,7 @@ pub(crate) fn publish_frame_updates(
     if canvas_receivers > 0 {
         let canvas_frame = if let Some(surface) = frame_surface {
             CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
-        } else {
+        } else if let Some(canvas) = canvas {
             let canvas_rgba_len = usize_to_u32(canvas.rgba_len());
             let (frame, copied) =
                 CanvasFrame::from_owned_canvas_with_copy_info(canvas, frame_number, elapsed_ms);
@@ -134,6 +134,8 @@ pub(crate) fn publish_frame_updates(
                 full_frame_copy_bytes = full_frame_copy_bytes.saturating_add(canvas_rgba_len);
             }
             frame
+        } else {
+            CanvasFrame::empty()
         };
         state
             .preview_runtime
@@ -288,10 +290,10 @@ pub(crate) fn screen_data_to_canvas(
             .and_then(|col_count| row_count.checked_mul(col_count))
     })?;
 
-    if sector_grid.len() != cell_count {
-        sector_grid.resize(cell_count, [0, 0, 0]);
-    } else {
+    if sector_grid.len() == cell_count {
         sector_grid.fill([0, 0, 0]);
+    } else {
+        sector_grid.resize(cell_count, [0, 0, 0]);
     }
     for zone in &screen_data.zone_colors {
         let Some((row, col)) = parse_sector_zone_id(&zone.zone_id) else {

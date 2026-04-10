@@ -65,7 +65,6 @@ impl CompositionPlanner {
     }
 
     pub(crate) fn compile(
-        &mut self,
         width: u32,
         height: u32,
         scene_runtime: &SceneRuntimeSnapshot,
@@ -111,7 +110,7 @@ impl CompositionPlanner {
         }
 
         let layers = self.transition_layers(scene_runtime, &current_frame);
-        let compiled = self.compile(width, height, scene_runtime, layers);
+        let compiled = Self::compile(width, height, scene_runtime, layers);
         if self.active_transition.is_none() {
             self.last_stable_frame = Some(current_frame);
         }
@@ -126,35 +125,31 @@ impl CompositionPlanner {
         let transition = scene_runtime.active_transition.as_ref();
         let transition_key = transition_key(scene_runtime);
 
-        match transition_key {
-            Some(key) => {
-                if self.active_transition != Some(key) {
-                    self.active_transition = Some(key);
-                    self.transition_base_frame = self
-                        .last_stable_frame
-                        .clone()
-                        .or_else(|| Some(current_frame.clone()));
-                }
+        if let Some(key) = transition_key {
+            if self.active_transition != Some(key) {
+                self.active_transition = Some(key);
+                self.transition_base_frame = self
+                    .last_stable_frame
+                    .clone()
+                    .or_else(|| Some(current_frame.clone()));
+            }
 
-                let opacity = transition
-                    .map(|transition| transition.eased_progress.clamp(0.0, 1.0))
-                    .unwrap_or(1.0);
-                let mut layers = Vec::with_capacity(2);
-                if let Some(base_frame) = self.transition_base_frame.clone() {
-                    layers.push(PlannedSceneLayer::replace(base_frame));
-                }
-                if opacity < 1.0 {
-                    layers.push(PlannedSceneLayer::alpha(current_frame.clone(), opacity));
-                } else {
-                    layers.push(PlannedSceneLayer::replace(current_frame.clone()));
-                }
-                layers
+            let opacity =
+                transition.map_or(1.0, |transition| transition.eased_progress.clamp(0.0, 1.0));
+            let mut layers = Vec::with_capacity(2);
+            if let Some(base_frame) = self.transition_base_frame.clone() {
+                layers.push(PlannedSceneLayer::replace(base_frame));
             }
-            None => {
-                self.active_transition = None;
-                self.transition_base_frame = None;
-                vec![PlannedSceneLayer::replace(current_frame.clone())]
+            if opacity < 1.0 {
+                layers.push(PlannedSceneLayer::alpha(current_frame.clone(), opacity));
+            } else {
+                layers.push(PlannedSceneLayer::replace(current_frame.clone()));
             }
+            layers
+        } else {
+            self.active_transition = None;
+            self.transition_base_frame = None;
+            vec![PlannedSceneLayer::replace(current_frame.clone())]
         }
     }
 }
@@ -264,8 +259,7 @@ mod tests {
 
     #[test]
     fn planner_marks_scene_transition_metadata() {
-        let mut planner = CompositionPlanner::new();
-        let compiled = planner.compile(
+        let compiled = CompositionPlanner::compile(
             2,
             2,
             &SceneRuntimeSnapshot {
@@ -293,8 +287,7 @@ mod tests {
 
     #[test]
     fn planner_compiles_multi_layer_plan_for_sparkleflinger() {
-        let mut planner = CompositionPlanner::new();
-        let compiled = planner.compile(
+        let compiled = CompositionPlanner::compile(
             2,
             2,
             &SceneRuntimeSnapshot::default(),
@@ -314,8 +307,12 @@ mod tests {
         assert_eq!(compiled.metadata.logical_layer_count, 2);
         assert_eq!(compiled.metadata.render_group_count, 0);
         assert!(!composed.bypassed);
-        assert_eq!(composed.sampling_canvas.width(), 2);
-        assert_eq!(composed.sampling_canvas.height(), 2);
+        let canvas = composed
+            .sampling_canvas
+            .as_ref()
+            .expect("planner test expects a materialized canvas");
+        assert_eq!(canvas.width(), 2);
+        assert_eq!(canvas.height(), 2);
     }
 
     #[test]
@@ -345,7 +342,11 @@ mod tests {
         assert_eq!(compiled.metadata.logical_layer_count, 2);
         assert_eq!(compiled.metadata.render_group_count, 0);
         assert!(!composed.bypassed);
-        let pixel = &composed.sampling_canvas.as_rgba_bytes()[0..4];
+        let pixel = &composed
+            .sampling_canvas
+            .as_ref()
+            .expect("planner transition test expects a materialized canvas")
+            .as_rgba_bytes()[0..4];
         assert_ne!(pixel, [255, 0, 0, 255].as_slice());
         assert_ne!(pixel, [0, 0, 255, 255].as_slice());
     }

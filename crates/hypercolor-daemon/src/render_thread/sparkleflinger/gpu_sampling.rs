@@ -35,7 +35,29 @@ pub(super) struct GpuSamplingPlan {
     pub(super) zones: Vec<GpuZoneRange>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GpuSamplingPlanKey {
+    ptr: usize,
+    len: usize,
+}
+
+#[derive(Debug, Clone)]
+struct CachedGpuSamplingPlan {
+    key: GpuSamplingPlanKey,
+    plan: GpuSamplingPlan,
+    encoded_points: Vec<u8>,
+}
+
 impl GpuSamplingPlan {
+    pub(super) fn supports_prepared_zones(prepared_zones: &[PreparedZonePlan]) -> bool {
+        prepared_zones.iter().all(|zone| {
+            matches!(
+                zone.sampling_method,
+                SamplingMethod::Nearest | SamplingMethod::Bilinear
+            )
+        })
+    }
+
     pub(super) fn from_prepared_zones(prepared_zones: &[PreparedZonePlan]) -> Option<Self> {
         let total_points = prepared_zones
             .iter()
@@ -75,6 +97,8 @@ pub(super) struct GpuSpatialSampler {
     output_buffer: Option<wgpu::Buffer>,
     readback_buffer: Option<wgpu::Buffer>,
     capacity: usize,
+    cached_plan: Option<CachedGpuSamplingPlan>,
+    packed_samples: Vec<u32>,
 }
 
 impl GpuSpatialSampler {
@@ -159,34 +183,56 @@ impl GpuSpatialSampler {
             output_buffer: None,
             readback_buffer: None,
             capacity: 0,
+            cached_plan: None,
+            packed_samples: Vec::new(),
         }
     }
 
-    pub(super) fn sample_texture(
+    pub(super) fn sample_texture_into(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         source_view: &wgpu::TextureView,
         width: u32,
         height: u32,
-        plan: &GpuSamplingPlan,
-    ) -> Result<Vec<ZoneColors>> {
-        self.ensure_capacity(device, plan.points.len());
+        prepared_zones: &[PreparedZonePlan],
+        zones: &mut Vec<ZoneColors>,
+    ) -> Result<bool> {
+        if !self.ensure_plan(prepared_zones) {
+            return Ok(false);
+        }
+
+        let sample_count = self
+            .cached_plan
+            .as_ref()
+            .map_or(0, |cached| cached.plan.points.len());
+        self.ensure_capacity(device, sample_count);
         let Some(points_buffer) = &self.points_buffer else {
-            return Ok(Vec::new());
+            zones.clear();
+            return Ok(true);
         };
         let Some(output_buffer) = &self.output_buffer else {
-            return Ok(Vec::new());
+            zones.clear();
+            return Ok(true);
         };
         let Some(readback_buffer) = &self.readback_buffer else {
-            return Ok(Vec::new());
+            zones.clear();
+            return Ok(true);
         };
 
-        queue.write_buffer(points_buffer, 0, &encode_points(plan));
+        queue.write_buffer(
+            points_buffer,
+            0,
+            &self
+                .cached_plan
+                .as_ref()
+                .expect("GPU sampling plan should be cached before sampling")
+                .encoded_points,
+        );
         queue.write_buffer(
             &self.params_buffer,
             0,
-            &encode_sample_params(width, height, plan.points.len()),
+            &encode_sample_params(width, height, sample_count),
         );
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -223,7 +269,7 @@ impl GpuSpatialSampler {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(
-                u32::try_from(plan.points.len())
+                u32::try_from(sample_count)
                     .unwrap_or(u32::MAX)
                     .div_ceil(SAMPLE_WORKGROUP_SIZE),
                 1,
@@ -232,13 +278,23 @@ impl GpuSpatialSampler {
         }
         encoder.copy_buffer_to_buffer(output_buffer, 0, readback_buffer, 0, output_buffer.size());
 
-        let packed = readback_samples(
+        readback_samples_into(
             device,
             readback_buffer,
-            plan.points.len(),
+            sample_count,
             queue.submit(Some(encoder.finish())),
+            &mut self.packed_samples,
         )?;
-        Ok(rebuild_zone_colors(plan, &packed))
+        rebuild_zone_colors_into(
+            &self
+                .cached_plan
+                .as_ref()
+                .expect("GPU sampling plan should remain cached after sampling")
+                .plan,
+            &self.packed_samples,
+            zones,
+        );
+        Ok(true)
     }
 
     fn ensure_capacity(&mut self, device: &wgpu::Device, sample_count: usize) {
@@ -269,6 +325,32 @@ impl GpuSpatialSampler {
         }));
         self.capacity = sample_count;
     }
+
+    fn ensure_plan(&mut self, prepared_zones: &[PreparedZonePlan]) -> bool {
+        let key = GpuSamplingPlanKey {
+            ptr: prepared_zones.as_ptr() as usize,
+            len: prepared_zones.len(),
+        };
+        if self
+            .cached_plan
+            .as_ref()
+            .is_some_and(|cached| cached.key == key)
+        {
+            return true;
+        }
+
+        let Some(plan) = GpuSamplingPlan::from_prepared_zones(prepared_zones) else {
+            self.cached_plan = None;
+            return false;
+        };
+        let encoded_points = encode_points(&plan);
+        self.cached_plan = Some(CachedGpuSamplingPlan {
+            key,
+            plan,
+            encoded_points,
+        });
+        true
+    }
 }
 
 fn encode_points(plan: &GpuSamplingPlan) -> Vec<u8> {
@@ -294,12 +376,13 @@ fn encode_sample_params(width: u32, height: u32, sample_count: usize) -> [u8; SA
     bytes
 }
 
-fn readback_samples(
+fn readback_samples_into(
     device: &wgpu::Device,
     buffer: &wgpu::Buffer,
     sample_count: usize,
     submission_index: wgpu::SubmissionIndex,
-) -> Result<Vec<u32>> {
+    packed: &mut Vec<u32>,
+) -> Result<()> {
     let slice = buffer.slice(..);
     let (sender, receiver) = mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |result| {
@@ -317,32 +400,46 @@ fn readback_samples(
         .context("GPU sample buffer mapping failed")?;
 
     let mapped = slice.get_mapped_range();
-    let mut packed = Vec::with_capacity(sample_count);
+    packed.clear();
+    packed.reserve(sample_count.saturating_sub(packed.capacity()));
     for chunk in mapped.chunks_exact(4).take(sample_count) {
         packed.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
     }
     drop(mapped);
     buffer.unmap();
-    Ok(packed)
+    Ok(())
 }
 
-fn rebuild_zone_colors(plan: &GpuSamplingPlan, packed: &[u32]) -> Vec<ZoneColors> {
-    plan.zones
-        .iter()
-        .map(|zone| ZoneColors {
-            zone_id: zone.zone_id.clone(),
-            colors: packed[zone.start..zone.start.saturating_add(zone.len)]
-                .iter()
-                .map(|packed| {
-                    [
-                        u8::try_from(packed & 0xff).expect("red channel fits"),
-                        u8::try_from((packed >> 8) & 0xff).expect("green channel fits"),
-                        u8::try_from((packed >> 16) & 0xff).expect("blue channel fits"),
-                    ]
-                })
-                .collect(),
-        })
-        .collect()
+fn rebuild_zone_colors_into(plan: &GpuSamplingPlan, packed: &[u32], zones: &mut Vec<ZoneColors>) {
+    zones.reserve(plan.zones.len().saturating_sub(zones.len()));
+
+    for (index, zone_plan) in plan.zones.iter().enumerate() {
+        if index == zones.len() {
+            zones.push(ZoneColors {
+                zone_id: zone_plan.zone_id.clone(),
+                colors: vec![[0_u8; 3]; zone_plan.len],
+            });
+        }
+
+        let zone = &mut zones[index];
+        if zone.zone_id != zone_plan.zone_id {
+            zone.zone_id.clone_from(&zone_plan.zone_id);
+        }
+        zone.colors.resize(zone_plan.len, [0_u8; 3]);
+        for (color, packed_rgb) in zone
+            .colors
+            .iter_mut()
+            .zip(packed[zone_plan.start..zone_plan.start.saturating_add(zone_plan.len)].iter())
+        {
+            *color = [
+                u8::try_from(packed_rgb & 0xff).expect("red channel fits"),
+                u8::try_from((packed_rgb >> 8) & 0xff).expect("green channel fits"),
+                u8::try_from((packed_rgb >> 16) & 0xff).expect("blue channel fits"),
+            ];
+        }
+    }
+
+    zones.truncate(plan.zones.len());
 }
 
 #[cfg(test)]

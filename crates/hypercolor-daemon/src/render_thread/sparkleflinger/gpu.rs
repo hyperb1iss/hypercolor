@@ -144,7 +144,15 @@ impl GpuSparkleFlinger {
         plan.width > 0 && plan.height > 0 && !plan.layers.is_empty()
     }
 
-    pub(crate) fn compose(&mut self, plan: &CompositionPlan) -> Result<ComposedFrameSet> {
+    pub(crate) fn can_sample_zone_plan(&self, prepared_zones: &[PreparedZonePlan]) -> bool {
+        GpuSamplingPlan::supports_prepared_zones(prepared_zones)
+    }
+
+    pub(crate) fn compose(
+        &mut self,
+        plan: &CompositionPlan,
+        requires_cpu_sampling_canvas: bool,
+    ) -> Result<ComposedFrameSet> {
         if plan.layers.len() == 1
             && let Some(layer) = plan.layers.first()
             && layer.is_bypass_candidate()
@@ -211,6 +219,18 @@ impl GpuSparkleFlinger {
             GpuCompositorOutputSurface::Front => &surfaces.front.texture,
             GpuCompositorOutputSurface::Back => &surfaces.back.texture,
         };
+        self.current_output = Some(current_output);
+        if !requires_cpu_sampling_canvas {
+            self.queue.submit(Some(encoder.finish()));
+            return Ok(ComposedFrameSet {
+                sampling_canvas: None,
+                sampling_surface: None,
+                preview_surface: None,
+                bypassed: false,
+                backend: CompositorBackendKind::Gpu,
+            });
+        }
+
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: current_texture,
@@ -238,39 +258,35 @@ impl GpuSparkleFlinger {
             self.queue.submit(Some(encoder.finish())),
         )?;
         let canvas = Canvas::from_vec(bytes, plan.width, plan.height);
-        self.current_output = Some(current_output);
         let mut composed = publish_composed_frame((canvas, None), false);
         composed.backend = CompositorBackendKind::Gpu;
         Ok(composed)
     }
 
-    pub(crate) fn sample_zone_plan(
+    pub(crate) fn sample_zone_plan_into(
         &mut self,
         prepared_zones: &[PreparedZonePlan],
-    ) -> Result<Option<Vec<ZoneColors>>> {
-        let Some(plan) = GpuSamplingPlan::from_prepared_zones(prepared_zones) else {
-            return Ok(None);
-        };
+        zones: &mut Vec<ZoneColors>,
+    ) -> Result<bool> {
         let Some(output) = self.current_output else {
-            return Ok(None);
+            return Ok(false);
         };
         let Some(surfaces) = self.surfaces.as_ref() else {
-            return Ok(None);
+            return Ok(false);
         };
         let source_view = match output {
             GpuCompositorOutputSurface::Front => &surfaces.front.view,
             GpuCompositorOutputSurface::Back => &surfaces.back.view,
         };
-        self.spatial_sampler
-            .sample_texture(
-                &self.device,
-                &self.queue,
-                source_view,
-                surfaces.width,
-                surfaces.height,
-                &plan,
-            )
-            .map(Some)
+        self.spatial_sampler.sample_texture_into(
+            &self.device,
+            &self.queue,
+            source_view,
+            surfaces.width,
+            surfaces.height,
+            prepared_zones,
+            zones,
+        )
     }
 
     pub(crate) fn ensure_surface_size(&mut self, width: u32, height: u32) {
@@ -707,6 +723,7 @@ enum ComposeShaderMode {
 mod tests {
     use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_core::types::canvas::{Canvas, PublishedSurface, Rgba};
+    use hypercolor_types::event::ZoneColors;
     use hypercolor_types::spatial::{
         DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
         StripDirection,
@@ -813,12 +830,20 @@ mod tests {
         );
         let expected = CpuSparkleFlinger::new().compose(plan.clone());
         let composed = compositor
-            .compose(&plan)
+            .compose(&plan, true)
             .expect("GPU composition should succeed for replace + alpha plans");
 
         assert_eq!(
-            composed.sampling_canvas.as_rgba_bytes(),
-            expected.sampling_canvas.as_rgba_bytes()
+            composed
+                .sampling_canvas
+                .as_ref()
+                .expect("GPU alpha compose should materialize a canvas")
+                .as_rgba_bytes(),
+            expected
+                .sampling_canvas
+                .as_ref()
+                .expect("CPU alpha compose should materialize a canvas")
+                .as_rgba_bytes()
         );
     }
 
@@ -844,12 +869,20 @@ mod tests {
         );
         let expected = CpuSparkleFlinger::new().compose(plan.clone());
         let composed = compositor
-            .compose(&plan)
+            .compose(&plan, true)
             .expect("GPU composition should succeed for add plans");
 
         assert_eq!(
-            composed.sampling_canvas.as_rgba_bytes(),
-            expected.sampling_canvas.as_rgba_bytes()
+            composed
+                .sampling_canvas
+                .as_ref()
+                .expect("GPU add compose should materialize a canvas")
+                .as_rgba_bytes(),
+            expected
+                .sampling_canvas
+                .as_ref()
+                .expect("CPU add compose should materialize a canvas")
+                .as_rgba_bytes()
         );
     }
 
@@ -875,12 +908,20 @@ mod tests {
         );
         let expected = CpuSparkleFlinger::new().compose(plan.clone());
         let composed = compositor
-            .compose(&plan)
+            .compose(&plan, true)
             .expect("GPU composition should succeed for screen plans");
 
         assert_eq!(
-            composed.sampling_canvas.as_rgba_bytes(),
-            expected.sampling_canvas.as_rgba_bytes()
+            composed
+                .sampling_canvas
+                .as_ref()
+                .expect("GPU screen compose should materialize a canvas")
+                .as_rgba_bytes(),
+            expected
+                .sampling_canvas
+                .as_ref()
+                .expect("CPU screen compose should materialize a canvas")
+                .as_rgba_bytes()
         );
     }
 
@@ -898,13 +939,42 @@ mod tests {
             CompositionLayer::replace(ProducerFrame::Surface(source.clone())),
         );
         let composed = compositor
-            .compose(&plan)
+            .compose(&plan, true)
             .expect("single replace surface should bypass GPU composition");
 
         let surface = composed
             .sampling_surface
             .expect("bypass path should preserve the source surface");
         assert_eq!(surface.rgba_bytes().as_ptr(), source.rgba_bytes().as_ptr());
+    }
+
+    #[test]
+    fn gpu_compositor_skips_cpu_readback_when_canvas_is_not_required() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                    255, 32, 0, 255,
+                )))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(solid_canvas(Rgba::new(32, 64, 255, 255))),
+                    0.35,
+                ),
+            ],
+        );
+
+        let composed = compositor
+            .compose(&plan, false)
+            .expect("GPU composition should support no-readback mode");
+
+        assert!(composed.sampling_canvas.is_none());
+        assert!(composed.sampling_surface.is_none());
+        assert!(!composed.bypassed);
     }
 
     #[test]
@@ -928,16 +998,71 @@ mod tests {
             ],
         );
         let expected = CpuSparkleFlinger::new().compose(plan.clone());
-        let expected_zones = engine.sample(&expected.sampling_canvas);
+        let expected_zones = engine.sample(
+            expected
+                .sampling_canvas
+                .as_ref()
+                .expect("CPU compose should materialize a canvas"),
+        );
         compositor
-            .compose(&plan)
+            .compose(&plan, false)
             .expect("GPU composition should succeed before GPU sampling");
-        let sampled = compositor
-            .sample_zone_plan(engine.sampling_plan().as_ref())
-            .expect("GPU spatial sampling should succeed")
-            .expect("bilinear plans should be GPU-sampleable");
+        let mut sampled = Vec::new();
+        assert!(
+            compositor
+                .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
+                .expect("GPU spatial sampling should succeed")
+        );
 
         assert_eq!(sampled, expected_zones);
+    }
+
+    #[test]
+    fn gpu_sampler_reuses_zone_output_storage() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                    24, 88, 160, 255,
+                )))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(solid_canvas(Rgba::new(220, 48, 24, 255))),
+                    0.25,
+                ),
+            ],
+        );
+        let expected = CpuSparkleFlinger::new().compose(plan.clone());
+        compositor
+            .compose(&plan, false)
+            .expect("GPU composition should succeed before output reuse testing");
+
+        let mut sampled = vec![ZoneColors {
+            zone_id: "stale".into(),
+            colors: vec![[0_u8; 3]; 8],
+        }];
+        let first_colors_ptr = sampled[0].colors.as_ptr();
+        assert!(
+            compositor
+                .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
+                .expect("GPU spatial sampling should succeed for bilinear plans")
+        );
+
+        assert_eq!(
+            sampled,
+            engine.sample(
+                expected
+                    .sampling_canvas
+                    .as_ref()
+                    .expect("CPU compose should materialize a canvas"),
+            )
+        );
+        assert_eq!(sampled[0].colors.as_ptr(), first_colors_ptr);
     }
 
     #[test]
@@ -964,14 +1089,13 @@ mod tests {
             ],
         );
         compositor
-            .compose(&plan)
+            .compose(&plan, false)
             .expect("GPU composition should succeed before checking area fallback");
-
+        let mut sampled = Vec::new();
         assert!(
-            compositor
-                .sample_zone_plan(engine.sampling_plan().as_ref())
+            !compositor
+                .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
                 .expect("GPU sampler should handle unsupported plans cleanly")
-                .is_none()
         );
     }
 }

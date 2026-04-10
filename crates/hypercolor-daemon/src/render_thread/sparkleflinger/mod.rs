@@ -124,7 +124,7 @@ impl CompositionPlan {
 
 #[derive(Debug, Clone)]
 pub struct ComposedFrameSet {
-    pub sampling_canvas: Canvas,
+    pub sampling_canvas: Option<Canvas>,
     pub sampling_surface: Option<PublishedSurface>,
     pub preview_surface: Option<PublishedSurface>,
     pub bypassed: bool,
@@ -166,12 +166,20 @@ impl SparkleFlinger {
     }
 
     pub fn compose(&mut self, plan: CompositionPlan) -> ComposedFrameSet {
+        self.compose_with_cpu_readback(plan, true)
+    }
+
+    pub fn compose_with_cpu_readback(
+        &mut self,
+        plan: CompositionPlan,
+        _requires_cpu_sampling_canvas: bool,
+    ) -> ComposedFrameSet {
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(backend) => backend.compose(plan),
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, cpu_fallback } => {
                 if gpu.supports_plan(&plan)
-                    && let Ok(composed) = gpu.compose(&plan)
+                    && let Ok(composed) = gpu.compose(&plan, _requires_cpu_sampling_canvas)
                 {
                     return composed;
                 }
@@ -184,12 +192,34 @@ impl SparkleFlinger {
 
     pub fn sample_zone_plan(
         &mut self,
-        _prepared_zones: &[PreparedZonePlan],
+        prepared_zones: &[PreparedZonePlan],
     ) -> Result<Option<Vec<ZoneColors>>> {
+        let mut zones = Vec::new();
+        if self.sample_zone_plan_into(prepared_zones, &mut zones)? {
+            return Ok(Some(zones));
+        }
+        Ok(None)
+    }
+
+    pub fn sample_zone_plan_into(
+        &mut self,
+        _prepared_zones: &[PreparedZonePlan],
+        _zones: &mut Vec<ZoneColors>,
+    ) -> Result<bool> {
         match &mut self.backend {
-            SparkleFlingerBackend::Cpu(_) => Ok(None),
+            SparkleFlingerBackend::Cpu(_) => Ok(false),
             #[cfg(feature = "wgpu")]
-            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.sample_zone_plan(_prepared_zones),
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                gpu.sample_zone_plan_into(_prepared_zones, _zones)
+            }
+        }
+    }
+
+    pub fn can_sample_zone_plan(&self, _prepared_zones: &[PreparedZonePlan]) -> bool {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => false,
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.can_sample_zone_plan(_prepared_zones),
         }
     }
 }
@@ -214,7 +244,7 @@ pub(super) fn publish_composed_frame(frame: RenderFrame, bypassed: bool) -> Comp
     let (sampling_canvas, sampling_surface) = frame;
     if let Some(sampling_surface) = sampling_surface {
         return ComposedFrameSet {
-            sampling_canvas,
+            sampling_canvas: Some(sampling_canvas),
             sampling_surface: Some(sampling_surface),
             preview_surface: None,
             bypassed,
@@ -225,7 +255,7 @@ pub(super) fn publish_composed_frame(frame: RenderFrame, bypassed: bool) -> Comp
     let sampling_surface = PublishedSurface::from_owned_canvas(sampling_canvas, 0, 0);
     let sampling_canvas = Canvas::from_published_surface(&sampling_surface);
     ComposedFrameSet {
-        sampling_canvas,
+        sampling_canvas: Some(sampling_canvas),
         sampling_surface: Some(sampling_surface),
         preview_surface: None,
         bypassed,
@@ -274,7 +304,12 @@ mod tests {
         assert_eq!(surface.rgba_bytes().as_ptr(), source.rgba_bytes().as_ptr());
         assert!(composed.preview_surface.is_none());
         assert_eq!(
-            composed.sampling_canvas.as_rgba_bytes().as_ptr(),
+            composed
+                .sampling_canvas
+                .as_ref()
+                .expect("bypass path should materialize a canvas view")
+                .as_rgba_bytes()
+                .as_ptr(),
             source.rgba_bytes().as_ptr()
         );
     }
@@ -303,18 +338,35 @@ mod tests {
         ));
 
         assert_eq!(
-            composed.sampling_canvas.get_pixel(0, 0),
+            composed
+                .sampling_canvas
+                .as_ref()
+                .expect("CPU alpha compose should materialize a canvas")
+                .get_pixel(0, 0),
             expected_blend(base, overlay, BlendMode::Normal, opacity)
         );
         assert_ne!(
-            composed.sampling_canvas.get_pixel(0, 0),
-            reversed.sampling_canvas.get_pixel(0, 0)
+            composed
+                .sampling_canvas
+                .as_ref()
+                .expect("CPU alpha compose should materialize a canvas")
+                .get_pixel(0, 0),
+            reversed
+                .sampling_canvas
+                .as_ref()
+                .expect("CPU alpha compose should materialize a canvas")
+                .get_pixel(0, 0)
         );
         let composed_surface = composed
             .sampling_surface
             .expect("composed frame should publish an immutable sampling surface");
         assert_eq!(
-            composed.sampling_canvas.as_rgba_bytes().as_ptr(),
+            composed
+                .sampling_canvas
+                .as_ref()
+                .expect("CPU alpha compose should materialize a canvas")
+                .as_rgba_bytes()
+                .as_ptr(),
             composed_surface.rgba_bytes().as_ptr()
         );
     }
@@ -334,7 +386,11 @@ mod tests {
         ));
 
         assert_eq!(
-            composed.sampling_canvas.get_pixel(0, 0),
+            composed
+                .sampling_canvas
+                .as_ref()
+                .expect("CPU add compose should materialize a canvas")
+                .get_pixel(0, 0),
             expected_blend(base, glow, BlendMode::Add, 1.0)
         );
     }
@@ -354,7 +410,11 @@ mod tests {
         ));
 
         assert_eq!(
-            composed.sampling_canvas.get_pixel(0, 0),
+            composed
+                .sampling_canvas
+                .as_ref()
+                .expect("CPU screen compose should materialize a canvas")
+                .get_pixel(0, 0),
             expected_blend(base, overlay, BlendMode::Screen, 1.0)
         );
     }
@@ -374,6 +434,14 @@ mod tests {
             ],
         ));
 
-        assert_eq!(composed.sampling_canvas.as_rgba_bytes().as_ptr(), base_ptr);
+        assert_eq!(
+            composed
+                .sampling_canvas
+                .as_ref()
+                .expect("CPU multi-layer compose should materialize a canvas")
+                .as_rgba_bytes()
+                .as_ptr(),
+            base_ptr
+        );
     }
 }

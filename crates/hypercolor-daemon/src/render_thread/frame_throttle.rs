@@ -54,6 +54,7 @@ pub(crate) async fn maybe_idle_throttle(
 }
 
 #[allow(
+    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "sleep-throttle execution is easier to audit when frame synthesis, output, and telemetry stay in one async block"
 )]
@@ -94,7 +95,7 @@ pub(crate) async fn maybe_sleep_throttle(
             state,
             recycled_frame,
             &AudioData::silence(),
-            Canvas::from_published_surface(&surface),
+            Some(Canvas::from_published_surface(&surface)),
             Some(surface),
             None,
             frame_num_u32,
@@ -164,7 +165,7 @@ pub(crate) async fn maybe_sleep_throttle(
         state,
         recycled_frame,
         &AudioData::silence(),
-        canvas,
+        Some(canvas),
         Some(surface),
         None,
         frame_num_u32,

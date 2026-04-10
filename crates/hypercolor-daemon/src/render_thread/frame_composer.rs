@@ -21,6 +21,10 @@ use super::{
     MAX_RENDER_SURFACE_SLOTS, RenderThreadState, desired_render_surface_slots, micros_u32,
 };
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "render stage stats intentionally preserve distinct reuse and scene state flags"
+)]
 pub(crate) struct RenderStageStats {
     pub(crate) composed_frame: ComposedFrameSet,
     pub(crate) sampled_layout: Option<Arc<SpatialLayout>>,
@@ -86,7 +90,7 @@ fn effective_render_group_layer_count(plan_layers: u32, group_layers: u32) -> u3
     group_layers.saturating_add(plan_layers.saturating_sub(1))
 }
 
-impl<'a> ComposeContext<'a> {
+impl ComposeContext<'_> {
     async fn compose(&mut self) -> RenderStageStats {
         let stage_start = Instant::now();
         if self.scene_snapshot.scene_runtime.has_active_render_groups() {
@@ -157,7 +161,10 @@ impl<'a> ComposeContext<'a> {
             &self.scene_snapshot.scene_runtime,
             source_frame,
         );
-        let composed = self.render.sparkleflinger.compose(compiled_plan.plan);
+        let composed = self
+            .render
+            .sparkleflinger
+            .compose_with_cpu_readback(compiled_plan.plan, self.requires_cpu_sampling_canvas());
         let composition_us = micros_u32(composition_start.elapsed());
         let composition_done_us = micros_u32(stage_start.elapsed());
         RenderStageStats {
@@ -282,7 +289,10 @@ impl<'a> ComposeContext<'a> {
                     &self.scene_snapshot.scene_runtime,
                     render_group_result.preview_frame,
                 );
-                let composed = self.render.sparkleflinger.compose(compiled_plan.plan);
+                let composed = self.render.sparkleflinger.compose_with_cpu_readback(
+                    compiled_plan.plan,
+                    self.requires_cpu_sampling_canvas(),
+                );
                 let composition_bypassed = composed.bypassed;
                 let composition_us = micros_u32(composition_start.elapsed());
                 let composition_done_us = micros_u32(stage_start.elapsed());
@@ -325,7 +335,10 @@ impl<'a> ComposeContext<'a> {
                     &self.scene_snapshot.scene_runtime,
                     source_frame,
                 );
-                let composed = self.render.sparkleflinger.compose(compiled_plan.plan);
+                let composed = self.render.sparkleflinger.compose_with_cpu_readback(
+                    compiled_plan.plan,
+                    self.requires_cpu_sampling_canvas(),
+                );
                 let composition_bypassed = composed.bypassed;
                 let composition_us = micros_u32(composition_start.elapsed());
                 let composition_done_us = micros_u32(stage_start.elapsed());
@@ -385,6 +398,19 @@ impl<'a> ComposeContext<'a> {
                 state: Some(frame.state),
             })
     }
+
+    fn requires_cpu_sampling_canvas(&self) -> bool {
+        if self.state.preview_canvas_receiver_count() > 0
+            || self.state.event_bus.screen_canvas_receiver_count() > 0
+        {
+            return true;
+        }
+
+        !self
+            .render
+            .sparkleflinger
+            .can_sample_zone_plan(self.scene_snapshot.spatial_engine.sampling_plan().as_ref())
+    }
 }
 
 async fn render_effect_frame(
@@ -397,25 +423,24 @@ async fn render_effect_frame(
     screen_data: Option<&ScreenData>,
 ) -> ProducedFrame {
     let render_start = Instant::now();
-    let lease = match render.render_surface_pool.dequeue() {
-        lease @ Some(_) => lease,
-        None => {
-            if render.render_surface_pool.slot_count() < MAX_RENDER_SURFACE_SLOTS {
-                let previous_slots = render.render_surface_pool.slot_count();
-                let receiver_count = state.preview_canvas_receiver_count();
-                let expanded_slots = desired_render_surface_slots(receiver_count)
-                    .max(previous_slots.saturating_add(1))
-                    .min(MAX_RENDER_SURFACE_SLOTS);
-                render.render_surface_pool.ensure_slot_count(expanded_slots);
-                debug!(
-                    previous_slots,
-                    expanded_slots,
-                    canvas_receivers = receiver_count,
-                    "expanded render surface pool under retention pressure"
-                );
-            }
-            render.render_surface_pool.dequeue()
+    let lease = if let lease @ Some(_) = render.render_surface_pool.dequeue() {
+        lease
+    } else {
+        if render.render_surface_pool.slot_count() < MAX_RENDER_SURFACE_SLOTS {
+            let previous_slots = render.render_surface_pool.slot_count();
+            let receiver_count = state.preview_canvas_receiver_count();
+            let expanded_slots = desired_render_surface_slots(receiver_count)
+                .max(previous_slots.saturating_add(1))
+                .min(MAX_RENDER_SURFACE_SLOTS);
+            render.render_surface_pool.ensure_slot_count(expanded_slots);
+            debug!(
+                previous_slots,
+                expanded_slots,
+                canvas_receivers = receiver_count,
+                "expanded render surface pool under retention pressure"
+            );
         }
+        render.render_surface_pool.dequeue()
     };
 
     if let Some(mut lease) = lease {
