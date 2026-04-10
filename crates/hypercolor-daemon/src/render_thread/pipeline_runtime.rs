@@ -7,6 +7,7 @@ use hypercolor_core::types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor,
 };
 use hypercolor_core::types::event::FrameData;
+use hypercolor_types::config::RenderAccelerationMode;
 
 use super::composition_planner::CompositionPlanner;
 use super::desired_render_surface_slots;
@@ -147,6 +148,7 @@ impl PipelineRuntime {
         canvas_height: u32,
         initial_spatial_engine: SpatialEngine,
         screen_capture_configured: bool,
+        render_acceleration_mode: RenderAccelerationMode,
         configured_max_fps_tier: FpsTier,
     ) -> Self {
         Self {
@@ -166,7 +168,7 @@ impl PipelineRuntime {
                 effect_queue: ProducerQueue::new(),
                 screen_queue: ProducerQueue::new(),
                 composition_planner: CompositionPlanner::new(),
-                sparkleflinger: SparkleFlinger::new(),
+                sparkleflinger: SparkleFlinger::new(render_acceleration_mode),
                 render_group_runtime: RenderGroupRuntime::new(canvas_width, canvas_height),
                 render_surface_pool: RenderSurfacePool::with_slot_count(
                     SurfaceDescriptor::rgba8888(canvas_width, canvas_height),
