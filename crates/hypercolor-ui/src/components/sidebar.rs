@@ -467,6 +467,29 @@ pub fn Sidebar() -> impl IntoView {
                 }).collect_view()}
             </div>
 
+            // Sponsor link — above Now Playing, accent-styled
+            <a
+                href="https://github.com/sponsors/hyperb1iss"
+                target="_blank"
+                rel="noopener"
+                class="flex items-center gap-2 mx-2 rounded-lg
+                       text-fg-tertiary hover:text-fg-primary
+                       bg-accent/5 hover:bg-accent/10
+                       border border-accent/10 hover:border-accent/20
+                       transition-all duration-200"
+                class:justify-center=move || collapsed.get()
+                class:px-3=move || !collapsed.get()
+                class:py-1.5=move || !collapsed.get()
+                class:p-2=move || collapsed.get()
+                title="Support Hypercolor development"
+            >
+                <span class="text-accent text-sm font-bold">{"\u{2665}"}</span>
+                <span
+                    class="text-[11px] whitespace-nowrap"
+                    style:display=move || if collapsed.get() { "none" } else { "inline" }
+                >"Sponsor"</span>
+            </a>
+
             // Now Playing — live thumbnail + palette-styled panel
             //
             // IMPORTANT: The outer closure ONLY reads has_active + collapsed so that
@@ -752,21 +775,6 @@ pub fn Sidebar() -> impl IntoView {
                                 }}
                             </div>
                         </div>
-
-                        // Sponsor link
-                        <a
-                            href="https://github.com/sponsors/hyperb1iss"
-                            target="_blank"
-                            rel="noopener"
-                            class="flex items-center justify-center gap-1.5 py-1 text-[10px] text-fg-tertiary hover:text-accent-primary transition-colors"
-                            title="Support Hypercolor development"
-                        >
-                            <span class="text-accent-primary">{"\u{2665}"}</span>
-                            <span
-                                class="whitespace-nowrap overflow-hidden"
-                                style:display=move || if collapsed.get() { "none" } else { "inline" }
-                            >"Sponsor"</span>
-                        </a>
 
                         // Collapse toggle
                         <button
