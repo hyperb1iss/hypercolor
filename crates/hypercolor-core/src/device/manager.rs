@@ -1949,23 +1949,15 @@ fn apply_led_perceptual_compensation_channels(red: &mut f32, green: &mut f32, bl
     *blue = (*blue * gain).min(1.0);
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::as_conversions,
-    reason = "the LUT generator clamps the computed transfer value into the valid 16-bit range"
-)]
 fn decode_srgb_channel(channel: u8) -> f32 {
-    static SRGB_TO_LED_LINEAR_LUT: OnceLock<[u16; 256]> = OnceLock::new();
+    static SRGB_TO_LED_LINEAR_LUT: OnceLock<[f32; 256]> = OnceLock::new();
 
-    let linear = SRGB_TO_LED_LINEAR_LUT.get_or_init(|| {
+    SRGB_TO_LED_LINEAR_LUT.get_or_init(|| {
         std::array::from_fn(|index| {
             let srgb = f32::from(u8::try_from(index).expect("LUT index must fit in u8")) / 255.0;
-            (srgb_to_linear(srgb) * 65535.0).round().clamp(0.0, 65535.0) as u16
+            srgb_to_linear(srgb)
         })
-    })[usize::from(channel)];
-
-    f32::from(linear) / 65535.0
+    })[usize::from(channel)]
 }
 
 fn target_interval_for_fps(target_fps: u32) -> Option<Duration> {
