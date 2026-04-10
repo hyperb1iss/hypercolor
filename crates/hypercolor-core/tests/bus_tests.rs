@@ -586,17 +586,24 @@ fn owned_canvas_frame_reuses_canvas_rgba_allocation() {
 }
 
 #[test]
-fn owned_canvas_frame_reports_when_shared_canvas_forces_copy() {
+fn owned_canvas_frame_reuses_shared_canvas_storage_without_copy() {
     let mut canvas = Canvas::new(2, 1);
     canvas.set_pixel(0, 0, Rgba::new(1, 2, 3, 255));
     canvas.set_pixel(1, 0, Rgba::new(4, 5, 6, 255));
-    let shared = canvas.clone();
+    let original = [1, 2, 3, 255, 4, 5, 6, 255];
+    let original_ptr = canvas.as_rgba_bytes().as_ptr();
+    let mut shared = canvas.clone();
 
     let (frame, copied) = CanvasFrame::from_owned_canvas_with_copy_info(canvas, 9, 123);
 
-    assert!(copied);
-    assert_eq!(frame.rgba_bytes()[..8], [1, 2, 3, 255, 4, 5, 6, 255]);
-    assert_eq!(shared.as_rgba_bytes()[..8], [1, 2, 3, 255, 4, 5, 6, 255]);
+    assert!(!copied);
+    assert_eq!(frame.rgba_bytes().as_ptr(), original_ptr);
+    assert_eq!(frame.rgba_bytes()[..8], original);
+
+    shared.set_pixel(0, 0, Rgba::new(9, 8, 7, 255));
+
+    assert_eq!(frame.rgba_bytes()[..8], original);
+    assert_eq!(shared.as_rgba_bytes()[..8], [9, 8, 7, 255, 4, 5, 6, 255]);
 }
 
 // ── Lagged Receiver Handling ─────────────────────────────────────────────

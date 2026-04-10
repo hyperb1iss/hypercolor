@@ -833,17 +833,21 @@ impl PublishedSurface {
         frame_number: u32,
         timestamp_ms: u32,
     ) -> (Self, bool) {
-        let descriptor = SurfaceDescriptor::rgba8888(canvas.width(), canvas.height());
-        let (rgba, copied) = canvas.into_rgba_bytes_with_copy_info();
+        let Canvas {
+            width,
+            height,
+            pixels,
+        } = canvas;
+        let descriptor = SurfaceDescriptor::rgba8888(width, height);
         (
             Self {
                 descriptor,
                 generation: 0,
                 frame_number,
                 timestamp_ms,
-                rgba: Arc::new(rgba),
+                rgba: pixels,
             },
-            copied,
+            false,
         )
     }
 

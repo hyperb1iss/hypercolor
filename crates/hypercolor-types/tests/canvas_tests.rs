@@ -254,22 +254,26 @@ fn published_surface_from_owned_canvas_reuses_unique_storage() {
 }
 
 #[test]
-fn published_surface_from_owned_canvas_reports_copy_when_shared() {
+fn published_surface_from_owned_canvas_reuses_shared_storage_without_copy() {
     let mut canvas = Canvas::new(2, 1);
     canvas.set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
     canvas.set_pixel(1, 0, Rgba::new(40, 50, 60, 255));
-    let shared = canvas.clone();
+    let original = [10, 20, 30, 255, 40, 50, 60, 255];
+    let original_ptr = canvas.as_rgba_bytes().as_ptr();
+    let mut shared = canvas.clone();
 
     let (surface, copied) = PublishedSurface::from_owned_canvas_with_copy_info(canvas, 8, 84);
 
-    assert!(copied);
-    assert_eq!(
-        surface.rgba_bytes()[..8],
-        [10, 20, 30, 255, 40, 50, 60, 255]
-    );
+    assert!(!copied);
+    assert_eq!(surface.rgba_bytes().as_ptr(), original_ptr);
+    assert_eq!(surface.rgba_bytes()[..8], original);
+
+    shared.set_pixel(0, 0, Rgba::new(90, 80, 70, 255));
+
+    assert_eq!(surface.rgba_bytes()[..8], original);
     assert_eq!(
         shared.as_rgba_bytes()[..8],
-        [10, 20, 30, 255, 40, 50, 60, 255]
+        [90, 80, 70, 255, 40, 50, 60, 255]
     );
 }
 

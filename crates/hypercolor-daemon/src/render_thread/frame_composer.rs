@@ -470,7 +470,8 @@ async fn render_effect_frame(
     render.effect_target_canvas = recycled.and_then(|previous| match previous {
         ProducerFrame::Canvas(canvas)
             if canvas.width() == state.canvas_dims.width()
-                && canvas.height() == state.canvas_dims.height() =>
+                && canvas.height() == state.canvas_dims.height()
+                && !canvas.is_shared() =>
         {
             Some(canvas)
         }
