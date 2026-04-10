@@ -1,0 +1,817 @@
+//! Relay tasks that pump events, frames, spectrum, canvases, and metrics
+//! from the render bus out to connected WebSocket clients.
+//!
+//! Each relay owns its own `tokio::task` and watches an immutable
+//! `SubscriptionState` snapshot. Slow consumers are handled with bounded
+//! mpsc channels and `try_send` backpressure — drop under load rather than
+//! queue unboundedly.
+
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant, SystemTime};
+
+use axum::body::Bytes;
+use axum::extract::ws::Utf8Bytes;
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::{broadcast, watch};
+use tracing::{debug, warn};
+
+use super::cache::{
+    FrameRelayMessage, WS_CANVAS_BYTES_PER_PIXEL_RGBA, WS_CANVAS_PAYLOAD_BUILD_COUNT,
+    WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT, WS_CLIENT_COUNT, WS_FRAME_PAYLOAD_BUILD_COUNT,
+    WS_FRAME_PAYLOAD_CACHE_HIT_COUNT, WS_SCREEN_CANVAS_HEADER, WS_TOTAL_BYTES_SENT,
+    cached_frame_payload, cached_spectrum_payload, encode_cached_canvas_binary_with_header,
+    encode_cached_canvas_preview_binary,
+};
+use super::protocol::{
+    ActiveFramesConfig, CanvasConfig, MetricsCopies, MetricsDevices, MetricsFps, MetricsFrameTime,
+    MetricsMemory, MetricsPacing, MetricsPayload, MetricsPreview, MetricsRenderSurfaces,
+    MetricsStages, MetricsTimeline, MetricsWebsocket, ServerMessage, SpectrumConfig,
+    SubscriptionState, WsChannel, event_message_parts, should_relay_event,
+};
+use crate::api::AppState;
+use crate::performance::FrameTimeSummary as RenderFrameTimeSummary;
+use crate::session::OutputPowerState;
+
+/// Relay events from the broadcast bus to a bounded mpsc channel.
+/// Drops events when the consumer is slow (backpressure).
+pub(super) async fn relay_events(
+    mut event_rx: broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
+    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
+    subscriptions: watch::Receiver<SubscriptionState>,
+) {
+    loop {
+        match event_rx.recv().await {
+            Ok(timestamped) => {
+                let should_relay = {
+                    let subs = subscriptions.borrow();
+                    should_relay_event(&timestamped.event, &subs.channels)
+                };
+                if !should_relay {
+                    continue;
+                }
+
+                let (event_name, event_data) = event_message_parts(&timestamped.event);
+                let msg = ServerMessage::Event {
+                    event: event_name,
+                    timestamp: timestamped.timestamp.to_string(),
+                    data: event_data,
+                };
+                let Ok(json) = serde_json::to_string(&msg) else {
+                    continue;
+                };
+
+                let _ = try_enqueue_json(&json_tx, json, "events");
+            }
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                warn!("WebSocket consumer lagged by {n} events");
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
+}
+
+/// Relay frame watch updates to the WebSocket client.
+pub(super) async fn relay_frames(
+    state: Arc<AppState>,
+    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
+    binary_tx: tokio::sync::mpsc::Sender<Bytes>,
+    mut subscriptions: watch::Receiver<SubscriptionState>,
+) {
+    let mut frame_rx = None::<watch::Receiver<hypercolor_types::event::FrameData>>;
+    let mut active_frame_config = None::<ActiveFramesConfig>;
+    let mut last_sent = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
+    let mut was_subscribed = false;
+
+    loop {
+        if active_frame_config.is_none() {
+            active_frame_config = {
+                let subs = subscriptions.borrow();
+                if !subs.channels.contains(WsChannel::Frames) {
+                    None
+                } else {
+                    Some(ActiveFramesConfig::new(subs.config.frames.clone()))
+                }
+            };
+        }
+        let Some(frame_config) = active_frame_config.as_ref() else {
+            let _ = frame_rx.take();
+            was_subscribed = false;
+            if subscriptions.changed().await.is_err() {
+                break;
+            }
+            let _ = subscriptions.borrow_and_update();
+            continue;
+        };
+        if frame_rx.is_none() {
+            frame_rx = Some(state.event_bus.frame_receiver());
+        }
+        let frame_rx = frame_rx
+            .as_mut()
+            .expect("frame receiver should exist while subscribed");
+
+        let emit_current = !was_subscribed;
+        was_subscribed = true;
+        if !emit_current {
+            tokio::select! {
+                changed = subscriptions.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let _ = subscriptions.borrow_and_update();
+                    active_frame_config = None;
+                    continue;
+                }
+                changed = frame_rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let frame = frame_rx.borrow();
+        if !should_emit(&mut last_sent, frame_config.config.fps) {
+            continue;
+        }
+        let outbound = cached_frame_payload(&frame, &frame_config);
+
+        match outbound {
+            FrameRelayMessage::Json(text) => {
+                let _ = try_enqueue_json(&json_tx, text, "frames");
+            }
+            FrameRelayMessage::Binary(bytes) => {
+                if binary_tx.try_send(bytes).is_err() {
+                    enqueue_backpressure_notice(&json_tx, "frames", frame_config.config.fps);
+                    debug!("Dropping binary frame update for slow WebSocket consumer");
+                }
+            }
+        }
+    }
+}
+
+/// Relay spectrum watch updates to the WebSocket client.
+pub(super) async fn relay_spectrum(
+    state: Arc<AppState>,
+    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
+    binary_tx: tokio::sync::mpsc::Sender<Bytes>,
+    mut subscriptions: watch::Receiver<SubscriptionState>,
+) {
+    let mut spectrum_rx = None::<watch::Receiver<hypercolor_types::event::SpectrumData>>;
+    let mut active_spectrum_config = None::<SpectrumConfig>;
+    let mut last_sent = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
+    let mut was_subscribed = false;
+
+    loop {
+        if active_spectrum_config.is_none() {
+            active_spectrum_config = {
+                let subs = subscriptions.borrow();
+                if !subs.channels.contains(WsChannel::Spectrum) {
+                    None
+                } else {
+                    Some(subs.config.spectrum.clone())
+                }
+            };
+        }
+        let Some(spectrum_config) = active_spectrum_config.as_ref() else {
+            let _ = spectrum_rx.take();
+            was_subscribed = false;
+            if subscriptions.changed().await.is_err() {
+                break;
+            }
+            let _ = subscriptions.borrow_and_update();
+            continue;
+        };
+        if spectrum_rx.is_none() {
+            spectrum_rx = Some(state.event_bus.spectrum_receiver());
+        }
+        let spectrum_rx = spectrum_rx
+            .as_mut()
+            .expect("spectrum receiver should exist while subscribed");
+
+        let emit_current = !was_subscribed;
+        was_subscribed = true;
+        if !emit_current {
+            tokio::select! {
+                changed = subscriptions.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let _ = subscriptions.borrow_and_update();
+                    active_spectrum_config = None;
+                    continue;
+                }
+                changed = spectrum_rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let spectrum = spectrum_rx.borrow();
+        if !should_emit(&mut last_sent, spectrum_config.fps) {
+            continue;
+        }
+        if binary_tx
+            .try_send(cached_spectrum_payload(&spectrum, spectrum_config.bins))
+            .is_err()
+        {
+            enqueue_backpressure_notice(&json_tx, "spectrum", spectrum_config.fps);
+            debug!("Dropping binary spectrum update for slow WebSocket consumer");
+        }
+    }
+}
+
+/// Relay raw canvas updates to the WebSocket client.
+pub(super) async fn relay_canvas(
+    preview_runtime: Arc<crate::preview_runtime::PreviewRuntime>,
+    mut power_state_rx: watch::Receiver<OutputPowerState>,
+    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
+    binary_tx: tokio::sync::mpsc::Sender<Bytes>,
+    mut subscriptions: watch::Receiver<SubscriptionState>,
+) {
+    let mut canvas_rx = None::<crate::preview_runtime::PreviewFrameReceiver>;
+    let mut active_canvas_config = None::<CanvasConfig>;
+    let mut latest_canvas = None::<hypercolor_core::bus::CanvasFrame>;
+    let mut last_sent_frame_number: Option<u32> = None;
+    let mut last_sent_brightness_bits: Option<u32> = None;
+    let mut active_fps = 15_u32;
+    let mut ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        if active_canvas_config.is_none() {
+            active_canvas_config = {
+                let subs = subscriptions.borrow();
+                if subs.channels.contains(WsChannel::Canvas) {
+                    Some(subs.config.canvas.clone())
+                } else {
+                    None
+                }
+            };
+        }
+        sync_preview_receiver(&mut canvas_rx, active_canvas_config.is_some(), || {
+            preview_runtime.canvas_receiver()
+        });
+
+        let Some(canvas_config) = active_canvas_config.as_ref() else {
+            last_sent_frame_number = None;
+            last_sent_brightness_bits = None;
+            latest_canvas = None;
+            tokio::select! {
+                changed = power_state_rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let _ = power_state_rx.borrow_and_update();
+                }
+                changed = subscriptions.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let _ = subscriptions.borrow_and_update();
+                    active_canvas_config = None;
+                }
+            }
+            continue;
+        };
+        let canvas_rx = canvas_rx
+            .as_mut()
+            .expect("preview canvas receiver should exist while subscribed");
+
+        if canvas_config.fps != active_fps {
+            active_fps = canvas_config.fps.max(1);
+            ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        }
+        if latest_canvas.is_none() {
+            latest_canvas = Some(canvas_rx.borrow_and_update().clone());
+        }
+
+        tokio::select! {
+            changed = canvas_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                latest_canvas = Some(canvas_rx.borrow_and_update().clone());
+            }
+            changed = power_state_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let _ = power_state_rx.borrow_and_update();
+            }
+            changed = subscriptions.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let _ = subscriptions.borrow_and_update();
+                active_canvas_config = None;
+            }
+            _ = ticker.tick() => {
+                let Some(latest_canvas) = latest_canvas.as_ref() else {
+                    continue;
+                };
+                let brightness = power_state_rx.borrow().effective_brightness();
+                let brightness_bits = brightness.to_bits();
+                if last_sent_frame_number == Some(latest_canvas.frame_number)
+                    && last_sent_brightness_bits == Some(brightness_bits)
+                {
+                    continue;
+                }
+
+                if binary_tx
+                    .try_send(encode_cached_canvas_preview_binary(
+                        &latest_canvas,
+                        canvas_config.format,
+                        brightness,
+                    ))
+                    .is_err()
+                {
+                    enqueue_backpressure_notice(&json_tx, "canvas", canvas_config.fps);
+                    debug!("Dropping binary canvas update for slow WebSocket consumer");
+                    continue;
+                }
+
+                last_sent_frame_number = Some(latest_canvas.frame_number);
+                last_sent_brightness_bits = Some(brightness_bits);
+            }
+        }
+    }
+}
+
+/// Relay raw screen-source canvas updates to the WebSocket client.
+pub(super) async fn relay_screen_canvas(
+    preview_runtime: Arc<crate::preview_runtime::PreviewRuntime>,
+    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
+    binary_tx: tokio::sync::mpsc::Sender<Bytes>,
+    mut subscriptions: watch::Receiver<SubscriptionState>,
+) {
+    let mut canvas_rx = None::<crate::preview_runtime::PreviewFrameReceiver>;
+    let mut active_canvas_config = None::<CanvasConfig>;
+    let mut latest_canvas = None::<hypercolor_core::bus::CanvasFrame>;
+    let mut last_sent_frame_number: Option<u32> = None;
+    let mut active_fps = 15_u32;
+    let mut ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        if active_canvas_config.is_none() {
+            active_canvas_config = {
+                let subs = subscriptions.borrow();
+                if subs.channels.contains(WsChannel::ScreenCanvas) {
+                    Some(subs.config.screen_canvas.clone())
+                } else {
+                    None
+                }
+            };
+        }
+        sync_preview_receiver(&mut canvas_rx, active_canvas_config.is_some(), || {
+            preview_runtime.screen_canvas_receiver()
+        });
+
+        let Some(canvas_config) = active_canvas_config.as_ref() else {
+            last_sent_frame_number = None;
+            latest_canvas = None;
+            if subscriptions.changed().await.is_err() {
+                break;
+            }
+            let _ = subscriptions.borrow_and_update();
+            active_canvas_config = None;
+            continue;
+        };
+        let canvas_rx = canvas_rx
+            .as_mut()
+            .expect("screen preview receiver should exist while subscribed");
+
+        if canvas_config.fps != active_fps {
+            active_fps = canvas_config.fps.max(1);
+            ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        }
+        if latest_canvas.is_none() {
+            latest_canvas = Some(canvas_rx.borrow_and_update().clone());
+        }
+
+        tokio::select! {
+            changed = canvas_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                latest_canvas = Some(canvas_rx.borrow_and_update().clone());
+            }
+            changed = subscriptions.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let _ = subscriptions.borrow_and_update();
+                active_canvas_config = None;
+            }
+            _ = ticker.tick() => {
+                let Some(latest_canvas) = latest_canvas.as_ref() else {
+                    continue;
+                };
+                if last_sent_frame_number == Some(latest_canvas.frame_number) {
+                    continue;
+                }
+
+                if binary_tx
+                    .try_send(encode_cached_canvas_binary_with_header(
+                        &latest_canvas,
+                        canvas_config.format,
+                        WS_SCREEN_CANVAS_HEADER,
+                    ))
+                    .is_err()
+                {
+                    enqueue_backpressure_notice(&json_tx, "screen_canvas", canvas_config.fps);
+                    debug!("Dropping binary screen_canvas update for slow WebSocket consumer");
+                    continue;
+                }
+
+                last_sent_frame_number = Some(latest_canvas.frame_number);
+            }
+        }
+    }
+}
+
+pub(super) fn sync_preview_receiver(
+    receiver: &mut Option<crate::preview_runtime::PreviewFrameReceiver>,
+    subscribed: bool,
+    subscribe: impl FnOnce() -> crate::preview_runtime::PreviewFrameReceiver,
+) {
+    if subscribed {
+        if receiver.is_none() {
+            *receiver = Some(subscribe());
+        }
+    } else {
+        let _ = receiver.take();
+    }
+}
+
+/// Relay periodic metrics snapshots to the WebSocket client.
+pub(super) async fn relay_metrics(
+    state: Arc<AppState>,
+    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
+    mut subscriptions: watch::Receiver<SubscriptionState>,
+) {
+    let mut last_total_bytes = WS_TOTAL_BYTES_SENT.load(Ordering::Relaxed);
+    let mut active_interval_ms = None::<u32>;
+
+    loop {
+        if active_interval_ms.is_none() {
+            active_interval_ms = {
+                let subs = subscriptions.borrow();
+                if subs.channels.contains(WsChannel::Metrics) {
+                    Some(subs.config.metrics.interval_ms)
+                } else {
+                    None
+                }
+            };
+        }
+
+        let Some(interval_ms) = active_interval_ms else {
+            if subscriptions.changed().await.is_err() {
+                break;
+            }
+            let _ = subscriptions.borrow_and_update();
+            continue;
+        };
+        tokio::select! {
+            changed = subscriptions.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let _ = subscriptions.borrow_and_update();
+                active_interval_ms = None;
+                continue;
+            }
+            _ = tokio::time::sleep(Duration::from_millis(u64::from(interval_ms))) => {}
+        }
+
+        let still_subscribed = {
+            let subs = subscriptions.borrow();
+            subs.channels.contains(WsChannel::Metrics)
+        };
+        if !still_subscribed {
+            continue;
+        }
+
+        let total_bytes = WS_TOTAL_BYTES_SENT.load(Ordering::Relaxed);
+        let delta_bytes = total_bytes.saturating_sub(last_total_bytes);
+        last_total_bytes = total_bytes;
+        let interval_secs = f64::from(interval_ms) / 1000.0;
+        let bytes_per_sec = if interval_secs > 0.0 {
+            let delta_u32 = u32::try_from(delta_bytes).unwrap_or(u32::MAX);
+            f64::from(delta_u32) / interval_secs
+        } else {
+            0.0
+        };
+
+        let message = build_metrics_message(&state, bytes_per_sec).await;
+        if let Ok(text) = serde_json::to_string(&message) {
+            let _ = try_enqueue_json(&json_tx, text, "metrics");
+        }
+    }
+}
+
+pub(super) fn try_enqueue_json<T>(
+    json_tx: &tokio::sync::mpsc::Sender<Utf8Bytes>,
+    text: T,
+    stream: &str,
+) -> bool
+where
+    T: Into<Utf8Bytes>,
+{
+    match json_tx.try_send(text.into()) {
+        Ok(()) => true,
+        Err(TrySendError::Full(_)) => {
+            debug!(
+                stream,
+                "Dropping queued WebSocket JSON message for slow consumer"
+            );
+            false
+        }
+        Err(TrySendError::Closed(_)) => false,
+    }
+}
+
+fn should_emit(last_sent: &mut Instant, fps: u32) -> bool {
+    let clamped_fps = fps.max(1);
+    let interval = Duration::from_secs_f64(1.0 / f64::from(clamped_fps));
+    let now = Instant::now();
+    if now.duration_since(*last_sent) < interval {
+        return false;
+    }
+    *last_sent = now;
+    true
+}
+
+fn enqueue_backpressure_notice(
+    json_tx: &tokio::sync::mpsc::Sender<Utf8Bytes>,
+    channel: &str,
+    current_fps: u32,
+) {
+    let suggested_fps = current_fps.saturating_div(2).max(1);
+    let message = ServerMessage::Backpressure {
+        dropped_frames: 1,
+        channel: channel.to_owned(),
+        recommendation: "reduce_fps".to_owned(),
+        suggested_fps,
+    };
+
+    if let Ok(text) = serde_json::to_string(&message) {
+        let _ = try_enqueue_json(json_tx, text, "backpressure");
+    }
+}
+
+pub(super) async fn build_metrics_message(
+    state: &AppState,
+    bytes_sent_per_sec: f64,
+) -> ServerMessage {
+    let (render_stats, render_elapsed_ms) = {
+        let render_loop = state.render_loop.read().await;
+        (
+            render_loop.stats(),
+            render_loop.elapsed().as_secs_f64() * 1000.0,
+        )
+    };
+    let performance_snapshot = state.performance.read().await.snapshot();
+    let target_fps = render_stats.tier.fps();
+    let ceiling_fps = render_stats.max_tier.fps();
+    let avg_frame_secs = render_stats.avg_frame_time.as_secs_f64();
+    let actual_fps = paced_fps(avg_frame_secs, target_fps);
+    let avg_ms = avg_frame_secs * 1000.0;
+    let frame_time = frame_time_summary(performance_snapshot.frame_time, avg_ms);
+    let latest_frame = performance_snapshot.latest_frame.unwrap_or_default();
+    let frame_age_ms = if latest_frame.timestamp_ms > 0 {
+        (render_elapsed_ms - f64::from(latest_frame.timestamp_ms)).max(0.0)
+    } else {
+        0.0
+    };
+
+    let devices = state.device_registry.list().await;
+    let total_leds = devices.iter().fold(0_usize, |acc, tracked| {
+        let led_count = usize::try_from(tracked.info.total_led_count()).unwrap_or_default();
+        acc.saturating_add(led_count)
+    });
+    let connected = devices.len();
+
+    let (canvas_width, canvas_height) = {
+        let spatial = state.spatial_engine.read().await;
+        let layout = spatial.layout();
+        (layout.canvas_width, layout.canvas_height)
+    };
+    let canvas_buffer_bytes = u64::from(canvas_width)
+        .saturating_mul(u64::from(canvas_height))
+        .saturating_mul(WS_CANVAS_BYTES_PER_PIXEL_RGBA);
+    let canvas_buffer_kb = u32::try_from(canvas_buffer_bytes / 1024).unwrap_or(u32::MAX);
+
+    let daemon_rss_mb = process_rss_mb().unwrap_or(0.0);
+    let client_count = WS_CLIENT_COUNT.load(Ordering::Relaxed);
+    let preview_runtime = state.preview_runtime.snapshot();
+
+    ServerMessage::Metrics {
+        timestamp: format_iso8601_now(),
+        data: MetricsPayload {
+            fps: MetricsFps {
+                target: target_fps,
+                ceiling: ceiling_fps,
+                actual: round_1(actual_fps),
+                dropped: render_stats.consecutive_misses,
+            },
+            frame_time: MetricsFrameTime {
+                avg_ms: round_2(frame_time.avg_ms),
+                p95_ms: round_2(frame_time.p95_ms),
+                p99_ms: round_2(frame_time.p99_ms),
+                max_ms: round_2(frame_time.max_ms),
+            },
+            stages: MetricsStages {
+                input_sampling_ms: round_2(us_to_ms(latest_frame.input_us)),
+                producer_rendering_ms: round_2(us_to_ms(latest_frame.producer_us)),
+                composition_ms: round_2(us_to_ms(latest_frame.composition_us)),
+                effect_rendering_ms: round_2(us_to_ms(latest_frame.render_us)),
+                spatial_sampling_ms: round_2(us_to_ms(latest_frame.sample_us)),
+                device_output_ms: round_2(us_to_ms(latest_frame.push_us)),
+                preview_postprocess_ms: round_2(us_to_ms(latest_frame.postprocess_us)),
+                event_bus_ms: round_2(us_to_ms(latest_frame.publish_us)),
+                coordination_overhead_ms: round_2(us_to_ms(latest_frame.overhead_us)),
+            },
+            pacing: MetricsPacing {
+                jitter_avg_ms: round_2(performance_snapshot.pacing.jitter_avg_ms),
+                jitter_p95_ms: round_2(performance_snapshot.pacing.jitter_p95_ms),
+                jitter_max_ms: round_2(performance_snapshot.pacing.jitter_max_ms),
+                wake_delay_avg_ms: round_2(performance_snapshot.pacing.wake_delay_avg_ms),
+                wake_delay_p95_ms: round_2(performance_snapshot.pacing.wake_delay_p95_ms),
+                wake_delay_max_ms: round_2(performance_snapshot.pacing.wake_delay_max_ms),
+                frame_age_ms: round_2(frame_age_ms),
+                reused_inputs: performance_snapshot.pacing.reused_inputs,
+                reused_canvas: performance_snapshot.pacing.reused_canvas,
+                retained_effect: performance_snapshot.pacing.retained_effect,
+                retained_screen: performance_snapshot.pacing.retained_screen,
+                composition_bypassed: performance_snapshot.pacing.composition_bypassed,
+            },
+            timeline: MetricsTimeline {
+                frame_token: latest_frame.timeline.frame_token,
+                budget_ms: round_2(us_to_ms(latest_frame.timeline.budget_us)),
+                wake_late_ms: round_2(us_to_ms(latest_frame.wake_late_us)),
+                logical_layer_count: latest_frame.logical_layer_count,
+                render_group_count: latest_frame.render_group_count,
+                scene_active: latest_frame.scene_active,
+                scene_transition_active: latest_frame.scene_transition_active,
+                scene_snapshot_done_ms: round_2(us_to_ms(
+                    latest_frame.timeline.scene_snapshot_done_us,
+                )),
+                input_done_ms: round_2(us_to_ms(latest_frame.timeline.input_done_us)),
+                producer_done_ms: round_2(us_to_ms(latest_frame.timeline.producer_done_us)),
+                composition_done_ms: round_2(us_to_ms(latest_frame.timeline.composition_done_us)),
+                sampling_done_ms: round_2(us_to_ms(latest_frame.timeline.sample_done_us)),
+                output_done_ms: round_2(us_to_ms(latest_frame.timeline.output_done_us)),
+                publish_done_ms: round_2(us_to_ms(latest_frame.timeline.publish_done_us)),
+                frame_done_ms: round_2(us_to_ms(latest_frame.timeline.frame_done_us)),
+            },
+            render_surfaces: MetricsRenderSurfaces {
+                slot_count: latest_frame.render_surface_slot_count,
+                free_slots: latest_frame.render_surface_free_slots,
+                published_slots: latest_frame.render_surface_published_slots,
+                dequeued_slots: latest_frame.render_surface_dequeued_slots,
+                canvas_receivers: latest_frame.canvas_receiver_count,
+            },
+            preview: MetricsPreview {
+                canvas_receivers: preview_runtime.canvas_receivers,
+                screen_canvas_receivers: preview_runtime.screen_canvas_receivers,
+                canvas_frames_published: preview_runtime.canvas_frames_published,
+                screen_canvas_frames_published: preview_runtime.screen_canvas_frames_published,
+                latest_canvas_frame_number: preview_runtime.latest_canvas_frame_number,
+                latest_screen_canvas_frame_number: preview_runtime
+                    .latest_screen_canvas_frame_number,
+            },
+            copies: MetricsCopies {
+                full_frame_count: latest_frame.full_frame_copy_count,
+                full_frame_kb: round_2(bytes_to_kib(latest_frame.full_frame_copy_bytes)),
+            },
+            memory: MetricsMemory {
+                daemon_rss_mb: round_1(daemon_rss_mb),
+                servo_rss_mb: 0.0,
+                canvas_buffer_kb,
+            },
+            devices: MetricsDevices {
+                connected,
+                total_leds,
+                output_errors: latest_frame.output_errors,
+            },
+            websocket: MetricsWebsocket {
+                client_count,
+                bytes_sent_per_sec: round_1(bytes_sent_per_sec),
+                frame_payload_builds: WS_FRAME_PAYLOAD_BUILD_COUNT.load(Ordering::Relaxed),
+                frame_payload_cache_hits: WS_FRAME_PAYLOAD_CACHE_HIT_COUNT.load(Ordering::Relaxed),
+                canvas_payload_builds: WS_CANVAS_PAYLOAD_BUILD_COUNT.load(Ordering::Relaxed),
+                canvas_payload_cache_hits: WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT
+                    .load(Ordering::Relaxed),
+            },
+        },
+    }
+}
+
+fn round_1(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
+fn round_2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+fn paced_fps(avg_frame_secs: f64, target_fps: u32) -> f64 {
+    if avg_frame_secs <= 0.0 {
+        return f64::from(target_fps);
+    }
+
+    (1.0 / avg_frame_secs).clamp(0.0, f64::from(target_fps))
+}
+
+fn us_to_ms(value: u32) -> f64 {
+    f64::from(value) / 1000.0
+}
+
+fn bytes_to_kib(value: u32) -> f64 {
+    f64::from(value) / 1024.0
+}
+
+fn frame_time_summary(
+    summary: RenderFrameTimeSummary,
+    fallback_avg_ms: f64,
+) -> RenderFrameTimeSummary {
+    if summary.avg_ms > 0.0 {
+        summary
+    } else {
+        RenderFrameTimeSummary {
+            avg_ms: fallback_avg_ms,
+            p95_ms: fallback_avg_ms,
+            p99_ms: fallback_avg_ms,
+            max_ms: fallback_avg_ms,
+        }
+    }
+}
+
+fn process_rss_mb() -> Option<f64> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
+        let kb = line.split_whitespace().nth(1)?.parse::<f64>().ok()?;
+        Some(kb / 1024.0)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+fn format_iso8601_now() -> String {
+    let now = SystemTime::now();
+    let duration = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+
+    let total_secs = duration.as_secs();
+    let millis = duration.subsec_millis();
+    let (year, month, day, hour, minute, second) = epoch_to_utc(total_secs);
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
+}
+
+#[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
+fn epoch_to_utc(epoch_secs: u64) -> (u32, u32, u32, u32, u32, u32) {
+    let secs_per_day: u64 = 86400;
+    let days = epoch_secs / secs_per_day;
+    let day_secs = epoch_secs % secs_per_day;
+
+    let hour = (day_secs / 3600) as u32;
+    let minute = ((day_secs % 3600) / 60) as u32;
+    let second = (day_secs % 60) as u32;
+
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    (y as u32, m as u32, d as u32, hour, minute, second)
+}
+
+pub(super) fn publish_subscriptions(
+    subscriptions_tx: &watch::Sender<SubscriptionState>,
+    subscriptions: &SubscriptionState,
+) {
+    let _ = subscriptions_tx.send(subscriptions.clone());
+}

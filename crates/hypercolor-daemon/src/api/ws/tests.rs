@@ -1,0 +1,1033 @@
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
+
+use axum::body::Bytes;
+use axum::extract::ws::Utf8Bytes;
+use axum::response::IntoResponse;
+use tokio::sync::watch;
+
+use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
+use hypercolor_types::canvas::{Canvas, Rgba, linear_to_srgb_u8, srgb_u8_to_linear};
+use hypercolor_types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData, ZoneColors};
+
+use super::cache::{
+    FrameRelayMessage, WS_CANVAS_BINARY_CACHE, WS_CANVAS_HEADER, WS_CANVAS_PAYLOAD_BUILD_COUNT,
+    WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT, WS_FRAME_PAYLOAD_BUILD_COUNT, WS_FRAME_PAYLOAD_CACHE,
+    WS_FRAME_PAYLOAD_CACHE_HIT_COUNT, WS_SCREEN_CANVAS_HEADER, WS_SPECTRUM_PAYLOAD_BUILD_COUNT,
+    WS_SPECTRUM_PAYLOAD_CACHE, WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT, cached_frame_payload,
+    cached_spectrum_payload, encode_cached_canvas_preview_binary, encode_canvas_binary_with_header,
+    encode_canvas_preview_binary, encode_frame_binary, encode_spectrum_binary,
+};
+use super::command::{
+    command_response_from_http, dispatch_command, normalize_command_path, parse_command_method,
+};
+use super::protocol::{
+    ActiveFramesConfig, CanvasFormat, ChannelConfig, ChannelConfigPatch, ChannelSet, FrameFormat,
+    FrameZoneSelection, FramesConfig, ServerMessage, SubscriptionState, WsChannel,
+    event_message_parts, parse_channels, should_relay_event, to_snake_case,
+    unique_sorted_channel_names, ws_capabilities,
+};
+use super::relays::{
+    build_metrics_message, publish_subscriptions, relay_frames, relay_metrics, relay_spectrum,
+    sync_preview_receiver, try_enqueue_json,
+};
+use crate::api::AppState;
+use crate::api::security::{RequestAuthContext, SecurityState};
+use crate::performance::{FrameTimeline, LatestFrameMetrics};
+use crate::preview_runtime::{PreviewFrameReceiver, PreviewRuntime};
+
+static WS_CACHE_TEST_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
+
+fn secured_state() -> Arc<AppState> {
+    let mut state = AppState::new();
+    state.security_state =
+        SecurityState::with_keys(Some("hc_ak_control_test"), Some("hc_ak_r_read_test"));
+    Arc::new(state)
+}
+
+fn reset_ws_payload_caches() {
+    WS_FRAME_PAYLOAD_BUILD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+    WS_FRAME_PAYLOAD_CACHE_HIT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+    WS_CANVAS_PAYLOAD_BUILD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+    WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+    WS_SPECTRUM_PAYLOAD_BUILD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+    WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+    for shard in WS_FRAME_PAYLOAD_CACHE.iter() {
+        shard
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clear();
+    }
+    for shard in WS_CANVAS_BINARY_CACHE.iter() {
+        shard
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clear();
+    }
+    for shard in WS_SPECTRUM_PAYLOAD_CACHE.iter() {
+        shard
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clear();
+    }
+}
+
+fn sample_frame() -> FrameData {
+    FrameData {
+        frame_number: 42,
+        timestamp_ms: 1234,
+        zones: vec![
+            ZoneColors {
+                zone_id: "left".to_owned(),
+                colors: vec![[255, 0, 0], [128, 0, 0]],
+            },
+            ZoneColors {
+                zone_id: "right".to_owned(),
+                colors: vec![[0, 0, 255], [0, 0, 128]],
+            },
+        ],
+    }
+}
+
+fn selected_frame_zones<'a>(
+    zones: &'a [hypercolor_types::event::ZoneColors],
+    selected: &[String],
+) -> Vec<&'a hypercolor_types::event::ZoneColors> {
+    FrameZoneSelection::new(selected).select(zones)
+}
+
+fn filter_frame_zones(
+    zones: &[hypercolor_types::event::ZoneColors],
+    selected: &[String],
+) -> Vec<hypercolor_types::event::ZoneColors> {
+    selected_frame_zones(zones, selected)
+        .into_iter()
+        .cloned()
+        .collect()
+}
+
+#[tokio::test]
+async fn metrics_message_includes_latest_frame_timeline() {
+    let state = Arc::new(AppState::new());
+    let _preview_rx = state.preview_runtime.canvas_receiver();
+    let _screen_preview_rx = state.preview_runtime.screen_canvas_receiver();
+    let canvas_frame = CanvasFrame::from_canvas(&Canvas::new(2, 1), 88, 44);
+    let screen_frame = CanvasFrame::from_canvas(&Canvas::new(1, 1), 45, 21);
+    let _ = state.event_bus.canvas_sender().send(canvas_frame.clone());
+    let _ = state
+        .event_bus
+        .screen_canvas_sender()
+        .send(screen_frame.clone());
+    state
+        .preview_runtime
+        .record_canvas_publication(canvas_frame.frame_number, canvas_frame.timestamp_ms);
+    state
+        .preview_runtime
+        .record_screen_canvas_publication(screen_frame.frame_number, screen_frame.timestamp_ms);
+    {
+        let mut performance = state.performance.write().await;
+        performance.record_frame(LatestFrameMetrics {
+            timestamp_ms: 1234,
+            input_us: 200,
+            producer_us: 900,
+            composition_us: 300,
+            render_us: 1_200,
+            sample_us: 150,
+            push_us: 250,
+            postprocess_us: 0,
+            publish_us: 180,
+            overhead_us: 70,
+            total_us: 1_850,
+            wake_late_us: 220,
+            jitter_us: 440,
+            reused_inputs: false,
+            reused_canvas: false,
+            retained_effect: false,
+            retained_screen: false,
+            composition_bypassed: false,
+            logical_layer_count: 2,
+            render_group_count: 1,
+            scene_active: true,
+            scene_transition_active: true,
+            render_surface_slot_count: 6,
+            render_surface_free_slots: 1,
+            render_surface_published_slots: 4,
+            render_surface_dequeued_slots: 1,
+            canvas_receiver_count: 2,
+            full_frame_copy_count: 0,
+            full_frame_copy_bytes: 0,
+            output_errors: 0,
+            timeline: FrameTimeline {
+                frame_token: 77,
+                budget_us: 16_666,
+                scene_snapshot_done_us: 120,
+                input_done_us: 320,
+                producer_done_us: 1_040,
+                composition_done_us: 1_340,
+                sample_done_us: 1_490,
+                output_done_us: 1_740,
+                publish_done_us: 1_820,
+                frame_done_us: 1_850,
+            },
+        });
+    }
+
+    let ServerMessage::Metrics { data, .. } = build_metrics_message(&state, 0.0).await else {
+        panic!("expected metrics message");
+    };
+    let json = serde_json::to_value(&data).expect("metrics payload should serialize");
+
+    assert_eq!(json["timeline"]["frame_token"], 77);
+    assert_eq!(json["timeline"]["budget_ms"], 16.67);
+    assert_eq!(json["timeline"]["wake_late_ms"], 0.22);
+    assert_eq!(json["timeline"]["logical_layer_count"], 2);
+    assert_eq!(json["timeline"]["render_group_count"], 1);
+    assert_eq!(json["timeline"]["scene_active"], true);
+    assert_eq!(json["timeline"]["scene_transition_active"], true);
+    assert_eq!(json["timeline"]["scene_snapshot_done_ms"], 0.12);
+    assert_eq!(json["timeline"]["composition_done_ms"], 1.34);
+    assert_eq!(json["timeline"]["frame_done_ms"], 1.85);
+    assert_eq!(json["fps"]["ceiling"], 60);
+    assert_eq!(json["render_surfaces"]["slot_count"], 6);
+    assert_eq!(json["render_surfaces"]["published_slots"], 4);
+    assert_eq!(json["render_surfaces"]["canvas_receivers"], 2);
+    assert_eq!(json["preview"]["canvas_receivers"], 1);
+    assert_eq!(json["preview"]["screen_canvas_receivers"], 1);
+    assert_eq!(json["preview"]["canvas_frames_published"], 1);
+    assert_eq!(json["preview"]["screen_canvas_frames_published"], 1);
+    assert_eq!(json["preview"]["latest_canvas_frame_number"], 88);
+    assert_eq!(json["preview"]["latest_screen_canvas_frame_number"], 45);
+}
+
+#[tokio::test]
+async fn relay_metrics_wakes_when_subscription_changes() {
+    let state = Arc::new(AppState::new());
+    let initial_subscriptions = SubscriptionState::default();
+    let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
+    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(1);
+
+    let relay_handle = tokio::spawn(relay_metrics(Arc::clone(&state), json_tx, subscriptions_rx));
+
+    let mut subscriptions = initial_subscriptions;
+    subscriptions.channels.insert(WsChannel::Metrics);
+    subscriptions.config.metrics.interval_ms = 100;
+    publish_subscriptions(&subscriptions_tx, &subscriptions);
+
+    let message = tokio::time::timeout(std::time::Duration::from_millis(250), json_rx.recv())
+        .await
+        .expect("metrics relay should wake without idle polling");
+    assert!(message.is_some());
+
+    relay_handle.abort();
+}
+
+#[tokio::test]
+async fn relay_frames_wakes_when_subscription_changes() {
+    let initial_subscriptions = SubscriptionState::default();
+    let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
+    let (json_tx, _json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(1);
+    let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(1);
+    let state = Arc::new(AppState::new());
+    let _ = state.event_bus.frame_sender().send(sample_frame());
+
+    let relay_handle = tokio::spawn(relay_frames(
+        Arc::clone(&state),
+        json_tx,
+        binary_tx,
+        subscriptions_rx,
+    ));
+    assert_eq!(state.event_bus.frame_receiver_count(), 0);
+
+    let mut subscriptions = initial_subscriptions;
+    subscriptions.channels.insert(WsChannel::Frames);
+    publish_subscriptions(&subscriptions_tx, &subscriptions);
+
+    let payload = tokio::time::timeout(std::time::Duration::from_millis(250), binary_rx.recv())
+        .await
+        .expect("frame relay should wake on subscription changes")
+        .expect("frame relay should publish the latest cached frame");
+    assert_eq!(payload.first().copied(), Some(0x01));
+    assert_eq!(state.event_bus.frame_receiver_count(), 1);
+
+    subscriptions.channels.remove(WsChannel::Frames);
+    publish_subscriptions(&subscriptions_tx, &subscriptions);
+    tokio::time::timeout(std::time::Duration::from_millis(250), async {
+        loop {
+            if state.event_bus.frame_receiver_count() == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("frame receiver should be dropped after unsubscribe");
+
+    relay_handle.abort();
+}
+
+#[tokio::test]
+async fn relay_spectrum_subscribes_lazily() {
+    let initial_subscriptions = SubscriptionState::default();
+    let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
+    let (json_tx, _json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(1);
+    let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(1);
+    let state = Arc::new(AppState::new());
+    let _ = state
+        .event_bus
+        .spectrum_sender()
+        .send(SpectrumData::empty());
+
+    let relay_handle = tokio::spawn(relay_spectrum(
+        Arc::clone(&state),
+        json_tx,
+        binary_tx,
+        subscriptions_rx,
+    ));
+    assert_eq!(state.event_bus.spectrum_receiver_count(), 0);
+
+    let mut subscriptions = initial_subscriptions;
+    subscriptions.channels.insert(WsChannel::Spectrum);
+    publish_subscriptions(&subscriptions_tx, &subscriptions);
+
+    let payload = tokio::time::timeout(std::time::Duration::from_millis(250), binary_rx.recv())
+        .await
+        .expect("spectrum relay should wake on subscription changes")
+        .expect("spectrum relay should publish the latest cached spectrum");
+    assert_eq!(payload.first().copied(), Some(0x02));
+    assert_eq!(state.event_bus.spectrum_receiver_count(), 1);
+
+    subscriptions.channels.remove(WsChannel::Spectrum);
+    publish_subscriptions(&subscriptions_tx, &subscriptions);
+    tokio::time::timeout(std::time::Duration::from_millis(250), async {
+        loop {
+            if state.event_bus.spectrum_receiver_count() == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("spectrum receiver should be dropped after unsubscribe");
+
+    relay_handle.abort();
+}
+
+#[test]
+fn parse_channels_accepts_supported_channel() {
+    let channels = vec![
+        "events".to_owned(),
+        "frames".to_owned(),
+        "spectrum".to_owned(),
+        "canvas".to_owned(),
+        "screen_canvas".to_owned(),
+        "metrics".to_owned(),
+    ];
+    let parsed = parse_channels(&channels).expect("events should parse");
+    assert_eq!(
+        parsed,
+        vec![
+            WsChannel::Events,
+            WsChannel::Frames,
+            WsChannel::Spectrum,
+            WsChannel::Canvas,
+            WsChannel::ScreenCanvas,
+            WsChannel::Metrics
+        ]
+    );
+}
+
+#[test]
+fn parse_channels_rejects_unknown_channel() {
+    let channels = vec!["unknown".to_owned()];
+    let error = parse_channels(&channels).expect_err("unknown channel should fail");
+    assert_eq!(error.code, "invalid_request");
+}
+
+#[test]
+fn channel_config_apply_patch_supports_all_channels() {
+    let mut config = ChannelConfig::default();
+    let patch: ChannelConfigPatch = serde_json::from_value(serde_json::json!({
+        "frames": {"fps": 30, "format": "binary"},
+        "spectrum": {"fps": 20, "bins": 32},
+        "canvas": {"fps": 60, "format": "rgba"},
+        "screen_canvas": {"fps": 24, "format": "rgb"},
+        "metrics": {"interval_ms": 500}
+    }))
+    .expect("valid json patch");
+
+    config
+        .apply_patch(patch)
+        .expect("full channel config patch should be accepted");
+
+    let json = serde_json::to_value(config).expect("config serializes");
+    assert_eq!(json["canvas"]["fps"], 60);
+    assert_eq!(json["canvas"]["format"], "rgba");
+    assert_eq!(json["screen_canvas"]["fps"], 24);
+    assert_eq!(json["screen_canvas"]["format"], "rgb");
+    assert_eq!(json["metrics"]["interval_ms"], 500);
+}
+
+#[test]
+fn channel_config_defaults_are_stable() {
+    let config = ChannelConfig::default();
+    let json = serde_json::to_value(config).expect("config serializes");
+
+    assert_eq!(json["frames"]["fps"], 30);
+    assert_eq!(json["frames"]["format"], "binary");
+    assert_eq!(json["spectrum"]["bins"], 64);
+    assert_eq!(json["canvas"]["fps"], 15);
+    assert_eq!(json["screen_canvas"]["fps"], 15);
+    assert_eq!(json["metrics"]["interval_ms"], 1000);
+}
+
+#[test]
+fn unique_channel_names_are_sorted() {
+    let names =
+        unique_sorted_channel_names(&[WsChannel::Events, WsChannel::Events, WsChannel::Events]);
+    assert_eq!(names, vec!["events"]);
+}
+
+#[test]
+fn snake_case_conversion_handles_camel_case() {
+    assert_eq!(to_snake_case("DeviceDiscovered"), "device_discovered");
+    assert_eq!(to_snake_case("Paused"), "paused");
+}
+
+#[test]
+fn event_message_parts_unwraps_payload() {
+    let event = HypercolorEvent::DeviceDiscoveryStarted {
+        backends: vec!["wled".to_owned()],
+    };
+
+    let (event_name, event_data) = event_message_parts(&event);
+    assert_eq!(event_name, "device_discovery_started");
+    assert_eq!(event_data["backends"], serde_json::json!(["wled"]));
+    assert!(event_data.get("type").is_none());
+}
+
+#[test]
+fn event_message_parts_defaults_to_empty_object_for_unit_events() {
+    let (event_name, event_data) = event_message_parts(&HypercolorEvent::Resumed);
+    assert_eq!(event_name, "resumed");
+    assert_eq!(event_data, serde_json::json!({}));
+}
+
+#[test]
+fn frame_rendered_events_are_suppressed_when_metrics_are_subscribed() {
+    let channels = ChannelSet::from_channels(&[WsChannel::Events, WsChannel::Metrics]);
+    let event = HypercolorEvent::FrameRendered {
+        frame_number: 7,
+        timing: FrameTiming {
+            producer_us: 0,
+            composition_us: 0,
+            render_us: 0,
+            sample_us: 0,
+            push_us: 0,
+            total_us: 0,
+            budget_us: 16_666,
+        },
+    };
+
+    assert!(!should_relay_event(&event, &channels));
+}
+
+#[test]
+fn frame_rendered_events_pass_through_for_event_only_clients() {
+    let channels = ChannelSet::from_channels(&[WsChannel::Events]);
+    let event = HypercolorEvent::FrameRendered {
+        frame_number: 7,
+        timing: FrameTiming {
+            producer_us: 0,
+            composition_us: 0,
+            render_us: 0,
+            sample_us: 0,
+            push_us: 0,
+            total_us: 0,
+            budget_us: 16_666,
+        },
+    };
+
+    assert!(should_relay_event(&event, &channels));
+}
+
+#[test]
+fn ws_capabilities_include_commands() {
+    let capabilities = ws_capabilities();
+    assert!(capabilities.contains(&"events".to_owned()));
+    assert!(capabilities.contains(&"frames".to_owned()));
+    assert!(capabilities.contains(&"spectrum".to_owned()));
+    assert!(capabilities.contains(&"canvas".to_owned()));
+    assert!(capabilities.contains(&"screen_canvas".to_owned()));
+    assert!(capabilities.contains(&"metrics".to_owned()));
+    assert!(capabilities.contains(&"commands".to_owned()));
+}
+
+#[tokio::test]
+async fn try_enqueue_json_drops_when_queue_is_full() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(1);
+
+    assert!(try_enqueue_json(&tx, "first".to_owned(), "test"));
+    assert!(!try_enqueue_json(&tx, "second".to_owned(), "test"));
+
+    assert_eq!(rx.recv().await.as_deref(), Some("first"));
+    drop(tx);
+    assert!(rx.recv().await.is_none());
+}
+
+#[test]
+fn sync_preview_receiver_subscribes_only_while_requested() {
+    let runtime = PreviewRuntime::new(Arc::new(HypercolorBus::new()));
+    let mut receiver = None::<PreviewFrameReceiver>;
+
+    sync_preview_receiver(&mut receiver, true, || runtime.canvas_receiver());
+    assert!(receiver.is_some());
+    assert_eq!(runtime.canvas_receiver_count(), 1);
+
+    sync_preview_receiver(&mut receiver, true, || runtime.canvas_receiver());
+    assert_eq!(runtime.canvas_receiver_count(), 1);
+
+    sync_preview_receiver(&mut receiver, false, || runtime.canvas_receiver());
+    assert!(receiver.is_none());
+    assert_eq!(runtime.canvas_receiver_count(), 0);
+}
+
+#[test]
+fn sync_preview_receiver_drops_screen_subscription_cleanly() {
+    let runtime = PreviewRuntime::new(Arc::new(HypercolorBus::new()));
+    let mut receiver = None::<PreviewFrameReceiver>;
+
+    sync_preview_receiver(&mut receiver, true, || runtime.screen_canvas_receiver());
+    assert!(receiver.is_some());
+    assert_eq!(runtime.screen_canvas_receiver_count(), 1);
+
+    sync_preview_receiver(&mut receiver, false, || runtime.screen_canvas_receiver());
+    assert!(receiver.is_none());
+    assert_eq!(runtime.screen_canvas_receiver_count(), 0);
+}
+
+#[test]
+fn parse_command_method_rejects_invalid_values() {
+    let error = parse_command_method("BREW").expect_err("BREW should be rejected");
+    assert_eq!(error.code, "invalid_request");
+}
+
+#[test]
+fn normalize_command_path_adds_api_prefix() {
+    assert_eq!(
+        normalize_command_path("/status").expect("path should normalize"),
+        "/api/v1/status"
+    );
+    assert_eq!(
+        normalize_command_path("/api/v1/status").expect("path should stay stable"),
+        "/api/v1/status"
+    );
+}
+
+#[test]
+fn normalize_command_path_rejects_relative_paths() {
+    let error = normalize_command_path("status").expect_err("relative path must fail");
+    assert_eq!(error.code, "invalid_request");
+}
+
+#[tokio::test]
+async fn command_response_from_http_unwraps_data_envelope() {
+    let response = (
+        axum::http::StatusCode::OK,
+        axum::Json(serde_json::json!({
+            "data": {"ok": true}
+        })),
+    )
+        .into_response();
+    let message = command_response_from_http("cmd_test".to_owned(), response).await;
+    match message {
+        ServerMessage::Response {
+            id,
+            status,
+            data,
+            error,
+        } => {
+            assert_eq!(id, "cmd_test");
+            assert_eq!(status, 200);
+            assert_eq!(data, Some(serde_json::json!({"ok": true})));
+            assert!(error.is_none());
+        }
+        _ => panic!("expected response variant"),
+    }
+}
+
+#[tokio::test]
+async fn command_response_from_http_unwraps_error_envelope() {
+    let response = (
+        axum::http::StatusCode::NOT_FOUND,
+        axum::Json(serde_json::json!({
+            "error": {"code": "not_found", "message": "missing resource"}
+        })),
+    )
+        .into_response();
+    let message = command_response_from_http("cmd_missing".to_owned(), response).await;
+    match message {
+        ServerMessage::Response {
+            id,
+            status,
+            data,
+            error,
+        } => {
+            assert_eq!(id, "cmd_missing");
+            assert_eq!(status, 404);
+            assert!(data.is_none());
+            assert_eq!(
+                error,
+                Some(serde_json::json!({
+                    "code": "not_found",
+                    "message": "missing resource"
+                }))
+            );
+        }
+        _ => panic!("expected response variant"),
+    }
+}
+
+#[tokio::test]
+async fn dispatch_command_routes_to_status() {
+    let state = Arc::new(AppState::new());
+    let message = dispatch_command(
+        &state,
+        RequestAuthContext::unsecured(),
+        "cmd_status".to_owned(),
+        "GET".to_owned(),
+        "/status".to_owned(),
+        None,
+    )
+    .await;
+
+    match message {
+        ServerMessage::Response {
+            id,
+            status,
+            data,
+            error,
+        } => {
+            assert_eq!(id, "cmd_status");
+            assert_eq!(status, 200);
+            let payload = data.expect("status command should return payload");
+            assert!(payload.get("running").is_some());
+            assert!(error.is_none());
+        }
+        _ => panic!("expected command response"),
+    }
+}
+
+#[tokio::test]
+async fn dispatch_command_rejects_invalid_method() {
+    let state = Arc::new(AppState::new());
+    let message = dispatch_command(
+        &state,
+        RequestAuthContext::unsecured(),
+        "cmd_bad_method".to_owned(),
+        "BREW".to_owned(),
+        "/status".to_owned(),
+        None,
+    )
+    .await;
+
+    match message {
+        ServerMessage::Response {
+            id,
+            status,
+            data,
+            error,
+        } => {
+            assert_eq!(id, "cmd_bad_method");
+            assert_eq!(status, 400);
+            assert!(data.is_none());
+            assert_eq!(
+                error.and_then(|value| value.get("code").cloned()),
+                Some(serde_json::json!("invalid_request"))
+            );
+        }
+        _ => panic!("expected command response"),
+    }
+}
+
+#[tokio::test]
+async fn dispatch_command_preserves_secured_ws_auth_context() {
+    let state = secured_state();
+    let message = dispatch_command(
+        &state,
+        RequestAuthContext::read_only(),
+        "cmd_status".to_owned(),
+        "GET".to_owned(),
+        "/status".to_owned(),
+        None,
+    )
+    .await;
+
+    match message {
+        ServerMessage::Response {
+            id,
+            status,
+            data,
+            error,
+        } => {
+            assert_eq!(id, "cmd_status");
+            assert_eq!(status, 200);
+            assert!(data.is_some());
+            assert!(error.is_none());
+        }
+        _ => panic!("expected command response"),
+    }
+}
+
+#[tokio::test]
+async fn dispatch_command_requires_auth_context_when_security_is_enabled() {
+    let state = secured_state();
+    let message = dispatch_command(
+        &state,
+        RequestAuthContext::unsecured(),
+        "cmd_status".to_owned(),
+        "GET".to_owned(),
+        "/status".to_owned(),
+        None,
+    )
+    .await;
+
+    match message {
+        ServerMessage::Response {
+            status,
+            data,
+            error,
+            ..
+        } => {
+            assert_eq!(status, 401);
+            assert!(data.is_none());
+            assert_eq!(
+                error.and_then(|value| value.get("code").cloned()),
+                Some(serde_json::json!("unauthorized"))
+            );
+        }
+        _ => panic!("expected command response"),
+    }
+}
+
+#[test]
+fn frame_binary_encoder_writes_header_and_payload() {
+    let frame = FrameData {
+        frame_number: 42,
+        timestamp_ms: 1234,
+        zones: vec![ZoneColors {
+            zone_id: "zone_a".to_owned(),
+            colors: vec![[255, 0, 0], [0, 255, 0]],
+        }],
+    };
+
+    let encoded = encode_frame_binary(&frame);
+    assert_eq!(encoded[0], 0x01);
+    assert_eq!(
+        u32::from_le_bytes([encoded[1], encoded[2], encoded[3], encoded[4]]),
+        42
+    );
+    assert_eq!(
+        u32::from_le_bytes([encoded[5], encoded[6], encoded[7], encoded[8]]),
+        1234
+    );
+    assert_eq!(encoded[9], 1);
+}
+
+#[test]
+fn spectrum_binary_encoder_uses_requested_bin_count() {
+    let spectrum = SpectrumData {
+        timestamp_ms: 77,
+        level: 0.5,
+        bass: 0.4,
+        mid: 0.3,
+        treble: 0.2,
+        beat: true,
+        beat_confidence: 0.9,
+        bpm: None,
+        bins: vec![0.0; 64],
+    };
+
+    let encoded = encode_spectrum_binary(&spectrum, 16);
+    assert_eq!(encoded[0], 0x02);
+    assert_eq!(encoded[5], 16);
+    assert_eq!(encoded[22], 1);
+}
+
+#[test]
+fn filter_frame_zones_respects_named_subset() {
+    let zones = vec![
+        ZoneColors {
+            zone_id: "left".to_owned(),
+            colors: vec![[255, 0, 0]],
+        },
+        ZoneColors {
+            zone_id: "right".to_owned(),
+            colors: vec![[0, 0, 255]],
+        },
+    ];
+
+    let filtered = filter_frame_zones(&zones, &["right".to_owned()]);
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].zone_id, "right");
+
+    let all = filter_frame_zones(&zones, &["all".to_owned()]);
+    assert_eq!(all.len(), 2);
+}
+
+#[test]
+fn cached_frame_payload_reuses_binary_bytes_for_matching_requests() {
+    let _guard = WS_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    reset_ws_payload_caches();
+
+    let frame = sample_frame();
+    let config = ActiveFramesConfig::new(FramesConfig {
+        fps: 30,
+        format: FrameFormat::Binary,
+        zones: vec!["right".to_owned()],
+    });
+
+    let first = cached_frame_payload(&frame, &config);
+    let second = cached_frame_payload(&frame, &config);
+
+    match (first, second) {
+        (FrameRelayMessage::Binary(first), FrameRelayMessage::Binary(second)) => {
+            assert_eq!(first, second);
+            assert_eq!(first.as_ptr(), second.as_ptr());
+        }
+        _ => panic!("expected binary relay payloads"),
+    }
+
+    assert_eq!(
+        WS_FRAME_PAYLOAD_BUILD_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        WS_FRAME_PAYLOAD_CACHE_HIT_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+}
+
+#[test]
+fn cached_frame_payload_keys_selection_and_format_separately() {
+    let _guard = WS_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    reset_ws_payload_caches();
+
+    let frame = sample_frame();
+    let left_binary = cached_frame_payload(
+        &frame,
+        &ActiveFramesConfig::new(FramesConfig {
+            fps: 30,
+            format: FrameFormat::Binary,
+            zones: vec!["left".to_owned()],
+        }),
+    );
+    let right_binary = cached_frame_payload(
+        &frame,
+        &ActiveFramesConfig::new(FramesConfig {
+            fps: 30,
+            format: FrameFormat::Binary,
+            zones: vec!["right".to_owned()],
+        }),
+    );
+    let left_json = cached_frame_payload(
+        &frame,
+        &ActiveFramesConfig::new(FramesConfig {
+            fps: 30,
+            format: FrameFormat::Json,
+            zones: vec!["left".to_owned()],
+        }),
+    );
+
+    match (left_binary, right_binary, left_json) {
+        (
+            FrameRelayMessage::Binary(left_binary),
+            FrameRelayMessage::Binary(right_binary),
+            FrameRelayMessage::Json(left_json),
+        ) => {
+            assert_ne!(left_binary, right_binary);
+            assert!(left_json.contains("\"zone_id\":\"left\""));
+            assert!(!left_json.contains("\"zone_id\":\"right\""));
+        }
+        _ => panic!("unexpected relay payload variants"),
+    }
+
+    assert_eq!(
+        WS_FRAME_PAYLOAD_BUILD_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+        3
+    );
+    assert_eq!(
+        WS_FRAME_PAYLOAD_CACHE_HIT_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+}
+
+#[test]
+fn cached_spectrum_payload_reuses_bytes_for_matching_requests() {
+    let _guard = WS_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    reset_ws_payload_caches();
+
+    let spectrum = SpectrumData {
+        timestamp_ms: 77,
+        level: 0.5,
+        bass: 0.4,
+        mid: 0.3,
+        treble: 0.2,
+        beat: true,
+        beat_confidence: 0.9,
+        bpm: None,
+        bins: vec![0.0; 64],
+    };
+
+    let first = cached_spectrum_payload(&spectrum, 16);
+    let second = cached_spectrum_payload(&spectrum, 16);
+
+    assert_eq!(first, second);
+    assert_eq!(first.as_ptr(), second.as_ptr());
+    assert_eq!(
+        WS_SPECTRUM_PAYLOAD_BUILD_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+}
+
+#[test]
+fn cached_spectrum_payload_keys_bin_count_separately() {
+    let _guard = WS_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    reset_ws_payload_caches();
+
+    let spectrum = SpectrumData {
+        timestamp_ms: 77,
+        level: 0.5,
+        bass: 0.4,
+        mid: 0.3,
+        treble: 0.2,
+        beat: true,
+        beat_confidence: 0.9,
+        bpm: None,
+        bins: vec![0.0; 64],
+    };
+
+    let small = cached_spectrum_payload(&spectrum, 16);
+    let large = cached_spectrum_payload(&spectrum, 32);
+
+    assert_ne!(small, large);
+    assert_eq!(
+        WS_SPECTRUM_PAYLOAD_BUILD_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+    assert_eq!(
+        WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+}
+
+#[test]
+fn canvas_binary_encoder_writes_spec_header_and_rgb_payload() {
+    let mut canvas = Canvas::new(2, 1);
+    canvas.set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
+    canvas.set_pixel(1, 0, Rgba::new(40, 50, 60, 200));
+    let frame = CanvasFrame::from_canvas(&canvas, 7, 99);
+
+    let encoded = encode_canvas_binary_with_header(&frame, CanvasFormat::Rgb, WS_CANVAS_HEADER);
+    assert_eq!(encoded[0], WS_CANVAS_HEADER);
+    assert_eq!(
+        u32::from_le_bytes([encoded[1], encoded[2], encoded[3], encoded[4]]),
+        7
+    );
+    assert_eq!(
+        u32::from_le_bytes([encoded[5], encoded[6], encoded[7], encoded[8]]),
+        99
+    );
+    assert_eq!(u16::from_le_bytes([encoded[9], encoded[10]]), 2);
+    assert_eq!(u16::from_le_bytes([encoded[11], encoded[12]]), 1);
+    assert_eq!(encoded[13], 0);
+    assert_eq!(&encoded[14..20], &[10, 20, 30, 40, 50, 60]);
+}
+
+#[test]
+fn canvas_binary_encoder_writes_rgba_payload_without_repacking() {
+    let mut canvas = Canvas::new(2, 1);
+    canvas.set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
+    canvas.set_pixel(1, 0, Rgba::new(40, 50, 60, 200));
+    let frame = CanvasFrame::from_canvas(&canvas, 7, 99);
+
+    let encoded = encode_canvas_binary_with_header(&frame, CanvasFormat::Rgba, WS_CANVAS_HEADER);
+    assert_eq!(encoded[13], 1);
+    assert_eq!(&encoded[14..22], &[10, 20, 30, 255, 40, 50, 60, 200]);
+}
+
+#[test]
+fn canvas_preview_binary_applies_brightness_without_mutating_source() {
+    let mut canvas = Canvas::new(1, 1);
+    canvas.set_pixel(0, 0, Rgba::new(255, 128, 0, 200));
+    let frame = CanvasFrame::from_canvas(&canvas, 7, 99);
+
+    let encoded = encode_canvas_preview_binary(&frame, CanvasFormat::Rgba, 0.5);
+    let expected = [
+        linear_to_srgb_u8(srgb_u8_to_linear(255) * 0.5),
+        linear_to_srgb_u8(srgb_u8_to_linear(128) * 0.5),
+        linear_to_srgb_u8(srgb_u8_to_linear(0) * 0.5),
+        200,
+    ];
+
+    assert_eq!(&encoded[14..18], &expected);
+    assert_eq!(frame.rgba_bytes(), &[255, 128, 0, 200]);
+}
+
+#[test]
+fn canvas_preview_binary_zero_brightness_preserves_alpha() {
+    let mut canvas = Canvas::new(1, 1);
+    canvas.set_pixel(0, 0, Rgba::new(90, 80, 70, 123));
+    let frame = CanvasFrame::from_canvas(&canvas, 5, 44);
+
+    let encoded = encode_canvas_preview_binary(&frame, CanvasFormat::Rgba, 0.0);
+
+    assert_eq!(&encoded[14..18], &[0, 0, 0, 123]);
+}
+
+#[test]
+fn cached_canvas_preview_binary_reuses_bytes_for_matching_requests() {
+    let mut canvas = Canvas::new(1, 1);
+    canvas.set_pixel(0, 0, Rgba::new(90, 80, 70, 123));
+    let frame = CanvasFrame::from_canvas(&canvas, 7001, 9901);
+
+    let first = encode_cached_canvas_preview_binary(&frame, CanvasFormat::Rgba, 0.5);
+    let second = encode_cached_canvas_preview_binary(&frame, CanvasFormat::Rgba, 0.5);
+
+    assert_eq!(first, second);
+    assert_eq!(first.as_ptr(), second.as_ptr());
+}
+
+#[test]
+fn cached_canvas_preview_binary_keys_brightness_separately() {
+    let mut canvas = Canvas::new(1, 1);
+    canvas.set_pixel(0, 0, Rgba::new(255, 128, 0, 200));
+    let frame = CanvasFrame::from_canvas(&canvas, 7002, 9902);
+
+    let full = encode_cached_canvas_preview_binary(&frame, CanvasFormat::Rgba, 1.0);
+    let dimmed = encode_cached_canvas_preview_binary(&frame, CanvasFormat::Rgba, 0.5);
+
+    assert_ne!(full, dimmed);
+}
+
+#[test]
+fn screen_canvas_binary_encoder_uses_distinct_header() {
+    let mut canvas = Canvas::new(1, 1);
+    canvas.set_pixel(0, 0, Rgba::new(90, 80, 70, 255));
+    let frame = CanvasFrame::from_canvas(&canvas, 5, 44);
+
+    let encoded =
+        encode_canvas_binary_with_header(&frame, CanvasFormat::Rgb, WS_SCREEN_CANVAS_HEADER);
+    assert_eq!(encoded[0], WS_SCREEN_CANVAS_HEADER);
+    assert_eq!(&encoded[14..17], &[90, 80, 70]);
+}
