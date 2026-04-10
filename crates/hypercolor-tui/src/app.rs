@@ -411,6 +411,14 @@ impl App {
             }
 
             Action::ApplyEffect(effect_id) => {
+                // Crossfade sweep over the full content area as the effect changes
+                self.motion.trigger(
+                    crate::motion::MotionKey::EffectTransition,
+                    crate::motion::catalog::effect_transition(
+                        self.last_frame_area,
+                        self.motion.sensitivity(),
+                    ),
+                );
                 self.spawn_actions({
                     let client = self.client.clone();
                     let id = effect_id.clone();
@@ -426,6 +434,13 @@ impl App {
                 });
             }
             Action::ApplyEffectPreset(effect_id, controls) => {
+                self.motion.trigger(
+                    crate::motion::MotionKey::EffectTransition,
+                    crate::motion::catalog::effect_transition(
+                        self.last_frame_area,
+                        self.motion.sensitivity(),
+                    ),
+                );
                 self.spawn_actions({
                     let client = self.client.clone();
                     let id = effect_id.clone();
