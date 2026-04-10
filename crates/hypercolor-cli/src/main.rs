@@ -6,6 +6,7 @@
 
 mod client;
 mod commands;
+pub mod config;
 mod output;
 
 use anyhow::Result;
@@ -34,6 +35,10 @@ pub struct Cli {
     /// API key used for authenticated daemon requests.
     #[arg(long, global = true, env = "HYPERCOLOR_API_KEY")]
     api_key: Option<String>,
+
+    /// Connection profile name from ~/.config/hypercolor/cli.toml.
+    #[arg(long, global = true, env = "HYPERCOLOR_PROFILE")]
+    profile: Option<String>,
 
     /// Color theme name (default: silkcircuit-neon).
     #[arg(long, global = true, env = "HYPERCOLOR_THEME")]
@@ -95,6 +100,14 @@ async fn main() -> Result<()> {
     // Initialize tracing based on verbosity
     init_tracing(cli.verbose);
 
+    // Resolve connection profile (flags > env > profile > defaults)
+    let conn = config::resolve_connection(
+        &cli.host,
+        cli.port,
+        cli.api_key.as_deref(),
+        cli.profile.as_deref(),
+    )?;
+
     // Build shared context
     let ctx = OutputContext::new(
         cli.format,
@@ -103,7 +116,7 @@ async fn main() -> Result<()> {
         cli.no_color,
         cli.theme.as_deref(),
     );
-    let client = DaemonClient::new(&cli.host, cli.port, cli.api_key.as_deref());
+    let client = DaemonClient::new(&conn.host, conn.port, conn.api_key.as_deref());
 
     // Dispatch to subcommand handlers
     let result = match &cli.command {

@@ -29,6 +29,7 @@ dirs = { workspace = true }
 opaline = { workspace = true }
 owo-colors = { workspace = true }
 unicode-width = { workspace = true }
+toml = { workspace = true }
 
 [dev-dependencies]
 hypercolor-core = { path = "../hypercolor-core" }
