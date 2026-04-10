@@ -854,6 +854,56 @@ fn append_sample_into_appends_zone_samples() {
     assert_eq!(zones[2].colors, vec![[40, 50, 60]; 8]);
 }
 
+#[test]
+fn sample_append_into_at_reuses_existing_zone_buffers() {
+    let canvas = solid_canvas(32, 20, Rgba::new(10, 20, 30, 255));
+    let layout = test_layout(
+        vec![
+            full_canvas_zone(
+                "strip1",
+                LedTopology::Strip {
+                    count: 5,
+                    direction: StripDirection::LeftToRight,
+                },
+            ),
+            full_canvas_zone(
+                "strip2",
+                LedTopology::Strip {
+                    count: 8,
+                    direction: StripDirection::LeftToRight,
+                },
+            ),
+        ],
+        32,
+        20,
+    );
+    let engine = SpatialEngine::new(layout);
+    let mut zones = vec![
+        ZoneColors {
+            zone_id: "existing".into(),
+            colors: vec![[1, 2, 3]],
+        },
+        ZoneColors {
+            zone_id: "strip1".into(),
+            colors: vec![[0, 0, 0]; 5],
+        },
+        ZoneColors {
+            zone_id: "strip2".into(),
+            colors: vec![[0, 0, 0]; 8],
+        },
+    ];
+    let strip1_ptr = zones[1].colors.as_ptr();
+    let strip2_ptr = zones[2].colors.as_ptr();
+
+    let next_index = engine.sample_append_into_at(&canvas, &mut zones, 1);
+
+    assert_eq!(next_index, 3);
+    assert_eq!(zones[1].colors, vec![[10, 20, 30]; 5]);
+    assert_eq!(zones[2].colors, vec![[10, 20, 30]; 8]);
+    assert_eq!(zones[1].colors.as_ptr(), strip1_ptr);
+    assert_eq!(zones[2].colors.as_ptr(), strip2_ptr);
+}
+
 // ── Empty Layout ────────────────────────────────────────────────────────────
 
 #[test]

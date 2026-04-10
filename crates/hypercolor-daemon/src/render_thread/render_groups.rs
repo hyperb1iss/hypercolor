@@ -105,13 +105,8 @@ impl RenderGroupRuntime {
         }
 
         let sample_start = Instant::now();
-        let mut zones = Vec::with_capacity(
-            groups
-                .iter()
-                .filter(|group| group.enabled && group.effect_id.is_some())
-                .map(|group| group.layout.zones.len())
-                .sum(),
-        );
+        let mut zones = self.take_zone_scratch(groups_revision);
+        let mut next_index = 0;
         for group in groups {
             if !group.enabled || group.effect_id.is_none() || group.layout.zones.is_empty() {
                 continue;
@@ -123,8 +118,9 @@ impl RenderGroupRuntime {
             let Some(spatial_engine) = self.spatial_engines.get(&group.id) else {
                 continue;
             };
-            spatial_engine.append_sample_into(target, &mut zones);
+            next_index = spatial_engine.sample_append_into_at(target, &mut zones, next_index);
         }
+        zones.truncate(next_index);
         let sample_us = micros_u32(sample_start.elapsed());
         let logical_layer_count = u32::try_from(
             groups
@@ -151,6 +147,16 @@ impl RenderGroupRuntime {
             sample_us,
             logical_layer_count,
         })
+    }
+
+    fn take_zone_scratch(&mut self, groups_revision: u64) -> Vec<ZoneColors> {
+        if let Some(retained) = self.retained_frame.as_mut()
+            && retained.groups_revision == groups_revision
+        {
+            return std::mem::take(&mut retained.zones);
+        }
+
+        Vec::new()
     }
 
     fn reconcile(

@@ -78,10 +78,30 @@ impl SpatialEngine {
 
     /// Sample the canvas into an existing output buffer, reusing allocations.
     pub fn sample_into(&self, canvas: &Canvas, zones: &mut Vec<ZoneColors>) {
-        zones.truncate(self.prepared_zones.len());
-        zones.reserve(self.prepared_zones.len().saturating_sub(zones.len()));
+        let next_index = self.sample_append_into_at(canvas, zones, 0);
+        zones.truncate(next_index);
+    }
 
-        for (index, prepared_zone) in self.prepared_zones.iter().enumerate() {
+    /// Append sampled zones to an existing output buffer without allocating a temporary vector.
+    pub fn append_sample_into(&self, canvas: &Canvas, zones: &mut Vec<ZoneColors>) {
+        let start_index = zones.len();
+        let _ = self.sample_append_into_at(canvas, zones, start_index);
+    }
+
+    /// Sample the canvas into `zones` starting at `start_index`, reusing existing entries when possible.
+    ///
+    /// Returns the exclusive end index of the sampled range.
+    pub fn sample_append_into_at(
+        &self,
+        canvas: &Canvas,
+        zones: &mut Vec<ZoneColors>,
+        start_index: usize,
+    ) -> usize {
+        let next_index = start_index.saturating_add(self.prepared_zones.len());
+        zones.reserve(next_index.saturating_sub(zones.len()));
+
+        for (offset, prepared_zone) in self.prepared_zones.iter().enumerate() {
+            let index = start_index + offset;
             if index == zones.len() {
                 let mut colors = Vec::new();
                 sampler::sample_prepared_zone_into(canvas, prepared_zone, &mut colors);
@@ -98,20 +118,8 @@ impl SpatialEngine {
             }
             sampler::sample_prepared_zone_into(canvas, prepared_zone, &mut zone.colors);
         }
-    }
 
-    /// Append sampled zones to an existing output buffer without allocating a temporary vector.
-    pub fn append_sample_into(&self, canvas: &Canvas, zones: &mut Vec<ZoneColors>) {
-        zones.reserve(self.prepared_zones.len());
-
-        for prepared_zone in self.prepared_zones.iter() {
-            let mut colors = Vec::new();
-            sampler::sample_prepared_zone_into(canvas, prepared_zone, &mut colors);
-            zones.push(ZoneColors {
-                zone_id: prepared_zone.zone_id.clone(),
-                colors,
-            });
-        }
+        next_index
     }
 
     /// Replace the active layout and recompute all LED positions.
