@@ -5,7 +5,7 @@ export default effect(
     'Frequency Cascade',
     shader,
     {
-        scene: combo('Scene', ['Cascade', 'Prism Skyline', 'Pulse Grid', 'Spectrum Tunnel'], {
+        scene: combo('Scene', ['Cascade', 'Mirror', 'Horizon', 'Tunnel'], {
             default: 'Cascade',
             group: 'Scene',
         }),
@@ -14,49 +14,49 @@ export default effect(
             group: 'Color',
         }),
         speed: num('Speed', [1, 10], 5, { group: 'Audio' }),
-        intensity: num('Intensity', [0, 100], 75, { group: 'Audio' }),
-        smoothing: num('Smoothing', [0, 100], 50, { group: 'Audio' }),
-        barWidth: num('Bar Width', [0, 100], 58, { group: 'Geometry' }),
-        glow: num('Glow', [0, 100], 28, { group: 'Geometry' }),
+        intensity: num('Intensity', [0, 100], 80, { group: 'Audio' }),
+        smoothing: num('Smoothing', [0, 100], 60, { group: 'Audio' }),
+        barWidth: num('Bar Width', [0, 100], 55, { group: 'Geometry' }),
+        glow: num('Glow', [0, 100], 45, { group: 'Geometry' }),
     },
     {
         audio: true,
         description:
-            'Feed it sound and watch the spectrum erupt — frequency bands cascade in surging peaks of light across a pulsing audio field',
+            'Feed it sound and watch the spectrum breathe — frequency bands rise in poised columns of light across a stable, luminous field',
         presets: [
             {
                 controls: {
-                    barWidth: 75,
-                    glow: 65,
-                    intensity: 95,
+                    barWidth: 70,
+                    glow: 60,
+                    intensity: 92,
                     palette: 'Fire',
-                    scene: 'Prism Skyline',
-                    smoothing: 30,
+                    scene: 'Horizon',
+                    smoothing: 45,
                     speed: 7,
                 },
                 description:
-                    'Arena lights ignite on the chorus drop — towering spectral columns rise like crowd hands reaching for the hook',
+                    'Arena lights ignite on the chorus drop — towering spectral columns rise from a blazing horizon like crowd hands reaching for the hook',
                 name: 'Stadium Anthem',
             },
             {
                 controls: {
-                    barWidth: 90,
-                    glow: 85,
-                    intensity: 100,
+                    barWidth: 85,
+                    glow: 75,
+                    intensity: 95,
                     palette: 'Cyberpunk',
-                    scene: 'Spectrum Tunnel',
-                    smoothing: 70,
+                    scene: 'Tunnel',
+                    smoothing: 60,
                     speed: 4,
                 },
                 description:
-                    'Dubstep in a sweat-soaked basement — fat bars throbbing through a tunnel of pure low-end pressure',
+                    'Dubstep in a sweat-soaked basement — fat bars throb through a tunnel of pure low-end pressure',
                 name: 'Basement Frequencies',
             },
             {
                 controls: {
-                    barWidth: 35,
+                    barWidth: 30,
                     glow: 40,
-                    intensity: 60,
+                    intensity: 58,
                     palette: 'Ice',
                     scene: 'Cascade',
                     smoothing: 80,
@@ -70,24 +70,24 @@ export default effect(
                 controls: {
                     barWidth: 50,
                     glow: 55,
-                    intensity: 88,
+                    intensity: 85,
                     palette: 'Sunset',
-                    scene: 'Pulse Grid',
-                    smoothing: 20,
-                    speed: 8,
+                    scene: 'Horizon',
+                    smoothing: 35,
+                    speed: 7,
                 },
                 description:
-                    'Mission control monitors during a coronal mass ejection — pulsing data grid screams in solar orange and amber',
+                    'Mission control monitors during a coronal mass ejection — bars surge from a burning horizon in solar orange and amber',
                 name: 'Solar Flare Grid',
             },
             {
                 controls: {
-                    barWidth: 58,
-                    glow: 45,
+                    barWidth: 55,
+                    glow: 50,
                     intensity: 78,
                     palette: 'SilkCircuit',
                     scene: 'Cascade',
-                    smoothing: 60,
+                    smoothing: 65,
                     speed: 5,
                 },
                 description:
@@ -96,12 +96,12 @@ export default effect(
             },
             {
                 controls: {
-                    barWidth: 15,
-                    glow: 90,
-                    intensity: 70,
+                    barWidth: 25,
+                    glow: 85,
+                    intensity: 65,
                     palette: 'Aurora',
-                    scene: 'Spectrum Tunnel',
-                    smoothing: 95,
+                    scene: 'Tunnel',
+                    smoothing: 88,
                     speed: 2,
                 },
                 description:
@@ -110,30 +110,30 @@ export default effect(
             },
             {
                 controls: {
-                    barWidth: 100,
-                    glow: 20,
+                    barWidth: 95,
+                    glow: 35,
                     intensity: 100,
                     palette: 'Cyberpunk',
-                    scene: 'Pulse Grid',
-                    smoothing: 5,
+                    scene: 'Mirror',
+                    smoothing: 25,
                     speed: 10,
                 },
                 description:
-                    'A Tokyo arcade cabinet overloads on drum-and-bass — razor-wide columns slam the grid in magenta and cyan at 174 BPM',
+                    'A Tokyo arcade cabinet overloads on drum-and-bass — razor-wide columns slam the mirror line in magenta and cyan at 174 BPM',
                 name: 'Akihabara Overload',
             },
             {
                 controls: {
                     barWidth: 42,
-                    glow: 72,
+                    glow: 70,
                     intensity: 55,
                     palette: 'Ice',
-                    scene: 'Prism Skyline',
-                    smoothing: 75,
+                    scene: 'Horizon',
+                    smoothing: 80,
                     speed: 3,
                 },
                 description:
-                    'A glass city skyline refracts ambient piano into pale blue towers — each note lifts a column of cold crystal light',
+                    'A glass city skyline refracts ambient piano into pale blue towers — each note lifts a column of cold crystal light from still water',
                 name: 'Glass City Lullaby',
             },
         ],

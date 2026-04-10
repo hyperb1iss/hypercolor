@@ -6,32 +6,57 @@ out vec4 fragColor;
 uniform float iTime;
 uniform vec2 iResolution;
 
-// Audio
-uniform float iAudioLevel;
-uniform float iAudioBass;
-uniform float iAudioMid;
-uniform float iAudioTreble;
-uniform float iAudioBeatPulse;
-uniform float iAudioOnsetPulse;
-uniform float iAudioSpectralFlux;
-uniform float iAudioHarmonicHue;
-uniform float iAudioSwell;
-uniform vec3 iAudioFluxBands;
+// Audio — only the stable, smoothed channels drive temporal motion
+uniform float iAudioLevel;        // smoothed overall level
+uniform float iAudioBass;         // raw bass band
+uniform float iAudioMid;          // raw mid band
+uniform float iAudioTreble;       // raw treble band
+uniform float iAudioBeatPulse;    // decaying beat impulse
+uniform float iAudioSwell;        // positive swell envelope
+uniform float iAudioBrightness;   // spectral centroid 0..1
+uniform float iAudioHarmonicHue;  // harmonic color 0..360
 
 // Controls
 uniform float iSpeed;
 uniform float iIntensity;
 uniform float iSmoothing;
 uniform float iBarWidth;
-uniform int iPalette;
 uniform float iGlow;
+uniform int iPalette;
 uniform int iScene;
 
-float hash21(vec2 p) {
+// ── Smooth value noise ──────────────────────────────────────────────
+// No floor(time * N) patterns anywhere. All motion is continuous.
+
+float hash12(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.x + p3.y) * p3.z);
 }
+
+float valueNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash12(i);
+    float b = hash12(i + vec2(1.0, 0.0));
+    float c = hash12(i + vec2(0.0, 1.0));
+    float d = hash12(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float fbm(vec2 p) {
+    float v = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 4; i++) {
+        v += valueNoise(p) * a;
+        p *= 2.03;
+        a *= 0.5;
+    }
+    return v;
+}
+
+// ── iq cosine palettes ──────────────────────────────────────────────
 
 vec3 iqPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {
     return a + b * cos(6.28318 * (c * t + d));
@@ -44,161 +69,243 @@ vec3 paletteColor(float t, int id) {
     if (id == 3) return iqPalette(t, vec3(0.50, 0.22, 0.02), vec3(0.50, 0.40, 0.20), vec3(1.00, 0.72, 0.38), vec3(0.02, 0.16, 0.24));
     if (id == 4) return iqPalette(t, vec3(0.40, 0.16, 0.28), vec3(0.40, 0.26, 0.28), vec3(0.82, 0.68, 0.60), vec3(0.06, 0.24, 0.44));
     if (id == 5) return iqPalette(t, vec3(0.52, 0.60, 0.78), vec3(0.22, 0.30, 0.22), vec3(0.62, 0.82, 1.00), vec3(0.00, 0.10, 0.32));
-    return iqPalette(t, vec3(0.50, 0.28, 0.54), vec3(0.48, 0.45, 0.45), vec3(1.00, 0.85, 0.70), vec3(0.88, 0.18, 0.52));
+    return iqPalette(t, vec3(0.50), vec3(0.50), vec3(1.00), vec3(0.00));
 }
 
-float audioPresence() {
-    float fluxMean = dot(iAudioFluxBands, vec3(0.3333));
-    float signal =
-        iAudioLevel * 1.15 +
-        iAudioBeatPulse * 0.95 +
-        iAudioOnsetPulse * 0.65 +
-        iAudioSpectralFlux * 0.70 +
-        fluxMean * 0.55;
-    return smoothstep(0.035, 0.16, signal);
+// ── Spectrum shaping ────────────────────────────────────────────────
+// Treats bass/mid/treble as *spatial* shape, not per-bar energy.
+// Temporal stability comes from iAudioLevel + iAudioSwell.
+
+float spectralEnvelope(float freq) {
+    float bassLobe  = exp(-pow((freq - 0.08) * 2.55, 2.0));
+    float lowLobe   = exp(-pow((freq - 0.28) * 2.85, 2.0));
+    float midLobe   = exp(-pow((freq - 0.52) * 2.95, 2.0));
+    float highLobe  = exp(-pow((freq - 0.76) * 2.85, 2.0));
+    float airLobe   = exp(-pow((freq - 0.94) * 3.20, 2.0));
+
+    float lowMix  = mix(iAudioBass, iAudioMid, 0.40);
+    float highMix = mix(iAudioMid, iAudioTreble, 0.55);
+
+    return
+        iAudioBass   * bassLobe  * 1.05 +
+        lowMix       * lowLobe   * 0.92 +
+        iAudioMid    * midLobe   * 1.00 +
+        highMix      * highLobe  * 0.95 +
+        iAudioTreble * airLobe   * 0.82;
 }
 
-float audioEnergy(float freq, float barId, float time) {
-    float bassWeight = 1.0 - smoothstep(0.05, 0.92, freq);
-    float trebleWeight = smoothstep(0.25, 0.98, freq);
-    float midWeight = exp(-pow((freq - 0.50) * 2.8, 2.0));
+float barEnergy(float freq, float barId, float time, float smoothAmt) {
+    float spectrum = spectralEnvelope(freq);
 
-    float lowMid = mix(iAudioBass, iAudioMid, smoothstep(0.10, 0.55, freq));
-    float midHigh = mix(iAudioMid, iAudioTreble, smoothstep(0.40, 0.92, freq));
-    float stitched = mix(lowMid, midHigh, smoothstep(0.35, 0.70, freq));
+    // Neighbor-blur in the frequency domain — sample envelope at neighbors
+    // and blend in according to smoothing amount. Cheap, smoothstep-clean.
+    float freqStep = 1.0 / 84.0;
+    float neighborLeft  = spectralEnvelope(clamp(freq - freqStep, 0.0, 1.0));
+    float neighborRight = spectralEnvelope(clamp(freq + freqStep, 0.0, 1.0));
+    float smoothed = (spectrum * 2.0 + neighborLeft + neighborRight) * 0.25;
+    spectrum = mix(spectrum, smoothed, smoothAmt);
 
-    float flux = mix(iAudioFluxBands.x, iAudioFluxBands.y, smoothstep(0.05, 0.55, freq));
-    flux = mix(flux, iAudioFluxBands.z, smoothstep(0.45, 0.98, freq));
+    // Global breath from already-smoothed envelopes
+    float breath = iAudioLevel * 0.55 + iAudioSwell * 0.45;
 
-    float sparkleSeed = hash21(vec2(barId * 0.123, floor(time * 12.0)));
-    float sparkle = iAudioSpectralFlux * (0.20 + 0.80 * sparkleSeed);
+    // Organic per-bar variation — continuous fBm, no time-stepping
+    float organicTime = time * mix(0.55, 0.22, smoothAmt);
+    float organic = fbm(vec2(freq * 3.2 + barId * 0.035, organicTime)) - 0.5;
 
-    float energy =
-        stitched * 0.82 +
-        iAudioBass * bassWeight * 0.30 +
-        iAudioTreble * trebleWeight * 0.32 +
-        iAudioMid * midWeight * 0.42 +
-        flux * 0.55 +
-        sparkle +
-        iAudioSwell * 0.18;
+    float energy = spectrum + breath * 0.55 + organic * (0.32 + breath * 0.45);
 
-    return clamp(energy, 0.0, 1.6);
+    // Minimum baseline so bars breathe even when silent
+    float floor_ = 0.05 + organic * 0.08;
+    energy = max(energy, floor_);
+
+    return clamp(energy, 0.0, 1.7);
 }
 
-float fallbackEnergy(float barId, float freq, float time, int scene) {
-    float n = hash21(vec2(barId, floor(time * 2.4)));
-    float waveA = 0.5 + 0.5 * sin(time * 1.65 + barId * 0.24 + n * 6.28318);
-    float waveB = 0.5 + 0.5 * sin(time * 0.86 - barId * 0.19 + sin(time * 0.44 + barId * 0.08));
-    float pulse = pow(max(0.0, sin(time * (2.0 + float(scene) * 0.22) + barId * (0.10 + float(scene) * 0.01))), 2.4);
+// ── Scene geometry ──────────────────────────────────────────────────
+// Each scene produces:
+//   visualY  — distance from the bar base (0 at base, >1 past the top)
+//   baseTint — brightness of the scene backdrop at this pixel
 
-    float contour = 0.35 + 0.65 * (1.0 - abs(freq - 0.5) * 1.35);
-    if (scene == 2) contour = 0.45 + 0.55 * smoothstep(0.0, 1.0, freq);
-    if (scene == 3) contour = 0.45 + 0.55 * (1.0 - smoothstep(0.0, 1.0, freq));
+struct Scene {
+    float visualY;
+    float lane;      // 0..1 horizontal lane for bar layout
+    float backdrop;  // backdrop intensity multiplier
+    float mirror;    // extra dim for mirrored/reflection regions
+};
 
-    float energy = mix(waveA, waveB, 0.45) * (0.64 + pulse * 0.72) + contour * 0.20;
-    return clamp(energy, 0.0, 1.35);
+Scene sceneCascade(vec2 uv) {
+    Scene s;
+    s.visualY = uv.y;
+    s.lane = uv.x;
+    s.backdrop = pow(uv.y, 1.25);
+    s.mirror = 1.0;
+    return s;
 }
+
+Scene sceneMirror(vec2 uv) {
+    Scene s;
+    s.visualY = abs(uv.y - 0.5) * 2.0;
+    s.lane = uv.x;
+    s.backdrop = 1.0 - abs(uv.y - 0.5) * 1.4;
+    s.backdrop = clamp(s.backdrop, 0.0, 1.0);
+    s.mirror = 1.0;
+    return s;
+}
+
+Scene sceneHorizon(vec2 uv) {
+    const float horizon = 0.42;
+    Scene s;
+    if (uv.y >= horizon) {
+        s.visualY = (uv.y - horizon) / (1.0 - horizon);
+        s.mirror = 1.0;
+    } else {
+        // Reflection falls off into darkness
+        float depth = (horizon - uv.y) / horizon;
+        s.visualY = depth * 0.85;
+        s.mirror = (1.0 - depth) * 0.55;
+    }
+    s.lane = uv.x;
+    s.backdrop = smoothstep(horizon - 0.12, 1.0, uv.y);
+    return s;
+}
+
+Scene sceneTunnel(vec2 uv, float aspect, float time) {
+    Scene s;
+    vec2 p = uv - 0.5;
+    p.x *= aspect;
+    float r = length(p);
+    float ang = atan(p.y, p.x);
+    s.lane = fract(ang / 6.28318 + 0.5 + time * 0.012);
+    s.visualY = clamp((r - 0.08) / 0.42, 0.0, 1.0); // bars radiate outward
+    s.backdrop = smoothstep(0.65, 0.08, r);
+    s.mirror = 1.0;
+    return s;
+}
+
+// ── Main ────────────────────────────────────────────────────────────
 
 void main() {
     vec2 uv = gl_FragCoord.xy / iResolution;
     float aspect = iResolution.x / max(iResolution.y, 1.0);
 
     float speed = max(iSpeed, 0.05);
-    float time = iTime * (0.28 + speed * 0.44);
+    float time = iTime * (0.22 + speed * 0.32);
     float intensity = clamp(iIntensity * 0.01, 0.0, 1.0);
-    float smoothness = clamp(iSmoothing * 0.01, 0.0, 1.0);
-    float glowAmount = clamp(iGlow * 0.01, 0.0, 1.0);
+    float smoothAmt = clamp(iSmoothing * 0.01, 0.0, 1.0);
+    float glow = clamp(iGlow * 0.01, 0.0, 1.0);
 
-    float barCount = mix(84.0, 18.0, clamp(iBarWidth * 0.01, 0.0, 1.0));
-    float barPos = uv.x * barCount;
+    Scene scn;
+    if (iScene == 0) scn = sceneCascade(uv);
+    else if (iScene == 1) scn = sceneMirror(uv);
+    else if (iScene == 2) scn = sceneHorizon(uv);
+    else scn = sceneTunnel(uv, aspect, time);
+
+    // ── Bar layout ──────────────────────────────────────────────────
+    float barCount = floor(mix(84.0, 18.0, clamp(iBarWidth * 0.01, 0.0, 1.0)));
+    float barPos = scn.lane * barCount;
     float barId = floor(barPos);
     float barCell = fract(barPos);
-
-    float barMask = smoothstep(0.02, 0.11, barCell) * smoothstep(0.02, 0.11, 1.0 - barCell);
-
     float freq = barId / max(barCount - 1.0, 1.0);
-    float warpedFreq = freq;
-    if (iScene == 2) warpedFreq = pow(freq, 0.84);
-    if (iScene == 3) warpedFreq = abs(freq * 2.0 - 1.0);
-    if (iScene == 1) warpedFreq = fract(freq + 0.12 * sin(time * 0.38));
 
-    float audioActive = audioPresence();
-    float reactiveEnergy = audioEnergy(warpedFreq, barId, time);
-    float proceduralEnergy = fallbackEnergy(barId, warpedFreq, time, iScene);
+    // Softer bar edges — wider gap at low glow, tighter at high glow
+    float halfGap = mix(0.09, 0.035, glow);
+    float barMask =
+        smoothstep(halfGap, halfGap + 0.065, barCell) *
+        smoothstep(halfGap, halfGap + 0.065, 1.0 - barCell);
 
-    float energy = mix(proceduralEnergy, reactiveEnergy, audioActive);
-    energy += iAudioBeatPulse * 0.25 * audioActive;
+    // ── Energy ──────────────────────────────────────────────────────
+    float energy = barEnergy(freq, barId, time, smoothAmt);
 
-    if (iScene == 2) {
-        energy *= 0.82 + 0.18 * sin(time * 5.6 + uv.y * 24.0 + barId * 0.14);
-    } else if (iScene == 3) {
-        float center = exp(-abs(uv.x - 0.5) * 7.0);
-        energy *= 0.74 + center * 0.56;
-    } else if (iScene == 1) {
-        float chop = 0.65 + 0.35 * step(0.56, fract(time * 1.05 + barId * 0.039));
-        energy *= chop;
-    }
+    // Gentle, capped beat lift — never pops
+    energy += iAudioBeatPulse * mix(0.20, 0.08, smoothAmt);
+    energy = clamp(energy, 0.0, 1.75);
 
-    energy = clamp(energy, 0.0, 1.8);
+    // ── Bar height ──────────────────────────────────────────────────
+    float baseline = 0.045;
+    float barHeight = clamp(baseline + energy * mix(0.32, 1.05, intensity), 0.02, 1.1);
 
-    float barHeight = clamp(
-        mix(0.08, 0.02, audioActive) + energy * mix(0.36, 1.28, intensity),
-        0.02,
-        1.0
-    );
+    // ── Bar body + edges ────────────────────────────────────────────
+    float barTop = 1.0 - smoothstep(barHeight - 0.018, barHeight + 0.006, scn.visualY);
+    float bar = barTop * barMask;
 
-    float barBody = 1.0 - smoothstep(barHeight - 0.010, barHeight + 0.010, uv.y);
-    float ledRows = mix(16.0, 7.0, smoothness);
-    float ledCell = fract(uv.y * ledRows - time * 0.22);
-    float ledMask = smoothstep(0.05, 0.20, ledCell) * smoothstep(0.05, 0.20, 1.0 - ledCell);
-    barBody *= mix(0.78, 1.0, ledMask);
+    // LED segmentation — static in Y, no time scroll
+    float ledRows = mix(24.0, 10.0, smoothAmt);
+    float ledCell = fract(scn.visualY * ledRows);
+    float ledMask =
+        smoothstep(0.02, 0.18, ledCell) *
+        smoothstep(0.02, 0.18, 1.0 - ledCell);
+    bar *= mix(0.82, 1.0, ledMask);
 
-    float historyY = 1.0 - uv.y;
-    float trailDecay = mix(9.0, 2.4, smoothness);
-    float trailScan = 0.55 + 0.45 * sin(historyY * 72.0 + time * (4.2 + speed * 1.3) + barId * 0.35);
-    float waterfall = exp(-historyY * trailDecay) * trailScan * energy;
-    waterfall *= smoothstep(0.16, 0.96, uv.y);
-    waterfall *= 0.55 + 0.45 * barMask;
+    // ── Haze above the bar (fake waterfall — spatial, not temporal) ─
+    float above = max(scn.visualY - barHeight, 0.0);
+    float hazeDecay = mix(26.0, 7.0, smoothAmt);
+    float haze = exp(-above * hazeDecay);
+    haze *= (1.0 - barTop) * barMask;
+    haze *= 0.25 + 0.75 * energy;
 
-    float rim = exp(-abs(uv.y - barHeight) * mix(115.0, 44.0, glowAmount));
-    float beam = exp(-abs(barCell - 0.5) * mix(28.0, 8.0, glowAmount));
-    float bloom = (rim + waterfall * 0.62 + barBody * 0.20) * beam * (0.22 + glowAmount * 1.30);
+    // ── Rim + beam glow ─────────────────────────────────────────────
+    float rim = exp(-abs(scn.visualY - barHeight) * mix(85.0, 28.0, glow));
+    float beam = exp(-pow((barCell - 0.5) * 2.1, 2.0) * mix(24.0, 7.0, glow));
+    float bloom = (rim * 0.85 + haze * 0.55) * beam * (0.22 + glow * 1.20);
 
-    float paletteT = warpedFreq + time * (0.05 + float(iScene) * 0.008);
+    // ── Color ───────────────────────────────────────────────────────
+    // Palette walks with frequency so neighbors are chromatically related.
+    float paletteT =
+        freq * 0.75 +
+        time * 0.010 +
+        iAudioHarmonicHue * 0.0006 +
+        (iAudioBrightness - 0.5) * 0.18;
+
     vec3 baseColor = paletteColor(paletteT, iPalette);
-    vec3 accentColor = paletteColor(paletteT + 0.17 + iAudioHarmonicHue * 0.0015, iPalette);
+    vec3 accentColor = paletteColor(paletteT + 0.22, iPalette);
+    vec3 peakColor = paletteColor(paletteT + 0.42, iPalette);
 
-    vec3 bgLow = paletteColor(0.08 + time * 0.01, iPalette) * 0.03;
-    vec3 bgHigh = paletteColor(0.46 + time * 0.01, iPalette) * 0.12;
-    vec3 color = mix(bgLow, bgHigh, pow(uv.y, 1.3));
+    // Deep, calm background — single smooth gradient, driven by scene backdrop
+    vec3 bgLow = paletteColor(0.05 + time * 0.004, iPalette) * 0.025;
+    vec3 bgHigh = paletteColor(0.46, iPalette) * 0.075;
+    vec3 color = mix(bgLow, bgHigh, scn.backdrop);
 
-    float bodyLight = barBody * (0.34 + energy * 1.45);
-    color += baseColor * bodyLight * barMask * (0.30 + intensity * 1.75);
-    color += accentColor * rim * (0.16 + intensity * 1.10);
-    color += mix(baseColor, accentColor, 0.62) * waterfall * (0.12 + intensity * 0.86);
-    color += accentColor * bloom;
+    // Bar body — peaks warm toward peakColor for emphasis
+    float peakBlend = smoothstep(0.45, 1.15, energy);
+    vec3 barTint = mix(baseColor, peakColor, peakBlend);
+    color += barTint * bar * (0.42 + energy * 1.50) * (0.55 + intensity * 1.45) * scn.mirror;
 
-    if (iScene == 2) {
-        float gridWave = abs(fract(uv.y * 12.0 - time * 1.3) - 0.5) - 0.44;
-        float grid = 1.0 - smoothstep(0.0, 0.02, gridWave);
-        color += accentColor * grid * 0.07 * (0.30 + energy * 0.82);
+    // Rim glow in accent
+    color += accentColor * rim * barMask * (0.18 + intensity * 0.95) * scn.mirror;
+
+    // Haze trail tint
+    color += mix(baseColor, accentColor, 0.55) * haze * (0.30 + intensity * 0.80) * scn.mirror;
+
+    // Bloom — the widest visual spread
+    color += accentColor * bloom * scn.mirror;
+
+    // ── Scene accents ───────────────────────────────────────────────
+    if (iScene == 1) {
+        // Mirror: center line glow
+        float horizonLine = exp(-abs(uv.y - 0.5) * 52.0);
+        color += mix(baseColor, accentColor, 0.5) *
+                 horizonLine * (0.20 + iAudioLevel * 0.45);
+    } else if (iScene == 2) {
+        // Horizon: horizon line flare
+        float horizonLine = exp(-abs(uv.y - 0.42) * 60.0);
+        color += mix(accentColor, peakColor, 0.5) *
+                 horizonLine * (0.22 + iAudioLevel * 0.50);
     } else if (iScene == 3) {
-        float tunnel = exp(-abs(uv.x - 0.5) * 8.0) * (0.5 + 0.5 * sin(uv.y * 30.0 - time * 3.0));
-        color += mix(baseColor, accentColor, 0.5) * tunnel * 0.14;
-    } else if (iScene == 1) {
-        float prism = pow(abs(sin((uv.x - 0.5) * aspect * 12.0 + uv.y * 5.0 + time * 2.9)), 18.0);
-        color += accentColor * prism * 0.12;
+        // Tunnel: soft radial core
+        vec2 cp = (uv - 0.5) * vec2(aspect, 1.0);
+        float core = exp(-length(cp) * 4.5);
+        color += accentColor * core * (0.30 + iAudioLevel * 0.55);
     }
 
-    float scanline = 0.95 + 0.05 * sin(gl_FragCoord.y * 1.8 + time * 2.0);
-    color *= scanline;
-
+    // ── Vignette ────────────────────────────────────────────────────
     vec2 centered = (uv - 0.5) * vec2(aspect, 1.0);
-    float vignette = 1.0 - smoothstep(0.28, 1.25, length(centered));
+    float vignette = 1.0 - smoothstep(0.34, 1.18, length(centered));
     color *= vignette;
 
+    // ── Tonemap + gamma ─────────────────────────────────────────────
+    // Reinhard-extended: bright-but-never-clipped rolloff.
     color = color / (1.0 + color * 0.34);
-    color = pow(max(color, 0.0), vec3(0.95));
+    color = pow(max(color, 0.0), vec3(0.92));
 
     fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 }
