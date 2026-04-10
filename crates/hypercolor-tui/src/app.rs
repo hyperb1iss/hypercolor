@@ -43,6 +43,11 @@ pub struct App {
     motion: MotionSystem,
     /// Last rendered frame area, cached so action handlers can scope effects.
     last_frame_area: Rect,
+    /// Last user input or significant state event, used to trigger the idle
+    /// breathing effect after a period of inactivity.
+    last_activity: Instant,
+    /// Whether the idle breathing effect is currently active.
+    idle_active: bool,
     /// Fullscreen canvas preview mode.
     fullscreen_preview: bool,
     /// Current notification (auto-dismisses).
@@ -80,6 +85,8 @@ impl App {
             theme_picker: None,
             motion: MotionSystem::new(MotionSensitivity::resolve(MotionSensitivity::Full)),
             last_frame_area: Rect::new(0, 0, 80, 24),
+            last_activity: Instant::now(),
+            idle_active: false,
             fullscreen_preview: false,
             notification: None,
             action_tx,
@@ -129,11 +136,13 @@ impl App {
             // Map event → action
             match event {
                 Event::Key(key) => {
+                    self.bump_activity();
                     if let Some(action) = self.handle_key_event(key) {
                         let _ = self.action_tx.send(action);
                     }
                 }
                 Event::Mouse(mouse) => {
+                    self.bump_activity();
                     if let Some(screen) = self.screens.get_mut(&self.active_screen)
                         && let Ok(Some(action)) = screen.handle_mouse_event(mouse)
                     {
@@ -141,6 +150,7 @@ impl App {
                     }
                 }
                 Event::Resize(w, h) => {
+                    self.bump_activity();
                     let _ = self.action_tx.send(Action::Resize(w, h));
                 }
                 Event::Tick => {
@@ -169,6 +179,31 @@ impl App {
         ratatui::restore();
         tracing::info!("TUI event loop ended");
         Ok(())
+    }
+
+    /// Reset the idle timer and cancel the breathing effect if it's running.
+    fn bump_activity(&mut self) {
+        self.last_activity = Instant::now();
+        if self.idle_active {
+            self.motion.cancel(crate::motion::MotionKey::IdleBreathing);
+            self.idle_active = false;
+        }
+    }
+
+    /// Check the idle threshold and start the breathing effect if exceeded.
+    fn check_idle(&mut self) {
+        // 10s idle → start breathing
+        const IDLE_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(10);
+        if !self.idle_active && self.last_activity.elapsed() >= IDLE_THRESHOLD {
+            self.motion.trigger(
+                crate::motion::MotionKey::IdleBreathing,
+                crate::motion::catalog::idle_breathing(
+                    self.last_frame_area,
+                    self.motion.sensitivity(),
+                ),
+            );
+            self.idle_active = true;
+        }
     }
 
     /// Handle a key event, returning an action to dispatch.
@@ -519,6 +554,7 @@ impl App {
                 {
                     self.notification = None;
                 }
+                self.check_idle();
             }
 
             _ => {}

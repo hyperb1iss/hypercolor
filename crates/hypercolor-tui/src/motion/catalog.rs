@@ -165,3 +165,18 @@ pub fn notification_entry(toast_area: Rect, sensitivity: MotionSensitivity) -> E
     )
     .with_area(toast_area)
 }
+
+/// Slow breathing effect for idle borders.
+///
+/// Spec 38 §6.11 — gentle ping-pong lighten/darken on border cells with
+/// a 3-second period. Never completes, runs as long as the user is idle.
+pub fn idle_breathing(area: Rect, sensitivity: MotionSensitivity) -> Effect {
+    let half_period_ms = scale_ms(3000, sensitivity);
+    let amplitude = 0.05 * sensitivity.amplitude();
+    fx::never_complete(fx::repeating(fx::ping_pong(fx::lighten_fg(
+        amplitude,
+        (half_period_ms, Interpolation::SineInOut),
+    ))))
+    .with_area(area)
+    .with_filter(CellFilter::Outer(Margin::new(1, 1)))
+}
