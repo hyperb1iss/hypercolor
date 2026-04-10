@@ -695,8 +695,9 @@ pub struct BackendManager {
     /// Reusable per-device color staging for steady-state frame routing.
     device_staging: HashMap<BackendDeviceKey, DeviceStagingBuffer>,
 
-    /// Device staging keys touched during the current frame.
+    /// Device staging keys touched during recent frames.
     active_staging_keys: Vec<BackendDeviceKey>,
+    active_staging_len: usize,
 
     /// Monotonic frame generation for staging reset bookkeeping.
     staging_generation: u64,
@@ -1359,6 +1360,7 @@ impl BackendManager {
 
     fn begin_staging_frame(&mut self) {
         self.staging_generation = self.staging_generation.saturating_add(1);
+        self.active_staging_len = 0;
     }
 
     fn staging_buffer(&mut self, key: &BackendDeviceKey) -> &mut DeviceStagingBuffer {
@@ -1378,7 +1380,12 @@ impl BackendManager {
         }
 
         if became_active {
-            self.active_staging_keys.push(key.clone());
+            if self.active_staging_len < self.active_staging_keys.len() {
+                self.active_staging_keys[self.active_staging_len].clone_from(key);
+            } else {
+                self.active_staging_keys.push(key.clone());
+            }
+            self.active_staging_len += 1;
         }
 
         self.device_staging
@@ -1494,10 +1501,12 @@ impl BackendManager {
             }
         }
 
+        let active_staging_len = self.active_staging_len;
         let mut active_staging_keys = Vec::new();
         std::mem::swap(&mut active_staging_keys, &mut self.active_staging_keys);
+        self.active_staging_len = 0;
 
-        for key in &active_staging_keys {
+        for key in active_staging_keys.iter().take(active_staging_len) {
             let (backend_id, device_id) = key;
 
             if self.is_direct_control_active(backend_id.as_str(), *device_id) {
@@ -1561,7 +1570,6 @@ impl BackendManager {
             }
         }
 
-        active_staging_keys.clear();
         self.active_staging_keys = active_staging_keys;
 
         stats
