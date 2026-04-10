@@ -6,9 +6,9 @@ use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
 use crate::api;
+use crate::async_helpers::spawn_identify;
 use crate::components::attachment_editor::{ComponentDraft, DraftRow};
 use crate::icons::*;
-use crate::toasts;
 
 /// Renders a single component in the channel editor.
 ///
@@ -215,15 +215,10 @@ pub fn ComponentRow(
                     move |_| {
                         let did = did.clone();
                         let sid = sid.clone();
-                        leptos::task::spawn_local(async move {
-                            if let Err(e) =
-                                api::identify_attachment(&did, &sid, binding_index, instance).await
-                            {
-                                toasts::toast_error(&format!("Identify failed: {e}"));
-                            } else {
-                                toasts::toast_success("Flashing component");
-                            }
-                        });
+                        spawn_identify(
+                            "component",
+                            async move { api::identify_attachment(&did, &sid, binding_index, instance).await },
+                        );
                     }
                 }
             >

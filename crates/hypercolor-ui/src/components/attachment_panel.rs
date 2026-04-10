@@ -11,6 +11,7 @@ use hypercolor_types::attachment::AttachmentSuggestedZone;
 
 use crate::api;
 use crate::app::DevicesContext;
+use crate::async_helpers::spawn_identify;
 use crate::channel_names;
 use crate::components::attachment_editor;
 use crate::components::component_picker::ComponentPicker;
@@ -222,13 +223,10 @@ pub fn WiringPanel(
                                                                         move |_| {
                                                                             let did = did.clone();
                                                                             let zid = zid.clone();
-                                                                            leptos::task::spawn_local(async move {
-                                                                                if let Err(e) = api::identify_zone(&did, &zid).await {
-                                                                                    toasts::toast_error(&format!("Identify failed: {e}"));
-                                                                                } else {
-                                                                                    toasts::toast_success("Flashing channel");
-                                                                                }
-                                                                            });
+                                                                            spawn_identify(
+                                                                                "channel",
+                                                                                async move { api::identify_zone(&did, &zid).await },
+                                                                            );
                                                                         }
                                                                     }
                                                                 >
@@ -509,13 +507,10 @@ pub fn WiringPanel(
                                                                                         .or(Some(i));
                                                                                     let instance =
                                                                                         identify_target.map(|target| target.instance);
-                                                                                    leptos::task::spawn_local(async move {
-                                                                                        if let Err(e) = api::identify_attachment(&d, &s, binding_index, instance).await {
-                                                                                            toasts::toast_error(&format!("Identify failed: {e}"));
-                                                                                        } else {
-                                                                                            toasts::toast_success("Flashing component");
-                                                                                        }
-                                                                                    });
+                                                                                    spawn_identify(
+                                                                                        "component",
+                                                                                        async move { api::identify_attachment(&d, &s, binding_index, instance).await },
+                                                                                    );
                                                                                 }
                                                                             >
                                                                                 <Icon icon=LuZap width="10px" height="10px" />

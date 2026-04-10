@@ -10,12 +10,12 @@ use leptos_use::use_throttle_fn_with_arg;
 
 use crate::api;
 use crate::app::{EffectsContext, WsContext};
+use crate::async_helpers::spawn_api_call;
 use crate::color::{self, CanvasPalette};
 use crate::components::canvas_preview::CanvasPreview;
 use crate::icons::*;
 use crate::preview_telemetry::PreviewTelemetryContext;
 use crate::style_utils::category_accent_rgb;
-use crate::toasts;
 use crate::ws::ConnectionState;
 
 // ── Sidebar Component ──────────────────────────────────────────────────────
@@ -99,11 +99,10 @@ pub fn Sidebar() -> impl IntoView {
 
     let push_global_brightness = use_throttle_fn_with_arg(
         move |brightness: u8| {
-            leptos::task::spawn_local(async move {
-                if let Err(error) = api::set_global_brightness(brightness).await {
-                    toasts::toast_error(&format!("Global brightness update failed: {error}"));
-                }
-            });
+            spawn_api_call(
+                "Global brightness update failed",
+                api::set_global_brightness(brightness),
+            );
         },
         50.0,
     );
@@ -810,12 +809,8 @@ fn SidebarAudioToggle() -> impl IntoView {
         ev.stop_propagation();
         let new_state = !ws.audio_enabled.get();
         ws.set_audio_enabled.set(new_state);
-        leptos::task::spawn_local(async move {
-            if let Err(error) =
-                api::set_config_value("audio.enabled", &serde_json::json!(new_state)).await
-            {
-                toasts::toast_error(&format!("Failed to toggle audio: {error}"));
-            }
+        spawn_api_call("Failed to toggle audio", async move {
+            api::set_config_value("audio.enabled", &serde_json::json!(new_state)).await
         });
     };
 
