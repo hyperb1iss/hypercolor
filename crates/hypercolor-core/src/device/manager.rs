@@ -1313,6 +1313,7 @@ impl BackendManager {
 
     fn compile_routing_plan(&self, layout: &SpatialLayout, layout_signature: u64) -> RoutingPlan {
         let mut active_layout_device_ids = HashSet::with_capacity(layout.zones.len());
+        let mut active_target_keys = HashSet::with_capacity(layout.zones.len());
         let mut zone_routes = HashMap::with_capacity(layout.zones.len());
         let mut ordered_zone_routes = Vec::with_capacity(layout.zones.len());
 
@@ -1320,10 +1321,12 @@ impl BackendManager {
             active_layout_device_ids.insert(zone.device_id.clone());
 
             let route = if let Some(mapping) = self.device_map.get(zone.device_id.as_str()) {
+                let target_key = (mapping.backend_id.clone(), mapping.device_id);
+                active_target_keys.insert(target_key.clone());
                 PlannedZoneRoute::Mapped(CompiledZoneRoute {
                     layout_device_id: zone.device_id.clone(),
-                    target_key: (mapping.backend_id.clone(), mapping.device_id),
-                    led_mapping: zone.led_mapping.clone().map(Vec::into_boxed_slice),
+                    target_key,
+                    led_mapping: normalized_led_mapping(zone.led_mapping.as_deref()),
                     segment: mapped_segment_for_zone_name(
                         &zone.id,
                         zone.zone_name.as_deref(),
@@ -1347,29 +1350,6 @@ impl BackendManager {
             zone_routes.insert(zone.id.clone(), route);
         }
 
-        let targeted = active_layout_device_ids
-            .iter()
-            .filter_map(|layout_device_id| {
-                self.device_map
-                    .get(layout_device_id.as_str())
-                    .map(|mapping| (mapping.backend_id.clone(), mapping.device_id))
-            })
-            .collect::<HashSet<_>>();
-
-        let mut inactive_devices = self
-            .device_map
-            .values()
-            .map(|mapping| (mapping.backend_id.clone(), mapping.device_id))
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .filter(|key| !targeted.contains(key))
-            .collect::<Vec<_>>();
-        inactive_devices.sort_by(|left, right| {
-            left.0
-                .cmp(&right.0)
-                .then_with(|| left.1.to_string().cmp(&right.1.to_string()))
-        });
-
         let mut mapped_layout_ids_by_device: HashMap<BackendDeviceKey, Vec<String>> =
             HashMap::new();
         for (layout_device_id, mapping) in &self.device_map {
@@ -1381,6 +1361,17 @@ impl BackendManager {
         for ids in mapped_layout_ids_by_device.values_mut() {
             ids.sort_unstable();
         }
+
+        let mut inactive_devices = mapped_layout_ids_by_device
+            .keys()
+            .filter(|key| !active_target_keys.contains(*key))
+            .cloned()
+            .collect::<Vec<_>>();
+        inactive_devices.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.to_string().cmp(&right.1.to_string()))
+        });
 
         RoutingPlan {
             layout_signature,
@@ -2062,6 +2053,20 @@ fn remap_zone_colors<'a>(
     }
 
     scratch.as_slice()
+}
+
+fn normalized_led_mapping(led_mapping: Option<&[u32]>) -> Option<Box<[u32]>> {
+    let led_mapping = led_mapping?;
+
+    if led_mapping
+        .iter()
+        .enumerate()
+        .all(|(index, &physical_index)| u32::try_from(index).ok() == Some(physical_index))
+    {
+        return None;
+    }
+
+    Some(led_mapping.to_vec().into_boxed_slice())
 }
 
 fn zone_segments_from_device_info(device_info: &DeviceInfo) -> HashMap<String, SegmentRange> {
