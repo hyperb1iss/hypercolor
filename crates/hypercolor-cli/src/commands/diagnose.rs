@@ -134,4 +134,3 @@ fn print_summary(data: &serde_json::Value) {
         println!("  Summary: {passed} passed, {warnings} warnings, {failed} failed");
     }
 }
-
