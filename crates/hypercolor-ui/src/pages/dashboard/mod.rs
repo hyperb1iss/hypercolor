@@ -304,16 +304,11 @@ pub fn DashboardPage() -> impl IntoView {
 }
 
 fn read_stored_width() -> Option<f64> {
-    let storage = web_sys::window()?.local_storage().ok()??;
-    let value = storage.get_item(PREVIEW_WIDTH_STORAGE_KEY).ok()??;
-    value.parse::<f64>().ok()
+    crate::storage::get_parsed(PREVIEW_WIDTH_STORAGE_KEY)
 }
 
 fn persist_width(width: f64) {
-    let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) else {
-        return;
-    };
-    let _ = storage.set_item(PREVIEW_WIDTH_STORAGE_KEY, &width.to_string());
+    crate::storage::set(PREVIEW_WIDTH_STORAGE_KEY, &width.to_string());
 }
 
 fn set_resizing_body(active: bool) {

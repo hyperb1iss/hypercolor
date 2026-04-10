@@ -27,9 +27,7 @@ fn apply_theme(theme: &str) {
     {
         let _ = doc.set_attribute("data-theme", theme);
     }
-    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
-        let _ = storage.set_item("hc-theme", theme);
-    }
+    crate::storage::set("hc-theme", theme);
 }
 
 /// Extract dominant hue (0..360) from RGBA pixel data by averaging sampled pixels.

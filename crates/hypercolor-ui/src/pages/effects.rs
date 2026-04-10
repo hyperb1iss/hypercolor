@@ -49,14 +49,11 @@ pub fn EffectsPage() -> impl IntoView {
     on_cleanup(move || ws.set_preview_cap.set(crate::ws::DEFAULT_PREVIEW_FPS_CAP));
 
     // Restore persisted filter state from localStorage
-    let storage = web_sys::window().and_then(|w| w.local_storage().ok().flatten());
-    let stored = |key: &str| -> Option<String> { storage.as_ref()?.get_item(key).ok().flatten() };
-
     let (search, set_search) = signal(String::new());
     let (category_filter, set_category_filter) =
-        signal(stored("hc-fx-category").unwrap_or_else(|| "all".to_string()));
+        signal(crate::storage::get("hc-fx-category").unwrap_or_else(|| "all".to_string()));
     let (selected_authors, set_selected_authors) = signal({
-        stored("hc-fx-authors")
+        crate::storage::get("hc-fx-authors")
             .map(|s| {
                 s.split(',')
                     .filter(|a| !a.is_empty())
@@ -66,24 +63,18 @@ pub fn EffectsPage() -> impl IntoView {
             .unwrap_or_else(std::collections::BTreeSet::<String>::new)
     });
     let (favorites_only, set_favorites_only) =
-        signal(stored("hc-fx-favorites").as_deref() == Some("true"));
+        signal(crate::storage::get("hc-fx-favorites").as_deref() == Some("true"));
     let (audio_reactive_only, set_audio_reactive_only) =
-        signal(stored("hc-fx-audio").as_deref() == Some("true"));
+        signal(crate::storage::get("hc-fx-audio").as_deref() == Some("true"));
 
     // Panel layout state (persisted to localStorage)
     let (detail_width, set_detail_width) = signal(
-        stored("hc-fx-detail-width")
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(380.0)
-            .clamp(MIN_DETAIL_WIDTH, MAX_DETAIL_WIDTH),
+        crate::storage::get_clamped("hc-fx-detail-width", 380.0, MIN_DETAIL_WIDTH, MAX_DETAIL_WIDTH),
     );
     let (controls_detached, set_controls_detached) =
-        signal(stored("hc-fx-controls-detached").as_deref() != Some("false"));
+        signal(crate::storage::get("hc-fx-controls-detached").as_deref() != Some("false"));
     let (controls_width, set_controls_width) = signal(
-        stored("hc-fx-controls-width")
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(320.0)
-            .clamp(MIN_CONTROLS_WIDTH, MAX_CONTROLS_WIDTH),
+        crate::storage::get_clamped("hc-fx-controls-width", 320.0, MIN_CONTROLS_WIDTH, MAX_CONTROLS_WIDTH),
     );
     let pending_control_updates =
         StoredValue::new(std::collections::HashMap::<String, serde_json::Value>::new());
@@ -107,19 +98,16 @@ pub fn EffectsPage() -> impl IntoView {
 
     // Persist filter changes to localStorage
     Effect::new(move |_| {
-        let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) else {
-            return;
-        };
-        let _ = storage.set_item("hc-fx-category", &category_filter.get());
-        let _ = storage.set_item("hc-fx-favorites", &favorites_only.get().to_string());
-        let _ = storage.set_item("hc-fx-audio", &audio_reactive_only.get().to_string());
+        crate::storage::set("hc-fx-category", &category_filter.get());
+        crate::storage::set("hc-fx-favorites", &favorites_only.get().to_string());
+        crate::storage::set("hc-fx-audio", &audio_reactive_only.get().to_string());
         let authors_str: String = selected_authors
             .get()
             .iter()
             .cloned()
             .collect::<Vec<_>>()
             .join(",");
-        let _ = storage.set_item("hc-fx-authors", &authors_str);
+        crate::storage::set("hc-fx-authors", &authors_str);
     });
 
     // Derive unique sorted author list from loaded effects
@@ -1066,9 +1054,7 @@ fn drag_callbacks(
 }
 
 fn persist_to_storage(key: &str, value: &str) {
-    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
-        let _ = storage.set_item(key, value);
-    }
+    crate::storage::set(key, value);
 }
 
 /// Loading skeleton for the effects grid.
