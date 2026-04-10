@@ -262,21 +262,21 @@ pub(crate) fn screen_data_to_canvas(
         return None;
     }
 
-    let mut sectors: Vec<(u32, u32, [u8; 3])> = Vec::new();
     let mut max_row = 0_u32;
     let mut max_col = 0_u32;
+    let mut saw_sector = false;
 
     for zone in &screen_data.zone_colors {
         let Some((row, col)) = parse_sector_zone_id(&zone.zone_id) else {
             continue;
         };
-        let color = zone.colors.first().copied().unwrap_or([0, 0, 0]);
+        let _color = zone.colors.first().copied().unwrap_or([0, 0, 0]);
         max_row = max_row.max(row);
         max_col = max_col.max(col);
-        sectors.push((row, col, color));
+        saw_sector = true;
     }
 
-    if sectors.is_empty() {
+    if !saw_sector {
         return None;
     }
 
@@ -289,7 +289,11 @@ pub(crate) fn screen_data_to_canvas(
     })?;
 
     let mut grid = vec![[0, 0, 0]; cell_count];
-    for (row, col, color) in sectors {
+    for zone in &screen_data.zone_colors {
+        let Some((row, col)) = parse_sector_zone_id(&zone.zone_id) else {
+            continue;
+        };
+        let color = zone.colors.first().copied().unwrap_or([0, 0, 0]);
         let idx_u64 = u64::from(row)
             .checked_mul(u64::from(cols))
             .and_then(|base| base.checked_add(u64::from(col)))?;
