@@ -57,6 +57,7 @@ pub(super) fn render_display_view(
     height: u32,
     rendered_rgb: &mut Vec<u8>,
     axis_plan: &mut Option<PreparedDisplayPlan>,
+    brightness_lut: Option<&[u8; 256]>,
 ) {
     let Some(render_len) = rgb_buffer_len(width, height) else {
         rendered_rgb.clear();
@@ -72,7 +73,15 @@ pub(super) fn render_display_view(
     if viewport.rotation.abs() <= f32::EPSILON
         && !matches!(viewport.edge_behavior, EdgeBehavior::FadeToBlack { .. })
     {
-        render_display_view_axis_aligned(source, viewport, width, height, rendered_rgb, axis_plan);
+        render_display_view_axis_aligned(
+            source,
+            viewport,
+            width,
+            height,
+            rendered_rgb,
+            axis_plan,
+            brightness_lut,
+        );
         return;
     }
 
@@ -87,7 +96,13 @@ pub(super) fn render_display_view(
             );
             let canvas_pos = viewport_local_to_canvas(local, viewport);
             let pixel = sample_image_bilinear(source, canvas_pos, viewport.edge_behavior);
-            write_rgb_pixel(rendered_rgb, width, x, y, pixel);
+            write_rgb_pixel(
+                rendered_rgb,
+                width,
+                x,
+                y,
+                apply_display_brightness(pixel, brightness_lut),
+            );
         }
     }
 }
@@ -99,6 +114,7 @@ fn render_display_view_axis_aligned(
     height: u32,
     rendered_rgb: &mut [u8],
     axis_plan: &mut Option<PreparedDisplayPlan>,
+    brightness_lut: Option<&[u8; 256]>,
 ) {
     let rgba = source.rgba_bytes();
     let plan_key = prepared_display_plan_key(source, viewport, width, height);
@@ -111,7 +127,7 @@ fn render_display_view_axis_aligned(
     if let Some(plan) = axis_plan.as_ref() {
         let mut output_offset = 0usize;
         for sample in &plan.samples {
-            let pixel = sample_prepared_display_rgb(rgba, sample);
+            let pixel = sample_prepared_display_rgb(rgba, sample, brightness_lut);
             rendered_rgb[output_offset] = pixel[0];
             rendered_rgb[output_offset + 1] = pixel[1];
             rendered_rgb[output_offset + 2] = pixel[2];
@@ -412,11 +428,24 @@ fn bilinear_sample_rgba(
     ]
 }
 
-fn sample_prepared_display_rgb(rgba: &[u8], sample: &PreparedDisplaySample) -> [u8; 3] {
+fn sample_prepared_display_rgb(
+    rgba: &[u8],
+    sample: &PreparedDisplaySample,
+    brightness_lut: Option<&[u8; 256]>,
+) -> [u8; 3] {
     [
-        prepared_display_channel(rgba, sample.offsets, 0, sample),
-        prepared_display_channel(rgba, sample.offsets, 1, sample),
-        prepared_display_channel(rgba, sample.offsets, 2, sample),
+        apply_display_brightness_channel(
+            prepared_display_channel(rgba, sample.offsets, 0, sample),
+            brightness_lut,
+        ),
+        apply_display_brightness_channel(
+            prepared_display_channel(rgba, sample.offsets, 1, sample),
+            brightness_lut,
+        ),
+        apply_display_brightness_channel(
+            prepared_display_channel(rgba, sample.offsets, 2, sample),
+            brightness_lut,
+        ),
     ]
 }
 
@@ -472,6 +501,18 @@ fn round_to_u8(value: f32) -> u8 {
     }
 
     (value + 0.5) as u8
+}
+
+fn apply_display_brightness(pixel: [u8; 3], brightness_lut: Option<&[u8; 256]>) -> [u8; 3] {
+    [
+        apply_display_brightness_channel(pixel[0], brightness_lut),
+        apply_display_brightness_channel(pixel[1], brightness_lut),
+        apply_display_brightness_channel(pixel[2], brightness_lut),
+    ]
+}
+
+fn apply_display_brightness_channel(channel: u8, brightness_lut: Option<&[u8; 256]>) -> u8 {
+    brightness_lut.map_or(channel, |lut| lut[usize::from(channel)])
 }
 
 fn write_rgb_pixel(image: &mut [u8], width: u32, x: u32, y: u32, pixel: [u8; 3]) {

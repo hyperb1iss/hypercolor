@@ -910,6 +910,95 @@ async fn automatic_display_output_skips_unchanged_frames() {
 }
 
 #[tokio::test]
+async fn automatic_display_output_applies_device_brightness_before_encoding() {
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![display_zone(
+            &format!("device:{device_id}"),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 320, 200, false))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+    });
+
+    let red = solid_canvas(Rgba::new(255, 0, 0, 255));
+
+    let _ = device_registry
+        .update_user_settings(&device_id, None, None, Some(0.0))
+        .await;
+    let _ = event_bus
+        .canvas_sender()
+        .send(CanvasFrame::from_canvas(&red, 1, 16));
+    let writes = wait_for_display_write_count(&display_writes, 1).await;
+    let black_image = decode_jpeg(
+        writes
+            .last()
+            .expect("expected zero-brightness display frame"),
+    );
+    let black_pixel = black_image.get_pixel(black_image.width() / 2, black_image.height() / 2);
+    assert!(
+        black_pixel[0] <= 8 && black_pixel[1] <= 8 && black_pixel[2] <= 8,
+        "expected zero-brightness display output to stay black, got {black_pixel:?}"
+    );
+
+    let _ = device_registry
+        .update_user_settings(&device_id, None, None, Some(0.5))
+        .await;
+    let _ = event_bus
+        .canvas_sender()
+        .send(CanvasFrame::from_canvas(&red, 2, 32));
+    let writes = wait_for_display_write_count(&display_writes, 2).await;
+    let dimmed_image = decode_jpeg(
+        writes
+            .last()
+            .expect("expected dimmed display frame after brightness update"),
+    );
+    let dimmed_pixel = dimmed_image.get_pixel(dimmed_image.width() / 2, dimmed_image.height() / 2);
+    assert!(
+        (90..=170).contains(&dimmed_pixel[0]) && dimmed_pixel[1] <= 32 && dimmed_pixel[2] <= 32,
+        "expected half-bright red display output, got {dimmed_pixel:?}"
+    );
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
 async fn automatic_display_output_refreshes_cached_targets_when_layout_changes() {
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();

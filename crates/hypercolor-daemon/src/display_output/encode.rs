@@ -9,7 +9,9 @@ use turbojpeg::{
 
 use hypercolor_core::bus::CanvasFrame;
 
-use super::render::{apply_circular_mask, render_display_view, PreparedDisplayPlan};
+use super::render::{
+    PreparedDisplayPlan, apply_circular_mask, render_display_view, rgb_buffer_len,
+};
 use super::{DisplayGeometry, DisplayViewport};
 
 const JPEG_QUALITY: u8 = 85;
@@ -20,6 +22,8 @@ pub(super) struct DisplayEncodeState {
     pub jpeg_buffer: Vec<u8>,
     pub jpeg_compressor: TurboJpegCompressor,
     pub axis_plan: Option<PreparedDisplayPlan>,
+    brightness_factor: u16,
+    brightness_lut: [u8; 256],
 }
 
 impl DisplayEncodeState {
@@ -38,6 +42,8 @@ impl DisplayEncodeState {
             jpeg_buffer: Vec::new(),
             jpeg_compressor,
             axis_plan: None,
+            brightness_factor: u16::from(u8::MAX),
+            brightness_lut: identity_brightness_lut(),
         })
     }
 }
@@ -49,15 +55,30 @@ pub(super) fn encode_canvas_frame(
     brightness: f32,
     encode_state: &mut DisplayEncodeState,
 ) -> Result<Vec<u8>> {
+    let brightness_factor = display_brightness_factor(brightness);
+    if brightness_factor == 0 {
+        prepare_black_frame(geometry, &mut encode_state.rgb_buffer);
+        return encode_rgb_to_jpeg(geometry, encode_state);
+    }
+
+    refresh_display_brightness_lut(encode_state, brightness_factor);
+    let brightness_lut = if brightness_factor >= u16::from(u8::MAX) {
+        None
+    } else {
+        Some(&encode_state.brightness_lut)
+    };
+    let rgb_buffer = &mut encode_state.rgb_buffer;
+    let axis_plan = &mut encode_state.axis_plan;
+
     render_display_view(
         source,
         viewport,
         geometry.width,
         geometry.height,
-        &mut encode_state.rgb_buffer,
-        &mut encode_state.axis_plan,
+        rgb_buffer,
+        axis_plan,
+        brightness_lut,
     );
-    apply_display_brightness(&mut encode_state.rgb_buffer, brightness);
     if geometry.circular {
         apply_circular_mask(
             &mut encode_state.rgb_buffer,
@@ -110,26 +131,38 @@ fn encode_rgb_to_jpeg(
     Ok(jpeg_buffer)
 }
 
-fn apply_display_brightness(image: &mut [u8], brightness: f32) {
-    let factor = display_brightness_factor(brightness);
-    if factor >= u16::from(u8::MAX) {
-        return;
-    }
-    if factor == 0 {
-        image.fill(0);
-        return;
-    }
-
-    for pixel in image.chunks_exact_mut(3) {
-        pixel[0] = scale_channel(pixel[0], factor);
-        pixel[1] = scale_channel(pixel[1], factor);
-        pixel[2] = scale_channel(pixel[2], factor);
-    }
-}
-
 fn scale_channel(channel: u8, factor: u16) -> u8 {
     let scaled = (u16::from(channel) * factor) / u16::from(u8::MAX);
     u8::try_from(scaled).expect("display brightness scaling should remain within byte range")
+}
+
+fn refresh_display_brightness_lut(encode_state: &mut DisplayEncodeState, brightness_factor: u16) {
+    if encode_state.brightness_factor != brightness_factor {
+        encode_state.brightness_factor = brightness_factor;
+        encode_state.brightness_lut = std::array::from_fn(|channel| {
+            scale_channel(
+                u8::try_from(channel)
+                    .expect("brightness lookup indices should remain within byte range"),
+                brightness_factor,
+            )
+        });
+    }
+}
+
+fn prepare_black_frame(geometry: &DisplayGeometry, rgb_buffer: &mut Vec<u8>) {
+    let Some(render_len) = rgb_buffer_len(geometry.width, geometry.height) else {
+        rgb_buffer.clear();
+        return;
+    };
+
+    rgb_buffer.clear();
+    rgb_buffer.resize(render_len, 0);
+}
+
+fn identity_brightness_lut() -> [u8; 256] {
+    std::array::from_fn(|channel| {
+        u8::try_from(channel).expect("brightness lookup indices should remain within byte range")
+    })
 }
 
 pub(super) fn display_brightness_factor(brightness: f32) -> u16 {
