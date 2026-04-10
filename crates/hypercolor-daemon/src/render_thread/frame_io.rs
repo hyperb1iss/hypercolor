@@ -17,6 +17,15 @@ pub(crate) struct PublishFrameStats {
     pub(crate) full_frame_copy_bytes: u32,
 }
 
+#[derive(Clone, Copy)]
+struct AudioSignalSnapshot {
+    level: f32,
+    bass: f32,
+    mid: f32,
+    treble: f32,
+    beat: bool,
+}
+
 pub(crate) async fn sample_inputs(state: &RenderThreadState, delta_secs: f32) -> FrameInputs {
     let (samples, events) = {
         let mut input_manager = state.input_manager.lock().await;
@@ -78,6 +87,14 @@ pub(crate) fn publish_frame_updates(
 ) -> PublishFrameStats {
     let publish_start = Instant::now();
     let event_subscribers = state.event_bus.subscriber_count();
+    let spectrum_receivers = state.event_bus.spectrum_receiver_count();
+    let publish_audio_level = should_publish_audio_level_event(
+        elapsed_ms,
+        *last_audio_level_update_ms,
+        event_subscribers > 0,
+    );
+    let audio_signal = (spectrum_receivers > 0 || publish_audio_level)
+        .then(|| AudioSignalSnapshot::from_audio(audio));
     let mut full_frame_copy_count = 0_u32;
     let mut full_frame_copy_bytes = 0_u32;
     recycled_frame.frame_number = frame_number;
@@ -88,16 +105,20 @@ pub(crate) fn publish_frame_updates(
         elapsed_ms,
     );
     *recycled_frame = state.event_bus.frame_sender().send_replace(published_frame);
-    let _ = state
-        .event_bus
-        .spectrum_sender()
-        .send(spectrum_from_audio(audio, elapsed_ms));
+    if spectrum_receivers > 0 {
+        let _ = state.event_bus.spectrum_sender().send(spectrum_from_audio(
+            audio,
+            audio_signal.as_ref().expect("audio signal should exist"),
+            elapsed_ms,
+        ));
+    }
     maybe_publish_audio_level_event(
         state,
         audio,
+        audio_signal.as_ref(),
         elapsed_ms,
         last_audio_level_update_ms,
-        event_subscribers > 0,
+        publish_audio_level,
     );
     let canvas_frame = if let Some(surface) = frame_surface {
         CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
@@ -155,38 +176,51 @@ fn canvas_frame_is_empty(frame: &CanvasFrame) -> bool {
 fn maybe_publish_audio_level_event(
     state: &RenderThreadState,
     audio: &AudioData,
+    signal: Option<&AudioSignalSnapshot>,
     elapsed_ms: u32,
     last_audio_level_update_ms: &mut Option<u32>,
-    has_event_subscribers: bool,
+    should_publish: bool,
 ) {
-    if !has_event_subscribers {
-        return;
-    }
-
-    if last_audio_level_update_ms.is_some_and(|last_sent| {
-        elapsed_ms.saturating_sub(last_sent) < AUDIO_LEVEL_EVENT_INTERVAL_MS
-    }) {
+    if !should_publish {
         return;
     }
 
     *last_audio_level_update_ms = Some(elapsed_ms);
+    let signal = signal
+        .copied()
+        .unwrap_or_else(|| AudioSignalSnapshot::from_audio(audio));
     state.event_bus.publish(HypercolorEvent::AudioLevelUpdate {
-        level: audio.rms_level,
-        bass: audio.bass(),
-        mid: audio.mid(),
-        treble: audio.treble(),
-        beat: audio.beat_detected,
+        level: signal.level,
+        bass: signal.bass,
+        mid: signal.mid,
+        treble: signal.treble,
+        beat: signal.beat,
     });
 }
 
-fn spectrum_from_audio(audio: &AudioData, timestamp_ms: u32) -> SpectrumData {
+fn should_publish_audio_level_event(
+    elapsed_ms: u32,
+    last_audio_level_update_ms: Option<u32>,
+    has_event_subscribers: bool,
+) -> bool {
+    has_event_subscribers
+        && !last_audio_level_update_ms.is_some_and(|last_sent| {
+            elapsed_ms.saturating_sub(last_sent) < AUDIO_LEVEL_EVENT_INTERVAL_MS
+        })
+}
+
+fn spectrum_from_audio(
+    audio: &AudioData,
+    signal: &AudioSignalSnapshot,
+    timestamp_ms: u32,
+) -> SpectrumData {
     SpectrumData {
         timestamp_ms,
-        level: audio.rms_level,
-        bass: audio.bass(),
-        mid: audio.mid(),
-        treble: audio.treble(),
-        beat: audio.beat_detected,
+        level: signal.level,
+        bass: signal.bass,
+        mid: signal.mid,
+        treble: signal.treble,
+        beat: signal.beat,
         beat_confidence: audio.beat_confidence,
         bpm: if audio.bpm > 0.0 {
             Some(audio.bpm)
@@ -194,6 +228,18 @@ fn spectrum_from_audio(audio: &AudioData, timestamp_ms: u32) -> SpectrumData {
             None
         },
         bins: audio.spectrum.clone(),
+    }
+}
+
+impl AudioSignalSnapshot {
+    fn from_audio(audio: &AudioData) -> Self {
+        Self {
+            level: audio.rms_level,
+            bass: audio.bass(),
+            mid: audio.mid(),
+            treble: audio.treble(),
+            beat: audio.beat_detected,
+        }
     }
 }
 

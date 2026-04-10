@@ -2344,6 +2344,66 @@ async fn idle_pipeline_throttles_even_with_watch_receivers() {
 }
 
 #[tokio::test]
+async fn idle_pipeline_skips_spectrum_publication_without_receivers() {
+    let mut audio = AudioData::silence();
+    audio.rms_level = 0.42;
+    audio.beat_detected = true;
+    audio.beat_confidence = 0.9;
+    for value in &mut audio.spectrum[..40] {
+        *value = 0.8;
+    }
+    for value in &mut audio.spectrum[40..130] {
+        *value = 0.4;
+    }
+    for value in &mut audio.spectrum[130..] {
+        *value = 0.2;
+    }
+
+    let state = make_render_state(
+        EffectEngine::new(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+
+    let mut frame_rx = state.event_bus.frame_receiver();
+    assert_eq!(state.event_bus.spectrum_receiver_count(), 0);
+
+    {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager.add_source(Box::new(MockAudioSource::new(audio)));
+        input_manager
+            .start_all()
+            .expect("input manager should start");
+    }
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+    let first_frame = tokio::time::timeout(Duration::from_secs(1), frame_rx.changed()).await;
+    assert!(
+        first_frame.is_ok(),
+        "expected initial frame before idle throttling"
+    );
+    let _ = frame_rx.borrow_and_update();
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let published_spectrum = state.event_bus.spectrum_sender().borrow().clone();
+    assert_eq!(published_spectrum.timestamp_ms, 0);
+    assert_eq!(published_spectrum.level, 0.0);
+    assert_eq!(published_spectrum.bins.len(), 0);
+}
+
+#[tokio::test]
 async fn idle_pipeline_does_not_republish_empty_screen_canvas_frames() {
     let state = make_render_state(
         EffectEngine::new(),
