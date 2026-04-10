@@ -1834,6 +1834,9 @@ fn prepare_output_for_led_ranges(
 
 fn prepare_output_for_leds(colors: &mut [[u8; 3]], brightness: f32) {
     for color in colors {
+        if *color == [0, 0, 0] {
+            continue;
+        }
         let linear = [
             decode_srgb_channel(color[0]),
             decode_srgb_channel(color[1]),
