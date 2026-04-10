@@ -5,8 +5,10 @@ use hypercolor_types::device::DeviceFamily;
 use crate::protocol::Protocol;
 use crate::registry::{DeviceDescriptor, HidRawReportMode, ProtocolBinding, TransportType};
 
+use super::common::{LianLiHubVariant, TL_REPORT_ID};
+use super::ene::Ene6k77Protocol;
 use super::legacy::LegacyUniHubProtocol;
-use super::protocol::{Ene6k77Protocol, LianLiHubVariant, TL_REPORT_ID, TlFanProtocol};
+use super::tl::TlFanProtocol;
 
 /// ENE-based Lian Li vendor ID.
 pub const LIANLI_ENE_VENDOR_ID: u16 = 0x0CF2;

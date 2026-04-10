@@ -9,7 +9,7 @@ use crate::protocol::{
 };
 use crate::transport::vendor::{VendorControlOperation, encode_operations as encode_vendor_ops};
 
-use super::protocol::apply_al_white_limit;
+use super::common::apply_al_white_limit;
 
 const LEGACY_GROUP_COUNT: usize = 4;
 const LEGACY_MAX_FANS_PER_GROUP: usize = 4;
