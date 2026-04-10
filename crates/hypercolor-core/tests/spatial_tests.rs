@@ -817,6 +817,43 @@ fn sample_into_reuses_zone_and_color_buffers() {
     }
 }
 
+#[test]
+fn append_sample_into_appends_zone_samples() {
+    let canvas = solid_canvas(32, 20, Rgba::new(40, 50, 60, 255));
+    let layout = test_layout(
+        vec![
+            full_canvas_zone(
+                "strip1",
+                LedTopology::Strip {
+                    count: 5,
+                    direction: StripDirection::LeftToRight,
+                },
+            ),
+            full_canvas_zone(
+                "strip2",
+                LedTopology::Strip {
+                    count: 8,
+                    direction: StripDirection::LeftToRight,
+                },
+            ),
+        ],
+        32,
+        20,
+    );
+    let engine = SpatialEngine::new(layout);
+    let mut zones = vec![ZoneColors {
+        zone_id: "existing".into(),
+        colors: vec![[1, 2, 3]],
+    }];
+
+    engine.append_sample_into(&canvas, &mut zones);
+
+    assert_eq!(zones.len(), 3);
+    assert_eq!(zones[0].zone_id, "existing");
+    assert_eq!(zones[1].colors, vec![[40, 50, 60]; 5]);
+    assert_eq!(zones[2].colors, vec![[40, 50, 60]; 8]);
+}
+
 // ── Empty Layout ────────────────────────────────────────────────────────────
 
 #[test]

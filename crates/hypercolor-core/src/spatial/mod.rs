@@ -100,6 +100,20 @@ impl SpatialEngine {
         }
     }
 
+    /// Append sampled zones to an existing output buffer without allocating a temporary vector.
+    pub fn append_sample_into(&self, canvas: &Canvas, zones: &mut Vec<ZoneColors>) {
+        zones.reserve(self.prepared_zones.len());
+
+        for prepared_zone in self.prepared_zones.iter() {
+            let mut colors = Vec::new();
+            sampler::sample_prepared_zone_into(canvas, prepared_zone, &mut colors);
+            zones.push(ZoneColors {
+                zone_id: prepared_zone.zone_id.clone(),
+                colors,
+            });
+        }
+    }
+
     /// Replace the active layout and recompute all LED positions.
     ///
     /// Call this when the user edits the layout (moves/adds/removes zones,

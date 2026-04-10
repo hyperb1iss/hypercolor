@@ -123,7 +123,7 @@ impl RenderGroupRuntime {
             let Some(spatial_engine) = self.spatial_engines.get(&group.id) else {
                 continue;
             };
-            zones.extend(spatial_engine.sample(target));
+            spatial_engine.append_sample_into(target, &mut zones);
         }
         let sample_us = micros_u32(sample_start.elapsed());
         let logical_layer_count = u32::try_from(
