@@ -17,7 +17,7 @@ use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
 
 use crate::style_utils::{category_accent_rgb, filter_chips};
 
-const EFFECTS_PREVIEW_FPS_CAP: u32 = 24;
+const EFFECTS_PREVIEW_FPS_CAP: u32 = 60;
 const MIN_DETAIL_WIDTH: f64 = 260.0;
 const MAX_DETAIL_WIDTH: f64 = 1200.0;
 const MIN_CONTROLS_WIDTH: f64 = 220.0;
