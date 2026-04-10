@@ -14,7 +14,7 @@ use std::time::SystemTime;
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
-use axum::extract::ws::{Message, WebSocket};
+use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
 use axum::extract::{Extension, State, WebSocketUpgrade};
 use axum::http::{Method, Request, header};
 use axum::response::Response;
@@ -889,7 +889,7 @@ async fn handle_socket(
     let event_rx = state.event_bus.subscribe_all();
     // Split outbound traffic: both queues are bounded so slow clients cannot
     // grow daemon memory without limit.
-    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<String>(WS_BUFFER_SIZE);
+    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(WS_BUFFER_SIZE);
     let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(WS_BUFFER_SIZE);
 
     // Spawn event relay tasks — each watches immutable subscription snapshots.
@@ -942,7 +942,7 @@ async fn handle_socket(
                 match json_msg {
                     Some(msg) => {
                         let sent_len = msg.len();
-                        if socket.send(Message::Text(msg.into())).await.is_err() {
+                        if socket.send(Message::Text(msg)).await.is_err() {
                             break;
                         }
                         track_ws_bytes_sent(sent_len);
@@ -1025,7 +1025,7 @@ async fn handle_socket(
 /// Drops events when the consumer is slow (backpressure).
 async fn relay_events(
     mut event_rx: broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
-    json_tx: tokio::sync::mpsc::Sender<String>,
+    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
     subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     loop {
@@ -1083,14 +1083,14 @@ fn should_relay_event(
 
 #[derive(Clone)]
 enum FrameRelayMessage {
-    Json(String),
+    Json(Utf8Bytes),
     Binary(Bytes),
 }
 
 /// Relay frame watch updates to the WebSocket client.
 async fn relay_frames(
     state: Arc<AppState>,
-    json_tx: tokio::sync::mpsc::Sender<String>,
+    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
     binary_tx: tokio::sync::mpsc::Sender<Bytes>,
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
@@ -1171,7 +1171,7 @@ async fn relay_frames(
 /// Relay spectrum watch updates to the WebSocket client.
 async fn relay_spectrum(
     state: Arc<AppState>,
-    json_tx: tokio::sync::mpsc::Sender<String>,
+    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
     binary_tx: tokio::sync::mpsc::Sender<Bytes>,
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
@@ -1247,7 +1247,7 @@ async fn relay_spectrum(
 async fn relay_canvas(
     preview_runtime: Arc<crate::preview_runtime::PreviewRuntime>,
     mut power_state_rx: watch::Receiver<OutputPowerState>,
-    json_tx: tokio::sync::mpsc::Sender<String>,
+    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
     binary_tx: tokio::sync::mpsc::Sender<Bytes>,
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
@@ -1364,7 +1364,7 @@ async fn relay_canvas(
 /// Relay raw screen-source canvas updates to the WebSocket client.
 async fn relay_screen_canvas(
     preview_runtime: Arc<crate::preview_runtime::PreviewRuntime>,
-    json_tx: tokio::sync::mpsc::Sender<String>,
+    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
     binary_tx: tokio::sync::mpsc::Sender<Bytes>,
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
@@ -1472,7 +1472,7 @@ fn sync_preview_receiver(
 /// Relay periodic metrics snapshots to the WebSocket client.
 async fn relay_metrics(
     state: Arc<AppState>,
-    json_tx: tokio::sync::mpsc::Sender<String>,
+    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut last_total_bytes = WS_TOTAL_BYTES_SENT.load(Ordering::Relaxed);
@@ -1535,12 +1535,15 @@ async fn relay_metrics(
     }
 }
 
-fn try_enqueue_json(
-    json_tx: &tokio::sync::mpsc::Sender<String>,
-    text: String,
+fn try_enqueue_json<T>(
+    json_tx: &tokio::sync::mpsc::Sender<Utf8Bytes>,
+    text: T,
     stream: &str,
-) -> bool {
-    match json_tx.try_send(text) {
+) -> bool
+where
+    T: Into<Utf8Bytes>,
+{
+    match json_tx.try_send(text.into()) {
         Ok(()) => true,
         Err(TrySendError::Full(_)) => {
             debug!(
@@ -2049,7 +2052,7 @@ struct BorrowedFrameMessage<'a> {
 fn encode_frame_json_selected(
     frame: &hypercolor_types::event::FrameData,
     selection: &FrameZoneSelection,
-) -> String {
+) -> Utf8Bytes {
     let zones = match selection {
         FrameZoneSelection::All => frame
             .zones
@@ -2076,6 +2079,7 @@ fn encode_frame_json_selected(
         zones,
     })
     .unwrap_or_default()
+    .into()
 }
 
 fn encode_spectrum_binary(
@@ -2647,7 +2651,7 @@ fn process_rss_mb() -> Option<f64> {
 }
 
 fn enqueue_backpressure_notice(
-    json_tx: &tokio::sync::mpsc::Sender<String>,
+    json_tx: &tokio::sync::mpsc::Sender<Utf8Bytes>,
     channel: &str,
     current_fps: u32,
 ) {
@@ -2826,6 +2830,7 @@ mod tests {
     use crate::performance::{FrameTimeline, LatestFrameMetrics};
     use crate::preview_runtime::{PreviewFrameReceiver, PreviewRuntime};
     use axum::body::Bytes;
+    use axum::extract::ws::Utf8Bytes;
     use axum::response::IntoResponse;
     use hypercolor_core::bus::CanvasFrame;
     use hypercolor_core::bus::HypercolorBus;
@@ -2987,7 +2992,7 @@ mod tests {
         let state = Arc::new(AppState::new());
         let initial_subscriptions = SubscriptionState::default();
         let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
-        let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<String>(1);
+        let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(1);
 
         let relay_handle =
             tokio::spawn(relay_metrics(Arc::clone(&state), json_tx, subscriptions_rx));
@@ -3009,7 +3014,7 @@ mod tests {
     async fn relay_frames_wakes_when_subscription_changes() {
         let initial_subscriptions = SubscriptionState::default();
         let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
-        let (json_tx, _json_rx) = tokio::sync::mpsc::channel::<String>(1);
+        let (json_tx, _json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(1);
         let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(1);
         let state = Arc::new(AppState::new());
         let _ = state.event_bus.frame_sender().send(sample_frame());
@@ -3053,7 +3058,7 @@ mod tests {
     async fn relay_spectrum_subscribes_lazily() {
         let initial_subscriptions = SubscriptionState::default();
         let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
-        let (json_tx, _json_rx) = tokio::sync::mpsc::channel::<String>(1);
+        let (json_tx, _json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(1);
         let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(1);
         let state = Arc::new(AppState::new());
         let _ = state
@@ -3248,7 +3253,7 @@ mod tests {
 
     #[tokio::test]
     async fn try_enqueue_json_drops_when_queue_is_full() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(1);
 
         assert!(try_enqueue_json(&tx, "first".to_owned(), "test"));
         assert!(!try_enqueue_json(&tx, "second".to_owned(), "test"));
