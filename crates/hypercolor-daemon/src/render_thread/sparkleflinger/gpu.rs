@@ -120,15 +120,7 @@ impl GpuSparkleFlinger {
     }
 
     pub(crate) fn supports_plan(&self, plan: &CompositionPlan) -> bool {
-        plan.width > 0
-            && plan.height > 0
-            && !plan.layers.is_empty()
-            && plan.layers.iter().all(|layer| {
-                matches!(
-                    layer.mode,
-                    CompositionMode::Replace | CompositionMode::Alpha
-                )
-            })
+        plan.width > 0 && plan.height > 0 && !plan.layers.is_empty()
     }
 
     pub(crate) fn compose(&mut self, plan: CompositionPlan) -> Result<ComposedFrameSet> {
@@ -418,7 +410,11 @@ fn compose_layer_into_gpu(
     let shader_mode = if layer.mode == CompositionMode::Replace && layer.opacity >= 1.0 {
         ComposeShaderMode::Replace
     } else {
-        ComposeShaderMode::Alpha
+        match layer.mode {
+            CompositionMode::Replace | CompositionMode::Alpha => ComposeShaderMode::Alpha,
+            CompositionMode::Add => ComposeShaderMode::Add,
+            CompositionMode::Screen => ComposeShaderMode::Screen,
+        }
     };
     upload_frame_into_texture(queue, &surfaces.source.texture, layer.frame);
     if shader_mode == ComposeShaderMode::Replace {
@@ -594,6 +590,8 @@ fn texture_format_name(format: wgpu::TextureFormat) -> &'static str {
 enum ComposeShaderMode {
     Replace = 0,
     Alpha = 1,
+    Add = 2,
+    Screen = 3,
 }
 
 #[cfg(test)]
@@ -666,6 +664,68 @@ mod tests {
         let composed = compositor
             .compose(plan)
             .expect("GPU composition should succeed for replace + alpha plans");
+
+        assert_eq!(
+            composed.sampling_canvas.as_rgba_bytes(),
+            expected.sampling_canvas.as_rgba_bytes()
+        );
+    }
+
+    #[test]
+    fn gpu_compositor_matches_cpu_add_composition() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                    32, 12, 96, 255,
+                )))),
+                CompositionLayer::add(
+                    ProducerFrame::Canvas(solid_canvas(Rgba::new(96, 64, 48, 255))),
+                    0.4,
+                ),
+            ],
+        );
+        let expected = CpuSparkleFlinger::new().compose(plan.clone());
+        let composed = compositor
+            .compose(plan)
+            .expect("GPU composition should succeed for add plans");
+
+        assert_eq!(
+            composed.sampling_canvas.as_rgba_bytes(),
+            expected.sampling_canvas.as_rgba_bytes()
+        );
+    }
+
+    #[test]
+    fn gpu_compositor_matches_cpu_screen_composition() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                    12, 120, 48, 255,
+                )))),
+                CompositionLayer::screen(
+                    ProducerFrame::Canvas(solid_canvas(Rgba::new(200, 32, 64, 255))),
+                    0.6,
+                ),
+            ],
+        );
+        let expected = CpuSparkleFlinger::new().compose(plan.clone());
+        let composed = compositor
+            .compose(plan)
+            .expect("GPU composition should succeed for screen plans");
 
         assert_eq!(
             composed.sampling_canvas.as_rgba_bytes(),

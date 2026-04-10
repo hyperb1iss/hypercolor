@@ -17,6 +17,8 @@ var<uniform> params: ComposeParams;
 
 const MODE_REPLACE: u32 = 0u;
 const MODE_ALPHA: u32 = 1u;
+const MODE_ADD: u32 = 2u;
+const MODE_SCREEN: u32 = 3u;
 
 fn srgb_to_linear(channel: f32) -> f32 {
     if (channel <= 0.04045) {
@@ -58,6 +60,23 @@ fn compose_alpha(destination: vec4<f32>, source: vec4<f32>, opacity: f32) -> vec
     return vec4<f32>(rgb, alpha);
 }
 
+fn compose_add(destination: vec4<f32>, source: vec4<f32>, opacity: f32) -> vec4<f32> {
+    let source_alpha = source.a * opacity;
+    let inverse_alpha = 1.0 - source_alpha;
+    let rgb = destination.rgb * inverse_alpha + min(destination.rgb + source.rgb, vec3<f32>(1.0)) * source_alpha;
+    let alpha = min(destination.a + source_alpha - destination.a * source_alpha, 1.0);
+    return vec4<f32>(rgb, alpha);
+}
+
+fn compose_screen(destination: vec4<f32>, source: vec4<f32>, opacity: f32) -> vec4<f32> {
+    let source_alpha = source.a * opacity;
+    let inverse_alpha = 1.0 - source_alpha;
+    let screen = vec3<f32>(1.0) - (vec3<f32>(1.0) - destination.rgb) * (vec3<f32>(1.0) - source.rgb);
+    let rgb = destination.rgb * inverse_alpha + screen * source_alpha;
+    let alpha = min(destination.a + source_alpha - destination.a * source_alpha, 1.0);
+    return vec4<f32>(rgb, alpha);
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn compose(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= params.size_and_mode.x || gid.y >= params.size_and_mode.y) {
@@ -71,6 +90,10 @@ fn compose(@builtin(global_invocation_id) gid: vec3<u32>) {
     var composed = source;
     if (params.size_and_mode.z == MODE_ALPHA) {
         composed = compose_alpha(destination, source, params.opacity.x);
+    } else if (params.size_and_mode.z == MODE_ADD) {
+        composed = compose_add(destination, source, params.opacity.x);
+    } else if (params.size_and_mode.z == MODE_SCREEN) {
+        composed = compose_screen(destination, source, params.opacity.x);
     }
 
     textureStore(output_texture, xy, encode_srgb(composed));
