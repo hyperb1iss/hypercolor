@@ -106,8 +106,10 @@ impl ServoRenderer {
         }
     }
 
-    fn placeholder_canvas(input: &FrameInput) -> Canvas {
-        let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
+    fn render_placeholder_into(target: &mut Canvas, input: &FrameInput) {
+        if target.width() != input.canvas_width || target.height() != input.canvas_height {
+            *target = Canvas::new(input.canvas_width, input.canvas_height);
+        }
         let frame_mod = u8::try_from(input.frame_number % u64::from(u8::MAX)).unwrap_or_default();
         #[allow(
             clippy::as_conversions,
@@ -117,8 +119,12 @@ impl ServoRenderer {
         let audio_mod = (input.audio.rms_level.clamp(0.0, 1.0) * f32::from(u8::MAX)) as u8;
 
         let color = Rgba::new(frame_mod, audio_mod, frame_mod.saturating_add(32), 255);
-        canvas.fill(color);
-        canvas
+        target.fill(color);
+    }
+
+    fn take_pending_scripts(&mut self) -> Vec<String> {
+        let capacity = self.pending_scripts.capacity();
+        std::mem::replace(&mut self.pending_scripts, Vec::with_capacity(capacity))
     }
 
     fn cleanup_runtime_html(&mut self) {
@@ -288,16 +294,20 @@ impl ServoRenderer {
             return;
         }
 
-        let Some(worker) = self.worker.clone() else {
+        if self.worker.is_none() {
             return;
-        };
+        }
         let Some(frame) = self.queued_frame.take() else {
             return;
         };
 
         let frame_input = frame.as_frame_input();
         self.enqueue_frame_scripts(&frame_input);
-        let scripts = std::mem::take(&mut self.pending_scripts);
+        let scripts = self.take_pending_scripts();
+        let worker = self
+            .worker
+            .as_ref()
+            .expect("worker presence should be stable while queuing one render");
         match worker.submit_render(scripts, frame.canvas_width, frame.canvas_height) {
             Ok(render) => {
                 self.in_flight_render = Some(render);
@@ -379,10 +389,11 @@ impl EffectRenderer for ServoRenderer {
         self.poll_in_flight_render();
         self.try_submit_queued_frame();
 
-        *target = self
-            .last_canvas
-            .clone()
-            .unwrap_or_else(|| Self::placeholder_canvas(input));
+        if let Some(canvas) = self.last_canvas.as_ref() {
+            target.clone_from(canvas);
+        } else {
+            Self::render_placeholder_into(target, input);
+        }
         Ok(())
     }
 
@@ -671,6 +682,20 @@ mod tests {
     }
 
     #[test]
+    fn take_pending_scripts_preserves_capacity() {
+        let mut renderer = ServoRenderer::new();
+        renderer.pending_scripts = Vec::with_capacity(8);
+        renderer.pending_scripts.push("tick()".to_owned());
+
+        let capacity = renderer.pending_scripts.capacity();
+        let scripts = renderer.take_pending_scripts();
+
+        assert_eq!(scripts, vec!["tick()"]);
+        assert!(renderer.pending_scripts.is_empty());
+        assert!(renderer.pending_scripts.capacity() >= capacity);
+    }
+
+    #[test]
     fn init_with_canvas_size_loads_servo_page_at_target_resolution() {
         let _lock = SHARED_WORKER_STATE_TEST_LOCK
             .lock()
@@ -788,6 +813,26 @@ mod tests {
             .filter(|script| script.contains("window.engine.keyboard.keys"))
             .count();
         assert_eq!(second_input_scripts, 0);
+    }
+
+    #[test]
+    fn render_into_without_completed_frame_fills_placeholder_target() {
+        let mut renderer = ServoRenderer::new();
+        renderer.initialized = true;
+
+        let audio = custom_audio(0.5);
+        let interaction = custom_interaction(&[], &[]);
+        let input = frame_input_with(1.0 / 30.0, 7, &audio, &interaction, 4, 3);
+        let mut target = Canvas::new(1, 1);
+
+        renderer
+            .render_into(&input, &mut target)
+            .expect("placeholder render should succeed");
+
+        assert_eq!(target.width(), 4);
+        assert_eq!(target.height(), 3);
+        assert_eq!(target.get_pixel(0, 0), Rgba::new(7, 127, 39, 255));
+        assert_eq!(target.get_pixel(3, 2), Rgba::new(7, 127, 39, 255));
     }
 
     #[test]
