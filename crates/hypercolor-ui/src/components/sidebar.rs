@@ -193,6 +193,46 @@ pub fn Sidebar() -> impl IntoView {
         }
     };
 
+    // Memoized palette colors. Published once per live_palette tick as
+    // --np-primary / --np-secondary / --np-tertiary CSS custom properties on
+    // the Now Playing root, so every downstream style binding is a static
+    // `rgb(var(--np-*))` string instead of a reactive format! closure that
+    // wakes on every tick. All live-palette colors pass through harmonize_rgb
+    // so the three hues sit in a cohesive L/S band.
+    let primary_rgb = Memo::new(move |_| {
+        let cat = fx.active_effect_category.get();
+        if uses_sidebar_preview.get() {
+            category_accent_rgb(&cat).to_string()
+        } else {
+            live_palette.get().map_or_else(
+                || category_accent_rgb(&cat).to_string(),
+                |p| color::rgb_string(color::harmonize_rgb(p.primary)),
+            )
+        }
+    });
+    let secondary_rgb = Memo::new(move |_| {
+        let cat = fx.active_effect_category.get();
+        if uses_sidebar_preview.get() {
+            category_accent_rgb(&cat).to_string()
+        } else {
+            live_palette.get().map_or_else(
+                || category_accent_rgb(&cat).to_string(),
+                |p| color::rgb_string(color::harmonize_rgb(p.secondary)),
+            )
+        }
+    });
+    let tertiary_rgb = Memo::new(move |_| {
+        let cat = fx.active_effect_category.get();
+        if uses_sidebar_preview.get() {
+            category_accent_rgb(&cat).to_string()
+        } else {
+            live_palette.get().map_or_else(
+                || category_accent_rgb(&cat).to_string(),
+                |p| color::rgb_string(color::harmonize_rgb(p.tertiary)),
+            )
+        }
+    });
+
     view! {
         <nav
             class="flex flex-col h-full bg-surface-raised border-r border-edge-subtle shrink-0 transition-[width] duration-250 ease-out relative"
@@ -452,66 +492,24 @@ pub fn Sidebar() -> impl IntoView {
                 }
                 let push_global_brightness = push_global_brightness.clone();
 
-                // Derived signals for palette RGB — read inside style: closures, not here.
-                // All live-palette colors pass through harmonize_rgb so the three hues
-                // sit in a cohesive L/S band (readable on dark + visually coordinated).
-                let primary_rgb = move || {
-                    let cat = fx.active_effect_category.get();
-                    if uses_sidebar_preview.get() {
-                        category_accent_rgb(&cat).to_string()
-                    } else {
-                        live_palette.get().map_or_else(
-                            || category_accent_rgb(&cat).to_string(),
-                            |p| color::rgb_string(color::harmonize_rgb(p.primary)),
-                        )
-                    }
-                };
-                let secondary_rgb = move || {
-                    let cat = fx.active_effect_category.get();
-                    if uses_sidebar_preview.get() {
-                        category_accent_rgb(&cat).to_string()
-                    } else {
-                        live_palette.get().map_or_else(
-                            || category_accent_rgb(&cat).to_string(),
-                            |p| color::rgb_string(color::harmonize_rgb(p.secondary)),
-                        )
-                    }
-                };
-                let tertiary_rgb = move || {
-                    let cat = fx.active_effect_category.get();
-                    if uses_sidebar_preview.get() {
-                        category_accent_rgb(&cat).to_string()
-                    } else {
-                        live_palette.get().map_or_else(
-                            || category_accent_rgb(&cat).to_string(),
-                            |p| color::rgb_string(color::harmonize_rgb(p.tertiary)),
-                        )
-                    }
-                };
-
                 Some(view! {
                     <div
                         class="shrink-0 border-t border-edge-subtle py-3 space-y-3 animate-fade-in"
-                        style:box-shadow=move || {
-                            let p = primary_rgb();
-                            let s = secondary_rgb();
-                            format!(
-                                "inset 3px 0 0 rgb({p}), inset 4px 0 12px rgba({p}, 0.15), \
-                                 inset 0 -1px 20px rgba({s}, 0.06)"
-                            )
-                        }
-                        style:background=move || {
-                            let p = primary_rgb();
-                            let s = secondary_rgb();
-                            format!(
-                                "linear-gradient(180deg, rgba({p}, 0.04) 0%, rgba({s}, 0.03) 60%, transparent 100%)"
-                            )
-                        }
+                        style:--np-primary=move || primary_rgb.get()
+                        style:--np-secondary=move || secondary_rgb.get()
+                        style:--np-tertiary=move || tertiary_rgb.get()
+                        style:box-shadow="inset 3px 0 0 rgb(var(--np-primary)), \
+                                          inset 4px 0 12px rgba(var(--np-primary), 0.15), \
+                                          inset 0 -1px 20px rgba(var(--np-secondary), 0.06)"
+                        style:background="linear-gradient(180deg, \
+                                          rgba(var(--np-primary), 0.04) 0%, \
+                                          rgba(var(--np-secondary), 0.03) 60%, \
+                                          transparent 100%)"
                     >
                         // Now Playing label
                         <div
                             class="px-4 text-[9px] font-mono uppercase tracking-[0.15em]"
-                            style:color=move || format!("rgba({}, 0.85)", primary_rgb())
+                            style:color="rgba(var(--np-primary), 0.85)"
                         >
                             {move || if fx.is_playing.get() { "Now Playing" } else { "Stopped" }}
                         </div>
@@ -522,11 +520,8 @@ pub fn Sidebar() -> impl IntoView {
                                 <div class="px-3 animate-fade-in">
                                     <div
                                         class="relative rounded-lg overflow-hidden bg-black/40"
-                                        style:box-shadow=move || {
-                                            let p = primary_rgb();
-                                            let s = secondary_rgb();
-                                            format!("0 4px 20px rgba({p}, 0.25), 0 0 40px rgba({s}, 0.08)")
-                                        }
+                                        style:box-shadow="0 4px 20px rgba(var(--np-primary), 0.25), \
+                                                          0 0 40px rgba(var(--np-secondary), 0.08)"
                                     >
                                         <CanvasPreview
                                             frame=canvas_frame
@@ -548,9 +543,9 @@ pub fn Sidebar() -> impl IntoView {
                                 } else {
                                     "w-2 h-2 rounded-full shrink-0 opacity-50"
                                 }
-                                style:background=move || format!("rgb({})", primary_rgb())
+                                style:background="rgb(var(--np-primary))"
                                 style:box-shadow=move || if fx.is_playing.get() {
-                                    format!("0 0 8px rgba({}, 0.7)", primary_rgb())
+                                    "0 0 8px rgba(var(--np-primary), 0.7)".to_string()
                                 } else {
                                     String::new()
                                 }
@@ -561,7 +556,7 @@ pub fn Sidebar() -> impl IntoView {
                                 </div>
                                 <div
                                     class="text-[10px] capitalize mt-0.5"
-                                    style:color=move || format!("rgba({}, 0.85)", secondary_rgb())
+                                    style:color="rgba(var(--np-secondary), 0.85)"
                                 >
                                     {move || fx.active_effect_category.get()}
                                 </div>
@@ -573,19 +568,12 @@ pub fn Sidebar() -> impl IntoView {
                         <div class="px-4">
                             <div
                                 class="h-[3px] rounded-full"
-                                style:background=move || {
-                                    let p = primary_rgb();
-                                    let s = secondary_rgb();
-                                    let t = tertiary_rgb();
-                                    format!(
-                                        "linear-gradient(90deg, rgb({p}) 0%, rgb({s}) 50%, rgb({t}) 100%)"
-                                    )
-                                }
+                                style:background="linear-gradient(90deg, \
+                                                  rgb(var(--np-primary)) 0%, \
+                                                  rgb(var(--np-secondary)) 50%, \
+                                                  rgb(var(--np-tertiary)) 100%)"
                                 style:opacity="0.7"
-                                style:box-shadow=move || {
-                                    let p = primary_rgb();
-                                    format!("0 0 8px rgba({p}, 0.3)")
-                                }
+                                style:box-shadow="0 0 8px rgba(var(--np-primary), 0.3)"
                             />
                         </div>
 
@@ -647,7 +635,7 @@ pub fn Sidebar() -> impl IntoView {
                                 max="100"
                                 step="1"
                                 class="min-w-0 flex-1 h-1 rounded-full appearance-none cursor-pointer"
-                                style:accent-color=move || format!("rgb({})", primary_rgb())
+                                style:accent-color="rgb(var(--np-primary))"
                                 style:background="rgba(139, 133, 160, 0.15)"
                                 prop:value=move || global_brightness.get().to_string()
                                 on:input=move |ev| {
