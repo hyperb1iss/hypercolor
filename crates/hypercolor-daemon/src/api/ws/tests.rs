@@ -15,7 +15,8 @@ use super::cache::{
     WS_FRAME_PAYLOAD_CACHE_HIT_COUNT, WS_SCREEN_CANVAS_HEADER, WS_SPECTRUM_PAYLOAD_BUILD_COUNT,
     WS_SPECTRUM_PAYLOAD_CACHE, WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT, cached_frame_payload,
     cached_spectrum_payload, encode_cached_canvas_preview_binary, encode_canvas_binary_with_header,
-    encode_canvas_preview_binary, encode_frame_binary, encode_spectrum_binary,
+    encode_canvas_preview_binary, encode_frame_binary, encode_frame_binary_selected,
+    encode_spectrum_binary,
 };
 use super::command::{
     command_response_from_http, dispatch_command, normalize_command_path, parse_command_method,
@@ -730,6 +731,34 @@ fn frame_binary_encoder_writes_header_and_payload() {
         1234
     );
     assert_eq!(encoded[9], 1);
+}
+
+#[test]
+fn filtered_frame_binary_encoder_writes_selected_zone_count_and_payload() {
+    let frame = FrameData {
+        frame_number: 42,
+        timestamp_ms: 1234,
+        zones: vec![
+            ZoneColors {
+                zone_id: "left".to_owned(),
+                colors: vec![[255, 0, 0]],
+            },
+            ZoneColors {
+                zone_id: "right".to_owned(),
+                colors: vec![[0, 0, 255], [0, 255, 0]],
+            },
+        ],
+    };
+
+    let encoded =
+        encode_frame_binary_selected(&frame, &FrameZoneSelection::new(&["right".to_owned()]));
+
+    assert_eq!(encoded[0], 0x01);
+    assert_eq!(encoded[9], 1);
+    assert_eq!(u16::from_le_bytes([encoded[10], encoded[11]]), 5);
+    assert_eq!(&encoded[12..17], b"right");
+    assert_eq!(u16::from_le_bytes([encoded[17], encoded[18]]), 2);
+    assert_eq!(&encoded[19..25], &[0, 0, 255, 0, 255, 0]);
 }
 
 #[test]

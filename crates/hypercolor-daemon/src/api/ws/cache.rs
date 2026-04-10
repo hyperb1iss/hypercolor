@@ -240,48 +240,27 @@ fn encode_filtered_frame_binary(
     selection: &FrameZoneSelection,
 ) -> Vec<u8> {
     let max_zone_count = usize::from(u8::MAX);
-    let mut included_zone_count = 0_usize;
-    let mut payload_bytes = 0_usize;
-    for zone in &frame.zones {
-        if included_zone_count >= max_zone_count || !selection.includes(zone.zone_id.as_str()) {
-            continue;
-        }
-        let zone_id_len = zone.zone_id.len().min(usize::from(u16::MAX));
-        let led_count = zone.colors.len().min(usize::from(u16::MAX));
-        payload_bytes = payload_bytes.saturating_add(
-            2_usize
-                .saturating_add(zone_id_len)
-                .saturating_add(2)
-                .saturating_add(led_count.saturating_mul(3)),
-        );
-        included_zone_count = included_zone_count.saturating_add(1);
-    }
-
-    let mut out = Vec::with_capacity(10_usize.saturating_add(payload_bytes));
+    let mut out = Vec::with_capacity(
+        10_usize.saturating_add(frame.zones.len().min(max_zone_count).saturating_mul(16)),
+    );
     out.push(0x01);
     out.extend_from_slice(&frame.frame_number.to_le_bytes());
     out.extend_from_slice(&frame.timestamp_ms.to_le_bytes());
-    out.push(u8::try_from(included_zone_count).unwrap_or(u8::MAX));
+    let zone_count_index = out.len();
+    out.push(0);
 
-    let mut encoded_zone_count = 0_usize;
+    let mut encoded_zone_count = 0_u8;
     for zone in &frame.zones {
-        if encoded_zone_count >= included_zone_count || !selection.includes(zone.zone_id.as_str()) {
+        if usize::from(encoded_zone_count) >= max_zone_count
+            || !selection.includes(zone.zone_id.as_str())
+        {
             continue;
         }
-        let zone_id_bytes = zone.zone_id.as_bytes();
-        let zone_id_len_u16 = u16::try_from(zone_id_bytes.len()).unwrap_or(u16::MAX);
-        let zone_id_len = usize::from(zone_id_len_u16);
-        out.extend_from_slice(&zone_id_len_u16.to_le_bytes());
-        out.extend_from_slice(&zone_id_bytes[..zone_id_len]);
 
-        let led_count_u16 = u16::try_from(zone.colors.len()).unwrap_or(u16::MAX);
-        out.extend_from_slice(&led_count_u16.to_le_bytes());
-        let led_count = usize::from(led_count_u16);
-        for color in zone.colors.iter().take(led_count) {
-            out.extend_from_slice(color);
-        }
+        encode_frame_zone_binary(&mut out, zone);
         encoded_zone_count = encoded_zone_count.saturating_add(1);
     }
+    out[zone_count_index] = encoded_zone_count;
 
     out
 }
