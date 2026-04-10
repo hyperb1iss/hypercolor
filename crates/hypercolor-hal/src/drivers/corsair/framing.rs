@@ -67,8 +67,21 @@ pub fn pad_to(data: &[u8], len: usize) -> Vec<u8> {
 }
 
 /// Build a 513-byte LINK packet from command bytes and payload bytes.
+///
+/// The combined length of `command` and `data` must fit within
+/// `LINK_WRITE_BUF_SIZE - 3`; callers that exceed this will have trailing
+/// bytes silently dropped in release builds and will trip a debug assert
+/// in development builds.
 #[must_use]
 pub fn build_link_packet(command: &[u8], data: &[u8]) -> Vec<u8> {
+    debug_assert!(
+        command.len() + data.len() <= LINK_WRITE_BUF_SIZE - 3,
+        "LINK packet overflow: command={}B data={}B capacity={}B",
+        command.len(),
+        data.len(),
+        LINK_WRITE_BUF_SIZE - 3,
+    );
+
     let mut buf = vec![0_u8; LINK_WRITE_BUF_SIZE];
     buf[2] = 0x01;
 

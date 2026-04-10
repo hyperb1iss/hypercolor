@@ -3,6 +3,8 @@
 use std::sync::RwLock;
 use std::time::Duration;
 
+use tracing::warn;
+
 use crate::transport::TransportError;
 use crate::transport::smbus::{SmBusOperation, decode_operations, encode_operations};
 
@@ -240,14 +242,42 @@ pub fn supports_mode_14(config_table: &[u8], variant: EneFirmwareVariant) -> boo
 }
 
 /// Build the indirect-read sequence for one ENE register range.
+///
+/// Returns an empty vec if `len` is zero or if the requested range would
+/// overflow the 16-bit ENE address space. The overflow case is logged at
+/// warn level so a misconfigured caller is observable without panicking.
 #[must_use]
 pub fn ene_read_register_range(register: u16, len: usize) -> Vec<EneSmBusOperation> {
+    if len == 0 {
+        return Vec::new();
+    }
+
+    let Ok(len_u16) = u16::try_from(len) else {
+        warn!(
+            register = %format_args!("{register:#06X}"),
+            len,
+            "ENE register read length exceeds u16::MAX; dropping request"
+        );
+        return Vec::new();
+    };
+
+    let Some(last_offset) = len_u16.checked_sub(1) else {
+        return Vec::new();
+    };
+
+    if register.checked_add(last_offset).is_none() {
+        warn!(
+            register = %format_args!("{register:#06X}"),
+            len,
+            "ENE register read range overflows u16::MAX; dropping request"
+        );
+        return Vec::new();
+    }
+
     let mut operations = Vec::with_capacity(len.saturating_mul(3));
 
-    for offset in 0..len {
-        let current = register
-            .checked_add(u16::try_from(offset).expect("register offset must fit in u16"))
-            .expect("register range should not overflow");
+    for offset in 0..len_u16 {
+        let current = register + offset;
         operations.push(EneSmBusOperation::WriteWordData {
             register: ENE_ADDRESS_REGISTER,
             value: ene_byte_swap(current),
@@ -282,6 +312,10 @@ pub fn ene_write_register(register: u16, value: u8) -> Vec<EneSmBusOperation> {
 }
 
 /// Build the indirect block-write sequence for an ENE register range.
+///
+/// Returns an empty vec if `data` is empty or if the requested range would
+/// overflow the 16-bit ENE address space. The overflow case is logged at
+/// warn level so a misconfigured caller is observable without panicking.
 #[must_use]
 pub fn ene_write_register_block(register: u16, data: &[u8]) -> Vec<EneSmBusOperation> {
     if data.is_empty() {
@@ -289,11 +323,30 @@ pub fn ene_write_register_block(register: u16, data: &[u8]) -> Vec<EneSmBusOpera
     }
 
     let chunk_count = data.len().div_ceil(ENE_BLOCK_WRITE_LIMIT);
+    let max_offset_usize = (chunk_count - 1).saturating_mul(ENE_BLOCK_WRITE_LIMIT);
+
+    let Ok(max_offset) = u16::try_from(max_offset_usize) else {
+        warn!(
+            register = %format_args!("{register:#06X}"),
+            data_len = data.len(),
+            "ENE block write length exceeds u16::MAX; dropping request"
+        );
+        return Vec::new();
+    };
+
+    if register.checked_add(max_offset).is_none() {
+        warn!(
+            register = %format_args!("{register:#06X}"),
+            data_len = data.len(),
+            "ENE block write range overflows u16::MAX; dropping request"
+        );
+        return Vec::new();
+    }
+
     let mut operations = Vec::with_capacity(chunk_count.saturating_mul(3));
 
     for (chunk_index, chunk) in data.chunks(ENE_BLOCK_WRITE_LIMIT).enumerate() {
-        let chunk_offset = u16::try_from(chunk_index * ENE_BLOCK_WRITE_LIMIT)
-            .expect("ENE block offset must fit in u16");
+        let chunk_offset = u16::try_from(chunk_index * ENE_BLOCK_WRITE_LIMIT).unwrap_or(max_offset);
         operations.push(EneSmBusOperation::WriteWordData {
             register: ENE_ADDRESS_REGISTER,
             value: ene_byte_swap(register + chunk_offset),
@@ -371,7 +424,7 @@ impl AuraSmBusProtocol {
     pub fn firmware_name(&self) -> Option<String> {
         self.state
             .read()
-            .expect("ENE SMBus state lock should not be poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .firmware_name
             .clone()
     }
@@ -381,7 +434,7 @@ impl AuraSmBusProtocol {
     pub fn firmware_variant(&self) -> Option<EneFirmwareVariant> {
         self.state
             .read()
-            .expect("ENE SMBus state lock should not be poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .variant
     }
 
@@ -390,7 +443,7 @@ impl AuraSmBusProtocol {
     pub fn supports_mode_14(&self) -> bool {
         self.state
             .read()
-            .expect("ENE SMBus state lock should not be poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .supports_mode_14
     }
 }
@@ -453,7 +506,7 @@ impl Protocol for AuraSmBusProtocol {
                 let mut state = self
                     .state
                     .write()
-                    .expect("ENE SMBus state lock should not be poisoned");
+                    .unwrap_or_else(|err| err.into_inner());
                 state.firmware_name = Some(firmware.clone());
                 state.variant = variant;
 
@@ -466,7 +519,7 @@ impl Protocol for AuraSmBusProtocol {
                 let mut state = self
                     .state
                     .write()
-                    .expect("ENE SMBus state lock should not be poisoned");
+                    .unwrap_or_else(|err| err.into_inner());
                 let Some(variant) = state.variant else {
                     return Err(ProtocolError::MalformedResponse {
                         detail: "ENE config table arrived before firmware variant was known"
@@ -498,7 +551,7 @@ impl Protocol for AuraSmBusProtocol {
         let state = self
             .state
             .read()
-            .expect("ENE SMBus state lock should not be poisoned");
+            .unwrap_or_else(|err| err.into_inner());
 
         if state.led_count == 0 {
             return Vec::new();
@@ -528,7 +581,7 @@ impl Protocol for AuraSmBusProtocol {
     fn total_leds(&self) -> u32 {
         self.state
             .read()
-            .expect("ENE SMBus state lock should not be poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .led_count
     }
 

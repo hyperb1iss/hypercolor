@@ -78,7 +78,7 @@ impl CorsairLinkProtocol {
     pub fn children(&self) -> Vec<LinkChild> {
         self.state
             .read()
-            .expect("LINK state lock should not be poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .children
             .clone()
     }
@@ -105,33 +105,28 @@ impl CorsairLinkProtocol {
         usize::try_from(
             self.state
                 .read()
-                .expect("LINK state lock should not be poisoned")
+                .unwrap_or_else(|err| err.into_inner())
                 .total_leds,
         )
         .unwrap_or_default()
     }
 
-    fn normalize_colors(&self, colors: &[[u8; 3]]) -> Vec<[u8; 3]> {
+    fn normalize_colors(&self, colors: &[[u8; 3]]) -> Result<Vec<[u8; 3]>, ProtocolError> {
         let expected = self.current_total_leds();
         if expected == 0 {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
-        if colors.len() == expected {
-            return colors.to_vec();
+        if colors.len() != expected {
+            return Err(ProtocolError::EncodingError {
+                detail: format!(
+                    "corsair LINK frame length mismatch: expected {expected} LEDs, got {}",
+                    colors.len()
+                ),
+            });
         }
 
-        let mut normalized = vec![[0_u8; 3]; expected];
-        let copy_len = colors.len().min(expected);
-        normalized[..copy_len].copy_from_slice(&colors[..copy_len]);
-
-        warn!(
-            expected,
-            actual = colors.len(),
-            "corsair LINK frame length mismatch; applying truncate/pad"
-        );
-
-        normalized
+        Ok(colors.to_vec())
     }
 
     fn parse_children_response(data: &[u8]) -> Result<Vec<LinkChild>, ProtocolError> {
@@ -208,7 +203,7 @@ impl CorsairLinkProtocol {
         let mut state = self
             .state
             .write()
-            .expect("LINK state lock should not be poisoned");
+            .unwrap_or_else(|err| err.into_inner());
         state.children = children;
         state.total_leds = total_leds;
     }
@@ -241,7 +236,13 @@ impl Protocol for CorsairLinkProtocol {
     }
 
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
-        let normalized = self.normalize_colors(colors);
+        let normalized = match self.normalize_colors(colors) {
+            Ok(frame) => frame,
+            Err(error) => {
+                warn!(%error, "corsair LINK encode_frame rejected frame");
+                return Vec::new();
+            }
+        };
         if normalized.is_empty() {
             return Vec::new();
         }
@@ -282,7 +283,7 @@ impl Protocol for CorsairLinkProtocol {
 
         self.state
             .write()
-            .expect("LINK state lock should not be poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .last_frame_commands
             .clone_from(&commands);
 
@@ -299,7 +300,7 @@ impl Protocol for CorsairLinkProtocol {
     fn keepalive_commands(&self) -> Vec<ProtocolCommand> {
         self.state
             .read()
-            .expect("LINK state lock should not be poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .last_frame_commands
             .clone()
     }
@@ -324,7 +325,7 @@ impl Protocol for CorsairLinkProtocol {
     fn zones(&self) -> Vec<ProtocolZone> {
         self.state
             .read()
-            .expect("LINK state lock should not be poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .children
             .iter()
             .map(|child| ProtocolZone {
@@ -340,7 +341,7 @@ impl Protocol for CorsairLinkProtocol {
         let total_leds = self
             .state
             .read()
-            .expect("LINK state lock should not be poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .total_leds;
         DeviceCapabilities {
             led_count: total_leds,
@@ -357,7 +358,7 @@ impl Protocol for CorsairLinkProtocol {
     fn total_leds(&self) -> u32 {
         self.state
             .read()
-            .expect("LINK state lock should not be poisoned")
+            .unwrap_or_else(|err| err.into_inner())
             .total_leds
     }
 
