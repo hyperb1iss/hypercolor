@@ -29,6 +29,7 @@ pub fn Sparkline(
 ) -> impl IntoView {
     const W: f64 = 200.0;
     const H: f64 = 48.0;
+    const PAD_X: f64 = 5.0;
     const PAD_Y: f64 = 3.0;
 
     let geometry = Memo::new(move |_| {
@@ -51,7 +52,10 @@ pub fn Sparkline(
             return None;
         }
         let range = (hi - lo).max(1e-9);
-        let step = W / (n - 1) as f64;
+        let draw_w = W - PAD_X * 2.0;
+        let project_x = |i: usize| -> f64 {
+            PAD_X + (i as f64 / (n - 1).max(1) as f64) * draw_w
+        };
         let project_y = |v: f64| -> f64 {
             let t = (v - lo) / range;
             H - PAD_Y - t * (H - PAD_Y * 2.0)
@@ -59,7 +63,7 @@ pub fn Sparkline(
 
         let mut line = String::with_capacity(n * 12);
         for (i, v) in vs.iter().enumerate() {
-            let x = i as f64 * step;
+            let x = project_x(i);
             let y = project_y(*v);
             if i == 0 {
                 line.push_str(&format!("M{x:.1},{y:.1}"));
@@ -68,11 +72,11 @@ pub fn Sparkline(
             }
         }
         let mut area = line.clone();
-        area.push_str(&format!(" L{:.1},{:.1}", (n - 1) as f64 * step, H));
-        area.push_str(&format!(" L0,{H} Z"));
+        area.push_str(&format!(" L{:.1},{:.1}", project_x(n - 1), H));
+        area.push_str(&format!(" L{PAD_X},{H} Z"));
 
         let baseline_y = baseline.map(project_y);
-        let last_point = vs.last().copied().map(|v| ((n - 1) as f64 * step, project_y(v)));
+        let last_point = vs.last().copied().map(|v| (project_x(n - 1), project_y(v)));
 
         Some((line, area, baseline_y, last_point, lo, hi))
     });
@@ -210,14 +214,17 @@ pub fn RadialGauge(
                         style="transition: stroke-dashoffset 0.45s cubic-bezier(0.4, 0, 0.2, 1); filter: drop-shadow(0 0 6px currentColor)"
                     />
                 </svg>
-                <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                <div
+                    class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none"
+                    style="overflow: visible"
+                >
                     <div
                         class="text-[22px] font-semibold tabular-nums leading-none"
                         style=format!("color: {color}")
                     >
                         {move || primary.get()}
                     </div>
-                    <div class="mt-1 text-[10px] font-mono text-fg-tertiary uppercase tracking-[0.12em]">
+                    <div class="mt-1 text-[9px] font-mono text-fg-tertiary uppercase tracking-[0.08em] whitespace-nowrap">
                         {move || secondary.get()}
                     </div>
                 </div>

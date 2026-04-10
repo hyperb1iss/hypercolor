@@ -1676,6 +1676,67 @@ body.resizing * {
     50%      { background-position: 100% 50%; }
 }
 
+/* Per-mode collapsed marks — each mirrors its expanded logo's palette */
+.logo-mark-circuit {
+    background: linear-gradient(135deg, #80ffea 0%, #50fa7b 50%, #80ffea 100%);
+    background-size: 200% 200%;
+    animation: markShift 6s ease-in-out infinite, breathe 3s ease-in-out infinite;
+}
+.logo-mark-silk {
+    background: linear-gradient(135deg, #e135ff 0%, #ff6ac1 40%, #fda4af 70%, #c4b5fd 100%);
+    background-size: 200% 200%;
+    animation: markShift 6s ease-in-out infinite, breathe 3s ease-in-out infinite;
+}
+.logo-mark-bloom {
+    background: linear-gradient(135deg, #ff6ac1 0%, #fda4af 40%, #e135ff 70%, #c4b5fd 100%);
+    background-size: 200% 200%;
+    animation: markShift 5s ease-in-out infinite, breathe 3s ease-in-out infinite;
+}
+.logo-mark-whisper {
+    background: linear-gradient(135deg, #c4b5fd 0%, #e135ff 50%, #80ffea 100%);
+    background-size: 200% 200%;
+    animation: markShift 8s ease-in-out infinite, breathe 4s ease-in-out infinite;
+}
+.logo-mark-prism {
+    background: linear-gradient(135deg, #e135ff 0%, #ff6ac1 20%, #fda4af 40%, #c4b5fd 60%, #80ffea 80%, #e135ff 100%);
+    background-size: 200% 200%;
+    animation: logoPrismShift 16s ease-in-out infinite, breathe 3s ease-in-out infinite;
+}
+.logo-mark-script {
+    background: linear-gradient(135deg, #ff6ac1 0%, #e135ff 40%, #c4b5fd 70%, #fda4af 100%);
+    background-size: 200% 200%;
+    animation: markShift 6s ease-in-out infinite, breathe 3s ease-in-out infinite;
+}
+.logo-mark-editorial {
+    background: linear-gradient(135deg, #e135ff 0%, #ff6ac1 50%, #e135ff 100%);
+    background-size: 200% 200%;
+    animation: markShift 6s ease-in-out infinite, breathe 3s ease-in-out infinite;
+}
+.logo-mark-neon {
+    background: linear-gradient(180deg, #e135ff 0%, #ff6ac1 45%, #80ffea 55%, #c4b5fd 100%);
+    background-size: 100% 200%;
+    animation: markNeonShift 4s ease-in-out infinite, breathe 3s ease-in-out infinite;
+}
+.logo-mark-glitch {
+    background: linear-gradient(135deg, #ff6ac1 0%, #e135ff 25%, #f1fa8c 50%, #80ffea 75%, #ff6ac1 100%);
+    background-size: 200% 200%;
+    animation: markShift 6s ease-in-out infinite, breathe 3s ease-in-out infinite, logoGlitchMark 12s step-end infinite;
+}
+
+@keyframes markNeonShift {
+    0%, 100% { background-position: 50% 0%; }
+    50%      { background-position: 50% 100%; }
+}
+@keyframes logoGlitchMark {
+    0%, 100% { transform: none; }
+    32%, 71% { transform: none; }
+    32.5% { transform: translateX(-1px) skewX(-2deg); }
+    33.5% { transform: translateX(1px); }
+    34% { transform: none; }
+    71.5% { transform: translateX(1px) skewX(1deg); }
+    72% { transform: none; }
+}
+
 /* ── Reduced motion ──────────────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
@@ -1698,6 +1759,7 @@ body.resizing * {
     .logo-neon-color,
     .logo-sparkle,
     .logo-mark,
+    [class*="logo-mark-"],
     .logo-bg-circuit::before,
     .logo-bg-silk::before,
     .logo-bg-silk::after,

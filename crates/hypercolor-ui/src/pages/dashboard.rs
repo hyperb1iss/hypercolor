@@ -21,7 +21,8 @@ use crate::components::perf_charts::{
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
-use crate::style_utils::category_style;
+use crate::color;
+use crate::style_utils::{category_accent_rgb, category_style};
 use crate::ws::{BackpressureNotice, PerformanceMetrics};
 
 // ── Layout tunables ──────────────────────────────────────────────────
@@ -274,34 +275,143 @@ fn ResizeHint() -> impl IntoView {
     }
 }
 
-// ── Preview card ─────────────────────────────────────────────────────
+// ── Cinematic preview card ────────────────────────────────────────────
 
+/// Cinematic preview with scrim overlay showing active effect info, matching
+/// the effects page's treatment. Canvas as background, metadata overlaid at
+/// the bottom with category-accent-tinted text.
 #[component]
 fn PreviewCard() -> impl IntoView {
     let ws = expect_context::<WsContext>();
+    let fx = expect_context::<EffectsContext>();
+
+    let accent_rgb = Signal::derive(move || {
+        category_accent_rgb(&fx.active_effect_category.get()).to_string()
+    });
+    let title_tint = Memo::new(move |_| color::accent_text_tint(&accent_rgb.get(), 0.86, 0.65));
+    let body_tint = Memo::new(move |_| color::accent_text_tint(&accent_rgb.get(), 0.78, 0.22));
+    let meta_tint = Memo::new(move |_| color::accent_text_tint(&accent_rgb.get(), 0.68, 0.65));
+
+    let effect_meta = Memo::new(move |_| {
+        fx.active_effect_id.get().and_then(|id| {
+            fx.effects_index.with(|effects| {
+                effects
+                    .iter()
+                    .find(|e| e.effect.id == id)
+                    .map(|e| e.effect.clone())
+            })
+        })
+    });
 
     view! {
-        <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle overflow-hidden preview-glow">
-            <div class="px-4 py-2.5 border-b border-edge-subtle flex items-center justify-between">
-                <div class="flex items-center gap-2">
-                    <Icon icon=LuPlay width="12px" height="12px" style="color: var(--color-neon-cyan)" />
-                    <h2 class="text-[12px] font-medium text-fg-secondary">"Live Preview"</h2>
-                </div>
-                {move || ws.active_effect.get().map(|name| view! {
-                    <div class="flex items-center gap-1.5 bg-accent-subtle rounded-full px-2 py-0.5 min-w-0">
-                        <div class="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" />
-                        <span class="text-[10px] text-accent font-mono truncate max-w-[140px]">{name}</span>
-                    </div>
-                })}
-            </div>
-            <div class="p-2.5">
-                <CanvasPreview
-                    frame=ws.canvas_frame
-                    fps=ws.preview_fps
-                    show_fps=true
-                    fps_target=ws.preview_target_fps
-                    report_presenter_telemetry=true
-                />
+        <div
+            class="relative rounded-xl overflow-hidden border border-edge-subtle bg-black edge-glow"
+            style:--glow-rgb=move || accent_rgb.get()
+            style:border-top=move || format!("2px solid rgba({}, 0.45)", accent_rgb.get())
+        >
+            <CanvasPreview
+                frame=ws.canvas_frame
+                fps=ws.preview_fps
+                show_fps=true
+                fps_target=ws.preview_target_fps
+                report_presenter_telemetry=true
+            />
+
+            // Scrim — transparent at top, fades dark at bottom for legible overlay text
+            <div
+                class="absolute inset-0 pointer-events-none"
+                style="background: linear-gradient(180deg, \
+                       rgba(0, 0, 0, 0) 0%, \
+                       rgba(0, 0, 0, 0) 40%, \
+                       rgba(0, 0, 0, 0.78) 78%, \
+                       rgba(0, 0, 0, 0.95) 100%)"
+            />
+
+            // Top accent wash — colored highlight along the top edge
+            <div
+                class="absolute top-0 left-0 right-0 h-px pointer-events-none"
+                style=move || format!(
+                    "background: linear-gradient(90deg, transparent 0%, rgba({0}, 0.8) 50%, transparent 100%); \
+                     box-shadow: 0 0 14px rgba({0}, 0.55)",
+                    accent_rgb.get()
+                )
+            />
+
+            // Info overlay — effect name, description, category + audio badge
+            <div class="absolute left-0 right-0 bottom-0 px-3.5 pb-3 pt-8 pointer-events-none">
+                {move || {
+                    let name = fx.active_effect_name.get();
+                    let meta = effect_meta.get();
+
+                    name.map(|effect_name| {
+                        let description = meta.as_ref().map(|m| m.description.clone()).unwrap_or_default();
+                        let category = meta.as_ref().map(|m| m.category.clone()).unwrap_or_default();
+                        let audio_reactive = meta.as_ref().is_some_and(|m| m.audio_reactive);
+                        let source = meta.as_ref().map(|m| m.source.clone()).unwrap_or_default();
+                        let is_html = source == "html";
+                        let show_source = source != "native";
+
+                        view! {
+                            <h3
+                                class="text-[14px] font-semibold line-clamp-1 leading-tight \
+                                       drop-shadow-[0_2px_8px_rgba(0,0,0,0.85)] mb-0.5"
+                                style:color=move || format!("rgb({})", title_tint.get())
+                            >
+                                {effect_name}
+                            </h3>
+
+                            {(!description.is_empty()).then(|| view! {
+                                <p
+                                    class="text-[10px] line-clamp-2 leading-relaxed mb-2 \
+                                           drop-shadow-[0_1px_4px_rgba(0,0,0,0.85)]"
+                                    style:color=move || format!("rgba({}, 0.88)", body_tint.get())
+                                >
+                                    {description}
+                                </p>
+                            })}
+
+                            <div class="flex items-center justify-between gap-2">
+                                <div class="flex items-center gap-1.5 min-w-0">
+                                    <div
+                                        class="w-1.5 h-1.5 rounded-full shrink-0 dot-alive"
+                                        style:background=move || format!("rgb({})", accent_rgb.get())
+                                        style:box-shadow=move || format!("0 0 6px rgba({}, 0.75)", accent_rgb.get())
+                                    />
+                                    <span
+                                        class="text-[10px] font-mono uppercase tracking-wider capitalize truncate \
+                                               drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]"
+                                        style:color=move || format!("rgb({})", meta_tint.get())
+                                    >
+                                        {category}
+                                    </span>
+                                </div>
+                                <div class="flex items-center gap-1.5 shrink-0">
+                                    {show_source.then(|| {
+                                        let icon = if is_html { LuGlobe } else { LuCode };
+                                        view! {
+                                            <span
+                                                class="inline-flex items-center text-[9px] font-mono px-1.5 py-0.5 \
+                                                       rounded-full bg-white/5 backdrop-blur-sm"
+                                                style:color=move || format!("rgba({}, 0.85)", meta_tint.get())
+                                            >
+                                                <Icon icon=icon width="11px" height="11px" />
+                                            </span>
+                                        }
+                                    })}
+                                    {audio_reactive.then(|| view! {
+                                        <span
+                                            class="inline-flex items-center text-coral/90 px-1.5 py-0.5 \
+                                                   rounded-full bg-coral/15 backdrop-blur-sm"
+                                            title="Audio-reactive"
+                                        >
+                                            <Icon icon=LuAudioLines width="11px" height="11px" />
+                                        </span>
+                                    })}
+                                </div>
+                            </div>
+                        }
+                    })
+                }}
             </div>
         </div>
     }
@@ -324,35 +434,35 @@ fn StatusStrip(
     });
 
     view! {
-        <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle px-4 py-3 flex flex-wrap items-center gap-5 animate-fade-in-up">
+        <div class="px-4 py-3 flex flex-wrap items-center gap-5 animate-fade-in-up border-b border-edge-subtle/50">
             <StatusPill
                 label="Status"
                 value=if running { "Running" } else { "Stopped" }
                 color=if running { "var(--color-success-green)" } else { "var(--color-error-red)" }
                 pulsing=running
             />
-            <div class="w-px h-8 bg-edge-subtle/60" />
+            <div class="w-px h-6 bg-edge-subtle/30" />
             <StatusPill
                 label="Uptime"
                 value=uptime.as_str()
                 color="var(--color-neon-cyan)"
                 pulsing=false
             />
-            <div class="w-px h-8 bg-edge-subtle/60" />
+            <div class="w-px h-6 bg-edge-subtle/30" />
             <StatusPill
                 label="Devices"
                 value=format!("{device_count}")
                 color="var(--color-coral)"
                 pulsing=false
             />
-            <div class="w-px h-8 bg-edge-subtle/60" />
+            <div class="w-px h-6 bg-edge-subtle/30" />
             <StatusPill
                 label="Effects"
                 value=format!("{effect_count}")
                 color="var(--color-electric-purple)"
                 pulsing=false
             />
-            <div class="w-px h-8 bg-edge-subtle/60" />
+            <div class="w-px h-6 bg-edge-subtle/30" />
             <StatusPillDynamic
                 label="WS Clients"
                 value=Signal::derive(move || ws_clients.get().to_string())
@@ -462,7 +572,7 @@ fn HeroGauges(
     let frame_secondary = Memo::new(move |_| {
         metrics
             .get()
-            .map(|m| format!("ms · budget {:.1}", if m.fps.target > 0 { 1000.0 / f64::from(m.fps.target) } else { 33.33 }))
+            .map(|m| format!("/ {:.1} ms", if m.fps.target > 0 { 1000.0 / f64::from(m.fps.target) } else { 33.33 }))
             .unwrap_or_else(|| "ms".into())
     });
 
@@ -479,8 +589,7 @@ fn HeroGauges(
     let preview_primary = Memo::new(move |_| format!("{:.1}", preview_value.get()));
     let preview_secondary = Memo::new(move |_| {
         let target = preview_target_fps.get();
-        let mode = preview_present.get().runtime_mode.unwrap_or("pending");
-        format!("/ {target} · {mode}")
+        format!("/ {target} fps")
     });
 
     // Health-colored dropped badge
@@ -492,17 +601,20 @@ fn HeroGauges(
     });
 
     view! {
-        <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle overflow-hidden">
-            <div class="px-4 py-2.5 border-b border-edge-subtle flex items-center justify-between">
+        <div
+            class="rounded-lg bg-surface-overlay/40 border border-transparent"
+            style="border-top: 2px solid rgba(128, 255, 234, 0.30)"
+        >
+            <div class="px-4 py-2.5 flex items-center justify-between">
                 <div class="flex items-center gap-2">
                     <Icon icon=LuActivity width="14px" height="14px" style="color: var(--color-neon-cyan)" />
                     <h2 class="text-[13px] font-medium text-fg-secondary">"Render Engine"</h2>
                 </div>
-                <div class="text-[10px] font-mono text-fg-tertiary rounded-full border border-edge-subtle bg-surface-overlay/30 px-2.5 py-0.5">
+                <div class="text-[10px] font-mono text-fg-tertiary/70">
                     {move || dropped_text.get()}
                 </div>
             </div>
-            <div class="px-4 py-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div class="px-4 pb-4 grid grid-cols-1 md:grid-cols-3 gap-3">
                 <GaugeWithSparkline
                     caption="Engine"
                     gauge_value=Signal::derive(move || engine_value.get())
@@ -554,7 +666,7 @@ fn GaugeWithSparkline(
     sparkline_color: &'static str,
 ) -> impl IntoView {
     view! {
-        <div class="rounded-lg bg-surface-overlay/30 border border-edge-subtle px-3 py-3 flex flex-col items-center gap-2">
+        <div class="rounded-md bg-surface-overlay/20 px-3 py-3 flex flex-col items-center gap-2">
             <RadialGauge
                 caption=caption
                 value=gauge_value
@@ -612,13 +724,16 @@ fn PipelinePanel(#[prop(into)] metrics: Signal<Option<PerformanceMetrics>>) -> i
     });
 
     view! {
-        <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle overflow-hidden">
-            <div class="px-4 py-2.5 border-b border-edge-subtle flex items-center justify-between">
+        <div
+            class="rounded-lg bg-surface-overlay/40 border border-transparent"
+            style="border-top: 2px solid rgba(225, 53, 255, 0.25)"
+        >
+            <div class="px-4 py-2.5 flex items-center justify-between">
                 <div class="flex items-center gap-2">
                     <Icon icon=LuLayers width="14px" height="14px" style="color: var(--color-electric-purple)" />
                     <h2 class="text-[13px] font-medium text-fg-secondary">"Pipeline Breakdown"</h2>
                 </div>
-                <div class="text-[10px] font-mono text-fg-tertiary">
+                <div class="text-[10px] font-mono text-fg-tertiary/70">
                     {move || total_label.get()}
                 </div>
             </div>
@@ -679,8 +794,11 @@ fn FrameTimelinePanel(#[prop(into)] metrics: Signal<Option<PerformanceMetrics>>)
     });
 
     view! {
-        <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle overflow-hidden">
-            <div class="px-4 py-2.5 border-b border-edge-subtle flex items-center justify-between gap-2">
+        <div
+            class="rounded-lg bg-surface-overlay/40 border border-transparent"
+            style="border-top: 2px solid rgba(241, 250, 140, 0.25)"
+        >
+            <div class="px-4 py-2.5 flex items-center justify-between gap-2">
                 <div class="flex items-center gap-2">
                     <Icon icon=LuTimer width="14px" height="14px" style="color: var(--color-electric-yellow)" />
                     <h2 class="text-[13px] font-medium text-fg-secondary">"Frame Timeline"</h2>
@@ -735,19 +853,17 @@ fn DistributionPanel(#[prop(into)] metrics: Signal<Option<PerformanceMetrics>>) 
     });
 
     view! {
-        <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle overflow-hidden">
-            <div class="px-4 py-2.5 border-b border-edge-subtle flex items-center justify-between">
+        <div class="pt-1">
+            <div class="flex items-center justify-between mb-3">
                 <div class="flex items-center gap-2">
                     <Icon icon=LuGauge width="14px" height="14px" style="color: var(--color-coral)" />
                     <h2 class="text-[13px] font-medium text-fg-secondary">"Frame Time Distribution"</h2>
                 </div>
-                <div class="text-[10px] font-mono text-fg-tertiary">
+                <div class="text-[10px] font-mono text-fg-tertiary/70">
                     {move || format!("budget {:.1} ms", budget.get())}
                 </div>
             </div>
-            <div class="p-4">
-                <DistributionBar avg=avg p95=p95 p99=p99 max=max budget=budget />
-            </div>
+            <DistributionBar avg=avg p95=p95 p99=p99 max=max budget=budget />
         </div>
     }
 }
@@ -788,12 +904,12 @@ fn PacingPanel(
     });
 
     view! {
-        <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle overflow-hidden">
-            <div class="px-4 py-2.5 border-b border-edge-subtle flex items-center gap-2">
+        <div class="pt-1">
+            <div class="flex items-center gap-2 mb-3">
                 <Icon icon=LuWifi width="14px" height="14px" style="color: var(--color-electric-purple)" />
                 <h2 class="text-[13px] font-medium text-fg-secondary">"Frame Pacing"</h2>
             </div>
-            <div class="p-4 space-y-4">
+            <div class="space-y-4">
                 <PacingRow
                     label="Jitter"
                     detail=Signal::derive(move || jitter_label.get())
@@ -859,13 +975,16 @@ fn ReuseRatesPanel(#[prop(into)] metrics: Signal<Option<PerformanceMetrics>>) ->
     let composition_bypassed = Memo::new(move |_| metrics.get().map_or(0, |m| m.pacing.composition_bypassed));
 
     view! {
-        <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle overflow-hidden">
-            <div class="px-4 py-2.5 border-b border-edge-subtle flex items-center justify-between">
+        <div
+            class="rounded-lg bg-surface-overlay/40 border border-transparent"
+            style="border-top: 2px solid rgba(80, 250, 123, 0.25)"
+        >
+            <div class="px-4 py-2.5 flex items-center justify-between">
                 <div class="flex items-center gap-2">
                     <Icon icon=LuZap width="14px" height="14px" style="color: var(--color-success-green)" />
                     <h2 class="text-[13px] font-medium text-fg-secondary">"Reuse Efficiency"</h2>
                 </div>
-                <div class="text-[10px] font-mono text-fg-tertiary">"120-frame window"</div>
+                <div class="text-[10px] font-mono text-fg-tertiary/70">"120-frame window"</div>
             </div>
             <div class="p-4 space-y-3">
                 <HitRateBar
@@ -940,8 +1059,11 @@ fn MemoryAndDevicesPanel(
     });
 
     view! {
-        <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle overflow-hidden">
-            <div class="px-4 py-2.5 border-b border-edge-subtle flex items-center gap-2">
+        <div
+            class="rounded-lg bg-surface-overlay/40 border border-transparent"
+            style="border-top: 2px solid rgba(255, 106, 193, 0.25)"
+        >
+            <div class="px-4 py-2.5 flex items-center gap-2">
                 <Icon icon=LuCpu width="14px" height="14px" style="color: var(--color-coral)" />
                 <h2 class="text-[13px] font-medium text-fg-secondary">"Memory & Devices"</h2>
             </div>
@@ -999,7 +1121,7 @@ fn StatMini(
     #[prop(optional)] color_signal: Option<Signal<&'static str>>,
 ) -> impl IntoView {
     view! {
-        <div class="rounded-lg bg-surface-overlay/30 border border-edge-subtle px-3 py-2 text-center">
+        <div class="rounded-md bg-surface-overlay/20 px-3 py-2 text-center">
             <div class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">{label}</div>
             <div
                 class="text-[16px] font-semibold tabular-nums mt-0.5"
@@ -1032,13 +1154,16 @@ fn ThroughputPanel(
     });
 
     view! {
-        <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle overflow-hidden">
-            <div class="px-4 py-2.5 border-b border-edge-subtle flex items-center justify-between">
+        <div
+            class="rounded-lg bg-surface-overlay/40 border border-transparent"
+            style="border-top: 2px solid rgba(241, 250, 140, 0.20)"
+        >
+            <div class="px-4 py-2.5 flex items-center justify-between">
                 <div class="flex items-center gap-2">
                     <Icon icon=LuWifi width="14px" height="14px" style="color: var(--color-electric-yellow)" />
                     <h2 class="text-[13px] font-medium text-fg-secondary">"WebSocket Throughput"</h2>
                 </div>
-                <div class="text-[10px] font-mono text-fg-tertiary">
+                <div class="text-[10px] font-mono text-fg-tertiary/70">
                     {move || ws_clients.get()}
                 </div>
             </div>
@@ -1089,7 +1214,7 @@ fn LatestFramePanel(#[prop(into)] metrics: Signal<Option<PerformanceMetrics>>) -
     });
 
     view! {
-        <div class="rounded-xl bg-surface-overlay/40 border border-edge-subtle px-4 py-3">
+        <div class="rounded-md bg-surface-overlay/25 px-4 py-3">
             <div class="flex items-center justify-between gap-3 mb-1">
                 <div class="flex items-center gap-2">
                     <Icon icon=LuCode width="13px" height="13px" style="color: var(--color-fg-tertiary)" />
@@ -1143,7 +1268,10 @@ fn FavoritesPanel() -> impl IntoView {
     });
 
     view! {
-        <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle flex flex-col flex-1 min-h-0">
+        <div
+            class="rounded-lg bg-surface-overlay/40 border border-transparent flex flex-col flex-1 min-h-0"
+            style="border-top: 2px solid rgba(255, 106, 193, 0.25)"
+        >
             <div class="px-4 py-2.5 border-b border-edge-subtle flex items-center justify-between">
                 <div class="flex items-center gap-2">
                     <Icon icon=LuHeart width="12px" height="12px" style="color: var(--color-coral)" />
