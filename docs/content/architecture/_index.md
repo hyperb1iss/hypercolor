@@ -5,7 +5,7 @@ sort_by = "weight"
 template = "section.html"
 +++
 
-Hypercolor is a daemon-first lighting engine. A background service runs the render loop, manages device connections, and exposes control interfaces. Clients (web UI, TUI, CLI, AI assistants) connect to the daemon — they never talk to hardware directly.
+Hypercolor is a daemon-first lighting engine. A background service runs the render thread, composes frames through **SparkleFlinger**, manages device connections, and exposes control interfaces. Clients (web UI, TUI, CLI, AI assistants) connect to the daemon — they never talk to hardware directly.
 
 ## System Overview
 
@@ -23,7 +23,8 @@ graph TB
     end
 
     subgraph Daemon Core
-        C[Spatial Sampler<br/>320x200 canvas]
+        SF[SparkleFlinger<br/>compositor]
+        C[Spatial Sampler<br/>composed frame → LEDs]
         D[Event Bus<br/>tokio broadcast/watch]
         E[Device Registry]
     end
@@ -50,8 +51,9 @@ graph TB
     A2 --> B1
     A3 --> B1
 
-    B1 -->|RGBA pixels| C
-    B2 -->|RGBA pixels| C
+    B1 -->|surface| SF
+    B2 -->|surface| SF
+    SF -->|composed frame| C
     C -->|per-zone colors| E
     E --> F1
     E --> F2
@@ -104,15 +106,18 @@ hypercolor-daemon    Binary: daemon + REST API + WebSocket + MCP
 
 ## Render Pipeline
 
-The render loop is the heart of the system. It runs at 60fps on the daemon's async runtime:
+The render thread is the heart of the system. It runs on a dedicated OS thread with adaptive FPS (10–60fps across 5 tiers) and drives the pipeline one frame at a time:
 
 1. **Sample inputs** — Collect audio FFT data, screen capture, MIDI events
-2. **Render effect** — Execute the active effect (HTML via Servo or native via wgpu) to produce an RGBA canvas buffer (320x200)
-3. **Spatial mapping** — Sample the canvas at each LED's physical position using bilinear interpolation
-4. **Push to devices** — Send per-zone color arrays to hardware backends via their protocol encoders
-5. **Publish state** — Broadcast the frame data on the event bus for UI preview
+2. **Render producers** — The active effect (HTML via Servo or native via wgpu), screen source, and any other producers publish their newest RGBA surface to the queue
+3. **Compose with SparkleFlinger** — The render-thread compositor latches one surface per producer at the frame boundary and blends them into a single canonical frame. Blend modes are `Replace`, `Alpha`, `Add`, and `Screen`, with math in premultiplied linear-light sRGB. A single full-opacity layer takes the bypass fast path — the source surface passes through untouched, with no per-pixel work
+4. **Spatial mapping** — Sample the composed frame at each LED's physical position using bilinear interpolation (or area averaging / Gaussian, configurable per zone)
+5. **Push to devices** — Send per-zone color arrays to hardware backends via their protocol encoders
+6. **Publish state** — Broadcast the frame data and canvas preview on the event bus for UI subscribers
 
-The 320x200 canvas resolution is intentional. It matches the spatial mapping granularity, keeps pixel readback fast (256KB/frame), and is the standard used by the HTML effect ecosystem.
+SparkleFlinger is the composition boundary that lets render groups, overlapping zones, and mixed-cadence producers (Servo at 30fps, native at 60fps, screen capture at whatever PipeWire hands us) all flow into a single deadline-driven frame. See `docs/design/29-sparkleflinger-60fps-evolution.md` for the motivating design and `docs/design/30-sparkleflinger-implementation.md` for the shipped invariants.
+
+The canvas defaults to 640×480 and is configurable via `daemon.canvas_width` / `daemon.canvas_height`. Effects render in normalized `[0.0, 1.0]` spatial coordinates, so they stay resolution-independent — tune the canvas to match your sampling needs without touching effect code. Readback cost scales with the canvas (≈1.17 MB/frame at 640×480, still trivially fast). Changing canvas dimensions requires a daemon restart; target FPS can be retuned live.
 
 ## Dual-Path Effect Engine
 
@@ -161,8 +166,9 @@ The sampler uses bilinear interpolation at each LED's canvas position to produce
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Language | Rust | Performance (60fps render loop), safety (USB HID), ecosystem (wgpu, Servo, Ratatui) |
+| Language | Rust | Performance (60fps render thread), safety (USB HID), ecosystem (wgpu, Servo, Ratatui) |
 | Effect renderer | wgpu + Servo dual path | Native performance for new effects + compatibility with existing HTML effects |
+| Frame composition | SparkleFlinger compositor | Decouples producer cadence from frame deadlines; enables render groups, overlapping zones, and mixed-rate sources without coupling composition to the render loop |
 | Web UI | Leptos 0.8 (WASM) | Type-safe, fine-grained reactivity, single Rust ecosystem |
 | Web server | Axum | tokio-native, first-class WebSocket, serves embedded SPA |
 | TUI | Ratatui | Established ecosystem, true-color LED preview |
@@ -170,5 +176,5 @@ The sampler uses bilinear interpolation at each LED's canvas position to produce
 | IPC | tokio broadcast/watch | Multi-consumer events + latest-value state for real-time data |
 | Config | TOML | Rust ecosystem standard, human-readable |
 | Wire format | zerocopy structs | Zero-allocation frame encoding at 60fps |
-| Canvas resolution | 320x200 | Matches LED spatial mapping granularity, fast readback |
+| Canvas resolution | 640×480 (configurable) | Resolution-independent effects render in normalized coords; tune via `daemon.canvas_width` / `canvas_height` |
 | License | Apache-2.0 | Permissive open source |

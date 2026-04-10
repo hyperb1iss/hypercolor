@@ -64,7 +64,8 @@ graph LR
 
     subgraph Engine
         D[Effect Renderer<br><i>Servo · wgpu · Canvas</i>]
-        E[320 × 200 Canvas]
+        E[Canvas<br><i>640 × 480 default</i>]
+        SF[SparkleFlinger<br><i>compositor</i>]
         F[Spatial Sampler]
     end
 
@@ -75,14 +76,17 @@ graph LR
     end
 
     A & B & C --> D
-    D --> E --> F
+    D --> E --> SF --> F
     F --> G & H & I
 ```
 
-Effects render to a virtual 320×200 pixel canvas. The spatial engine samples that canvas at each
-LED's physical position. Audio, screen capture, and keyboard input feed into effects in real time.
-One effect paints the whole room — your keyboard, your LED strip, your case fans — all synchronized
-from the same visual source.
+Effects render to a virtual RGBA canvas — 640×480 by default, tunable in the daemon's rendering
+settings. **SparkleFlinger**, the render-thread compositor, latches the newest surface from each
+producer at the frame boundary and blends them into a single canonical frame every tick. The
+spatial engine then samples that frame at each LED's physical position. Effects use normalized
+`[0.0, 1.0]` coordinates, so they stay resolution-independent across canvas sizes. Audio, screen
+capture, and keyboard input feed into effects in real time. One effect paints the whole room —
+your keyboard, your LED strip, your case fans — all synchronized from the same visual source.
 
 ## 🌈 Features
 
@@ -328,11 +332,13 @@ tray applet, and HAL drivers are all Rust. The web UI is Rust compiled to WASM v
 the embedded browser is Servo (Rust). The only non-Rust code is the TypeScript effect SDK and
 the GLSL shaders it compiles.
 
-The render loop runs on a dedicated OS thread with adaptive FPS (10-60fps, auto-shifting across
-5 tiers based on measured budget). The event bus uses lock-free `tokio::sync::watch` channels for
-high-frequency frame data and `broadcast` for discrete events. `zerocopy` structs handle
-wire-format encoding at zero allocation cost per frame. The spatial engine caches LED positions
-and samples the canvas with configurable interpolation (nearest, bilinear, area average, Gaussian).
+The render thread runs on a dedicated OS thread with adaptive FPS (10-60fps, auto-shifting across
+5 tiers based on measured budget). Each tick, SparkleFlinger composes frame producers into one
+canonical surface — with a zero-copy bypass fast path when a single full-opacity layer is active.
+The event bus uses lock-free `tokio::sync::watch` channels for high-frequency frame data and
+`broadcast` for discrete events. `zerocopy` structs handle wire-format encoding at zero allocation
+cost per frame. The spatial engine caches LED positions and samples the composed frame with
+configurable interpolation (nearest, bilinear, area average, Gaussian).
 
 `#![forbid(unsafe_code)]` across the entire workspace. Edition 2024. Rust 1.94+.
 
