@@ -203,6 +203,21 @@ pub fn DashboardPage() -> impl IntoView {
 
                 // ── Right column: all the juicy data ──
                 <section class="flex-1 min-w-0 flex flex-col gap-4">
+                    // Page title
+                    <div class="flex items-center gap-2 shrink-0">
+                        <span style="color: #80ffea; filter: drop-shadow(0 0 8px rgba(128, 255, 234, 0.75))">
+                            <Icon icon=LuActivity width="20px" height="20px" />
+                        </span>
+                        <h1
+                            class="leading-none logo-gradient-text"
+                            style="font-family:'Orbitron',sans-serif; font-weight:900; font-size:22px; \
+                                   letter-spacing:-0.01em; \
+                                   background-image:linear-gradient(105deg,#80ffea 0%,#d4eaff 50%,#50fa7b 100%)"
+                        >
+                            "Dashboard"
+                        </h1>
+                    </div>
+
                     <Suspense fallback=move || view! { <StatusSkeleton /> }>
                         {move || status_resource.get().map(|result| {
                             match result {

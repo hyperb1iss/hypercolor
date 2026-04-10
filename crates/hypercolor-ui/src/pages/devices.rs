@@ -218,7 +218,19 @@ pub fn DevicesPage() -> impl IntoView {
             // Header
             <div class="shrink-0 px-6 pt-5 pb-3 bg-surface-base z-10">
                 <div class="flex items-center gap-3">
-                    <h1 class="text-lg font-medium text-fg-primary shrink-0">"Devices"</h1>
+                    <div class="flex items-center gap-2 shrink-0">
+                        <span style="color: #80ffea; filter: drop-shadow(0 0 8px rgba(128, 255, 234, 0.75))">
+                            <Icon icon=LuCpu width="20px" height="20px" />
+                        </span>
+                        <h1
+                            class="leading-none logo-gradient-text"
+                            style="font-family:'Orbitron',sans-serif; font-weight:900; font-size:22px; \
+                                   letter-spacing:-0.01em; \
+                                   background-image:linear-gradient(105deg,#80ffea 0%,#e8f4ff 55%,#80ffea 100%)"
+                        >
+                            "Devices"
+                        </h1>
+                    </div>
 
                     <span class="text-[10px] font-mono text-fg-tertiary/40 tabular-nums shrink-0">
                         {move || {

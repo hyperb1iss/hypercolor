@@ -304,7 +304,19 @@ pub fn EffectsPage() -> impl IntoView {
             // Left column — search header locked above the grid, both share width
             <div class="flex-1 min-w-0 flex flex-col" style="min-width: 120px">
                 <div class="shrink-0 pb-3 flex items-center gap-3">
-                    <h1 class="text-lg font-medium text-fg-primary shrink-0">"Effects"</h1>
+                    <div class="flex items-center gap-2 shrink-0">
+                        <span style="color: #e135ff; filter: drop-shadow(0 0 8px rgba(225, 53, 255, 0.75))">
+                            <Icon icon=LuZap width="20px" height="20px" />
+                        </span>
+                        <h1
+                            class="leading-none logo-gradient-text"
+                            style="font-family:'Orbitron',sans-serif; font-weight:900; font-size:22px; \
+                                   letter-spacing:-0.01em; \
+                                   background-image:linear-gradient(105deg,#80ffea 0%,#c8d4ff 48%,#e135ff 100%)"
+                        >
+                            "Effects"
+                        </h1>
+                    </div>
 
                     // Search bar — fills available space
                     <div class="relative flex-1 min-w-0">

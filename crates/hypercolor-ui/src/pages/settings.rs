@@ -278,7 +278,19 @@ pub fn SettingsPage() -> impl IntoView {
             // Sticky header with title + tab bar
             <div class="sticky top-0 z-10 shrink-0 glass-dense">
                 <div class="flex items-center justify-between px-6 pt-5 pb-3">
-                    <h1 class="text-lg font-medium text-fg-primary">"Settings"</h1>
+                    <div class="flex items-center gap-2">
+                        <span style="color: #f1fa8c; filter: drop-shadow(0 0 8px rgba(241, 250, 140, 0.65))">
+                            <Icon icon=LuSettings2 width="20px" height="20px" />
+                        </span>
+                        <h1
+                            class="leading-none logo-gradient-text"
+                            style="font-family:'Orbitron',sans-serif; font-weight:900; font-size:22px; \
+                                   letter-spacing:-0.01em; \
+                                   background-image:linear-gradient(105deg,#80ffea 0%,#e8f0ff 50%,#f1fa8c 100%)"
+                        >
+                            "Settings"
+                        </h1>
+                    </div>
                     <div
                         class="flex items-center gap-1.5 text-xs"
                         style="color: rgba(128, 255, 234, 0.4)"
