@@ -302,10 +302,7 @@ pub(crate) async fn execute_frame(
             composition_us: render_stage.composition_us,
             full_frame_copy_count,
         });
-        if rl.fps_controller().max_tier() != admission.ceiling_tier {
-            rl.fps_controller_mut().set_max_tier(admission.ceiling_tier);
-        }
-        match rl.frame_complete() {
+        match rl.frame_complete_with_max_tier(Some(admission.ceiling_tier)) {
             Some(frame_stats) => (
                 NextWake::Interval(rl.target_interval()),
                 SkipDecision::from_frame_stats(&frame_stats),

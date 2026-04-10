@@ -220,6 +220,15 @@ impl RenderLoop {
     /// sleep duration before the next frame. Returns `None` if no frame
     /// was in progress.
     pub fn frame_complete(&mut self) -> Option<FrameStats> {
+        self.frame_complete_with_max_tier(None)
+    }
+
+    /// Finalize the current frame and optionally apply a new runtime ceiling
+    /// before evaluating automatic tier transitions for the next frame.
+    pub fn frame_complete_with_max_tier(
+        &mut self,
+        max_tier: Option<FpsTier>,
+    ) -> Option<FrameStats> {
         let stats = self.fps_controller.end_frame()?;
         self.frame_number += 1;
 
@@ -229,6 +238,12 @@ impl RenderLoop {
             budget_exceeded = stats.budget_exceeded,
             tier = %stats.tier,
         );
+
+        if let Some(max_tier) = max_tier
+            && self.fps_controller.max_tier() != max_tier
+        {
+            self.fps_controller.set_max_tier(max_tier);
+        }
 
         // Check for automatic tier transitions
         if let Some(new_tier) = self.fps_controller.maybe_transition() {

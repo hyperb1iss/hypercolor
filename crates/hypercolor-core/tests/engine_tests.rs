@@ -561,6 +561,23 @@ fn render_loop_frame_complete_returns_stats() {
 }
 
 #[test]
+fn render_loop_applies_new_ceiling_after_current_frame_budget_is_recorded() {
+    let mut rl = RenderLoop::new(60);
+    rl.start();
+    assert!(rl.tick());
+
+    std::thread::sleep(Duration::from_millis(25));
+    let stats = rl
+        .frame_complete_with_max_tier(Some(FpsTier::High))
+        .expect("frame stats");
+
+    assert_eq!(stats.tier, FpsTier::Full);
+    assert!(stats.budget_exceeded);
+    assert_eq!(rl.fps_controller().max_tier(), FpsTier::High);
+    assert_eq!(rl.fps_controller().tier(), FpsTier::High);
+}
+
+#[test]
 fn render_loop_frame_complete_without_tick_returns_none() {
     let mut rl = RenderLoop::new(60);
     rl.start();
