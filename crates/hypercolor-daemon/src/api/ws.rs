@@ -923,30 +923,54 @@ async fn relay_frames(
     mut frame_rx: watch::Receiver<hypercolor_types::event::FrameData>,
     json_tx: tokio::sync::mpsc::Sender<String>,
     binary_tx: tokio::sync::mpsc::Sender<Bytes>,
-    subscriptions: watch::Receiver<SubscriptionState>,
+    mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut last_sent = Instant::now()
         .checked_sub(Duration::from_secs(1))
         .unwrap_or_else(Instant::now);
+    let mut was_subscribed = false;
 
     loop {
-        if frame_rx.changed().await.is_err() {
-            break;
-        }
-
         let frame_config = {
             let subs = subscriptions.borrow();
             if !subs.channels.contains(&WsChannel::Frames) {
-                continue;
+                None
+            } else {
+                Some(subs.config.frames.clone())
             }
-            subs.config.frames.clone()
+        };
+        let Some(frame_config) = frame_config else {
+            was_subscribed = false;
+            if subscriptions.changed().await.is_err() {
+                break;
+            }
+            let _ = subscriptions.borrow_and_update();
+            continue;
         };
 
-        if !should_emit(&mut last_sent, frame_config.fps) {
-            continue;
+        let emit_current = !was_subscribed;
+        was_subscribed = true;
+        if !emit_current {
+            tokio::select! {
+                changed = subscriptions.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let _ = subscriptions.borrow_and_update();
+                    continue;
+                }
+                changed = frame_rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                }
+            }
         }
 
         let frame = frame_rx.borrow();
+        if !should_emit(&mut last_sent, frame_config.fps) {
+            continue;
+        }
         let outbound = cached_frame_payload(&frame, &frame_config);
 
         match outbound {
@@ -968,30 +992,54 @@ async fn relay_spectrum(
     mut spectrum_rx: watch::Receiver<hypercolor_types::event::SpectrumData>,
     json_tx: tokio::sync::mpsc::Sender<String>,
     binary_tx: tokio::sync::mpsc::Sender<Bytes>,
-    subscriptions: watch::Receiver<SubscriptionState>,
+    mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut last_sent = Instant::now()
         .checked_sub(Duration::from_secs(1))
         .unwrap_or_else(Instant::now);
+    let mut was_subscribed = false;
 
     loop {
-        if spectrum_rx.changed().await.is_err() {
-            break;
-        }
-
         let spectrum_config = {
             let subs = subscriptions.borrow();
             if !subs.channels.contains(&WsChannel::Spectrum) {
-                continue;
+                None
+            } else {
+                Some(subs.config.spectrum.clone())
             }
-            subs.config.spectrum.clone()
+        };
+        let Some(spectrum_config) = spectrum_config else {
+            was_subscribed = false;
+            if subscriptions.changed().await.is_err() {
+                break;
+            }
+            let _ = subscriptions.borrow_and_update();
+            continue;
         };
 
-        if !should_emit(&mut last_sent, spectrum_config.fps) {
-            continue;
+        let emit_current = !was_subscribed;
+        was_subscribed = true;
+        if !emit_current {
+            tokio::select! {
+                changed = subscriptions.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let _ = subscriptions.borrow_and_update();
+                    continue;
+                }
+                changed = spectrum_rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                }
+            }
         }
 
         let spectrum = spectrum_rx.borrow();
+        if !should_emit(&mut last_sent, spectrum_config.fps) {
+            continue;
+        }
         if binary_tx
             .try_send(encode_spectrum_binary(&spectrum, spectrum_config.bins).into())
             .is_err()
@@ -2332,14 +2380,15 @@ mod tests {
         command_response_from_http, dispatch_command, encode_cached_canvas_preview_binary,
         encode_canvas_preview_binary, encode_frame_binary, encode_spectrum_binary,
         event_message_parts, filter_frame_zones, normalize_command_path, parse_channels,
-        parse_command_method, publish_subscriptions, relay_metrics, should_relay_event,
-        sync_preview_receiver, to_snake_case, try_enqueue_json, unique_sorted_channel_names,
-        ws_capabilities,
+        parse_command_method, publish_subscriptions, relay_frames, relay_metrics,
+        should_relay_event, sync_preview_receiver, to_snake_case, try_enqueue_json,
+        unique_sorted_channel_names, ws_capabilities,
     };
     use crate::api::AppState;
     use crate::api::security::{RequestAuthContext, SecurityState};
     use crate::performance::{FrameTimeline, LatestFrameMetrics};
     use crate::preview_runtime::PreviewRuntime;
+    use axum::body::Bytes;
     use axum::response::IntoResponse;
     use hypercolor_core::bus::CanvasFrame;
     use hypercolor_types::canvas::{Canvas, Rgba, linear_to_srgb_u8, srgb_u8_to_linear};
@@ -2496,6 +2545,30 @@ mod tests {
             .await
             .expect("metrics relay should wake without idle polling");
         assert!(message.is_some());
+
+        relay_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn relay_frames_wakes_when_subscription_changes() {
+        let (_frame_tx, frame_rx) = watch::channel(sample_frame());
+        let initial_subscriptions = SubscriptionState::default();
+        let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
+        let (json_tx, _json_rx) = tokio::sync::mpsc::channel::<String>(1);
+        let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(1);
+
+        let relay_handle =
+            tokio::spawn(relay_frames(frame_rx, json_tx, binary_tx, subscriptions_rx));
+
+        let mut subscriptions = initial_subscriptions;
+        subscriptions.channels.insert(WsChannel::Frames);
+        publish_subscriptions(&subscriptions_tx, &subscriptions);
+
+        let payload = tokio::time::timeout(std::time::Duration::from_millis(250), binary_rx.recv())
+            .await
+            .expect("frame relay should wake on subscription changes")
+            .expect("frame relay should publish the latest cached frame");
+        assert_eq!(payload.first().copied(), Some(0x01));
 
         relay_handle.abort();
     }
