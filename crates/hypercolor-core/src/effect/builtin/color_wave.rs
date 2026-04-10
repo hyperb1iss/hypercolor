@@ -3,9 +3,13 @@
 //! Produces spawned rectangular wave bands that sweep across the canvas,
 //! with configurable direction, width, spawn rate, trail fade, and color modes.
 
+use std::array;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
-use hypercolor_types::canvas::{Canvas, Oklch, Rgba, RgbaF32};
+use hypercolor_types::canvas::{
+    BYTES_PER_PIXEL, Canvas, Oklch, Rgba, RgbaF32, linear_to_srgb_u8, srgb_u8_to_linear,
+};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
@@ -80,6 +84,21 @@ pub struct ColorWaveRenderer {
     last_size: (u32, u32),
     framebuffer: Option<Canvas>,
 }
+
+const LINEAR_ENCODE_LUT_SCALE: f32 = 65_535.0;
+const LINEAR_ENCODE_LUT_LAST_INDEX: usize = 65_535;
+
+static SRGB_TO_LINEAR_LUT: LazyLock<[f32; 256]> = LazyLock::new(|| {
+    array::from_fn(|index| {
+        let channel = u8::try_from(index).expect("LUT index must fit in u8");
+        srgb_u8_to_linear(channel)
+    })
+});
+static LINEAR_TO_SRGB_LUT: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    (0..=LINEAR_ENCODE_LUT_LAST_INDEX)
+        .map(|index| linear_to_srgb_u8(index as f32 / LINEAR_ENCODE_LUT_SCALE))
+        .collect()
+});
 
 impl ColorWaveRenderer {
     /// Create a color wave renderer with reference defaults.
@@ -250,19 +269,17 @@ impl ColorWaveRenderer {
         }
 
         let background = self.scaled_color(self.background_color);
+        let background_red = background.r;
+        let background_green = background.g;
+        let background_blue = background.b;
         for chunk in canvas.as_rgba_bytes_mut().chunks_exact_mut(4) {
-            let dst = Rgba::new(chunk[0], chunk[1], chunk[2], chunk[3]).to_linear_f32();
-            let blended = RgbaF32::new(
-                dst.r + (background.r - dst.r) * opacity,
-                dst.g + (background.g - dst.g) * opacity,
-                dst.b + (background.b - dst.b) * opacity,
-                1.0,
-            )
-            .to_srgb_u8();
-            chunk[0] = blended[0];
-            chunk[1] = blended[1];
-            chunk[2] = blended[2];
-            chunk[3] = blended[3];
+            let red = decode_srgb_channel(chunk[0]);
+            let green = decode_srgb_channel(chunk[1]);
+            let blue = decode_srgb_channel(chunk[2]);
+            chunk[0] = encode_srgb_channel(red + (background_red - red) * opacity);
+            chunk[1] = encode_srgb_channel(green + (background_green - green) * opacity);
+            chunk[2] = encode_srgb_channel(blue + (background_blue - blue) * opacity);
+            chunk[3] = 255;
         }
     }
 
@@ -492,6 +509,15 @@ fn hue_shift(color: [f32; 4], degrees: f32) -> [f32; 4] {
     [shifted.r, shifted.g, shifted.b, shifted.a]
 }
 
+fn decode_srgb_channel(channel: u8) -> f32 {
+    SRGB_TO_LINEAR_LUT[channel as usize]
+}
+
+fn encode_srgb_channel(channel: f32) -> u8 {
+    let index = (channel.clamp(0.0, 1.0) * LINEAR_ENCODE_LUT_SCALE).round() as usize;
+    LINEAR_TO_SRGB_LUT[index.min(LINEAR_ENCODE_LUT_LAST_INDEX)]
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -518,15 +544,29 @@ fn fill_rect(canvas: &mut Canvas, x: i32, y: i32, width: i32, height: i32, color
         return;
     }
 
-    for py in start_y..end_y {
-        for px in start_x..end_x {
-            let Ok(col) = u32::try_from(px) else {
-                continue;
-            };
-            let Ok(row) = u32::try_from(py) else {
-                continue;
-            };
-            canvas.set_pixel(col, row, color);
+    let Ok(start_x) = usize::try_from(start_x) else {
+        return;
+    };
+    let Ok(start_y) = usize::try_from(start_y) else {
+        return;
+    };
+    let Ok(end_x) = usize::try_from(end_x) else {
+        return;
+    };
+    let Ok(end_y) = usize::try_from(end_y) else {
+        return;
+    };
+    let row_stride = usize::try_from(canvas.width()).unwrap_or(usize::MAX) * BYTES_PER_PIXEL;
+    let row_start = start_x * BYTES_PER_PIXEL;
+    let row_end = end_x * BYTES_PER_PIXEL;
+    let color = [color.r, color.g, color.b, color.a];
+
+    let bytes = canvas.as_rgba_bytes_mut();
+    for row in start_y..end_y {
+        let row_offset = row * row_stride;
+        let slice = &mut bytes[row_offset + row_start..row_offset + row_end];
+        for pixel in slice.chunks_exact_mut(BYTES_PER_PIXEL) {
+            pixel.copy_from_slice(&color);
         }
     }
 }
@@ -870,8 +910,7 @@ pub(super) fn metadata() -> EffectMetadata {
         author: "Hypercolor".into(),
         version: "0.1.0".into(),
         description:
-            "Traveling wavefront strips with directional passes and configurable fade trails"
-                .into(),
+            "Traveling wavefront strips with directional passes and configurable fade trails".into(),
         category: EffectCategory::Ambient,
         tags: vec!["wave".into(), "animation".into(), "pattern".into()],
         controls: controls(),
