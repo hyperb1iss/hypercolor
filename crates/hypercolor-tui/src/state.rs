@@ -23,6 +23,7 @@ pub enum ConnectionStatus {
 /// Top-level shared state accessible by all components.
 #[derive(Debug, Clone, Default)]
 pub struct AppState {
+    pub show_donate: bool,
     pub daemon: Option<DaemonState>,
     pub effects: Vec<EffectSummary>,
     pub devices: Vec<DeviceSummary>,

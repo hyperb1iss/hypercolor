@@ -91,6 +91,8 @@ pub enum Action {
     Notify(Notification),
     /// Dismiss the current notification.
     DismissNotification,
+    /// Open the GitHub Sponsors page in the user's browser.
+    OpenDonate,
 
     // ── Scroll ──────────────────────────────────────────────
     /// Scroll up in the focused list.

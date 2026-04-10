@@ -141,7 +141,10 @@ impl App {
             screens,
             available_screens,
             chrome: Chrome::new(),
-            state: AppState::default(),
+            state: AppState {
+                show_donate: crate::theme_picker::load_config().show_donate,
+                ..AppState::default()
+            },
             running: true,
             help_visible: false,
             theme_picker: None,
@@ -357,6 +360,7 @@ impl App {
             KeyCode::Char('T' | 't') => return Some(Action::ToggleThemePicker),
             KeyCode::Char('M' | 'm') => return Some(Action::CycleMotionSensitivity),
             KeyCode::Char('Z' | 'z') => return Some(Action::ToggleFullscreenPreview),
+            KeyCode::Char('$') => return Some(Action::OpenDonate),
             KeyCode::Char(c) if c.is_ascii_alphabetic() => {
                 if let Some(screen) = ScreenId::from_key(c)
                     && self.screens.contains_key(&screen)
@@ -674,6 +678,9 @@ impl App {
                     );
                 }
                 self.notification = Some((notif.clone(), Instant::now()));
+            }
+            Action::OpenDonate => {
+                let _ = open::that("https://github.com/sponsors/hyperb1iss");
             }
             Action::DismissNotification => {
                 self.notification = None;

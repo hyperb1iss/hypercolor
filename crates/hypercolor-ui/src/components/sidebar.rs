@@ -753,6 +753,21 @@ pub fn Sidebar() -> impl IntoView {
                             </div>
                         </div>
 
+                        // Sponsor link
+                        <a
+                            href="https://github.com/sponsors/hyperb1iss"
+                            target="_blank"
+                            rel="noopener"
+                            class="flex items-center justify-center gap-1.5 py-1 text-[10px] text-fg-tertiary hover:text-accent-primary transition-colors"
+                            title="Support Hypercolor development"
+                        >
+                            <span class="text-accent-primary">{"\u{2665}"}</span>
+                            <span
+                                class="whitespace-nowrap overflow-hidden"
+                                style:display=move || if collapsed.get() { "none" } else { "inline" }
+                            >"Sponsor"</span>
+                        </a>
+
                         // Collapse toggle
                         <button
                             class="flex items-center justify-center w-full h-8 rounded-lg text-fg-tertiary hover:text-fg-secondary

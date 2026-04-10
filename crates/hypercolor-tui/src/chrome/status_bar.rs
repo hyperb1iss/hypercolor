@@ -32,7 +32,7 @@ impl StatusBar {
         }
 
         let left_spans = build_left(state);
-        let right_spans = build_nav_hints(active_screen, available_screens);
+        let right_spans = build_nav_hints(active_screen, available_screens, state.show_donate);
 
         let left_len: usize = left_spans.iter().map(Span::width).sum();
         let right_len: usize = right_spans.iter().map(Span::width).sum();
@@ -87,7 +87,7 @@ fn build_left(state: &AppState) -> Vec<Span<'static>> {
 
 /// Build right-aligned nav hints: `dash | effx | ctrl | ?help`
 /// Active screen's first char is highlighted; items separated by `|`.
-fn build_nav_hints(active: ScreenId, screens: &[ScreenId]) -> Vec<Span<'static>> {
+fn build_nav_hints(active: ScreenId, screens: &[ScreenId], show_donate: bool) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let muted = theme::text_muted();
     let sep = Style::default().fg(muted);
@@ -128,6 +128,16 @@ fn build_nav_hints(active: ScreenId, screens: &[ScreenId]) -> Vec<Span<'static>>
                 ));
             }
         }
+    }
+
+    // Sponsor link
+    if show_donate {
+        spans.push(Span::styled(" \u{2502} ", sep));
+        spans.push(Span::styled(
+            "\u{2665}",
+            Style::default().fg(theme::accent_primary()),
+        ));
+        spans.push(Span::styled(" Sponsor", Style::default().fg(muted)));
     }
 
     // Help hint

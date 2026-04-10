@@ -19,11 +19,28 @@ use serde::{Deserialize, Serialize};
 // ── Persistence ─────────────────────────────────────────────────────────
 
 /// Persistent TUI preferences stored at `~/.config/hypercolor/tui.toml`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TuiConfig {
     /// Active opaline theme name (kebab-case).
     #[serde(default)]
     pub theme: Option<String>,
+
+    /// Show the "♥ Sponsor" link in the status bar (default: true).
+    #[serde(default = "default_show_donate")]
+    pub show_donate: bool,
+}
+
+impl Default for TuiConfig {
+    fn default() -> Self {
+        Self {
+            theme: None,
+            show_donate: true,
+        }
+    }
+}
+
+fn default_show_donate() -> bool {
+    true
 }
 
 /// Locate the TUI config file path.
@@ -46,18 +63,15 @@ pub fn load_config() -> TuiConfig {
         .unwrap_or_default()
 }
 
-/// Save the active theme to the TUI config.
-pub fn save_theme(name: &str) -> Result<()> {
+/// Save the full TUI config to disk.
+pub fn save_config(config: &TuiConfig) -> Result<()> {
     let path = config_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
 
-    let mut config = load_config();
-    config.theme = Some(name.to_string());
-
-    let content = toml::to_string_pretty(&config).context("failed to serialize TUI config")?;
+    let content = toml::to_string_pretty(config).context("failed to serialize TUI config")?;
     std::fs::write(&path, content)
         .with_context(|| format!("failed to write {}", path.display()))?;
 
@@ -69,6 +83,13 @@ pub fn save_theme(name: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Save the active theme to the TUI config.
+pub fn save_theme(name: &str) -> Result<()> {
+    let mut config = load_config();
+    config.theme = Some(name.to_string());
+    save_config(&config)
 }
 
 // ── Token derivation ────────────────────────────────────────────────────

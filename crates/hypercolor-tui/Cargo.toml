@@ -58,6 +58,7 @@ clap = { workspace = true }
 
 # Data structures
 strum = { workspace = true }
+open = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
