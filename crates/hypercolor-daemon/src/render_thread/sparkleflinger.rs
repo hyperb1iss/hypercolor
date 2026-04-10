@@ -136,11 +136,17 @@ impl SparkleFlinger {
     }
 
     pub fn compose(&mut self, plan: CompositionPlan) -> ComposedFrameSet {
-        if plan.layers.len() == 1
-            && let Some(layer) = plan.layers.first()
+        let CompositionPlan {
+            width,
+            height,
+            mut layers,
+        } = plan;
+
+        if layers.len() == 1
+            && let Some(layer) = layers.pop()
             && layer.is_bypass_candidate()
         {
-            let (sampling_canvas, sampling_surface) = layer.frame.clone().into_render_frame();
+            let (sampling_canvas, sampling_surface) = layer.frame.into_render_frame();
             let preview_surface = sampling_surface.clone();
             return ComposedFrameSet {
                 sampling_canvas,
@@ -150,8 +156,8 @@ impl SparkleFlinger {
             };
         }
 
-        let mut sampling_canvas = Canvas::new(plan.width, plan.height);
-        for layer in plan.layers {
+        let mut sampling_canvas = Canvas::new(width, height);
+        for layer in layers {
             compose_layer(&mut sampling_canvas, layer);
         }
 
