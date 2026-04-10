@@ -15,8 +15,11 @@ use crate::chrome::Chrome;
 use crate::client::rest::DaemonClient;
 use crate::component::Component;
 use crate::event::{Event, EventReader};
+use crate::motion::{MotionSensitivity, MotionSystem};
 use crate::screen::ScreenId;
 use crate::state::{AppState, ConnectionStatus, ControlValue, Notification, NotificationLevel};
+use crate::theme_picker::ThemePicker;
+use opaline::widgets::ThemeSelectorAction;
 
 /// Top-level application that owns all screens and drives the event loop.
 pub struct App {
@@ -34,6 +37,10 @@ pub struct App {
     running: bool,
     /// Help overlay visible.
     help_visible: bool,
+    /// Active live theme picker, when modal is open.
+    theme_picker: Option<ThemePicker>,
+    /// Motion effects engine (tachyonfx-backed).
+    motion: MotionSystem,
     /// Fullscreen canvas preview mode.
     fullscreen_preview: bool,
     /// Current notification (auto-dismisses).
@@ -68,6 +75,8 @@ impl App {
             state: AppState::default(),
             running: true,
             help_visible: false,
+            theme_picker: None,
+            motion: MotionSystem::new(MotionSensitivity::resolve(MotionSensitivity::Full)),
             fullscreen_preview: false,
             notification: None,
             action_tx,
@@ -104,7 +113,8 @@ impl App {
         });
 
         // Event reader: 250ms tick, ~15 FPS render
-        let mut events = EventReader::new(Duration::from_millis(250), Duration::from_millis(66));
+        // 250ms data tick, 16ms (~60 FPS) render — smooth motion for tachyonfx
+        let mut events = EventReader::new(Duration::from_millis(250), Duration::from_millis(16));
 
         tracing::info!("TUI event loop started");
 
@@ -160,6 +170,27 @@ impl App {
 
     /// Handle a key event, returning an action to dispatch.
     fn handle_key_event(&mut self, key: KeyEvent) -> Option<Action> {
+        // Theme picker captures all keys when open
+        if let Some(picker) = self.theme_picker.as_mut() {
+            match picker.handle_key(key) {
+                ThemeSelectorAction::Select(name) => {
+                    if let Err(e) = crate::theme_picker::save_theme(&name) {
+                        tracing::warn!("failed to persist theme: {e}");
+                    }
+                    self.theme_picker = None;
+                    return Some(Action::Notify(Notification {
+                        message: format!("Theme: {name}"),
+                        level: NotificationLevel::Success,
+                    }));
+                }
+                ThemeSelectorAction::Cancel => {
+                    self.theme_picker = None;
+                    return None;
+                }
+                _ => return None,
+            }
+        }
+
         if self.fullscreen_preview {
             return match key.code {
                 KeyCode::Esc | KeyCode::F(11) => Some(Action::ToggleFullscreenPreview),
@@ -179,6 +210,8 @@ impl App {
         match key.code {
             KeyCode::Char('q') => return Some(Action::Quit),
             KeyCode::Char('?') => return Some(Action::ToggleHelp),
+            KeyCode::Char('T' | 't') => return Some(Action::ToggleThemePicker),
+            KeyCode::Char('M' | 'm') => return Some(Action::CycleMotionSensitivity),
             KeyCode::F(11) => return Some(Action::ToggleFullscreenPreview),
             KeyCode::Char(c) if c.is_ascii_alphabetic() => {
                 if let Some(screen) = ScreenId::from_key(c)
@@ -244,6 +277,24 @@ impl App {
 
             Action::ToggleHelp => {
                 self.help_visible = !self.help_visible;
+            }
+            Action::ToggleThemePicker => {
+                self.theme_picker = if self.theme_picker.is_some() {
+                    None
+                } else {
+                    Some(ThemePicker::open())
+                };
+            }
+            Action::CycleMotionSensitivity => {
+                self.motion.cycle_sensitivity();
+                let label = self.motion.sensitivity().label();
+                self.notification = Some((
+                    Notification {
+                        message: format!("Motion: {label}"),
+                        level: NotificationLevel::Info,
+                    },
+                    Instant::now(),
+                ));
             }
             Action::ToggleFullscreenPreview => {
                 self.fullscreen_preview = !self.fullscreen_preview;
@@ -520,7 +571,7 @@ impl App {
     }
 
     /// Render the full TUI frame.
-    fn render(&self, frame: &mut Frame) {
+    fn render(&mut self, frame: &mut Frame) {
         use ratatui::layout::Rect;
         use ratatui::style::{Modifier, Style};
         use ratatui::text::{Line, Span};
@@ -578,6 +629,14 @@ impl App {
         if self.help_visible {
             self.render_help(frame, area);
         }
+
+        // Theme picker (modal — top of z-order)
+        if let Some(picker) = self.theme_picker.as_mut() {
+            picker.render(frame, area);
+        }
+
+        // Motion effects post-process the composed buffer
+        self.motion.tick(frame.buffer_mut(), area);
     }
 
     /// Render a centered help overlay listing all keybindings.
@@ -591,6 +650,8 @@ impl App {
         let mut bindings: Vec<(String, String)> = vec![
             ("q".to_string(), "Quit".to_string()),
             ("?".to_string(), "Toggle help".to_string()),
+            ("T".to_string(), "Theme picker".to_string()),
+            ("M".to_string(), "Motion sensitivity".to_string()),
             ("Tab".to_string(), "Switch pane in browser".to_string()),
             ("F11".to_string(), "Fullscreen preview".to_string()),
             ("Esc".to_string(), "Go back".to_string()),

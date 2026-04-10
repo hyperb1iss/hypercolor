@@ -43,8 +43,11 @@ async fn main() -> Result<()> {
         .with_ansi(false)
         .init();
 
-    // Initialize theme
-    hypercolor_tui::theme::initialize(args.theme.as_deref());
+    // Theme resolution: --theme flag → HYPERCOLOR_THEME env (already merged
+    // by clap) → tui.toml persisted preference → silkcircuit-neon default
+    let persisted = hypercolor_tui::theme_picker::load_config().theme;
+    let theme_name = args.theme.as_deref().or(persisted.as_deref());
+    hypercolor_tui::theme::initialize(theme_name);
 
     // Install panic hook that restores the terminal
     let original_hook = std::panic::take_hook();

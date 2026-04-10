@@ -81,6 +81,10 @@ pub enum Action {
     // ── UI State ────────────────────────────────────────────
     /// Toggle the help overlay.
     ToggleHelp,
+    /// Toggle the live theme picker modal.
+    ToggleThemePicker,
+    /// Cycle motion sensitivity (Off → Subtle → Full).
+    CycleMotionSensitivity,
     /// Toggle fullscreen canvas preview.
     ToggleFullscreenPreview,
     /// Show a transient notification.

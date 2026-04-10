@@ -140,6 +140,7 @@ ratatui = "0.30"
 crossterm = "0.29"
 dpi = "0.1"
 opaline = { git = "https://github.com/hyperb1iss/opaline", features = ["global-state", "owo-colors", "widgets", "discovery"] }
+tachyonfx = "0.25"
 tokio-tungstenite = "0.26"
 
 # Imaging

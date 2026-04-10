@@ -22,6 +22,9 @@ hypercolor-types = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true, features = ["event-stream"] }
 
+# Motion effects
+tachyonfx = { workspace = true }
+
 # Theme
 opaline = { workspace = true }
 
@@ -39,6 +42,10 @@ reqwest = { workspace = true }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
+
+# Filesystem paths
+dirs = { workspace = true }
 
 # Error handling + logging
 anyhow = { workspace = true }
