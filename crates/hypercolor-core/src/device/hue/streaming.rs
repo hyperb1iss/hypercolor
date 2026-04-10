@@ -44,6 +44,16 @@ impl HueStreamSession {
         channels: Vec<HueChannel>,
     ) -> Result<Self> {
         let client_key = decode_hex(client_key_hex)?;
+        if client_key.is_empty() {
+            bail!(
+                "Hue client key is empty — refusing to open DTLS session without PSK authentication"
+            );
+        }
+        if api_key.is_empty() {
+            bail!(
+                "Hue api key (PSK identity hint) is empty — refusing to open DTLS session without PSK authentication"
+            );
+        }
         let bind_addr = SocketAddr::new(
             match bridge_ip {
                 IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -56,6 +66,15 @@ impl HueStreamSession {
             .connect(SocketAddr::new(bridge_ip, HUE_STREAM_PORT))
             .await?;
 
+        // SAFETY: `insecure_skip_verify` disables X.509 chain verification, NOT the DTLS
+        // handshake itself. Hue bridges ship self-signed certificates tied to the bridge
+        // serial, and the Entertainment API mandates a pure PSK handshake
+        // (TLS_PSK_WITH_AES_128_GCM_SHA256) — there is no public CA to validate against,
+        // so chain verification would always fail. Authentication is enforced by the
+        // pre-shared key negotiated via the `/api` user/clientkey pairing flow; the
+        // non-empty checks above guarantee we never reach this point with PSK auth
+        // disabled. Do NOT remove `insecure_skip_verify` without replacing it with a
+        // bridge-specific cert pin.
         let psk = Arc::new(client_key);
         let config = DtlsConfig {
             psk: Some(Arc::new(move |_| Ok(psk.as_ref().clone()))),

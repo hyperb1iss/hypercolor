@@ -34,6 +34,9 @@ use hypercolor_types::server::ServerIdentity;
 
 /// Maximum number of events that can be buffered per WebSocket client.
 const WS_BUFFER_SIZE: usize = 64;
+/// Maximum WebSocket command response body we buffer before relaying to the client.
+/// Guards against memory exhaustion from crafted or runaway handler responses.
+const WS_COMMAND_BODY_MAX: usize = 1024 * 1024;
 const WS_PROTOCOL_VERSION: &str = "1.0";
 const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
 const WS_PONG_TIMEOUT: Duration = Duration::from_secs(10);
@@ -88,6 +91,28 @@ static WS_SPECTRUM_PAYLOAD_CACHE: LazyLock<
 });
 static WS_PREVIEW_SCALE_LUT_CACHE: LazyLock<StdMutex<VecDeque<(u32, [u8; 256])>>> =
     LazyLock::new(|| StdMutex::new(VecDeque::with_capacity(WS_PREVIEW_SCALE_LUT_CACHE_CAPACITY)));
+
+/// Single-slot cache of the router used for WebSocket command dispatch. Keyed by
+/// the `AppState` pointer so parallel tests with distinct states invalidate the
+/// entry instead of crossing wires.
+static WS_COMMAND_ROUTER_CACHE: LazyLock<StdMutex<Option<(usize, axum::Router)>>> =
+    LazyLock::new(|| StdMutex::new(None));
+
+fn cached_command_router(state: &Arc<AppState>) -> axum::Router {
+    let key = Arc::as_ptr(state) as usize;
+    if let Ok(mut guard) = WS_COMMAND_ROUTER_CACHE.lock() {
+        if let Some((cached_key, router)) = guard.as_ref()
+            && *cached_key == key
+        {
+            return router.clone();
+        }
+        let router = crate::api::build_router(Arc::clone(state), None);
+        *guard = Some((key, router.clone()));
+        return router;
+    }
+    // Lock poisoned — fall back to a fresh build rather than panicking.
+    crate::api::build_router(Arc::clone(state), None)
+}
 
 struct WsClientGuard;
 
@@ -1674,7 +1699,7 @@ async fn dispatch_command(
     };
     request.extensions_mut().insert(auth_context);
 
-    let response = crate::api::build_router(Arc::clone(state), None)
+    let response = cached_command_router(state)
         .oneshot(request)
         .await
         .unwrap_or_else(|never| match never {});
@@ -1720,9 +1745,19 @@ fn normalize_command_path(path_raw: &str) -> Result<String, WsProtocolError> {
 async fn command_response_from_http(id: String, response: Response) -> ServerMessage {
     let status = response.status().as_u16();
     let body = response.into_body();
-    let bytes = axum::body::to_bytes(body, usize::MAX)
-        .await
-        .unwrap_or_default();
+    let bytes = match axum::body::to_bytes(body, WS_COMMAND_BODY_MAX).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return ServerMessage::Response {
+                id,
+                status: 502,
+                data: None,
+                error: Some(protocol_error_json(WsProtocolError::invalid_request(
+                    format!("Command response body exceeded {WS_COMMAND_BODY_MAX} bytes: {error}"),
+                ))),
+            };
+        }
+    };
     let parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
 
     if (200..300).contains(&status) {
