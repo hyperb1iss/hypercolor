@@ -107,6 +107,7 @@ impl RenderCaches {
             desired_render_surface_slots(0),
         );
         self.render_group_runtime = RenderGroupRuntime::new(width, height);
+        self.composition_planner = CompositionPlanner::new();
         self.effect_target_canvas = None;
         self.static_surface_cache = None;
     }
