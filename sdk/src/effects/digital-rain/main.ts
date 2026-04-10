@@ -1,4 +1,4 @@
-import { canvas, color, combo, num, toggle } from '@hypercolor/sdk'
+import { canvas, color, combo, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, num, toggle } from '@hypercolor/sdk'
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -140,6 +140,12 @@ function randomRange(min: number, max: number): number {
 
 function randomGlyphIndex(): number {
     return Math.floor(Math.random() * GLYPHS.length)
+}
+
+function canvasScale(width: number, height: number): number {
+    const sx = width / DEFAULT_CANVAS_WIDTH
+    const sy = height / DEFAULT_CANVAS_HEIGHT
+    return Math.max(0.5, Math.min(sx, sy))
 }
 
 function hexToRgb(hex: string): Rgb {
@@ -307,7 +313,8 @@ export default canvas.stateful(
         }
 
         function syncGrid(w: number, h: number, charSize: number, density: number): void {
-            const nextCellWidth = Math.max(5, Math.round(5 + charSize * 0.09))
+            const scale = canvasScale(w, h)
+            const nextCellWidth = Math.max(5, Math.round((5 + charSize * 0.09) * scale))
             const nextCellHeight = Math.max(nextCellWidth + 4, Math.round(nextCellWidth * 1.62))
             const nextCols = Math.max(8, Math.floor(w / nextCellWidth))
             const nextRows = Math.max(8, Math.floor(h / nextCellHeight))

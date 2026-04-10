@@ -1,4 +1,4 @@
-import { canvas, color, combo, num } from '@hypercolor/sdk'
+import { canvas, color, combo, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, num } from '@hypercolor/sdk'
 
 interface RGB {
     r: number
@@ -92,6 +92,12 @@ function mixRgb(a: RGB, b: RGB, t: number): RGB {
     }
 }
 
+function canvasScale(width: number, height: number): number {
+    const sx = width / DEFAULT_CANVAS_WIDTH
+    const sy = height / DEFAULT_CANVAS_HEIGHT
+    return Math.max(0.5, Math.min(sx, sy))
+}
+
 function fillRingBand(
     ctx: CanvasRenderingContext2D,
     x: number,
@@ -123,14 +129,15 @@ function createParticle(
     height: number,
     paletteSize: number,
     direction: 1 | -1,
+    scale: number,
     initial = false,
 ): RingParticle {
-    const offscreenMargin = 120
-    const radius = Math.random() * 6 + 2
+    const offscreenMargin = 120 * scale
+    const radius = (Math.random() * 6 + 2) * scale
     return {
         colorIndex: Math.floor(Math.random() * paletteSize),
         direction,
-        lineWidth: Math.round(Math.random() * 6) + 3,
+        lineWidth: (Math.round(Math.random() * 6) + 3) * scale,
         radius,
         speedX: (Math.random() - 0.5) * (Math.random() * 0.8 + 0.2),
         speedY: Math.random() * 2.4 + 0.7,
@@ -165,10 +172,11 @@ export default canvas.stateful(
         }
 
         function reset(width: number, height: number, paletteSize: number, targetPerDirection: number): void {
+            const scale = canvasScale(width, height)
             particles = []
             for (let i = 0; i < targetPerDirection; i++) {
-                particles.push(createParticle(width, height, paletteSize, 1, true))
-                particles.push(createParticle(width, height, paletteSize, -1, true))
+                particles.push(createParticle(width, height, paletteSize, 1, scale, true))
+                particles.push(createParticle(width, height, paletteSize, -1, scale, true))
             }
             lastWidth = width
             lastHeight = height
@@ -180,14 +188,15 @@ export default canvas.stateful(
             paletteSize: number,
             targetPerDirection: number,
         ): void {
+            const scale = canvasScale(width, height)
             const upward = particles.filter((particle) => particle.direction === -1).length
             const downward = particles.filter((particle) => particle.direction === 1).length
 
             for (let i = downward; i < targetPerDirection; i++) {
-                particles.push(createParticle(width, height, paletteSize, 1))
+                particles.push(createParticle(width, height, paletteSize, 1, scale))
             }
             for (let i = upward; i < targetPerDirection; i++) {
-                particles.push(createParticle(width, height, paletteSize, -1))
+                particles.push(createParticle(width, height, paletteSize, -1, scale))
             }
         }
 

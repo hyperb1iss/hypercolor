@@ -45,6 +45,12 @@ function rand(min: number, max: number): number {
     return Math.random() * (max - min) + min
 }
 
+function canvasScale(width: number, height: number): number {
+    const sx = width / DEFAULT_CANVAS_WIDTH
+    const sy = height / DEFAULT_CANVAS_HEIGHT
+    return Math.max(0.5, Math.min(sx, sy))
+}
+
 function randomVelocity(): number {
     const value = rand(-1.0, 1.0)
     return Math.abs(value) < 0.08 ? (Math.random() < 0.5 ? -0.22 : 0.22) : value
@@ -135,8 +141,9 @@ function polishBubbleColors(colors: { aura: RGB; body: RGB; rim: RGB; gloss: RGB
 
 function createBubbles(count: number, width: number, height: number): Bubble[] {
     const bubbles: Bubble[] = []
+    const scale = canvasScale(width, height)
     for (let i = 0; i < count; i++) {
-        const radius = rand(14, 28)
+        const radius = rand(14, 28) * scale
         bubbles.push({
             alpha: 0.22 + (i / Math.max(1, count - 1)) * 0.24,
             baseSize: radius,
@@ -323,9 +330,11 @@ export default canvas.stateful(
         ),
     },
     () => {
-        let bubbles = createBubbles(30, DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT)
+        let bubbles: Bubble[] = []
         let prevCount = 30
         let prevSpeed = 10
+        let lastWidth = 0
+        let lastHeight = 0
 
         return (ctx, time, c) => {
             const count = Math.max(10, Math.floor(c.count as number))
@@ -340,9 +349,12 @@ export default canvas.stateful(
             const width = ctx.canvas.width
             const height = ctx.canvas.height
 
-            if (count !== prevCount) {
+            if (width !== lastWidth || height !== lastHeight || count !== prevCount || bubbles.length === 0) {
                 bubbles = createBubbles(count, width, height)
                 prevCount = count
+                prevSpeed = speed
+                lastWidth = width
+                lastHeight = height
             } else if (speed !== prevSpeed) {
                 for (const bubble of bubbles) {
                     bubble.vx = randomVelocity()
