@@ -26,11 +26,12 @@ pub struct SidebarState {
 
 // ── Live Palette Extraction ────────────────────────────────────────────────
 
-/// Two-color palette extracted from live canvas frame pixels.
+/// Dominant colors extracted from live canvas frame pixels.
 #[derive(Clone, Copy)]
 struct LivePalette {
     primary: (f64, f64, f64),
     secondary: (f64, f64, f64),
+    tertiary: (f64, f64, f64),
 }
 
 /// Extract the 1-2 most dominant vibrant colors from RGBA pixel data.
@@ -110,8 +111,17 @@ fn extract_palette(frame: &crate::ws::CanvasFrame) -> Option<LivePalette> {
     } else {
         primary
     };
+    let tertiary = if ranked.len() > 2 {
+        avg(ranked[2].0)
+    } else {
+        secondary
+    };
 
-    Some(LivePalette { primary, secondary })
+    Some(LivePalette {
+        primary,
+        secondary,
+        tertiary,
+    })
 }
 
 fn lerp_rgb(a: (f64, f64, f64), b: (f64, f64, f64), t: f64) -> (f64, f64, f64) {
@@ -242,6 +252,7 @@ pub fn Sidebar() -> impl IntoView {
                     Some(old) => LivePalette {
                         primary: lerp_rgb(old.primary, new_palette.primary, 0.3),
                         secondary: lerp_rgb(old.secondary, new_palette.secondary, 0.3),
+                        tertiary: lerp_rgb(old.tertiary, new_palette.tertiary, 0.3),
                     },
                     None => new_palette,
                 };
@@ -560,17 +571,42 @@ pub fn Sidebar() -> impl IntoView {
                         )
                     }
                 };
+                let tertiary_rgb = move || {
+                    let cat = fx.active_effect_category.get();
+                    if uses_sidebar_preview.get() {
+                        category_accent_rgb(&cat).to_string()
+                    } else {
+                        live_palette.get().map_or_else(
+                            || category_accent_rgb(&cat).to_string(),
+                            |p| rgb_string(p.tertiary),
+                        )
+                    }
+                };
 
                 Some(view! {
                     <div
                         class="border-t border-edge-subtle py-3 space-y-3 animate-fade-in"
                         style:box-shadow=move || {
                             let p = primary_rgb();
-                            format!("inset 3px 0 0 rgb({p}), inset 4px 0 12px rgba({p}, 0.15)")
+                            let s = secondary_rgb();
+                            format!(
+                                "inset 3px 0 0 rgb({p}), inset 4px 0 12px rgba({p}, 0.15), \
+                                 inset 0 -1px 20px rgba({s}, 0.06)"
+                            )
+                        }
+                        style:background=move || {
+                            let p = primary_rgb();
+                            let s = secondary_rgb();
+                            format!(
+                                "linear-gradient(180deg, rgba({p}, 0.04) 0%, rgba({s}, 0.03) 60%, transparent 100%)"
+                            )
                         }
                     >
                         // Now Playing label
-                        <div class="px-4 text-[9px] font-mono uppercase tracking-[0.15em] text-fg-tertiary/60">
+                        <div
+                            class="px-4 text-[9px] font-mono uppercase tracking-[0.15em]"
+                            style:color=move || format!("rgba({}, 0.55)", primary_rgb())
+                        >
                             {move || if fx.is_playing.get() { "Now Playing" } else { "Stopped" }}
                         </div>
 
@@ -617,11 +653,34 @@ pub fn Sidebar() -> impl IntoView {
                                 <div class="text-[11px] font-medium text-fg-primary truncate leading-tight">
                                     {move || fx.active_effect_name.get().unwrap_or_default()}
                                 </div>
-                                <div class="text-[10px] text-fg-tertiary capitalize mt-0.5">
+                                <div
+                                    class="text-[10px] capitalize mt-0.5"
+                                    style:color=move || format!("rgba({}, 0.6)", secondary_rgb())
+                                >
                                     {move || fx.active_effect_category.get()}
                                 </div>
                             </div>
                             <SidebarAudioToggle />
+                        </div>
+
+                        // Palette strip — shows extracted colors as a smooth gradient
+                        <div class="px-4">
+                            <div
+                                class="h-[3px] rounded-full"
+                                style:background=move || {
+                                    let p = primary_rgb();
+                                    let s = secondary_rgb();
+                                    let t = tertiary_rgb();
+                                    format!(
+                                        "linear-gradient(90deg, rgb({p}) 0%, rgb({s}) 50%, rgb({t}) 100%)"
+                                    )
+                                }
+                                style:opacity="0.7"
+                                style:box-shadow=move || {
+                                    let p = primary_rgb();
+                                    format!("0 0 8px rgba({p}, 0.3)")
+                                }
+                            />
                         </div>
 
                         // Player controls
@@ -682,7 +741,8 @@ pub fn Sidebar() -> impl IntoView {
                                 max="100"
                                 step="1"
                                 class="min-w-0 flex-1 h-1 rounded-full appearance-none cursor-pointer"
-                                style="accent-color: rgb(225, 53, 255); background: rgba(139, 133, 160, 0.15)"
+                                style:accent-color=move || format!("rgb({})", primary_rgb())
+                                style:background="rgba(139, 133, 160, 0.15)"
                                 prop:value=move || global_brightness.get().to_string()
                                 on:input=move |ev| {
                                     let value = event_target_value(&ev);
