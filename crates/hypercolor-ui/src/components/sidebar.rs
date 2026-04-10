@@ -472,10 +472,8 @@ pub fn Sidebar() -> impl IntoView {
                 href="https://github.com/sponsors/hyperb1iss"
                 target="_blank"
                 rel="noopener"
-                class="flex items-center mx-2 rounded-lg
+                class="flex items-center mx-2
                        text-fg-tertiary hover:text-fg-primary
-                       bg-accent/5 hover:bg-accent/10
-                       border border-accent/10 hover:border-accent/20
                        transition-all duration-200"
                 class:justify-center=move || collapsed.get()
                 class:gap-2=move || !collapsed.get()
@@ -488,7 +486,7 @@ pub fn Sidebar() -> impl IntoView {
                 <span
                     class="text-[11px] whitespace-nowrap"
                     style:display=move || if collapsed.get() { "none" } else { "inline" }
-                >"Sponsor"</span>
+                >"Sponsor the project"</span>
             </a>
 
             // Now Playing — live thumbnail + palette-styled panel
