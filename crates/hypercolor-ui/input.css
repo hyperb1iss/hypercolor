@@ -818,7 +818,7 @@ button:hover:not(:disabled) > .relative {
 /* ── Resize Handle ─────────────────────────────────────────────────────── */
 
 .resize-handle-zone {
-    width: 10px;
+    width: 14px;
     margin: 0 -1px;
     cursor: col-resize;
     display: flex;
@@ -831,16 +831,17 @@ button:hover:not(:disabled) > .relative {
 
 .resize-handle-line {
     width: 2px;
-    height: 40px;
+    height: 56px;
     border-radius: 999px;
-    background: var(--border-subtle, rgba(139, 133, 160, 0.12));
+    background: rgba(225, 53, 255, 0.22);
+    box-shadow: 0 0 0 1px rgba(225, 53, 255, 0.04);
     transition: all 200ms ease;
 }
 
 .resize-handle-zone:hover .resize-handle-line {
-    background: rgba(225, 53, 255, 0.45);
-    height: 64px;
-    box-shadow: 0 0 10px rgba(225, 53, 255, 0.2);
+    background: rgba(225, 53, 255, 0.55);
+    height: 80px;
+    box-shadow: 0 0 14px rgba(225, 53, 255, 0.35);
 }
 
 .resize-handle-active .resize-handle-line {

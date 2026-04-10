@@ -14,6 +14,7 @@ pub mod layout_builder;
 pub mod layout_canvas;
 pub mod layout_palette;
 pub mod layout_zone_properties;
+pub mod perf_charts;
 pub mod preset_matching;
 pub mod preset_panel;
 mod preview_runtime;
