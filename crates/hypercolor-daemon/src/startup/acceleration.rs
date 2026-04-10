@@ -8,11 +8,21 @@ use hypercolor_types::config::RenderAccelerationMode;
 
 const GPU_COMPOSITOR_UNAVAILABLE_REASON: &str = "gpu compositor acceleration is not available yet";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GpuCompositorProbeInfo {
+    pub(crate) adapter_name: String,
+    pub(crate) backend: &'static str,
+    pub(crate) texture_format: &'static str,
+    pub(crate) max_texture_dimension_2d: u32,
+    pub(crate) max_storage_textures_per_shader_stage: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompositorAccelerationResolution {
     pub(crate) requested_mode: RenderAccelerationMode,
     pub(crate) effective_mode: RenderAccelerationMode,
     pub(crate) fallback_reason: Option<&'static str>,
+    pub(crate) gpu_probe: Option<GpuCompositorProbeInfo>,
 }
 
 pub(crate) fn resolve_compositor_acceleration_mode(
@@ -23,6 +33,7 @@ pub(crate) fn resolve_compositor_acceleration_mode(
             requested_mode,
             effective_mode: RenderAccelerationMode::Cpu,
             fallback_reason: None,
+            gpu_probe: None,
         }),
         RenderAccelerationMode::Auto => resolve_auto_mode(requested_mode),
         RenderAccelerationMode::Gpu => resolve_explicit_gpu_mode(requested_mode),
@@ -33,11 +44,12 @@ pub(crate) fn resolve_compositor_acceleration_mode(
 fn resolve_auto_mode(
     requested_mode: RenderAccelerationMode,
 ) -> Result<CompositorAccelerationResolution> {
-    if crate::render_thread::sparkleflinger::gpu::GpuSparkleFlinger::new().is_ok() {
+    if let Ok(compositor) = crate::render_thread::sparkleflinger::gpu::GpuSparkleFlinger::new() {
         return Ok(CompositorAccelerationResolution {
             requested_mode,
             effective_mode: RenderAccelerationMode::Gpu,
             fallback_reason: None,
+            gpu_probe: Some(GpuCompositorProbeInfo::from(compositor.describe())),
         });
     }
 
@@ -45,6 +57,7 @@ fn resolve_auto_mode(
         requested_mode,
         effective_mode: RenderAccelerationMode::Cpu,
         fallback_reason: None,
+        gpu_probe: None,
     })
 }
 
@@ -56,6 +69,7 @@ fn resolve_auto_mode(
         requested_mode,
         effective_mode: RenderAccelerationMode::Cpu,
         fallback_reason: None,
+        gpu_probe: None,
     })
 }
 
@@ -64,10 +78,11 @@ fn resolve_explicit_gpu_mode(
     requested_mode: RenderAccelerationMode,
 ) -> Result<CompositorAccelerationResolution> {
     crate::render_thread::sparkleflinger::gpu::GpuSparkleFlinger::new()
-        .map(|_| CompositorAccelerationResolution {
+        .map(|compositor| CompositorAccelerationResolution {
             requested_mode,
             effective_mode: RenderAccelerationMode::Gpu,
             fallback_reason: None,
+            gpu_probe: Some(GpuCompositorProbeInfo::from(compositor.describe())),
         })
         .with_context(|| {
             format!(
@@ -85,6 +100,21 @@ fn resolve_explicit_gpu_mode(
     )
 }
 
+#[cfg(feature = "wgpu")]
+impl From<crate::render_thread::sparkleflinger::gpu::GpuCompositorProbe>
+    for GpuCompositorProbeInfo
+{
+    fn from(probe: crate::render_thread::sparkleflinger::gpu::GpuCompositorProbe) -> Self {
+        Self {
+            adapter_name: probe.adapter_name,
+            backend: probe.backend,
+            texture_format: probe.texture_format,
+            max_texture_dimension_2d: probe.max_texture_dimension_2d,
+            max_storage_textures_per_shader_stage: probe.max_storage_textures_per_shader_stage,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use hypercolor_types::config::RenderAccelerationMode;
@@ -98,6 +128,7 @@ mod tests {
             .expect("auto mode should resolve");
         assert_eq!(resolution.effective_mode, RenderAccelerationMode::Cpu);
         assert!(resolution.fallback_reason.is_none());
+        assert!(resolution.gpu_probe.is_none());
     }
 
     #[cfg(feature = "wgpu")]
@@ -112,6 +143,7 @@ mod tests {
             .expect("auto mode should resolve when wgpu is enabled");
         assert_eq!(resolution.effective_mode, RenderAccelerationMode::Gpu);
         assert!(resolution.fallback_reason.is_none());
+        assert!(resolution.gpu_probe.is_some());
     }
 
     #[cfg(not(feature = "wgpu"))]
@@ -134,5 +166,6 @@ mod tests {
             .expect("gpu mode should resolve when a compatible adapter is available");
         assert_eq!(resolution.effective_mode, RenderAccelerationMode::Gpu);
         assert!(resolution.fallback_reason.is_none());
+        assert!(resolution.gpu_probe.is_some());
     }
 }
