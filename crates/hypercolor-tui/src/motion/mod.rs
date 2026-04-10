@@ -11,6 +11,7 @@
 //!
 //! Phase 1 (this commit): scaffold only — no actual effects yet.
 
+pub mod catalog;
 pub mod keys;
 pub mod sensitivity;
 

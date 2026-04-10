@@ -41,6 +41,8 @@ pub struct App {
     theme_picker: Option<ThemePicker>,
     /// Motion effects engine (tachyonfx-backed).
     motion: MotionSystem,
+    /// Last rendered frame area, cached so action handlers can scope effects.
+    last_frame_area: Rect,
     /// Fullscreen canvas preview mode.
     fullscreen_preview: bool,
     /// Current notification (auto-dismisses).
@@ -77,6 +79,7 @@ impl App {
             help_visible: false,
             theme_picker: None,
             motion: MotionSystem::new(MotionSensitivity::resolve(MotionSensitivity::Full)),
+            last_frame_area: Rect::new(0, 0, 80, 24),
             fullscreen_preview: false,
             notification: None,
             action_tx,
@@ -267,6 +270,15 @@ impl App {
                 if let Some(new) = self.screens.get_mut(&self.active_screen) {
                     new.set_focused(true);
                 }
+
+                // Motion: dissolve+coalesce the screen content area
+                self.motion.trigger(
+                    crate::motion::MotionKey::ScreenTransition,
+                    crate::motion::catalog::screen_transition(
+                        self.last_frame_area,
+                        self.motion.sensitivity(),
+                    ),
+                );
             }
 
             Action::GoBack => {
@@ -315,6 +327,15 @@ impl App {
                         },
                         Instant::now(),
                     ));
+                    // Cancel any persistent connection_lost effect, then green flash
+                    self.motion.cancel(crate::motion::MotionKey::ConnectionLost);
+                    self.motion.trigger(
+                        crate::motion::MotionKey::ConnectionRestored,
+                        crate::motion::catalog::connection_restored(
+                            self.last_frame_area,
+                            self.motion.sensitivity(),
+                        ),
+                    );
                 }
             }
             Action::DaemonDisconnected(reason) => {
@@ -329,6 +350,14 @@ impl App {
                         },
                         Instant::now(),
                     ));
+                    // Persistent red border tint until reconnect
+                    self.motion.trigger(
+                        crate::motion::MotionKey::ConnectionLost,
+                        crate::motion::catalog::connection_lost(
+                            self.last_frame_area,
+                            self.motion.sensitivity(),
+                        ),
+                    );
                 }
             }
             Action::DaemonReconnecting => {
@@ -578,6 +607,7 @@ impl App {
         use ratatui::widgets::Paragraph;
 
         let area = frame.area();
+        self.last_frame_area = area;
 
         // Fullscreen canvas preview — bypass all chrome
         if self.fullscreen_preview {
