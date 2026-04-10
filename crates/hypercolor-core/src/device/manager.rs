@@ -1311,11 +1311,6 @@ impl BackendManager {
 
         let mut stats = FrameWriteStats::default();
 
-        let inactive_keys = plan
-            .inactive_devices
-            .iter()
-            .cloned()
-            .collect::<HashSet<_>>();
         let newly_inactive = plan
             .inactive_devices
             .iter()
@@ -1347,7 +1342,9 @@ impl BackendManager {
                 "connected devices have no active layout zones; frames will not be sent"
             );
         }
-        self.warned_inactive_layout_devices = inactive_keys;
+        self.warned_inactive_layout_devices.clear();
+        self.warned_inactive_layout_devices
+            .extend(plan.inactive_devices.iter().cloned());
 
         if zone_colors.len() == plan.ordered_zone_routes.len()
             && zone_colors
