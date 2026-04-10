@@ -211,3 +211,36 @@ fn load_theme(name: Option<&str>) -> opaline::Theme {
             .expect("builtin silkcircuit-neon theme must exist")
     })
 }
+
+// ── Clap help styling ──────────────────────────────────────────────────
+
+/// SilkCircuit-themed styles for clap help output.
+///
+/// Maps the project's visual identity onto clap's help categories:
+///   header/usage → Electric Purple (bold)
+///   literal      → Neon Cyan
+///   placeholder  → Text Muted
+///   valid        → Success Green
+///   invalid/error→ Error Red
+///
+/// Clap respects `NO_COLOR` and non-TTY detection automatically, so
+/// these styles are stripped when color output is suppressed.
+pub fn help_styles() -> clap::builder::Styles {
+    use clap::builder::styling::{Color, RgbColor, Style, Styles};
+
+    let purple = Some(Color::Rgb(RgbColor(225, 53, 255)));
+    let cyan = Some(Color::Rgb(RgbColor(128, 255, 234)));
+    let coral = Some(Color::Rgb(RgbColor(255, 106, 193)));
+    let muted = Some(Color::Rgb(RgbColor(130, 135, 159)));
+    let green = Some(Color::Rgb(RgbColor(80, 250, 123)));
+    let red = Some(Color::Rgb(RgbColor(255, 99, 99)));
+
+    Styles::styled()
+        .header(Style::new().fg_color(purple).bold())
+        .usage(Style::new().fg_color(purple).bold())
+        .literal(Style::new().fg_color(cyan))
+        .placeholder(Style::new().fg_color(muted))
+        .valid(Style::new().fg_color(green))
+        .invalid(Style::new().fg_color(red))
+        .error(Style::new().fg_color(coral).bold())
+}

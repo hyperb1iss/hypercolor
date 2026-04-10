@@ -18,7 +18,7 @@ use output::{OutputContext, OutputFormat};
 /// Hypercolor RGB lighting control.
 #[derive(Parser)]
 #[command(name = "hyper", version, about = "Hypercolor RGB lighting control")]
-#[command(propagate_version = true)]
+#[command(propagate_version = true, styles = output::painter::help_styles())]
 pub struct Cli {
     /// Output format.
     #[arg(long, global = true, default_value = "table", value_enum)]
