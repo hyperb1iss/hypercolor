@@ -90,6 +90,18 @@ impl RenderGroupRuntime {
     ) -> Result<RenderGroupResult> {
         self.reconcile(groups, groups_revision, registry)?;
 
+        if let Some(result) = self.render_single_full_preview_group(
+            groups,
+            delta_secs,
+            audio,
+            interaction,
+            screen,
+            zones,
+        )? {
+            self.retain_frame(groups_revision, &result);
+            return Ok(result);
+        }
+
         for group in groups {
             let Some(target) = self.target_canvases.get_mut(&group.id) else {
                 continue;
@@ -131,20 +143,15 @@ impl RenderGroupRuntime {
         let preview_frame = self.compose_preview(groups);
         let layout = Arc::clone(&self.combined_layout);
 
-        self.retained_frame = Some(RetainedRenderGroupFrame {
-            groups_revision,
-            preview_frame: preview_frame.clone(),
-            layout: Arc::clone(&layout),
-            logical_layer_count,
-        });
-
-        Ok(RenderGroupResult {
+        let result = RenderGroupResult {
             preview_frame,
             layout,
             sample_us,
             logical_layer_count,
             reuse_published_zones: false,
-        })
+        };
+        self.retain_frame(groups_revision, &result);
+        Ok(result)
     }
 
     fn reconcile(
@@ -202,6 +209,77 @@ impl RenderGroupRuntime {
             self.spatial_engines
                 .insert(group.id, SpatialEngine::new(group.layout.clone()));
         }
+    }
+
+    fn render_single_full_preview_group(
+        &mut self,
+        groups: &[RenderGroup],
+        delta_secs: f32,
+        audio: &AudioData,
+        interaction: &InteractionData,
+        screen: Option<&ScreenData>,
+        zones: &mut Vec<ZoneColors>,
+    ) -> Result<Option<RenderGroupResult>> {
+        let Some(group) = self.single_full_preview_group(groups) else {
+            return Ok(None);
+        };
+        let Some(spatial_engine) = self.spatial_engines.get(&group.id) else {
+            return Ok(None);
+        };
+        let Some(mut lease) = self.preview_surface_pool.dequeue() else {
+            return Ok(None);
+        };
+
+        if let Err(error) = self.effect_pool.render_group_into(
+            group,
+            delta_secs,
+            audio,
+            interaction,
+            screen,
+            lease.canvas_mut(),
+        ) {
+            lease.release();
+            return Err(error);
+        }
+
+        let sample_start = Instant::now();
+        let next_index = spatial_engine.sample_append_into_at(lease.canvas_mut(), zones, 0);
+        zones.truncate(next_index);
+        let sample_us = micros_u32(sample_start.elapsed());
+        let preview_surface = lease.submit(0, 0);
+
+        Ok(Some(RenderGroupResult {
+            preview_frame: ProducerFrame::Surface(preview_surface),
+            layout: Arc::clone(&self.combined_layout),
+            sample_us,
+            logical_layer_count: 1,
+            reuse_published_zones: false,
+        }))
+    }
+
+    fn single_full_preview_group<'a>(&self, groups: &'a [RenderGroup]) -> Option<&'a RenderGroup> {
+        let mut active_groups = groups
+            .iter()
+            .filter(|group| group.enabled && group.effect_id.is_some());
+        let group = active_groups.next()?;
+        if active_groups.next().is_some() {
+            return None;
+        }
+        if group.layout.canvas_width != self.preview_width
+            || group.layout.canvas_height != self.preview_height
+        {
+            return None;
+        }
+        Some(group)
+    }
+
+    fn retain_frame(&mut self, groups_revision: u64, result: &RenderGroupResult) {
+        self.retained_frame = Some(RetainedRenderGroupFrame {
+            groups_revision,
+            preview_frame: result.preview_frame.clone(),
+            layout: Arc::clone(&result.layout),
+            logical_layer_count: result.logical_layer_count,
+        });
     }
 
     fn compose_preview(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
@@ -343,8 +421,13 @@ fn blit_scaled_tile(target: &mut Canvas, source: &Canvas, x0: u32, y0: u32, x1: 
 mod tests {
     use std::collections::HashMap;
 
+    use hypercolor_core::effect::EffectRegistry;
+    use hypercolor_core::effect::builtin::register_builtin_effects;
+    use hypercolor_core::input::InteractionData;
+    use hypercolor_types::audio::AudioData;
     use hypercolor_types::canvas::Rgba;
-    use hypercolor_types::effect::EffectId;
+    use hypercolor_types::effect::{ControlValue, EffectId};
+    use hypercolor_types::spatial::{DeviceZone, LedTopology, NormalizedPosition, StripDirection};
     use uuid::Uuid;
 
     use super::*;
@@ -373,6 +456,47 @@ mod tests {
             enabled: true,
             color: None,
         }
+    }
+
+    fn point_zone(id: &str) -> DeviceZone {
+        DeviceZone {
+            id: id.into(),
+            name: id.into(),
+            device_id: id.into(),
+            zone_name: None,
+            position: NormalizedPosition { x: 0.5, y: 0.5 },
+            size: NormalizedPosition { x: 0.2, y: 0.2 },
+            rotation: 0.0,
+            scale: 1.0,
+            orientation: None,
+            topology: LedTopology::Strip {
+                count: 1,
+                direction: StripDirection::LeftToRight,
+            },
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: None,
+            edge_behavior: None,
+            shape: None,
+            shape_preset: None,
+            display_order: 0,
+            attachment: None,
+        }
+    }
+
+    fn builtin_registry() -> EffectRegistry {
+        let mut registry = EffectRegistry::new(Vec::new());
+        register_builtin_effects(&mut registry);
+        registry
+    }
+
+    fn builtin_effect_id(registry: &EffectRegistry, stem: &str) -> EffectId {
+        registry
+            .iter()
+            .find_map(|(id, entry)| {
+                (entry.metadata.source.source_stem() == Some(stem)).then_some(*id)
+            })
+            .expect("builtin effect should exist")
     }
 
     #[test]
@@ -421,5 +545,65 @@ mod tests {
         assert!(top_right.g > top_right.r && top_right.g > top_right.b);
         assert!(bottom_left.b > bottom_left.r && bottom_left.b > bottom_left.g);
         assert!(bottom_right.r > 180 && bottom_right.g > 180 && bottom_right.b < 120);
+    }
+
+    #[test]
+    fn single_full_preview_group_renders_directly_into_surface() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let registry = builtin_registry();
+        let solid_id = builtin_effect_id(&registry, "solid_color");
+        let group = RenderGroup {
+            id: RenderGroupId::new(),
+            name: "Direct".into(),
+            description: None,
+            effect_id: Some(solid_id),
+            controls: HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+            preset_id: None,
+            layout: SpatialLayout {
+                id: "direct-group".into(),
+                name: "Direct Group".into(),
+                description: None,
+                canvas_width: 4,
+                canvas_height: 4,
+                zones: vec![point_zone("zone_direct")],
+                default_sampling_mode: SamplingMode::Bilinear,
+                default_edge_behavior: EdgeBehavior::Clamp,
+                spaces: None,
+                version: 1,
+            },
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+        };
+        let mut zones = Vec::new();
+
+        let result = runtime
+            .render_scene(
+                &[group.clone()],
+                1,
+                &registry,
+                1.0 / 60.0,
+                &AudioData::silence(),
+                &InteractionData::default(),
+                None,
+                &mut zones,
+            )
+            .expect("single group should render");
+
+        let ProducerFrame::Surface(surface) = result.preview_frame else {
+            panic!("single full-size group should render into a surface");
+        };
+
+        assert_eq!(surface.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
+        assert_eq!(zones.len(), 1);
+        assert_eq!(zones[0].colors.first().copied(), Some([255, 0, 0]));
+        assert_eq!(
+            runtime
+                .target_canvases
+                .get(&group.id)
+                .expect("reconcile should provision a group canvas")
+                .get_pixel(0, 0),
+            Rgba::new(0, 0, 0, 255)
+        );
     }
 }
