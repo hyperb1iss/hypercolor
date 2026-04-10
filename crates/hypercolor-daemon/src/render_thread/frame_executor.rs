@@ -120,7 +120,7 @@ pub(crate) async fn execute_frame(
     .await;
     let render_us = render_stage.total_us;
 
-    let layout = if let Some(sampled_layout) = render_stage.sampled_layout.clone() {
+    let layout = if let Some(sampled_layout) = render_stage.sampled_layout.take() {
         if let Some(sampled_zones) = render_stage.sampled_zones.take() {
             render.recycled_frame.zones = sampled_zones;
         }
@@ -172,28 +172,21 @@ pub(crate) async fn execute_frame(
 
     let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
     let timing_total_us = micros_u32(frame_start.elapsed());
-    let screen_watch_surface = if !scene_snapshot.effect_demand.effect_running
-        && scene_snapshot.effect_demand.screen_capture_active
-    {
-        render_stage
-            .composed_frame
-            .preview_surface
-            .clone()
-            .or_else(|| render_stage.composed_frame.sampling_surface.clone())
-            .or_else(|| inputs.screen_preview_surface.clone())
-    } else {
-        render_stage
-            .composed_frame
-            .preview_surface
-            .clone()
-            .or_else(|| inputs.screen_preview_surface.clone())
-    };
     let ComposedFrameSet {
         sampling_canvas,
         sampling_surface,
-        preview_surface: _,
+        preview_surface,
         bypassed: _,
     } = render_stage.composed_frame;
+    let screen_watch_surface = if !scene_snapshot.effect_demand.effect_running
+        && scene_snapshot.effect_demand.screen_capture_active
+    {
+        preview_surface
+            .or_else(|| sampling_surface.clone())
+            .or_else(|| inputs.screen_preview_surface.clone())
+    } else {
+        preview_surface.or_else(|| inputs.screen_preview_surface.clone())
+    };
     let publish_stats = publish_frame_updates(
         state,
         &mut render.recycled_frame,
