@@ -77,6 +77,14 @@ pub(crate) async fn compose_frame(request: ComposeRequest<'_>) -> RenderStageSta
     .await
 }
 
+fn effective_render_group_layer_count(plan_layers: u32, group_layers: u32) -> u32 {
+    if group_layers == 0 {
+        return plan_layers;
+    }
+
+    group_layers.saturating_add(plan_layers.saturating_sub(1))
+}
+
 impl<'a> ComposeContext<'a> {
     async fn compose(&mut self) -> RenderStageStats {
         let stage_start = Instant::now();
@@ -267,10 +275,10 @@ impl<'a> ComposeContext<'a> {
                     composition_us,
                     composition_done_us,
                     total_us: micros_u32(stage_start.elapsed()),
-                    logical_layer_count: compiled_plan
-                        .metadata
-                        .logical_layer_count
-                        .max(render_group_result.logical_layer_count),
+                    logical_layer_count: effective_render_group_layer_count(
+                        compiled_plan.metadata.logical_layer_count,
+                        render_group_result.logical_layer_count,
+                    ),
                     render_group_count: compiled_plan.metadata.render_group_count,
                     scene_active: compiled_plan.metadata.scene_active,
                     scene_transition_active: compiled_plan.metadata.transition_active,
@@ -436,5 +444,16 @@ impl<'a> ComposeContext<'a> {
             producer_us: micros_u32(render_start.elapsed()),
             state: Some(ProducerFrameState::Fresh),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::effective_render_group_layer_count;
+
+    #[test]
+    fn render_group_layer_count_adds_transition_base_once() {
+        assert_eq!(effective_render_group_layer_count(1, 4), 4);
+        assert_eq!(effective_render_group_layer_count(2, 4), 5);
     }
 }
