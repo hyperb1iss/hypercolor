@@ -120,10 +120,12 @@ pub(crate) fn publish_frame_updates(
     } else {
         CanvasFrame::empty()
     };
-    state
-        .preview_runtime
-        .record_screen_canvas_publication(&screen_frame);
-    let _ = state.event_bus.screen_canvas_sender().send(screen_frame);
+    if should_publish_screen_frame(state, &screen_frame) {
+        state
+            .preview_runtime
+            .record_screen_canvas_publication(&screen_frame);
+        let _ = state.event_bus.screen_canvas_sender().send(screen_frame);
+    }
     if event_subscribers > 0 {
         state.event_bus.publish(HypercolorEvent::FrameRendered {
             frame_number,
@@ -135,6 +137,19 @@ pub(crate) fn publish_frame_updates(
         full_frame_copy_count,
         full_frame_copy_bytes,
     }
+}
+
+fn should_publish_screen_frame(state: &RenderThreadState, next_frame: &CanvasFrame) -> bool {
+    if !canvas_frame_is_empty(next_frame) {
+        return true;
+    }
+
+    let current = state.event_bus.screen_canvas_sender().borrow();
+    !canvas_frame_is_empty(&current)
+}
+
+fn canvas_frame_is_empty(frame: &CanvasFrame) -> bool {
+    frame.width == 0 || frame.height == 0
 }
 
 fn maybe_publish_audio_level_event(

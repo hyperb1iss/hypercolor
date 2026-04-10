@@ -2343,6 +2343,56 @@ async fn idle_pipeline_throttles_even_with_watch_receivers() {
     );
 }
 
+#[tokio::test]
+async fn idle_pipeline_does_not_republish_empty_screen_canvas_frames() {
+    let state = make_render_state(
+        EffectEngine::new(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let mut screen_canvas_rx = state.event_bus.screen_canvas_receiver();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    let first_frame = tokio::time::timeout(Duration::from_secs(1), frame_rx.changed()).await;
+    assert!(
+        first_frame.is_ok(),
+        "expected initial black frame before idle throttling"
+    );
+    let _ = frame_rx.borrow_and_update();
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    if screen_canvas_rx
+        .has_changed()
+        .expect("screen canvas watch should remain connected")
+    {
+        let _ = screen_canvas_rx.borrow_and_update();
+    }
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let screen_canvas_changed = screen_canvas_rx
+        .has_changed()
+        .expect("screen canvas watch should remain connected");
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    assert!(
+        !screen_canvas_changed,
+        "expected idle pipeline to stop republishing identical empty screen preview frames"
+    );
+}
+
 #[test]
 fn preview_runtime_receivers_share_event_bus_canvas_channel() {
     let state = make_render_state(
