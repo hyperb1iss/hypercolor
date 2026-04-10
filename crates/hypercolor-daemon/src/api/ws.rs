@@ -2012,6 +2012,8 @@ fn encode_canvas_binary_with_header_and_brightness(
     header: u8,
     brightness: f32,
 ) -> Vec<u8> {
+    const CANVAS_HEADER_LEN: usize = 14;
+
     let brightness = brightness.clamp(0.0, 1.0);
     let width_u16 = u16::try_from(canvas.width).unwrap_or(u16::MAX);
     let height_u16 = u16::try_from(canvas.height).unwrap_or(u16::MAX);
@@ -2023,32 +2025,53 @@ fn encode_canvas_binary_with_header_and_brightness(
         CanvasFormat::Rgb => 3_usize,
         CanvasFormat::Rgba => 4_usize,
     };
-    let mut out = Vec::with_capacity(14_usize.saturating_add(px_count.saturating_mul(bpp)));
-    out.push(header);
-    out.extend_from_slice(&canvas.frame_number.to_le_bytes());
-    out.extend_from_slice(&canvas.timestamp_ms.to_le_bytes());
-    out.extend_from_slice(&width_u16.to_le_bytes());
-    out.extend_from_slice(&height_u16.to_le_bytes());
-    out.push(match format {
+    let mut out = vec![0; CANVAS_HEADER_LEN.saturating_add(px_count.saturating_mul(bpp))];
+    out[0] = header;
+    out[1..5].copy_from_slice(&canvas.frame_number.to_le_bytes());
+    out[5..9].copy_from_slice(&canvas.timestamp_ms.to_le_bytes());
+    out[9..11].copy_from_slice(&width_u16.to_le_bytes());
+    out[11..13].copy_from_slice(&height_u16.to_le_bytes());
+    out[13] = match format {
         CanvasFormat::Rgb => 0,
         CanvasFormat::Rgba => 1,
-    });
+    };
 
     let rgba = canvas.rgba_bytes();
+    let payload_len = px_count.saturating_mul(bpp);
+    let payload = &mut out[CANVAS_HEADER_LEN..CANVAS_HEADER_LEN.saturating_add(payload_len)];
     match format {
         CanvasFormat::Rgb => {
-            for pixel in rgba.chunks_exact(4).take(px_count) {
-                out.push(scale_preview_channel(pixel[0], brightness));
-                out.push(scale_preview_channel(pixel[1], brightness));
-                out.push(scale_preview_channel(pixel[2], brightness));
+            if brightness >= 0.999 {
+                for (dst, pixel) in payload
+                    .chunks_exact_mut(3)
+                    .zip(rgba.chunks_exact(4).take(px_count))
+                {
+                    dst.copy_from_slice(&pixel[..3]);
+                }
+            } else {
+                for (dst, pixel) in payload
+                    .chunks_exact_mut(3)
+                    .zip(rgba.chunks_exact(4).take(px_count))
+                {
+                    dst[0] = scale_preview_channel(pixel[0], brightness);
+                    dst[1] = scale_preview_channel(pixel[1], brightness);
+                    dst[2] = scale_preview_channel(pixel[2], brightness);
+                }
             }
         }
         CanvasFormat::Rgba => {
-            for pixel in rgba.chunks_exact(4).take(px_count) {
-                out.push(scale_preview_channel(pixel[0], brightness));
-                out.push(scale_preview_channel(pixel[1], brightness));
-                out.push(scale_preview_channel(pixel[2], brightness));
-                out.push(pixel[3]);
+            if brightness >= 0.999 {
+                payload.copy_from_slice(&rgba[..payload_len]);
+            } else {
+                for (dst, pixel) in payload
+                    .chunks_exact_mut(4)
+                    .zip(rgba.chunks_exact(4).take(px_count))
+                {
+                    dst[0] = scale_preview_channel(pixel[0], brightness);
+                    dst[1] = scale_preview_channel(pixel[1], brightness);
+                    dst[2] = scale_preview_channel(pixel[2], brightness);
+                    dst[3] = pixel[3];
+                }
             }
         }
     }
