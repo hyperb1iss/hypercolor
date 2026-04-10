@@ -1948,8 +1948,14 @@ fn encode_spectrum_binary(
     spectrum: &hypercolor_types::event::SpectrumData,
     requested_bins: u16,
 ) -> Vec<u8> {
-    let downsampled = spectrum.downsample(usize::from(requested_bins));
-    let bin_count_u8 = u8::try_from(downsampled.len()).unwrap_or(u8::MAX);
+    let source_bins = spectrum.bins.as_slice();
+    let requested_bins = usize::from(requested_bins);
+    let encoded_bin_count = if source_bins.is_empty() || requested_bins == 0 {
+        0
+    } else {
+        requested_bins.min(source_bins.len())
+    };
+    let bin_count_u8 = u8::try_from(encoded_bin_count).unwrap_or(u8::MAX);
     let bin_count = usize::from(bin_count_u8);
 
     let mut out = Vec::with_capacity(27_usize.saturating_add(bin_count.saturating_mul(4)));
@@ -1963,8 +1969,19 @@ fn encode_spectrum_binary(
     out.push(u8::from(spectrum.beat));
     out.extend_from_slice(&sanitize_f32(spectrum.beat_confidence).to_le_bytes());
 
-    for value in downsampled.iter().take(bin_count) {
-        out.extend_from_slice(&sanitize_f32(*value).to_le_bytes());
+    if requested_bins >= source_bins.len() {
+        for value in source_bins.iter().take(bin_count) {
+            out.extend_from_slice(&sanitize_f32(*value).to_le_bytes());
+        }
+    } else {
+        for index in 0..bin_count {
+            let start = index * source_bins.len() / requested_bins;
+            let end = ((index + 1) * source_bins.len() / requested_bins).min(source_bins.len());
+            let slice = &source_bins[start..end];
+            #[expect(clippy::cast_precision_loss, clippy::as_conversions)]
+            let avg = slice.iter().sum::<f32>() / slice.len() as f32;
+            out.extend_from_slice(&sanitize_f32(avg).to_le_bytes());
+        }
     }
 
     out
