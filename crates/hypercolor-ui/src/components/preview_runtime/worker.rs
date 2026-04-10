@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use js_sys::{Array, Object, Reflect};
+use js_sys::Array;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
@@ -69,17 +69,33 @@ let framePending = false;
 let scratchRgba = null;
 
 self.onmessage = (event) => {
-  const data = event.data;
-  if (!data || data.kind !== "frame") {
+  const frame = decodeFrame(event.data);
+  if (!frame) {
     return;
   }
 
-  latestFrame = data;
+  latestFrame = frame;
   if (!framePending) {
     framePending = true;
     scheduleFlush();
   }
 };
+
+function decodeFrame(data) {
+  if (!Array.isArray(data) || data.length !== 4) {
+    return null;
+  }
+
+  const width = data[0] >>> 0;
+  const height = data[1] >>> 0;
+  const format = data[2] | 0;
+  const pixels = data[3];
+  if (!(pixels instanceof Uint8Array)) {
+    return null;
+  }
+
+  return { width, height, format, pixels };
+}
 
 function scheduleFlush() {
   if (typeof self.requestAnimationFrame === "function") {
@@ -108,7 +124,7 @@ function flushFrame() {
 
   ctx.putImageData(imageData, 0, 0);
   const bitmap = canvas.transferToImageBitmap();
-  self.postMessage({ kind: "present", frameNumber: frame.frameNumber, bitmap }, [bitmap]);
+  self.postMessage(bitmap, [bitmap]);
 }
 
 function ensureCanvas(width, height) {
@@ -141,7 +157,7 @@ function createImageData(frame) {
     return null;
   }
 
-  if (frame.format === "rgba") {
+  if (frame.format === 1) {
     return new ImageData(
       new Uint8ClampedArray(pixels.buffer, pixels.byteOffset, pixels.byteLength),
       frame.width,
@@ -149,7 +165,7 @@ function createImageData(frame) {
     );
   }
 
-  if (frame.format !== "rgb") {
+  if (frame.format !== 0) {
     return null;
   }
 
@@ -300,40 +316,20 @@ fn create_worker_url() -> Result<String, JsValue> {
 }
 
 fn post_frame(worker: &Worker, frame: &CanvasFrame) -> Result<(), JsValue> {
-    let message = Object::new();
-    Reflect::set(
-        &message,
-        &JsValue::from_str("kind"),
-        &JsValue::from_str("frame"),
-    )?;
-    Reflect::set(
-        &message,
-        &JsValue::from_str("frameNumber"),
-        &JsValue::from_f64(f64::from(frame.frame_number)),
-    )?;
-    Reflect::set(
-        &message,
-        &JsValue::from_str("width"),
-        &JsValue::from_f64(f64::from(frame.width)),
-    )?;
-    Reflect::set(
-        &message,
-        &JsValue::from_str("height"),
-        &JsValue::from_f64(f64::from(frame.height)),
-    )?;
-    Reflect::set(
-        &message,
-        &JsValue::from_str("format"),
-        &JsValue::from_str(pixel_format_label(frame.pixel_format())),
-    )?;
-    Reflect::set(&message, &JsValue::from_str("pixels"), frame.pixels_js())?;
+    let message = Array::new();
+    message.push(&JsValue::from_f64(f64::from(frame.width)));
+    message.push(&JsValue::from_f64(f64::from(frame.height)));
+    message.push(&JsValue::from_f64(f64::from(pixel_format_code(
+        frame.pixel_format(),
+    ))));
+    message.push(frame.pixels_js());
     worker.post_message(&message)
 }
 
-fn pixel_format_label(format: CanvasPixelFormat) -> &'static str {
+fn pixel_format_code(format: CanvasPixelFormat) -> u8 {
     match format {
-        CanvasPixelFormat::Rgb => "rgb",
-        CanvasPixelFormat::Rgba => "rgba",
+        CanvasPixelFormat::Rgb => 0,
+        CanvasPixelFormat::Rgba => 1,
     }
 }
 
@@ -342,18 +338,7 @@ fn present_bitmap(
     bitmap_ctx: &ImageBitmapRenderingContext,
     event: &MessageEvent,
 ) -> bool {
-    let data = event.data();
-    let Ok(kind) = Reflect::get(&data, &JsValue::from_str("kind")) else {
-        return false;
-    };
-    if kind.as_string().as_deref() != Some("present") {
-        return true;
-    }
-
-    let Ok(bitmap_value) = Reflect::get(&data, &JsValue::from_str("bitmap")) else {
-        return false;
-    };
-    let Ok(bitmap) = bitmap_value.dyn_into::<ImageBitmap>() else {
+    let Ok(bitmap) = event.data().dyn_into::<ImageBitmap>() else {
         return false;
     };
 
