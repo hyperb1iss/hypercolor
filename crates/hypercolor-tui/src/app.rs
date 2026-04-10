@@ -115,16 +115,15 @@ impl App {
         // Install the persistent title bar shimmer effect. Brand area is
         // computed from the first row of the terminal — the title bar
         // always renders at y=0 and the brand always starts at column 1.
-        let initial_size = terminal.size().unwrap_or_else(|_| ratatui::layout::Size::new(80, 24));
+        let initial_size = terminal
+            .size()
+            .unwrap_or_else(|_| ratatui::layout::Size::new(80, 24));
         let title_area = Rect::new(0, 0, initial_size.width, 1);
         let brand_area = crate::chrome::TitleBar::brand_area(title_area);
         if brand_area.width > 0 {
             self.motion.trigger(
                 crate::motion::MotionKey::TitleShimmer,
-                crate::motion::catalog::title_shimmer(
-                    brand_area,
-                    self.motion.sensitivity(),
-                ),
+                crate::motion::catalog::title_shimmer(brand_area, self.motion.sensitivity()),
             );
         }
 
@@ -461,14 +460,6 @@ impl App {
             }
 
             Action::ApplyEffect(effect_id) => {
-                // Crossfade sweep over the full content area as the effect changes
-                self.motion.trigger(
-                    crate::motion::MotionKey::EffectTransition,
-                    crate::motion::catalog::effect_transition(
-                        self.last_frame_area,
-                        self.motion.sensitivity(),
-                    ),
-                );
                 self.spawn_actions({
                     let client = self.client.clone();
                     let id = effect_id.clone();
@@ -484,13 +475,6 @@ impl App {
                 });
             }
             Action::ApplyEffectPreset(effect_id, controls) => {
-                self.motion.trigger(
-                    crate::motion::MotionKey::EffectTransition,
-                    crate::motion::catalog::effect_transition(
-                        self.last_frame_area,
-                        self.motion.sensitivity(),
-                    ),
-                );
                 self.spawn_actions({
                     let client = self.client.clone();
                     let id = effect_id.clone();
