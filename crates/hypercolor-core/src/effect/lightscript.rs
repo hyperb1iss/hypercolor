@@ -371,29 +371,45 @@ impl LightscriptRuntime {
         let recent_keys = serde_json::to_string(&interaction.keyboard.recent_keys)
             .unwrap_or_else(|_| "[]".to_owned());
         let mouse_buttons = js_true_object_literal(&mouse_lookup_keys(&interaction.mouse.buttons));
-
-        format!(
-            concat!(
-                "(function(){{\n",
-                "  if (typeof window.engine !== 'object' || window.engine === null) {{ window.engine = {{}}; }}\n",
-                "  if (typeof window.engine.keyboard !== 'object' || window.engine.keyboard === null) {{ window.engine.keyboard = {{}}; }}\n",
-                "  if (typeof window.engine.mouse !== 'object' || window.engine.mouse === null) {{ window.engine.mouse = {{}}; }}\n",
-                "  window.engine.keyboard.keys = {};\n",
-                "  window.engine.keyboard.recent = {};\n",
-                "  window.engine.mouse.x = {};\n",
-                "  window.engine.mouse.y = {};\n",
-                "  window.engine.mouse.down = {};\n",
-                "  window.engine.mouse.buttons = {};\n",
-                "  if (typeof globalThis === 'object' && globalThis !== null) {{ globalThis.engine = window.engine; }}\n",
-                "}})();",
-            ),
-            keyboard_keys,
-            recent_keys,
-            interaction.mouse.x,
-            interaction.mouse.y,
-            js_bool(interaction.mouse.down),
-            mouse_buttons,
-        )
+        let mut script = String::with_capacity(
+            320_usize
+                .saturating_add(keyboard_keys.len())
+                .saturating_add(recent_keys.len())
+                .saturating_add(mouse_buttons.len()),
+        );
+        script.push_str("(function(){\n");
+        script.push_str(
+            "  if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }\n",
+        );
+        script.push_str(
+            "  if (typeof window.engine.keyboard !== 'object' || window.engine.keyboard === null) { window.engine.keyboard = {}; }\n",
+        );
+        script.push_str(
+            "  if (typeof window.engine.mouse !== 'object' || window.engine.mouse === null) { window.engine.mouse = {}; }\n",
+        );
+        script.push_str("  window.engine.keyboard.keys = ");
+        script.push_str(&keyboard_keys);
+        script.push_str(";\n");
+        script.push_str("  window.engine.keyboard.recent = ");
+        script.push_str(&recent_keys);
+        script.push_str(";\n");
+        script.push_str("  window.engine.mouse.x = ");
+        let _ = write!(&mut script, "{}", interaction.mouse.x);
+        script.push_str(";\n");
+        script.push_str("  window.engine.mouse.y = ");
+        let _ = write!(&mut script, "{}", interaction.mouse.y);
+        script.push_str(";\n");
+        script.push_str("  window.engine.mouse.down = ");
+        script.push_str(js_bool(interaction.mouse.down));
+        script.push_str(";\n");
+        script.push_str("  window.engine.mouse.buttons = ");
+        script.push_str(&mouse_buttons);
+        script.push_str(";\n");
+        script.push_str(
+            "  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }\n",
+        );
+        script.push_str("})();");
+        script
     }
 
     /// Build JavaScript for interaction state when the payload changed.
@@ -615,7 +631,11 @@ fn normalized_to_int8(value: f32) -> i8 {
 }
 
 fn push_js_f32_assignment(script: &mut String, path: &str, value: f32) {
-    let _ = writeln!(script, "  {path} = {};", js_number(value));
+    script.push_str("  ");
+    script.push_str(path);
+    script.push_str(" = ");
+    push_js_number_literal(script, value);
+    script.push_str(";\n");
 }
 
 fn push_js_bool_assignment(script: &mut String, path: &str, value: bool) {
@@ -629,6 +649,14 @@ fn push_js_csv_typed_array_assignment(
     csv: &str,
 ) {
     let _ = writeln!(script, "  {path} = new {typed_array}([{csv}]);");
+}
+
+fn push_js_number_literal(script: &mut String, value: f32) {
+    if value.is_finite() {
+        let _ = write!(script, "{value}");
+    } else {
+        script.push('0');
+    }
 }
 
 fn join_f32_csv(values: &[f32]) -> String {
@@ -808,14 +836,6 @@ fn single_ascii_digit(name: &str) -> Option<char> {
     let mut chars = name.chars();
     let ch = chars.next()?;
     (chars.next().is_none() && ch.is_ascii_digit()).then_some(ch)
-}
-
-fn js_number(value: f32) -> String {
-    if value.is_finite() {
-        value.to_string()
-    } else {
-        "0".to_owned()
-    }
 }
 
 const fn js_bool(value: bool) -> &'static str {
