@@ -1,12 +1,16 @@
 mod cpu;
 #[cfg(feature = "wgpu")]
 pub(crate) mod gpu;
+#[cfg(feature = "wgpu")]
+mod gpu_sampling;
 
 use anyhow::Result;
 #[cfg(not(feature = "wgpu"))]
 use anyhow::bail;
+use hypercolor_core::spatial::PreparedZonePlan;
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
 use hypercolor_types::config::RenderAccelerationMode;
+use hypercolor_types::event::ZoneColors;
 
 use crate::performance::CompositorBackendKind;
 
@@ -175,6 +179,17 @@ impl SparkleFlinger {
                 composed.backend = CompositorBackendKind::GpuFallback;
                 composed
             }
+        }
+    }
+
+    pub fn sample_zone_plan(
+        &mut self,
+        _prepared_zones: &[PreparedZonePlan],
+    ) -> Result<Option<Vec<ZoneColors>>> {
+        match &mut self.backend {
+            SparkleFlingerBackend::Cpu(_) => Ok(None),
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.sample_zone_plan(_prepared_zones),
         }
     }
 }

@@ -2,13 +2,16 @@ use std::fmt;
 use std::sync::mpsc;
 
 use anyhow::{Context, Result};
+use hypercolor_core::spatial::PreparedZonePlan;
 use hypercolor_core::types::canvas::{BYTES_PER_PIXEL, Canvas};
+use hypercolor_types::event::ZoneColors;
 
 use super::{
     ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, publish_composed_frame,
 };
 use crate::performance::CompositorBackendKind;
 use crate::render_thread::producer_queue::ProducerFrame;
+use crate::render_thread::sparkleflinger::gpu_sampling::{GpuSamplingPlan, GpuSpatialSampler};
 
 const COMPOSITOR_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const COMPOSE_WORKGROUP_WIDTH: u32 = 8;
@@ -31,7 +34,9 @@ pub(crate) struct GpuSparkleFlinger {
     queue: wgpu::Queue,
     probe: GpuCompositorProbe,
     pipeline: GpuCompositorPipeline,
+    spatial_sampler: GpuSpatialSampler,
     surfaces: Option<GpuCompositorSurfaceSet>,
+    current_output: Option<GpuCompositorOutputSurface>,
 }
 
 struct GpuCompositorPipeline {
@@ -66,6 +71,12 @@ pub(crate) struct GpuCompositorSurfaceSnapshot {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) texture_format: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GpuCompositorOutputSurface {
+    Front,
+    Back,
 }
 
 impl GpuSparkleFlinger {
@@ -110,6 +121,7 @@ impl GpuSparkleFlinger {
         };
 
         let pipeline = GpuCompositorPipeline::new(&device);
+        let spatial_sampler = GpuSpatialSampler::new(&device);
 
         Ok(Self {
             _instance: instance,
@@ -118,7 +130,9 @@ impl GpuSparkleFlinger {
             queue,
             probe,
             pipeline,
+            spatial_sampler,
             surfaces: None,
+            current_output: None,
         })
     }
 
@@ -135,6 +149,7 @@ impl GpuSparkleFlinger {
             && let Some(layer) = plan.layers.first()
             && layer.is_bypass_candidate()
         {
+            self.current_output = None;
             let mut composed =
                 publish_composed_frame(layer.frame.clone().into_render_frame(), true);
             composed.backend = CompositorBackendKind::Gpu;
@@ -187,10 +202,14 @@ impl GpuSparkleFlinger {
             use_front_as_current = !use_front_as_current;
         }
 
-        let current_texture = if use_front_as_current {
-            &surfaces.front.texture
+        let current_output = if use_front_as_current {
+            GpuCompositorOutputSurface::Front
         } else {
-            &surfaces.back.texture
+            GpuCompositorOutputSurface::Back
+        };
+        let current_texture = match current_output {
+            GpuCompositorOutputSurface::Front => &surfaces.front.texture,
+            GpuCompositorOutputSurface::Back => &surfaces.back.texture,
         };
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
@@ -219,9 +238,39 @@ impl GpuSparkleFlinger {
             self.queue.submit(Some(encoder.finish())),
         )?;
         let canvas = Canvas::from_vec(bytes, plan.width, plan.height);
+        self.current_output = Some(current_output);
         let mut composed = publish_composed_frame((canvas, None), false);
         composed.backend = CompositorBackendKind::Gpu;
         Ok(composed)
+    }
+
+    pub(crate) fn sample_zone_plan(
+        &mut self,
+        prepared_zones: &[PreparedZonePlan],
+    ) -> Result<Option<Vec<ZoneColors>>> {
+        let Some(plan) = GpuSamplingPlan::from_prepared_zones(prepared_zones) else {
+            return Ok(None);
+        };
+        let Some(output) = self.current_output else {
+            return Ok(None);
+        };
+        let Some(surfaces) = self.surfaces.as_ref() else {
+            return Ok(None);
+        };
+        let source_view = match output {
+            GpuCompositorOutputSurface::Front => &surfaces.front.view,
+            GpuCompositorOutputSurface::Back => &surfaces.back.view,
+        };
+        self.spatial_sampler
+            .sample_texture(
+                &self.device,
+                &self.queue,
+                source_view,
+                surfaces.width,
+                surfaces.height,
+                &plan,
+            )
+            .map(Some)
     }
 
     pub(crate) fn ensure_surface_size(&mut self, width: u32, height: u32) {
@@ -242,6 +291,7 @@ impl GpuSparkleFlinger {
             width,
             height,
         ));
+        self.current_output = None;
     }
 
     pub(crate) fn surface_snapshot(&self) -> Option<GpuCompositorSurfaceSnapshot> {
@@ -655,7 +705,12 @@ enum ComposeShaderMode {
 
 #[cfg(test)]
 mod tests {
+    use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_core::types::canvas::{Canvas, PublishedSurface, Rgba};
+    use hypercolor_types::spatial::{
+        DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+        StripDirection,
+    };
 
     use super::GpuSparkleFlinger;
     use crate::render_thread::producer_queue::ProducerFrame;
@@ -667,6 +722,43 @@ mod tests {
         let mut canvas = Canvas::new(4, 4);
         canvas.fill(color);
         canvas
+    }
+
+    fn sampling_layout(mode: SamplingMode) -> SpatialLayout {
+        SpatialLayout {
+            id: "gpu-sampling".into(),
+            name: "GPU Sampling".into(),
+            description: None,
+            canvas_width: 4,
+            canvas_height: 4,
+            zones: vec![DeviceZone {
+                id: "zone".into(),
+                name: "zone".into(),
+                device_id: "device:zone".into(),
+                zone_name: None,
+                position: NormalizedPosition::new(0.5, 0.5),
+                size: NormalizedPosition::new(1.0, 1.0),
+                rotation: 0.0,
+                scale: 1.0,
+                orientation: None,
+                topology: LedTopology::Strip {
+                    count: 4,
+                    direction: StripDirection::LeftToRight,
+                },
+                led_positions: Vec::new(),
+                led_mapping: None,
+                sampling_mode: Some(mode),
+                edge_behavior: Some(EdgeBehavior::Clamp),
+                shape: None,
+                shape_preset: None,
+                display_order: 0,
+                attachment: None,
+            }],
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        }
     }
 
     #[test]
@@ -813,5 +905,73 @@ mod tests {
             .sampling_surface
             .expect("bypass path should preserve the source surface");
         assert_eq!(surface.rgba_bytes().as_ptr(), source.rgba_bytes().as_ptr());
+    }
+
+    #[test]
+    fn gpu_sampler_matches_cpu_spatial_sampling_for_bilinear_plans() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                    255, 32, 0, 255,
+                )))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(solid_canvas(Rgba::new(32, 64, 255, 255))),
+                    0.35,
+                ),
+            ],
+        );
+        let expected = CpuSparkleFlinger::new().compose(plan.clone());
+        let expected_zones = engine.sample(&expected.sampling_canvas);
+        compositor
+            .compose(&plan)
+            .expect("GPU composition should succeed before GPU sampling");
+        let sampled = compositor
+            .sample_zone_plan(engine.sampling_plan().as_ref())
+            .expect("GPU spatial sampling should succeed")
+            .expect("bilinear plans should be GPU-sampleable");
+
+        assert_eq!(sampled, expected_zones);
+    }
+
+    #[test]
+    fn gpu_sampler_returns_none_for_area_sampling() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(sampling_layout(SamplingMode::AreaAverage {
+            radius_x: 1.0,
+            radius_y: 1.0,
+        }));
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                    12, 120, 48, 255,
+                )))),
+                CompositionLayer::screen(
+                    ProducerFrame::Canvas(solid_canvas(Rgba::new(200, 32, 64, 255))),
+                    0.6,
+                ),
+            ],
+        );
+        compositor
+            .compose(&plan)
+            .expect("GPU composition should succeed before checking area fallback");
+
+        assert!(
+            compositor
+                .sample_zone_plan(engine.sampling_plan().as_ref())
+                .expect("GPU sampler should handle unsupported plans cleanly")
+                .is_none()
+        );
     }
 }

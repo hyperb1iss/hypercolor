@@ -18,6 +18,10 @@ use super::{RenderThreadState, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
 use crate::performance::{FrameTimeline, LatestFrameMetrics};
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "frame execution intentionally keeps the full pipeline in one ordered async function"
+)]
 pub(crate) async fn execute_frame(
     state: &RenderThreadState,
     runtime: &mut PipelineRuntime,
@@ -136,10 +140,33 @@ pub(crate) async fn execute_frame(
         sampled_layout
     } else {
         let sample_start = Instant::now();
-        scene_snapshot.spatial_engine.sample_into(
-            &render_stage.composed_frame.sampling_canvas,
-            &mut render.recycled_frame.zones,
-        );
+        let gpu_sampled = if matches!(
+            render_stage.composed_frame.backend,
+            crate::performance::CompositorBackendKind::Gpu
+        ) {
+            match render
+                .sparkleflinger
+                .sample_zone_plan(scene_snapshot.spatial_engine.sampling_plan().as_ref())
+            {
+                Ok(Some(zones)) => {
+                    render.recycled_frame.zones = zones;
+                    true
+                }
+                Ok(None) => false,
+                Err(error) => {
+                    warn!(%error, "GPU spatial sampling failed; falling back to CPU");
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        if !gpu_sampled {
+            scene_snapshot.spatial_engine.sample_into(
+                &render_stage.composed_frame.sampling_canvas,
+                &mut render.recycled_frame.zones,
+            );
+        }
         render_stage.sampled_us = micros_u32(sample_start.elapsed());
         scene_snapshot.spatial_engine.layout()
     };
