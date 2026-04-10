@@ -323,7 +323,7 @@ fn profile_list(ctx: &OutputContext) -> Result<()> {
                     vec![
                         format!("{}{default_marker}", ctx.painter.name(name)),
                         ctx.painter.muted(&format!("{}:{}", p.host, p.port)),
-                        if p.api_key.is_some() {
+                        if p.api_key.as_ref().is_some_and(|k| !k.is_empty()) {
                             ctx.painter.warning("api_key")
                         } else {
                             ctx.painter.muted("none")
@@ -356,7 +356,7 @@ fn profile_show(args: &ProfileShowArgs, ctx: &OutputContext) -> Result<()> {
             println!("  Host     {}:{}", profile.host, profile.port);
             println!(
                 "  Auth     {}",
-                if profile.api_key.is_some() {
+                if profile.api_key.as_ref().is_some_and(|k| !k.is_empty()) {
                     "api_key (set)"
                 } else {
                     "none"
@@ -378,7 +378,10 @@ fn profile_add(args: &ProfileAddArgs, ctx: &OutputContext) -> Result<()> {
     let mut cfg = config::load()?;
 
     if cfg.profiles.contains_key(&args.name) {
-        anyhow::bail!("profile {:?} already exists (use `config profile set` to update)", args.name);
+        anyhow::bail!(
+            "profile {:?} already exists (use `config profile set` to update)",
+            args.name
+        );
     }
 
     cfg.profiles.insert(
@@ -393,7 +396,10 @@ fn profile_add(args: &ProfileAddArgs, ctx: &OutputContext) -> Result<()> {
     );
 
     config::save(&cfg)?;
-    ctx.success(&format!("Profile {:?} added ({}:{})", args.name, args.host, args.port));
+    ctx.success(&format!(
+        "Profile {:?} added ({}:{})",
+        args.name, args.host, args.port
+    ));
     Ok(())
 }
 
@@ -415,7 +421,9 @@ fn profile_set(args: &ProfileSetArgs, ctx: &OutputContext) -> Result<()> {
         "api_key" => profile.api_key = Some(args.value.clone()),
         "label" => profile.label = Some(args.value.clone()),
         "description" => profile.description = Some(args.value.clone()),
-        other => anyhow::bail!("unknown profile field: {other:?} (expected: host, port, api_key, label, description)"),
+        other => anyhow::bail!(
+            "unknown profile field: {other:?} (expected: host, port, api_key, label, description)"
+        ),
     }
 
     config::save(&cfg)?;

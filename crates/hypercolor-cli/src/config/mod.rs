@@ -152,8 +152,8 @@ pub fn resolve_connection(
     let profile = config.profiles.get(&profile_name);
 
     if profile.is_none() && explicitly_requested {
-        anyhow::bail!(
-            "profile {profile_name:?} not found in {} \
+        eprintln!(
+            "  ! profile {profile_name:?} not found in {} \
              (run `hyper config profile list` to see available profiles)",
             config_path().display()
         );
