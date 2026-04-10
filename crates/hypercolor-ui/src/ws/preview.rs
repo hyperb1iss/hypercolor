@@ -1,0 +1,119 @@
+//! Preview FPS cap logic, subscription management, and backpressure handling.
+
+use leptos::prelude::*;
+
+use super::messages::CanvasFrame;
+
+pub const DEFAULT_PREVIEW_FPS_CAP: u32 = 30;
+pub(super) const HIDDEN_TAB_PREVIEW_FPS_CAP: u32 = 6;
+pub(super) const SCREEN_PREVIEW_FPS_CAP: u32 = 15;
+
+pub(super) fn desired_preview_fps(
+    engine_target_fps: u32,
+    client_cap: u32,
+    page_visible: bool,
+) -> u32 {
+    let capped_target = engine_target_fps.clamp(1, 60).min(client_cap.clamp(1, 60));
+    if page_visible {
+        capped_target
+    } else {
+        capped_target.min(HIDDEN_TAB_PREVIEW_FPS_CAP)
+    }
+}
+
+pub(super) fn preview_canvas_format() -> &'static str {
+    let hostname = web_sys::window()
+        .map(|window| window.location())
+        .and_then(|location| location.hostname().ok())
+        .unwrap_or_default();
+
+    match hostname.as_str() {
+        "localhost" | "127.0.0.1" | "::1" => "rgba",
+        _ => "rgb",
+    }
+}
+
+pub(super) fn request_preview_subscription(
+    ws: &web_sys::WebSocket,
+    requested_preview_fps: StoredValue<u32>,
+    set_preview_target_fps: WriteSignal<u32>,
+    engine_target_fps: u32,
+    client_cap: u32,
+    page_visible: bool,
+) {
+    let desired_fps = desired_preview_fps(engine_target_fps, client_cap, page_visible);
+    if desired_fps == requested_preview_fps.get_value() {
+        return;
+    }
+
+    requested_preview_fps.set_value(desired_fps);
+    set_preview_target_fps.set(desired_fps);
+
+    let subscribe_msg = serde_json::json!({
+        "type": "subscribe",
+        "channels": ["canvas"],
+        "config": {
+            "canvas": { "fps": desired_fps, "format": preview_canvas_format() }
+        }
+    });
+    let _ = ws.send_with_str(&subscribe_msg.to_string());
+}
+
+pub(super) fn request_screen_preview_subscription(
+    ws: &web_sys::WebSocket,
+    requested_preview_fps: StoredValue<u32>,
+    engine_target_fps: u32,
+    page_visible: bool,
+) {
+    let desired_fps = desired_preview_fps(engine_target_fps, SCREEN_PREVIEW_FPS_CAP, page_visible);
+    if desired_fps == requested_preview_fps.get_value() {
+        return;
+    }
+
+    requested_preview_fps.set_value(desired_fps);
+
+    let subscribe_msg = serde_json::json!({
+        "type": "subscribe",
+        "channels": ["screen_canvas"],
+        "config": {
+            "screen_canvas": { "fps": desired_fps, "format": preview_canvas_format() }
+        }
+    });
+    let _ = ws.send_with_str(&subscribe_msg.to_string());
+}
+
+pub(super) fn clear_preview_subscription(
+    requested_preview_fps: StoredValue<u32>,
+    set_preview_target_fps: &WriteSignal<u32>,
+    set_preview_fps: &WriteSignal<f32>,
+    set_canvas_frame: &WriteSignal<Option<CanvasFrame>>,
+) {
+    requested_preview_fps.set_value(0);
+    set_preview_target_fps.set(0);
+    set_preview_fps.set(0.0);
+    set_canvas_frame.set(None);
+}
+
+pub(super) fn clear_screen_preview_subscription(
+    requested_preview_fps: StoredValue<u32>,
+    set_screen_canvas_frame: &WriteSignal<Option<CanvasFrame>>,
+) {
+    requested_preview_fps.set_value(0);
+    set_screen_canvas_frame.set(None);
+}
+
+pub(super) fn send_canvas_unsubscribe(ws: &web_sys::WebSocket) {
+    let unsubscribe_msg = serde_json::json!({
+        "type": "unsubscribe",
+        "channels": ["canvas"]
+    });
+    let _ = ws.send_with_str(&unsubscribe_msg.to_string());
+}
+
+pub(super) fn send_screen_canvas_unsubscribe(ws: &web_sys::WebSocket) {
+    let unsubscribe_msg = serde_json::json!({
+        "type": "unsubscribe",
+        "channels": ["screen_canvas"]
+    });
+    let _ = ws.send_with_str(&unsubscribe_msg.to_string());
+}

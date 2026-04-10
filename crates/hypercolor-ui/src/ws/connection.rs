@@ -1,0 +1,427 @@
+//! WebSocket connection lifecycle, reconnect logic, and exponential backoff.
+
+use std::rc::Rc;
+
+use leptos::prelude::*;
+use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
+use web_sys::MessageEvent;
+
+use super::messages::{
+    AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, DeviceEventHint,
+    PerformanceMetrics, PreviewFrameChannel, decode_preview_frame, handle_json_message,
+};
+use super::preview::{
+    DEFAULT_PREVIEW_FPS_CAP, clear_preview_subscription, clear_screen_preview_subscription,
+    request_preview_subscription, request_screen_preview_subscription, send_canvas_unsubscribe,
+    send_screen_canvas_unsubscribe,
+};
+
+/// Reconnection delay bounds (milliseconds).
+const RECONNECT_BASE_MS: i32 = 500;
+const RECONNECT_MAX_MS: i32 = 15_000;
+
+// ── WebSocket Manager ───────────────────────────────────────────────────────
+
+/// Reactive WebSocket connection to the daemon.
+///
+/// Returns signals for canvas data, connection state, preview FPS, and daemon
+/// performance metrics. Canvas streaming is subscribed on demand.
+pub struct WsManager {
+    pub canvas_frame: ReadSignal<Option<CanvasFrame>>,
+    pub screen_canvas_frame: ReadSignal<Option<CanvasFrame>>,
+    pub connection_state: ReadSignal<ConnectionState>,
+    pub preview_fps: ReadSignal<f32>,
+    pub metrics: ReadSignal<Option<PerformanceMetrics>>,
+    pub backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
+    pub active_effect: ReadSignal<Option<String>>,
+    pub last_device_event: ReadSignal<Option<DeviceEventHint>>,
+    pub audio_level: ReadSignal<AudioLevel>,
+    pub preview_target_fps: ReadSignal<u32>,
+    pub set_preview_cap: WriteSignal<u32>,
+    pub set_preview_consumers: WriteSignal<u32>,
+    pub set_screen_preview_consumers: WriteSignal<u32>,
+}
+
+impl WsManager {
+    pub fn new() -> Self {
+        let (canvas_frame, set_canvas_frame) = signal(None::<CanvasFrame>);
+        let (screen_canvas_frame, set_screen_canvas_frame) = signal(None::<CanvasFrame>);
+        let (connection_state, set_connection_state) = signal(ConnectionState::Disconnected);
+        let (preview_fps, set_preview_fps) = signal(0.0_f32);
+        let (metrics, set_metrics) = signal(None::<PerformanceMetrics>);
+        let (backpressure_notice, set_backpressure_notice) = signal(None::<BackpressureNotice>);
+        let (active_effect, set_active_effect) = signal(None::<String>);
+        let (last_device_event, set_last_device_event) = signal(None::<DeviceEventHint>);
+        let (audio_level, set_audio_level) = signal(AudioLevel::default());
+        let (preview_target_fps, set_preview_target_fps) = signal(0_u32);
+        let (engine_preview_target, set_engine_preview_target) = signal(0_u32);
+        let (preview_page_cap, set_preview_cap) = signal(DEFAULT_PREVIEW_FPS_CAP);
+        let (preview_consumers, set_preview_consumers) = signal(0_u32);
+        let (screen_preview_consumers, set_screen_preview_consumers) = signal(0_u32);
+        let (preview_transport_cap, set_preview_transport_cap) = signal(DEFAULT_PREVIEW_FPS_CAP);
+        let (page_visible, set_page_visible) = signal(document_is_visible());
+
+        // Track authoritative canvas cadence from backend frame metadata.
+        let last_frame_number = StoredValue::new(None::<u32>);
+        let last_frame_timestamp = StoredValue::new(None::<u32>);
+        let smoothed_fps = StoredValue::new(0.0_f64);
+        let requested_preview_fps = StoredValue::new(0_u32);
+        let requested_screen_preview_fps = StoredValue::new(0_u32);
+
+        // Shared WebSocket handle for preview subscription effect.
+        let ws_handle: StoredValue<Option<web_sys::WebSocket>> = StoredValue::new(None);
+        let reconnect_timeout_id: StoredValue<Option<i32>> = StoredValue::new(None);
+
+        // Reconnection attempt counter for exponential backoff.
+        let reconnect_attempts = StoredValue::new(0_u32);
+
+        // Build WebSocket URL relative to page origin
+        let ws_url = build_ws_url();
+        let ws_url = StoredValue::new(ws_url);
+
+        // ── connect() ──────────────────────────────────────────────────────
+        // Callable multiple times: creates a fresh WebSocket and wires the
+        // same signal writers. Called once at startup and again on close/error
+        // after a backoff delay.
+
+        let connect: StoredValue<Option<Rc<dyn Fn()>>, LocalStorage> =
+            StoredValue::new_local(None);
+
+        let connect_fn: Rc<dyn Fn()> = Rc::new(move || {
+            clear_reconnect_timer(reconnect_timeout_id);
+            dispose_existing_socket(ws_handle);
+            set_connection_state.set(ConnectionState::Connecting);
+
+            // Reset frame-tracking state so FPS doesn't glitch after reconnect
+            last_frame_number.set_value(None);
+            last_frame_timestamp.set_value(None);
+            smoothed_fps.set_value(0.0);
+            requested_preview_fps.set_value(0);
+            set_preview_fps.set(0.0);
+
+            let url = ws_url.get_value();
+            let ws = match web_sys::WebSocket::new_with_str(&url, "hypercolor-v1") {
+                Ok(ws) => ws,
+                Err(_) => {
+                    set_connection_state.set(ConnectionState::Error);
+                    schedule_reconnect(reconnect_attempts, reconnect_timeout_id, connect);
+                    return;
+                }
+            };
+            ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
+            ws_handle.set_value(Some(ws.clone()));
+
+            // onopen — subscribe to events + metrics
+            let ws_clone = ws.clone();
+            let on_open = Closure::<dyn FnMut()>::new(move || {
+                set_connection_state.set(ConnectionState::Connected);
+                reconnect_attempts.set_value(0);
+                clear_reconnect_timer(reconnect_timeout_id);
+
+                let subscribe_msg = serde_json::json!({
+                    "type": "subscribe",
+                    "channels": ["events", "metrics"],
+                    "config": {
+                        "metrics": { "interval_ms": 500 }
+                    }
+                });
+                let _ = ws_clone.send_with_str(&subscribe_msg.to_string());
+            });
+            ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+            on_open.forget();
+
+            // onclose — schedule reconnect with backoff
+            let on_close = Closure::<dyn FnMut()>::new(move || {
+                set_connection_state.set(ConnectionState::Disconnected);
+                ws_handle.set_value(None);
+                clear_preview_subscription(
+                    requested_preview_fps,
+                    &set_preview_target_fps,
+                    &set_preview_fps,
+                    &set_canvas_frame,
+                );
+                clear_screen_preview_subscription(
+                    requested_screen_preview_fps,
+                    &set_screen_canvas_frame,
+                );
+                schedule_reconnect(reconnect_attempts, reconnect_timeout_id, connect);
+            });
+            ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+            on_close.forget();
+
+            // onerror (browser fires close after error, so reconnect triggers there)
+            let on_error = Closure::<dyn FnMut()>::new(move || {
+                set_connection_state.set(ConnectionState::Error);
+                ws_handle.set_value(None);
+            });
+            ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+            on_error.forget();
+
+            // onmessage — handle both JSON and binary frames
+            let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
+                // Binary frame (ArrayBuffer)
+                if let Ok(buffer) = event.data().dyn_into::<js_sys::ArrayBuffer>() {
+                    if let Some((channel, frame)) = decode_preview_frame(buffer) {
+                        match channel {
+                            PreviewFrameChannel::Canvas => {
+                                let current_frame_number = frame.frame_number;
+                                let current_timestamp_ms = frame.timestamp_ms;
+                                set_canvas_frame.set(Some(frame));
+
+                                if let (Some(previous_frame_number), Some(previous_timestamp_ms)) = (
+                                    last_frame_number.get_value(),
+                                    last_frame_timestamp.get_value(),
+                                ) {
+                                    let frame_delta =
+                                        current_frame_number.saturating_sub(previous_frame_number);
+                                    let elapsed_ms =
+                                        current_timestamp_ms.saturating_sub(previous_timestamp_ms);
+
+                                    if frame_delta > 0 && elapsed_ms > 0 {
+                                        let target_fps = preview_target_fps.get_untracked();
+                                        let mut instant_fps =
+                                            f64::from(frame_delta) * 1000.0 / f64::from(elapsed_ms);
+                                        if target_fps > 0 {
+                                            instant_fps =
+                                                instant_fps.clamp(0.0, f64::from(target_fps));
+                                        } else {
+                                            instant_fps = instant_fps.clamp(0.0, 120.0);
+                                        }
+
+                                        let previous = smoothed_fps.get_value();
+                                        let next = if previous <= 0.0 {
+                                            instant_fps
+                                        } else {
+                                            previous * 0.82 + instant_fps * 0.18
+                                        };
+                                        smoothed_fps.set_value(next);
+                                        #[allow(clippy::cast_possible_truncation)]
+                                        set_preview_fps.set(next as f32);
+                                    }
+                                }
+
+                                last_frame_number.set_value(Some(current_frame_number));
+                                last_frame_timestamp.set_value(Some(current_timestamp_ms));
+                            }
+                            PreviewFrameChannel::ScreenCanvas => {
+                                set_screen_canvas_frame.set(Some(frame));
+                            }
+                        }
+                    }
+                    return;
+                }
+
+                // JSON message (String)
+                if let Some(text) = event.data().as_string()
+                    && let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text)
+                {
+                    handle_json_message(
+                        &msg,
+                        &set_active_effect,
+                        metrics,
+                        &set_metrics,
+                        backpressure_notice,
+                        &set_backpressure_notice,
+                        &set_last_device_event,
+                        &set_audio_level,
+                        &set_engine_preview_target,
+                        &set_preview_target_fps,
+                        &set_preview_transport_cap,
+                    );
+                }
+            });
+            ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+            on_message.forget();
+        });
+
+        connect.set_value(Some(connect_fn));
+
+        // Preview subscription effect — reacts to FPS cap / visibility changes
+        Effect::new(move |_| {
+            let engine_target = engine_preview_target.get();
+            let consumer_count = preview_consumers.get();
+            let client_cap = preview_page_cap.get().min(preview_transport_cap.get());
+            let is_visible = page_visible.get();
+            if engine_target == 0 || consumer_count == 0 {
+                if let Some(ws) = ws_handle.get_value() {
+                    clear_preview_subscription(
+                        requested_preview_fps,
+                        &set_preview_target_fps,
+                        &set_preview_fps,
+                        &set_canvas_frame,
+                    );
+                    send_canvas_unsubscribe(&ws);
+                }
+                return;
+            }
+
+            if let Some(ws) = ws_handle.get_value() {
+                request_preview_subscription(
+                    &ws,
+                    requested_preview_fps,
+                    set_preview_target_fps,
+                    engine_target,
+                    client_cap,
+                    is_visible,
+                );
+            }
+        });
+
+        Effect::new(move |_| {
+            let engine_target = engine_preview_target.get();
+            let consumer_count = screen_preview_consumers.get();
+            let is_visible = page_visible.get();
+            if engine_target == 0 || consumer_count == 0 {
+                if let Some(ws) = ws_handle.get_value() {
+                    clear_screen_preview_subscription(
+                        requested_screen_preview_fps,
+                        &set_screen_canvas_frame,
+                    );
+                    send_screen_canvas_unsubscribe(&ws);
+                }
+                return;
+            }
+
+            if let Some(ws) = ws_handle.get_value() {
+                request_screen_preview_subscription(
+                    &ws,
+                    requested_screen_preview_fps,
+                    engine_target,
+                    is_visible,
+                );
+            }
+        });
+
+        Effect::new(move |_| {
+            set_preview_transport_cap.set(preview_page_cap.get());
+        });
+
+        // Visibility change listener
+        if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+            let visibility_document = document.clone();
+            let on_visibility_change = Closure::<dyn FnMut()>::new(move || {
+                set_page_visible.set(!visibility_document.hidden());
+            });
+            document.set_onvisibilitychange(Some(on_visibility_change.as_ref().unchecked_ref()));
+            on_visibility_change.forget();
+        }
+
+        // Initial connection
+        if let Some(connect_fn) = connect.get_value() {
+            connect_fn();
+        }
+
+        Self {
+            canvas_frame,
+            screen_canvas_frame,
+            connection_state,
+            preview_fps,
+            metrics,
+            backpressure_notice,
+            active_effect,
+            last_device_event,
+            audio_level,
+            preview_target_fps,
+            set_preview_cap,
+            set_preview_consumers,
+            set_screen_preview_consumers,
+        }
+    }
+}
+
+// ── Connection Lifecycle Helpers ────────────────────────────────────────────
+
+/// Schedule a reconnection attempt with exponential backoff + jitter.
+fn schedule_reconnect(
+    reconnect_attempts: StoredValue<u32>,
+    reconnect_timeout_id: StoredValue<Option<i32>>,
+    connect: StoredValue<Option<Rc<dyn Fn()>>, LocalStorage>,
+) {
+    clear_reconnect_timer(reconnect_timeout_id);
+    let attempt = reconnect_attempts.get_value();
+    reconnect_attempts.set_value(attempt.saturating_add(1));
+
+    // Exponential backoff: 500ms, 1s, 2s, 4s, 8s, capped at 15s
+    let base_delay = RECONNECT_BASE_MS.saturating_mul(1_i32.wrapping_shl(attempt.min(5)));
+    let delay = base_delay.min(RECONNECT_MAX_MS);
+
+    // Add jitter (±25%) to prevent thundering herd on daemon restart
+    let jitter = (js_sys::Math::random() * 0.5 - 0.25) * f64::from(delay);
+    #[allow(clippy::cast_possible_truncation)]
+    let final_delay = (f64::from(delay) + jitter).max(100.0) as i32;
+
+    let callback = Closure::<dyn FnMut()>::new(move || {
+        if let Some(connect_fn) = connect.get_value() {
+            connect_fn();
+        }
+    });
+
+    if let Some(window) = web_sys::window() {
+        if let Ok(timeout_id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+            callback.as_ref().unchecked_ref(),
+            final_delay,
+        ) {
+            reconnect_timeout_id.set_value(Some(timeout_id));
+        }
+    }
+    callback.forget();
+}
+
+fn clear_reconnect_timer(reconnect_timeout_id: StoredValue<Option<i32>>) {
+    let Some(timeout_id) = reconnect_timeout_id.get_value() else {
+        return;
+    };
+
+    if let Some(window) = web_sys::window() {
+        window.clear_timeout_with_handle(timeout_id);
+    }
+    reconnect_timeout_id.set_value(None);
+}
+
+fn dispose_existing_socket(ws_handle: StoredValue<Option<web_sys::WebSocket>>) {
+    let Some(existing_ws) = ws_handle.get_value() else {
+        return;
+    };
+
+    existing_ws.set_onopen(None);
+    existing_ws.set_onclose(None);
+    existing_ws.set_onerror(None);
+    existing_ws.set_onmessage(None);
+    let _ = existing_ws.close();
+    ws_handle.set_value(None);
+}
+
+/// Build WS URL from current page origin.
+///
+/// When running on the Trunk dev server (:9430), connects directly to the
+/// daemon (:9420) since Trunk's proxy doesn't reliably handle WebSocket
+/// upgrades. In production the daemon serves the UI itself, so same-origin works.
+fn build_ws_url() -> String {
+    let window = web_sys::window().expect("no window");
+    let location = window.location();
+    let protocol = location.protocol().unwrap_or_else(|_| "http:".to_string());
+    let hostname = location
+        .hostname()
+        .unwrap_or_else(|_| "127.0.0.1".to_string());
+    let port = location.port().unwrap_or_default();
+
+    let ws_protocol = if protocol == "https:" { "wss:" } else { "ws:" };
+
+    // Trunk dev server → bypass proxy, connect directly to daemon
+    let host = if port == "9430" {
+        format!("{hostname}:9420")
+    } else if port.is_empty() {
+        hostname
+    } else {
+        format!("{hostname}:{port}")
+    };
+
+    format!("{ws_protocol}//{host}/api/v1/ws")
+}
+
+fn document_is_visible() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .is_none_or(|document| !document.hidden())
+}
