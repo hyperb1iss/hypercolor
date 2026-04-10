@@ -741,7 +741,7 @@ fn request_screen_preview_subscription(
         "type": "subscribe",
         "channels": ["screen_canvas"],
         "config": {
-            "screen_canvas": { "fps": desired_fps, "format": "rgb" }
+            "screen_canvas": { "fps": desired_fps, "format": preview_canvas_format() }
         }
     });
     let _ = ws.send_with_str(&subscribe_msg.to_string());
