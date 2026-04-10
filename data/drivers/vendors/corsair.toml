@@ -1,0 +1,192 @@
+[vendor]
+name = "Corsair"
+vid = [0x1B1C]
+website = "https://corsair.com"
+
+# ─── LINK Hub ────────────────────────────────────────────────────────
+
+[[devices]]
+pid = 0x0C3F
+name = "iCUE LINK System Hub"
+type = "fan_controller"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+notes = "Hub-and-spoke daisy-chain protocol, dynamic device enumeration"
+
+# ─── LCD Devices ─────────────────────────────────────────────────────
+
+[[devices]]
+pid = 0x0C39
+name = "Elite Capellix LCD"
+type = "lcd"
+status = "supported"
+driver = "corsair"
+transport = "usb_bulk"
+notes = "480x480 JPEG streaming, 30fps"
+
+[[devices]]
+pid = 0x0C33
+name = "Elite Capellix LCD (Alt PID)"
+type = "lcd"
+status = "supported"
+driver = "corsair"
+transport = "usb_bulk"
+
+[[devices]]
+pid = 0x0C4E
+name = "iCUE LINK LCD"
+type = "lcd"
+status = "supported"
+driver = "corsair"
+transport = "usb_bulk"
+
+[[devices]]
+pid = 0x0C55
+name = "Nautilus RS LCD"
+type = "lcd"
+status = "supported"
+driver = "corsair"
+transport = "usb_bulk"
+
+[[devices]]
+pid = 0x0C42
+name = "XC7 RGB Elite LCD"
+type = "lcd"
+status = "supported"
+driver = "corsair"
+transport = "usb_bulk"
+leds = 31
+notes = "480x480 display + 31-LED ring, custom XC7 init sequence"
+
+[[devices]]
+pid = 0x0C43
+name = "XD6 Elite LCD"
+type = "lcd"
+status = "supported"
+driver = "corsair"
+transport = "usb_bulk"
+
+# ─── Lighting Node Family ────────────────────────────────────────────
+
+[[devices]]
+pid = 0x0C1A
+name = "Lighting Node Core"
+type = "argb_controller"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+notes = "1 channel, 204 LEDs max"
+
+[[devices]]
+pid = 0x0C0B
+name = "Lighting Node Pro"
+type = "argb_controller"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+notes = "2 channels, 408 LEDs max"
+
+[[devices]]
+pid = 0x0C10
+name = "Commander Pro"
+type = "fan_controller"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+notes = "2 RGB channels + fan control"
+
+[[devices]]
+pid = 0x0C1E
+name = "LS100 Starter Kit"
+type = "strip"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+notes = "1 channel"
+
+[[devices]]
+pid = 0x0C23
+name = "LT100 Tower"
+type = "strip"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+notes = "2 channels"
+
+[[devices]]
+pid = 0x1D00
+name = "1000D Obsidian"
+type = "argb_controller"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+notes = "2 channels"
+
+[[devices]]
+pid = 0x1D04
+name = "SPEC OMEGA RGB"
+type = "argb_controller"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+notes = "2 channels"
+
+# ─── Not Yet Supported ───────────────────────────────────────────────
+
+[[devices]]
+pid = 0x0C12
+name = "Commander Core"
+type = "fan_controller"
+status = "researched"
+notes = "Lighting Commander Core protocol"
+
+[[devices]]
+pid = 0x0C1C
+name = "Commander Core XT"
+type = "fan_controller"
+status = "researched"
+
+[[devices]]
+pid = 0x0A51
+name = "Void Elite Wireless"
+type = "headset"
+status = "researched"
+
+[[devices]]
+pid = 0x0A55
+name = "Void Elite Wireless (White)"
+type = "headset"
+status = "researched"
+
+[[devices]]
+pid = 0x0A58
+name = "Void Pro Wireless"
+type = "headset"
+status = "researched"
+
+[[devices]]
+pid = 0x0A4F
+name = "HS80 RGB Wired"
+type = "headset"
+status = "researched"
+
+[[devices]]
+pid = 0x1B2E
+name = "Dominator RAM"
+type = "ram"
+status = "researched"
+notes = "SMBus protocol"
+
+[[devices]]
+pid = 0x1B40
+name = "Dominator Titanium RAM"
+type = "ram"
+status = "researched"
+
+[[devices]]
+pid = 0x0A44
+name = "Nexus LCD Companion"
+type = "lcd"
+status = "researched"
+notes = "5-inch touchscreen, different from AIO LCDs"

@@ -1,0 +1,32 @@
+[vendor]
+name = "Wooting"
+vid = [0x03EB, 0x31E3]
+website = "https://wooting.io"
+
+[[devices]]
+pid = 0xFF01
+name = "Wooting One"
+type = "keyboard"
+status = "known"
+notes = "VID 0x03EB, original analog keyboard"
+
+[[devices]]
+pid = 0x1220
+name = "Wooting Two HE"
+type = "keyboard"
+status = "known"
+notes = "VID 0x31E3, multiple PIDs: 0x1220-0x1222, 0x1230-0x1232"
+
+[[devices]]
+pid = 0x1310
+name = "Wooting 60 HE"
+type = "keyboard"
+status = "known"
+notes = "VID 0x31E3, multiple PIDs: 0x1310, 0x1312, 0x1300, 0x1302, 0x1322, 0x1320"
+
+[[devices]]
+pid = 0x1400
+name = "Wooting 80 HE"
+type = "keyboard"
+status = "known"
+notes = "VID 0x31E3, PIDs 0x1400, 0x1402"

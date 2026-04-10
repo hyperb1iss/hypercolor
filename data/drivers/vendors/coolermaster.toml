@@ -1,0 +1,134 @@
+[vendor]
+name = "Cooler Master"
+vid = [0x2516]
+website = "https://coolermaster.com"
+
+# ─── ARGB Controllers ────────────────────────────────────────────────
+
+[[devices]]
+pid = 0x1000
+name = "A-RGB LED Small Controller"
+type = "argb_controller"
+status = "researched"
+
+[[devices]]
+pid = 0x1011
+name = "ARGB Controller"
+type = "argb_controller"
+status = "researched"
+
+[[devices]]
+pid = 0x0173
+name = "Gen2 LED Controller A1"
+type = "argb_controller"
+status = "researched"
+notes = "Multiple PIDs: 0x0173, 0x01C9, 0x01CB"
+
+# ─── Keyboards ───────────────────────────────────────────────────────
+
+[[devices]]
+pid = 0x016B
+name = "CK720"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x016D
+name = "CK721"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x0145
+name = "CK550 V2"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x007F
+name = "CK552 V2"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x0147
+name = "CK530 V2"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x008F
+name = "MK730"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x0067
+name = "MK750"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x0069
+name = "MK850"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x0087
+name = "SK620/SK622"
+type = "keyboard"
+status = "known"
+notes = "Multiple PIDs: 0x0087, 0x0159, 0x0149, 0x014B"
+
+[[devices]]
+pid = 0x008D
+name = "SK650"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x015D
+name = "SK652"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x01AB
+name = "SK653"
+type = "keyboard"
+status = "known"
+
+# ─── Mice ────────────────────────────────────────────────────────────
+
+[[devices]]
+pid = 0x0101
+name = "MM711"
+type = "mouse"
+status = "known"
+
+# ─── Mouse Pads ─────────────────────────────────────────────────────
+
+[[devices]]
+pid = 0x0107
+name = "MP750L"
+type = "mousepad"
+status = "known"
+
+[[devices]]
+pid = 0x0105
+name = "MP750M"
+type = "mousepad"
+status = "known"
+
+[[devices]]
+pid = 0x0109
+name = "MP750XL"
+type = "mousepad"
+status = "known"
+
+[[devices]]
+pid = 0x006D
+name = "MP860"
+type = "mousepad"
+status = "known"

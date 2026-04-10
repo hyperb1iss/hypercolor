@@ -1,0 +1,29 @@
+[vendor]
+name = "Aqua Computer"
+vid = [0x0C70]
+website = "https://aquacomputer.de"
+
+[[devices]]
+pid = 0xF010
+name = "Farbwerk 360"
+type = "argb_controller"
+status = "known"
+
+[[devices]]
+pid = 0xF00F
+name = "Farbwerk Nano"
+type = "argb_controller"
+status = "known"
+
+[[devices]]
+pid = 0xF00E
+name = "D5 Next"
+type = "other"
+status = "known"
+notes = "Pump with RGB"
+
+[[devices]]
+pid = 0xF012
+name = "HighFlow Next"
+type = "other"
+status = "known"

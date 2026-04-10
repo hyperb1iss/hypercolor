@@ -1,0 +1,59 @@
+[vendor]
+name = "Gigabyte"
+vid = [0x048D, 0x1044, 0x0414]
+website = "https://gigabyte.com"
+
+[[devices]]
+pid = 0x5702
+name = "RGB Fusion Motherboard Controller"
+type = "motherboard"
+status = "researched"
+notes = "VID 0x048D, zone addresses 0x20-0x27, ARGB at 0x58-0x59, 240 LED max"
+
+[[devices]]
+pid = 0x8297
+name = "RGB Fusion Motherboard Controller (Alt)"
+type = "motherboard"
+status = "researched"
+notes = "VID 0x048D"
+
+[[devices]]
+pid = 0x5711
+name = "RGB Fusion Motherboard Controller (Gen 2)"
+type = "motherboard"
+status = "researched"
+notes = "VID 0x048D"
+
+[[devices]]
+pid = 0x7A42
+name = "Aorus ATC800"
+type = "aio"
+status = "known"
+notes = "VID 0x1044"
+
+[[devices]]
+pid = 0x7A46
+name = "Aorus Liquid Cooler 360"
+type = "aio"
+status = "known"
+notes = "VID 0x1044"
+
+[[devices]]
+pid = 0x7A4D
+name = "Aorus Waterforce X I"
+type = "aio"
+status = "known"
+notes = "VID 0x1044"
+
+[[devices]]
+pid = 0x7A5E
+name = "Aorus Waterforce X II"
+type = "aio"
+status = "known"
+notes = "VID 0x0414"
+
+[[devices]]
+name = "Gigabyte GPU (Gen 1-4)"
+type = "gpu"
+status = "researched"
+notes = "4 GPU generations. SMBus protocol, NVIDIA bus scanning."

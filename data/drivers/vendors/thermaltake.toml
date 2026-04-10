@@ -1,0 +1,69 @@
+[vendor]
+name = "Thermaltake"
+vid = [0x264A]
+website = "https://thermaltake.com"
+notes = "Large lighting controller portfolio with Riing fans"
+
+[[devices]]
+pid = 0x2135
+name = "Riing Controller"
+type = "fan_controller"
+status = "known"
+notes = "Multiple PIDs: 0x2135-0x2137, 0x2143-0x2144"
+
+[[devices]]
+pid = 0x1FA4
+name = "Floe Riing Controller"
+type = "fan_controller"
+status = "known"
+notes = "Multiple PIDs: 0x1FA4-0x1FA7"
+
+[[devices]]
+pid = 0x2260
+name = "LedBox Standard"
+type = "argb_controller"
+status = "known"
+notes = "17+ PIDs: 0x2260-0x2268, 0x226F, 0x232B-0x232E, 0x233A, etc."
+
+[[devices]]
+pid = 0x213C
+name = "LedBox"
+type = "argb_controller"
+status = "known"
+
+[[devices]]
+pid = 0x219A
+name = "LedBox Pacific"
+type = "argb_controller"
+status = "known"
+notes = "Multiple PIDs: 0x219A-0x219F"
+
+[[devices]]
+pid = 0x9011
+name = "Argent MP1 Mousepad"
+type = "mousepad"
+status = "known"
+
+[[devices]]
+pid = 0x8020
+name = "Argent Mouse Bungee"
+type = "other"
+status = "known"
+
+[[devices]]
+pid = 0x8022
+name = "Argent HS1 Headphone Stand"
+type = "other"
+status = "known"
+
+[[devices]]
+pid = 0x07D1
+name = "Level 20 Desk"
+type = "desk"
+status = "known"
+
+[[devices]]
+pid = 0x2329
+name = "DPSG PSU"
+type = "other"
+status = "known"

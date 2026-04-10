@@ -1,0 +1,96 @@
+[vendor]
+name = "QMK"
+vid = [0x3434, 0x3297, 0xFEED, 0x6964, 0x4B42, 0xCA04, 0x320F, 0x0C45, 0x1A86]
+website = "https://qmk.fm"
+
+# ─── Supported in Hypercolor ─────────────────────────────────────────
+
+[[devices]]
+pid = 0x0110
+name = "Keychron Q1"
+type = "keyboard"
+status = "supported"
+driver = "qmk"
+transport = "usb_hid"
+notes = "VID 0x3434, QMK protocol rev D"
+
+[[devices]]
+pid = 0x0120
+name = "Keychron Q2"
+type = "keyboard"
+status = "supported"
+driver = "qmk"
+transport = "usb_hid"
+notes = "VID 0x3434"
+
+[[devices]]
+pid = 0x0130
+name = "Keychron Q3"
+type = "keyboard"
+status = "supported"
+driver = "qmk"
+transport = "usb_hid"
+notes = "VID 0x3434"
+
+[[devices]]
+pid = 0x0150
+name = "Keychron Q5"
+type = "keyboard"
+status = "supported"
+driver = "qmk"
+transport = "usb_hid"
+notes = "VID 0x3434"
+
+[[devices]]
+pid = 0x0160
+name = "Keychron Q6"
+type = "keyboard"
+status = "supported"
+driver = "qmk"
+transport = "usb_hid"
+notes = "VID 0x3434"
+
+[[devices]]
+pid = 0x0310
+name = "Keychron V1"
+type = "keyboard"
+status = "supported"
+driver = "qmk"
+transport = "usb_hid"
+notes = "VID 0x3434"
+
+[[devices]]
+pid = 0x1969
+name = "ZSA Moonlander"
+type = "keyboard"
+status = "supported"
+driver = "qmk"
+transport = "usb_hid"
+notes = "VID 0x3297"
+
+[[devices]]
+pid = 0x0791
+name = "ZSA Voyager"
+type = "keyboard"
+status = "supported"
+driver = "qmk"
+transport = "usb_hid"
+notes = "VID 0x3297"
+
+[[devices]]
+pid = 0x6060
+name = "OLKB Planck"
+type = "keyboard"
+status = "supported"
+driver = "qmk"
+transport = "usb_hid"
+notes = "VID 0xFEED"
+
+[[devices]]
+pid = 0x5044
+name = "Glorious GMMK Pro"
+type = "keyboard"
+status = "supported"
+driver = "qmk"
+transport = "usb_hid"
+notes = "VID 0x320F"

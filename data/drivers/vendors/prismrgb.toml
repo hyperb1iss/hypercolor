@@ -1,0 +1,40 @@
+[vendor]
+name = "PrismRGB"
+vid = [0x16D5, 0x16D2, 0x16D0]
+website = "https://prismrgb.com"
+
+[[devices]]
+pid = 0x1F01
+name = "Prism 8"
+type = "argb_controller"
+status = "supported"
+driver = "prismrgb"
+transport = "usb_hid"
+notes = "VID 0x16D5, 8 channels x 126 LEDs, GRB byte order"
+
+[[devices]]
+pid = 0x1F01
+name = "Nollie 8 v2"
+type = "argb_controller"
+status = "supported"
+driver = "prismrgb"
+transport = "usb_hid"
+notes = "VID 0x16D2, GRB byte order"
+
+[[devices]]
+pid = 0x1294
+name = "Prism S"
+type = "argb_controller"
+status = "supported"
+driver = "prismrgb"
+transport = "usb_hid"
+notes = "VID 0x16D0, RGB byte order, ATX + GPU cable variants"
+
+[[devices]]
+pid = 0x1407
+name = "Prism Mini"
+type = "argb_controller"
+status = "supported"
+driver = "prismrgb"
+transport = "usb_hid"
+notes = "VID 0x16D0, 128 LEDs max, color pair compression"

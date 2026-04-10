@@ -1,0 +1,143 @@
+[vendor]
+name = "ASUS"
+vid = [0x0B05]
+website = "https://asus.com"
+
+# ─── Supported in Hypercolor ─────────────────────────────────────────
+
+[[devices]]
+pid = 0x18F3
+name = "Aura Motherboard (Gen 1)"
+type = "motherboard"
+status = "supported"
+driver = "asus"
+transport = "usb_hid_raw"
+
+[[devices]]
+pid = 0x1939
+name = "Aura Motherboard (Gen 2)"
+type = "motherboard"
+status = "supported"
+driver = "asus"
+transport = "usb_hid_raw"
+
+[[devices]]
+pid = 0x19AF
+name = "Aura Motherboard (Gen 3)"
+type = "motherboard"
+status = "supported"
+driver = "asus"
+transport = "usb_hid_raw"
+
+[[devices]]
+pid = 0x1AA6
+name = "Aura Motherboard (Gen 4)"
+type = "motherboard"
+status = "supported"
+driver = "asus"
+transport = "usb_hid_raw"
+
+[[devices]]
+pid = 0x1BED
+name = "Aura Motherboard (Gen 5)"
+type = "motherboard"
+status = "supported"
+driver = "asus"
+transport = "usb_hid_raw"
+
+[[devices]]
+pid = 0x1867
+name = "Aura Addressable (Gen 1)"
+type = "argb_controller"
+status = "supported"
+driver = "asus"
+transport = "usb_hid_raw"
+notes = "Up to 120 LEDs per ARGB channel"
+
+[[devices]]
+pid = 0x1872
+name = "Aura Addressable (Gen 2)"
+type = "argb_controller"
+status = "supported"
+driver = "asus"
+transport = "usb_hid_raw"
+
+[[devices]]
+pid = 0x18A3
+name = "Aura Addressable (Gen 3)"
+type = "argb_controller"
+status = "supported"
+driver = "asus"
+transport = "usb_hid_raw"
+
+[[devices]]
+pid = 0x18A5
+name = "Aura Addressable (Gen 4)"
+type = "argb_controller"
+status = "supported"
+driver = "asus"
+transport = "usb_hid_raw"
+
+[[devices]]
+pid = 0x1889
+name = "Aura Terminal"
+type = "argb_controller"
+status = "supported"
+driver = "asus"
+transport = "usb_hid_raw"
+
+# ─── Not Yet Supported ───────────────────────────────────────────────
+
+[[devices]]
+pid = 0x1854
+name = "Aura Core (Laptop)"
+type = "keyboard"
+status = "known"
+notes = "ROG laptop keyboard backlighting"
+
+[[devices]]
+pid = 0x1866
+name = "ROG Strix SCAR 17"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+name = "Aura GPU (SMBus)"
+type = "gpu"
+status = "researched"
+notes = "Ampere/Lovelace GPUs via ENE SMBus. Hypercolor has SMBus transport support."
+
+[[devices]]
+name = "ROG Balteus Qi"
+type = "mousepad"
+status = "known"
+
+[[devices]]
+name = "ROG Spotlight"
+type = "strip"
+status = "known"
+
+[[devices]]
+name = "ROG Strix LC AIO"
+type = "aio"
+status = "known"
+
+[[devices]]
+name = "Ryujin AIO"
+type = "aio"
+status = "known"
+
+[[devices]]
+name = "ROG Claymore II"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+name = "ROG Throne Qi Stand"
+type = "other"
+status = "known"
+
+[[devices]]
+name = "TUF K1"
+type = "keyboard"
+status = "known"

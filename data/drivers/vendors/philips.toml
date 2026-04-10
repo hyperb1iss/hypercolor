@@ -1,0 +1,12 @@
+[vendor]
+name = "Philips"
+vid = []
+website = "https://meethue.com"
+
+[[devices]]
+name = "Hue Bridge (any)"
+type = "argb_controller"
+status = "supported"
+driver = "hue"
+transport = "network_http"
+notes = "mDNS discovery + link button pairing. Controls all lights connected to bridge."

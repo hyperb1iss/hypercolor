@@ -1,0 +1,118 @@
+[vendor]
+name = "NZXT"
+vid = [0x1E71]
+website = "https://nzxt.com"
+
+# ─── AIOs ────────────────────────────────────────────────────────────
+
+[[devices]]
+pid = 0x3012
+name = "Kraken Elite V2"
+type = "aio"
+status = "researched"
+
+[[devices]]
+pid = 0x3008
+name = "Kraken Z3"
+type = "aio"
+status = "researched"
+
+[[devices]]
+pid = 0x300C
+name = "Kraken Elite"
+type = "aio"
+status = "researched"
+
+[[devices]]
+pid = 0x300E
+name = "Kraken"
+type = "aio"
+status = "researched"
+
+[[devices]]
+pid = 0x2007
+name = "Kraken X3"
+type = "aio"
+status = "known"
+
+[[devices]]
+pid = 0x170E
+name = "Kraken X2/M2"
+type = "aio"
+status = "known"
+
+# ─── Lighting Controllers ────────────────────────────────────────────
+
+[[devices]]
+pid = 0x2001
+name = "Smart Device V2 (Hue 2)"
+type = "argb_controller"
+status = "researched"
+notes = "Multiple PIDs: 0x2001, 0x2002, 0x2006, 0x200D, 0x200F"
+
+[[devices]]
+pid = 0x2009
+name = "RGB and Fan Controller"
+type = "fan_controller"
+status = "researched"
+notes = "Multiple PIDs: 0x2009, 0x200E, 0x2010-0x2012, 0x2019, 0x201F-0x2022"
+
+[[devices]]
+pid = 0x1714
+name = "Smart Device V1"
+type = "argb_controller"
+status = "known"
+
+# ─── Motherboards ────────────────────────────────────────────────────
+
+[[devices]]
+pid = 0x2005
+name = "N7 Z390"
+type = "motherboard"
+status = "known"
+
+[[devices]]
+pid = 0x200A
+name = "N7 Z490"
+type = "motherboard"
+status = "known"
+
+[[devices]]
+pid = 0x200B
+name = "N7 B550"
+type = "motherboard"
+status = "known"
+
+[[devices]]
+pid = 0x201B
+name = "N7 B650E"
+type = "motherboard"
+status = "known"
+
+[[devices]]
+pid = 0x201D
+name = "N7 Z790"
+type = "motherboard"
+status = "known"
+
+# ─── Peripherals ─────────────────────────────────────────────────────
+
+[[devices]]
+pid = 0x2100
+name = "Lift Mouse"
+type = "mouse"
+status = "known"
+
+[[devices]]
+pid = 0x2103
+name = "Function Keyboard"
+type = "keyboard"
+status = "known"
+notes = "Multiple PIDs: 0x2103-0x2108 (ANSI/ISO, Full/TKL/MiniTKL)"
+
+[[devices]]
+pid = 0x2130
+name = "Function 2 Keyboard"
+type = "keyboard"
+status = "known"
+notes = "Multiple PIDs: 0x2130, 0x2131, 0x2136"

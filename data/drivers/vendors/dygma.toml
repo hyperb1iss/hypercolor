@@ -1,0 +1,22 @@
+[vendor]
+name = "Dygma"
+vid = [0x35EF]
+website = "https://dygma.com"
+
+[[devices]]
+pid = 0x0010
+name = "Defy (Wired)"
+type = "keyboard"
+status = "blocked"
+driver = "dygma"
+transport = "usb_serial"
+notes = "Driver implemented but not functional. Needs firmware-side work to support external RGB control. Focus protocol works for config but lighting requires additional capability in Defy firmware."
+
+[[devices]]
+pid = 0x0012
+name = "Defy (Wireless)"
+type = "keyboard"
+status = "blocked"
+driver = "dygma"
+transport = "usb_serial"
+notes = "Same firmware limitation as wired variant. RGBW color support ready on our side."

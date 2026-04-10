@@ -1,0 +1,46 @@
+[vendor]
+name = "EVGA"
+vid = [0x3842]
+website = "https://evga.com"
+
+[[devices]]
+pid = 0x2415
+name = "X15 Mouse"
+type = "mouse"
+status = "known"
+
+[[devices]]
+pid = 0x240D
+name = "X17 Mouse"
+type = "mouse"
+status = "known"
+
+[[devices]]
+pid = 0x260E
+name = "Z15 Keyboard (ISO)"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x2608
+name = "Z15 Keyboard (ANSI)"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x2610
+name = "Z20 Keyboard (ISO)"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x260A
+name = "Z20 Keyboard"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+name = "EVGA GPU (Pascal/Turing/Ampere)"
+type = "gpu"
+status = "known"
+notes = "SMBus protocol, 3 generations"

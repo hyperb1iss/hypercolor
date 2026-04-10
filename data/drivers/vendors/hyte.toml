@@ -1,0 +1,16 @@
+[vendor]
+name = "HYTE"
+vid = [0x3402]
+website = "https://hyte.com"
+
+[[devices]]
+pid = 0x0B00
+name = "CNVS"
+type = "mousepad"
+status = "known"
+
+[[devices]]
+pid = 0x0B01
+name = "CNVS (Alt PID)"
+type = "mousepad"
+status = "known"

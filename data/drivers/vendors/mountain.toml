@@ -1,0 +1,28 @@
+[vendor]
+name = "Mountain"
+vid = [0x3282]
+website = "https://mountain.gg"
+
+[[devices]]
+pid = 0x0001
+name = "Everest Max"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x0005
+name = "Everest 60"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x0003
+name = "Makalu 67"
+type = "mouse"
+status = "known"
+
+[[devices]]
+pid = 0x0008
+name = "Macropad"
+type = "keyboard"
+status = "known"

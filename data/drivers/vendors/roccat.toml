@@ -1,0 +1,89 @@
+[vendor]
+name = "Roccat"
+vid = [0x1E7D]
+website = "https://roccat.com"
+notes = "Extensive mouse and keyboard lineup."
+
+[[devices]]
+pid = 0x2C88
+name = "Kone Pro"
+type = "mouse"
+status = "known"
+
+[[devices]]
+pid = 0x2C8B
+name = "Kone XP"
+type = "mouse"
+status = "known"
+
+[[devices]]
+pid = 0x2E27
+name = "Kone"
+type = "mouse"
+status = "known"
+
+[[devices]]
+pid = 0x2DE1
+name = "Burst Pro"
+type = "mouse"
+status = "known"
+
+[[devices]]
+pid = 0x2EE2
+name = "Vulcan II MAX"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x2F09
+name = "Vulcan II Mini"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x2FEE
+name = "Vulcan TKL"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x307A
+name = "Vulcan 100"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x30F7
+name = "Vulcan Pro"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x3124
+name = "Magma"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x314C
+name = "Pyro"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x343A
+name = "AIMO Pad"
+type = "mousepad"
+status = "known"
+
+[[devices]]
+pid = 0x3A34
+name = "Elo 7.1 USB"
+type = "headset"
+status = "known"
+
+[[devices]]
+pid = 0x3A56
+name = "Torch"
+type = "microphone"
+status = "known"

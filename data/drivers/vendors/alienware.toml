@@ -1,0 +1,23 @@
+[vendor]
+name = "Alienware"
+vid = [0x187C, 0x04CA, 0x0424]
+website = "https://dell.com/alienware"
+
+[[devices]]
+pid = 0x0530
+name = "Alienware 15 R3"
+type = "keyboard"
+status = "known"
+notes = "VID 0x187C"
+
+[[devices]]
+name = "Alienware Monitor (Gen 1-3)"
+type = "monitor"
+status = "known"
+
+[[devices]]
+pid = 0x00A5
+name = "AW558 Mouse"
+type = "mouse"
+status = "known"
+notes = "VID 0x04CA"

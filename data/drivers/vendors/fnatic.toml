@@ -1,0 +1,22 @@
+[vendor]
+name = "Fnatic"
+vid = [0x2F0E]
+website = "https://fnatic.com"
+
+[[devices]]
+pid = 0x0101
+name = "STREAK"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x0103
+name = "miniSTREAK Speed"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+pid = 0x0105
+name = "STREAK65"
+type = "keyboard"
+status = "known"

@@ -1,0 +1,22 @@
+[vendor]
+name = "Sony"
+vid = [0x054C]
+website = "https://playstation.com"
+
+[[devices]]
+pid = 0x0CE6
+name = "DualSense"
+type = "lightbar"
+status = "known"
+
+[[devices]]
+pid = 0x05C4
+name = "DualShock 4"
+type = "lightbar"
+status = "known"
+
+[[devices]]
+pid = 0x09CC
+name = "DualShock 4 V2"
+type = "lightbar"
+status = "known"

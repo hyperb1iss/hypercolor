@@ -1,0 +1,36 @@
+[vendor]
+name = "SteelSeries"
+vid = [0x1038]
+website = "https://steelseries.com"
+notes = "GameSense-era protocol. Large peripheral portfolio with 40+ devices."
+
+
+[[devices]]
+name = "Apex Pro TKL"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+name = "Apex 7 TKL"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+name = "Aerox 3"
+type = "mouse"
+status = "known"
+
+[[devices]]
+name = "Rival 600"
+type = "mouse"
+status = "known"
+
+[[devices]]
+name = "Arctis Nova Pro"
+type = "headset"
+status = "known"
+
+[[devices]]
+name = "QcK Prism XL"
+type = "mousepad"
+status = "known"

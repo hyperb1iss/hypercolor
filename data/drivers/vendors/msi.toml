@@ -1,0 +1,77 @@
+[vendor]
+name = "MSI"
+vid = [0x1462, 0x0DB0, 0x1770]
+website = "https://msi.com"
+
+# ─── Motherboard Controllers ─────────────────────────────────────────
+
+[[devices]]
+pid = 0x1720
+name = "Mystic Light Controller (162 Byte)"
+type = "motherboard"
+status = "researched"
+notes = "162-byte HID packet, zone-based offsets (10 bytes/zone)"
+
+[[devices]]
+pid = 0x7B17
+name = "Mystic Light Controller (162 Byte)"
+type = "motherboard"
+status = "researched"
+
+[[devices]]
+pid = 0x7B18
+name = "Mystic Light Controller (162 Byte)"
+type = "motherboard"
+status = "researched"
+
+[[devices]]
+pid = 0x7B85
+name = "B450 Gaming Pro Carbon AC"
+type = "motherboard"
+status = "researched"
+
+[[devices]]
+pid = 0xB926
+name = "Mystic Light Controller (162 Byte)"
+type = "motherboard"
+status = "researched"
+
+[[devices]]
+name = "Mystic Light Controller (185 Byte)"
+type = "motherboard"
+status = "researched"
+notes = "185-byte HID, ARGB headers at 0x400-0x402. 120+ PIDs across many board revisions."
+
+# ─── GPUs ────────────────────────────────────────────────────────────
+
+[[devices]]
+name = "MSI GPU (Lovelace)"
+type = "gpu"
+status = "researched"
+notes = "SMBus protocol, base address from device list lookup"
+
+[[devices]]
+name = "MSI GPU (Blackwell)"
+type = "gpu"
+status = "known"
+
+# ─── Peripherals ─────────────────────────────────────────────────────
+
+[[devices]]
+pid = 0xFF00
+name = "GS63 Keyboard"
+type = "keyboard"
+status = "known"
+notes = "VID 0x1770"
+
+[[devices]]
+name = "MSI Keyboard (Modern)"
+type = "keyboard"
+status = "known"
+notes = "VID 0x0DB0, dynamic PID library"
+
+[[devices]]
+pid = 0x3FA4
+name = "MSI Monitor Controller"
+type = "monitor"
+status = "known"

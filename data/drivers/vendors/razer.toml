@@ -1,0 +1,818 @@
+[vendor]
+name = "Razer"
+vid = [0x1532]
+website = "https://razer.com"
+
+# ─── Supported in Hypercolor ─────────────────────────────────────────
+
+[[devices]]
+pid = 0x026C
+name = "Huntsman V2"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 132
+notes = "Extended matrix 6x22"
+
+[[devices]]
+pid = 0x0099
+name = "Basilisk V3"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 11
+notes = "Matrix 1x11, has scroll wheel LED"
+
+[[devices]]
+pid = 0x0208
+name = "Tartarus Chroma"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+notes = "Keypad, standard LED set"
+
+[[devices]]
+pid = 0x006C
+name = "Mamba Elite"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 20
+notes = "Extended matrix 1x20"
+
+[[devices]]
+pid = 0x0F1B
+name = "Seiren Emote"
+type = "microphone"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 64
+notes = "Matrix 4x16, LED display"
+
+[[devices]]
+pid = 0x056F
+name = "Seiren V3 Chroma"
+type = "microphone"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0270
+name = "Blade 14 (2021)"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0210
+name = "Blade Pro (2016)"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+notes = "Legacy protocol, matrix 6x25"
+
+[[devices]]
+pid = 0x0276
+name = "Blade 15 (Late 2021 Advanced)"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x028A
+name = "Blade 15 (2022)"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x029D
+name = "Blade 14 (2023)"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+# Extended matrix keyboards (HID API grouped)
+
+[[devices]]
+pid = 0x0257
+name = "Huntsman Mini"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0F09
+name = "Chroma HDK"
+type = "argb_controller"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0A24
+name = "BlackWidow V3 TKL"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0243
+name = "Huntsman Tournament Edition"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x025A
+name = "BlackWidow V3 Pro (Wired)"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x022A
+name = "Cynosa Chroma"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x021E
+name = "Ornata Chroma"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0227
+name = "Huntsman"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0226
+name = "Huntsman Elite"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x00A3
+name = "Cobra"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0091
+name = "Viper 8kHz"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x00B9
+name = "Basilisk V3 X HyperSpeed"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x026B
+name = "Huntsman V2 TKL"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x02A7
+name = "Huntsman V3 Pro TKL White"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x024E
+name = "BlackWidow V3"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x008C
+name = "DeathAdder V2 Mini"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0084
+name = "DeathAdder V2"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x00A7
+name = "Naga Pro V2 (Wired)"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x00A8
+name = "Naga Pro V2 (Wireless)"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x008F
+name = "Naga Pro (Wired)"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0090
+name = "Naga Pro (Wireless)"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x00AF
+name = "Cobra Pro (Wired)"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x00B0
+name = "Cobra Pro (Wireless)"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x00AA
+name = "Basilisk V3 Pro (Wired)"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x00AB
+name = "Basilisk V3 Pro (Wireless)"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x00CC
+name = "Basilisk V3 Pro 35K (Wired)"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x00CD
+name = "Basilisk V3 Pro 35K (Wireless)"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0086
+name = "Basilisk Ultimate"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0088
+name = "Basilisk Ultimate (Wireless)"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0F0D
+name = "Laptop Stand Chroma"
+type = "other"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0F2B
+name = "Laptop Stand Chroma V2"
+type = "other"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0C08
+name = "Firefly V2 Pro"
+type = "mousepad"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0532
+name = "Leviathan V2"
+type = "speakers"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0F13
+name = "Lian Li O11 Dynamic - Razer Edition"
+type = "case"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x022B
+name = "Tartarus V2"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0298
+name = "DeathStalker V2 Pro TKL (Wired)"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x02B3
+name = "BlackWidow V4 Pro 75% (Wired)"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x02B4
+name = "BlackWidow V4 Pro 75% (Wireless)"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0295
+name = "DeathStalker V2"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0287
+name = "BlackWidow V4"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x028D
+name = "BlackWidow V4 Pro"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x025C
+name = "BlackWidow V3 Pro (Wireless)"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x02A6
+name = "Huntsman V3 Pro"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0266
+name = "Huntsman V2 Analog"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x00CB
+name = "Basilisk V3 35K"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0282
+name = "Huntsman Mini Analog"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0258
+name = "BlackWidow V3 Mini (Wired)"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x02A0
+name = "Huntsman V3 Pro Wireless"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0256
+name = "Huntsman Mini Wireless"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0F20
+name = "Base Station V2 Chroma"
+type = "other"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0F26
+name = "Charging Pad Chroma"
+type = "mousepad"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0C06
+name = "Goliathus Chroma 3XL"
+type = "mousepad"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0098
+name = "DeathAdder Essential V2"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x008D
+name = "Naga Left Handed"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0093
+name = "Naga Classic"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0F1D
+name = "Mouse Bungee V3 Chroma"
+type = "other"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x00D6
+name = "Basilisk V3 Pro 35K Phantom Green (Wired)"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x00D7
+name = "Basilisk V3 Pro 35K Phantom Green (Wireless)"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x0F03
+name = "Tiamat 7.1 V2"
+type = "headset"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+
+# ─── Not Yet Supported ───────────────────────────────────────────────
+
+[[devices]]
+pid = 0x0203
+name = "BlackWidow Chroma"
+type = "keyboard"
+status = "researched"
+notes = "Legacy protocol"
+
+[[devices]]
+pid = 0x0211
+name = "BlackWidow Chroma Overwatch"
+type = "keyboard"
+status = "researched"
+
+[[devices]]
+pid = 0x0216
+name = "BlackWidow X Chroma"
+type = "keyboard"
+status = "researched"
+
+[[devices]]
+pid = 0x0241
+name = "BlackWidow 2019"
+type = "keyboard"
+status = "researched"
+
+[[devices]]
+pid = 0x025E
+name = "Cynosa V2"
+type = "keyboard"
+status = "researched"
+
+[[devices]]
+pid = 0x023F
+name = "Cynosa Lite"
+type = "keyboard"
+status = "researched"
+
+[[devices]]
+pid = 0x0209
+name = "BlackWidow Tournament Edition Chroma"
+type = "keyboard"
+status = "researched"
+
+[[devices]]
+pid = 0x011A
+name = "BlackWidow Ultimate 2013/2014"
+type = "keyboard"
+status = "researched"
+notes = "Very old model, low priority"
+
+[[devices]]
+pid = 0x0207
+name = "Orbweaver Chroma"
+type = "keyboard"
+status = "researched"
+notes = "Known to have protocol issues"
+
+[[devices]]
+pid = 0x022C
+name = "Tartarus Pro"
+type = "keyboard"
+status = "researched"
+
+[[devices]]
+pid = 0x0265
+name = "Ornata V3 TKL"
+type = "keyboard"
+status = "researched"
+
+[[devices]]
+pid = 0x0294
+name = "Ornata V3 X"
+type = "keyboard"
+status = "researched"
+
+[[devices]]
+pid = 0x0296
+name = "DeathStalker V2 Pro TKL (Wireless)"
+type = "keyboard"
+status = "researched"
+
+[[devices]]
+pid = 0x004C
+name = "Diamondback Chroma"
+type = "mouse"
+status = "researched"
+notes = "Legacy mouse"
+
+[[devices]]
+pid = 0x004E
+name = "Naga Hex V2"
+type = "mouse"
+status = "researched"
+
+[[devices]]
+pid = 0x006E
+name = "DeathAdder Essential (Legacy)"
+type = "mouse"
+status = "researched"
+
+[[devices]]
+pid = 0x0071
+name = "DeathAdder Essential (Alt)"
+type = "mouse"
+status = "researched"
+
+[[devices]]
+pid = 0x0574
+name = "Barracuda X Chroma"
+type = "headset"
+status = "researched"
+
+[[devices]]
+pid = 0x020F
+name = "Kraken Kitty Edition"
+type = "headset"
+status = "researched"
+
+[[devices]]
+pid = 0x0510
+name = "Kraken 7.1 V2"
+type = "headset"
+status = "researched"
+
+[[devices]]
+pid = 0x0527
+name = "Kraken Headset"
+type = "headset"
+status = "researched"
+notes = "Multiple PIDs: 0x0527, 0x0533, 0x0537, 0x0549, 0x0560"
+
+[[devices]]
+pid = 0x051C
+name = "Nari Headset"
+type = "headset"
+status = "researched"
+notes = "Multiple PIDs: 0x051C, 0x051F, 0x051E, 0x051A"
+
+[[devices]]
+pid = 0x0517
+name = "Nommo Speakers"
+type = "speakers"
+status = "researched"
+notes = "Multiple PIDs: 0x0517, 0x0518, 0x055C, 0x055A"
+
+[[devices]]
+pid = 0x0532
+name = "Leviathan V2 Soundbar"
+type = "speakers"
+status = "researched"
+notes = "Multiple PIDs: 0x0532, 0x054A, 0x0548"
+
+[[devices]]
+pid = 0x0F2C
+name = "Chroma Light Strip Set"
+type = "strip"
+status = "researched"
+
+[[devices]]
+pid = 0x0F0E
+name = "Chroma Lighting Kit"
+type = "argb_controller"
+status = "researched"
+
+[[devices]]
+pid = 0x0F1F
+name = "Addressable RGB Controller"
+type = "argb_controller"
+status = "researched"
+
+[[devices]]
+pid = 0x0F3C
+name = "PWM Controller"
+type = "fan_controller"
+status = "researched"
+
+[[devices]]
+pid = 0x0F43
+name = "Laptop Cooling Pad"
+type = "other"
+status = "researched"
+
+[[devices]]
+pid = 0x0F44
+name = "Hanbo AIO"
+type = "aio"
+status = "researched"
+
+[[devices]]
+pid = 0x0C00
+name = "Mousepad Controller"
+type = "mousepad"
+status = "researched"
+notes = "Multiple PIDs: 0x0C00, 0x0C01, 0x0C02, 0x0C04, 0x0C05"
+
+[[devices]]
+pid = 0x0F12
+name = "Raptor 27 Inch Monitor"
+type = "monitor"
+status = "researched"
+notes = "Multiple PIDs: 0x0F12, 0x0F28"
+
+[[devices]]
+pid = 0x0F21
+name = "Thunderbolt Dock"
+type = "other"
+status = "researched"
+
+[[devices]]
+pid = 0x0F08
+name = "Base Station Chroma"
+type = "other"
+status = "researched"
+
+[[devices]]
+pid = 0x0F22
+name = "Mouse Dock"
+type = "other"
+status = "researched"
+
+[[devices]]
+pid = 0x0F23
+name = "Mouse Dock Pro"
+type = "other"
+status = "researched"
+
+[[devices]]
+pid = 0x0F24
+name = "Mouse Bungee V3"
+type = "other"
+status = "researched"
+
+[[devices]]
+pid = 0x0F05
+name = "Tomahawk ATX Case"
+type = "case"
+status = "researched"

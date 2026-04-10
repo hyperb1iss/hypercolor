@@ -1,0 +1,12 @@
+[vendor]
+name = "Nanoleaf"
+vid = []
+website = "https://nanoleaf.me"
+
+[[devices]]
+name = "Nanoleaf Panels (any)"
+type = "strip"
+status = "supported"
+driver = "nanoleaf"
+transport = "network_http"
+notes = "mDNS discovery + power button pairing. Supports all panel shapes and light strips."

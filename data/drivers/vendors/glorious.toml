@@ -1,0 +1,41 @@
+[vendor]
+name = "Glorious"
+vid = [0x258A, 0x320F]
+website = "https://gloriousgaming.com"
+
+[[devices]]
+pid = 0x2011
+name = "Model O Wireless (Wired)"
+type = "mouse"
+status = "known"
+notes = "VID 0x258A"
+
+[[devices]]
+pid = 0x2022
+name = "Model O Wireless"
+type = "mouse"
+status = "known"
+notes = "VID 0x258A, multiple PIDs"
+
+[[devices]]
+pid = 0x2014
+name = "Model D Wireless (Wired)"
+type = "mouse"
+status = "known"
+notes = "VID 0x258A"
+
+[[devices]]
+pid = 0x2025
+name = "Model D Wireless"
+type = "mouse"
+status = "known"
+notes = "VID 0x258A"
+
+[[devices]]
+pid = 0x5044
+name = "GMMK Pro"
+type = "keyboard"
+status = "supported"
+driver = "qmk"
+transport = "usb_hid"
+notes = "VID 0x320F, supported via QMK driver"

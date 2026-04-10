@@ -1,0 +1,27 @@
+[vendor]
+name = "ASRock"
+vid = [0x26CE]
+website = "https://asrock.com"
+
+[[devices]]
+pid = 0x01A2
+name = "Polychrome Motherboard"
+type = "motherboard"
+status = "known"
+
+[[devices]]
+pid = 0x01C4
+name = "Monitor Controller"
+type = "monitor"
+status = "known"
+
+[[devices]]
+name = "ASRock LCD"
+type = "lcd"
+status = "known"
+
+[[devices]]
+name = "ASRock GPU (SMBus)"
+type = "gpu"
+status = "known"
+notes = "AMD GPU only, SubVendor 0x1849"

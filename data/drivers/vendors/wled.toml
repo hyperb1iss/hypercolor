@@ -1,0 +1,12 @@
+[vendor]
+name = "WLED"
+vid = []
+website = "https://kno.wled.ge"
+
+[[devices]]
+name = "WLED Controller (any)"
+type = "argb_controller"
+status = "supported"
+driver = "wled"
+transport = "network_udp"
+notes = "DDP and E1.31 protocols. mDNS discovery. No auth required. ESP8266/ESP32 controllers."

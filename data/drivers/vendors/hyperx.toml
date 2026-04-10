@@ -1,0 +1,117 @@
+[vendor]
+name = "HyperX"
+vid = [0x0951, 0x03F0]
+website = "https://hyperx.com"
+notes = "Two VID eras: 0x0951 (Kingston) and 0x03F0 (HP/HyperX). Large peripheral portfolio."
+
+[[devices]]
+pid = 0x16BE
+name = "Alloy Elite RGB"
+type = "keyboard"
+status = "known"
+notes = "VID 0x0951"
+
+[[devices]]
+pid = 0x1711
+name = "Alloy Elite 2"
+type = "keyboard"
+status = "known"
+notes = "VID 0x0951"
+
+[[devices]]
+pid = 0x16E5
+name = "Alloy Origins"
+type = "keyboard"
+status = "known"
+notes = "VID 0x0951"
+
+[[devices]]
+pid = 0x16E6
+name = "Alloy Origins Core"
+type = "keyboard"
+status = "known"
+notes = "VID 0x0951"
+
+[[devices]]
+pid = 0x1734
+name = "Alloy Origins 60"
+type = "keyboard"
+status = "known"
+notes = "VID 0x0951"
+
+[[devices]]
+pid = 0x038F
+name = "Alloy Origins 65"
+type = "keyboard"
+status = "known"
+notes = "VID 0x03F0 (HP era)"
+
+[[devices]]
+pid = 0x16DC
+name = "Alloy FPS RGB"
+type = "keyboard"
+status = "known"
+notes = "VID 0x0951"
+
+[[devices]]
+pid = 0x16D3
+name = "PulseFire Surge"
+type = "mouse"
+status = "known"
+notes = "VID 0x0951"
+
+[[devices]]
+pid = 0x16DE
+name = "PulseFire Core"
+type = "mouse"
+status = "known"
+notes = "VID 0x0951"
+
+[[devices]]
+pid = 0x1727
+name = "PulseFire Haste"
+type = "mouse"
+status = "known"
+notes = "VID 0x0951"
+
+[[devices]]
+pid = 0x16E4
+name = "PulseFire Raid"
+type = "mouse"
+status = "known"
+notes = "VID 0x0951"
+
+[[devices]]
+pid = 0x1705
+name = "Fury Ultra"
+type = "mousepad"
+status = "known"
+notes = "VID 0x0951"
+
+[[devices]]
+pid = 0x171D
+name = "Quadcast S"
+type = "microphone"
+status = "known"
+notes = "VID 0x0951, multiple PIDs"
+
+[[devices]]
+pid = 0x02B5
+name = "Quadcast 2 S"
+type = "microphone"
+status = "known"
+notes = "VID 0x03F0"
+
+[[devices]]
+pid = 0x098C
+name = "Duocast"
+type = "microphone"
+status = "known"
+notes = "VID 0x03F0"
+
+[[devices]]
+pid = 0x16C4
+name = "Cloud Flight"
+type = "headset"
+status = "known"
+notes = "VID 0x0951"

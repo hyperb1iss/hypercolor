@@ -1,0 +1,103 @@
+[vendor]
+name = "Lian Li"
+vid = [0x0CF2, 0x0416]
+website = "https://lian-li.com"
+
+# ─── Supported in Hypercolor ─────────────────────────────────────────
+
+[[devices]]
+pid = 0xA100
+name = "Uni Hub - SL"
+type = "fan_controller"
+status = "supported"
+driver = "lianli"
+transport = "usb_hid"
+notes = "ENE 6K77 protocol, single-ring fans"
+
+[[devices]]
+pid = 0xA101
+name = "Uni Hub - AL"
+type = "fan_controller"
+status = "supported"
+driver = "lianli"
+transport = "usb_hid"
+notes = "Dual-ring fans (inner/outer), firmware-dependent: HID for v1.7+, Vendor for v1.0 (AL10)"
+
+[[devices]]
+pid = 0xA102
+name = "Uni Hub - SL Infinity"
+type = "fan_controller"
+status = "supported"
+driver = "lianli"
+transport = "usb_hid"
+notes = "4 physical groups, 8 logical channels"
+
+[[devices]]
+pid = 0xA103
+name = "Uni Hub - SL V2"
+type = "fan_controller"
+status = "supported"
+driver = "lianli"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0xA104
+name = "Uni Hub - AL V2"
+type = "fan_controller"
+status = "supported"
+driver = "lianli"
+transport = "usb_hid"
+notes = "Dual-ring, 144 bytes per port output"
+
+[[devices]]
+pid = 0xA105
+name = "Uni Hub - SL V2a"
+type = "fan_controller"
+status = "supported"
+driver = "lianli"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0xA106
+name = "Uni Hub - SL Redragon"
+type = "fan_controller"
+status = "supported"
+driver = "lianli"
+transport = "usb_hid"
+
+[[devices]]
+pid = 0x7750
+name = "Uni Hub (Original)"
+type = "fan_controller"
+status = "supported"
+driver = "lianli"
+transport = "usb_vendor"
+notes = "Legacy USB vendor protocol"
+
+[[devices]]
+pid = 0x7372
+name = "TL Fan Hub"
+type = "fan_controller"
+status = "supported"
+driver = "lianli"
+transport = "usb_hid"
+leds = 260
+notes = "VID 0x0416, Nuvoton-based. 26 LEDs/fan, 10 fans/port, 4 ports. RPM reading supported."
+
+# ─── Not Yet Supported ───────────────────────────────────────────────
+
+[[devices]]
+pid = 0xA200
+name = "Strimer Controller"
+type = "strip"
+status = "researched"
+leds = 162
+notes = "24-pin ATX: 120 LEDs, Dual 8-pin GPU: 108, Triple 8-pin: 162. Zone addresses 0x30-0x3B. BGR byte order."
+
+[[devices]]
+pid = 0x7395
+name = "Galahad II LCD"
+type = "aio"
+status = "researched"
+leds = 50
+notes = "VID 0x0416, 480x480 JPEG streaming via 1024-byte packets with sequence numbering"

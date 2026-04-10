@@ -1,0 +1,58 @@
+[vendor]
+name = "Logitech"
+vid = [0x046D]
+website = "https://logitechg.com"
+notes = "Modern and legacy 8080 protocols. Wireless dongle support. Large peripheral portfolio."
+
+# ─── Modern Protocol ─────────────────────────────────────────────────
+
+[[devices]]
+name = "Logitech Modern Device (multi-PID)"
+type = "keyboard"
+status = "known"
+notes = "Dynamic PID library. Covers G Pro, G915, G815, etc."
+
+# ─── Legacy 8080 Protocol ────────────────────────────────────────────
+
+[[devices]]
+name = "G810 Keyboard"
+type = "keyboard"
+status = "known"
+notes = "Legacy 8080 protocol"
+
+[[devices]]
+name = "G910 Keyboard"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+name = "G513 Keyboard"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+name = "G560 Speakers"
+type = "speakers"
+status = "known"
+
+[[devices]]
+name = "G600 Mouse"
+type = "mouse"
+status = "known"
+
+[[devices]]
+name = "G13 Keyboard"
+type = "keyboard"
+status = "known"
+
+[[devices]]
+name = "G19 Keyboard"
+type = "keyboard"
+status = "known"
+notes = "Has LCD display"
+
+[[devices]]
+name = "Wireless Dongle"
+type = "other"
+status = "known"
+notes = "Unified receiver for wireless peripherals"
