@@ -38,6 +38,7 @@ pub(crate) struct RenderGroupRuntime {
     target_canvases: HashMap<RenderGroupId, Canvas>,
     spatial_engines: HashMap<RenderGroupId, SpatialEngine>,
     preview_surface_pool: RenderSurfacePool,
+    reconciled_groups_revision: Option<u64>,
     retained_frame: Option<RetainedRenderGroupFrame>,
     combined_layout: Arc<SpatialLayout>,
     preview_width: u32,
@@ -54,6 +55,7 @@ impl RenderGroupRuntime {
                 preview_width,
                 preview_height,
             )),
+            reconciled_groups_revision: None,
             retained_frame: None,
             combined_layout: Arc::new(empty_group_layout(preview_width, preview_height)),
             preview_width,
@@ -86,7 +88,7 @@ impl RenderGroupRuntime {
         interaction: &InteractionData,
         screen: Option<&ScreenData>,
     ) -> Result<RenderGroupResult> {
-        self.reconcile(groups, registry)?;
+        self.reconcile(groups, groups_revision, registry)?;
 
         for group in groups {
             let Some(target) = self.target_canvases.get_mut(&group.id) else {
@@ -151,7 +153,16 @@ impl RenderGroupRuntime {
         })
     }
 
-    fn reconcile(&mut self, groups: &[RenderGroup], registry: &EffectRegistry) -> Result<()> {
+    fn reconcile(
+        &mut self,
+        groups: &[RenderGroup],
+        groups_revision: u64,
+        registry: &EffectRegistry,
+    ) -> Result<()> {
+        if self.reconciled_groups_revision == Some(groups_revision) {
+            return Ok(());
+        }
+
         self.effect_pool.reconcile(groups, registry)?;
 
         let desired_ids = groups.iter().map(|group| group.id).collect::<HashSet<_>>();
@@ -170,6 +181,7 @@ impl RenderGroupRuntime {
             self.preview_width,
             self.preview_height,
         ));
+        self.reconciled_groups_revision = Some(groups_revision);
 
         Ok(())
     }
@@ -199,17 +211,11 @@ impl RenderGroupRuntime {
     }
 
     fn compose_preview(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
-        let preview_ids = groups
-            .iter()
-            .filter(|group| group.enabled && group.effect_id.is_some())
-            .map(|group| group.id)
-            .collect::<Vec<_>>();
-
         let Some(mut lease) = self.preview_surface_pool.dequeue() else {
             let mut preview = Canvas::new(self.preview_width, self.preview_height);
             compose_preview_canvas(
                 &mut preview,
-                &preview_ids,
+                groups,
                 &self.target_canvases,
                 self.preview_width,
                 self.preview_height,
@@ -219,7 +225,7 @@ impl RenderGroupRuntime {
 
         compose_preview_canvas(
             lease.canvas_mut(),
-            &preview_ids,
+            groups,
             &self.target_canvases,
             self.preview_width,
             self.preview_height,
@@ -231,19 +237,27 @@ impl RenderGroupRuntime {
 
 fn compose_preview_canvas(
     preview: &mut Canvas,
-    preview_ids: &[RenderGroupId],
+    groups: &[RenderGroup],
     target_canvases: &HashMap<RenderGroupId, Canvas>,
     preview_width: u32,
     preview_height: u32,
 ) {
     preview.clear();
 
-    if preview_ids.is_empty() {
+    let preview_count = groups
+        .iter()
+        .filter(|group| group.enabled && group.effect_id.is_some())
+        .count();
+
+    if preview_count == 0 {
         return;
     }
 
-    if preview_ids.len() == 1
-        && let Some(source) = target_canvases.get(&preview_ids[0])
+    if preview_count == 1
+        && let Some(source) = groups
+            .iter()
+            .find(|group| group.enabled && group.effect_id.is_some())
+            .and_then(|group| target_canvases.get(&group.id))
     {
         if source.width() == preview_width && source.height() == preview_height {
             preview
@@ -256,10 +270,14 @@ fn compose_preview_canvas(
         return;
     }
 
-    let columns = tile_columns(preview_ids.len());
-    let rows = preview_ids.len().div_ceil(columns);
-    for (index, group_id) in preview_ids.iter().enumerate() {
-        let Some(source) = target_canvases.get(group_id) else {
+    let columns = tile_columns(preview_count);
+    let rows = preview_count.div_ceil(columns);
+    for (index, group) in groups
+        .iter()
+        .filter(|group| group.enabled && group.effect_id.is_some())
+        .enumerate()
+    {
+        let Some(source) = target_canvases.get(&group.id) else {
             continue;
         };
 
