@@ -467,7 +467,7 @@ fn PresetSelectorRow(
                     <div
                         class="absolute left-0 right-0 top-full
                                rounded-b-xl overflow-hidden
-                               bg-surface-overlay/98 backdrop-blur-xl
+                               bg-surface-overlay
                                border border-t-0 border-edge-subtle
                                dropdown-glow animate-slide-down
                                max-h-[320px] overflow-y-auto scrollbar-dropdown"
