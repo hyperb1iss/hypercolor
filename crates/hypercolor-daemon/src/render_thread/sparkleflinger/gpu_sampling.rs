@@ -48,6 +48,18 @@ struct CachedGpuSamplingPlan {
     encoded_points: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UploadedGpuSamplingPlan {
+    key: GpuSamplingPlanKey,
+    buffer_generation: u64,
+}
+
+struct CachedGpuSamplingBindGroup {
+    source_view_ptr: usize,
+    buffer_generation: u64,
+    bind_group: wgpu::BindGroup,
+}
+
 impl GpuSamplingPlan {
     pub(super) fn supports_prepared_zones(prepared_zones: &[PreparedZonePlan]) -> bool {
         prepared_zones.iter().all(|zone| {
@@ -97,7 +109,10 @@ pub(super) struct GpuSpatialSampler {
     output_buffer: Option<wgpu::Buffer>,
     readback_buffer: Option<wgpu::Buffer>,
     capacity: usize,
+    buffer_generation: u64,
     cached_plan: Option<CachedGpuSamplingPlan>,
+    uploaded_plan: Option<UploadedGpuSamplingPlan>,
+    cached_bind_groups: Vec<CachedGpuSamplingBindGroup>,
     packed_samples: Vec<u32>,
 }
 
@@ -183,7 +198,10 @@ impl GpuSpatialSampler {
             output_buffer: None,
             readback_buffer: None,
             capacity: 0,
+            buffer_generation: 0,
             cached_plan: None,
+            uploaded_plan: None,
+            cached_bind_groups: Vec::with_capacity(2),
             packed_samples: Vec::new(),
         }
     }
@@ -207,56 +225,27 @@ impl GpuSpatialSampler {
             .as_ref()
             .map_or(0, |cached| cached.plan.points.len());
         self.ensure_capacity(device, sample_count);
-        let Some(points_buffer) = &self.points_buffer else {
+        let Some(points_buffer) = self.points_buffer.clone() else {
             zones.clear();
             return Ok(true);
         };
-        let Some(output_buffer) = &self.output_buffer else {
+        let Some(output_buffer) = self.output_buffer.clone() else {
             zones.clear();
             return Ok(true);
         };
-        let Some(readback_buffer) = &self.readback_buffer else {
+        let Some(readback_buffer) = self.readback_buffer.clone() else {
             zones.clear();
             return Ok(true);
         };
 
-        queue.write_buffer(
-            points_buffer,
-            0,
-            &self
-                .cached_plan
-                .as_ref()
-                .expect("GPU sampling plan should be cached before sampling")
-                .encoded_points,
-        );
+        self.ensure_points_uploaded(queue, &points_buffer);
         queue.write_buffer(
             &self.params_buffer,
             0,
             &encode_sample_params(width, height, sample_count),
         );
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("SparkleFlinger GPU sample bind group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(source_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: points_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: output_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: self.params_buffer.as_entire_binding(),
-                },
-            ],
-        });
+        let bind_group = self.bind_group_for(device, source_view, &points_buffer, &output_buffer);
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("SparkleFlinger GPU sample encoder"),
@@ -276,11 +265,11 @@ impl GpuSpatialSampler {
                 1,
             );
         }
-        encoder.copy_buffer_to_buffer(output_buffer, 0, readback_buffer, 0, output_buffer.size());
+        encoder.copy_buffer_to_buffer(&output_buffer, 0, &readback_buffer, 0, output_buffer.size());
 
         readback_samples_into(
             device,
-            readback_buffer,
+            &readback_buffer,
             sample_count,
             queue.submit(Some(encoder.finish())),
             &mut self.packed_samples,
@@ -324,6 +313,9 @@ impl GpuSpatialSampler {
             mapped_at_creation: false,
         }));
         self.capacity = sample_count;
+        self.buffer_generation = self.buffer_generation.saturating_add(1);
+        self.uploaded_plan = None;
+        self.cached_bind_groups.clear();
     }
 
     fn ensure_plan(&mut self, prepared_zones: &[PreparedZonePlan]) -> bool {
@@ -350,6 +342,68 @@ impl GpuSpatialSampler {
             encoded_points,
         });
         true
+    }
+
+    fn ensure_points_uploaded(&mut self, queue: &wgpu::Queue, points_buffer: &wgpu::Buffer) {
+        let cached_plan = self
+            .cached_plan
+            .as_ref()
+            .expect("GPU sampling plan should be cached before upload");
+        let upload = UploadedGpuSamplingPlan {
+            key: cached_plan.key,
+            buffer_generation: self.buffer_generation,
+        };
+        if self.uploaded_plan == Some(upload) {
+            return;
+        }
+
+        queue.write_buffer(points_buffer, 0, &cached_plan.encoded_points);
+        self.uploaded_plan = Some(upload);
+    }
+
+    fn bind_group_for(
+        &mut self,
+        device: &wgpu::Device,
+        source_view: &wgpu::TextureView,
+        points_buffer: &wgpu::Buffer,
+        output_buffer: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        let source_view_ptr = source_view as *const wgpu::TextureView as usize;
+        if let Some(cached) = self.cached_bind_groups.iter().find(|cached| {
+            cached.source_view_ptr == source_view_ptr
+                && cached.buffer_generation == self.buffer_generation
+        }) {
+            return cached.bind_group.clone();
+        }
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("SparkleFlinger GPU sample bind group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(source_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: points_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: output_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.params_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        self.cached_bind_groups.push(CachedGpuSamplingBindGroup {
+            source_view_ptr,
+            buffer_generation: self.buffer_generation,
+            bind_group: bind_group.clone(),
+        });
+        bind_group
     }
 }
 
