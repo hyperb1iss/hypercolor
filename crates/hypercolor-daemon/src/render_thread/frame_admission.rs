@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use hypercolor_core::engine::FpsTier;
 
 const EWMA_ALPHA: f64 = 0.2;
@@ -38,7 +36,9 @@ pub(crate) struct FrameAdmissionController {
     total_ewma_us: Option<f64>,
     producer_ewma_us: Option<f64>,
     composition_ewma_us: Option<f64>,
-    recent_total_us: VecDeque<u32>,
+    recent_total_us: [u32; ADMISSION_HISTORY_CAPACITY],
+    recent_total_len: usize,
+    recent_total_next: usize,
     consecutive_copy_frames: u32,
     consecutive_over_budget_frames: u32,
     consecutive_full_eligible_frames: u32,
@@ -52,7 +52,9 @@ impl FrameAdmissionController {
             total_ewma_us: None,
             producer_ewma_us: None,
             composition_ewma_us: None,
-            recent_total_us: VecDeque::with_capacity(ADMISSION_HISTORY_CAPACITY),
+            recent_total_us: [0; ADMISSION_HISTORY_CAPACITY],
+            recent_total_len: 0,
+            recent_total_next: 0,
             consecutive_copy_frames: 0,
             consecutive_over_budget_frames: 0,
             consecutive_full_eligible_frames: 0,
@@ -60,9 +62,11 @@ impl FrameAdmissionController {
     }
 
     pub(crate) fn record_frame(&mut self, sample: FrameAdmissionSample) -> FrameAdmissionDecision {
-        self.recent_total_us.push_back(sample.total_us);
-        if self.recent_total_us.len() > ADMISSION_HISTORY_CAPACITY {
-            let _ = self.recent_total_us.pop_front();
+        self.recent_total_us[self.recent_total_next] = sample.total_us;
+        self.recent_total_next =
+            (self.recent_total_next + 1).wrapping_rem(ADMISSION_HISTORY_CAPACITY);
+        if self.recent_total_len < ADMISSION_HISTORY_CAPACITY {
+            self.recent_total_len += 1;
         }
 
         self.total_ewma_us = Some(update_ewma(self.total_ewma_us, sample.total_us));
@@ -124,9 +128,9 @@ impl FrameAdmissionController {
         let composition_ewma_us = self.composition_ewma_us.unwrap_or(0.0);
         let copy_pressure = self.consecutive_copy_frames >= FULL_TIER_COPY_PRESSURE_THRESHOLD;
         let percentile_window_ready =
-            self.recent_total_us.len() >= FULL_TIER_REVOKE_PERCENTILE_MIN_SAMPLES;
+            self.recent_total_len >= FULL_TIER_REVOKE_PERCENTILE_MIN_SAMPLES;
         let (p95_total_us, p99_total_us) = if percentile_window_ready {
-            percentile_pair_us(&self.recent_total_us).unwrap_or((0.0, 0.0))
+            percentile_pair_us(&self.recent_total_us[..self.recent_total_len]).unwrap_or((0.0, 0.0))
         } else {
             (0.0, 0.0)
         };
@@ -145,7 +149,7 @@ impl FrameAdmissionController {
     }
 
     fn is_full_tier_eligible(&self) -> bool {
-        if self.recent_total_us.len() < FULL_TIER_READMIT_MIN_SAMPLES {
+        if self.recent_total_len < FULL_TIER_READMIT_MIN_SAMPLES {
             return false;
         }
 
@@ -154,7 +158,8 @@ impl FrameAdmissionController {
         let producer_ewma_us = self.producer_ewma_us.unwrap_or(0.0);
         let composition_ewma_us = self.composition_ewma_us.unwrap_or(0.0);
         let (p95_total_us, p99_total_us) =
-            percentile_pair_us(&self.recent_total_us).unwrap_or((full_budget_us, full_budget_us));
+            percentile_pair_us(&self.recent_total_us[..self.recent_total_len])
+                .unwrap_or((full_budget_us, full_budget_us));
 
         self.consecutive_copy_frames == 0
             && self.consecutive_over_budget_frames == 0
@@ -181,7 +186,7 @@ fn full_tier_budget_us_u32() -> u32 {
     u32::try_from(FpsTier::Full.frame_interval().as_micros()).unwrap_or(u32::MAX)
 }
 
-fn percentile_pair_us(samples: &VecDeque<u32>) -> Option<(f64, f64)> {
+fn percentile_pair_us(samples: &[u32]) -> Option<(f64, f64)> {
     if samples.is_empty() {
         return None;
     }
