@@ -62,6 +62,7 @@ pub struct RenderLoopStatus {
 #[derive(Debug, Serialize)]
 pub struct LatestFrameStatus {
     pub frame_token: u64,
+    pub compositor_backend: String,
     pub total_ms: f64,
     pub wake_late_ms: f64,
     pub frame_age_ms: f64,
@@ -307,6 +308,7 @@ fn latest_frame_status(frame: LatestFrameMetrics, render_elapsed_ms: f64) -> Lat
 
     LatestFrameStatus {
         frame_token: frame.timeline.frame_token,
+        compositor_backend: frame.compositor_backend.as_str().to_owned(),
         total_ms: round_2(us_to_ms(frame.total_us)),
         wake_late_ms: round_2(us_to_ms(frame.wake_late_us)),
         frame_age_ms: round_2(frame_age_ms),
@@ -363,7 +365,7 @@ fn round_2(value: f64) -> f64 {
 mod tests {
     use super::get_status;
     use crate::api::AppState;
-    use crate::performance::{FrameTimeline, LatestFrameMetrics};
+    use crate::performance::{CompositorBackendKind, FrameTimeline, LatestFrameMetrics};
     use axum::body::to_bytes;
     use axum::extract::State;
     use hypercolor_core::bus::CanvasFrame;
@@ -410,6 +412,7 @@ mod tests {
                 retained_effect: false,
                 retained_screen: false,
                 composition_bypassed: false,
+                compositor_backend: CompositorBackendKind::GpuFallback,
                 logical_layer_count: 2,
                 render_group_count: 1,
                 scene_active: true,
@@ -447,6 +450,10 @@ mod tests {
         assert_eq!(json["data"]["render_loop"]["ceiling_fps"], 60);
         assert_eq!(json["data"]["render_loop"]["actual_fps"], 60.0);
         assert_eq!(json["data"]["latest_frame"]["frame_token"], 77);
+        assert_eq!(
+            json["data"]["latest_frame"]["compositor_backend"],
+            "gpu_fallback"
+        );
         assert_eq!(
             json["data"]["latest_frame"]["render_surfaces"]["slot_count"],
             6

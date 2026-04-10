@@ -187,6 +187,7 @@ pub(crate) async fn execute_frame(
         sampling_surface,
         preview_surface,
         bypassed: _,
+        backend: compositor_backend,
     } = render_stage.composed_frame;
     let screen_watch_surface = if screen_canvas_receivers == 0 {
         None
@@ -268,6 +269,7 @@ pub(crate) async fn execute_frame(
             retained_effect: render_stage.effect_retained,
             retained_screen: render_stage.screen_retained,
             composition_bypassed: render_stage.composition_bypassed,
+            compositor_backend,
             logical_layer_count: render_stage.logical_layer_count,
             render_group_count: render_stage.render_group_count,
             scene_active: render_stage.scene_active,
@@ -308,6 +310,7 @@ pub(crate) async fn execute_frame(
         render_us,
         producer_us = render_stage.producer_us,
         composition_us = render_stage.composition_us,
+        compositor_backend = compositor_backend.as_str(),
         logical_layers = render_stage.logical_layer_count,
         render_groups = render_stage.render_group_count,
         scene_active = render_stage.scene_active,

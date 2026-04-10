@@ -8,6 +8,8 @@ use anyhow::bail;
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
 use hypercolor_types::config::RenderAccelerationMode;
 
+use crate::performance::CompositorBackendKind;
+
 use super::producer_queue::ProducerFrame;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +124,7 @@ pub struct ComposedFrameSet {
     pub sampling_surface: Option<PublishedSurface>,
     pub preview_surface: Option<PublishedSurface>,
     pub bypassed: bool,
+    pub(crate) backend: CompositorBackendKind,
 }
 
 pub(crate) type RenderFrame = (Canvas, Option<PublishedSurface>);
@@ -168,7 +171,9 @@ impl SparkleFlinger {
                 {
                     return composed;
                 }
-                cpu_fallback.compose(plan)
+                let mut composed = cpu_fallback.compose(plan);
+                composed.backend = CompositorBackendKind::GpuFallback;
+                composed
             }
         }
     }
@@ -198,6 +203,7 @@ pub(super) fn publish_composed_frame(frame: RenderFrame, bypassed: bool) -> Comp
             sampling_surface: Some(sampling_surface),
             preview_surface: None,
             bypassed,
+            backend: CompositorBackendKind::Cpu,
         };
     }
 
@@ -208,6 +214,7 @@ pub(super) fn publish_composed_frame(frame: RenderFrame, bypassed: bool) -> Comp
         sampling_surface: Some(sampling_surface),
         preview_surface: None,
         bypassed,
+        backend: CompositorBackendKind::Cpu,
     }
 }
 

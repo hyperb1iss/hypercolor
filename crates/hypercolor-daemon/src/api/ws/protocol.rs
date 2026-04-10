@@ -580,6 +580,7 @@ pub(super) struct MetricsPacing {
 )]
 pub(super) struct MetricsTimeline {
     pub(super) frame_token: u64,
+    pub(super) compositor_backend: String,
     pub(super) budget_ms: f64,
     pub(super) wake_late_ms: f64,
     pub(super) logical_layer_count: u32,

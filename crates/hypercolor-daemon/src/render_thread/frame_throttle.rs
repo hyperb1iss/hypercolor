@@ -14,7 +14,7 @@ use super::frame_sources::static_surface;
 use super::pipeline_runtime::{CachedStaticSurface, RenderSurfaceSnapshot};
 use super::{RenderThreadState, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
-use crate::performance::{FrameTimeline, LatestFrameMetrics};
+use crate::performance::{CompositorBackendKind, FrameTimeline, LatestFrameMetrics};
 
 const IDLE_THROTTLE_SLEEP: Duration = Duration::from_millis(120);
 const SESSION_SLEEP_THROTTLE_SLEEP: Duration = Duration::from_millis(250);
@@ -208,6 +208,7 @@ pub(crate) async fn maybe_sleep_throttle(
             retained_effect: false,
             retained_screen: false,
             composition_bypassed: false,
+            compositor_backend: CompositorBackendKind::Cpu,
             logical_layer_count: 0,
             render_group_count: scene_snapshot.scene_runtime.active_render_group_count(),
             scene_active: scene_snapshot.scene_runtime.active_scene_id.is_some(),

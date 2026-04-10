@@ -4,6 +4,32 @@ use std::collections::VecDeque;
 
 const FRAME_HISTORY_CAPACITY: usize = 120;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum CompositorBackendKind {
+    #[default]
+    Cpu,
+    #[cfg_attr(
+        not(feature = "wgpu"),
+        allow(dead_code, reason = "GPU compositor telemetry is only constructed on wgpu builds")
+    )]
+    Gpu,
+    #[cfg_attr(
+        not(feature = "wgpu"),
+        allow(dead_code, reason = "GPU compositor telemetry is only constructed on wgpu builds")
+    )]
+    GpuFallback,
+}
+
+impl CompositorBackendKind {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Gpu => "gpu",
+            Self::GpuFallback => "gpu_fallback",
+        }
+    }
+}
+
 /// Absolute checkpoints for the latest completed frame.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct FrameTimeline {
@@ -40,6 +66,7 @@ pub(crate) struct LatestFrameMetrics {
     pub retained_effect: bool,
     pub retained_screen: bool,
     pub composition_bypassed: bool,
+    pub compositor_backend: CompositorBackendKind,
     pub logical_layer_count: u32,
     pub render_group_count: u32,
     pub scene_active: bool,

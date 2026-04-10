@@ -198,6 +198,10 @@ fn status_table_lines(data: &serde_json::Value, p: &Painter) -> Vec<String> {
 
     // ── Frame budget ────────────────────────────────────────────────
     if let Some(latest_frame) = data.get("latest_frame") {
+        let compositor_backend = latest_frame
+            .get("compositor_backend")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("cpu");
         let total_ms = f64_field(latest_frame, "total_ms");
         let wake_late_ms = f64_field(latest_frame, "wake_late_ms");
         let frame_age_ms = f64_field(latest_frame, "frame_age_ms");
@@ -213,6 +217,11 @@ fn status_table_lines(data: &serde_json::Value, p: &Painter) -> Vec<String> {
             p.number(&format!("{total_ms:.2}ms")),
             p.number(&format!("{wake_late_ms:.2}ms")),
             p.number(&format!("{frame_age_ms:.2}ms")),
+        ));
+        lines.push(format!(
+            "  {}   {} compose",
+            p.muted(&pad("", 10)),
+            p.keyword(&compositor_backend.replace('_', " ")),
         ));
 
         // ── Pipeline ────────────────────────────────────────────────
@@ -442,6 +451,7 @@ mod tests {
             "effect_count": 18,
             "latest_frame": {
                 "frame_token": 77,
+                "compositor_backend": "gpu_fallback",
                 "total_ms": 4.32,
                 "wake_late_ms": 0.15,
                 "frame_age_ms": 8.5,
@@ -479,6 +489,10 @@ mod tests {
         );
         assert!(joined.contains("6 slots"), "surface count present");
         assert!(joined.contains("250 KiB"), "copy size present");
+        assert!(
+            joined.contains("gpu fallback compose"),
+            "backend mode present"
+        );
         assert!(joined.contains("5 devices"), "device count present");
         assert!(joined.contains("18 effects"), "effect count present");
     }

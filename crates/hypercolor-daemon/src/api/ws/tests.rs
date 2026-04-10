@@ -33,7 +33,7 @@ use super::relays::{
 };
 use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
-use crate::performance::{FrameTimeline, LatestFrameMetrics};
+use crate::performance::{CompositorBackendKind, FrameTimeline, LatestFrameMetrics};
 use crate::preview_runtime::{PreviewFrameReceiver, PreviewRuntime};
 
 static WS_CACHE_TEST_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
@@ -145,6 +145,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
             retained_effect: false,
             retained_screen: false,
             composition_bypassed: false,
+            compositor_backend: CompositorBackendKind::Gpu,
             logical_layer_count: 2,
             render_group_count: 1,
             scene_active: true,
@@ -178,6 +179,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
     let json = serde_json::to_value(&data).expect("metrics payload should serialize");
 
     assert_eq!(json["timeline"]["frame_token"], 77);
+    assert_eq!(json["timeline"]["compositor_backend"], "gpu");
     assert_eq!(json["timeline"]["budget_ms"], 16.67);
     assert_eq!(json["timeline"]["wake_late_ms"], 0.22);
     assert_eq!(json["timeline"]["logical_layer_count"], 2);

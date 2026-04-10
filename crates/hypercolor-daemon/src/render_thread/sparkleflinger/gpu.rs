@@ -7,6 +7,7 @@ use hypercolor_core::types::canvas::{BYTES_PER_PIXEL, Canvas};
 use super::{
     ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, publish_composed_frame,
 };
+use crate::performance::CompositorBackendKind;
 use crate::render_thread::producer_queue::ProducerFrame;
 
 const COMPOSITOR_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -134,10 +135,9 @@ impl GpuSparkleFlinger {
             && let Some(layer) = layers.pop()
             && layer.is_bypass_candidate()
         {
-            return Ok(publish_composed_frame(
-                layer.frame.into_render_frame(),
-                true,
-            ));
+            let mut composed = publish_composed_frame(layer.frame.into_render_frame(), true);
+            composed.backend = CompositorBackendKind::Gpu;
+            return Ok(composed);
         }
 
         self.ensure_surface_size(width, height);
@@ -220,7 +220,9 @@ impl GpuSparkleFlinger {
             self.queue.submit(Some(encoder.finish())),
         )?;
         let canvas = Canvas::from_vec(bytes, width, height);
-        Ok(publish_composed_frame((canvas, None), false))
+        let mut composed = publish_composed_frame((canvas, None), false);
+        composed.backend = CompositorBackendKind::Gpu;
+        Ok(composed)
     }
 
     pub(crate) fn ensure_surface_size(&mut self, width: u32, height: u32) {

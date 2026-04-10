@@ -657,6 +657,7 @@ pub(super) async fn build_metrics_message(
             },
             timeline: MetricsTimeline {
                 frame_token: latest_frame.timeline.frame_token,
+                compositor_backend: latest_frame.compositor_backend.as_str().to_owned(),
                 budget_ms: round_2(us_to_ms(latest_frame.timeline.budget_us)),
                 wake_late_ms: round_2(us_to_ms(latest_frame.wake_late_us)),
                 logical_layer_count: latest_frame.logical_layer_count,

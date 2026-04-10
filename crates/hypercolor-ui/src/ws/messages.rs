@@ -181,6 +181,7 @@ pub struct MetricsPacing {
 #[serde(default)]
 pub struct MetricsTimeline {
     pub frame_token: u64,
+    pub compositor_backend: String,
     pub budget_ms: f64,
     pub wake_late_ms: f64,
     pub logical_layer_count: u32,

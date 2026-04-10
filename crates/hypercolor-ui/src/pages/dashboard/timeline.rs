@@ -24,8 +24,9 @@ pub(super) fn FrameTimelinePanel(
             .get()
             .map(|m| {
                 format!(
-                    "frame #{} · {} layer{} · {} group{}",
+                    "frame #{} · {} · {} layer{} · {} group{}",
                     m.timeline.frame_token,
+                    m.timeline.compositor_backend.replace('_', " "),
                     m.timeline.logical_layer_count,
                     if m.timeline.logical_layer_count == 1 {
                         ""
@@ -207,8 +208,9 @@ pub(super) fn LatestFramePanel(
                     return None;
                 }
                 Some(format!(
-                    "#{} · wake {:.2} · snap {:.2} · input {:.2} · prod {:.2} · comp {:.2} · samp {:.2} · out {:.2} · pub {:.2} · frame {:.2}",
+                    "#{} · {} · wake {:.2} · snap {:.2} · input {:.2} · prod {:.2} · comp {:.2} · samp {:.2} · out {:.2} · pub {:.2} · frame {:.2}",
                     m.timeline.frame_token,
+                    m.timeline.compositor_backend.replace('_', " "),
                     m.timeline.wake_late_ms,
                     m.timeline.scene_snapshot_done_ms,
                     m.timeline.input_done_ms,
