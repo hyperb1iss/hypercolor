@@ -13,7 +13,9 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::action::Action;
 use crate::component::Component;
-use crate::state::{CanvasFrame, ConnectionStatus, DaemonState, DeviceSummary, EffectSummary};
+use crate::state::{
+    CanvasPreviewState, ConnectionStatus, DaemonState, DeviceSummary, EffectSummary,
+};
 use crate::widgets::{ParamSlider, Split, SplitDirection, aspect_fit};
 
 // ── SilkCircuit Neon palette ───────────────────────────────────────────
@@ -46,7 +48,7 @@ pub struct DashboardView {
     devices: Vec<DeviceSummary>,
     effects: Vec<EffectSummary>,
     favorites: Vec<String>,
-    canvas_frame: Option<CanvasFrame>,
+    canvas_frame: Option<CanvasPreviewState>,
     selected_device: usize,
     connection_status: ConnectionStatus,
     disconnect_reason: Option<String>,
@@ -678,6 +680,7 @@ impl Component for DashboardView {
             }
             Action::DaemonDisconnected(reason) => {
                 self.daemon_state = None;
+                self.canvas_frame = None;
                 self.connection_status = ConnectionStatus::Disconnected;
                 self.disconnect_reason = Some(reason.clone());
             }
@@ -701,7 +704,7 @@ impl Component for DashboardView {
                 self.favorites.clone_from(favs);
             }
             Action::CanvasFrameReceived(frame) => {
-                self.canvas_frame = Some(frame.as_ref().clone());
+                self.canvas_frame = Some(CanvasPreviewState::from(frame.as_ref()));
             }
             _ => {}
         }

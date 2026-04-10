@@ -32,7 +32,7 @@ impl AudioStrip {
         }
 
         match state.spectrum.as_ref() {
-            Some(snap) => render_active(frame, area, snap),
+            Some(snap) => render_active(frame, area, snap.as_ref()),
             None => render_inactive(frame, area),
         }
     }

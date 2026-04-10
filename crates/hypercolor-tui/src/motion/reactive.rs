@@ -45,6 +45,11 @@ impl SpectrumChannel {
         self.level.store(level.to_bits(), Ordering::Relaxed);
     }
 
+    pub fn clear(&self) {
+        self.bass.store(0.0_f32.to_bits(), Ordering::Relaxed);
+        self.level.store(0.0_f32.to_bits(), Ordering::Relaxed);
+    }
+
     /// Read the most recent bass energy (0.0..=1.0 typical).
     pub fn bass(&self) -> f32 {
         f32::from_bits(self.bass.load(Ordering::Relaxed))
@@ -75,6 +80,10 @@ impl CanvasColorChannel {
     pub fn write(&self, r: u8, g: u8, b: u8) {
         let packed = 0x0100_0000_u32 | (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
         self.packed.store(packed, Ordering::Relaxed);
+    }
+
+    pub fn clear(&self) {
+        self.packed.store(0, Ordering::Relaxed);
     }
 
     /// Read the latest sampled color, if any data has been written yet.

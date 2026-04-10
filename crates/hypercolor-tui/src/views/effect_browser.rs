@@ -2,7 +2,6 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -16,7 +15,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::action::Action;
 use crate::component::Component;
-use crate::state::{ControlDefinition, ControlValue, EffectSummary};
+use crate::state::{CanvasPreviewState, ControlDefinition, ControlValue, EffectSummary};
 use crate::widgets::{
     ColorPickerPopup, ParamSlider, Split, SplitDirection, aspect_fit, hsl_to_rgb, rgb_to_hsl,
 };
@@ -70,7 +69,7 @@ pub struct EffectBrowserView {
     search_query: String,
 
     // Canvas preview
-    canvas_frame: Option<Arc<crate::state::CanvasFrame>>,
+    canvas_frame: Option<CanvasPreviewState>,
 
     // Control interaction state
     control_values: HashMap<String, ControlValue>,
@@ -1455,7 +1454,10 @@ impl Component for EffectBrowserView {
                 self.favorites.clone_from(favs);
             }
             Action::CanvasFrameReceived(cf) => {
-                self.canvas_frame = Some(Arc::clone(cf));
+                self.canvas_frame = Some(CanvasPreviewState::from(cf.as_ref()));
+            }
+            Action::DaemonDisconnected(_) => {
+                self.canvas_frame = None;
             }
             _ => {}
         }

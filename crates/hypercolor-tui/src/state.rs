@@ -1,5 +1,7 @@
 //! TUI-side state types — lightweight projections of daemon data.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use crate::screen::ScreenId;
@@ -25,8 +27,7 @@ pub struct AppState {
     pub effects: Vec<EffectSummary>,
     pub devices: Vec<DeviceSummary>,
     pub favorites: Vec<String>,
-    pub canvas_frame: Option<CanvasFrame>,
-    pub spectrum: Option<SpectrumSnapshot>,
+    pub spectrum: Option<Arc<SpectrumSnapshot>>,
     pub active_screen: ScreenId,
     pub connection_status: ConnectionStatus,
     pub disconnect_reason: Option<String>,
@@ -155,6 +156,25 @@ pub struct CanvasFrame {
     pub height: u16,
     /// RGB pixel data, 3 bytes per pixel, row-major.
     pub pixels: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CanvasPreviewState {
+    pub frame_number: u32,
+    pub timestamp_ms: u32,
+    pub width: u16,
+    pub height: u16,
+}
+
+impl From<&CanvasFrame> for CanvasPreviewState {
+    fn from(frame: &CanvasFrame) -> Self {
+        Self {
+            frame_number: frame.frame_number,
+            timestamp_ms: frame.timestamp_ms,
+            width: frame.width,
+            height: frame.height,
+        }
+    }
 }
 
 /// A decoded audio spectrum snapshot from the WebSocket binary stream.

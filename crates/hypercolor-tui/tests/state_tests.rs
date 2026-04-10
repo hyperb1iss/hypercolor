@@ -1,8 +1,8 @@
 //! Tests for TUI state types and their conversions.
 
 use hypercolor_tui::state::{
-    ConnectionStatus, ControlDefinition, ControlValue, DaemonState, DeviceSummary, EffectSummary,
-    Notification, NotificationLevel, SpectrumSnapshot,
+    CanvasFrame, CanvasPreviewState, ConnectionStatus, ControlDefinition, ControlValue,
+    DaemonState, DeviceSummary, EffectSummary, Notification, NotificationLevel, SpectrumSnapshot,
 };
 
 // ── ControlValue conversion tests ────────────────────────────────
@@ -196,4 +196,27 @@ fn spectrum_snapshot_clone() {
     assert_eq!(cloned.timestamp_ms, 1000);
     assert_eq!(cloned.bins.len(), 3);
     assert_eq!(cloned.bpm, Some(120.0));
+}
+
+#[test]
+fn canvas_preview_state_captures_frame_metadata_without_pixels() {
+    let frame = CanvasFrame {
+        frame_number: 42,
+        timestamp_ms: 1337,
+        width: 320,
+        height: 200,
+        pixels: vec![1, 2, 3, 4, 5, 6],
+    };
+
+    let preview = CanvasPreviewState::from(&frame);
+
+    assert_eq!(
+        preview,
+        CanvasPreviewState {
+            frame_number: 42,
+            timestamp_ms: 1337,
+            width: 320,
+            height: 200,
+        }
+    );
 }

@@ -32,6 +32,8 @@ pub struct App {
     previous_screen: Option<ScreenId>,
     /// All registered screens, keyed by ID.
     screens: HashMap<ScreenId, Box<dyn Component>>,
+    /// Stable screen order for chrome and help overlays.
+    available_screens: Vec<ScreenId>,
     /// Persistent chrome (title bar, LED strip, nav, audio, status).
     chrome: Chrome,
     /// Shared state accessible by all components.
@@ -79,7 +81,9 @@ impl App {
     /// Create a new app targeting the given daemon.
     pub fn new(host: String, port: u16) -> Self {
         let (action_tx, action_rx) = mpsc::unbounded_channel();
-        let screens = crate::views::create_screens();
+        let screen_defs = crate::views::create_screens();
+        let available_screens = screen_defs.iter().map(|(id, _)| *id).collect();
+        let screens = screen_defs.into_iter().collect();
 
         let client = DaemonClient::new(&host, port);
 
@@ -99,7 +103,8 @@ impl App {
         Self {
             active_screen: ScreenId::Dashboard,
             previous_screen: None,
-            screens: screens.into_iter().collect(),
+            screens,
+            available_screens,
             chrome: Chrome::new(),
             state: AppState::default(),
             running: true,
@@ -269,7 +274,7 @@ impl App {
 
         if self.fullscreen_preview {
             return match key.code {
-                KeyCode::Esc | KeyCode::F(11) => Some(Action::ToggleFullscreenPreview),
+                KeyCode::Esc | KeyCode::Char('z' | 'Z') => Some(Action::ToggleFullscreenPreview),
                 KeyCode::Char('q') => Some(Action::Quit),
                 _ => None,
             };
@@ -288,7 +293,7 @@ impl App {
             KeyCode::Char('?') => return Some(Action::ToggleHelp),
             KeyCode::Char('T' | 't') => return Some(Action::ToggleThemePicker),
             KeyCode::Char('M' | 'm') => return Some(Action::CycleMotionSensitivity),
-            KeyCode::F(11) => return Some(Action::ToggleFullscreenPreview),
+            KeyCode::Char('Z' | 'z') => return Some(Action::ToggleFullscreenPreview),
             KeyCode::Char(c) if c.is_ascii_alphabetic() => {
                 if let Some(screen) = ScreenId::from_key(c)
                     && self.screens.contains_key(&screen)
@@ -415,6 +420,10 @@ impl App {
                 let was_connected = self.state.connection_status == ConnectionStatus::Connected;
                 self.state.connection_status = ConnectionStatus::Disconnected;
                 self.state.disconnect_reason = Some(reason.clone());
+                self.state.spectrum = None;
+                self.motion.spectrum_channel().clear();
+                self.motion.canvas_color_channel().clear();
+                self.canvas_protocol = None;
                 if was_connected {
                     self.notification = Some((
                         Notification {
@@ -473,11 +482,9 @@ impl App {
                             .new_resize_protocol(image::DynamicImage::ImageRgb8(img)),
                     );
                 }
-
-                self.state.canvas_frame = Some(frame.as_ref().clone());
             }
             Action::SpectrumUpdated(spectrum) => {
-                self.state.spectrum = Some(spectrum.as_ref().clone());
+                self.state.spectrum = Some(spectrum.clone());
                 // Feed the reactive spectrum layer
                 self.motion
                     .spectrum_channel()
@@ -637,12 +644,8 @@ impl App {
         }
     }
 
-    fn available_screens(&self) -> Vec<ScreenId> {
-        ScreenId::all()
-            .iter()
-            .copied()
-            .filter(|screen| self.screens.contains_key(screen))
-            .collect()
+    fn available_screens(&self) -> &[ScreenId] {
+        &self.available_screens
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
@@ -728,7 +731,7 @@ impl App {
         // Chrome renders the shell and returns the content area
         let content_area = self
             .chrome
-            .render(frame, area, &self.state, &self.available_screens());
+            .render(frame, area, &self.state, self.available_screens());
 
         // Active screen fills the content area, then App overlays the live
         // canvas preview using ratatui-image (Kitty/Sixel/halfblocks). The
@@ -811,10 +814,10 @@ impl App {
             ("T".to_string(), "Theme picker".to_string()),
             ("M".to_string(), "Motion sensitivity".to_string()),
             ("Tab".to_string(), "Switch pane in browser".to_string()),
-            ("F11".to_string(), "Fullscreen preview".to_string()),
+            ("Z".to_string(), "Fullscreen preview".to_string()),
             ("Esc".to_string(), "Go back".to_string()),
         ];
-        bindings.extend(self.available_screens().into_iter().map(|screen| {
+        bindings.extend(self.available_screens().iter().copied().map(|screen| {
             (
                 screen.key_hint().to_ascii_lowercase().to_string(),
                 screen.to_string(),
@@ -932,7 +935,7 @@ impl App {
         let left_preview = " PREVIEW ";
         let left_name = format!(" {effect_name} ");
         let left_fps = format!("{fps:.0} fps");
-        let right_hint = "F11/Esc to exit ";
+        let right_hint = "Z/Esc to exit ";
         let used: u16 = (left_preview.len() + left_name.len() + left_fps.len() + right_hint.len())
             .try_into()
             .unwrap_or(0);
