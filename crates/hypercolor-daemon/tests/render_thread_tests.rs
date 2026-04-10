@@ -2343,6 +2343,26 @@ async fn idle_pipeline_throttles_even_with_watch_receivers() {
     );
 }
 
+#[test]
+fn preview_runtime_receivers_share_event_bus_canvas_channel() {
+    let state = make_render_state(
+        EffectEngine::new(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+
+    assert_eq!(state.event_bus.canvas_receiver_count(), 0);
+    assert_eq!(state.preview_runtime.canvas_receiver_count(), 0);
+
+    let _direct_rx = state.event_bus.canvas_receiver();
+    assert_eq!(state.event_bus.canvas_receiver_count(), 1);
+    assert_eq!(state.preview_runtime.canvas_receiver_count(), 0);
+
+    let _preview_rx = state.preview_runtime.canvas_receiver();
+    assert_eq!(state.event_bus.canvas_receiver_count(), 2);
+    assert_eq!(state.preview_runtime.canvas_receiver_count(), 1);
+}
+
 #[tokio::test]
 async fn release_sleep_clears_published_frame_and_canvas_once() {
     let layout = test_layout(vec![strip_zone("zone_0", "mock:strip", 8)]);

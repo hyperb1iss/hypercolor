@@ -147,9 +147,7 @@ pub struct RenderThreadState {
 
 impl RenderThreadState {
     pub(crate) fn preview_canvas_receiver_count(&self) -> usize {
-        self.event_bus
-            .canvas_receiver_count()
-            .saturating_add(self.preview_runtime.canvas_receiver_count())
+        self.event_bus.canvas_receiver_count()
     }
 }
 
