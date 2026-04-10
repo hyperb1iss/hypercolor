@@ -3,7 +3,7 @@ use std::time::Instant;
 use hypercolor_core::bus::CanvasFrame;
 use hypercolor_core::input::{InputData, InteractionData, ScreenData};
 use hypercolor_core::types::audio::AudioData;
-use hypercolor_core::types::canvas::{Canvas, PublishedSurface, Rgba};
+use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
 
 use super::pipeline_runtime::FrameInputs;
@@ -308,16 +308,22 @@ pub(crate) fn screen_data_to_canvas(
     }
 
     let mut canvas = Canvas::new(canvas_width, canvas_height);
+    let pixels = canvas.as_rgba_bytes_mut();
     let width_u64 = u64::from(canvas_width);
     let height_u64 = u64::from(canvas_height);
     let grid_cols_u64 = u64::from(cols);
     let grid_rows_u64 = u64::from(rows);
+    let canvas_width_usize = usize::try_from(canvas_width).ok()?;
 
     for y in 0..canvas_height {
         let mapped_row_u64 = (u64::from(y) * grid_rows_u64) / height_u64;
         let row = u32::try_from(mapped_row_u64)
             .unwrap_or_default()
             .min(rows.saturating_sub(1));
+        let row_offset = usize::try_from(y)
+            .ok()?
+            .checked_mul(canvas_width_usize)?
+            .checked_mul(4)?;
 
         for x in 0..canvas_width {
             let mapped_col_u64 = (u64::from(x) * grid_cols_u64) / width_u64;
@@ -331,7 +337,11 @@ pub(crate) fn screen_data_to_canvas(
                 .unwrap_or_default();
             let idx = usize::try_from(idx_u64).unwrap_or_default();
             let [r, g, b] = sector_grid.get(idx).copied().unwrap_or([0, 0, 0]);
-            canvas.set_pixel(x, y, Rgba::new(r, g, b, 255));
+            let pixel_offset = row_offset.checked_add(usize::try_from(x).ok()?.checked_mul(4)?)?;
+            pixels[pixel_offset] = r;
+            pixels[pixel_offset + 1] = g;
+            pixels[pixel_offset + 2] = b;
+            pixels[pixel_offset + 3] = 255;
         }
     }
 
