@@ -18,16 +18,6 @@ const DEFAULT_ZONE_IMAGE_WIDTH: usize = 160;
 const DEFAULT_ZONE_IMAGE_HEIGHT: usize = 100;
 const DEFAULT_ZONE_IMAGE_BYTES: usize = DEFAULT_ZONE_IMAGE_WIDTH * DEFAULT_ZONE_IMAGE_HEIGHT * 4;
 
-/// Batch of JavaScript snippets to evaluate for one frame.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LightscriptFrameScripts {
-    /// JavaScript that updates `window.engine.audio`, when enabled.
-    pub audio_update: Option<String>,
-
-    /// JavaScript snippets for changed control values.
-    pub control_updates: Vec<String>,
-}
-
 /// Runtime state for Lightscript injection.
 #[derive(Debug, Clone)]
 pub struct LightscriptRuntime {
@@ -357,21 +347,19 @@ impl LightscriptRuntime {
         ))
     }
 
-    /// Build JavaScript for one frame's audio + changed control updates.
-    #[must_use]
-    pub fn frame_scripts(
+    /// Append JavaScript for one frame's audio + changed control updates.
+    pub fn push_frame_scripts(
         &mut self,
+        scripts: &mut Vec<String>,
         audio: &AudioData,
         controls: &HashMap<String, ControlValue>,
         include_audio: bool,
-    ) -> LightscriptFrameScripts {
-        let audio_update = include_audio.then(|| Self::audio_update_script(audio));
-        let control_updates = self.control_update_scripts(controls);
-
-        LightscriptFrameScripts {
-            audio_update,
-            control_updates,
+    ) {
+        if include_audio {
+            scripts.push(Self::audio_update_script(audio));
         }
+
+        self.push_control_update_scripts(scripts, controls);
     }
 
     /// Build JavaScript to update `window.engine.keyboard` and `window.engine.mouse`.
@@ -583,9 +571,11 @@ impl LightscriptRuntime {
         script
     }
 
-    fn control_update_scripts(&mut self, controls: &HashMap<String, ControlValue>) -> Vec<String> {
-        let mut scripts = Vec::new();
-
+    fn push_control_update_scripts(
+        &mut self,
+        scripts: &mut Vec<String>,
+        controls: &HashMap<String, ControlValue>,
+    ) {
         for (name, value) in controls {
             let changed = self
                 .last_controls
@@ -599,8 +589,6 @@ impl LightscriptRuntime {
             scripts.push(control_update_script(name, value));
             self.last_controls.insert(name.clone(), value.clone());
         }
-
-        scripts
     }
 }
 
@@ -867,31 +855,60 @@ mod tests {
     }
 
     #[test]
-    fn frame_scripts_emit_control_deltas_only() {
+    fn push_frame_scripts_emit_control_deltas_only() {
         let mut runtime = LightscriptRuntime::new(320, 200);
         let audio = AudioData::silence();
+        let mut scripts = Vec::new();
 
         let mut controls = HashMap::new();
         controls.insert("speed".to_owned(), ControlValue::Float(0.5));
 
-        let first = runtime.frame_scripts(&audio, &controls, true);
-        assert_eq!(first.control_updates.len(), 1);
+        runtime.push_frame_scripts(&mut scripts, &audio, &controls, true);
+        assert_eq!(
+            scripts
+                .iter()
+                .filter(|script| script.contains("window[\"speed\"]"))
+                .count(),
+            1
+        );
+        assert!(
+            scripts
+                .iter()
+                .any(|script| script.contains("window.engine.audio.level"))
+        );
 
-        let second = runtime.frame_scripts(&audio, &controls, true);
-        assert!(second.control_updates.is_empty());
+        scripts.clear();
+        runtime.push_frame_scripts(&mut scripts, &audio, &controls, true);
+        assert!(
+            scripts
+                .iter()
+                .all(|script| !script.contains("window[\"speed\"]"))
+        );
 
         controls.insert("speed".to_owned(), ControlValue::Float(0.8));
-        let third = runtime.frame_scripts(&audio, &controls, true);
-        assert_eq!(third.control_updates.len(), 1);
+        scripts.clear();
+        runtime.push_frame_scripts(&mut scripts, &audio, &controls, true);
+        assert_eq!(
+            scripts
+                .iter()
+                .filter(|script| script.contains("window[\"speed\"]"))
+                .count(),
+            1
+        );
     }
 
     #[test]
-    fn frame_scripts_can_skip_audio_update() {
+    fn push_frame_scripts_can_skip_audio_update() {
         let mut runtime = LightscriptRuntime::new(320, 200);
         let audio = AudioData::silence();
+        let mut scripts = Vec::new();
 
-        let scripts = runtime.frame_scripts(&audio, &HashMap::new(), false);
-        assert!(scripts.audio_update.is_none());
+        runtime.push_frame_scripts(&mut scripts, &audio, &HashMap::new(), false);
+        assert!(
+            scripts
+                .iter()
+                .all(|script| !script.contains("window.engine.audio.level"))
+        );
     }
 
     #[test]

@@ -92,13 +92,12 @@ impl ServoRenderer {
         {
             self.pending_scripts.push(script);
         }
-        let frame_scripts =
-            self.runtime
-                .frame_scripts(&input.audio, &self.controls, self.include_audio_updates);
-        self.pending_scripts.extend(frame_scripts.control_updates);
-        if let Some(audio_update) = frame_scripts.audio_update {
-            self.pending_scripts.push(audio_update);
-        }
+        self.runtime.push_frame_scripts(
+            &mut self.pending_scripts,
+            &input.audio,
+            &self.controls,
+            self.include_audio_updates,
+        );
         if let Some(script) = self
             .runtime
             .input_update_script_if_changed(&input.interaction)
