@@ -969,6 +969,14 @@ impl SurfaceSlot {
             state: SurfaceState::Free,
         }
     }
+
+    fn begin_dequeue(&mut self, descriptor: SurfaceDescriptor) {
+        if self.state == SurfaceState::Published && self.canvas.is_shared() {
+            self.canvas = Canvas::new(descriptor.width, descriptor.height);
+        }
+
+        self.state = SurfaceState::Dequeued;
+    }
 }
 
 /// Fixed-capacity pool for reusable render surfaces.
@@ -1039,7 +1047,21 @@ impl RenderSurfacePool {
                 continue;
             }
 
-            self.slots[index].state = SurfaceState::Dequeued;
+            self.slots[index].begin_dequeue(self.descriptor);
+            self.next_slot = (index + 1) % self.slots.len();
+            return Some(SurfaceLease {
+                descriptor: self.descriptor,
+                slot: &mut self.slots[index],
+            });
+        }
+
+        for offset in 0..self.slots.len() {
+            let index = (self.next_slot + offset) % self.slots.len();
+            if self.slots[index].state != SurfaceState::Published {
+                continue;
+            }
+
+            self.slots[index].begin_dequeue(self.descriptor);
             self.next_slot = (index + 1) % self.slots.len();
             return Some(SurfaceLease {
                 descriptor: self.descriptor,

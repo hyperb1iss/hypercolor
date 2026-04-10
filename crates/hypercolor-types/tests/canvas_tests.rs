@@ -298,9 +298,17 @@ fn render_surface_pool_uses_three_slots_and_reclaims_released_surface() {
             SurfaceState::Published
         ]
     );
-    assert!(pool.dequeue().is_none());
 
     drop(surface_b);
+
+    assert_eq!(
+        pool.slot_states(),
+        vec![
+            SurfaceState::Published,
+            SurfaceState::Free,
+            SurfaceState::Published
+        ]
+    );
 
     let mut lease_d = pool.dequeue().expect("released slot should be reclaimed");
     lease_d.canvas_mut().fill(Rgba::new(9, 8, 7, 255));
@@ -327,8 +335,6 @@ fn render_surface_pool_can_grow_without_disturbing_published_slots() {
     lease_b.canvas_mut().fill(Rgba::new(4, 5, 6, 255));
     let surface_b = lease_b.submit(2, 20);
 
-    assert!(pool.dequeue().is_none(), "two-slot pool should be full");
-
     pool.ensure_slot_count(4);
 
     assert_eq!(pool.slot_count(), 4);
@@ -351,6 +357,33 @@ fn render_surface_pool_can_grow_without_disturbing_published_slots() {
     assert_eq!(surface_a.generation(), 1);
     assert_eq!(surface_b.generation(), 1);
     assert_eq!(surface_c.generation(), 1);
+}
+
+#[test]
+fn render_surface_pool_rebinds_published_slots_under_retention_pressure() {
+    let descriptor = SurfaceDescriptor::rgba8888(2, 1);
+    let mut pool = RenderSurfacePool::with_slot_count(descriptor, 1);
+
+    let mut lease_a = pool.dequeue().expect("first lease");
+    lease_a.canvas_mut().set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
+    lease_a.canvas_mut().set_pixel(1, 0, Rgba::new(40, 50, 60, 255));
+    let surface_a = lease_a.submit(1, 10);
+
+    let mut lease_b = pool
+        .dequeue()
+        .expect("retained published surface should not block slot reuse");
+    lease_b.canvas_mut().set_pixel(0, 0, Rgba::new(70, 80, 90, 255));
+    lease_b.canvas_mut().set_pixel(1, 0, Rgba::new(100, 110, 120, 255));
+    let surface_b = lease_b.submit(2, 20);
+
+    assert_eq!(surface_a.generation(), 1);
+    assert_eq!(surface_b.generation(), 2);
+    assert_eq!(surface_a.rgba_bytes()[..8], [10, 20, 30, 255, 40, 50, 60, 255]);
+    assert_eq!(
+        surface_b.rgba_bytes()[..8],
+        [70, 80, 90, 255, 100, 110, 120, 255]
+    );
+    assert_eq!(pool.slot_states(), vec![SurfaceState::Published]);
 }
 
 #[test]
