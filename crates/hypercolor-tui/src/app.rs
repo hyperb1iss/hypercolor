@@ -20,6 +20,9 @@ use crate::screen::ScreenId;
 use crate::state::{AppState, ConnectionStatus, ControlValue, Notification, NotificationLevel};
 use crate::theme_picker::ThemePicker;
 use opaline::widgets::ThemeSelectorAction;
+use ratatui_image::StatefulImage;
+use ratatui_image::picker::Picker;
+use ratatui_image::protocol::StatefulProtocol;
 
 /// Top-level application that owns all screens and drives the event loop.
 pub struct App {
@@ -41,6 +44,12 @@ pub struct App {
     theme_picker: Option<ThemePicker>,
     /// Motion effects engine (tachyonfx-backed).
     motion: MotionSystem,
+    /// ratatui-image picker for terminal-native graphics protocol selection.
+    /// Falls back to halfblocks if the terminal can't be queried.
+    picker: Picker,
+    /// Stateful image protocol for the live canvas preview. Rebuilt on each
+    /// CanvasFrameReceived from the latest pixels. `None` until first frame.
+    canvas_protocol: Option<StatefulProtocol>,
     /// Last rendered frame area, cached so action handlers can scope effects.
     last_frame_area: Rect,
     /// Last user input or significant state event, used to trigger the idle
@@ -74,6 +83,19 @@ impl App {
 
         let client = DaemonClient::new(&host, port);
 
+        // Query the terminal for the best graphics protocol BEFORE entering
+        // raw/alternate-screen mode. Falls back to halfblocks on any failure
+        // (test environments, dumb terminals, missing capabilities).
+        let picker = Picker::from_query_stdio().unwrap_or_else(|e| {
+            tracing::info!("graphics protocol query failed, using halfblocks: {e}");
+            Picker::halfblocks()
+        });
+        tracing::info!(
+            "image protocol: {:?} font_size: {:?}",
+            picker.protocol_type(),
+            picker.font_size()
+        );
+
         Self {
             active_screen: ScreenId::Dashboard,
             previous_screen: None,
@@ -84,6 +106,8 @@ impl App {
             help_visible: false,
             theme_picker: None,
             motion: MotionSystem::new(MotionSensitivity::resolve(MotionSensitivity::Full)),
+            picker,
+            canvas_protocol: None,
             last_frame_area: Rect::new(0, 0, 80, 24),
             last_activity: Instant::now(),
             idle_active: false,
@@ -435,6 +459,21 @@ impl App {
                 {
                     self.motion.canvas_color_channel().write(r, g, b);
                 }
+
+                // Build a fresh ratatui-image protocol from the new pixels.
+                // Cheap for halfblocks, slightly more for Kitty/Sixel — but we
+                // only do this on actual frame updates (15 FPS), not per render.
+                if let Some(img) = image::RgbImage::from_raw(
+                    u32::from(frame.width),
+                    u32::from(frame.height),
+                    frame.pixels.clone(),
+                ) {
+                    self.canvas_protocol = Some(
+                        self.picker
+                            .new_resize_protocol(image::DynamicImage::ImageRgb8(img)),
+                    );
+                }
+
                 self.state.canvas_frame = Some(frame.as_ref().clone());
             }
             Action::SpectrumUpdated(spectrum) => {
@@ -821,7 +860,7 @@ impl App {
 
     /// Render fullscreen canvas preview with a subtle status line.
     #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
-    fn render_fullscreen_preview(&self, frame: &mut Frame, area: Rect) {
+    fn render_fullscreen_preview(&mut self, frame: &mut Frame, area: Rect) {
         use ratatui::layout::Rect;
         use ratatui::style::{Color, Modifier, Style};
         use ratatui::text::{Line, Span};
@@ -835,8 +874,13 @@ impl App {
         let canvas_area = Rect::new(area.x, area.y, area.width, area.height - 1);
         let info_area = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
 
-        // Render canvas
-        if let Some(cf) = &self.state.canvas_frame {
+        // Render canvas — use the live ratatui-image protocol if available
+        // (Kitty graphics on Ghostty, Sixel on supporting terminals, halfblocks
+        // elsewhere). Falls through to the legacy half-block widget if no
+        // protocol has been built yet.
+        if let Some(protocol) = self.canvas_protocol.as_mut() {
+            frame.render_stateful_widget(StatefulImage::default(), canvas_area, protocol);
+        } else if let Some(cf) = &self.state.canvas_frame {
             let canvas = crate::widgets::HalfBlockCanvas::new(&cf.pixels, cf.width, cf.height);
             frame.render_widget(canvas, canvas_area);
         } else {

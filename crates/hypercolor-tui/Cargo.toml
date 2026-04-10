@@ -25,6 +25,10 @@ crossterm = { workspace = true, features = ["event-stream"] }
 # Motion effects
 tachyonfx = { workspace = true }
 
+# Multi-protocol image rendering (Kitty/Sixel/iTerm2/halfblocks)
+ratatui-image = { workspace = true }
+image = { workspace = true }
+
 # Theme
 opaline = { workspace = true }
 
