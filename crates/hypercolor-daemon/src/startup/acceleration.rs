@@ -24,13 +24,39 @@ pub(crate) fn resolve_compositor_acceleration_mode(
             effective_mode: RenderAccelerationMode::Cpu,
             fallback_reason: None,
         }),
-        RenderAccelerationMode::Auto => Ok(CompositorAccelerationResolution {
-            requested_mode,
-            effective_mode: RenderAccelerationMode::Cpu,
-            fallback_reason: None,
-        }),
+        RenderAccelerationMode::Auto => resolve_auto_mode(requested_mode),
         RenderAccelerationMode::Gpu => resolve_explicit_gpu_mode(requested_mode),
     }
+}
+
+#[cfg(feature = "wgpu")]
+fn resolve_auto_mode(
+    requested_mode: RenderAccelerationMode,
+) -> Result<CompositorAccelerationResolution> {
+    if crate::render_thread::sparkleflinger::gpu::GpuSparkleFlinger::new().is_ok() {
+        return Ok(CompositorAccelerationResolution {
+            requested_mode,
+            effective_mode: RenderAccelerationMode::Gpu,
+            fallback_reason: None,
+        });
+    }
+
+    Ok(CompositorAccelerationResolution {
+        requested_mode,
+        effective_mode: RenderAccelerationMode::Cpu,
+        fallback_reason: None,
+    })
+}
+
+#[cfg(not(feature = "wgpu"))]
+fn resolve_auto_mode(
+    requested_mode: RenderAccelerationMode,
+) -> Result<CompositorAccelerationResolution> {
+    Ok(CompositorAccelerationResolution {
+        requested_mode,
+        effective_mode: RenderAccelerationMode::Cpu,
+        fallback_reason: None,
+    })
 }
 
 #[cfg(feature = "wgpu")]
@@ -65,11 +91,26 @@ mod tests {
 
     use super::resolve_compositor_acceleration_mode;
 
+    #[cfg(not(feature = "wgpu"))]
     #[test]
     fn auto_mode_stays_on_cpu_without_warning() {
         let resolution = resolve_compositor_acceleration_mode(RenderAccelerationMode::Auto)
             .expect("auto mode should resolve");
         assert_eq!(resolution.effective_mode, RenderAccelerationMode::Cpu);
+        assert!(resolution.fallback_reason.is_none());
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn auto_mode_prefers_gpu_when_adapter_is_available() {
+        let probe = crate::render_thread::sparkleflinger::gpu::GpuSparkleFlinger::new();
+        if probe.is_err() {
+            return;
+        }
+
+        let resolution = resolve_compositor_acceleration_mode(RenderAccelerationMode::Auto)
+            .expect("auto mode should resolve when wgpu is enabled");
+        assert_eq!(resolution.effective_mode, RenderAccelerationMode::Gpu);
         assert!(resolution.fallback_reason.is_none());
     }
 
