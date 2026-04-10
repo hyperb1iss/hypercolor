@@ -64,11 +64,13 @@ pub(crate) async fn execute_frame(
     )
     .await;
     let scene_snapshot_done_us = micros_u32(frame_start.elapsed());
+    let sleep_render_surfaces = render.render_surface_snapshot(state.event_bus.canvas_receiver_count());
     if let Some(frame) = maybe_sleep_throttle(
         state,
         &scene_snapshot,
         frame_start,
         scene_snapshot_done_us,
+        sleep_render_surfaces,
         &mut render.static_surface_cache,
         &mut render.recycled_frame,
         &mut frame_loop.sleep_black_pushed,

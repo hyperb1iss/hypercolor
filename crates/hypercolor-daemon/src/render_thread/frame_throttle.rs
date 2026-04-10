@@ -11,7 +11,7 @@ use super::frame_io::publish_frame_updates;
 use super::frame_pacing::{FrameExecution, NextWake, SkipDecision};
 use super::frame_scheduler::FrameSceneSnapshot;
 use super::frame_sources::static_surface;
-use super::pipeline_runtime::CachedStaticSurface;
+use super::pipeline_runtime::{CachedStaticSurface, RenderSurfaceSnapshot};
 use super::{RenderThreadState, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
 use crate::performance::{FrameTimeline, LatestFrameMetrics};
@@ -62,6 +62,7 @@ pub(crate) async fn maybe_sleep_throttle(
     scene_snapshot: &FrameSceneSnapshot,
     frame_start: Instant,
     scene_snapshot_done_us: u32,
+    render_surfaces: RenderSurfaceSnapshot,
     static_surface_cache: &mut Option<CachedStaticSurface>,
     recycled_frame: &mut FrameData,
     sleep_black_pushed: &mut bool,
@@ -213,12 +214,11 @@ pub(crate) async fn maybe_sleep_throttle(
             render_group_count: scene_snapshot.scene_runtime.active_render_group_count(),
             scene_active: scene_snapshot.scene_runtime.active_scene_id.is_some(),
             scene_transition_active: scene_snapshot.scene_runtime.active_transition.is_some(),
-            render_surface_slot_count: 0,
-            render_surface_free_slots: 0,
-            render_surface_published_slots: 0,
-            render_surface_dequeued_slots: 0,
-            canvas_receiver_count: u32::try_from(state.event_bus.canvas_receiver_count())
-                .unwrap_or(u32::MAX),
+            render_surface_slot_count: render_surfaces.slot_count,
+            render_surface_free_slots: render_surfaces.free_slots,
+            render_surface_published_slots: render_surfaces.published_slots,
+            render_surface_dequeued_slots: render_surfaces.dequeued_slots,
+            canvas_receiver_count: render_surfaces.canvas_receivers,
             full_frame_copy_count: publish_stats.full_frame_copy_count,
             full_frame_copy_bytes: publish_stats.full_frame_copy_bytes,
             output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),
