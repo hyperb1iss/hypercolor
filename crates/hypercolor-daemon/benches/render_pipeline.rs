@@ -28,6 +28,8 @@ use tokio::runtime::Runtime;
 
 const CANVAS_WIDTH: u32 = 320;
 const CANVAS_HEIGHT: u32 = 200;
+const PREVIEW_WIDTH: u32 = 640;
+const PREVIEW_HEIGHT: u32 = 480;
 const FRAME_DT_SECONDS: f32 = 1.0 / 60.0;
 const FRAME_INTERVAL_MS: u32 = 16;
 const BENCH_DEVICE_COUNT: usize = 3;
@@ -134,10 +136,14 @@ fn build_backend_and_spatial(runtime: &Runtime) -> (BackendManager, SpatialEngin
 }
 
 fn split_surface() -> PublishedSurface {
-    let mut canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
-    for y in 0..CANVAS_HEIGHT {
-        for x in 0..CANVAS_WIDTH {
-            let color = if x < CANVAS_WIDTH / 2 {
+    split_surface_for(CANVAS_WIDTH, CANVAS_HEIGHT)
+}
+
+fn split_surface_for(width: u32, height: u32) -> PublishedSurface {
+    let mut canvas = Canvas::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            let color = if x < width / 2 {
                 Rgba::new(255, 0, 0, 255)
             } else {
                 Rgba::new(0, 0, 255, 255)
@@ -149,18 +155,21 @@ fn split_surface() -> PublishedSurface {
 }
 
 fn patterned_canvas() -> Canvas {
-    let mut canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
-    for y in 0..CANVAS_HEIGHT {
-        for x in 0..CANVAS_WIDTH {
-            let red =
-                u8::try_from((x * 255) / CANVAS_WIDTH.saturating_sub(1).max(1)).expect("red fits");
-            let green = u8::try_from((y * 255) / CANVAS_HEIGHT.saturating_sub(1).max(1))
-                .expect("green fits");
+    patterned_canvas_for(CANVAS_WIDTH, CANVAS_HEIGHT)
+}
+
+fn patterned_canvas_for(width: u32, height: u32) -> Canvas {
+    let mut canvas = Canvas::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            let red = u8::try_from((x * 255) / width.saturating_sub(1).max(1)).expect("red fits");
+            let green =
+                u8::try_from((y * 255) / height.saturating_sub(1).max(1)).expect("green fits");
             let blue = u8::try_from(
                 ((x + y) * 255)
-                    / (CANVAS_WIDTH
+                    / (width
                         .saturating_sub(1)
-                        .saturating_add(CANVAS_HEIGHT.saturating_sub(1))
+                        .saturating_add(height.saturating_sub(1))
                         .max(1)),
             )
             .expect("blue fits");
@@ -171,17 +180,21 @@ fn patterned_canvas() -> Canvas {
 }
 
 fn inverse_patterned_canvas() -> Canvas {
-    let mut canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
-    for y in 0..CANVAS_HEIGHT {
-        for x in 0..CANVAS_WIDTH {
+    inverse_patterned_canvas_for(CANVAS_WIDTH, CANVAS_HEIGHT)
+}
+
+fn inverse_patterned_canvas_for(width: u32, height: u32) -> Canvas {
+    let mut canvas = Canvas::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
             let red = u8::try_from(
-                ((CANVAS_WIDTH.saturating_sub(1).saturating_sub(x)) * 255)
-                    / CANVAS_WIDTH.saturating_sub(1).max(1),
+                ((width.saturating_sub(1).saturating_sub(x)) * 255)
+                    / width.saturating_sub(1).max(1),
             )
             .expect("red fits");
             let green = u8::try_from(
-                ((CANVAS_HEIGHT.saturating_sub(1).saturating_sub(y)) * 255)
-                    / CANVAS_HEIGHT.saturating_sub(1).max(1),
+                ((height.saturating_sub(1).saturating_sub(y)) * 255)
+                    / height.saturating_sub(1).max(1),
             )
             .expect("green fits");
             let blue = u8::try_from(((x ^ y) & u32::from(u8::MAX)) as u64).expect("blue fits");
@@ -344,10 +357,10 @@ fn bench_render_pipeline(c: &mut Criterion) {
 
 fn bench_sparkleflinger(c: &mut Criterion) {
     let mut group = c.benchmark_group("daemon_sparkleflinger");
-    group.throughput(Throughput::Bytes(CANVAS_RGBA_BYTES));
 
     let mut sparkleflinger = SparkleFlinger::cpu();
     let bypass_surface = split_surface();
+    group.throughput(Throughput::Bytes(CANVAS_RGBA_BYTES));
     group.bench_function("single_replace_bypass", |b| {
         b.iter(|| {
             let composed = sparkleflinger.compose(CompositionPlan::single(
@@ -366,6 +379,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
 
     let base = patterned_canvas();
     let overlay = inverse_patterned_canvas();
+    group.throughput(Throughput::Bytes(CANVAS_RGBA_BYTES));
     group.bench_function("alpha_two_layer_compose", |b| {
         b.iter(|| {
             let composed = sparkleflinger.compose(CompositionPlan::with_layers(
@@ -380,10 +394,30 @@ fn bench_sparkleflinger(c: &mut Criterion) {
         });
     });
 
+    let preview_rgba_bytes = u64::from(PREVIEW_WIDTH) * u64::from(PREVIEW_HEIGHT) * 4;
+    let preview_base = patterned_canvas_for(PREVIEW_WIDTH, PREVIEW_HEIGHT);
+    let preview_overlay = inverse_patterned_canvas_for(PREVIEW_WIDTH, PREVIEW_HEIGHT);
+    let mut preview_sparkleflinger = SparkleFlinger::cpu();
+    group.throughput(Throughput::Bytes(preview_rgba_bytes));
+    group.bench_function("alpha_two_layer_compose_640x480", |b| {
+        b.iter(|| {
+            let composed = preview_sparkleflinger.compose(CompositionPlan::with_layers(
+                PREVIEW_WIDTH,
+                PREVIEW_HEIGHT,
+                vec![
+                    CompositionLayer::replace_canvas(black_box(preview_base.clone())),
+                    CompositionLayer::alpha_canvas(black_box(preview_overlay.clone()), 0.35),
+                ],
+            ));
+            black_box(composed.sampling_canvas.get_pixel(0, 0));
+        });
+    });
+
     #[cfg(feature = "wgpu")]
     {
         let mut sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Gpu)
             .expect("GPU SparkleFlinger should initialize for the benchmark");
+        group.throughput(Throughput::Bytes(CANVAS_RGBA_BYTES));
         group.bench_function("gpu_alpha_two_layer_compose", |b| {
             b.iter(|| {
                 let composed = sparkleflinger.compose(CompositionPlan::with_layers(
@@ -392,6 +426,23 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                     vec![
                         CompositionLayer::replace_canvas(black_box(base.clone())),
                         CompositionLayer::alpha_canvas(black_box(overlay.clone()), 0.35),
+                    ],
+                ));
+                black_box(composed.sampling_canvas.get_pixel(0, 0));
+            });
+        });
+
+        let mut preview_sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Gpu)
+            .expect("GPU SparkleFlinger should initialize for the preview benchmark");
+        group.throughput(Throughput::Bytes(preview_rgba_bytes));
+        group.bench_function("gpu_alpha_two_layer_compose_640x480", |b| {
+            b.iter(|| {
+                let composed = preview_sparkleflinger.compose(CompositionPlan::with_layers(
+                    PREVIEW_WIDTH,
+                    PREVIEW_HEIGHT,
+                    vec![
+                        CompositionLayer::replace_canvas(black_box(preview_base.clone())),
+                        CompositionLayer::alpha_canvas(black_box(preview_overlay.clone()), 0.35),
                     ],
                 ));
                 black_box(composed.sampling_canvas.get_pixel(0, 0));
