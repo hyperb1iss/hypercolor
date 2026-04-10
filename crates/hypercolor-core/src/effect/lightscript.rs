@@ -435,7 +435,14 @@ impl LightscriptRuntime {
         let chroma_csv = join_padded_f32_csv(&audio.chromagram, CHROMA_BINS);
         let flux_bands_csv = join_f32_csv(&spectral_flux_bands);
 
-        let mut script = String::new();
+        let mut script = String::with_capacity(
+            1200_usize
+                .saturating_add(spectrum_csv.len())
+                .saturating_add(frequency_raw_csv.len().saturating_mul(2))
+                .saturating_add(mel_csv.len().saturating_mul(2))
+                .saturating_add(chroma_csv.len())
+                .saturating_add(flux_bands_csv.len()),
+        );
         script.push_str("(function(){\n");
         script.push_str(
             "  if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }\n",
@@ -443,91 +450,53 @@ impl LightscriptRuntime {
         script.push_str(
             "  if (typeof window.engine.audio !== 'object' || window.engine.audio === null) { window.engine.audio = {}; }\n",
         );
-        script.push_str(&format!(
-            "  window.engine.audio.level = {};\n",
-            js_number(level_db)
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.levelRaw = {};\n",
-            js_number(level_db)
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.levelLinear = {};\n",
-            js_number(level_linear)
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.rms = {};\n",
-            js_number(level_linear)
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.peak = {};\n",
-            js_number(peak)
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.bass = {};\n",
-            js_number(bass)
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.mid = {};\n",
-            js_number(mid)
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.treble = {};\n",
-            js_number(treble)
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.density = {};\n",
-            js_number(density)
-        ));
+        push_js_f32_assignment(&mut script, "window.engine.audio.level", level_db);
+        push_js_f32_assignment(&mut script, "window.engine.audio.levelRaw", level_db);
+        push_js_f32_assignment(&mut script, "window.engine.audio.levelLinear", level_linear);
+        push_js_f32_assignment(&mut script, "window.engine.audio.rms", level_linear);
+        push_js_f32_assignment(&mut script, "window.engine.audio.peak", peak);
+        push_js_f32_assignment(&mut script, "window.engine.audio.bass", bass);
+        push_js_f32_assignment(&mut script, "window.engine.audio.mid", mid);
+        push_js_f32_assignment(&mut script, "window.engine.audio.treble", treble);
+        push_js_f32_assignment(&mut script, "window.engine.audio.density", density);
         script.push_str("  window.engine.audio.width = 0.5;\n");
-        script.push_str(&format!(
-            "  window.engine.audio.bpm = {};\n",
-            js_number(audio.bpm)
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.tempo = {};\n",
-            js_number(audio.bpm)
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.beat = {};\n",
-            js_bool(audio.beat_detected)
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.beatPulse = {};\n",
-            js_number(beat_pulse)
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.beatPhase = {};\n",
-            js_number(clamp_unit(audio.beat_phase))
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.beatConfidence = {};\n",
-            js_number(audio.beat_confidence)
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.confidence = {};\n",
-            js_number(audio.beat_confidence)
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.onset = {};\n",
-            js_bool(audio.onset_detected)
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.onsetPulse = {};\n",
-            js_number(onset_pulse)
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.spectralFlux = {};\n",
-            js_number(audio.spectral_flux)
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.spectralFluxBands = new Float32Array([{}]);\n",
-            flux_bands_csv
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.brightness = {};\n",
-            js_number(brightness)
-        ));
+        push_js_f32_assignment(&mut script, "window.engine.audio.bpm", audio.bpm);
+        push_js_f32_assignment(&mut script, "window.engine.audio.tempo", audio.bpm);
+        push_js_bool_assignment(&mut script, "window.engine.audio.beat", audio.beat_detected);
+        push_js_f32_assignment(&mut script, "window.engine.audio.beatPulse", beat_pulse);
+        push_js_f32_assignment(
+            &mut script,
+            "window.engine.audio.beatPhase",
+            clamp_unit(audio.beat_phase),
+        );
+        push_js_f32_assignment(
+            &mut script,
+            "window.engine.audio.beatConfidence",
+            audio.beat_confidence,
+        );
+        push_js_f32_assignment(
+            &mut script,
+            "window.engine.audio.confidence",
+            audio.beat_confidence,
+        );
+        push_js_bool_assignment(
+            &mut script,
+            "window.engine.audio.onset",
+            audio.onset_detected,
+        );
+        push_js_f32_assignment(&mut script, "window.engine.audio.onsetPulse", onset_pulse);
+        push_js_f32_assignment(
+            &mut script,
+            "window.engine.audio.spectralFlux",
+            audio.spectral_flux,
+        );
+        push_js_csv_typed_array_assignment(
+            &mut script,
+            "window.engine.audio.spectralFluxBands",
+            "Float32Array",
+            &flux_bands_csv,
+        );
+        push_js_f32_assignment(&mut script, "window.engine.audio.brightness", brightness);
         script.push_str("  window.engine.audio.spread = 0;\n");
         script.push_str("  window.engine.audio.rolloff = 0;\n");
         script.push_str("  window.engine.audio.roughness = 0;\n");
@@ -535,30 +504,42 @@ impl LightscriptRuntime {
         script.push_str("  window.engine.audio.chordMood = 0;\n");
         script.push_str("  window.engine.audio.dominantPitch = 0;\n");
         script.push_str("  window.engine.audio.dominantPitchConfidence = 0;\n");
-        script.push_str(&format!(
-            "  window.engine.audio.freq = new Int8Array([{}]);\n",
-            frequency_raw_csv
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.frequencyRaw = new Int8Array([{}]);\n",
-            frequency_raw_csv
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.frequency = new Float32Array([{}]);\n",
-            spectrum_csv
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.melBands = new Float32Array([{}]);\n",
-            mel_csv
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.melBandsNormalized = new Float32Array([{}]);\n",
-            mel_csv
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.chromagram = new Float32Array([{}]);\n",
-            chroma_csv
-        ));
+        push_js_csv_typed_array_assignment(
+            &mut script,
+            "window.engine.audio.freq",
+            "Int8Array",
+            &frequency_raw_csv,
+        );
+        push_js_csv_typed_array_assignment(
+            &mut script,
+            "window.engine.audio.frequencyRaw",
+            "Int8Array",
+            &frequency_raw_csv,
+        );
+        push_js_csv_typed_array_assignment(
+            &mut script,
+            "window.engine.audio.frequency",
+            "Float32Array",
+            &spectrum_csv,
+        );
+        push_js_csv_typed_array_assignment(
+            &mut script,
+            "window.engine.audio.melBands",
+            "Float32Array",
+            &mel_csv,
+        );
+        push_js_csv_typed_array_assignment(
+            &mut script,
+            "window.engine.audio.melBandsNormalized",
+            "Float32Array",
+            &mel_csv,
+        );
+        push_js_csv_typed_array_assignment(
+            &mut script,
+            "window.engine.audio.chromagram",
+            "Float32Array",
+            &chroma_csv,
+        );
         script.push_str("  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }\n");
         script.push_str("})();");
         script
@@ -631,6 +612,23 @@ fn normalized_to_int8(value: f32) -> i8 {
     #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
     let scaled = (clamp_unit(value) * 127.0).round() as i16;
     i8::try_from(scaled).unwrap_or_default()
+}
+
+fn push_js_f32_assignment(script: &mut String, path: &str, value: f32) {
+    let _ = writeln!(script, "  {path} = {};", js_number(value));
+}
+
+fn push_js_bool_assignment(script: &mut String, path: &str, value: bool) {
+    let _ = writeln!(script, "  {path} = {};", js_bool(value));
+}
+
+fn push_js_csv_typed_array_assignment(
+    script: &mut String,
+    path: &str,
+    typed_array: &str,
+    csv: &str,
+) {
+    let _ = writeln!(script, "  {path} = new {typed_array}([{csv}]);");
 }
 
 fn join_f32_csv(values: &[f32]) -> String {
