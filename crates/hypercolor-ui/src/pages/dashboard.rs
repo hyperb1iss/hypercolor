@@ -15,8 +15,8 @@ use crate::api::{self, EffectSummary, SystemStatus};
 use crate::app::{EffectsContext, WsContext};
 use crate::components::canvas_preview::CanvasPreview;
 use crate::components::perf_charts::{
-    DistributionBar, GanttTimeline, HitRateBar, ProgressRing, RadialGauge, Sparkline, StackSegment,
-    StackedBar, TimelineMarker,
+    DistributionBar, HitRateBar, PhaseFrame, PhaseWaterfall, ProgressRing, RadialGauge, Sparkline,
+    StackSegment, StackedBar,
 };
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
@@ -49,10 +49,26 @@ struct MetricsSample {
     frame_age: f64,
     preview_fps: f32,
     ws_bytes_per_sec: f64,
+    phase: PhaseFrame,
 }
 
 impl MetricsSample {
     fn from_metrics(m: &PerformanceMetrics, preview_fps: f32) -> Self {
+        let t = &m.timeline;
+        // Phase durations are derived from the cumulative milestone timeline.
+        // Any given milestone may briefly regress by a hair under load, so
+        // clamp to zero to keep the waterfall bars well-formed.
+        let diff = |later: f64, earlier: f64| (later - earlier).max(0.0) as f32;
+        let phase = PhaseFrame {
+            input: diff(t.input_done_ms, t.scene_snapshot_done_ms),
+            producer: diff(t.producer_done_ms, t.input_done_ms),
+            compose: diff(t.composition_done_ms, t.producer_done_ms),
+            sample: diff(t.sampling_done_ms, t.composition_done_ms),
+            output: diff(t.output_done_ms, t.sampling_done_ms),
+            publish: diff(t.publish_done_ms, t.output_done_ms),
+            overhead: diff(t.frame_done_ms, t.publish_done_ms),
+        };
+
         Self {
             engine_fps: m.fps.actual,
             frame_time_avg: m.frame_time.avg_ms,
@@ -62,6 +78,7 @@ impl MetricsSample {
             frame_age: m.pacing.frame_age_ms,
             preview_fps,
             ws_bytes_per_sec: m.websocket.bytes_sent_per_sec,
+            phase,
         }
     }
 }
@@ -173,6 +190,9 @@ pub fn DashboardPage() -> impl IntoView {
             .map(|s| s.ws_bytes_per_sec)
             .collect::<Vec<_>>()
     });
+    let series_phase = Memo::new(move |_| {
+        history.read().iter().map(|s| s.phase).collect::<Vec<_>>()
+    });
 
     view! {
         <div class="h-full overflow-y-auto animate-fade-in">
@@ -243,7 +263,10 @@ pub fn DashboardPage() -> impl IntoView {
 
                     <PipelinePanel metrics=ws.metrics />
 
-                    <FrameTimelinePanel metrics=ws.metrics />
+                    <FrameTimelinePanel
+                        metrics=ws.metrics
+                        phase_history=Signal::derive(move || series_phase.get())
+                    />
 
                     <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
                         <DistributionPanel metrics=ws.metrics />
@@ -770,28 +793,14 @@ fn PipelinePanel(#[prop(into)] metrics: Signal<Option<PerformanceMetrics>>) -> i
     }
 }
 
-// ── Frame timeline (Gantt) ───────────────────────────────────────────
+// ── Frame timeline (rolling phase waterfall) ────────────────────────
 
 #[component]
-fn FrameTimelinePanel(#[prop(into)] metrics: Signal<Option<PerformanceMetrics>>) -> impl IntoView {
-    let markers = Memo::new(move |_| {
-        let Some(m) = metrics.get() else {
-            return Vec::<TimelineMarker>::new();
-        };
-        let t = &m.timeline;
-        vec![
-            TimelineMarker { label: "wake", at_ms: t.wake_late_ms.max(0.0), color: "#f1fa8c" },
-            TimelineMarker { label: "snap", at_ms: t.scene_snapshot_done_ms, color: "#82aaff" },
-            TimelineMarker { label: "input", at_ms: t.input_done_ms, color: "#80ffea" },
-            TimelineMarker { label: "prod", at_ms: t.producer_done_ms, color: "#e135ff" },
-            TimelineMarker { label: "comp", at_ms: t.composition_done_ms, color: "#ff6ac1" },
-            TimelineMarker { label: "samp", at_ms: t.sampling_done_ms, color: "#ff99ff" },
-            TimelineMarker { label: "out", at_ms: t.output_done_ms, color: "#f1fa8c" },
-            TimelineMarker { label: "pub", at_ms: t.publish_done_ms, color: "#50fa7b" },
-        ]
-    });
+fn FrameTimelinePanel(
+    #[prop(into)] metrics: Signal<Option<PerformanceMetrics>>,
+    #[prop(into)] phase_history: Signal<Vec<PhaseFrame>>,
+) -> impl IntoView {
     let budget = Memo::new(move |_| metrics.get().map_or(33.33, |m| m.timeline.budget_ms.max(0.1)));
-    let actual = Memo::new(move |_| metrics.get().map_or(0.0, |m| m.timeline.frame_done_ms));
     let token_text = Memo::new(move |_| {
         metrics
             .get()
@@ -824,6 +833,9 @@ fn FrameTimelinePanel(#[prop(into)] metrics: Signal<Option<PerformanceMetrics>>)
                 <div class="flex items-center gap-2">
                     <Icon icon=LuTimer width="14px" height="14px" style="color: var(--color-electric-yellow)" />
                     <h2 class="text-[13px] font-medium text-fg-secondary">"Frame Timeline"</h2>
+                    <span class="text-[9px] font-mono uppercase tracking-[0.1em] text-fg-tertiary/50">
+                        "last 30s"
+                    </span>
                 </div>
                 <div class="flex items-center gap-2">
                     {move || scene_badge.get().map(|(active, xfade)| view! {
@@ -845,12 +857,8 @@ fn FrameTimelinePanel(#[prop(into)] metrics: Signal<Option<PerformanceMetrics>>)
                     </div>
                 </div>
             </div>
-            <div class="p-4">
-                <GanttTimeline
-                    markers=Signal::derive(move || markers.get())
-                    budget_ms=budget
-                    actual_ms=actual
-                />
+            <div class="px-4 pb-4">
+                <PhaseWaterfall frames=phase_history budget_ms=budget />
             </div>
         </div>
     }

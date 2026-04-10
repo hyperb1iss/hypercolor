@@ -330,143 +330,202 @@ pub fn StackedBar(
     }
 }
 
-// ── Gantt timeline (frame milestones) ────────────────────────────────
+// ── Phase waterfall (rolling history of frame phase durations) ──────
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TimelineMarker {
-    pub label: &'static str,
-    pub at_ms: f64,
-    pub color: &'static str,
+/// A single frame's phase-breakdown durations in milliseconds. Captured
+/// each metrics tick and pushed into a ring buffer so the waterfall has
+/// history to render.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PhaseFrame {
+    pub input: f32,
+    pub producer: f32,
+    pub compose: f32,
+    pub sample: f32,
+    pub output: f32,
+    pub publish: f32,
+    pub overhead: f32,
 }
 
-/// Horizontal frame timeline with color-coded milestone ticks and a legend
-/// grid beneath. Auto-scales to the actual frame data with a floor so tiny
-/// values remain readable — budget is only drawn in-chart when it's close
-/// enough to the data to be visible, otherwise shown as an annotation.
+impl PhaseFrame {
+    #[inline]
+    pub fn total(self) -> f32 {
+        self.input
+            + self.producer
+            + self.compose
+            + self.sample
+            + self.output
+            + self.publish
+            + self.overhead
+    }
+}
+
+// Ordering here defines bottom→top stacking in the waterfall columns and
+// is aligned with the Pipeline Breakdown panel's legend colors.
+const PHASE_COLORS: [&str; 7] = [
+    "#80ffea", // input    — cyan
+    "#e135ff", // producer — electric purple
+    "#ff6ac1", // compose  — coral
+    "#ff99ff", // sample   — pink
+    "#f1fa8c", // output   — yellow
+    "#50fa7b", // publish  — green
+    "#8b85a0", // overhead — muted lavender
+];
+
+/// Rolling stacked-column waterfall of frame phase timings. Newest sample
+/// sits on the right and the view scrolls left as frames arrive. Auto-
+/// scales to the tallest column in view, with a budget line that only
+/// renders when it's within range.
 #[component]
-pub fn GanttTimeline(
-    #[prop(into)] markers: Signal<Vec<TimelineMarker>>,
+pub fn PhaseWaterfall(
+    #[prop(into)] frames: Signal<Vec<PhaseFrame>>,
     #[prop(into)] budget_ms: Signal<f64>,
-    #[prop(into)] actual_ms: Signal<f64>,
+    #[prop(default = 128)] height: u32,
 ) -> impl IntoView {
     view! {
         <div class="space-y-2">
             {move || {
-                let budget = budget_ms.get().max(0.1);
-                let actual = actual_ms.get().max(0.0);
-                let ms_list = markers.get();
+                let fs = frames.get();
+                let budget = budget_ms.get().max(0.1) as f32;
 
-                // Scale to whichever is biggest: actual frame, largest milestone,
-                // or a tiny floor so sub-millisecond data has breathing room.
-                let markers_max = ms_list.iter().map(|m| m.at_ms).fold(0.0_f64, f64::max);
-                let data_max = actual.max(markers_max);
-                let data_scale = (data_max * 1.35).max(0.2);
-
-                // If we're pushing the budget, extend the scale to keep the
-                // dashed end marker in view; otherwise zoom tight to the data.
-                let scale = if data_max >= budget * 0.5 {
+                let max_total = fs.iter().map(|f| f.total()).fold(0.0_f32, f32::max);
+                // Scale to data with a 0.2ms floor so sub-millisecond frames
+                // still read on screen. Extend to include budget only when
+                // we're actually pushing it.
+                let data_scale = (max_total * 1.25).max(0.2);
+                let scale = if max_total >= budget * 0.5 {
                     data_scale.max(budget * 1.05)
                 } else {
                     data_scale
                 };
                 let budget_in_range = budget <= scale * 1.02;
-
-                let actual_pct = (actual / scale * 100.0).min(100.0);
-
-                let over_budget = actual > budget * 1.01;
-                let actual_color = if over_budget {
-                    "var(--color-error-red)"
-                } else if actual > budget * 0.85 {
-                    "var(--color-electric-yellow)"
+                let budget_y_pct = if budget_in_range {
+                    100.0 - (budget / scale * 100.0).clamp(0.0, 100.0)
                 } else {
-                    "var(--color-success-green)"
+                    0.0
                 };
 
+                let n = fs.len();
+                let last_idx = n.saturating_sub(1);
+
                 view! {
-                    // Timeline bar
-                    <div class="relative w-full" style="height: 26px">
-                        // Track background
-                        <div class="absolute inset-x-0 top-[9px] h-2 rounded-full bg-surface-overlay/60 border border-edge-subtle/60" />
+                    <div
+                        class="relative w-full rounded-md bg-surface-overlay/30 border border-edge-subtle/40 overflow-hidden"
+                        style=format!("height: {height}px")
+                    >
+                        // Subtle horizontal grid — 25 / 50 / 75% reference lines
+                        <div class="absolute inset-x-0 top-1/4 h-px bg-edge-subtle/20 pointer-events-none" />
+                        <div class="absolute inset-x-0 top-1/2 h-px bg-edge-subtle/20 pointer-events-none" />
+                        <div class="absolute inset-x-0 top-3/4 h-px bg-edge-subtle/20 pointer-events-none" />
 
-                        // Actual frame duration fill
-                        <div
-                            class="absolute top-[9px] h-2 rounded-full transition-all duration-300"
-                            style=format!(
-                                "left: 0; width: {actual_pct:.2}%; \
-                                 background: linear-gradient(90deg, {actual_color}88, {actual_color}ff); \
-                                 box-shadow: 0 0 10px {actual_color}66"
-                            )
-                        />
-
-                        // Budget end marker — only drawn when within the zoomed range
-                        {budget_in_range.then(|| {
-                            let budget_pct = (budget / scale * 100.0).min(100.0);
-                            view! {
-                                <div
-                                    class="absolute top-[2px] bottom-[2px] w-px"
-                                    style=format!(
-                                        "left: {budget_pct:.2}%; \
-                                         background: repeating-linear-gradient(to bottom, var(--color-electric-yellow) 0 3px, transparent 3px 6px)"
-                                    )
-                                />
-                            }
+                        // Budget reference line
+                        {budget_in_range.then(|| view! {
+                            <div
+                                class="absolute inset-x-0 h-px pointer-events-none"
+                                style=format!(
+                                    "top: {budget_y_pct:.2}%; \
+                                     background: repeating-linear-gradient(to right, var(--color-electric-yellow) 0 4px, transparent 4px 8px); \
+                                     opacity: 0.55"
+                                )
+                            />
                         })}
 
-                        // Milestone ticks (labels live in the legend below)
-                        {ms_list.iter().map(|m| {
-                            let pos_pct = (m.at_ms / scale * 100.0).clamp(0.0, 100.0);
-                            let color = m.color;
-                            let label = m.label;
-                            let at = m.at_ms;
-                            view! {
-                                <div
-                                    class="absolute top-[4px] h-[18px] w-[2px] rounded-full"
-                                    style=format!(
-                                        "left: calc({pos_pct:.2}% - 1px); \
-                                         background: {color}; \
-                                         box-shadow: 0 0 6px {color}"
-                                    )
-                                    title=format!("{label}: {at:.2} ms")
-                                />
-                            }
-                        }).collect_view()}
+                        // Columns — flex so they share width evenly
+                        <div class="absolute inset-0 flex items-end gap-[1px] px-1 pb-0.5">
+                            {fs.into_iter().enumerate().map(|(i, f)| {
+                                let total = f.total().max(1e-6);
+                                let col_h_pct = (f.total() / scale * 100.0).clamp(0.0, 100.0);
+                                let is_latest = i == last_idx;
+                                // Older frames fade subtly so the eye tracks newest data
+                                let age_opacity = 0.45 + 0.55 * (i as f32 / n.max(1) as f32);
+                                let glow = if is_latest {
+                                    "filter: drop-shadow(0 0 6px rgba(128, 255, 234, 0.55));"
+                                } else {
+                                    ""
+                                };
+
+                                let segs: [f32; 7] = [
+                                    f.input,
+                                    f.producer,
+                                    f.compose,
+                                    f.sample,
+                                    f.output,
+                                    f.publish,
+                                    f.overhead,
+                                ];
+
+                                let mut cursor = 0.0_f32;
+                                let segments_view = segs.iter().enumerate()
+                                    .filter(|(_, v)| **v > 0.0)
+                                    .map(|(phase_idx, v)| {
+                                        let seg_h_pct = (v / total * 100.0).clamp(0.0, 100.0);
+                                        let bottom_pct = cursor;
+                                        cursor += seg_h_pct;
+                                        let color = PHASE_COLORS[phase_idx];
+                                        view! {
+                                            <div
+                                                class="absolute inset-x-0"
+                                                style=format!(
+                                                    "bottom: {bottom_pct:.2}%; \
+                                                     height: {seg_h_pct:.2}%; \
+                                                     background: linear-gradient(180deg, {color}ee, {color}cc); \
+                                                     box-shadow: inset 0 -1px 0 rgba(0,0,0,0.25)"
+                                                )
+                                            />
+                                        }
+                                    }).collect_view();
+
+                                view! {
+                                    <div
+                                        class="flex-1 relative min-w-0 transition-all duration-300 ease-out"
+                                        style=format!(
+                                            "height: {col_h_pct:.2}%; opacity: {age_opacity:.2}; {glow}"
+                                        )
+                                        title=format!("frame {}: {:.2} ms total", i, f.total())
+                                    >
+                                        {segments_view}
+                                    </div>
+                                }
+                            }).collect_view()}
+                        </div>
+
+                        // Scale label (top-left) + budget annotation (top-right)
+                        <div class="absolute top-1 left-2 right-2 flex items-center justify-between pointer-events-none text-[9px] font-mono tabular-nums">
+                            <span class="text-fg-tertiary/50">
+                                {format!("{scale:.2} ms")}
+                            </span>
+                            {if budget_in_range {
+                                view! {
+                                    <span class="text-electric-yellow/60">
+                                        {format!("budget {budget:.1}ms")}
+                                    </span>
+                                }.into_any()
+                            } else {
+                                view! {
+                                    <span class="text-electric-yellow/60">
+                                        {format!("budget {budget:.1}ms · headroom")}
+                                    </span>
+                                }.into_any()
+                            }}
+                        </div>
                     </div>
 
-                    // Scale + budget annotation row
-                    <div class="flex items-center justify-between text-[9px] font-mono tabular-nums px-0.5">
-                        <span class="text-fg-tertiary/60">"0 ms"</span>
-                        {if budget_in_range {
-                            view! { <span class="text-fg-tertiary/60">{format!("{scale:.2} ms")}</span> }.into_any()
-                        } else {
-                            view! {
-                                <span class="text-electric-yellow/70">
-                                    {format!("scale {scale:.2}ms · budget {budget:.1}ms (headroom)")}
-                                </span>
-                            }.into_any()
-                        }}
-                    </div>
-
-                    // Legend: colored dot + label + value
-                    <div class="grid grid-cols-4 gap-x-3 gap-y-1 pt-1">
-                        {ms_list.iter().map(|m| {
-                            let color = m.color;
-                            let label = m.label;
-                            let at = m.at_ms;
-                            view! {
-                                <div class="flex items-center gap-1.5 min-w-0">
-                                    <span
-                                        class="w-1.5 h-1.5 rounded-full shrink-0"
-                                        style=format!("background: {color}; box-shadow: 0 0 4px {color}")
-                                    />
-                                    <span class="text-[9px] font-mono uppercase tracking-[0.08em] text-fg-tertiary truncate">
-                                        {label}
-                                    </span>
-                                    <span class="text-[9px] font-mono tabular-nums text-fg-secondary ml-auto shrink-0">
-                                        {format!("{at:.2}")}
-                                    </span>
-                                </div>
-                            }
-                        }).collect_view()}
+                    // Phase legend row — dots + labels
+                    <div class="flex items-center flex-wrap gap-x-3 gap-y-1 text-[9px] font-mono uppercase tracking-[0.08em] text-fg-tertiary">
+                        {["input", "producer", "compose", "sample", "output", "publish", "overhead"]
+                            .iter()
+                            .enumerate()
+                            .map(|(i, label)| {
+                                let color = PHASE_COLORS[i];
+                                view! {
+                                    <div class="flex items-center gap-1">
+                                        <span
+                                            class="w-1.5 h-1.5 rounded-sm"
+                                            style=format!("background: {color}; box-shadow: 0 0 4px {color}")
+                                        />
+                                        <span>{*label}</span>
+                                    </div>
+                                }
+                            }).collect_view()}
                     </div>
                 }
             }}
