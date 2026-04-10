@@ -29,16 +29,24 @@ pub(crate) struct EffectSceneSnapshot {
     pub(crate) generation: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CachedRenderGroupDemand {
+    pub(crate) groups_revision: u64,
+    pub(crate) demand: EffectDemand,
+}
+
 pub(crate) async fn build_frame_scene_snapshot(
     state: &RenderThreadState,
     frame_scheduler: &mut FrameScheduler,
     render_scene_state: &RenderSceneState,
+    last_render_group_demand: &mut Option<CachedRenderGroupDemand>,
     delta_secs: f32,
 ) -> FrameSceneSnapshot {
     let scene_runtime = current_scene_runtime_snapshot(state, delta_secs).await;
     let effect_scene = current_effect_scene_snapshot(
         state,
         &scene_runtime,
+        last_render_group_demand,
         render_scene_state.screen_capture_configured(),
     )
     .await;
@@ -93,10 +101,16 @@ fn snapshot_scene_runtime(manager: &SceneManager) -> SceneRuntimeSnapshot {
 async fn current_effect_scene_snapshot(
     state: &RenderThreadState,
     scene_runtime: &SceneRuntimeSnapshot,
+    last_render_group_demand: &mut Option<CachedRenderGroupDemand>,
     screen_capture_configured: bool,
 ) -> EffectSceneSnapshot {
     if scene_runtime.has_active_render_groups() {
-        return current_render_group_effect_scene_snapshot(state, scene_runtime).await;
+        return current_render_group_effect_scene_snapshot(
+            state,
+            scene_runtime,
+            last_render_group_demand,
+        )
+        .await;
     }
 
     let engine = state.effect_engine.lock().await;
@@ -123,7 +137,17 @@ async fn current_effect_scene_snapshot(
 async fn current_render_group_effect_scene_snapshot(
     state: &RenderThreadState,
     scene_runtime: &SceneRuntimeSnapshot,
+    last_render_group_demand: &mut Option<CachedRenderGroupDemand>,
 ) -> EffectSceneSnapshot {
+    if let Some(cached) = last_render_group_demand.as_ref()
+        && cached.groups_revision == scene_runtime.active_render_groups_revision
+    {
+        return EffectSceneSnapshot {
+            demand: cached.demand,
+            generation: 0,
+        };
+    }
+
     let registry = state.effect_registry.read().await;
     let mut effect_running = false;
     let mut audio_capture_active = false;
@@ -145,12 +169,18 @@ async fn current_render_group_effect_scene_snapshot(
         }
     }
 
+    let demand = EffectDemand {
+        effect_running,
+        audio_capture_active,
+        screen_capture_active,
+    };
+    *last_render_group_demand = Some(CachedRenderGroupDemand {
+        groups_revision: scene_runtime.active_render_groups_revision,
+        demand,
+    });
+
     EffectSceneSnapshot {
-        demand: EffectDemand {
-            effect_running,
-            audio_capture_active,
-            screen_capture_active,
-        },
+        demand,
         generation: 0,
     }
 }

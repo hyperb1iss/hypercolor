@@ -12,6 +12,7 @@ use super::composition_planner::CompositionPlanner;
 use super::desired_render_surface_slots;
 use super::frame_admission::FrameAdmissionController;
 use super::frame_scheduler::FrameScheduler;
+use super::frame_state::CachedRenderGroupDemand;
 use super::producer_queue::ProducerQueue;
 use super::render_groups::RenderGroupRuntime;
 use super::scene_state::RenderSceneState;
@@ -58,6 +59,7 @@ pub(crate) struct FrameLoopState {
     pub(crate) last_audio_level_update_ms: Option<u32>,
     pub(crate) last_audio_capture_active: Option<bool>,
     pub(crate) last_screen_capture_active: Option<bool>,
+    pub(crate) last_render_group_demand: Option<CachedRenderGroupDemand>,
 }
 
 pub(crate) struct RenderCaches {
@@ -137,6 +139,7 @@ impl PipelineRuntime {
                 last_audio_level_update_ms: None,
                 last_audio_capture_active: None,
                 last_screen_capture_active: None,
+                last_render_group_demand: None,
             },
             render: RenderCaches {
                 effect_target_canvas: None,

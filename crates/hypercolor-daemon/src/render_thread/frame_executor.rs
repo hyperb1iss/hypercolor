@@ -46,6 +46,7 @@ pub(crate) async fn execute_frame(
         state,
         frame_scheduler,
         &render.render_scene_state,
+        &mut frame_loop.last_render_group_demand,
         delta_secs,
     )
     .await;
