@@ -10,6 +10,8 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::state::{CanvasFrame, SpectrumSnapshot};
 
+const TUI_CANVAS_FPS: u8 = 10;
+
 /// Messages decoded from the WebSocket stream.
 #[derive(Debug)]
 pub enum WsMessage {
@@ -41,7 +43,7 @@ pub async fn connect(host: &str, port: u16, tx: mpsc::UnboundedSender<WsMessage>
         "type": "subscribe",
         "channels": ["canvas", "spectrum", "events", "metrics"],
         "config": {
-            "canvas": { "fps": 15, "format": "rgb" },
+            "canvas": { "fps": TUI_CANVAS_FPS, "format": "rgb" },
             "spectrum": { "fps": 15, "bins": 64 },
             "metrics": { "interval_ms": 2000 }
         }

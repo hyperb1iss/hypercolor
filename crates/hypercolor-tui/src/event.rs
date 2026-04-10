@@ -25,7 +25,7 @@ pub enum Event {
 /// Reads terminal events and timers in a background task, forwarding them
 /// through an unbounded channel.
 pub struct EventReader {
-    rx: mpsc::UnboundedReceiver<Event>,
+    rx: mpsc::Receiver<Event>,
     cancel: CancellationToken,
 }
 
@@ -33,7 +33,7 @@ impl EventReader {
     /// Spawn the event reader with the given tick and render intervals.
     #[must_use]
     pub fn new(tick_rate: Duration, render_rate: Duration) -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(1);
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
 
@@ -62,7 +62,7 @@ impl EventReader {
                     }
                 };
 
-                if tx.send(event).is_err() {
+                if tx.send(event).await.is_err() {
                     break;
                 }
             }

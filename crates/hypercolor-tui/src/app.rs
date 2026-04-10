@@ -554,10 +554,8 @@ impl App {
                             protocol.replace_protocol(next_protocol);
                         }
                     } else if let Some(resize_tx) = self.canvas_resize_tx.as_ref() {
-                        self.canvas_protocol_pending = Some(ThreadProtocol::new(
-                            resize_tx.clone(),
-                            Some(next_protocol),
-                        ));
+                        self.canvas_protocol_pending =
+                            Some(ThreadProtocol::new(resize_tx.clone(), Some(next_protocol)));
                     }
                 }
             }

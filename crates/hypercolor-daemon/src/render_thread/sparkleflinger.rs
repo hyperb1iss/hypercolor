@@ -225,6 +225,12 @@ fn compose_layer(target: &mut Canvas, layer: CompositionLayer) {
 
 fn compose_normal_layer(target_pixels: &mut [u8], source_pixels: &[u8], opacity: f32) {
     let fully_opaque_layer = opacity >= 1.0 - f32::EPSILON;
+    let opaque_dst_weights: Option<[f32; 256]> = (!fully_opaque_layer).then(|| {
+        let inverse_alpha = 1.0 - opacity;
+        array::from_fn(|channel| decode_srgb_channel(channel as u8) * inverse_alpha)
+    });
+    let opaque_src_weights: Option<[f32; 256]> = (!fully_opaque_layer)
+        .then(|| array::from_fn(|channel| decode_srgb_channel(channel as u8) * opacity));
     for (dst_px, src_px) in target_pixels
         .chunks_exact_mut(4)
         .zip(source_pixels.chunks_exact(4))
@@ -241,18 +247,20 @@ fn compose_normal_layer(target_pixels: &mut [u8], source_pixels: &[u8], opacity:
             }
 
             if dst_px[3] == 255 {
-                let inverse_alpha = 1.0 - opacity;
+                let dst_weights = opaque_dst_weights
+                    .as_ref()
+                    .expect("non-opaque layers should precompute dst weights");
+                let src_weights = opaque_src_weights
+                    .as_ref()
+                    .expect("non-opaque layers should precompute src weights");
                 dst_px[0] = encode_srgb_channel(
-                    decode_srgb_channel(dst_px[0])
-                        .mul_add(inverse_alpha, decode_srgb_channel(src_px[0]) * opacity),
+                    dst_weights[usize::from(dst_px[0])] + src_weights[usize::from(src_px[0])],
                 );
                 dst_px[1] = encode_srgb_channel(
-                    decode_srgb_channel(dst_px[1])
-                        .mul_add(inverse_alpha, decode_srgb_channel(src_px[1]) * opacity),
+                    dst_weights[usize::from(dst_px[1])] + src_weights[usize::from(src_px[1])],
                 );
                 dst_px[2] = encode_srgb_channel(
-                    decode_srgb_channel(dst_px[2])
-                        .mul_add(inverse_alpha, decode_srgb_channel(src_px[2]) * opacity),
+                    dst_weights[usize::from(dst_px[2])] + src_weights[usize::from(src_px[2])],
                 );
                 continue;
             }
