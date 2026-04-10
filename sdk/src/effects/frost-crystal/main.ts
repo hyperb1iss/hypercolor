@@ -1,4 +1,4 @@
-import { canvas, combo, num } from '@hypercolor/sdk'
+import { canvas, clamp, combo, num } from '@hypercolor/sdk'
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -21,10 +21,6 @@ const SCENES = ['Lattice', 'Prism', 'Shardfield', 'Signal', 'Dendrite', 'Koch', 
 const TAU = Math.PI * 2
 
 // ── Helpers ──────────────────────────────────────────────────────────────
-
-function clamp(v: number, lo: number, hi: number): number {
-    return Math.max(lo, Math.min(hi, v))
-}
 
 function hash(n: number): number {
     const x = Math.sin(n * 127.1 + 311.7) * 43758.5453

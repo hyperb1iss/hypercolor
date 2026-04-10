@@ -1,4 +1,4 @@
-import { canvas, color, combo, num } from '@hypercolor/sdk'
+import { canvas, clamp, color, combo, num } from '@hypercolor/sdk'
 
 interface Firefly {
     x: number
@@ -75,11 +75,6 @@ function ledSafeHue(hue: number): number {
         return wrapped < 60 ? 24 : 120
     }
     return wrapped
-}
-
-function clamp(value: number, min: number, max: number): number {
-    if (Number.isNaN(value)) return min
-    return Math.max(min, Math.min(max, value))
 }
 
 function rgba(color: RGB, alpha: number): string {

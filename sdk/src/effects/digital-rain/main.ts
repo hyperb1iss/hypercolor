@@ -1,4 +1,4 @@
-import { canvas, color, combo, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, num, toggle } from '@hypercolor/sdk'
+import { canvas, clamp, color, combo, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, num, toggle } from '@hypercolor/sdk'
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -127,12 +127,6 @@ const PALETTES: Record<string, RainPalette> = {
 const WHITE: Rgb = { b: 255, g: 255, r: 255 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
-
-function clamp(value: number, min: number, max: number): number {
-    if (value < min) return min
-    if (value > max) return max
-    return value
-}
 
 function randomRange(min: number, max: number): number {
     return min + Math.random() * (max - min)

@@ -1,26 +1,5 @@
-import { combo, effect, num } from '@hypercolor/sdk'
+import { clamp, combo, effect, num, smoothApproach, smoothAsymmetric } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
-
-function clamp(value: number, min: number, max: number): number {
-    return Math.max(min, Math.min(max, value))
-}
-
-function smoothApproach(current: number, target: number, lambda: number, dt: number): number {
-    if (!Number.isFinite(lambda) || lambda <= 0) return target
-    const factor = 1 - Math.exp(-lambda * Math.max(dt, 0))
-    return current + (target - current) * factor
-}
-
-function smoothAsymmetric(
-    current: number,
-    target: number,
-    attackLambda: number,
-    decayLambda: number,
-    dt: number,
-): number {
-    const lambda = target > current ? attackLambda : decayLambda
-    return smoothApproach(current, target, lambda, dt)
-}
 
 function springStep(
     position: number,

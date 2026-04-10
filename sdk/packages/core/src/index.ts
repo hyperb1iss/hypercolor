@@ -95,6 +95,26 @@ export {
 export type { HSLColor, RGBColor, UpdateFunction } from './utils'
 export { createDebugLogger, debug, printStartupBanner } from './utils'
 
+// ── Math ────────────────────────────────────────────────────────────────
+
+export {
+    clamp,
+    easeInCubic,
+    easeInOutCubic,
+    easeInOutQuad,
+    easeInQuad,
+    easeOutCubic,
+    easeOutQuad,
+    inverseLerp,
+    lerp,
+    mix,
+    saturate,
+    smoothApproach,
+    smoothAsymmetric,
+    smoothstep,
+    step,
+} from './math'
+
 // ── Initialization ──────────────────────────────────────────────────────
 
 export type { InitializationMode, InitOptions } from './init'
