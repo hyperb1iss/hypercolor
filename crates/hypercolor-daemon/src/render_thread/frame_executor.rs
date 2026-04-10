@@ -172,13 +172,16 @@ pub(crate) async fn execute_frame(
 
     let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
     let timing_total_us = micros_u32(frame_start.elapsed());
+    let screen_canvas_receivers = state.event_bus.screen_canvas_receiver_count();
     let ComposedFrameSet {
         sampling_canvas,
         sampling_surface,
         preview_surface,
         bypassed: _,
     } = render_stage.composed_frame;
-    let screen_watch_surface = if !scene_snapshot.effect_demand.effect_running
+    let screen_watch_surface = if screen_canvas_receivers == 0 {
+        None
+    } else if !scene_snapshot.effect_demand.effect_running
         && scene_snapshot.effect_demand.screen_capture_active
     {
         preview_surface
