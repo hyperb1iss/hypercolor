@@ -4,10 +4,12 @@ use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
 mod canvas2d;
 mod webgl;
+mod worker;
 
 use canvas2d::Canvas2dPreviewRuntime;
 use webgl::WebGlInitError;
 use webgl::WebGlPreviewRuntime;
+use worker::PreviewWorkerRuntime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TextureShape {
@@ -29,6 +31,7 @@ pub(super) enum PreviewRuntimeInitError {
 }
 
 enum PreviewRuntimeBackend {
+    Worker(PreviewWorkerRuntime),
     WebGl(WebGlPreviewRuntime),
     Canvas2d(Canvas2dPreviewRuntime),
 }
@@ -40,6 +43,10 @@ impl PreviewRuntime {
         canvas: &HtmlCanvasElement,
         allow_canvas2d_fallback: bool,
     ) -> Result<Self, PreviewRuntimeInitError> {
+        if let Ok(runtime) = PreviewWorkerRuntime::new(canvas) {
+            return Ok(Self(PreviewRuntimeBackend::Worker(runtime)));
+        }
+
         match WebGlPreviewRuntime::new(canvas) {
             Ok(runtime) => Ok(Self(PreviewRuntimeBackend::WebGl(runtime))),
             Err(WebGlInitError::InitializationFailed) => {
@@ -63,6 +70,7 @@ impl PreviewRuntime {
         frame: &CanvasFrame,
     ) -> PreviewRenderOutcome {
         match &mut self.0 {
+            PreviewRuntimeBackend::Worker(runtime) => runtime.render(frame),
             PreviewRuntimeBackend::WebGl(runtime) => runtime.render(canvas, frame),
             PreviewRuntimeBackend::Canvas2d(runtime) => runtime.render(canvas, frame),
         }
