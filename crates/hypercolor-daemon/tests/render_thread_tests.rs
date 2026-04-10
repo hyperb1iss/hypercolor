@@ -1406,6 +1406,52 @@ async fn pipeline_publishes_frame_data_via_watch() {
 }
 
 #[tokio::test]
+async fn pipeline_keeps_latest_frame_hot_for_late_subscribers() {
+    let mut effect_engine = EffectEngine::new();
+    effect_engine
+        .activate(
+            Box::new(MockEffectRenderer::solid(255, 32, 128)),
+            MockEffectRenderer::sample_metadata("late-frame-subscriber"),
+        )
+        .expect("activate");
+
+    let layout = test_layout(vec![point_zone("zone_main", "mock:main", 0.5, 0.5)]);
+    let state = make_render_state(
+        effect_engine,
+        SpatialEngine::new(layout),
+        BackendManager::new(),
+    );
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let frame_rx = state.event_bus.frame_receiver();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let frame_data = frame_rx.borrow().clone();
+    assert!(
+        frame_data.timestamp_ms > 0 || frame_data.frame_number > 0,
+        "late subscribers should see the current frame immediately"
+    );
+    let zone = frame_data
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_main")
+        .expect("late subscriber should see sampled zones");
+    assert_eq!(zone.colors.first().copied(), Some([255, 32, 128]));
+}
+
+#[tokio::test]
 async fn pipeline_publishes_canvas_data_via_watch() {
     let state = make_render_state(
         EffectEngine::new(),
