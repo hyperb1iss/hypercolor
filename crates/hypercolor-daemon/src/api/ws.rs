@@ -983,21 +983,24 @@ async fn relay_frames(
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut frame_rx = None::<watch::Receiver<hypercolor_types::event::FrameData>>;
+    let mut active_frame_config = None::<FramesConfig>;
     let mut last_sent = Instant::now()
         .checked_sub(Duration::from_secs(1))
         .unwrap_or_else(Instant::now);
     let mut was_subscribed = false;
 
     loop {
-        let frame_config = {
-            let subs = subscriptions.borrow();
-            if !subs.channels.contains(WsChannel::Frames) {
-                None
-            } else {
-                Some(subs.config.frames.clone())
-            }
-        };
-        let Some(frame_config) = frame_config else {
+        if active_frame_config.is_none() {
+            active_frame_config = {
+                let subs = subscriptions.borrow();
+                if !subs.channels.contains(WsChannel::Frames) {
+                    None
+                } else {
+                    Some(subs.config.frames.clone())
+                }
+            };
+        }
+        let Some(frame_config) = active_frame_config.as_ref() else {
             let _ = frame_rx.take();
             was_subscribed = false;
             if subscriptions.changed().await.is_err() {
@@ -1022,6 +1025,7 @@ async fn relay_frames(
                         break;
                     }
                     let _ = subscriptions.borrow_and_update();
+                    active_frame_config = None;
                     continue;
                 }
                 changed = frame_rx.changed() => {
