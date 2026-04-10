@@ -18,7 +18,7 @@ use crate::action::Action;
 use crate::component::Component;
 use crate::state::{ControlDefinition, ControlValue, EffectSummary};
 use crate::widgets::{
-    ColorPickerPopup, HalfBlockCanvas, ParamSlider, Split, SplitDirection, hsl_to_rgb, rgb_to_hsl,
+    ColorPickerPopup, ParamSlider, Split, SplitDirection, hsl_to_rgb, rgb_to_hsl,
 };
 
 // ── SilkCircuit Neon palette ───────────────────────────────────────────
@@ -93,6 +93,10 @@ pub struct EffectBrowserView {
     controls_content_y: Cell<u16>,
     controls_inner_rect: Cell<Rect>,
     controls_label_w: Cell<usize>,
+
+    /// Aspect-fitted preview area, exposed via the Component trait so App
+    /// can overlay the live ratatui-image protocol on top.
+    preview_inner: Cell<Option<Rect>>,
 }
 
 impl Default for EffectBrowserView {
@@ -131,6 +135,7 @@ impl EffectBrowserView {
             controls_content_y: Cell::new(0),
             controls_inner_rect: Cell::new(Rect::default()),
             controls_label_w: Cell::new(0),
+            preview_inner: Cell::new(None),
         }
     }
 
@@ -897,10 +902,14 @@ impl EffectBrowserView {
 
     fn render_canvas_preview(&self, frame: &mut Frame, area: Rect) {
         if let Some(ref cf) = self.canvas_frame {
+            // Compute the aspect-fit rect for the live canvas. Cache it for
+            // App's image overlay (ratatui-image protocol).
             let fitted = aspect_fit(cf.width, cf.height, area);
-            let canvas = HalfBlockCanvas::new(&cf.pixels, cf.width, cf.height);
-            frame.render_widget(canvas, fitted);
+            self.preview_inner.set(Some(fitted));
+            // Don't render anything here — App will overlay the live image
+            // protocol on the cached rect.
         } else {
+            self.preview_inner.set(None);
             let placeholder = Paragraph::new(Line::from(Span::styled(
                 "\u{2584}".repeat(usize::from(area.width)),
                 Style::default().fg(Color::Rgb(30, 30, 50)),
@@ -1528,5 +1537,9 @@ impl Component for EffectBrowserView {
 
     fn id(&self) -> &'static str {
         "effect_browser"
+    }
+
+    fn canvas_preview_area(&self) -> Option<Rect> {
+        self.preview_inner.get()
     }
 }

@@ -730,9 +730,23 @@ impl App {
             .chrome
             .render(frame, area, &self.state, &self.available_screens());
 
-        // Active screen fills the content area
-        if let Some(screen) = self.screens.get(&self.active_screen) {
+        // Active screen fills the content area, then App overlays the live
+        // canvas preview using ratatui-image (Kitty/Sixel/halfblocks). The
+        // screen records its preview rect via Component::canvas_preview_area;
+        // we drop the immutable borrow before reaching for canvas_protocol.
+        let preview_area = if let Some(screen) = self.screens.get(&self.active_screen) {
             screen.render(frame, content_area);
+            screen.canvas_preview_area()
+        } else {
+            None
+        };
+
+        if let Some(area) = preview_area
+            && area.width > 0
+            && area.height > 0
+            && let Some(protocol) = self.canvas_protocol.as_mut()
+        {
+            frame.render_stateful_widget(StatefulImage::default(), area, protocol);
         }
 
         // Render notification toast (centered, overlays content bottom)

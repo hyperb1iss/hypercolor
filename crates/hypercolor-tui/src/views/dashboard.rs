@@ -1,5 +1,7 @@
 //! Dashboard view — single-glance overview of the lighting system.
 
+use std::cell::Cell as StdCell;
+
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::Frame;
@@ -12,7 +14,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::action::Action;
 use crate::component::Component;
 use crate::state::{CanvasFrame, ConnectionStatus, DaemonState, DeviceSummary, EffectSummary};
-use crate::widgets::{HalfBlockCanvas, ParamSlider, Split, SplitDirection};
+use crate::widgets::{ParamSlider, Split, SplitDirection};
 
 // ── SilkCircuit Neon palette ───────────────────────────────────────────
 
@@ -48,6 +50,11 @@ pub struct DashboardView {
     selected_device: usize,
     connection_status: ConnectionStatus,
     disconnect_reason: Option<String>,
+
+    /// Last computed inner area of the preview panel, exposed via the
+    /// Component trait so App can overlay the live ratatui-image protocol
+    /// (Kitty/Sixel/halfblocks) on top.
+    preview_inner: StdCell<Option<Rect>>,
 }
 
 impl Default for DashboardView {
@@ -72,6 +79,7 @@ impl DashboardView {
             selected_device: 0,
             connection_status: ConnectionStatus::default(),
             disconnect_reason: None,
+            preview_inner: StdCell::new(None),
         }
     }
 
@@ -425,6 +433,11 @@ impl DashboardView {
     }
 
     /// Render the canvas preview panel.
+    ///
+    /// Renders the bordered block and a placeholder when no canvas data is
+    /// available. When data IS available, the actual pixel rendering is done
+    /// by App as an overlay using the live ratatui-image protocol — see
+    /// `Component::canvas_preview_area()` and `App::render`.
     fn render_preview_panel(&self, frame: &mut Frame, area: Rect) {
         let block = Block::default()
             .title(Span::styled(
@@ -439,14 +452,16 @@ impl DashboardView {
         frame.render_widget(block, area);
 
         if inner.width < 2 || inner.height < 1 {
+            self.preview_inner.set(None);
             return;
         }
 
-        if let Some(cf) = &self.canvas_frame {
-            let canvas = HalfBlockCanvas::new(&cf.pixels, cf.width, cf.height);
-            frame.render_widget(canvas, inner);
-        } else {
-            // Dim placeholder
+        // Always record the inner area so App's overlay knows where to draw.
+        self.preview_inner.set(Some(inner));
+
+        if self.canvas_frame.is_none() {
+            // No data yet — show a centered "no signal" hint. App's image
+            // overlay will be a no-op since canvas_protocol is also None.
             let placeholder = Paragraph::new(Line::from(Span::styled(
                 "No canvas data",
                 Style::default().fg(Color::Rgb(50, 50, 70)),
@@ -731,6 +746,10 @@ impl Component for DashboardView {
 
     fn id(&self) -> &'static str {
         "dashboard"
+    }
+
+    fn canvas_preview_area(&self) -> Option<Rect> {
+        self.preview_inner.get()
     }
 }
 

@@ -37,6 +37,16 @@ pub trait Component: Send {
     /// Render the component into the given frame region.
     fn render(&self, frame: &mut Frame, area: Rect);
 
+    /// If this component reserves a region for the live canvas preview,
+    /// return that rect so App can overlay the multi-protocol image widget
+    /// (ratatui-image) on top of it. The screen still renders a placeholder
+    /// border / dim background — App fills the inner area with real graphics.
+    ///
+    /// Default returns `None` (component has no preview area).
+    fn canvas_preview_area(&self) -> Option<Rect> {
+        None
+    }
+
     /// Whether this component currently holds keyboard focus.
     fn focused(&self) -> bool {
         false
