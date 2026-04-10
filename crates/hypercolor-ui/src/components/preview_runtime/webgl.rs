@@ -6,6 +6,8 @@ use web_sys::{
 
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
+use super::{PreviewRenderOutcome, TextureShape};
+
 const PREVIEW_VERTEX_SHADER: &str = r#"
 attribute vec2 a_position;
 attribute vec2 a_tex_coord;
@@ -26,13 +28,6 @@ void main() {
     gl_FragColor = texture2D(u_texture, v_tex_coord);
 }
 "#;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TextureShape {
-    width: u32,
-    height: u32,
-    format: CanvasPixelFormat,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TextureUploadStrategy {
@@ -56,9 +51,9 @@ fn clear_gl_errors(gl: &Gl) {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PreviewRenderOutcome {
-    Presented,
-    Reinitialize,
+pub(super) enum WebGlInitError {
+    ContextUnavailable,
+    InitializationFailed,
 }
 
 pub(super) struct WebGlPreviewRuntime {
@@ -70,20 +65,26 @@ pub(super) struct WebGlPreviewRuntime {
 }
 
 impl WebGlPreviewRuntime {
-    pub(super) fn new(canvas: &HtmlCanvasElement) -> Option<Self> {
+    pub(super) fn new(canvas: &HtmlCanvasElement) -> Result<Self, WebGlInitError> {
         let gl = canvas
             .get_context("webgl")
             .ok()
             .flatten()
             .or_else(|| canvas.get_context("experimental-webgl").ok().flatten())
-            .and_then(|ctx| ctx.dyn_into::<Gl>().ok())?;
+            .and_then(|ctx| ctx.dyn_into::<Gl>().ok())
+            .ok_or(WebGlInitError::ContextUnavailable)?;
 
-        let vertex_shader = compile_shader(&gl, Gl::VERTEX_SHADER, PREVIEW_VERTEX_SHADER)?;
-        let fragment_shader = compile_shader(&gl, Gl::FRAGMENT_SHADER, PREVIEW_FRAGMENT_SHADER)?;
-        let program = link_program(&gl, &vertex_shader, &fragment_shader)?;
+        let vertex_shader = compile_shader(&gl, Gl::VERTEX_SHADER, PREVIEW_VERTEX_SHADER)
+            .ok_or(WebGlInitError::InitializationFailed)?;
+        let fragment_shader = compile_shader(&gl, Gl::FRAGMENT_SHADER, PREVIEW_FRAGMENT_SHADER)
+            .ok_or(WebGlInitError::InitializationFailed)?;
+        let program = link_program(&gl, &vertex_shader, &fragment_shader)
+            .ok_or(WebGlInitError::InitializationFailed)?;
         gl.use_program(Some(&program));
 
-        let vertex_buffer = gl.create_buffer()?;
+        let vertex_buffer = gl
+            .create_buffer()
+            .ok_or(WebGlInitError::InitializationFailed)?;
         gl.bind_buffer(Gl::ARRAY_BUFFER, Some(&vertex_buffer));
 
         let vertices: [f32; 16] = [
@@ -92,15 +93,20 @@ impl WebGlPreviewRuntime {
         let vertex_array = js_sys::Float32Array::from(vertices.as_slice());
         gl.buffer_data_with_array_buffer_view(Gl::ARRAY_BUFFER, &vertex_array, Gl::STATIC_DRAW);
 
-        let position_attrib = u32::try_from(gl.get_attrib_location(&program, "a_position")).ok()?;
-        let tex_coord_attrib =
-            u32::try_from(gl.get_attrib_location(&program, "a_tex_coord")).ok()?;
+        let position_attrib = u32::try_from(gl.get_attrib_location(&program, "a_position"))
+            .ok()
+            .ok_or(WebGlInitError::InitializationFailed)?;
+        let tex_coord_attrib = u32::try_from(gl.get_attrib_location(&program, "a_tex_coord"))
+            .ok()
+            .ok_or(WebGlInitError::InitializationFailed)?;
         gl.enable_vertex_attrib_array(position_attrib);
         gl.vertex_attrib_pointer_with_i32(position_attrib, 2, Gl::FLOAT, false, 16, 0);
         gl.enable_vertex_attrib_array(tex_coord_attrib);
         gl.vertex_attrib_pointer_with_i32(tex_coord_attrib, 2, Gl::FLOAT, false, 16, 8);
 
-        let texture = gl.create_texture()?;
+        let texture = gl
+            .create_texture()
+            .ok_or(WebGlInitError::InitializationFailed)?;
         gl.active_texture(Gl::TEXTURE0);
         gl.bind_texture(Gl::TEXTURE_2D, Some(&texture));
         gl.pixel_storei(Gl::UNPACK_ALIGNMENT, 1);
@@ -113,7 +119,7 @@ impl WebGlPreviewRuntime {
             gl.uniform1i(Some(&location), 0);
         }
 
-        Some(Self {
+        Ok(Self {
             gl,
             program,
             vertex_buffer,
@@ -135,7 +141,7 @@ impl WebGlPreviewRuntime {
             canvas.set_height(height);
         }
 
-        let Some(replacement) = Self::new(canvas) else {
+        let Ok(replacement) = Self::new(canvas) else {
             return false;
         };
         *self = replacement;

@@ -15,55 +15,90 @@ use wasm_bindgen::closure::Closure;
 use crate::app::WsContext;
 use crate::ws::CanvasFrame;
 
-use super::preview_runtime::{PreviewRenderOutcome, WebGlPreviewRuntime};
+use super::preview_runtime::{PreviewRenderOutcome, PreviewRuntime, PreviewRuntimeInitError};
 
 type PresentCallback = Rc<dyn Fn()>;
 type PresentScheduler = Rc<RefCell<Option<PresentCallback>>>;
-const WEBGL_RETRY_DELAY_FRAMES: u32 = 30;
+const PREVIEW_RUNTIME_RETRY_DELAY_FRAMES: u32 = 30;
+const CANVAS2D_FALLBACK_THRESHOLD: u8 = 3;
 
 enum PresenterState {
-    Uninitialized,
-    Ready(WebGlPreviewRuntime),
-    CoolingDown { retry_at_frame: u32 },
+    Uninitialized {
+        webgl_unavailable_streak: u8,
+    },
+    Ready {
+        runtime: PreviewRuntime,
+        webgl_unavailable_streak: u8,
+    },
+    CoolingDown {
+        retry_at_frame: u32,
+        webgl_unavailable_streak: u8,
+    },
 }
 
 impl PresenterState {
-    fn schedule_retry(&mut self, frame_number: u32) {
+    fn schedule_retry(&mut self, frame_number: u32, webgl_unavailable_streak: u8) {
         *self = Self::CoolingDown {
-            retry_at_frame: frame_number.saturating_add(WEBGL_RETRY_DELAY_FRAMES),
+            retry_at_frame: frame_number.saturating_add(PREVIEW_RUNTIME_RETRY_DELAY_FRAMES),
+            webgl_unavailable_streak,
         };
     }
 
-    fn ready_for_retry(&self, frame_number: u32) -> bool {
+    fn retry_state(&self, frame_number: u32) -> Option<u8> {
         match self {
-            Self::CoolingDown { retry_at_frame } => frame_number >= *retry_at_frame,
-            Self::Uninitialized | Self::Ready(_) => true,
+            Self::Uninitialized {
+                webgl_unavailable_streak,
+            } => Some(*webgl_unavailable_streak),
+            Self::CoolingDown {
+                retry_at_frame,
+                webgl_unavailable_streak,
+            } if frame_number >= *retry_at_frame => Some(*webgl_unavailable_streak),
+            Self::CoolingDown { .. } | Self::Ready { .. } => None,
         }
     }
 
     fn ensure_runtime(&mut self, canvas: &web_sys::HtmlCanvasElement, frame_number: u32) -> bool {
-        if !self.ready_for_retry(frame_number) {
-            return false;
-        }
+        let Some(webgl_unavailable_streak) = self.retry_state(frame_number) else {
+            return matches!(self, Self::Ready { .. });
+        };
 
-        if matches!(self, Self::Ready(_)) {
-            return true;
-        }
-
-        match WebGlPreviewRuntime::new(canvas) {
-            Some(runtime) => {
-                *self = Self::Ready(runtime);
+        match PreviewRuntime::new(
+            canvas,
+            webgl_unavailable_streak >= CANVAS2D_FALLBACK_THRESHOLD,
+        ) {
+            Ok(runtime) => {
+                let ready_streak = if runtime.preserves_webgl_unavailable_streak() {
+                    webgl_unavailable_streak
+                } else {
+                    0
+                };
+                *self = Self::Ready {
+                    runtime,
+                    webgl_unavailable_streak: ready_streak,
+                };
                 true
             }
-            None => {
-                self.schedule_retry(frame_number);
+            Err(PreviewRuntimeInitError::WebGlUnavailable) => {
+                self.schedule_retry(frame_number, webgl_unavailable_streak.saturating_add(1));
+                false
+            }
+            Err(PreviewRuntimeInitError::WebGlInitializationFailed) => {
+                self.schedule_retry(frame_number, 0);
                 false
             }
         }
     }
 
     fn reset(&mut self) {
-        *self = Self::Uninitialized;
+        *self = Self::default();
+    }
+}
+
+impl Default for PresenterState {
+    fn default() -> Self {
+        Self::Uninitialized {
+            webgl_unavailable_streak: 0,
+        }
     }
 }
 
@@ -81,7 +116,7 @@ pub fn CanvasPreview(
 ) -> impl IntoView {
     let canvas_ref = NodeRef::<Canvas>::new();
     let latest_frame = Rc::new(RefCell::new(None::<CanvasFrame>));
-    let presenter = Rc::new(RefCell::new(PresenterState::Uninitialized));
+    let presenter = Rc::new(RefCell::new(PresenterState::default()));
     let animation = Rc::new(RefCell::new(None::<Closure<dyn FnMut(f64)>>));
     let animation_frame_id = Rc::new(RefCell::new(None::<i32>));
     let last_presented_frame = Rc::new(RefCell::new(None::<u32>));
@@ -133,14 +168,18 @@ pub fn CanvasPreview(
                 {
                     let mut presenter_state = presenter_handle.borrow_mut();
                     if presenter_state.ensure_runtime(&canvas_handle, frame.frame_number)
-                        && let PresenterState::Ready(presenter) = &mut *presenter_state
+                        && let PresenterState::Ready {
+                            runtime: presenter,
+                            webgl_unavailable_streak,
+                        } = &mut *presenter_state
                     {
                         match presenter.render(&canvas_handle, &frame) {
                             PreviewRenderOutcome::Presented => {
                                 *last_presented_frame.borrow_mut() = Some(frame.frame_number);
                             }
                             PreviewRenderOutcome::Reinitialize => {
-                                presenter_state.schedule_retry(frame.frame_number);
+                                let retry_streak = *webgl_unavailable_streak;
+                                presenter_state.schedule_retry(frame.frame_number, retry_streak);
                                 last_presented_frame.borrow_mut().take();
                             }
                         }

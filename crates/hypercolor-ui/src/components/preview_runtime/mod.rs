@@ -1,0 +1,74 @@
+use web_sys::HtmlCanvasElement;
+
+use crate::ws::{CanvasFrame, CanvasPixelFormat};
+
+mod canvas2d;
+mod webgl;
+
+use canvas2d::Canvas2dPreviewRuntime;
+use webgl::WebGlInitError;
+use webgl::WebGlPreviewRuntime;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TextureShape {
+    width: u32,
+    height: u32,
+    format: CanvasPixelFormat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PreviewRenderOutcome {
+    Presented,
+    Reinitialize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PreviewRuntimeInitError {
+    WebGlUnavailable,
+    WebGlInitializationFailed,
+}
+
+enum PreviewRuntimeBackend {
+    WebGl(WebGlPreviewRuntime),
+    Canvas2d(Canvas2dPreviewRuntime),
+}
+
+pub(super) struct PreviewRuntime(PreviewRuntimeBackend);
+
+impl PreviewRuntime {
+    pub(super) fn new(
+        canvas: &HtmlCanvasElement,
+        allow_canvas2d_fallback: bool,
+    ) -> Result<Self, PreviewRuntimeInitError> {
+        match WebGlPreviewRuntime::new(canvas) {
+            Ok(runtime) => Ok(Self(PreviewRuntimeBackend::WebGl(runtime))),
+            Err(WebGlInitError::InitializationFailed) => {
+                Err(PreviewRuntimeInitError::WebGlInitializationFailed)
+            }
+            Err(WebGlInitError::ContextUnavailable) if allow_canvas2d_fallback => {
+                Canvas2dPreviewRuntime::new(canvas)
+                    .map(PreviewRuntimeBackend::Canvas2d)
+                    .map(Self)
+                    .ok_or(PreviewRuntimeInitError::WebGlUnavailable)
+            }
+            Err(WebGlInitError::ContextUnavailable) => {
+                Err(PreviewRuntimeInitError::WebGlUnavailable)
+            }
+        }
+    }
+
+    pub(super) fn render(
+        &mut self,
+        canvas: &HtmlCanvasElement,
+        frame: &CanvasFrame,
+    ) -> PreviewRenderOutcome {
+        match &mut self.0 {
+            PreviewRuntimeBackend::WebGl(runtime) => runtime.render(canvas, frame),
+            PreviewRuntimeBackend::Canvas2d(runtime) => runtime.render(canvas, frame),
+        }
+    }
+
+    pub(super) fn preserves_webgl_unavailable_streak(&self) -> bool {
+        matches!(self.0, PreviewRuntimeBackend::Canvas2d(_))
+    }
+}
