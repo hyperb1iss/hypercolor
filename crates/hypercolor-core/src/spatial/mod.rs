@@ -20,9 +20,14 @@
 //!                     └──────────────────┘
 //! ```
 
+mod plan;
 mod sampler;
 mod topology;
 
+pub use plan::{
+    PreparedAreaSample, PreparedBilinearSample, PreparedNearestSample, PreparedZonePlan,
+    PreparedZoneSamples,
+};
 pub use sampler::{sample_led, sample_zone};
 pub use topology::generate_positions;
 
@@ -47,7 +52,7 @@ pub struct SpatialEngine {
     /// The active spatial layout with precomputed LED positions.
     layout: Arc<SpatialLayout>,
     /// Immutable per-zone sampling plans cached from the layout.
-    prepared_zones: Arc<[sampler::PreparedZone]>,
+    prepared_zones: Arc<[PreparedZonePlan]>,
 }
 
 impl SpatialEngine {
@@ -136,6 +141,11 @@ impl SpatialEngine {
     #[must_use]
     pub fn layout(&self) -> Arc<SpatialLayout> {
         Arc::clone(&self.layout)
+    }
+
+    #[must_use]
+    pub fn sampling_plan(&self) -> Arc<[PreparedZonePlan]> {
+        Arc::clone(&self.prepared_zones)
     }
 
     /// Recompute `led_positions` for every zone from its topology.

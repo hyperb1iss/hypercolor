@@ -4,7 +4,9 @@
 //! topology position generation, coordinate transforms, and sampling
 //! algorithms produce the expected LED colors.
 
-use hypercolor_core::spatial::{SpatialEngine, generate_positions, sample_led};
+use hypercolor_core::spatial::{
+    PreparedZoneSamples, SpatialEngine, generate_positions, sample_led,
+};
 use hypercolor_types::canvas::{Canvas, Rgba, linear_to_srgb, srgb_to_linear};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
@@ -681,6 +683,28 @@ fn display_viewport_zones_are_skipped_by_spatial_sampling() {
     assert_eq!(result[0].zone_id, "strip1");
     assert_eq!(result[0].colors.len(), 5);
     assert_eq!(result[0].colors[0], [100, 150, 200]);
+}
+
+#[test]
+fn spatial_engine_exposes_prepared_sampling_plan() {
+    let zone = full_canvas_zone(
+        "strip",
+        LedTopology::Strip {
+            count: 4,
+            direction: StripDirection::LeftToRight,
+        },
+    );
+    let engine = SpatialEngine::new(test_layout(vec![zone], 100, 20));
+
+    let plan = engine.sampling_plan();
+    assert_eq!(plan.len(), 1);
+    assert_eq!(plan[0].zone_id, "strip");
+    assert_eq!(plan[0].prepared_canvas_width, 100);
+    assert_eq!(plan[0].prepared_canvas_height, 20);
+    match &plan[0].prepared_samples {
+        PreparedZoneSamples::Bilinear(samples) => assert_eq!(samples.len(), 4),
+        other => panic!("expected bilinear prepared samples, got {other:?}"),
+    }
 }
 
 // ── Layout Update Tests ─────────────────────────────────────────────────────

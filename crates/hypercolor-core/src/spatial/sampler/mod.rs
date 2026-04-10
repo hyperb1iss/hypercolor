@@ -17,25 +17,12 @@ use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, NormalizedPosition, SamplingMode, SpatialLayout,
 };
 
+use super::plan::{PreparedZonePlan, PreparedZoneSamples};
 use resample::{
-    PreparedZoneSamples, prepare_area_sample_for_position, prepare_bilinear_sample_for_position,
-    prepare_nearest_sample, sample_positions, sample_positions_into_buffer,
-    sample_prepared_canvas_pixels, sample_prepared_canvas_pixels_into, sample_srgb_rgb,
+    prepare_area_sample_for_position, prepare_bilinear_sample_for_position, prepare_nearest_sample,
+    sample_positions, sample_positions_into_buffer, sample_prepared_canvas_pixels,
+    sample_prepared_canvas_pixels_into, sample_srgb_rgb,
 };
-
-// ── Prepared zone ──────────────────────────────────────────────────────────
-
-/// Per-zone sampling plan prepared when the layout changes.
-#[derive(Debug, Clone)]
-pub(crate) struct PreparedZone {
-    pub(crate) zone_id: String,
-    sampling_method: SamplingMethod,
-    edge_behavior: EdgeBehavior,
-    sample_positions: Vec<NormalizedPosition>,
-    prepared_canvas_width: u32,
-    prepared_canvas_height: u32,
-    prepared_samples: PreparedZoneSamples,
-}
 
 // ── Coordinate transforms ──────────────────────────────────────────────────
 
@@ -121,7 +108,7 @@ fn to_sampling_method(mode: &SamplingMode) -> SamplingMethod {
 
 /// Build the immutable sampling plan for a zone.
 #[must_use]
-pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> PreparedZone {
+pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> PreparedZonePlan {
     let mode = resolve_sampling_mode(zone, layout);
     let edge = resolve_edge_behavior(zone, layout);
     let sampling_method = match mode {
@@ -181,7 +168,7 @@ pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> Prepare
         ),
     };
 
-    PreparedZone {
+    PreparedZonePlan {
         zone_id: zone.id.clone(),
         sampling_method,
         edge_behavior: edge,
@@ -196,7 +183,7 @@ pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> Prepare
 
 /// Sample a prepared zone without redoing zone transform math.
 #[must_use]
-pub(crate) fn sample_prepared_zone(canvas: &Canvas, zone: &PreparedZone) -> Vec<[u8; 3]> {
+pub(crate) fn sample_prepared_zone(canvas: &Canvas, zone: &PreparedZonePlan) -> Vec<[u8; 3]> {
     if canvas.width() == zone.prepared_canvas_width
         && canvas.height() == zone.prepared_canvas_height
     {
@@ -213,7 +200,7 @@ pub(crate) fn sample_prepared_zone(canvas: &Canvas, zone: &PreparedZone) -> Vec<
 
 pub(crate) fn sample_prepared_zone_into(
     canvas: &Canvas,
-    zone: &PreparedZone,
+    zone: &PreparedZonePlan,
     colors: &mut Vec<[u8; 3]>,
 ) {
     if canvas.width() == zone.prepared_canvas_width

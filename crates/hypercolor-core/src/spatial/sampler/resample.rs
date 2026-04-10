@@ -7,44 +7,12 @@
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, SamplingMethod};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
 
+use super::super::plan::{
+    PreparedAreaSample, PreparedBilinearSample, PreparedNearestSample, PreparedZoneSamples,
+};
 use super::lut::{
     ATTENUATION_ONE, BILINEAR_ONE, BILINEAR_SHIFT, decode_srgb_byte, encode_linear_byte,
 };
-
-// ── Prepared sample types ──────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-pub(super) enum PreparedZoneSamples {
-    Nearest(Vec<PreparedNearestSample>),
-    Bilinear(Vec<PreparedBilinearSample>),
-    Area(Vec<PreparedAreaSample>),
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) struct PreparedNearestSample {
-    offset: usize,
-    attenuation: u16,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) struct PreparedBilinearSample {
-    offsets: [usize; 4],
-    x_lower_weight: u16,
-    x_upper_weight: u16,
-    y_lower_weight: u16,
-    y_upper_weight: u16,
-    attenuation: u16,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) struct PreparedAreaSample {
-    center_x: i32,
-    center_y: i32,
-    radius: i32,
-    canvas_width: i32,
-    canvas_height: i32,
-    attenuation: u16,
-}
 
 // ── Sample preparation (layout-time) ───────────────────────────────────────
 
