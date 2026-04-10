@@ -604,7 +604,14 @@ fn HeroGauges(
     let preview_primary = Memo::new(move |_| format!("{:.1}", preview_value.get()));
     let preview_secondary = Memo::new(move |_| {
         let target = preview_target_fps.get();
-        format!("/ {target} fps")
+        let present = preview_present.get();
+        let mode = present.runtime_mode.unwrap_or("pending");
+        let arrival = present.arrival_to_present_ms;
+        if arrival > 0.0 {
+            format!("/ {target} fps · {mode} · {arrival:.1} ms")
+        } else {
+            format!("/ {target} fps · {mode}")
+        }
     });
 
     // Health-colored dropped badge
@@ -1475,4 +1482,3 @@ fn set_resizing_body(active: bool) {
         let _ = body.class_list().remove_1("resizing");
     }
 }
-

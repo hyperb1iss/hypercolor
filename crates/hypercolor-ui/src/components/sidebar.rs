@@ -13,6 +13,7 @@ use crate::app::{EffectsContext, WsContext};
 use crate::color::{self, CanvasPalette};
 use crate::components::canvas_preview::CanvasPreview;
 use crate::icons::*;
+use crate::preview_telemetry::PreviewTelemetryContext;
 use crate::style_utils::category_accent_rgb;
 use crate::toasts;
 use crate::ws::ConnectionState;
@@ -670,6 +671,7 @@ pub fn Sidebar() -> impl IntoView {
                 let theme_ctx = use_context::<crate::components::shell::ThemeContext>();
                 let palette_ctx = use_context::<crate::components::shell::PaletteContext>();
                 let ws_ctx = use_context::<WsContext>();
+                let preview_telemetry = use_context::<PreviewTelemetryContext>();
 
                 view! {
                     <div class="border-t border-edge-subtle px-2 py-2 space-y-1">
@@ -696,7 +698,27 @@ pub fn Sidebar() -> impl IntoView {
                                             />
                                             <span>{move || ws.connection_state.get().to_string()}</span>
                                             <span class="text-fg-tertiary/50 ml-1">
-                                                {move || format!("preview {:.0}/{}", ws.preview_fps.get(), ws.preview_target_fps.get())}
+                                                {move || {
+                                                    let telemetry = preview_telemetry
+                                                        .map(|context| context.presenter.get())
+                                                        .unwrap_or_default();
+                                                    let mode = telemetry.runtime_mode.unwrap_or("pending");
+                                                    let arrival = telemetry.arrival_to_present_ms;
+                                                    if arrival > 0.0 {
+                                                        format!(
+                                                            "preview {:.0}/{} {mode} {:.1}ms",
+                                                            ws.preview_fps.get(),
+                                                            ws.preview_target_fps.get(),
+                                                            arrival
+                                                        )
+                                                    } else {
+                                                        format!(
+                                                            "preview {:.0}/{} {mode}",
+                                                            ws.preview_fps.get(),
+                                                            ws.preview_target_fps.get()
+                                                        )
+                                                    }
+                                                }}
                                             </span>
                                             <span class="text-fg-tertiary/50">
                                                 {move || {
