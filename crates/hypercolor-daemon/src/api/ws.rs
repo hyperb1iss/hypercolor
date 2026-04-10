@@ -135,17 +135,59 @@ impl WsChannel {
     fn is_supported(self) -> bool {
         Self::SUPPORTED.contains(&self)
     }
+
+    const fn bit(self) -> u8 {
+        match self {
+            Self::Frames => 1 << 0,
+            Self::Spectrum => 1 << 1,
+            Self::Events => 1 << 2,
+            Self::Canvas => 1 << 3,
+            Self::ScreenCanvas => 1 << 4,
+            Self::Metrics => 1 << 5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ChannelSet(u8);
+
+impl ChannelSet {
+    const fn contains(self, channel: WsChannel) -> bool {
+        self.0 & channel.bit() != 0
+    }
+
+    fn insert(&mut self, channel: WsChannel) {
+        self.0 |= channel.bit();
+    }
+
+    fn remove(&mut self, channel: WsChannel) {
+        self.0 &= !channel.bit();
+    }
+
+    fn iter(self) -> impl Iterator<Item = WsChannel> {
+        WsChannel::SUPPORTED
+            .into_iter()
+            .filter(move |channel| self.contains(*channel))
+    }
+
+    fn from_channels(channels: &[WsChannel]) -> Self {
+        let mut set = Self::default();
+        for channel in channels {
+            set.insert(*channel);
+        }
+        set
+    }
 }
 
 #[derive(Debug, Clone)]
 struct SubscriptionState {
-    channels: HashSet<WsChannel>,
+    channels: ChannelSet,
     config: ChannelConfig,
 }
 
 impl Default for SubscriptionState {
     fn default() -> Self {
-        let mut channels = HashSet::new();
+        let mut channels = ChannelSet::default();
         channels.insert(WsChannel::Events);
         Self {
             channels,
@@ -236,10 +278,10 @@ impl ChannelConfig {
         Ok(())
     }
 
-    fn filtered_json(&self, channels: &HashSet<WsChannel>) -> serde_json::Value {
+    fn filtered_json(&self, channels: &ChannelSet) -> serde_json::Value {
         let mut map = serde_json::Map::new();
 
-        for channel in channels {
+        for channel in channels.iter() {
             let value = match channel {
                 WsChannel::Frames => serde_json::to_value(&self.frames),
                 WsChannel::Spectrum => serde_json::to_value(&self.spectrum),
@@ -907,19 +949,19 @@ async fn relay_events(
 
 fn should_relay_event(
     event: &hypercolor_types::event::HypercolorEvent,
-    channels: &HashSet<WsChannel>,
+    channels: &ChannelSet,
 ) -> bool {
-    if !channels.contains(&WsChannel::Events) {
+    if !channels.contains(WsChannel::Events) {
         return false;
     }
 
     if matches!(
         event,
         hypercolor_types::event::HypercolorEvent::FrameRendered { .. }
-    ) && (channels.contains(&WsChannel::Frames)
-        || channels.contains(&WsChannel::Canvas)
-        || channels.contains(&WsChannel::ScreenCanvas)
-        || channels.contains(&WsChannel::Metrics))
+    ) && (channels.contains(WsChannel::Frames)
+        || channels.contains(WsChannel::Canvas)
+        || channels.contains(WsChannel::ScreenCanvas)
+        || channels.contains(WsChannel::Metrics))
     {
         return false;
     }
@@ -949,7 +991,7 @@ async fn relay_frames(
     loop {
         let frame_config = {
             let subs = subscriptions.borrow();
-            if !subs.channels.contains(&WsChannel::Frames) {
+            if !subs.channels.contains(WsChannel::Frames) {
                 None
             } else {
                 Some(subs.config.frames.clone())
@@ -1026,7 +1068,7 @@ async fn relay_spectrum(
     loop {
         let spectrum_config = {
             let subs = subscriptions.borrow();
-            if !subs.channels.contains(&WsChannel::Spectrum) {
+            if !subs.channels.contains(WsChannel::Spectrum) {
                 None
             } else {
                 Some(subs.config.spectrum.clone())
@@ -1100,7 +1142,7 @@ async fn relay_canvas(
     loop {
         let canvas_config = {
             let subs = subscriptions.borrow();
-            if subs.channels.contains(&WsChannel::Canvas) {
+            if subs.channels.contains(WsChannel::Canvas) {
                 Some(subs.config.canvas.clone())
             } else {
                 None
@@ -1211,7 +1253,7 @@ async fn relay_screen_canvas(
     loop {
         let canvas_config = {
             let subs = subscriptions.borrow();
-            if subs.channels.contains(&WsChannel::ScreenCanvas) {
+            if subs.channels.contains(WsChannel::ScreenCanvas) {
                 Some(subs.config.screen_canvas.clone())
             } else {
                 None
@@ -1308,7 +1350,7 @@ async fn relay_metrics(
     loop {
         let interval_ms = {
             let subs = subscriptions.borrow();
-            if subs.channels.contains(&WsChannel::Metrics) {
+            if subs.channels.contains(WsChannel::Metrics) {
                 Some(subs.config.metrics.interval_ms)
             } else {
                 None
@@ -1335,7 +1377,7 @@ async fn relay_metrics(
 
         let still_subscribed = {
             let subs = subscriptions.borrow();
-            subs.channels.contains(&WsChannel::Metrics)
+            subs.channels.contains(WsChannel::Metrics)
         };
         if !still_subscribed {
             continue;
@@ -1437,7 +1479,7 @@ async fn handle_client_message(
             };
 
             for channel in &parsed_channels {
-                subscriptions.channels.remove(channel);
+                subscriptions.channels.remove(*channel);
             }
             let remaining = sorted_channel_names(&subscriptions.channels);
 
@@ -2272,7 +2314,7 @@ fn enqueue_backpressure_notice(
     }
 }
 
-fn sorted_channel_names(channels: &HashSet<WsChannel>) -> Vec<String> {
+fn sorted_channel_names(channels: &ChannelSet) -> Vec<String> {
     let mut names: Vec<String> = channels
         .iter()
         .map(|channel| channel.as_str().to_owned())
@@ -2282,11 +2324,7 @@ fn sorted_channel_names(channels: &HashSet<WsChannel>) -> Vec<String> {
 }
 
 fn unique_sorted_channel_names(channels: &[WsChannel]) -> Vec<String> {
-    let mut unique: HashSet<WsChannel> = HashSet::new();
-    for channel in channels {
-        unique.insert(*channel);
-    }
-    sorted_channel_names(&unique)
+    sorted_channel_names(&ChannelSet::from_channels(channels))
 }
 
 fn ws_capabilities() -> Vec<String> {
@@ -2423,13 +2461,13 @@ async fn send_json(socket: &mut WebSocket, msg: &impl Serialize) -> Result<(), a
 #[cfg(test)]
 mod tests {
     use super::{
-        ChannelConfig, ChannelConfigPatch, FrameFormat, FrameRelayMessage, FramesConfig,
-        ServerMessage, SubscriptionState, WsChannel, build_metrics_message, cached_frame_payload,
-        command_response_from_http, dispatch_command, encode_cached_canvas_preview_binary,
-        encode_canvas_preview_binary, encode_frame_binary, encode_spectrum_binary,
-        event_message_parts, filter_frame_zones, normalize_command_path, parse_channels,
-        parse_command_method, publish_subscriptions, relay_frames, relay_metrics, relay_spectrum,
-        should_relay_event, sync_preview_receiver, to_snake_case, try_enqueue_json,
+        ChannelConfig, ChannelConfigPatch, ChannelSet, FrameFormat, FrameRelayMessage,
+        FramesConfig, ServerMessage, SubscriptionState, WsChannel, build_metrics_message,
+        cached_frame_payload, command_response_from_http, dispatch_command,
+        encode_cached_canvas_preview_binary, encode_canvas_preview_binary, encode_frame_binary,
+        encode_spectrum_binary, event_message_parts, filter_frame_zones, normalize_command_path,
+        parse_channels, parse_command_method, publish_subscriptions, relay_frames, relay_metrics,
+        relay_spectrum, should_relay_event, sync_preview_receiver, to_snake_case, try_enqueue_json,
         unique_sorted_channel_names, ws_capabilities,
     };
     use crate::api::AppState;
@@ -2444,7 +2482,6 @@ mod tests {
     use hypercolor_types::event::{
         FrameData, FrameTiming, HypercolorEvent, SpectrumData, ZoneColors,
     };
-    use std::collections::HashSet;
     use std::sync::{Arc, LazyLock, Mutex as StdMutex};
     use tokio::sync::watch;
 
@@ -2637,7 +2674,7 @@ mod tests {
         assert_eq!(payload.first().copied(), Some(0x01));
         assert_eq!(state.event_bus.frame_receiver_count(), 1);
 
-        subscriptions.channels.remove(&WsChannel::Frames);
+        subscriptions.channels.remove(WsChannel::Frames);
         publish_subscriptions(&subscriptions_tx, &subscriptions);
         tokio::time::timeout(std::time::Duration::from_millis(250), async {
             loop {
@@ -2684,7 +2721,7 @@ mod tests {
         assert_eq!(payload.first().copied(), Some(0x02));
         assert_eq!(state.event_bus.spectrum_receiver_count(), 1);
 
-        subscriptions.channels.remove(&WsChannel::Spectrum);
+        subscriptions.channels.remove(WsChannel::Spectrum);
         publish_subscriptions(&subscriptions_tx, &subscriptions);
         tokio::time::timeout(std::time::Duration::from_millis(250), async {
             loop {
@@ -2802,7 +2839,7 @@ mod tests {
 
     #[test]
     fn frame_rendered_events_are_suppressed_when_metrics_are_subscribed() {
-        let channels = HashSet::from([WsChannel::Events, WsChannel::Metrics]);
+        let channels = ChannelSet::from_channels(&[WsChannel::Events, WsChannel::Metrics]);
         let event = HypercolorEvent::FrameRendered {
             frame_number: 7,
             timing: FrameTiming {
@@ -2821,7 +2858,7 @@ mod tests {
 
     #[test]
     fn frame_rendered_events_pass_through_for_event_only_clients() {
-        let channels = HashSet::from([WsChannel::Events]);
+        let channels = ChannelSet::from_channels(&[WsChannel::Events]);
         let event = HypercolorEvent::FrameRendered {
             frame_number: 7,
             timing: FrameTiming {
