@@ -1,4 +1,9 @@
-use hypercolor_core::types::canvas::{BlendMode, Canvas, PublishedSurface, Rgba, RgbaF32};
+use std::array;
+use std::sync::LazyLock;
+
+use hypercolor_core::types::canvas::{
+    Canvas, PublishedSurface, linear_to_srgb_u8, srgb_u8_to_linear,
+};
 
 use super::producer_queue::ProducerFrame;
 
@@ -8,17 +13,6 @@ pub(crate) enum CompositionMode {
     Alpha,
     Add,
     Screen,
-}
-
-impl CompositionMode {
-    const fn blend_mode(self) -> Option<BlendMode> {
-        match self {
-            Self::Replace => None,
-            Self::Alpha => Some(BlendMode::Normal),
-            Self::Add => Some(BlendMode::Add),
-            Self::Screen => Some(BlendMode::Screen),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +124,21 @@ pub struct ComposedFrameSet {
 #[derive(Debug, Default)]
 pub struct SparkleFlinger;
 
+const LINEAR_ENCODE_LUT_SCALE: f32 = 65_535.0;
+const LINEAR_ENCODE_LUT_LAST_INDEX: usize = 65_535;
+
+static SRGB_TO_LINEAR_LUT: LazyLock<[f32; 256]> = LazyLock::new(|| {
+    array::from_fn(|index| {
+        let channel = u8::try_from(index).expect("LUT index must fit in u8");
+        srgb_u8_to_linear(channel)
+    })
+});
+static LINEAR_TO_SRGB_LUT: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    (0..=LINEAR_ENCODE_LUT_LAST_INDEX)
+        .map(|index| linear_to_srgb_u8(index as f32 / LINEAR_ENCODE_LUT_SCALE))
+        .collect()
+});
+
 impl SparkleFlinger {
     pub const fn new() -> Self {
         Self
@@ -199,25 +208,135 @@ fn compose_layer(target: &mut Canvas, layer: CompositionLayer) {
         return;
     }
 
-    let blend_mode = layer.mode.blend_mode().unwrap_or(BlendMode::Normal);
+    if opacity <= 0.0 {
+        return;
+    }
+
     let target_pixels = target.as_rgba_bytes_mut();
+    let source_pixels = source_canvas.as_rgba_bytes();
+    match layer.mode {
+        CompositionMode::Replace | CompositionMode::Alpha => {
+            compose_normal_layer(target_pixels, source_pixels, opacity)
+        }
+        CompositionMode::Add => compose_add_layer(target_pixels, source_pixels, opacity),
+        CompositionMode::Screen => compose_screen_layer(target_pixels, source_pixels, opacity),
+    }
+}
+
+fn compose_normal_layer(target_pixels: &mut [u8], source_pixels: &[u8], opacity: f32) {
     for (dst_px, src_px) in target_pixels
         .chunks_exact_mut(4)
-        .zip(source_canvas.as_rgba_bytes().chunks_exact(4))
+        .zip(source_pixels.chunks_exact(4))
     {
-        let dst = Rgba::new(dst_px[0], dst_px[1], dst_px[2], dst_px[3]).to_linear_f32();
-        let src = Rgba::new(src_px[0], src_px[1], src_px[2], src_px[3]).to_linear_f32();
-        let blended = blend_mode.blend(
-            [dst.r, dst.g, dst.b, dst.a],
-            [src.r, src.g, src.b, src.a],
-            opacity,
+        let source_alpha = alpha_weight(src_px[3], opacity);
+        if source_alpha <= 0.0 {
+            continue;
+        }
+
+        let inverse_alpha = 1.0 - source_alpha;
+        dst_px[0] = encode_srgb_channel(
+            decode_srgb_channel(dst_px[0])
+                .mul_add(inverse_alpha, decode_srgb_channel(src_px[0]) * source_alpha),
         );
-        let out = RgbaF32::new(blended[0], blended[1], blended[2], blended[3]).to_srgba();
-        dst_px[0] = out.r;
-        dst_px[1] = out.g;
-        dst_px[2] = out.b;
-        dst_px[3] = out.a;
+        dst_px[1] = encode_srgb_channel(
+            decode_srgb_channel(dst_px[1])
+                .mul_add(inverse_alpha, decode_srgb_channel(src_px[1]) * source_alpha),
+        );
+        dst_px[2] = encode_srgb_channel(
+            decode_srgb_channel(dst_px[2])
+                .mul_add(inverse_alpha, decode_srgb_channel(src_px[2]) * source_alpha),
+        );
+        dst_px[3] = encode_alpha_channel(composite_alpha(dst_px[3], source_alpha));
     }
+}
+
+fn compose_add_layer(target_pixels: &mut [u8], source_pixels: &[u8], opacity: f32) {
+    for (dst_px, src_px) in target_pixels
+        .chunks_exact_mut(4)
+        .zip(source_pixels.chunks_exact(4))
+    {
+        let source_alpha = alpha_weight(src_px[3], opacity);
+        if source_alpha <= 0.0 {
+            continue;
+        }
+
+        let inverse_alpha = 1.0 - source_alpha;
+        let dst_red = decode_srgb_channel(dst_px[0]);
+        let dst_green = decode_srgb_channel(dst_px[1]);
+        let dst_blue = decode_srgb_channel(dst_px[2]);
+        let src_red = decode_srgb_channel(src_px[0]);
+        let src_green = decode_srgb_channel(src_px[1]);
+        let src_blue = decode_srgb_channel(src_px[2]);
+        dst_px[0] = encode_srgb_channel(
+            dst_red.mul_add(inverse_alpha, (dst_red + src_red).min(1.0) * source_alpha),
+        );
+        dst_px[1] = encode_srgb_channel(dst_green.mul_add(
+            inverse_alpha,
+            (dst_green + src_green).min(1.0) * source_alpha,
+        ));
+        dst_px[2] = encode_srgb_channel(
+            dst_blue.mul_add(inverse_alpha, (dst_blue + src_blue).min(1.0) * source_alpha),
+        );
+        dst_px[3] = encode_alpha_channel(composite_alpha(dst_px[3], source_alpha));
+    }
+}
+
+fn compose_screen_layer(target_pixels: &mut [u8], source_pixels: &[u8], opacity: f32) {
+    for (dst_px, src_px) in target_pixels
+        .chunks_exact_mut(4)
+        .zip(source_pixels.chunks_exact(4))
+    {
+        let source_alpha = alpha_weight(src_px[3], opacity);
+        if source_alpha <= 0.0 {
+            continue;
+        }
+
+        let inverse_alpha = 1.0 - source_alpha;
+        let dst_red = decode_srgb_channel(dst_px[0]);
+        let dst_green = decode_srgb_channel(dst_px[1]);
+        let dst_blue = decode_srgb_channel(dst_px[2]);
+        let src_red = decode_srgb_channel(src_px[0]);
+        let src_green = decode_srgb_channel(src_px[1]);
+        let src_blue = decode_srgb_channel(src_px[2]);
+        dst_px[0] = encode_srgb_channel(
+            dst_red.mul_add(inverse_alpha, screen_blend(dst_red, src_red) * source_alpha),
+        );
+        dst_px[1] = encode_srgb_channel(dst_green.mul_add(
+            inverse_alpha,
+            screen_blend(dst_green, src_green) * source_alpha,
+        ));
+        dst_px[2] = encode_srgb_channel(dst_blue.mul_add(
+            inverse_alpha,
+            screen_blend(dst_blue, src_blue) * source_alpha,
+        ));
+        dst_px[3] = encode_alpha_channel(composite_alpha(dst_px[3], source_alpha));
+    }
+}
+
+fn alpha_weight(source_alpha: u8, opacity: f32) -> f32 {
+    (f32::from(source_alpha) / 255.0) * opacity
+}
+
+fn composite_alpha(target_alpha: u8, source_alpha: f32) -> f32 {
+    let target_alpha = f32::from(target_alpha) / 255.0;
+    (target_alpha + source_alpha - target_alpha * source_alpha).min(1.0)
+}
+
+fn screen_blend(dst: f32, src: f32) -> f32 {
+    1.0 - (1.0 - dst) * (1.0 - src)
+}
+
+fn decode_srgb_channel(channel: u8) -> f32 {
+    SRGB_TO_LINEAR_LUT[channel as usize]
+}
+
+fn encode_srgb_channel(channel: f32) -> u8 {
+    let index = (channel.clamp(0.0, 1.0) * LINEAR_ENCODE_LUT_SCALE).round() as usize;
+    LINEAR_TO_SRGB_LUT[index.min(LINEAR_ENCODE_LUT_LAST_INDEX)]
+}
+
+fn encode_alpha_channel(channel: f32) -> u8 {
+    (channel * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
 #[cfg(test)]
