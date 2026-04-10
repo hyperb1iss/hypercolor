@@ -1,11 +1,11 @@
 use std::array;
 use std::sync::LazyLock;
 
-use hypercolor_core::types::canvas::{
-    Canvas, PublishedSurface, linear_to_srgb_u8, srgb_u8_to_linear,
-};
+use hypercolor_core::types::canvas::{Canvas, linear_to_srgb_u8, srgb_u8_to_linear};
 
-use super::{ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, RenderFrame};
+use super::{
+    ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, publish_composed_frame,
+};
 
 #[derive(Debug, Default)]
 pub(super) struct CpuSparkleFlinger;
@@ -55,27 +55,6 @@ impl CpuSparkleFlinger {
         }
 
         publish_composed_frame((sampling_canvas, None), false)
-    }
-}
-
-fn publish_composed_frame(frame: RenderFrame, bypassed: bool) -> ComposedFrameSet {
-    let (sampling_canvas, sampling_surface) = frame;
-    if let Some(sampling_surface) = sampling_surface {
-        return ComposedFrameSet {
-            sampling_canvas,
-            sampling_surface: Some(sampling_surface),
-            preview_surface: None,
-            bypassed,
-        };
-    }
-
-    let sampling_surface = PublishedSurface::from_owned_canvas(sampling_canvas, 0, 0);
-    let sampling_canvas = Canvas::from_published_surface(&sampling_surface);
-    ComposedFrameSet {
-        sampling_canvas,
-        sampling_surface: Some(sampling_surface),
-        preview_surface: None,
-        bypassed,
     }
 }
 

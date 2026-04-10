@@ -89,11 +89,8 @@ impl DaemonState {
         #[cfg(feature = "wgpu")]
         match crate::render_thread::sparkleflinger::gpu::GpuSparkleFlinger::new() {
             Ok(mut compositor) => {
-                if let Err(error) = compositor
-                    .ensure_surface_size(config.daemon.canvas_width, config.daemon.canvas_height)
-                {
-                    warn!(%error, "SparkleFlinger GPU surface allocation failed");
-                }
+                compositor
+                    .ensure_surface_size(config.daemon.canvas_width, config.daemon.canvas_height);
                 let probe = compositor.describe();
                 info!(
                     adapter = %probe.adapter_name,

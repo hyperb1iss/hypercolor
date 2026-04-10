@@ -126,6 +126,11 @@ pub(crate) type RenderFrame = (Canvas, Option<PublishedSurface>);
 #[derive(Debug)]
 enum SparkleFlingerBackend {
     Cpu(cpu::CpuSparkleFlinger),
+    #[cfg(feature = "wgpu")]
+    Gpu {
+        gpu: gpu::GpuSparkleFlinger,
+        cpu_fallback: cpu::CpuSparkleFlinger,
+    },
 }
 
 #[derive(Debug)]
@@ -136,11 +141,10 @@ pub struct SparkleFlinger {
 impl SparkleFlinger {
     pub fn new(mode: RenderAccelerationMode) -> Self {
         let backend = match mode {
-            RenderAccelerationMode::Cpu
-            | RenderAccelerationMode::Auto
-            | RenderAccelerationMode::Gpu => {
+            RenderAccelerationMode::Cpu | RenderAccelerationMode::Auto => {
                 SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new())
             }
+            RenderAccelerationMode::Gpu => new_gpu_backend(),
         };
         Self { backend }
     }
@@ -148,7 +152,53 @@ impl SparkleFlinger {
     pub fn compose(&mut self, plan: CompositionPlan) -> ComposedFrameSet {
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(backend) => backend.compose(plan),
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, cpu_fallback } => {
+                if gpu.supports_plan(&plan)
+                    && let Ok(composed) = gpu.compose(plan.clone())
+                {
+                    return composed;
+                }
+                cpu_fallback.compose(plan)
+            }
         }
+    }
+}
+
+#[cfg(feature = "wgpu")]
+fn new_gpu_backend() -> SparkleFlingerBackend {
+    match gpu::GpuSparkleFlinger::new() {
+        Ok(gpu) => SparkleFlingerBackend::Gpu {
+            gpu,
+            cpu_fallback: cpu::CpuSparkleFlinger::new(),
+        },
+        Err(_) => SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new()),
+    }
+}
+
+#[cfg(not(feature = "wgpu"))]
+fn new_gpu_backend() -> SparkleFlingerBackend {
+    SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new())
+}
+
+pub(super) fn publish_composed_frame(frame: RenderFrame, bypassed: bool) -> ComposedFrameSet {
+    let (sampling_canvas, sampling_surface) = frame;
+    if let Some(sampling_surface) = sampling_surface {
+        return ComposedFrameSet {
+            sampling_canvas,
+            sampling_surface: Some(sampling_surface),
+            preview_surface: None,
+            bypassed,
+        };
+    }
+
+    let sampling_surface = PublishedSurface::from_owned_canvas(sampling_canvas, 0, 0);
+    let sampling_canvas = Canvas::from_published_surface(&sampling_surface);
+    ComposedFrameSet {
+        sampling_canvas,
+        sampling_surface: Some(sampling_surface),
+        preview_surface: None,
+        bypassed,
     }
 }
 
