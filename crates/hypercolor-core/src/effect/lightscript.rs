@@ -427,15 +427,12 @@ impl LightscriptRuntime {
         let beat_pulse = clamp_unit(audio.beat_pulse);
         let onset_pulse = clamp_unit(audio.onset_pulse);
 
-        let spectrum = pad_and_sanitize_f32(&audio.spectrum, SPECTRUM_BINS);
-        let mel_bands = pad_and_sanitize_f32(&audio.mel_bands, MEL_BANDS);
-        let chromagram = pad_and_sanitize_f32(&audio.chromagram, CHROMA_BINS);
         let spectral_flux_bands = [bass, mid, treble];
 
-        let spectrum_csv = join_f32_csv(&spectrum);
-        let frequency_raw_csv = join_normalized_i8_csv(&spectrum);
-        let mel_csv = join_f32_csv(&mel_bands);
-        let chroma_csv = join_f32_csv(&chromagram);
+        let spectrum_csv = join_padded_f32_csv(&audio.spectrum, SPECTRUM_BINS);
+        let frequency_raw_csv = join_padded_normalized_i8_csv(&audio.spectrum, SPECTRUM_BINS);
+        let mel_csv = join_padded_f32_csv(&audio.mel_bands, MEL_BANDS);
+        let chroma_csv = join_padded_f32_csv(&audio.chromagram, CHROMA_BINS);
         let flux_bands_csv = join_f32_csv(&spectral_flux_bands);
 
         let mut script = String::new();
@@ -630,17 +627,6 @@ fn clamp_unit(value: f32) -> f32 {
     }
 }
 
-fn pad_and_sanitize_f32(values: &[f32], expected_len: usize) -> Vec<f32> {
-    let mut out = values
-        .iter()
-        .copied()
-        .take(expected_len)
-        .map(|value| if value.is_finite() { value } else { 0.0 })
-        .collect::<Vec<f32>>();
-    out.resize(expected_len, 0.0);
-    out
-}
-
 fn normalized_to_int8(value: f32) -> i8 {
     #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
     let scaled = (clamp_unit(value) * 127.0).round() as i16;
@@ -662,13 +648,33 @@ fn join_f32_csv(values: &[f32]) -> String {
     csv
 }
 
-fn join_normalized_i8_csv(values: &[f32]) -> String {
-    let mut csv = String::with_capacity(values.len().saturating_mul(4));
-    for (index, value) in values.iter().copied().enumerate() {
+fn join_padded_f32_csv(values: &[f32], expected_len: usize) -> String {
+    let mut csv = String::with_capacity(expected_len.saturating_mul(8));
+    for index in 0..expected_len {
         if index > 0 {
             csv.push(',');
         }
-        let _ = write!(&mut csv, "{}", normalized_to_int8(value));
+        let value = values.get(index).copied().unwrap_or_default();
+        if value.is_finite() {
+            let _ = write!(&mut csv, "{value}");
+        } else {
+            csv.push('0');
+        }
+    }
+    csv
+}
+
+fn join_padded_normalized_i8_csv(values: &[f32], expected_len: usize) -> String {
+    let mut csv = String::with_capacity(expected_len.saturating_mul(4));
+    for index in 0..expected_len {
+        if index > 0 {
+            csv.push(',');
+        }
+        let _ = write!(
+            &mut csv,
+            "{}",
+            normalized_to_int8(values.get(index).copied().unwrap_or_default())
+        );
     }
     csv
 }
