@@ -54,6 +54,9 @@ struct GpuCompositorSurfaceSet {
     source: GpuCompositorTexture,
     bind_groups: GpuCompositorBindGroups,
     readback: wgpu::Buffer,
+    cached_source_upload: Option<CachedSourceUpload>,
+    #[cfg(test)]
+    source_upload_count: usize,
 }
 
 struct GpuCompositorTexture {
@@ -64,6 +67,14 @@ struct GpuCompositorTexture {
 struct GpuCompositorBindGroups {
     front_to_back: wgpu::BindGroup,
     back_to_front: wgpu::BindGroup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CachedSourceUpload {
+    storage_ptr: usize,
+    generation: u64,
+    width: u32,
+    height: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,7 +178,7 @@ impl GpuSparkleFlinger {
         self.ensure_surface_size(plan.width, plan.height);
         let surfaces = self
             .surfaces
-            .as_ref()
+            .as_mut()
             .expect("surface allocation should succeed before composition");
 
         let mut encoder = self
@@ -437,6 +448,9 @@ impl GpuCompositorSurfaceSet {
             back,
             source,
             readback,
+            cached_source_upload: None,
+            #[cfg(test)]
+            source_upload_count: 0,
         }
     }
 
@@ -501,11 +515,21 @@ impl GpuCompositorBindGroups {
 fn compose_layer_into_gpu(
     queue: &wgpu::Queue,
     pipeline: &GpuCompositorPipeline,
-    surfaces: &GpuCompositorSurfaceSet,
+    surfaces: &mut GpuCompositorSurfaceSet,
     encoder: &mut wgpu::CommandEncoder,
     layer: &CompositionLayer,
     use_front_as_current: bool,
 ) {
+    let shader_mode = if layer.mode == CompositionMode::Replace && layer.opacity >= 1.0 {
+        ComposeShaderMode::Replace
+    } else {
+        match layer.mode {
+            CompositionMode::Replace | CompositionMode::Alpha => ComposeShaderMode::Alpha,
+            CompositionMode::Add => ComposeShaderMode::Add,
+            CompositionMode::Screen => ComposeShaderMode::Screen,
+        }
+    };
+    upload_frame_into_source_texture(queue, surfaces, &layer.frame);
     let output = if use_front_as_current {
         &surfaces.back
     } else {
@@ -516,17 +540,6 @@ fn compose_layer_into_gpu(
     } else {
         &surfaces.bind_groups.back_to_front
     };
-
-    let shader_mode = if layer.mode == CompositionMode::Replace && layer.opacity >= 1.0 {
-        ComposeShaderMode::Replace
-    } else {
-        match layer.mode {
-            CompositionMode::Replace | CompositionMode::Alpha => ComposeShaderMode::Alpha,
-            CompositionMode::Add => ComposeShaderMode::Add,
-            CompositionMode::Screen => ComposeShaderMode::Screen,
-        }
-    };
-    upload_frame_into_texture(queue, &surfaces.source.texture, &layer.frame);
     if shader_mode == ComposeShaderMode::Replace {
         encoder.copy_texture_to_texture(
             wgpu::TexelCopyTextureInfo {
@@ -565,6 +578,24 @@ fn compose_layer_into_gpu(
     drop(pass);
 }
 
+fn upload_frame_into_source_texture(
+    queue: &wgpu::Queue,
+    surfaces: &mut GpuCompositorSurfaceSet,
+    frame: &ProducerFrame,
+) {
+    let next_upload = cached_source_upload(frame);
+    if next_upload.is_some() && surfaces.cached_source_upload == next_upload {
+        return;
+    }
+
+    upload_frame_into_texture(queue, &surfaces.source.texture, frame);
+    surfaces.cached_source_upload = next_upload;
+    #[cfg(test)]
+    {
+        surfaces.source_upload_count = surfaces.source_upload_count.saturating_add(1);
+    }
+}
+
 fn upload_frame_into_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, frame: &ProducerFrame) {
     let bytes_per_row = frame.width() * BYTES_PER_PIXEL as u32;
     queue.write_texture(
@@ -582,6 +613,22 @@ fn upload_frame_into_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, frame
         },
         texture_extent(frame.width(), frame.height()),
     );
+}
+
+fn cached_source_upload(frame: &ProducerFrame) -> Option<CachedSourceUpload> {
+    let ProducerFrame::Surface(surface) = frame else {
+        return None;
+    };
+    if surface.generation() == 0 {
+        return None;
+    }
+
+    Some(CachedSourceUpload {
+        storage_ptr: surface.rgba_bytes().as_ptr() as usize,
+        generation: surface.generation(),
+        width: surface.width(),
+        height: surface.height(),
+    })
 }
 
 fn read_back_texture(
@@ -722,7 +769,9 @@ enum ComposeShaderMode {
 #[cfg(test)]
 mod tests {
     use hypercolor_core::spatial::SpatialEngine;
-    use hypercolor_core::types::canvas::{Canvas, PublishedSurface, Rgba};
+    use hypercolor_core::types::canvas::{
+        Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
+    };
     use hypercolor_types::event::ZoneColors;
     use hypercolor_types::spatial::{
         DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -739,6 +788,13 @@ mod tests {
         let mut canvas = Canvas::new(4, 4);
         canvas.fill(color);
         canvas
+    }
+
+    fn slot_surface(color: Rgba) -> PublishedSurface {
+        let mut pool = RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(4, 4), 1);
+        let mut lease = pool.dequeue().expect("surface slot should be available");
+        lease.canvas_mut().fill(color);
+        lease.submit(0, 0)
     }
 
     fn sampling_layout(mode: SamplingMode) -> SpatialLayout {
@@ -975,6 +1031,49 @@ mod tests {
         assert!(composed.sampling_canvas.is_none());
         assert!(composed.sampling_surface.is_none());
         assert!(!composed.bypassed);
+    }
+
+    #[test]
+    fn gpu_compositor_reuses_cached_slot_backed_source_uploads() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let retained_overlay = slot_surface(Rgba::new(32, 64, 255, 255));
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                    255, 32, 0, 255,
+                )))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Surface(retained_overlay),
+                    0.35,
+                ),
+            ],
+        );
+
+        compositor
+            .compose(&plan, false)
+            .expect("initial GPU composition should succeed");
+        let first_upload_count = compositor
+            .surfaces
+            .as_ref()
+            .expect("surface allocation should exist after composition")
+            .source_upload_count;
+
+        compositor
+            .compose(&plan, false)
+            .expect("cached GPU composition should succeed");
+        let second_upload_count = compositor
+            .surfaces
+            .as_ref()
+            .expect("surface allocation should persist across compositions")
+            .source_upload_count;
+
+        assert_eq!(first_upload_count, 1);
+        assert_eq!(second_upload_count, first_upload_count);
     }
 
     #[test]
