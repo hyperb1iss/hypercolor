@@ -13,9 +13,11 @@
 
 pub mod catalog;
 pub mod keys;
+pub mod reactive;
 pub mod sensitivity;
 
 pub use keys::MotionKey;
+pub use reactive::SpectrumChannel;
 pub use sensitivity::MotionSensitivity;
 
 use std::time::Instant;
@@ -34,18 +36,43 @@ pub struct MotionSystem {
     sensitivity: MotionSensitivity,
     last_tick: Instant,
     last_process_us: u64,
+    /// Lock-free shared spectrum state, written by the App on each
+    /// `SpectrumUpdated` action and read by the spectrum pulse effect.
+    spectrum: SpectrumChannel,
 }
 
 impl MotionSystem {
     /// Create a new motion system at the given sensitivity level.
     #[must_use]
     pub fn new(sensitivity: MotionSensitivity) -> Self {
+        let spectrum = SpectrumChannel::new();
+        let mut manager = EffectManager::<MotionKey>::default();
+
+        // Install the spectrum reactive layer immediately. It's a
+        // never_complete effect that reads from the shared spectrum channel
+        // every frame, so it's safe to spawn now and let App write into
+        // the channel as snapshots arrive.
+        if sensitivity != MotionSensitivity::Off {
+            manager.add_unique_effect(
+                MotionKey::SpectrumPulse,
+                reactive::spectrum_border_pulse(spectrum.clone(), sensitivity),
+            );
+        }
+
         Self {
-            manager: EffectManager::default(),
+            manager,
             sensitivity,
             last_tick: Instant::now(),
             last_process_us: 0,
+            spectrum,
         }
+    }
+
+    /// Get a clone of the spectrum channel for writing fresh snapshots.
+    /// Each clone shares the same atomics — clone is cheap and safe.
+    #[must_use]
+    pub fn spectrum_channel(&self) -> SpectrumChannel {
+        self.spectrum.clone()
     }
 
     /// Tick the motion system. Call once per render frame, after all widgets
@@ -97,11 +124,27 @@ impl MotionSystem {
 
     pub fn set_sensitivity(&mut self, s: MotionSensitivity) {
         self.sensitivity = s;
+        self.refresh_reactive_layers();
     }
 
     /// Cycle Off → Subtle → Full → Off.
     pub fn cycle_sensitivity(&mut self) {
         self.sensitivity = self.sensitivity.next();
+        self.refresh_reactive_layers();
+    }
+
+    /// Re-install reactive layers at the current sensitivity. Called when
+    /// sensitivity changes — we need to rebuild because the captured
+    /// sensitivity inside the effect closure won't update on its own.
+    fn refresh_reactive_layers(&mut self) {
+        if self.sensitivity == MotionSensitivity::Off {
+            self.manager.cancel_unique_effect(MotionKey::SpectrumPulse);
+        } else {
+            self.manager.add_unique_effect(
+                MotionKey::SpectrumPulse,
+                reactive::spectrum_border_pulse(self.spectrum.clone(), self.sensitivity),
+            );
+        }
     }
 
     /// Microseconds spent processing effects on the last tick.

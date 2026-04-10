@@ -384,6 +384,10 @@ impl App {
             }
             Action::SpectrumUpdated(spectrum) => {
                 self.state.spectrum = Some(spectrum.as_ref().clone());
+                // Feed the reactive spectrum layer
+                self.motion
+                    .spectrum_channel()
+                    .write(spectrum.bass, spectrum.level);
             }
 
             // ── Commands → daemon API ─────────────────────────
