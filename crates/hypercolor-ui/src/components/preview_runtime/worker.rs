@@ -126,11 +126,19 @@ pub(super) struct PreviewWorkerRuntime {
     worker: Worker,
     worker_url: String,
     failed: Rc<Cell<bool>>,
+    last_shape: Option<(u32, u32, CanvasPixelFormat)>,
     _onmessage: Closure<dyn FnMut(MessageEvent)>,
 }
 
 impl PreviewWorkerRuntime {
-    pub(super) fn new(canvas: &HtmlCanvasElement) -> Result<Self, ()> {
+    pub(super) fn new(canvas: &HtmlCanvasElement, frame: &CanvasFrame) -> Result<Self, ()> {
+        if canvas.width() != frame.width {
+            canvas.set_width(frame.width);
+        }
+        if canvas.height() != frame.height {
+            canvas.set_height(frame.height);
+        }
+
         let bitmap_ctx = canvas
             .get_context("bitmaprenderer")
             .ok()
@@ -158,6 +166,7 @@ impl PreviewWorkerRuntime {
             worker,
             worker_url,
             failed,
+            last_shape: None,
             _onmessage: onmessage,
         })
     }
@@ -167,11 +176,18 @@ impl PreviewWorkerRuntime {
             return PreviewRenderOutcome::Reinitialize;
         }
 
+        let next_shape = (frame.width, frame.height, frame.pixel_format());
+        if self.last_shape.is_some_and(|shape| shape != next_shape) {
+            self.failed.set(true);
+            return PreviewRenderOutcome::Reinitialize;
+        }
+
         if post_frame(&self.worker, frame).is_err() {
             self.failed.set(true);
             return PreviewRenderOutcome::Reinitialize;
         }
 
+        self.last_shape = Some(next_shape);
         PreviewRenderOutcome::Presented
     }
 }

@@ -41,9 +41,12 @@ pub(super) struct PreviewRuntime(PreviewRuntimeBackend);
 impl PreviewRuntime {
     pub(super) fn new(
         canvas: &HtmlCanvasElement,
+        frame: &CanvasFrame,
         allow_canvas2d_fallback: bool,
     ) -> Result<Self, PreviewRuntimeInitError> {
-        if let Ok(runtime) = PreviewWorkerRuntime::new(canvas) {
+        prepare_canvas(canvas, frame);
+
+        if let Ok(runtime) = PreviewWorkerRuntime::new(canvas, frame) {
             return Ok(Self(PreviewRuntimeBackend::Worker(runtime)));
         }
 
@@ -86,5 +89,14 @@ impl PreviewRuntime {
             PreviewRuntimeBackend::WebGl(_) => "webgl",
             PreviewRuntimeBackend::Canvas2d(_) => "canvas2d",
         }
+    }
+}
+
+fn prepare_canvas(canvas: &HtmlCanvasElement, frame: &CanvasFrame) {
+    if canvas.width() != frame.width {
+        canvas.set_width(frame.width);
+    }
+    if canvas.height() != frame.height {
+        canvas.set_height(frame.height);
     }
 }

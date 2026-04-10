@@ -64,13 +64,14 @@ impl PresenterState {
         }
     }
 
-    fn ensure_runtime(&mut self, canvas: &web_sys::HtmlCanvasElement, frame_number: u32) -> bool {
-        let Some(webgl_unavailable_streak) = self.retry_state(frame_number) else {
+    fn ensure_runtime(&mut self, canvas: &web_sys::HtmlCanvasElement, frame: &CanvasFrame) -> bool {
+        let Some(webgl_unavailable_streak) = self.retry_state(frame.frame_number) else {
             return matches!(self, Self::Ready { .. });
         };
 
         match PreviewRuntime::new(
             canvas,
+            frame,
             webgl_unavailable_streak >= CANVAS2D_FALLBACK_THRESHOLD,
         ) {
             Ok(runtime) => {
@@ -80,17 +81,17 @@ impl PresenterState {
                     0
                 };
                 *self = Self::Ready {
-                    runtime,
-                    webgl_unavailable_streak: ready_streak,
-                };
+                                runtime,
+                                webgl_unavailable_streak: ready_streak,
+                            };
                 true
             }
             Err(PreviewRuntimeInitError::WebGlUnavailable) => {
-                self.schedule_retry(frame_number, webgl_unavailable_streak.saturating_add(1));
+                self.schedule_retry(frame.frame_number, webgl_unavailable_streak.saturating_add(1));
                 false
             }
             Err(PreviewRuntimeInitError::WebGlInitializationFailed) => {
-                self.schedule_retry(frame_number, 0);
+                self.schedule_retry(frame.frame_number, 0);
                 false
             }
         }
@@ -206,7 +207,7 @@ pub fn CanvasPreview(
                     && Some(frame.frame_number) != *last_presented_frame.borrow()
                 {
                     let mut presenter_state = presenter_handle.borrow_mut();
-                    if presenter_state.ensure_runtime(&canvas_handle, frame.frame_number) {
+                    if presenter_state.ensure_runtime(&canvas_handle, &frame) {
                         let mode = presenter_state.mode_label();
                         runtime_mode.set(mode);
                         if let PresenterState::Ready {
