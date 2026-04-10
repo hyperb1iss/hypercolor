@@ -1883,17 +1883,27 @@ fn prepare_output_for_led_ranges(
 }
 
 fn prepare_output_for_leds(colors: &mut [[u8; 3]], brightness: f32) {
+    let scale_brightness = brightness < 1.0;
     for color in colors {
-        if *color == [0, 0, 0] {
+        let [red_u8, green_u8, blue_u8] = *color;
+        if red_u8 == 0 && green_u8 == 0 && blue_u8 == 0 {
             continue;
         }
-        let linear = [
-            decode_srgb_channel(color[0]),
-            decode_srgb_channel(color[1]),
-            decode_srgb_channel(color[2]),
+
+        let mut red = decode_srgb_channel(red_u8);
+        let mut green = decode_srgb_channel(green_u8);
+        let mut blue = decode_srgb_channel(blue_u8);
+        apply_led_perceptual_compensation_channels(&mut red, &mut green, &mut blue);
+        if scale_brightness {
+            red *= brightness;
+            green *= brightness;
+            blue *= brightness;
+        }
+        *color = [
+            linear_to_output_u8(red),
+            linear_to_output_u8(green),
+            linear_to_output_u8(blue),
         ];
-        let compensated = apply_led_perceptual_compensation(linear);
-        *color = encode_led_pwm(scale_linear_rgb(compensated, brightness));
     }
 }
 
@@ -1901,24 +1911,17 @@ fn should_use_ordered_routing(zone: &DeviceZone) -> bool {
     zone.zone_name.as_deref() != Some("Display")
 }
 
-fn scale_linear_rgb(mut color: [f32; 3], brightness: f32) -> [f32; 3] {
-    color[0] *= brightness;
-    color[1] *= brightness;
-    color[2] *= brightness;
-    color
-}
-
-fn apply_led_perceptual_compensation(mut color: [f32; 3]) -> [f32; 3] {
-    let max_channel = color[0].max(color[1]).max(color[2]);
+fn apply_led_perceptual_compensation_channels(red: &mut f32, green: &mut f32, blue: &mut f32) {
+    let max_channel = (*red).max(*green).max(*blue);
     if max_channel <= f32::EPSILON {
-        return color;
+        return;
     }
 
-    let min_channel = color[0].min(color[1]).min(color[2]);
-    let luma = color[0].mul_add(0.2126, color[1].mul_add(0.7152, color[2] * 0.0722));
+    let min_channel = (*red).min(*green).min(*blue);
+    let luma = red.mul_add(0.2126, green.mul_add(0.7152, *blue * 0.0722));
     let headroom = 1.0 - max_channel;
     if headroom <= f32::EPSILON {
-        return color;
+        return;
     }
 
     // Point-light LEDs under-represent low-luma chromatic colors, especially
@@ -1938,13 +1941,12 @@ fn apply_led_perceptual_compensation(mut color: [f32; 3]) -> [f32; 3] {
     let gain = gain.min(1.0 / max_channel);
 
     if gain <= 1.0 {
-        return color;
+        return;
     }
 
-    color[0] = (color[0] * gain).min(1.0);
-    color[1] = (color[1] * gain).min(1.0);
-    color[2] = (color[2] * gain).min(1.0);
-    color
+    *red = (*red * gain).min(1.0);
+    *green = (*green * gain).min(1.0);
+    *blue = (*blue * gain).min(1.0);
 }
 
 #[allow(
@@ -1964,14 +1966,6 @@ fn decode_srgb_channel(channel: u8) -> f32 {
     })[usize::from(channel)];
 
     f32::from(linear) / 65535.0
-}
-
-fn encode_led_pwm(color: [f32; 3]) -> [u8; 3] {
-    [
-        linear_to_output_u8(color[0]),
-        linear_to_output_u8(color[1]),
-        linear_to_output_u8(color[2]),
-    ]
 }
 
 fn target_interval_for_fps(target_fps: u32) -> Option<Duration> {
