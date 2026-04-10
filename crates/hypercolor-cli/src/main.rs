@@ -15,19 +15,6 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use client::DaemonClient;
 use output::{OutputContext, OutputFormat};
 
-// ── Help template ───────────────────────────────────────────────────────
-//
-// We render the command list ourselves (with group headings) and let clap
-// render options (with help_heading groups). The template stitches them
-// together: banner → about → usage → [our command groups] → [clap options].
-
-const HELP_TEMPLATE: &str = "\
-{before-help}
-{about-with-newline}
-{usage-heading} {usage}
-{after-help}
-{all-args}";
-
 // ── CLI definition ──────────────────────────────────────────────────────
 
 /// Hypercolor RGB lighting control.
@@ -36,60 +23,74 @@ const HELP_TEMPLATE: &str = "\
     name = "hyper",
     version,
     about = "RGB lighting orchestration engine",
-    help_template = HELP_TEMPLATE,
     styles = output::painter::help_styles(),
     subcommand_required = true,
     arg_required_else_help = true,
 )]
 pub struct Cli {
     // ── Connection ──────────────────────────────────────────────────
-
     /// Daemon hostname or IP
-    #[arg(long, global = true, default_value = "localhost",
-          help_heading = "Connection")]
+    #[arg(
+        long,
+        global = true,
+        default_value = "localhost",
+        help_heading = "Connection"
+    )]
     host: String,
 
     /// Daemon port
-    #[arg(long, global = true, default_value_t = 9420,
-          help_heading = "Connection")]
+    #[arg(
+        long,
+        global = true,
+        default_value_t = 9420,
+        help_heading = "Connection"
+    )]
     port: u16,
 
     /// Bearer token for authenticated requests
-    #[arg(long, global = true, env = "HYPERCOLOR_API_KEY",
-          help_heading = "Connection")]
+    #[arg(
+        long,
+        global = true,
+        env = "HYPERCOLOR_API_KEY",
+        help_heading = "Connection"
+    )]
     api_key: Option<String>,
 
     /// Named connection profile from cli.toml
-    #[arg(long, global = true, env = "HYPERCOLOR_PROFILE",
-          help_heading = "Connection")]
+    #[arg(
+        long,
+        global = true,
+        env = "HYPERCOLOR_PROFILE",
+        help_heading = "Connection"
+    )]
     profile: Option<String>,
 
     // ── Output ──────────────────────────────────────────────────────
-
     /// Output format: table, json, plain
-    #[arg(long, global = true, default_value = "table", value_enum,
-          hide_possible_values = true,
-          help_heading = "Output")]
+    #[arg(
+        long,
+        global = true,
+        default_value = "table",
+        value_enum,
+        hide_possible_values = true,
+        help_heading = "Output"
+    )]
     format: OutputFormat,
 
     /// Shorthand for --format json
-    #[arg(long, short = 'j', global = true,
-          help_heading = "Output")]
+    #[arg(long, short = 'j', global = true, help_heading = "Output")]
     json: bool,
 
     /// Suppress non-essential output
-    #[arg(long, short, global = true,
-          help_heading = "Output")]
+    #[arg(long, short, global = true, help_heading = "Output")]
     quiet: bool,
 
     /// Disable colored output
-    #[arg(long, global = true,
-          help_heading = "Output")]
+    #[arg(long, global = true, help_heading = "Output")]
     no_color: bool,
 
     /// Color theme name
-    #[arg(long, global = true, env = "HYPERCOLOR_THEME",
-          help_heading = "Output")]
+    #[arg(long, global = true, env = "HYPERCOLOR_THEME", help_heading = "Output")]
     theme: Option<String>,
 
     /// Increase verbosity (-v, -vv, -vvv)
@@ -101,67 +102,76 @@ pub struct Cli {
     command: Commands,
 }
 
-/// Top-level subcommands (hidden from default help — rendered by help_commands).
+/// Top-level subcommands.
+///
+/// `display_order` controls the order in which clap lists them under the
+/// "Commands:" heading. Logical grouping: lighting → devices → library →
+/// network → system.
 #[derive(Subcommand)]
 pub enum Commands {
-    #[command(hide = true)]
+    // ── Lighting ──────────────────────────────────────────────
     /// System state, render loop, and active effect
+    #[command(display_order = 1)]
     Status(commands::status::StatusArgs),
 
-    #[command(hide = true)]
-    /// Discovery, pairing, and hardware management
-    Devices(commands::devices::DevicesArgs),
-
-    #[command(hide = true)]
     /// Browse, activate, and control lighting effects
+    #[command(display_order = 2)]
     Effects(commands::effects::EffectsArgs),
 
-    #[command(hide = true)]
-    /// Automated lighting triggers and schedules
-    Scenes(commands::scenes::ScenesArgs),
-
-    #[command(hide = true)]
-    /// Save and apply full system profiles
-    Profiles(commands::profiles::ProfilesArgs),
-
-    #[command(hide = true)]
-    /// Favorites, presets, and playlists
-    Library(commands::library::LibraryArgs),
-
-    #[command(hide = true)]
-    /// Spatial LED layout configuration
-    Layouts(commands::layouts::LayoutsArgs),
-
-    #[command(hide = true)]
-    /// Global output brightness (0\u{2013}100)
+    /// Global output brightness (0-100)
+    #[command(display_order = 3)]
     Brightness(commands::brightness::BrightnessArgs),
 
-    #[command(hide = true)]
+    /// Automated lighting triggers and schedules
+    #[command(display_order = 4)]
+    Scenes(commands::scenes::ScenesArgs),
+
+    // ── Devices ───────────────────────────────────────────────
+    /// Discovery, pairing, and hardware management
+    #[command(display_order = 10)]
+    Devices(commands::devices::DevicesArgs),
+
+    /// Spatial LED layout configuration
+    #[command(display_order = 11)]
+    Layouts(commands::layouts::LayoutsArgs),
+
     /// Audio input device selection
+    #[command(display_order = 12)]
     Audio(commands::audio::AudioArgs),
 
-    #[command(hide = true)]
+    // ── Library ───────────────────────────────────────────────
+    /// Favorites, presets, and playlists
+    #[command(display_order = 20)]
+    Library(commands::library::LibraryArgs),
+
+    /// Save and apply full system profiles
+    #[command(display_order = 21)]
+    Profiles(commands::profiles::ProfilesArgs),
+
+    // ── Network ───────────────────────────────────────────────
     /// Daemon version, identity, and health
+    #[command(display_order = 30)]
     Server(commands::server::ServerArgs),
 
-    #[command(hide = true)]
-    /// Daemon and CLI configuration
-    Config(commands::config::ConfigArgs),
-
-    #[command(hide = true)]
-    /// Daemon lifecycle (start, stop, restart)
-    Service(commands::service::ServiceArgs),
-
-    #[command(hide = true)]
-    /// Health checks and diagnostic reports
-    Diagnose(commands::diagnose::DiagnoseArgs),
-
-    #[command(hide = true)]
     /// Discover daemons on the local network
+    #[command(display_order = 31)]
     Servers(commands::servers::ServersArgs),
 
-    #[command(hide = true)]
+    /// Daemon lifecycle (start, stop, restart)
+    #[command(display_order = 32)]
+    Service(commands::service::ServiceArgs),
+
+    // ── System ────────────────────────────────────────────────
+    /// Daemon and CLI configuration
+    #[command(display_order = 40)]
+    Config(commands::config::ConfigArgs),
+
+    /// Health checks and diagnostic reports
+    #[command(display_order = 41)]
+    Diagnose(commands::diagnose::DiagnoseArgs),
+
     /// Generate shell completion scripts
+    #[command(display_order = 42)]
     Completions(commands::completions::CompletionsArgs),
 }
 
@@ -172,7 +182,6 @@ async fn main() -> Result<()> {
     let cli = Cli::from_arg_matches(
         &Cli::command()
             .before_help(output::painter::help_banner())
-            .after_help(output::painter::help_commands())
             .get_matches(),
     )?;
 
