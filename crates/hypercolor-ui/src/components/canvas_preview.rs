@@ -467,6 +467,8 @@ pub fn CanvasPreview(
                 node_ref=canvas_ref
                 class="w-full h-full block bg-black"
                 style=canvas_style
+                role="img"
+                aria-label="Live effect canvas preview"
             />
             {if show_fps {
                 Some(view! {

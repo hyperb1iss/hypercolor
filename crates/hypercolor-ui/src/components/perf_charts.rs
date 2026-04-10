@@ -23,6 +23,10 @@ pub fn Sparkline(
     /// Optional dashed horizontal reference line in data-space.
     #[prop(default = None)]
     baseline: Option<f64>,
+    /// Accessible label for screen readers. When empty, the SVG is hidden from
+    /// the accessibility tree (decorative context).
+    #[prop(default = "")]
+    aria_label: &'static str,
     /// Optional extra Tailwind classes for the wrapping svg element.
     #[prop(default = "")]
     class: &'static str,
@@ -86,7 +90,9 @@ pub fn Sparkline(
             class=format!("block w-full h-full {class}")
             viewBox=format!("0 0 {W} {H}")
             preserveAspectRatio="none"
-            aria-hidden="true"
+            role={(!aria_label.is_empty()).then_some("img")}
+            aria-label={(!aria_label.is_empty()).then_some(aria_label)}
+            aria-hidden={aria_label.is_empty().then_some("true")}
         >
             {move || geometry.get().map(|(line, area, baseline_y, last_point, _lo, _hi)| {
                 view! {
@@ -141,6 +147,9 @@ pub fn RadialGauge(
     /// Optional small caption above the gauge (upper-case track label).
     #[prop(default = "")]
     caption: &'static str,
+    /// Accessible label for screen readers. Falls back to caption if empty.
+    #[prop(default = "")]
+    aria_label: &'static str,
 ) -> impl IntoView {
     const SIZE: f64 = 120.0;
     const STROKE: f64 = 9.0;
@@ -174,7 +183,12 @@ pub fn RadialGauge(
                     viewBox=format!("0 0 {SIZE} {SIZE}")
                     class="block -rotate-90"
                     style="overflow: visible"
-                    aria-hidden="true"
+                    role="img"
+                    aria-label=if aria_label.is_empty() {
+                        if caption.is_empty() { "Gauge" } else { caption }
+                    } else {
+                        aria_label
+                    }
                 >
                     // Track
                     <circle
@@ -640,6 +654,9 @@ pub fn ProgressRing(
     #[prop(into)] label: Signal<String>,
     #[prop(into)] detail: Signal<String>,
     #[prop(default = "var(--color-electric-purple)")] color: &'static str,
+    /// Accessible label for screen readers. Falls back to "Progress ring" if empty.
+    #[prop(default = "")]
+    aria_label: &'static str,
 ) -> impl IntoView {
     const SIZE: f64 = 72.0;
     const STROKE: f64 = 6.0;
@@ -665,7 +682,8 @@ pub fn ProgressRing(
                     viewBox=format!("0 0 {SIZE} {SIZE}")
                     class="block -rotate-90"
                     style="overflow: visible"
-                    aria-hidden="true"
+                    role="img"
+                    aria-label=if aria_label.is_empty() { "Progress ring" } else { aria_label }
                 >
                     <circle
                         cx=SIZE / 2.0
