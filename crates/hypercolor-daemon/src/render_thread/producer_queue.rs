@@ -21,19 +21,21 @@ pub(crate) enum ProducerFrameState {
     Retained,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProducerGeneration {
+    Latest,
+    Tagged(u64),
+}
+
 #[derive(Debug, Clone)]
 struct ProducerSubmission {
     frame: ProducerFrame,
-    generation: u64,
+    generation: ProducerGeneration,
     fresh: bool,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct LatchedProducerFrame {
-    #[allow(
-        dead_code,
-        reason = "fresh vs retained state is asserted in tests and feeds upcoming frame metrics"
-    )]
     pub state: ProducerFrameState,
     pub frame: ProducerFrame,
 }
@@ -52,10 +54,18 @@ impl ProducerQueue {
         self.latest = None;
     }
 
-    pub(crate) fn submit(&mut self, frame: ProducerFrame, generation: u64) {
+    pub(crate) fn submit_latest(&mut self, frame: ProducerFrame) {
         self.latest = Some(ProducerSubmission {
             frame,
-            generation,
+            generation: ProducerGeneration::Latest,
+            fresh: true,
+        });
+    }
+
+    pub(crate) fn submit_for_generation(&mut self, frame: ProducerFrame, generation: u64) {
+        self.latest = Some(ProducerSubmission {
+            frame,
+            generation: ProducerGeneration::Tagged(generation),
             fresh: true,
         });
     }
@@ -68,7 +78,9 @@ impl ProducerQueue {
         &mut self,
         expected_generation: u64,
     ) -> Option<LatchedProducerFrame> {
-        self.latch_matching(|submission| submission.generation == expected_generation)
+        self.latch_matching(|submission| {
+            submission.generation == ProducerGeneration::Tagged(expected_generation)
+        })
     }
 
     fn latch_matching(
@@ -114,7 +126,7 @@ mod tests {
     #[test]
     fn producer_queue_latches_fresh_then_retains() {
         let mut queue = ProducerQueue::new();
-        queue.submit(ProducerFrame::Canvas(Canvas::new(4, 4)), 1);
+        queue.submit_for_generation(ProducerFrame::Canvas(Canvas::new(4, 4)), 1);
 
         let fresh = queue
             .latch_for_generation(1)
@@ -130,7 +142,7 @@ mod tests {
     #[test]
     fn producer_queue_discards_generation_mismatch() {
         let mut queue = ProducerQueue::new();
-        queue.submit(
+        queue.submit_for_generation(
             ProducerFrame::Surface(PublishedSurface::from_owned_canvas(Canvas::new(2, 2), 1, 1)),
             7,
         );
@@ -142,7 +154,7 @@ mod tests {
     #[test]
     fn producer_queue_latches_latest_without_generation_gate() {
         let mut queue = ProducerQueue::new();
-        queue.submit(ProducerFrame::Canvas(Canvas::new(3, 5)), 11);
+        queue.submit_latest(ProducerFrame::Canvas(Canvas::new(3, 5)));
 
         let fresh = queue.latch_latest().expect("latest frame should latch");
         assert_eq!(fresh.state, ProducerFrameState::Fresh);
@@ -151,5 +163,13 @@ mod tests {
             .latch_latest()
             .expect("latest frame should remain retained");
         assert_eq!(retained.state, ProducerFrameState::Retained);
+    }
+
+    #[test]
+    fn producer_queue_latest_frames_do_not_alias_generation_zero() {
+        let mut queue = ProducerQueue::new();
+        queue.submit_latest(ProducerFrame::Canvas(Canvas::new(3, 5)));
+
+        assert!(queue.latch_for_generation(0).is_none());
     }
 }

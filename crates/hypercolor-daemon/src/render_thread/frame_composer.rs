@@ -328,11 +328,11 @@ impl<'a> ComposeContext<'a> {
         {
             self.render
                 .screen_queue
-                .submit(ProducerFrame::Surface(screen_surface.clone()), 0);
+                .submit_latest(ProducerFrame::Surface(screen_surface.clone()));
         } else if let Some(screen_canvas) = self.inputs.screen_canvas.clone() {
             self.render
                 .screen_queue
-                .submit(ProducerFrame::Canvas(screen_canvas), 0);
+                .submit_latest(ProducerFrame::Canvas(screen_canvas));
         }
 
         self.render
@@ -394,7 +394,7 @@ impl<'a> ComposeContext<'a> {
             let frame = ProducerFrame::Surface(surface);
             self.render
                 .effect_queue
-                .submit(frame.clone(), effect_generation);
+                .submit_for_generation(frame.clone(), effect_generation);
             return ProducedFrame {
                 frame,
                 producer_us: micros_u32(render_start.elapsed()),
@@ -430,7 +430,7 @@ impl<'a> ComposeContext<'a> {
         let frame = ProducerFrame::Canvas(rendered);
         self.render
             .effect_queue
-            .submit(frame.clone(), effect_generation);
+            .submit_for_generation(frame.clone(), effect_generation);
         ProducedFrame {
             frame,
             producer_us: micros_u32(render_start.elapsed()),
