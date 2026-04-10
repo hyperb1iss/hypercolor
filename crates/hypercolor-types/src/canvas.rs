@@ -952,6 +952,13 @@ impl Default for SurfaceState {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SurfaceStateCounts {
+    pub free: usize,
+    pub dequeued: usize,
+    pub published: usize,
+}
+
 const DEFAULT_RENDER_SURFACE_SLOTS: usize = 3;
 
 #[derive(Clone)]
@@ -1035,6 +1042,25 @@ impl RenderSurfacePool {
     pub fn slot_states(&mut self) -> Vec<SurfaceState> {
         self.reclaim_published_slots();
         self.slots.iter().map(|slot| slot.state).collect()
+    }
+
+    /// Aggregate slot counts without allocating an intermediate state vector.
+    #[must_use]
+    pub fn slot_counts(&mut self) -> SurfaceStateCounts {
+        self.reclaim_published_slots();
+        let mut counts = SurfaceStateCounts::default();
+        for slot in &self.slots {
+            match slot.state {
+                SurfaceState::Free => counts.free = counts.free.saturating_add(1),
+                SurfaceState::Dequeued => {
+                    counts.dequeued = counts.dequeued.saturating_add(1);
+                }
+                SurfaceState::Published => {
+                    counts.published = counts.published.saturating_add(1);
+                }
+            }
+        }
+        counts
     }
 
     /// Lease the next available surface slot for mutation.

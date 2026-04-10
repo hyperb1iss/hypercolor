@@ -4,7 +4,7 @@ use hypercolor_core::engine::FpsTier;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{
-    Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceState,
+    Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor,
 };
 use hypercolor_core::types::event::FrameData;
 
@@ -89,26 +89,15 @@ impl RenderCaches {
         &mut self,
         canvas_receiver_count: usize,
     ) -> RenderSurfaceSnapshot {
-        let slot_states = self.render_surface_pool.slot_states();
+        let slot_counts = self.render_surface_pool.slot_counts();
         let mut snapshot = RenderSurfaceSnapshot {
-            slot_count: u32::try_from(slot_states.len()).unwrap_or(u32::MAX),
+            slot_count: u32::try_from(self.render_surface_pool.slot_count()).unwrap_or(u32::MAX),
             canvas_receivers: u32::try_from(canvas_receiver_count).unwrap_or(u32::MAX),
             ..RenderSurfaceSnapshot::default()
         };
-
-        for state in slot_states {
-            match state {
-                SurfaceState::Free => {
-                    snapshot.free_slots = snapshot.free_slots.saturating_add(1);
-                }
-                SurfaceState::Published => {
-                    snapshot.published_slots = snapshot.published_slots.saturating_add(1);
-                }
-                SurfaceState::Dequeued => {
-                    snapshot.dequeued_slots = snapshot.dequeued_slots.saturating_add(1);
-                }
-            }
-        }
+        snapshot.free_slots = u32::try_from(slot_counts.free).unwrap_or(u32::MAX);
+        snapshot.published_slots = u32::try_from(slot_counts.published).unwrap_or(u32::MAX);
+        snapshot.dequeued_slots = u32::try_from(slot_counts.dequeued).unwrap_or(u32::MAX);
 
         snapshot
     }

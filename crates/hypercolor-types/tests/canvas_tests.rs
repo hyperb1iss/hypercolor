@@ -398,6 +398,22 @@ fn render_surface_pool_rebinds_published_slots_under_retention_pressure() {
 }
 
 #[test]
+fn render_surface_pool_slot_counts_match_visible_states() {
+    let descriptor = SurfaceDescriptor::rgba8888(2, 2);
+    let mut pool = RenderSurfacePool::with_slot_count(descriptor, 3);
+
+    let lease_a = pool.dequeue().expect("first lease");
+    let _surface_a = lease_a.submit(1, 10);
+
+    let _lease_b = pool.dequeue().expect("second lease");
+
+    let counts = pool.slot_counts();
+    assert_eq!(counts.published, 1);
+    assert_eq!(counts.dequeued, 1);
+    assert_eq!(counts.free, 1);
+}
+
+#[test]
 fn render_surface_lease_release_returns_slot_without_publish() {
     let descriptor = SurfaceDescriptor::rgba8888(2, 2);
     let mut pool = RenderSurfacePool::with_slot_count(descriptor, 1);
