@@ -15,3 +15,5 @@ pub mod server;
 pub mod servers;
 pub mod service;
 pub mod status;
+#[cfg(feature = "tui")]
+pub mod tui;

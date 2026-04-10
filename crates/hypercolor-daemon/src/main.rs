@@ -19,7 +19,7 @@ const MAIN_RUNTIME_THREAD_KEEP_ALIVE: std::time::Duration = std::time::Duration:
 
 /// Hypercolor lighting daemon — orchestrates RGB devices at up to 60fps.
 #[derive(Parser, Debug)]
-#[command(name = "hypercolor", about = "Hypercolor lighting daemon")]
+#[command(name = "hypercolor-daemon", about = "Hypercolor lighting daemon")]
 struct DaemonArgs {
     /// Path to the configuration file.
     #[arg(short, long)]

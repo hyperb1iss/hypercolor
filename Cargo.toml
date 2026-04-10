@@ -97,6 +97,7 @@ hypercolor-driver-hue = { path = "crates/hypercolor-driver-hue" }
 hypercolor-driver-nanoleaf = { path = "crates/hypercolor-driver-nanoleaf" }
 hypercolor-driver-wled = { path = "crates/hypercolor-driver-wled" }
 hypercolor-network = { path = "crates/hypercolor-network" }
+hypercolor-tui = { path = "crates/hypercolor-tui" }
 
 # Audio + input capture
 realfft = "3.4"

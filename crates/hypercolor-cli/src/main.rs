@@ -1,6 +1,6 @@
 //! Hypercolor CLI -- control your RGB lighting from the terminal.
 //!
-//! The `hyper` binary is the primary interface for interacting with the
+//! The `hypercolor` binary is the primary interface for interacting with the
 //! Hypercolor daemon. It communicates via HTTP REST to the daemon's API
 //! and renders output as styled tables, plain text, or JSON.
 
@@ -20,7 +20,7 @@ use output::{OutputContext, OutputFormat};
 /// Hypercolor RGB lighting control.
 #[derive(Parser)]
 #[command(
-    name = "hyper",
+    name = "hypercolor",
     version,
     about = "RGB lighting orchestration engine",
     styles = output::painter::help_styles(),
@@ -34,6 +34,7 @@ pub struct Cli {
         long,
         global = true,
         default_value = "localhost",
+        env = "HYPERCOLOR_HOST",
         help_heading = "Connection"
     )]
     host: String,
@@ -43,6 +44,7 @@ pub struct Cli {
         long,
         global = true,
         default_value_t = 9420,
+        env = "HYPERCOLOR_PORT",
         help_heading = "Connection"
     )]
     port: u16,
@@ -173,6 +175,12 @@ pub enum Commands {
     /// Generate shell completion scripts
     #[command(display_order = 42)]
     Completions(commands::completions::CompletionsArgs),
+
+    // ── Interactive ──────────────────────────────────────────
+    /// Launch the interactive terminal dashboard
+    #[cfg(feature = "tui")]
+    #[command(display_order = 50)]
+    Tui(commands::tui::TuiArgs),
 }
 
 // ── Main ────────────────────────────────────────────────────────────────
@@ -184,6 +192,16 @@ async fn main() -> Result<()> {
             .before_help(output::painter::help_banner())
             .get_matches(),
     )?;
+
+    // TUI takes over the terminal and routes tracing to a file instead of
+    // stderr, so dispatch before CLI tracing initialization.
+    #[cfg(feature = "tui")]
+    if matches!(cli.command, Commands::Tui(_)) {
+        let Commands::Tui(args) = cli.command else {
+            unreachable!()
+        };
+        return hypercolor_tui::launch(cli.host, cli.port, cli.theme, &args.log_level).await;
+    }
 
     init_tracing(cli.verbose);
 
@@ -218,6 +236,8 @@ async fn main() -> Result<()> {
         Commands::Service(args) => commands::service::execute(args, &ctx).await,
         Commands::Diagnose(args) => commands::diagnose::execute(args, &client, &ctx).await,
         Commands::Servers(args) => commands::servers::execute(args, &ctx).await,
+        #[cfg(feature = "tui")]
+        Commands::Tui(_) => unreachable!(),
         Commands::Completions(args) => {
             let mut cmd = <Cli as clap::CommandFactory>::command();
             commands::completions::execute(args, &mut cmd);

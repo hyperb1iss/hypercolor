@@ -11,7 +11,7 @@ use tokio::sync::{Mutex, oneshot};
 type SharedBody = Arc<Mutex<Option<serde_json::Value>>>;
 
 async fn run_hyper(port: u16, args: &[&str]) -> Result<()> {
-    let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_hyper"));
+    let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_hypercolor"));
     cmd.arg("--host")
         .arg("127.0.0.1")
         .arg("--port")

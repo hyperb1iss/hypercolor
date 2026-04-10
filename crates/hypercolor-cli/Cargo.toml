@@ -9,11 +9,15 @@ repository.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "hyper"
+name = "hypercolor"
 path = "src/main.rs"
 
 [lints]
 workspace = true
+
+[features]
+default = ["tui"]
+tui = ["dep:hypercolor-tui"]
 
 [dependencies]
 hypercolor-core = { workspace = true }
@@ -30,6 +34,7 @@ opaline = { workspace = true }
 owo-colors = { workspace = true }
 unicode-width = { workspace = true }
 toml = { workspace = true }
+hypercolor-tui = { workspace = true, optional = true }
 
 [dev-dependencies]
 hypercolor-core = { path = "../hypercolor-core" }

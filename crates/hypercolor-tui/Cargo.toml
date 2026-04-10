@@ -7,10 +7,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-
-[[bin]]
-name = "hypercolor-tui"
-path = "src/main.rs"
+autobins = false
 
 [lints]
 workspace = true

@@ -128,11 +128,11 @@ docs-build:
 
 # Run the daemon
 daemon *args='':
-    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor --profile preview -- --log-level debug {{ args }}
+    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview -- --log-level debug {{ args }}
 
 # Run the CLI
 cli *args='':
-    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-cli -- {{ args }}
+    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-cli --bin hypercolor -- {{ args }}
 
 # Run the system tray applet
 tray *args='':
@@ -140,15 +140,15 @@ tray *args='':
 
 # Run the daemon in release mode
 daemon-release *args='':
-    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor --release -- {{ args }}
+    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --release -- {{ args }}
 
 # Run Servo daemon (dev profile) with cache wrapper
 daemon-servo *args='':
-    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor --profile preview --features servo -- --log-level debug --bind 127.0.0.1:9420 {{ args }}
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features servo -- --log-level debug --bind 127.0.0.1:9420 {{ args }}
 
 # Run Servo daemon in release mode with cache wrapper
 daemon-servo-release *args='':
-    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor --release --features servo -- --bind 127.0.0.1:9420 {{ args }}
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --release --features servo -- --bind 127.0.0.1:9420 {{ args }}
 
 # Build Servo daemon release artifacts once (faster repeat launches)
 build-servo-release:
@@ -156,7 +156,7 @@ build-servo-release:
 
 # Run prebuilt Servo daemon release binary from cache target dir
 run-servo-release-bin *args='':
-    ~/.cache/hypercolor/target/release/hypercolor --bind 127.0.0.1:9420 {{ args }}
+    ~/.cache/hypercolor/target/release/hypercolor-daemon --bind 127.0.0.1:9420 {{ args }}
 
 # ─── TUI ─────────────────────────────────────────────────
 
@@ -193,7 +193,7 @@ tui *args='':
         fi
 
         echo "→ starting local daemon on ${bind_host}:${port}"
-        ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor --profile preview --features servo -- --log-level debug --bind "${bind_host}:${port}" &
+        ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features servo -- --log-level debug --bind "${bind_host}:${port}" &
         daemon_pid=$!
         started_daemon=1
 
@@ -210,16 +210,16 @@ tui *args='':
         fi
     fi
 
-    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-tui -- {{ args }}
+    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-cli --bin hypercolor -- tui {{ args }}
 
 # Run daemon + TUI together
 tui-dev *args='':
     #!/usr/bin/env bash
     set -euo pipefail
     trap 'kill 0' EXIT
-    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor --profile preview --features servo -- --log-level debug --bind 127.0.0.1:9420 &
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features servo -- --log-level debug --bind 127.0.0.1:9420 &
     sleep 2
-    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-tui -- {{ args }} &
+    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-cli --bin hypercolor -- tui {{ args }} &
     wait
 
 # ─── UI ──────────────────────────────────────────────────
@@ -229,7 +229,7 @@ dev *args='':
     #!/usr/bin/env bash
     set -euo pipefail
     trap 'kill 0' EXIT
-    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor --profile preview --features servo -- --log-level debug --bind 127.0.0.1:9420 {{ args }} &
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features servo -- --log-level debug --bind 127.0.0.1:9420 {{ args }} &
     sleep 2
     cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev &
     wait

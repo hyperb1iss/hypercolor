@@ -155,7 +155,7 @@ async fn wait_for_health(port: u16, timeout: Duration) -> Result<()> {
 }
 
 async fn run_hyper_json(port: u16, args: &[&str]) -> Result<serde_json::Value> {
-    let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_hyper"));
+    let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_hypercolor"));
     cmd.arg("--host")
         .arg("127.0.0.1")
         .arg("--port")
