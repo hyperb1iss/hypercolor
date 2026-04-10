@@ -7,6 +7,30 @@ pub(crate) enum ProducerFrame {
 }
 
 impl ProducerFrame {
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn rgba_bytes(&self) -> &[u8] {
+        match self {
+            Self::Canvas(canvas) => canvas.as_rgba_bytes(),
+            Self::Surface(surface) => surface.rgba_bytes(),
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) const fn width(&self) -> u32 {
+        match self {
+            Self::Canvas(canvas) => canvas.width(),
+            Self::Surface(surface) => surface.width(),
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) const fn height(&self) -> u32 {
+        match self {
+            Self::Canvas(canvas) => canvas.height(),
+            Self::Surface(surface) => surface.height(),
+        }
+    }
+
     pub(crate) fn into_render_frame(self) -> (Canvas, Option<PublishedSurface>) {
         match self {
             Self::Canvas(canvas) => (canvas, None),

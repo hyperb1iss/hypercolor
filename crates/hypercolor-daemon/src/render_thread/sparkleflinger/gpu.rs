@@ -47,12 +47,18 @@ struct GpuCompositorSurfaceSet {
     front: GpuCompositorTexture,
     back: GpuCompositorTexture,
     source: GpuCompositorTexture,
+    bind_groups: GpuCompositorBindGroups,
     readback: wgpu::Buffer,
 }
 
 struct GpuCompositorTexture {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
+}
+
+struct GpuCompositorBindGroups {
+    front_to_back: wgpu::BindGroup,
+    back_to_front: wgpu::BindGroup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,23 +130,18 @@ impl GpuSparkleFlinger {
         plan.width > 0 && plan.height > 0 && !plan.layers.is_empty()
     }
 
-    pub(crate) fn compose(&mut self, plan: CompositionPlan) -> Result<ComposedFrameSet> {
-        let CompositionPlan {
-            width,
-            height,
-            mut layers,
-        } = plan;
-
-        if layers.len() == 1
-            && let Some(layer) = layers.pop()
+    pub(crate) fn compose(&mut self, plan: &CompositionPlan) -> Result<ComposedFrameSet> {
+        if plan.layers.len() == 1
+            && let Some(layer) = plan.layers.first()
             && layer.is_bypass_candidate()
         {
-            let mut composed = publish_composed_frame(layer.frame.into_render_frame(), true);
+            let mut composed =
+                publish_composed_frame(layer.frame.clone().into_render_frame(), true);
             composed.backend = CompositorBackendKind::Gpu;
             return Ok(composed);
         }
 
-        self.ensure_surface_size(width, height);
+        self.ensure_surface_size(plan.width, plan.height);
         let surfaces = self
             .surfaces
             .as_ref()
@@ -153,18 +154,17 @@ impl GpuSparkleFlinger {
             });
 
         let mut use_front_as_current = true;
-        let mut layers = layers.into_iter();
+        let mut layers = plan.layers.iter();
         let first_layer = layers
             .next()
             .context("GPU composition requires at least one layer")?;
 
         if first_layer.mode == CompositionMode::Replace && first_layer.opacity >= 1.0 {
-            upload_frame_into_texture(&self.queue, &surfaces.front.texture, first_layer.frame);
+            upload_frame_into_texture(&self.queue, &surfaces.front.texture, &first_layer.frame);
         } else {
             let full_range = wgpu::ImageSubresourceRange::default();
             encoder.clear_texture(&surfaces.front.texture, &full_range);
             compose_layer_into_gpu(
-                &self.device,
                 &self.queue,
                 &self.pipeline,
                 surfaces,
@@ -177,7 +177,6 @@ impl GpuSparkleFlinger {
 
         for layer in layers {
             compose_layer_into_gpu(
-                &self.device,
                 &self.queue,
                 &self.pipeline,
                 surfaces,
@@ -205,21 +204,21 @@ impl GpuSparkleFlinger {
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(surfaces.padded_bytes_per_row),
-                    rows_per_image: Some(height),
+                    rows_per_image: Some(plan.height),
                 },
             },
-            texture_extent(width, height),
+            texture_extent(plan.width, plan.height),
         );
 
         let bytes = read_back_texture(
             &self.device,
             &surfaces.readback,
-            width,
-            height,
+            plan.width,
+            plan.height,
             surfaces.padded_bytes_per_row,
             self.queue.submit(Some(encoder.finish())),
         )?;
-        let canvas = Canvas::from_vec(bytes, width, height);
+        let canvas = Canvas::from_vec(bytes, plan.width, plan.height);
         let mut composed = publish_composed_frame((canvas, None), false);
         composed.backend = CompositorBackendKind::Gpu;
         Ok(composed)
@@ -237,7 +236,12 @@ impl GpuSparkleFlinger {
             return;
         }
 
-        self.surfaces = Some(GpuCompositorSurfaceSet::new(&self.device, width, height));
+        self.surfaces = Some(GpuCompositorSurfaceSet::new(
+            &self.device,
+            &self.pipeline,
+            width,
+            height,
+        ));
     }
 
     pub(crate) fn surface_snapshot(&self) -> Option<GpuCompositorSurfaceSnapshot> {
@@ -340,7 +344,12 @@ impl GpuCompositorPipeline {
 }
 
 impl GpuCompositorSurfaceSet {
-    fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+    fn new(
+        device: &wgpu::Device,
+        pipeline: &GpuCompositorPipeline,
+        width: u32,
+        height: u32,
+    ) -> Self {
         let padded_bytes_per_row = padded_bytes_per_row(width);
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("SparkleFlinger GPU readback"),
@@ -349,13 +358,18 @@ impl GpuCompositorSurfaceSet {
             mapped_at_creation: false,
         });
 
+        let front = GpuCompositorTexture::new(device, width, height, "SparkleFlinger Front");
+        let back = GpuCompositorTexture::new(device, width, height, "SparkleFlinger Back");
+        let source = GpuCompositorTexture::new(device, width, height, "SparkleFlinger Source");
+
         Self {
             width,
             height,
             padded_bytes_per_row,
-            front: GpuCompositorTexture::new(device, width, height, "SparkleFlinger Front"),
-            back: GpuCompositorTexture::new(device, width, height, "SparkleFlinger Back"),
-            source: GpuCompositorTexture::new(device, width, height, "SparkleFlinger Source"),
+            bind_groups: GpuCompositorBindGroups::new(device, pipeline, &front, &back, &source),
+            front,
+            back,
+            source,
             readback,
         }
     }
@@ -389,24 +403,52 @@ impl GpuCompositorTexture {
     }
 }
 
+impl GpuCompositorBindGroups {
+    fn new(
+        device: &wgpu::Device,
+        pipeline: &GpuCompositorPipeline,
+        front: &GpuCompositorTexture,
+        back: &GpuCompositorTexture,
+        source: &GpuCompositorTexture,
+    ) -> Self {
+        Self {
+            front_to_back: create_compose_bind_group(
+                device,
+                pipeline,
+                &front.view,
+                &source.view,
+                &back.view,
+                "SparkleFlinger GPU bind group front->back",
+            ),
+            back_to_front: create_compose_bind_group(
+                device,
+                pipeline,
+                &back.view,
+                &source.view,
+                &front.view,
+                "SparkleFlinger GPU bind group back->front",
+            ),
+        }
+    }
+}
+
 fn compose_layer_into_gpu(
-    device: &wgpu::Device,
     queue: &wgpu::Queue,
     pipeline: &GpuCompositorPipeline,
     surfaces: &GpuCompositorSurfaceSet,
     encoder: &mut wgpu::CommandEncoder,
-    layer: CompositionLayer,
+    layer: &CompositionLayer,
     use_front_as_current: bool,
 ) {
-    let current = if use_front_as_current {
-        &surfaces.front
-    } else {
-        &surfaces.back
-    };
     let output = if use_front_as_current {
         &surfaces.back
     } else {
         &surfaces.front
+    };
+    let bind_group = if use_front_as_current {
+        &surfaces.bind_groups.front_to_back
+    } else {
+        &surfaces.bind_groups.back_to_front
     };
 
     let shader_mode = if layer.mode == CompositionMode::Replace && layer.opacity >= 1.0 {
@@ -418,7 +460,7 @@ fn compose_layer_into_gpu(
             CompositionMode::Screen => ComposeShaderMode::Screen,
         }
     };
-    upload_frame_into_texture(queue, &surfaces.source.texture, layer.frame);
+    upload_frame_into_texture(queue, &surfaces.source.texture, &layer.frame);
     if shader_mode == ComposeShaderMode::Replace {
         encoder.copy_texture_to_texture(
             wgpu::TexelCopyTextureInfo {
@@ -443,34 +485,12 @@ fn compose_layer_into_gpu(
         0,
         &encode_compose_params(surfaces.width, surfaces.height, shader_mode, layer.opacity),
     );
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("SparkleFlinger GPU compose bind group"),
-        layout: &pipeline.compose_bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&current.view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(&surfaces.source.view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::TextureView(&output.view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: pipeline.params_buffer.as_entire_binding(),
-            },
-        ],
-    });
     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
         label: Some("SparkleFlinger GPU compose pass"),
         timestamp_writes: None,
     });
     pass.set_pipeline(&pipeline.compose_pipeline);
-    pass.set_bind_group(0, &bind_group, &[]);
+    pass.set_bind_group(0, bind_group, &[]);
     pass.dispatch_workgroups(
         surfaces.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
         surfaces.height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
@@ -479,9 +499,8 @@ fn compose_layer_into_gpu(
     drop(pass);
 }
 
-fn upload_frame_into_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, frame: ProducerFrame) {
-    let (canvas, _) = frame.into_render_frame();
-    let bytes_per_row = canvas.width() * BYTES_PER_PIXEL as u32;
+fn upload_frame_into_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, frame: &ProducerFrame) {
+    let bytes_per_row = frame.width() * BYTES_PER_PIXEL as u32;
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture,
@@ -489,13 +508,13 @@ fn upload_frame_into_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, frame
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        canvas.as_rgba_bytes(),
+        frame.rgba_bytes(),
         wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(bytes_per_row),
-            rows_per_image: Some(canvas.height()),
+            rows_per_image: Some(frame.height()),
         },
-        texture_extent(canvas.width(), canvas.height()),
+        texture_extent(frame.width(), frame.height()),
     );
 }
 
@@ -525,19 +544,57 @@ fn read_back_texture(
 
     let mapped = slice.get_mapped_range();
     let unpadded_bytes_per_row = width * BYTES_PER_PIXEL as u32;
-    let mut bytes = Vec::with_capacity(width as usize * height as usize * BYTES_PER_PIXEL);
-    for row in mapped
-        .chunks(usize::try_from(padded_bytes_per_row).expect("row pitch should fit in usize"))
-        .take(height as usize)
-    {
-        bytes.extend_from_slice(
-            &row[..usize::try_from(unpadded_bytes_per_row).expect("row width should fit in usize")],
-        );
-    }
+    let bytes = if padded_bytes_per_row == unpadded_bytes_per_row {
+        mapped.to_vec()
+    } else {
+        let mut bytes = Vec::with_capacity(width as usize * height as usize * BYTES_PER_PIXEL);
+        for row in mapped
+            .chunks(usize::try_from(padded_bytes_per_row).expect("row pitch should fit in usize"))
+            .take(height as usize)
+        {
+            bytes.extend_from_slice(
+                &row[..usize::try_from(unpadded_bytes_per_row)
+                    .expect("row width should fit in usize")],
+            );
+        }
+        bytes
+    };
     drop(mapped);
     buffer.unmap();
 
     Ok(bytes)
+}
+
+fn create_compose_bind_group(
+    device: &wgpu::Device,
+    pipeline: &GpuCompositorPipeline,
+    current: &wgpu::TextureView,
+    source: &wgpu::TextureView,
+    output: &wgpu::TextureView,
+    label: &'static str,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout: &pipeline.compose_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(current),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(source),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(output),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: pipeline.params_buffer.as_entire_binding(),
+            },
+        ],
+    })
 }
 
 fn texture_extent(width: u32, height: u32) -> wgpu::Extent3d {
@@ -664,7 +721,7 @@ mod tests {
         );
         let expected = CpuSparkleFlinger::new().compose(plan.clone());
         let composed = compositor
-            .compose(plan)
+            .compose(&plan)
             .expect("GPU composition should succeed for replace + alpha plans");
 
         assert_eq!(
@@ -695,7 +752,7 @@ mod tests {
         );
         let expected = CpuSparkleFlinger::new().compose(plan.clone());
         let composed = compositor
-            .compose(plan)
+            .compose(&plan)
             .expect("GPU composition should succeed for add plans");
 
         assert_eq!(
@@ -726,7 +783,7 @@ mod tests {
         );
         let expected = CpuSparkleFlinger::new().compose(plan.clone());
         let composed = compositor
-            .compose(plan)
+            .compose(&plan)
             .expect("GPU composition should succeed for screen plans");
 
         assert_eq!(
@@ -743,12 +800,13 @@ mod tests {
         };
         let source =
             PublishedSurface::from_owned_canvas(solid_canvas(Rgba::new(12, 34, 56, 255)), 1, 2);
+        let plan = CompositionPlan::single(
+            4,
+            4,
+            CompositionLayer::replace(ProducerFrame::Surface(source.clone())),
+        );
         let composed = compositor
-            .compose(CompositionPlan::single(
-                4,
-                4,
-                CompositionLayer::replace(ProducerFrame::Surface(source.clone())),
-            ))
+            .compose(&plan)
             .expect("single replace surface should bypass GPU composition");
 
         let surface = composed

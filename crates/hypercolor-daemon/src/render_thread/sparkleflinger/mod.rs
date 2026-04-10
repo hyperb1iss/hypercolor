@@ -167,7 +167,7 @@ impl SparkleFlinger {
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, cpu_fallback } => {
                 if gpu.supports_plan(&plan)
-                    && let Ok(composed) = gpu.compose(plan.clone())
+                    && let Ok(composed) = gpu.compose(&plan)
                 {
                     return composed;
                 }

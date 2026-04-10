@@ -16,6 +16,8 @@ use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
 };
+#[cfg(feature = "wgpu")]
+use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::FrameData;
 use hypercolor_types::spatial::{
@@ -344,7 +346,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
     let mut group = c.benchmark_group("daemon_sparkleflinger");
     group.throughput(Throughput::Bytes(CANVAS_RGBA_BYTES));
 
-    let mut sparkleflinger = SparkleFlinger::new();
+    let mut sparkleflinger = SparkleFlinger::cpu();
     let bypass_surface = split_surface();
     group.bench_function("single_replace_bypass", |b| {
         b.iter(|| {
@@ -377,6 +379,25 @@ fn bench_sparkleflinger(c: &mut Criterion) {
             black_box(composed.sampling_canvas.get_pixel(0, 0));
         });
     });
+
+    #[cfg(feature = "wgpu")]
+    {
+        let mut sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Gpu)
+            .expect("GPU SparkleFlinger should initialize for the benchmark");
+        group.bench_function("gpu_alpha_two_layer_compose", |b| {
+            b.iter(|| {
+                let composed = sparkleflinger.compose(CompositionPlan::with_layers(
+                    CANVAS_WIDTH,
+                    CANVAS_HEIGHT,
+                    vec![
+                        CompositionLayer::replace_canvas(black_box(base.clone())),
+                        CompositionLayer::alpha_canvas(black_box(overlay.clone()), 0.35),
+                    ],
+                ));
+                black_box(composed.sampling_canvas.get_pixel(0, 0));
+            });
+        });
+    }
 
     group.finish();
 }
