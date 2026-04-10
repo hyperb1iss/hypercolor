@@ -491,7 +491,7 @@ pub fn Sidebar() -> impl IntoView {
 
                 Some(view! {
                     <div
-                        class="border-t border-edge-subtle py-3 space-y-3 animate-fade-in"
+                        class="shrink-0 border-t border-edge-subtle py-3 space-y-3 animate-fade-in"
                         style:box-shadow=move || {
                             let p = primary_rgb();
                             let s = secondary_rgb();
@@ -674,19 +674,19 @@ pub fn Sidebar() -> impl IntoView {
                 let preview_telemetry = use_context::<PreviewTelemetryContext>();
 
                 view! {
-                    <div class="border-t border-edge-subtle px-2 py-2 space-y-1">
+                    <div class="shrink-0 border-t border-edge-subtle px-2 py-2 space-y-1">
                         // Status + actions row (expanded only)
                         <div
-                            class="flex items-center justify-between px-1"
+                            class="flex items-center justify-between gap-2 px-1 min-h-5"
                             style:display=move || if collapsed.get() { "none" } else { "flex" }
                         >
                             // Connection status
-                            <div class="flex items-center gap-1.5 text-[10px] font-mono text-fg-tertiary">
+                            <div class="min-w-0 flex flex-1 items-center gap-1.5 overflow-hidden text-[10px] font-mono text-fg-tertiary">
                                 {move || {
                                     ws_ctx.map(|ws| {
                                         view! {
                                             <div
-                                                class="w-[5px] h-[5px] rounded-full"
+                                                class="w-[5px] h-[5px] rounded-full shrink-0"
                                                 style=move || {
                                                     match ws.connection_state.get() {
                                                         ConnectionState::Connected => "background: rgb(80, 250, 123); box-shadow: 0 0 6px rgba(80, 250, 123, 0.5)",
@@ -696,8 +696,10 @@ pub fn Sidebar() -> impl IntoView {
                                                     }
                                                 }
                                             />
-                                            <span>{move || ws.connection_state.get().to_string()}</span>
-                                            <span class="text-fg-tertiary/50 ml-1">
+                                            <span class="shrink-0 whitespace-nowrap">
+                                                {move || ws.connection_state.get().to_string()}
+                                            </span>
+                                            <span class="min-w-0 flex-1 truncate text-fg-tertiary/50">
                                                 {move || {
                                                     let telemetry = preview_telemetry
                                                         .map(|context| context.presenter.get())
@@ -720,7 +722,7 @@ pub fn Sidebar() -> impl IntoView {
                                                     }
                                                 }}
                                             </span>
-                                            <span class="text-fg-tertiary/50">
+                                            <span class="shrink-0 whitespace-nowrap text-fg-tertiary/50">
                                                 {move || {
                                                     ws.metrics
                                                         .get()
@@ -734,7 +736,7 @@ pub fn Sidebar() -> impl IntoView {
                             </div>
 
                             // Right side: theme + search
-                            <div class="flex items-center gap-0.5">
+                            <div class="shrink-0 flex items-center gap-0.5">
                                 // Search (command palette)
                                 {move || {
                                     palette_ctx.map(|ctx| {
