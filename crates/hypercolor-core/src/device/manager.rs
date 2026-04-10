@@ -1860,11 +1860,25 @@ fn prepare_output_for_led_ranges(
         return;
     }
 
+    if written_ranges.is_empty() {
+        return;
+    }
+
+    if written_ranges.len() == 1 {
+        let range = &written_ranges[0];
+        if range.start == 0 && range.end == colors.len() {
+            prepare_output_for_leds(colors, brightness);
+            return;
+        }
+    }
+
     for range in written_ranges {
-        let Some(slice) = colors.get_mut(range.clone()) else {
+        let start = range.start.min(colors.len());
+        let end = range.end.min(colors.len());
+        if start >= end {
             continue;
-        };
-        prepare_output_for_leds(slice, brightness);
+        }
+        prepare_output_for_leds(&mut colors[start..end], brightness);
     }
 }
 
