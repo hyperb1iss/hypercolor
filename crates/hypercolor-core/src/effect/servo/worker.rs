@@ -567,14 +567,16 @@ fn batched_script_preview(scripts: &[String]) -> String {
     format!("{} scripts: {previews}", scripts.len())
 }
 
-fn combined_script(scripts: &[String]) -> String {
+fn combined_script(buffer: &mut String, scripts: &[String]) {
     let capacity = scripts.iter().map(String::len).sum::<usize>() + scripts.len();
-    let mut combined = String::with_capacity(capacity);
-    for script in scripts {
-        combined.push_str(script);
-        combined.push('\n');
+    buffer.clear();
+    if buffer.capacity() < capacity {
+        buffer.reserve(capacity - buffer.capacity());
     }
-    combined
+    for script in scripts {
+        buffer.push_str(script);
+        buffer.push('\n');
+    }
 }
 
 struct ServoWorkerExitGuard;
@@ -701,6 +703,7 @@ struct ServoWorkerRuntime {
     rendering_context: Rc<dyn RenderingContext>,
     delegate: Rc<HypercolorWebViewDelegate>,
     loaded_html_path: Option<PathBuf>,
+    script_buffer: String,
 }
 
 impl ServoWorkerRuntime {
@@ -730,6 +733,7 @@ impl ServoWorkerRuntime {
             rendering_context,
             delegate,
             loaded_html_path: None,
+            script_buffer: String::new(),
         };
         runtime.wait_for_load_completion(LOAD_TIMEOUT, None)?;
         Ok(runtime)
@@ -773,6 +777,7 @@ impl ServoWorkerRuntime {
             rendering_context,
             delegate,
             loaded_html_path,
+            ..
         } = self;
         drop(loaded_html_path);
         drop(delegate);
@@ -921,10 +926,13 @@ impl ServoWorkerRuntime {
             return Ok(());
         }
 
-        let combined = combined_script(scripts);
-        let preview = batched_script_preview(scripts);
-        self.evaluate_script(&combined)
-            .with_context(|| format!("failed to evaluate script batch: {preview}"))
+        let mut script_buffer = std::mem::take(&mut self.script_buffer);
+        combined_script(&mut script_buffer, scripts);
+        let result = self
+            .evaluate_script(&script_buffer)
+            .with_context(|| format!("failed to evaluate script batch: {}", batched_script_preview(scripts)));
+        self.script_buffer = script_buffer;
+        result
     }
 
     fn resize_if_needed(&self, width: u32, height: u32) -> Result<()> {
