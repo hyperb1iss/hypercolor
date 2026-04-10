@@ -106,11 +106,13 @@ pub(crate) fn publish_frame_updates(
             });
     }
     if spectrum_receivers > 0 {
-        let _ = state.event_bus.spectrum_sender().send(spectrum_from_audio(
-            audio,
-            audio_signal.as_ref().expect("audio signal should exist"),
-            elapsed_ms,
-        ));
+        let audio_signal = audio_signal.as_ref().expect("audio signal should exist");
+        state
+            .event_bus
+            .spectrum_sender()
+            .send_modify(|published_spectrum| {
+                update_spectrum_from_audio(published_spectrum, audio, audio_signal, elapsed_ms);
+            });
     }
     maybe_publish_audio_level_event(
         state,
@@ -218,26 +220,21 @@ fn should_publish_audio_level_event(
         })
 }
 
-fn spectrum_from_audio(
+fn update_spectrum_from_audio(
+    spectrum: &mut SpectrumData,
     audio: &AudioData,
     signal: &AudioSignalSnapshot,
     timestamp_ms: u32,
-) -> SpectrumData {
-    SpectrumData {
-        timestamp_ms,
-        level: signal.level,
-        bass: signal.bass,
-        mid: signal.mid,
-        treble: signal.treble,
-        beat: signal.beat,
-        beat_confidence: audio.beat_confidence,
-        bpm: if audio.bpm > 0.0 {
-            Some(audio.bpm)
-        } else {
-            None
-        },
-        bins: audio.spectrum.clone(),
-    }
+) {
+    spectrum.timestamp_ms = timestamp_ms;
+    spectrum.level = signal.level;
+    spectrum.bass = signal.bass;
+    spectrum.mid = signal.mid;
+    spectrum.treble = signal.treble;
+    spectrum.beat = signal.beat;
+    spectrum.beat_confidence = audio.beat_confidence;
+    spectrum.bpm = (audio.bpm > 0.0).then_some(audio.bpm);
+    spectrum.bins.clone_from(&audio.spectrum);
 }
 
 impl AudioSignalSnapshot {

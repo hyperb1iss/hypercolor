@@ -2450,6 +2450,82 @@ async fn idle_pipeline_skips_spectrum_publication_without_receivers() {
 }
 
 #[tokio::test]
+async fn render_thread_reuses_published_spectrum_bins_between_frames() {
+    let mut effect_engine = EffectEngine::new();
+    effect_engine
+        .activate(
+            Box::new(MockEffectRenderer::solid(24, 32, 48)),
+            MockEffectRenderer::sample_metadata("spectrum-reuse"),
+        )
+        .expect("activate");
+
+    let state = make_render_state(
+        effect_engine,
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+
+    let mut audio = AudioData::silence();
+    audio.rms_level = 0.42;
+    audio.beat_detected = true;
+    audio.beat_confidence = 0.9;
+    for value in &mut audio.spectrum[..40] {
+        *value = 0.8;
+    }
+    for value in &mut audio.spectrum[40..130] {
+        *value = 0.4;
+    }
+    for value in &mut audio.spectrum[130..] {
+        *value = 0.2;
+    }
+
+    {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager.add_source(Box::new(MockAudioSource::new(audio)));
+        input_manager
+            .start_all()
+            .expect("input manager should start");
+    }
+
+    let mut spectrum_rx = state.event_bus.spectrum_receiver();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(1), spectrum_rx.changed())
+        .await
+        .expect("expected first spectrum frame within 1 second")
+        .expect("spectrum watch should remain connected");
+    let first_ptr = {
+        let first = spectrum_rx.borrow_and_update();
+        assert_eq!(first.bins.len(), 200);
+        first.bins.as_ptr()
+    };
+
+    tokio::time::timeout(Duration::from_secs(1), spectrum_rx.changed())
+        .await
+        .expect("expected second spectrum frame within 1 second")
+        .expect("spectrum watch should remain connected");
+    let second_ptr = {
+        let second = spectrum_rx.borrow_and_update();
+        assert_eq!(second.bins.len(), 200);
+        second.bins.as_ptr()
+    };
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    assert_eq!(first_ptr, second_ptr);
+}
+
+#[tokio::test]
 async fn idle_pipeline_does_not_republish_empty_screen_canvas_frames() {
     let state = make_render_state(
         EffectEngine::new(),
