@@ -81,13 +81,16 @@ impl PresenterState {
                     0
                 };
                 *self = Self::Ready {
-                                runtime,
-                                webgl_unavailable_streak: ready_streak,
-                            };
+                    runtime,
+                    webgl_unavailable_streak: ready_streak,
+                };
                 true
             }
             Err(PreviewRuntimeInitError::WebGlUnavailable) => {
-                self.schedule_retry(frame.frame_number, webgl_unavailable_streak.saturating_add(1));
+                self.schedule_retry(
+                    frame.frame_number,
+                    webgl_unavailable_streak.saturating_add(1),
+                );
                 false
             }
             Err(PreviewRuntimeInitError::WebGlInitializationFailed) => {
@@ -203,7 +206,8 @@ pub fn CanvasPreview(
                     return;
                 }
 
-                if let Some(frame) = latest_frame.borrow().clone()
+                let latest_frame_ref = latest_frame.borrow();
+                if let Some(frame) = latest_frame_ref.as_ref()
                     && Some(frame.frame_number) != *last_presented_frame.borrow()
                 {
                     let mut presenter_state = presenter_handle.borrow_mut();
@@ -313,12 +317,12 @@ pub fn CanvasPreview(
         let schedule_present = Rc::clone(&schedule_present);
         move |_| {
             let next_frame = frame.get();
-            *latest_frame.borrow_mut() = next_frame.clone();
-            *latest_frame_received_at.borrow_mut() = next_frame.as_ref().map(|_| browser_now_ms());
+            let has_next_frame = next_frame.is_some();
+            let received_at_ms = has_next_frame.then(browser_now_ms);
+            *latest_frame.borrow_mut() = next_frame;
+            *latest_frame_received_at.borrow_mut() = received_at_ms;
 
-            if next_frame.is_some()
-                && let Some(schedule) = schedule_present.borrow().as_ref()
-            {
+            if has_next_frame && let Some(schedule) = schedule_present.borrow().as_ref() {
                 schedule();
             }
         }
