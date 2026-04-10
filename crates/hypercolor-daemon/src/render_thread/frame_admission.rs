@@ -1,10 +1,22 @@
+use std::collections::VecDeque;
+
 use hypercolor_core::engine::FpsTier;
 
 const EWMA_ALPHA: f64 = 0.2;
-const FULL_TIER_TOTAL_RATIO: f64 = 0.8;
-const FULL_TIER_PRODUCER_RATIO: f64 = 0.6;
-const FULL_TIER_COMPOSITION_RATIO: f64 = 0.2;
+const ADMISSION_HISTORY_CAPACITY: usize = 60;
+const FULL_TIER_ELIGIBLE_TOTAL_RATIO: f64 = 0.8;
+const FULL_TIER_ELIGIBLE_PRODUCER_RATIO: f64 = 0.6;
+const FULL_TIER_ELIGIBLE_COMPOSITION_RATIO: f64 = 0.2;
+const FULL_TIER_ELIGIBLE_P95_RATIO: f64 = 0.85;
+const FULL_TIER_REVOKE_TOTAL_RATIO: f64 = 0.92;
+const FULL_TIER_REVOKE_PRODUCER_RATIO: f64 = 0.7;
+const FULL_TIER_REVOKE_COMPOSITION_RATIO: f64 = 0.25;
+const FULL_TIER_REVOKE_P95_RATIO: f64 = 0.95;
 const FULL_TIER_COPY_PRESSURE_THRESHOLD: u32 = 2;
+const FULL_TIER_REVOKE_MISS_THRESHOLD: u32 = 2;
+const FULL_TIER_REVOKE_PERCENTILE_MIN_SAMPLES: usize = 10;
+const FULL_TIER_READMIT_MIN_SAMPLES: usize = 30;
+const FULL_TIER_READMIT_STREAK: u32 = 30;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FrameAdmissionSample {
@@ -19,14 +31,17 @@ pub(crate) struct FrameAdmissionDecision {
     pub(crate) ceiling_tier: FpsTier,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct FrameAdmissionController {
     configured_max_tier: FpsTier,
     current_ceiling_tier: FpsTier,
     total_ewma_us: Option<f64>,
     producer_ewma_us: Option<f64>,
     composition_ewma_us: Option<f64>,
+    recent_total_us: VecDeque<u32>,
     consecutive_copy_frames: u32,
+    consecutive_over_budget_frames: u32,
+    consecutive_full_eligible_frames: u32,
 }
 
 impl FrameAdmissionController {
@@ -37,11 +52,19 @@ impl FrameAdmissionController {
             total_ewma_us: None,
             producer_ewma_us: None,
             composition_ewma_us: None,
+            recent_total_us: VecDeque::with_capacity(ADMISSION_HISTORY_CAPACITY),
             consecutive_copy_frames: 0,
+            consecutive_over_budget_frames: 0,
+            consecutive_full_eligible_frames: 0,
         }
     }
 
     pub(crate) fn record_frame(&mut self, sample: FrameAdmissionSample) -> FrameAdmissionDecision {
+        self.recent_total_us.push_back(sample.total_us);
+        if self.recent_total_us.len() > ADMISSION_HISTORY_CAPACITY {
+            let _ = self.recent_total_us.pop_front();
+        }
+
         self.total_ewma_us = Some(update_ewma(self.total_ewma_us, sample.total_us));
         self.producer_ewma_us = Some(update_ewma(self.producer_ewma_us, sample.producer_us));
         self.composition_ewma_us =
@@ -53,32 +76,96 @@ impl FrameAdmissionController {
             self.consecutive_copy_frames = 0;
         }
 
+        if sample.total_us > full_tier_budget_us_u32() {
+            self.consecutive_over_budget_frames =
+                self.consecutive_over_budget_frames.saturating_add(1);
+        } else {
+            self.consecutive_over_budget_frames = 0;
+        }
+
         self.current_ceiling_tier = self.resolve_ceiling_tier();
         FrameAdmissionDecision {
             ceiling_tier: self.current_ceiling_tier,
         }
     }
 
-    fn resolve_ceiling_tier(&self) -> FpsTier {
+    fn resolve_ceiling_tier(&mut self) -> FpsTier {
         if self.configured_max_tier < FpsTier::Full {
             return self.configured_max_tier;
         }
 
-        let full_budget_us = FpsTier::Full.frame_interval().as_secs_f64() * 1_000_000.0;
+        if self.current_ceiling_tier == FpsTier::Full {
+            if self.should_revoke_full_tier() {
+                self.consecutive_full_eligible_frames = 0;
+                return FpsTier::High;
+            }
+
+            return FpsTier::Full;
+        }
+
+        if self.is_full_tier_eligible() {
+            self.consecutive_full_eligible_frames =
+                self.consecutive_full_eligible_frames.saturating_add(1);
+            if self.consecutive_full_eligible_frames >= FULL_TIER_READMIT_STREAK {
+                self.consecutive_full_eligible_frames = 0;
+                return FpsTier::Full;
+            }
+        } else {
+            self.consecutive_full_eligible_frames = 0;
+        }
+
+        FpsTier::High
+    }
+
+    fn should_revoke_full_tier(&self) -> bool {
+        let full_budget_us = full_tier_budget_us();
         let total_ewma_us = self.total_ewma_us.unwrap_or(full_budget_us);
         let producer_ewma_us = self.producer_ewma_us.unwrap_or(0.0);
         let composition_ewma_us = self.composition_ewma_us.unwrap_or(0.0);
         let copy_pressure = self.consecutive_copy_frames >= FULL_TIER_COPY_PRESSURE_THRESHOLD;
+        let percentile_window_ready =
+            self.recent_total_us.len() >= FULL_TIER_REVOKE_PERCENTILE_MIN_SAMPLES;
+        let p95_total_us = percentile_window_ready
+            .then(|| percentile_us(&self.recent_total_us, 95, 100))
+            .flatten()
+            .unwrap_or(0.0);
+        let p99_total_us = percentile_window_ready
+            .then(|| percentile_us(&self.recent_total_us, 99, 100))
+            .flatten()
+            .unwrap_or(0.0);
 
-        if copy_pressure
-            || total_ewma_us > full_budget_us * FULL_TIER_TOTAL_RATIO
-            || producer_ewma_us > full_budget_us * FULL_TIER_PRODUCER_RATIO
-            || composition_ewma_us > full_budget_us * FULL_TIER_COMPOSITION_RATIO
-        {
-            FpsTier::High
-        } else {
-            FpsTier::Full
+        copy_pressure
+            || self.consecutive_over_budget_frames >= FULL_TIER_REVOKE_MISS_THRESHOLD
+            || (percentile_window_ready
+                && total_ewma_us > full_budget_us * FULL_TIER_REVOKE_TOTAL_RATIO)
+            || (percentile_window_ready
+                && producer_ewma_us > full_budget_us * FULL_TIER_REVOKE_PRODUCER_RATIO)
+            || (percentile_window_ready
+                && composition_ewma_us > full_budget_us * FULL_TIER_REVOKE_COMPOSITION_RATIO)
+            || (percentile_window_ready
+                && p95_total_us > full_budget_us * FULL_TIER_REVOKE_P95_RATIO)
+            || (percentile_window_ready && p99_total_us > full_budget_us)
+    }
+
+    fn is_full_tier_eligible(&self) -> bool {
+        if self.recent_total_us.len() < FULL_TIER_READMIT_MIN_SAMPLES {
+            return false;
         }
+
+        let full_budget_us = full_tier_budget_us();
+        let total_ewma_us = self.total_ewma_us.unwrap_or(full_budget_us);
+        let producer_ewma_us = self.producer_ewma_us.unwrap_or(0.0);
+        let composition_ewma_us = self.composition_ewma_us.unwrap_or(0.0);
+        let p95_total_us = percentile_us(&self.recent_total_us, 95, 100).unwrap_or(full_budget_us);
+        let p99_total_us = percentile_us(&self.recent_total_us, 99, 100).unwrap_or(full_budget_us);
+
+        self.consecutive_copy_frames == 0
+            && self.consecutive_over_budget_frames == 0
+            && total_ewma_us <= full_budget_us * FULL_TIER_ELIGIBLE_TOTAL_RATIO
+            && producer_ewma_us <= full_budget_us * FULL_TIER_ELIGIBLE_PRODUCER_RATIO
+            && composition_ewma_us <= full_budget_us * FULL_TIER_ELIGIBLE_COMPOSITION_RATIO
+            && p95_total_us <= full_budget_us * FULL_TIER_ELIGIBLE_P95_RATIO
+            && p99_total_us <= full_budget_us
     }
 }
 
@@ -87,6 +174,26 @@ fn update_ewma(previous: Option<f64>, sample_us: u32) -> f64 {
     previous.map_or(sample, |current| {
         ((1.0 - EWMA_ALPHA) * current) + (EWMA_ALPHA * sample)
     })
+}
+
+fn full_tier_budget_us() -> f64 {
+    FpsTier::Full.frame_interval().as_secs_f64() * 1_000_000.0
+}
+
+fn full_tier_budget_us_u32() -> u32 {
+    u32::try_from(FpsTier::Full.frame_interval().as_micros()).unwrap_or(u32::MAX)
+}
+
+fn percentile_us(samples: &VecDeque<u32>, numerator: usize, denominator: usize) -> Option<f64> {
+    if samples.is_empty() || denominator == 0 {
+        return None;
+    }
+
+    let mut sorted: Vec<u32> = samples.iter().copied().collect();
+    sorted.sort_unstable();
+    let max_index = sorted.len().saturating_sub(1);
+    let rank = max_index.saturating_mul(numerator) / denominator;
+    sorted.get(rank).map(|value| f64::from(*value))
 }
 
 #[cfg(test)]
@@ -139,14 +246,47 @@ mod tests {
     }
 
     #[test]
-    fn heavy_ewma_blocks_full_tier() {
+    fn heavy_frames_revoke_full_tier_quickly() {
         let mut admission = FrameAdmissionController::new(FpsTier::Full);
-        for _ in 0..4 {
-            let decision = admission.record_frame(sample(15_000, 10_500, 1_000));
+        for _ in 0..2 {
+            let decision = admission.record_frame(sample(18_000, 12_000, 1_000));
             if decision.ceiling_tier == FpsTier::High {
                 return;
             }
         }
         panic!("heavy producer workload should eventually block full tier admission");
+    }
+
+    #[test]
+    fn full_tier_readmission_requires_clean_window() {
+        let mut admission = FrameAdmissionController::new(FpsTier::Full);
+
+        for _ in 0..2 {
+            let _ = admission.record_frame(sample(18_000, 11_000, 1_200));
+        }
+        assert_eq!(admission.current_ceiling_tier, FpsTier::High);
+
+        let clean_frames_before_readmit = super::ADMISSION_HISTORY_CAPACITY
+            + usize::try_from(super::FULL_TIER_READMIT_STREAK).unwrap_or(usize::MAX)
+            - 3;
+
+        for _ in 0..clean_frames_before_readmit {
+            let decision = admission.record_frame(sample(7_000, 4_000, 800));
+            assert_eq!(decision.ceiling_tier, FpsTier::High);
+        }
+
+        let admitted = admission.record_frame(sample(7_000, 4_000, 800));
+        assert_eq!(admitted.ceiling_tier, FpsTier::Full);
+    }
+
+    #[test]
+    fn single_spike_does_not_revoke_full_tier() {
+        let mut admission = FrameAdmissionController::new(FpsTier::Full);
+
+        let first = admission.record_frame(sample(18_000, 11_000, 1_000));
+        assert_eq!(first.ceiling_tier, FpsTier::Full);
+
+        let recovered = admission.record_frame(sample(7_500, 4_000, 900));
+        assert_eq!(recovered.ceiling_tier, FpsTier::Full);
     }
 }
