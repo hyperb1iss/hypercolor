@@ -32,7 +32,9 @@ impl StatusBar {
         }
 
         let left_spans = build_left(state);
-        let right_spans = build_nav_hints(active_screen, available_screens, state.show_donate);
+        let wide = area.width > 100;
+        let right_spans =
+            build_nav_hints(active_screen, available_screens, state.show_donate, wide);
 
         let left_len: usize = left_spans.iter().map(Span::width).sum();
         let right_len: usize = right_spans.iter().map(Span::width).sum();
@@ -87,7 +89,12 @@ fn build_left(state: &AppState) -> Vec<Span<'static>> {
 
 /// Build right-aligned nav hints: `dash | effx | ctrl | ?help`
 /// Active screen's first char is highlighted; items separated by `|`.
-fn build_nav_hints(active: ScreenId, screens: &[ScreenId], show_donate: bool) -> Vec<Span<'static>> {
+fn build_nav_hints(
+    active: ScreenId,
+    screens: &[ScreenId],
+    show_donate: bool,
+    wide: bool,
+) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let muted = theme::text_muted();
     let sep = Style::default().fg(muted);
@@ -130,14 +137,21 @@ fn build_nav_hints(active: ScreenId, screens: &[ScreenId], show_donate: bool) ->
         }
     }
 
-    // Sponsor link
+    // Sponsor link — heart in coral, text in accent (text hidden on narrow terminals)
     if show_donate {
         spans.push(Span::styled(" \u{2502} ", sep));
         spans.push(Span::styled(
             "\u{2665}",
-            Style::default().fg(theme::accent_primary()),
+            Style::default()
+                .fg(ratatui::style::Color::Rgb(255, 106, 193))
+                .add_modifier(Modifier::BOLD),
         ));
-        spans.push(Span::styled(" Sponsor", Style::default().fg(muted)));
+        if wide {
+            spans.push(Span::styled(
+                " Sponsor",
+                Style::default().fg(theme::accent_primary()),
+            ));
+        }
     }
 
     // Help hint

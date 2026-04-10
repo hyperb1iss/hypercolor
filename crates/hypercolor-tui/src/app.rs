@@ -360,7 +360,6 @@ impl App {
             KeyCode::Char('T' | 't') => return Some(Action::ToggleThemePicker),
             KeyCode::Char('M' | 'm') => return Some(Action::CycleMotionSensitivity),
             KeyCode::Char('Z' | 'z') => return Some(Action::ToggleFullscreenPreview),
-            KeyCode::Char('$') => return Some(Action::OpenDonate),
             KeyCode::Char(c) if c.is_ascii_alphabetic() => {
                 if let Some(screen) = ScreenId::from_key(c)
                     && self.screens.contains_key(&screen)
