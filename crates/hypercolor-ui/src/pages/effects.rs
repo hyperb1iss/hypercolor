@@ -611,7 +611,7 @@ pub fn EffectsPage() -> impl IntoView {
                                             <CanvasPreview
                                                 frame=ws.canvas_frame
                                                 fps=ws.preview_fps
-                                                show_fps=true
+                                                show_fps=false
                                                 fps_target=ws.preview_target_fps
                                             />
 
