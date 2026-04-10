@@ -186,11 +186,16 @@ fn percentile_pair_us(samples: &VecDeque<u32>) -> Option<(f64, f64)> {
         return None;
     }
 
-    let mut sorted: Vec<u32> = samples.iter().copied().collect();
+    let len = samples.len();
+    let mut sorted = [0_u32; ADMISSION_HISTORY_CAPACITY];
+    for (index, sample) in samples.iter().enumerate() {
+        sorted[index] = *sample;
+    }
+    let sorted = &mut sorted[..len];
     sorted.sort_unstable();
     Some((
-        percentile_from_sorted(&sorted, 95, 100),
-        percentile_from_sorted(&sorted, 99, 100),
+        percentile_from_sorted(sorted, 95, 100),
+        percentile_from_sorted(sorted, 99, 100),
     ))
 }
 

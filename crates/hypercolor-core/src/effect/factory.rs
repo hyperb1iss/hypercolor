@@ -106,7 +106,7 @@ fn create_renderer_for_metadata_internal(
 
 #[cfg(feature = "servo")]
 fn create_html_renderer(_metadata: &EffectMetadata) -> Box<dyn EffectRenderer> {
-    Box::new(super::servo_renderer::ServoRenderer::new())
+    Box::new(super::servo::ServoRenderer::new())
 }
 
 #[cfg(not(feature = "servo"))]
