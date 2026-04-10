@@ -1,9 +1,12 @@
 //! Table rendering for the Hypercolor CLI.
 //!
 //! Auto-aligned columns with ANSI-aware width calculation so that colored
-//! cells don't break alignment.
+//! cells don't break alignment. Headers are rendered with the painter's
+//! accent color for a consistent visual identity across every table.
 
 use unicode_width::UnicodeWidthStr;
+
+use super::Painter;
 
 /// Strip ANSI escape sequences from a string for width measurement.
 fn strip_ansi(s: &str) -> String {
@@ -30,10 +33,10 @@ fn display_width(s: &str) -> usize {
 
 /// Print a simple table with headers and rows.
 ///
-/// Each row is a slice of column values. Columns are auto-aligned based on
-/// the widest visible value in each column (ANSI escapes excluded from width
-/// calculation).
-pub fn print_table(headers: &[&str], rows: &[Vec<String>], quiet: bool) {
+/// Headers are styled with the painter's muted color and underlined with a
+/// purple separator. Rows are passed through unchanged — callers style their
+/// own cells via the painter's semantic helpers.
+pub fn print_table(headers: &[&str], rows: &[Vec<String>], quiet: bool, painter: &Painter) {
     if rows.is_empty() && quiet {
         return;
     }
@@ -48,19 +51,21 @@ pub fn print_table(headers: &[&str], rows: &[Vec<String>], quiet: bool) {
         }
     }
 
-    // Header
-    let header_line: String = headers
+    // Header: muted uppercase
+    let header_cells: Vec<String> = headers
         .iter()
         .enumerate()
-        .map(|(i, h)| format!("{h:<width$}", width = widths[i]))
-        .collect::<Vec<_>>()
-        .join("  ");
-    println!("  {header_line}");
+        .map(|(i, h)| {
+            let padded = format!("{h:<width$}", width = widths[i]);
+            painter.muted(&padded)
+        })
+        .collect();
+    println!("  {}", header_cells.join("  "));
 
-    // Separator
+    // Separator line under headers
     let sep_width: usize = widths.iter().sum::<usize>() + (col_count.saturating_sub(1)) * 2;
     let separator = "\u{2500}".repeat(sep_width);
-    println!("  {separator}");
+    println!("  {}", painter.muted(&separator));
 
     // Rows — pad based on display width, not byte length
     for row in rows {

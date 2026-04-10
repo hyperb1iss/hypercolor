@@ -123,28 +123,33 @@ async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
                 let rows: Vec<Vec<String>> = layouts
                     .iter()
                     .map(|l| {
+                        let width = l
+                            .get("canvas_width")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(0);
+                        let height = l
+                            .get("canvas_height")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(0);
                         vec![
-                            extract_str(l, "id"),
-                            extract_str(l, "name"),
-                            format!(
-                                "{}x{}",
-                                l.get("canvas_width")
+                            ctx.painter.id(&extract_str(l, "id")),
+                            ctx.painter.name(&extract_str(l, "name")),
+                            ctx.painter.number(&format!("{width}x{height}")),
+                            ctx.painter.number(
+                                &l.get("zone_count")
                                     .and_then(serde_json::Value::as_u64)
-                                    .unwrap_or(0),
-                                l.get("canvas_height")
-                                    .and_then(serde_json::Value::as_u64)
-                                    .unwrap_or(0)
+                                    .map_or_else(|| "?".to_string(), |c| c.to_string()),
                             ),
-                            l.get("zone_count")
-                                .and_then(serde_json::Value::as_u64)
-                                .map_or_else(|| "?".to_string(), |c| c.to_string()),
                         ]
                     })
                     .collect();
 
                 ctx.print_table(&headers, &rows);
                 println!();
-                ctx.info(&format!("{} layouts", layouts.len()));
+                ctx.info(&format!(
+                    "{} layouts",
+                    ctx.painter.number(&layouts.len().to_string())
+                ));
             }
         }
     }

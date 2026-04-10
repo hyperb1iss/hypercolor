@@ -50,15 +50,20 @@ async fn execute_devices(client: &DaemonClient, ctx: &OutputContext) -> Result<(
                             .and_then(serde_json::Value::as_bool)
                             .unwrap_or(false);
                         let marker = if active {
-                            ctx.painter.success("*")
+                            ctx.painter.success("\u{2726}")
                         } else {
                             " ".to_string()
                         };
+                        let name_display = if active {
+                            ctx.painter.keyword(&extract_str(d, "name"))
+                        } else {
+                            ctx.painter.name(&extract_str(d, "name"))
+                        };
                         vec![
                             marker,
-                            extract_str(d, "name"),
-                            extract_str(d, "sample_rate"),
-                            extract_str(d, "channels"),
+                            name_display,
+                            ctx.painter.number(&extract_str(d, "sample_rate")),
+                            ctx.painter.number(&extract_str(d, "channels")),
                         ]
                     })
                     .collect();

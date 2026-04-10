@@ -112,22 +112,28 @@ async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
                     .iter()
                     .map(|p| {
                         vec![
-                            extract_str(p, "id"),
-                            extract_str(p, "name"),
-                            p.get("brightness")
-                                .and_then(serde_json::Value::as_u64)
-                                .map_or_else(|| "-".to_string(), |b| b.to_string()),
-                            p.get("description")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("-")
-                                .to_string(),
+                            ctx.painter.id(&extract_str(p, "id")),
+                            ctx.painter.name(&extract_str(p, "name")),
+                            ctx.painter.number(
+                                &p.get("brightness")
+                                    .and_then(serde_json::Value::as_u64)
+                                    .map_or_else(|| "-".to_string(), |b| b.to_string()),
+                            ),
+                            ctx.painter.muted(
+                                p.get("description")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("-"),
+                            ),
                         ]
                     })
                     .collect();
 
                 ctx.print_table(&headers, &rows);
                 println!();
-                ctx.info(&format!("{} profiles", profiles.len()));
+                ctx.info(&format!(
+                    "{} profiles",
+                    ctx.painter.number(&profiles.len().to_string())
+                ));
             }
         }
     }

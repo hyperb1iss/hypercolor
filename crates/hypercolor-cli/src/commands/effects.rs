@@ -210,17 +210,20 @@ async fn execute_list(
                     .iter()
                     .map(|e| {
                         vec![
-                            extract_str(e, "name"),
-                            extract_str(e, "category"),
-                            extract_str(e, "author"),
-                            extract_str(e, "version"),
+                            ctx.painter.name(&extract_str(e, "name")),
+                            ctx.painter.muted(&extract_str(e, "category")),
+                            ctx.painter.muted(&extract_str(e, "author")),
+                            ctx.painter.number(&extract_str(e, "version")),
                         ]
                     })
                     .collect();
 
                 ctx.print_table(&headers, &rows);
                 println!();
-                ctx.info(&format!("{} effects", effects.len()));
+                ctx.info(&format!(
+                    "{} effects",
+                    ctx.painter.number(&effects.len().to_string())
+                ));
             }
         }
     }

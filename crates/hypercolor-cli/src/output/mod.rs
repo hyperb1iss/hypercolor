@@ -108,7 +108,7 @@ impl OutputContext {
 
     /// Print a simple table with headers and rows.
     pub fn print_table(&self, headers: &[&str], rows: &[Vec<String>]) {
-        table::print_table(headers, rows, self.quiet);
+        table::print_table(headers, rows, self.quiet, &self.painter);
     }
 }
 

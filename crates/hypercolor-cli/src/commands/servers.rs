@@ -75,16 +75,19 @@ async fn discover_command(args: &DiscoverArgs, ctx: &OutputContext) -> Result<()
                 .iter()
                 .map(|server| {
                     vec![
-                        server.identity.instance_name.clone(),
-                        format!("{}:{}", server.host, server.port),
-                        server.identity.version.clone(),
-                        server
-                            .device_count
-                            .map_or_else(|| "?".to_owned(), |count| count.to_string()),
+                        ctx.painter.name(&server.identity.instance_name),
+                        ctx.painter
+                            .muted(&format!("{}:{}", server.host, server.port)),
+                        ctx.painter.number(&server.identity.version),
+                        ctx.painter.number(
+                            &server
+                                .device_count
+                                .map_or_else(|| "?".to_owned(), |count| count.to_string()),
+                        ),
                         if server.auth_required {
-                            "api_key".to_owned()
+                            ctx.painter.warning("api_key")
                         } else {
-                            "none".to_owned()
+                            ctx.painter.muted("none")
                         },
                     ]
                 })

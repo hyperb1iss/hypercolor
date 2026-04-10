@@ -268,17 +268,24 @@ async fn execute_favorites(
                             .iter()
                             .map(|item| {
                                 vec![
-                                    extract_str(item, "effect_name"),
-                                    extract_str(item, "effect_id"),
-                                    item.get("added_at_ms")
-                                        .and_then(serde_json::Value::as_u64)
-                                        .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+                                    ctx.painter.name(&extract_str(item, "effect_name")),
+                                    ctx.painter.id(&extract_str(item, "effect_id")),
+                                    ctx.painter.number(
+                                        &item
+                                            .get("added_at_ms")
+                                            .and_then(serde_json::Value::as_u64)
+                                            .map_or_else(|| "-".to_owned(), |v| v.to_string()),
+                                    ),
                                 ]
                             })
                             .collect();
+                        let row_count = rows.len();
                         ctx.print_table(&headers, &rows);
                         println!();
-                        ctx.info(&format!("{} favorites", rows.len()));
+                        ctx.info(&format!(
+                            "{} favorites",
+                            ctx.painter.number(&row_count.to_string())
+                        ));
                     }
                 }
             }
@@ -361,23 +368,30 @@ async fn execute_presets(
                                             .join(",")
                                     });
                                 vec![
-                                    extract_str(item, "name"),
-                                    extract_str(item, "id"),
-                                    extract_str(item, "effect_id"),
+                                    ctx.painter.name(&extract_str(item, "name")),
+                                    ctx.painter.id(&extract_str(item, "id")),
+                                    ctx.painter.muted(&extract_str(item, "effect_id")),
                                     if tags.is_empty() {
-                                        "-".to_owned()
+                                        ctx.painter.muted("-")
                                     } else {
-                                        tags
+                                        ctx.painter.muted(&tags)
                                     },
-                                    item.get("updated_at_ms")
-                                        .and_then(serde_json::Value::as_u64)
-                                        .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+                                    ctx.painter.number(
+                                        &item
+                                            .get("updated_at_ms")
+                                            .and_then(serde_json::Value::as_u64)
+                                            .map_or_else(|| "-".to_owned(), |v| v.to_string()),
+                                    ),
                                 ]
                             })
                             .collect();
+                        let row_count = rows.len();
                         ctx.print_table(&headers, &rows);
                         println!();
-                        ctx.info(&format!("{} presets", rows.len()));
+                        ctx.info(&format!(
+                            "{} presets",
+                            ctx.painter.number(&row_count.to_string())
+                        ));
                     }
                 }
             }
@@ -515,22 +529,34 @@ async fn execute_playlists(
                                     .get("items")
                                     .and_then(serde_json::Value::as_array)
                                     .map_or(0, Vec::len);
+                                let loop_display = item
+                                    .get("loop_enabled")
+                                    .and_then(serde_json::Value::as_bool)
+                                    .map_or_else(
+                                        || ctx.painter.muted("-"),
+                                        |v| ctx.painter.yesno(v),
+                                    );
                                 vec![
-                                    extract_str(item, "name"),
-                                    extract_str(item, "id"),
-                                    item_count.to_string(),
-                                    item.get("loop_enabled")
-                                        .and_then(serde_json::Value::as_bool)
-                                        .map_or_else(|| "-".to_owned(), |value| value.to_string()),
-                                    item.get("updated_at_ms")
-                                        .and_then(serde_json::Value::as_u64)
-                                        .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+                                    ctx.painter.name(&extract_str(item, "name")),
+                                    ctx.painter.id(&extract_str(item, "id")),
+                                    ctx.painter.number(&item_count.to_string()),
+                                    loop_display,
+                                    ctx.painter.number(
+                                        &item
+                                            .get("updated_at_ms")
+                                            .and_then(serde_json::Value::as_u64)
+                                            .map_or_else(|| "-".to_owned(), |v| v.to_string()),
+                                    ),
                                 ]
                             })
                             .collect();
+                        let row_count = rows.len();
                         ctx.print_table(&headers, &rows);
                         println!();
-                        ctx.info(&format!("{} playlists", rows.len()));
+                        ctx.info(&format!(
+                            "{} playlists",
+                            ctx.painter.number(&row_count.to_string())
+                        ));
                     }
                 }
             }

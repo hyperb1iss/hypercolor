@@ -152,16 +152,19 @@ async fn execute_list(
                     .iter()
                     .map(|d| {
                         vec![
-                            extract_str(d, "name"),
-                            extract_str(d, "backend"),
-                            d.get("total_leds")
-                                .and_then(serde_json::Value::as_u64)
-                                .map_or_else(|| "?".to_string(), |l| l.to_string()),
-                            extract_str(d, "status"),
-                            d.get("firmware_version")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("-")
-                                .to_string(),
+                            ctx.painter.name(&extract_str(d, "name")),
+                            ctx.painter.muted(&extract_str(d, "backend")),
+                            ctx.painter.number(
+                                &d.get("total_leds")
+                                    .and_then(serde_json::Value::as_u64)
+                                    .map_or_else(|| "?".to_string(), |l| l.to_string()),
+                            ),
+                            ctx.painter.device_state(&extract_str(d, "status")),
+                            ctx.painter.muted(
+                                d.get("firmware_version")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("-"),
+                            ),
                         ]
                     })
                     .collect();
@@ -174,8 +177,8 @@ async fn execute_list(
                     .sum();
                 ctx.info(&format!(
                     "{} devices \u{00b7} {} LEDs",
-                    devices.len(),
-                    total_leds
+                    ctx.painter.number(&devices.len().to_string()),
+                    ctx.painter.number(&total_leds.to_string()),
                 ));
             }
         }

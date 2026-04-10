@@ -123,27 +123,29 @@ async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
                 let rows: Vec<Vec<String>> = scenes
                     .iter()
                     .map(|s| {
+                        let enabled = s
+                            .get("enabled")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false);
                         vec![
-                            extract_str(s, "id"),
-                            extract_str(s, "name"),
-                            s.get("priority")
-                                .and_then(serde_json::Value::as_u64)
-                                .map_or_else(|| "?".to_string(), |v| v.to_string()),
-                            if s.get("enabled")
-                                .and_then(serde_json::Value::as_bool)
-                                .unwrap_or(false)
-                            {
-                                "yes".to_string()
-                            } else {
-                                "no".to_string()
-                            },
+                            ctx.painter.id(&extract_str(s, "id")),
+                            ctx.painter.name(&extract_str(s, "name")),
+                            ctx.painter.number(
+                                &s.get("priority")
+                                    .and_then(serde_json::Value::as_u64)
+                                    .map_or_else(|| "?".to_string(), |v| v.to_string()),
+                            ),
+                            ctx.painter.yesno(enabled),
                         ]
                     })
                     .collect();
 
                 ctx.print_table(&headers, &rows);
                 println!();
-                ctx.info(&format!("{} scenes", scenes.len()));
+                ctx.info(&format!(
+                    "{} scenes",
+                    ctx.painter.number(&scenes.len().to_string())
+                ));
             }
         }
     }
