@@ -1402,8 +1402,7 @@ impl BackendManager {
         let generation = self.staging_generation;
         let mut became_active = false;
 
-        {
-            let staging = self.device_staging.entry(key.clone()).or_default();
+        if let Some(staging) = self.device_staging.get_mut(key) {
             if staging.frame_generation != generation {
                 staging.output.clear();
                 staging.required_len = 0;
@@ -1412,6 +1411,14 @@ impl BackendManager {
                 staging.frame_generation = generation;
                 became_active = true;
             }
+        } else {
+            let staging = self.device_staging.entry(key.clone()).or_default();
+            staging.output.clear();
+            staging.required_len = 0;
+            staging.written_ranges.clear();
+            staging.has_segmented_write = false;
+            staging.frame_generation = generation;
+            became_active = true;
         }
 
         if became_active {
