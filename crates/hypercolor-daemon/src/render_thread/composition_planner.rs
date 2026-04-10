@@ -99,23 +99,7 @@ impl CompositionPlanner {
         scene_runtime: &SceneRuntimeSnapshot,
         layers: Vec<PlannedSceneLayer>,
     ) -> CompiledCompositionPlan {
-        let logical_layer_count = u32::try_from(layers.len()).unwrap_or(u32::MAX);
-        let transition_active =
-            scene_runtime
-                .active_transition
-                .as_ref()
-                .is_some_and(|transition| {
-                    transition.progress < 1.0
-                        || transition.eased_progress < 1.0
-                        || transition.from_scene.is_some()
-                        || transition.to_scene.is_some()
-                });
-        let metadata = CompiledCompositionMetadata {
-            logical_layer_count,
-            render_group_count: scene_runtime.active_render_group_count(),
-            scene_active: scene_runtime.active_scene_id.is_some(),
-            transition_active,
-        };
+        let metadata = composition_metadata(scene_runtime, layers.len());
         let composition_layers = layers
             .into_iter()
             .map(|layer| CompositionLayer::from_parts(layer.frame, layer.mode, layer.opacity))
@@ -140,6 +124,20 @@ impl CompositionPlanner {
         scene_runtime: &SceneRuntimeSnapshot,
         current_frame: ProducerFrame,
     ) -> CompiledCompositionPlan {
+        if transition_key(scene_runtime).is_none() {
+            self.active_transition = None;
+            self.transition_base_frame = None;
+            self.last_stable_frame = Some(current_frame.clone());
+            return CompiledCompositionPlan {
+                plan: CompositionPlan::single(
+                    width,
+                    height,
+                    CompositionLayer::replace(current_frame),
+                ),
+                metadata: composition_metadata(scene_runtime, 1),
+            };
+        }
+
         let layers = self.transition_layers(scene_runtime, &current_frame);
         let compiled = self.compile(width, height, scene_runtime, layers);
         if self.active_transition.is_none() {
@@ -154,12 +152,7 @@ impl CompositionPlanner {
         current_frame: &ProducerFrame,
     ) -> Vec<PlannedSceneLayer> {
         let transition = scene_runtime.active_transition.as_ref();
-        let transition_key = transition.and_then(|transition| {
-            Some(SceneTransitionKey {
-                from_scene: transition.from_scene?,
-                to_scene: transition.to_scene?,
-            })
-        });
+        let transition_key = transition_key(scene_runtime);
 
         match transition_key {
             Some(key) => {
@@ -174,7 +167,7 @@ impl CompositionPlanner {
                 let opacity = transition
                     .map(|transition| transition.eased_progress.clamp(0.0, 1.0))
                     .unwrap_or(1.0);
-                let mut layers = Vec::new();
+                let mut layers = Vec::with_capacity(2);
                 if let Some(base_frame) = self.transition_base_frame.clone() {
                     layers.push(PlannedSceneLayer::replace(base_frame));
                 }
@@ -192,6 +185,37 @@ impl CompositionPlanner {
             }
         }
     }
+}
+
+fn composition_metadata(
+    scene_runtime: &SceneRuntimeSnapshot,
+    logical_layer_count: usize,
+) -> CompiledCompositionMetadata {
+    let logical_layer_count = u32::try_from(logical_layer_count).unwrap_or(u32::MAX);
+    let transition_active = scene_runtime
+        .active_transition
+        .as_ref()
+        .is_some_and(|transition| {
+            transition.progress < 1.0
+                || transition.eased_progress < 1.0
+                || transition.from_scene.is_some()
+                || transition.to_scene.is_some()
+        });
+
+    CompiledCompositionMetadata {
+        logical_layer_count,
+        render_group_count: scene_runtime.active_render_group_count(),
+        scene_active: scene_runtime.active_scene_id.is_some(),
+        transition_active,
+    }
+}
+
+fn transition_key(scene_runtime: &SceneRuntimeSnapshot) -> Option<SceneTransitionKey> {
+    let transition = scene_runtime.active_transition.as_ref()?;
+    Some(SceneTransitionKey {
+        from_scene: transition.from_scene?,
+        to_scene: transition.to_scene?,
+    })
 }
 
 #[cfg(test)]
