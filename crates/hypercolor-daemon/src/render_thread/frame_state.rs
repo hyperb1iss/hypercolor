@@ -1,5 +1,7 @@
 use tracing::warn;
 
+use hypercolor_core::scene::SceneManager;
+
 use super::RenderThreadState;
 use super::frame_scheduler::{
     FrameSceneSnapshot, FrameSceneSnapshotInputs, FrameScheduler, SceneRuntimeSnapshot,
@@ -57,8 +59,22 @@ async fn current_scene_runtime_snapshot(
     state: &RenderThreadState,
     delta_secs: f32,
 ) -> SceneRuntimeSnapshot {
-    let mut manager = state.scene_manager.write().await;
-    manager.tick_transition(delta_secs);
+    let transitioning = {
+        let manager = state.scene_manager.read().await;
+        manager.is_transitioning()
+    };
+
+    if transitioning {
+        let mut manager = state.scene_manager.write().await;
+        manager.tick_transition(delta_secs);
+        return snapshot_scene_runtime(&manager);
+    }
+
+    let manager = state.scene_manager.read().await;
+    snapshot_scene_runtime(&manager)
+}
+
+fn snapshot_scene_runtime(manager: &SceneManager) -> SceneRuntimeSnapshot {
     SceneRuntimeSnapshot {
         active_scene_id: manager.active_scene_id().copied(),
         active_transition: manager
