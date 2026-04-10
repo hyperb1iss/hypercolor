@@ -6868,8 +6868,9 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
 name = "opaline"
-version = "0.3.0"
-source = "git+https://github.com/hyperb1iss/opaline#226c5341b0ed994555309885d0df66dcef4887fc"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1ab7165d71f0a02fd8e683c09ae0f341116bb5cef0e1df7eebacb6cecf0fb44"
 dependencies = [
  "crossterm",
  "dirs",
