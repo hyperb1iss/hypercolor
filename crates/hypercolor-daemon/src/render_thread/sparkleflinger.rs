@@ -155,13 +155,7 @@ impl SparkleFlinger {
             && let Some(layer) = layers.pop()
             && layer.is_bypass_candidate()
         {
-            let (sampling_canvas, sampling_surface) = layer.frame.into_render_frame();
-            return ComposedFrameSet {
-                sampling_canvas,
-                sampling_surface,
-                preview_surface: None,
-                bypassed: true,
-            };
+            return publish_composed_frame(layer.frame.into_render_frame(), true);
         }
 
         let mut layers = layers.into_iter();
@@ -174,12 +168,31 @@ impl SparkleFlinger {
             compose_layer(&mut sampling_canvas, layer);
         }
 
-        ComposedFrameSet {
+        publish_composed_frame((sampling_canvas, None), false)
+    }
+}
+
+fn publish_composed_frame(
+    frame: (Canvas, Option<PublishedSurface>),
+    bypassed: bool,
+) -> ComposedFrameSet {
+    let (sampling_canvas, sampling_surface) = frame;
+    if let Some(sampling_surface) = sampling_surface {
+        return ComposedFrameSet {
             sampling_canvas,
-            sampling_surface: None,
+            sampling_surface: Some(sampling_surface),
             preview_surface: None,
-            bypassed: false,
-        }
+            bypassed,
+        };
+    }
+
+    let sampling_surface = PublishedSurface::from_owned_canvas(sampling_canvas, 0, 0);
+    let sampling_canvas = Canvas::from_published_surface(&sampling_surface);
+    ComposedFrameSet {
+        sampling_canvas,
+        sampling_surface: Some(sampling_surface),
+        preview_surface: None,
+        bypassed,
     }
 }
 
@@ -469,6 +482,13 @@ mod tests {
         assert_ne!(
             composed.sampling_canvas.get_pixel(0, 0),
             reversed.sampling_canvas.get_pixel(0, 0)
+        );
+        let composed_surface = composed
+            .sampling_surface
+            .expect("composed frame should publish an immutable sampling surface");
+        assert_eq!(
+            composed.sampling_canvas.as_rgba_bytes().as_ptr(),
+            composed_surface.rgba_bytes().as_ptr()
         );
     }
 

@@ -405,7 +405,9 @@ mod tests {
             2,
         );
 
-        let canvas = screen_data_to_canvas(&screen_data, 4, 4).expect("canvas should build");
+        let mut sector_grid = Vec::new();
+        let canvas = screen_data_to_canvas(&screen_data, 4, 4, &mut sector_grid)
+            .expect("canvas should build");
         assert_eq!(canvas.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
         assert_eq!(canvas.get_pixel(3, 0), Rgba::new(0, 255, 0, 255));
         assert_eq!(canvas.get_pixel(0, 3), Rgba::new(0, 0, 255, 255));
