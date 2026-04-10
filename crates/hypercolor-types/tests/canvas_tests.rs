@@ -365,20 +365,31 @@ fn render_surface_pool_rebinds_published_slots_under_retention_pressure() {
     let mut pool = RenderSurfacePool::with_slot_count(descriptor, 1);
 
     let mut lease_a = pool.dequeue().expect("first lease");
-    lease_a.canvas_mut().set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
-    lease_a.canvas_mut().set_pixel(1, 0, Rgba::new(40, 50, 60, 255));
+    lease_a
+        .canvas_mut()
+        .set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
+    lease_a
+        .canvas_mut()
+        .set_pixel(1, 0, Rgba::new(40, 50, 60, 255));
     let surface_a = lease_a.submit(1, 10);
 
     let mut lease_b = pool
         .dequeue()
         .expect("retained published surface should not block slot reuse");
-    lease_b.canvas_mut().set_pixel(0, 0, Rgba::new(70, 80, 90, 255));
-    lease_b.canvas_mut().set_pixel(1, 0, Rgba::new(100, 110, 120, 255));
+    lease_b
+        .canvas_mut()
+        .set_pixel(0, 0, Rgba::new(70, 80, 90, 255));
+    lease_b
+        .canvas_mut()
+        .set_pixel(1, 0, Rgba::new(100, 110, 120, 255));
     let surface_b = lease_b.submit(2, 20);
 
     assert_eq!(surface_a.generation(), 1);
     assert_eq!(surface_b.generation(), 2);
-    assert_eq!(surface_a.rgba_bytes()[..8], [10, 20, 30, 255, 40, 50, 60, 255]);
+    assert_eq!(
+        surface_a.rgba_bytes()[..8],
+        [10, 20, 30, 255, 40, 50, 60, 255]
+    );
     assert_eq!(
         surface_b.rgba_bytes()[..8],
         [70, 80, 90, 255, 100, 110, 120, 255]

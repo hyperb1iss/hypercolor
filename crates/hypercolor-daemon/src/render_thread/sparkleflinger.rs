@@ -241,7 +241,10 @@ mod tests {
             .preview_surface
             .expect("bypassed surface should also be exposed for preview");
         assert_eq!(surface.rgba_bytes().as_ptr(), source.rgba_bytes().as_ptr());
-        assert_eq!(preview_surface.rgba_bytes().as_ptr(), source.rgba_bytes().as_ptr());
+        assert_eq!(
+            preview_surface.rgba_bytes().as_ptr(),
+            source.rgba_bytes().as_ptr()
+        );
         assert_eq!(
             composed.sampling_canvas.as_rgba_bytes().as_ptr(),
             source.rgba_bytes().as_ptr()

@@ -111,8 +111,14 @@ pub(crate) fn publish_frame_updates(
     } else {
         CanvasFrame::empty()
     };
-    let _ = state.event_bus.screen_canvas_sender().send(screen_frame.clone());
-    let _ = state.preview_runtime.screen_canvas_sender().send(screen_frame);
+    let _ = state
+        .event_bus
+        .screen_canvas_sender()
+        .send(screen_frame.clone());
+    let _ = state
+        .preview_runtime
+        .screen_canvas_sender()
+        .send(screen_frame);
     state.event_bus.publish(HypercolorEvent::FrameRendered {
         frame_number,
         timing,

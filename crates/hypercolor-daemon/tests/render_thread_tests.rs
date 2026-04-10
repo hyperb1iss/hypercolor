@@ -1452,7 +1452,10 @@ async fn pipeline_publishes_canvas_data_via_preview_runtime() {
     let mut rt = RenderThread::spawn(state.clone());
 
     let result = tokio::time::timeout(Duration::from_secs(1), canvas_rx.changed()).await;
-    assert!(result.is_ok(), "expected preview runtime canvas data within 1 second");
+    assert!(
+        result.is_ok(),
+        "expected preview runtime canvas data within 1 second"
+    );
     let canvas = canvas_rx.borrow().clone();
     assert_eq!(canvas.width, 320);
     assert_eq!(canvas.height, 200);

@@ -229,16 +229,35 @@ pub fn Sidebar() -> impl IntoView {
                         class:h-14=move || collapsed.get()
                         class:h-32=move || !collapsed.get()
                     >
-                        // Collapsed state: gradient mark
+                        // Collapsed state: mode-aware gradient mark
                         <div
                             class="items-center justify-center h-full logo-container"
                             style:display=move || if collapsed.get() { "flex" } else { "none" }
                             on:click=cycle_logo
                             title="Click to change logo style"
                         >
-                            <div class="w-8 h-8 rounded-lg logo-mark flex items-center justify-center animate-breathe" style="--glow-rgb: 225, 53, 255">
-                                <span class="text-xs font-bold text-white">"H"</span>
-                            </div>
+                            {move || {
+                                let mode = logo_mode.get();
+                                let (mark_class, glow, text_class, font, letter) = match mode {
+                                    0 => ("logo-mark-circuit", "128, 255, 234", "text-xs font-semibold", "font-family:'Orbitron',sans-serif", "H"),
+                                    1 => ("logo-mark-silk", "253, 164, 175", "text-sm font-normal", "font-family:'Orbitron',sans-serif", "h"),
+                                    2 => ("logo-mark-bloom", "255, 106, 193", "text-base", "", "\u{2726}"),
+                                    3 => ("logo-mark-whisper", "196, 181, 253", "text-xs font-light", "font-family:'Satoshi',system-ui,sans-serif", "h"),
+                                    4 => ("logo-mark-prism", "225, 53, 255", "text-sm font-black", "font-family:'Orbitron',sans-serif", "H"),
+                                    5 => ("logo-mark-script", "255, 106, 193", "text-lg font-bold", "font-family:'Dancing Script',cursive", "H"),
+                                    6 => ("logo-mark-editorial", "225, 53, 255", "text-base font-bold italic", "font-family:'Playfair Display',Georgia,serif", "H"),
+                                    7 => ("logo-mark-neon", "128, 255, 234", "text-xs font-semibold", "font-family:'JetBrains Mono',monospace", "H"),
+                                    _ => ("logo-mark-glitch", "225, 53, 255", "text-sm font-black", "font-family:'Orbitron',sans-serif", "H"),
+                                };
+                                view! {
+                                    <div
+                                        class=format!("w-8 h-8 rounded-lg {mark_class} flex items-center justify-center")
+                                        style=format!("--glow-rgb: {glow}")
+                                    >
+                                        <span class=format!("{text_class} text-white") style=font>{letter}</span>
+                                    </div>
+                                }
+                            }}
                         </div>
 
                         // Expanded state: cycling logo modes
