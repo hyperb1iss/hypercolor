@@ -212,7 +212,7 @@ pub fn RadialGauge(
                         stroke-linecap="round"
                         stroke-dasharray=format!("{circumference:.2}")
                         stroke-dashoffset=move || format!("{:.2}", dash_offset.get())
-                        style="transition: stroke-dashoffset 0.45s cubic-bezier(0.4, 0, 0.2, 1)"
+                        style="transition: stroke-dashoffset 0.2s cubic-bezier(0.4, 0, 0.2, 1)"
                     />
                     // Active arc
                     <circle
@@ -225,20 +225,17 @@ pub fn RadialGauge(
                         stroke-linecap="round"
                         stroke-dasharray=format!("{circumference:.2}")
                         stroke-dashoffset=move || format!("{:.2}", dash_offset.get())
-                        style="transition: stroke-dashoffset 0.45s cubic-bezier(0.4, 0, 0.2, 1); filter: drop-shadow(0 0 6px currentColor)"
+                        style="transition: stroke-dashoffset 0.2s cubic-bezier(0.4, 0, 0.2, 1); filter: drop-shadow(0 0 6px currentColor)"
                     />
                 </svg>
-                <div
-                    class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none"
-                    style="overflow: visible"
-                >
+                <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none overflow-hidden px-2">
                     <div
                         class="text-[22px] font-semibold tabular-nums leading-none"
                         style=format!("color: {color}")
                     >
                         {move || primary.get()}
                     </div>
-                    <div class="mt-1 text-[9px] font-mono text-fg-tertiary uppercase tracking-[0.08em] whitespace-nowrap">
+                    <div class="mt-1 text-[9px] font-mono text-fg-tertiary uppercase tracking-[0.08em] whitespace-nowrap max-w-full overflow-hidden text-ellipsis">
                         {move || secondary.get()}
                     </div>
                 </div>
@@ -297,7 +294,7 @@ pub fn StackedBar(
                         let color = seg.color;
                         view! {
                             <div
-                                class="absolute top-0 bottom-0 transition-all duration-300 group"
+                                class="absolute top-0 bottom-0 group"
                                 style=format!(
                                     "left: {start:.3}%; width: {width:.3}%; \
                                      background: linear-gradient(180deg, {color}cc, {color}66); \
@@ -490,7 +487,7 @@ pub fn PhaseWaterfall(
 
                                 view! {
                                     <div
-                                        class="flex-1 relative min-w-0 transition-all duration-300 ease-out"
+                                        class="flex-1 relative min-w-0"
                                         style=format!(
                                             "height: {col_h_pct:.2}%; opacity: {age_opacity:.2}; {glow}"
                                         )

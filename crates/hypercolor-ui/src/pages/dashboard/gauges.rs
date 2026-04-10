@@ -8,6 +8,21 @@ use crate::icons::*;
 use crate::preview_telemetry::PreviewPresenterTelemetry;
 use crate::ws::PerformanceMetrics;
 
+const EMA_ALPHA: f64 = 0.3;
+
+fn use_ema(source: impl Fn() -> Option<f64> + Copy + Send + Sync + 'static, alpha: f64) -> Signal<f64> {
+    let state = RwSignal::new(None::<f64>);
+    Effect::new(move |_| {
+        if let Some(raw) = source() {
+            state.set(Some(match state.get_untracked() {
+                None => raw,
+                Some(prev) => prev + alpha * (raw - prev),
+            }));
+        }
+    });
+    Signal::derive(move || state.get().unwrap_or(0.0))
+}
+
 // ── Hero gauges: Engine FPS / Frame Time / Preview FPS ───────────────
 
 #[component]
@@ -20,14 +35,16 @@ pub(super) fn HeroGauges(
     #[prop(into)] frame_time_series: Signal<Vec<f64>>,
     #[prop(into)] preview_fps_series: Signal<Vec<f64>>,
 ) -> impl IntoView {
-    // Engine FPS gauge values
-    let engine_value = Memo::new(move |_| metrics.get().map_or(0.0, |m| m.fps.actual));
+    // Engine FPS gauge values — EMA-smoothed for stable display
+    let engine_raw = Memo::new(move |_| metrics.get().map(|m| m.fps.actual));
+    let engine_value = use_ema(move || engine_raw.get(), EMA_ALPHA);
     let engine_max = Memo::new(move |_| metrics.get().map_or(60.0, |m| f64::from(m.fps.target).max(1.0)));
     let engine_primary = Memo::new(move |_| {
-        metrics
-            .get()
-            .map(|m| format!("{:.1}", m.fps.actual))
-            .unwrap_or_else(|| "—".into())
+        if metrics.get().is_some() {
+            format!("{:.1}", engine_value.get())
+        } else {
+            "—".into()
+        }
     });
     let engine_secondary = Memo::new(move |_| {
         metrics
@@ -36,8 +53,9 @@ pub(super) fn HeroGauges(
             .unwrap_or_else(|| "waiting".into())
     });
 
-    // Frame time gauge — inverted: lower is better. Fill = budget - actual.
-    let frame_value = Memo::new(move |_| metrics.get().map_or(0.0, |m| m.frame_time.avg_ms));
+    // Frame time gauge — inverted: lower is better. EMA-smoothed.
+    let frame_raw = Memo::new(move |_| metrics.get().map(|m| m.frame_time.avg_ms));
+    let frame_value = use_ema(move || frame_raw.get(), EMA_ALPHA);
     let frame_budget = Memo::new(move |_| {
         metrics.get().map_or(33.33, |m| {
             if m.fps.target > 0 {
@@ -48,10 +66,11 @@ pub(super) fn HeroGauges(
         })
     });
     let frame_primary = Memo::new(move |_| {
-        metrics
-            .get()
-            .map(|m| format!("{:.2}", m.frame_time.avg_ms))
-            .unwrap_or_else(|| "—".into())
+        if metrics.get().is_some() {
+            format!("{:.2}", frame_value.get())
+        } else {
+            "—".into()
+        }
     });
     let frame_secondary = Memo::new(move |_| {
         metrics
@@ -60,15 +79,17 @@ pub(super) fn HeroGauges(
             .unwrap_or_else(|| "ms".into())
     });
 
-    // Preview gauge
-    let preview_value = Memo::new(move |_| {
+    // Preview gauge — EMA-smoothed
+    let preview_raw = Memo::new(move |_| {
         let present = preview_present.get().present_fps;
-        if present > 0.0 {
+        let fps = if present > 0.0 {
             f64::from(present)
         } else {
             f64::from(preview_fps.get())
-        }
+        };
+        if fps > 0.0 { Some(fps) } else { None }
     });
+    let preview_value = use_ema(move || preview_raw.get(), EMA_ALPHA);
     let preview_max = Memo::new(move |_| f64::from(preview_target_fps.get()).max(1.0));
     let preview_primary = Memo::new(move |_| format!("{:.1}", preview_value.get()));
     let preview_secondary = Memo::new(move |_| {
@@ -77,9 +98,9 @@ pub(super) fn HeroGauges(
         let mode = present.runtime_mode.unwrap_or("pending");
         let arrival = present.arrival_to_present_ms;
         if arrival > 0.0 {
-            format!("/ {target} fps · {mode} · {arrival:.1} ms")
+            format!("/ {target} · {mode} · {arrival:.1}ms")
         } else {
-            format!("/ {target} fps · {mode}")
+            format!("/ {target} · {mode}")
         }
     });
 
