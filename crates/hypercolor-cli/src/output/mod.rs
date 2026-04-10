@@ -57,7 +57,7 @@ impl OutputContext {
             match hypercolor_color_env().as_deref() {
                 Some("always") => true,
                 Some("never") => false,
-                _ => atty_stdout(),
+                _ => cli_color_force() || atty_stdout(),
             }
         };
 
@@ -140,6 +140,10 @@ fn hypercolor_color_env() -> Option<String> {
 
 fn atty_stdout() -> bool {
     std::io::IsTerminal::is_terminal(&std::io::stdout())
+}
+
+fn cli_color_force() -> bool {
+    std::env::var_os("CLICOLOR_FORCE").is_some_and(|v| v != "0")
 }
 
 fn percent_encode_component(input: &str) -> String {

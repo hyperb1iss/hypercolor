@@ -214,20 +214,15 @@ fn load_theme(name: Option<&str>) -> opaline::Theme {
 
 // ── Clap help styling ──────────────────────────────────────────────────
 
-/// Gradient-colored banner for the top of `--help` output.
+/// Render arbitrary text through the brand gradient (Purple → Coral → Cyan).
 ///
-/// Renders "H Y P E R C O L O R" through the brand gradient
-/// (Purple → Coral → Cyan) with a muted separator line underneath.
-/// Returns plain text when color is suppressed.
-pub fn help_banner() -> String {
-    use opaline::{Gradient, OpalineColor};
-
-    let use_color = should_color_banner();
-
-    if !use_color {
-        return "  H Y P E R C O L O R\n  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}".to_string();
+/// Returns plain text when the painter is disabled. Use for hero text like
+/// banners, splash headers, or emphasized titles.
+pub fn gradient_brand(text: &str, enabled: bool) -> String {
+    if !enabled {
+        return text.to_string();
     }
-
+    use opaline::{Gradient, OpalineColor};
     let gradient = Gradient::new(vec![
         OpalineColor {
             r: 225,
@@ -245,11 +240,32 @@ pub fn help_banner() -> String {
             b: 234,
         }, // Neon Cyan
     ]);
+    opaline::adapters::owo_colors::gradient_string(text, &gradient)
+}
 
-    let title = opaline::adapters::owo_colors::gradient_string("H Y P E R C O L O R", &gradient);
+impl Painter {
+    /// Render the brand title "H Y P E R C O L O R" with the brand gradient.
+    ///
+    /// Respects the painter's enabled flag. Used by both the clap help banner
+    /// and the `hyper status` header.
+    pub fn help_banner_title(&self) -> String {
+        gradient_brand("H Y P E R C O L O R", self.enabled)
+    }
+}
 
-    let sep = format!("\x1b[38;2;130;135;159m{}\x1b[0m", "\u{2500}".repeat(21));
-
+/// Gradient-colored banner for the top of `--help` output.
+///
+/// Composes the brand title with a muted separator line. Used by clap's
+/// `before_help` hook, so its color gating must match clap's own detection
+/// (NO_COLOR / CLICOLOR_FORCE / stdout TTY).
+pub fn help_banner() -> String {
+    let use_color = should_color_banner();
+    let title = gradient_brand("H Y P E R C O L O R", use_color);
+    let sep = if use_color {
+        format!("\x1b[38;2;130;135;159m{}\x1b[0m", "\u{2500}".repeat(21))
+    } else {
+        "\u{2500}".repeat(21)
+    };
     format!("  {title}\n  {sep}")
 }
 
