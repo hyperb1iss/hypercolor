@@ -733,8 +733,6 @@ async fn handle_socket(
 
     // Subscribe to the event bus and watch channels.
     let event_rx = state.event_bus.subscribe_all();
-    let frame_rx = state.event_bus.frame_receiver();
-    let spectrum_rx = state.event_bus.spectrum_receiver();
     // Split outbound traffic: both queues are bounded so slow clients cannot
     // grow daemon memory without limit.
     let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<String>(WS_BUFFER_SIZE);
@@ -747,13 +745,13 @@ async fn handle_socket(
         subscriptions_rx.clone(),
     ));
     let frame_relay_handle = tokio::spawn(relay_frames(
-        frame_rx,
+        Arc::clone(&state),
         json_tx.clone(),
         binary_tx.clone(),
         subscriptions_rx.clone(),
     ));
     let spectrum_relay_handle = tokio::spawn(relay_spectrum(
-        spectrum_rx,
+        Arc::clone(&state),
         json_tx.clone(),
         binary_tx.clone(),
         subscriptions_rx.clone(),
@@ -937,11 +935,12 @@ enum FrameRelayMessage {
 
 /// Relay frame watch updates to the WebSocket client.
 async fn relay_frames(
-    mut frame_rx: watch::Receiver<hypercolor_types::event::FrameData>,
+    state: Arc<AppState>,
     json_tx: tokio::sync::mpsc::Sender<String>,
     binary_tx: tokio::sync::mpsc::Sender<Bytes>,
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
+    let mut frame_rx = None::<watch::Receiver<hypercolor_types::event::FrameData>>;
     let mut last_sent = Instant::now()
         .checked_sub(Duration::from_secs(1))
         .unwrap_or_else(Instant::now);
@@ -957,6 +956,7 @@ async fn relay_frames(
             }
         };
         let Some(frame_config) = frame_config else {
+            let _ = frame_rx.take();
             was_subscribed = false;
             if subscriptions.changed().await.is_err() {
                 break;
@@ -964,6 +964,12 @@ async fn relay_frames(
             let _ = subscriptions.borrow_and_update();
             continue;
         };
+        if frame_rx.is_none() {
+            frame_rx = Some(state.event_bus.frame_receiver());
+        }
+        let frame_rx = frame_rx
+            .as_mut()
+            .expect("frame receiver should exist while subscribed");
 
         let emit_current = !was_subscribed;
         was_subscribed = true;
@@ -1006,11 +1012,12 @@ async fn relay_frames(
 
 /// Relay spectrum watch updates to the WebSocket client.
 async fn relay_spectrum(
-    mut spectrum_rx: watch::Receiver<hypercolor_types::event::SpectrumData>,
+    state: Arc<AppState>,
     json_tx: tokio::sync::mpsc::Sender<String>,
     binary_tx: tokio::sync::mpsc::Sender<Bytes>,
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
+    let mut spectrum_rx = None::<watch::Receiver<hypercolor_types::event::SpectrumData>>;
     let mut last_sent = Instant::now()
         .checked_sub(Duration::from_secs(1))
         .unwrap_or_else(Instant::now);
@@ -1026,6 +1033,7 @@ async fn relay_spectrum(
             }
         };
         let Some(spectrum_config) = spectrum_config else {
+            let _ = spectrum_rx.take();
             was_subscribed = false;
             if subscriptions.changed().await.is_err() {
                 break;
@@ -1033,6 +1041,12 @@ async fn relay_spectrum(
             let _ = subscriptions.borrow_and_update();
             continue;
         };
+        if spectrum_rx.is_none() {
+            spectrum_rx = Some(state.event_bus.spectrum_receiver());
+        }
+        let spectrum_rx = spectrum_rx
+            .as_mut()
+            .expect("spectrum receiver should exist while subscribed");
 
         let emit_current = !was_subscribed;
         was_subscribed = true;
@@ -2414,7 +2428,7 @@ mod tests {
         command_response_from_http, dispatch_command, encode_cached_canvas_preview_binary,
         encode_canvas_preview_binary, encode_frame_binary, encode_spectrum_binary,
         event_message_parts, filter_frame_zones, normalize_command_path, parse_channels,
-        parse_command_method, publish_subscriptions, relay_frames, relay_metrics,
+        parse_command_method, publish_subscriptions, relay_frames, relay_metrics, relay_spectrum,
         should_relay_event, sync_preview_receiver, to_snake_case, try_enqueue_json,
         unique_sorted_channel_names, ws_capabilities,
     };
@@ -2589,14 +2603,20 @@ mod tests {
 
     #[tokio::test]
     async fn relay_frames_wakes_when_subscription_changes() {
-        let (_frame_tx, frame_rx) = watch::channel(sample_frame());
         let initial_subscriptions = SubscriptionState::default();
         let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
         let (json_tx, _json_rx) = tokio::sync::mpsc::channel::<String>(1);
         let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(1);
+        let state = Arc::new(AppState::new());
+        let _ = state.event_bus.frame_sender().send(sample_frame());
 
-        let relay_handle =
-            tokio::spawn(relay_frames(frame_rx, json_tx, binary_tx, subscriptions_rx));
+        let relay_handle = tokio::spawn(relay_frames(
+            Arc::clone(&state),
+            json_tx,
+            binary_tx,
+            subscriptions_rx,
+        ));
+        assert_eq!(state.event_bus.frame_receiver_count(), 0);
 
         let mut subscriptions = initial_subscriptions;
         subscriptions.channels.insert(WsChannel::Frames);
@@ -2607,6 +2627,67 @@ mod tests {
             .expect("frame relay should wake on subscription changes")
             .expect("frame relay should publish the latest cached frame");
         assert_eq!(payload.first().copied(), Some(0x01));
+        assert_eq!(state.event_bus.frame_receiver_count(), 1);
+
+        subscriptions.channels.remove(&WsChannel::Frames);
+        publish_subscriptions(&subscriptions_tx, &subscriptions);
+        tokio::time::timeout(std::time::Duration::from_millis(250), async {
+            loop {
+                if state.event_bus.frame_receiver_count() == 0 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("frame receiver should be dropped after unsubscribe");
+
+        relay_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn relay_spectrum_subscribes_lazily() {
+        let initial_subscriptions = SubscriptionState::default();
+        let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
+        let (json_tx, _json_rx) = tokio::sync::mpsc::channel::<String>(1);
+        let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(1);
+        let state = Arc::new(AppState::new());
+        let _ = state
+            .event_bus
+            .spectrum_sender()
+            .send(SpectrumData::empty());
+
+        let relay_handle = tokio::spawn(relay_spectrum(
+            Arc::clone(&state),
+            json_tx,
+            binary_tx,
+            subscriptions_rx,
+        ));
+        assert_eq!(state.event_bus.spectrum_receiver_count(), 0);
+
+        let mut subscriptions = initial_subscriptions;
+        subscriptions.channels.insert(WsChannel::Spectrum);
+        publish_subscriptions(&subscriptions_tx, &subscriptions);
+
+        let payload = tokio::time::timeout(std::time::Duration::from_millis(250), binary_rx.recv())
+            .await
+            .expect("spectrum relay should wake on subscription changes")
+            .expect("spectrum relay should publish the latest cached spectrum");
+        assert_eq!(payload.first().copied(), Some(0x02));
+        assert_eq!(state.event_bus.spectrum_receiver_count(), 1);
+
+        subscriptions.channels.remove(&WsChannel::Spectrum);
+        publish_subscriptions(&subscriptions_tx, &subscriptions);
+        tokio::time::timeout(std::time::Duration::from_millis(250), async {
+            loop {
+                if state.event_bus.spectrum_receiver_count() == 0 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("spectrum receiver should be dropped after unsubscribe");
 
         relay_handle.abort();
     }
