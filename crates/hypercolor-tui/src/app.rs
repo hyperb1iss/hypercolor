@@ -112,6 +112,22 @@ impl App {
             screen.set_focused(true);
         }
 
+        // Install the persistent title bar shimmer effect. Brand area is
+        // computed from the first row of the terminal — the title bar
+        // always renders at y=0 and the brand always starts at column 1.
+        let initial_size = terminal.size().unwrap_or_else(|_| ratatui::layout::Size::new(80, 24));
+        let title_area = Rect::new(0, 0, initial_size.width, 1);
+        let brand_area = crate::chrome::TitleBar::brand_area(title_area);
+        if brand_area.width > 0 {
+            self.motion.trigger(
+                crate::motion::MotionKey::TitleShimmer,
+                crate::motion::catalog::title_shimmer(
+                    brand_area,
+                    self.motion.sensitivity(),
+                ),
+            );
+        }
+
         // Spawn data bridge
         let bridge_tx = self.action_tx.clone();
         let bridge_cancel = self.data_cancel.clone();
@@ -164,7 +180,6 @@ impl App {
             // Drain and process all queued actions
             while let Ok(action) = self.action_rx.try_recv() {
                 if let Action::Render = action {
-                    self.chrome.title_bar.tick();
                     terminal.draw(|frame| self.render(frame))?;
                 } else {
                     self.process_action(&action);

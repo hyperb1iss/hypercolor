@@ -1,7 +1,8 @@
 //! Title bar — the topmost chrome row with stylized brand and status.
 //!
-//! Renders: `H Y P E R C O L O R` gradient brand on the left,
-//! active screen name centered, and daemon status indicators right-aligned.
+//! Renders: `H Y P E R C O L O R` brand on the left (animated by the
+//! tachyonfx motion layer via `MotionKey::TitleShimmer`), active screen
+//! name centered, and daemon status indicators right-aligned.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -12,31 +13,31 @@ use crate::screen::ScreenId;
 use crate::state::{AppState, ConnectionStatus};
 use crate::theme;
 
-/// Animated title bar renderer with sine-wave shimmer on the brand text.
-pub struct TitleBar {
-    /// Animation phase in radians, advanced on each Tick.
-    phase: f32,
-}
+/// Width in cells of the brand text "H Y P E R C O L O R" (10 chars + 9 spaces).
+pub const BRAND_WIDTH: u16 = 19;
 
-impl Default for TitleBar {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// Title bar renderer. Stateless — the shimmer animation is owned by
+/// `MotionSystem` as `MotionKey::TitleShimmer`.
+#[derive(Default)]
+pub struct TitleBar;
 
 impl TitleBar {
-    /// Create a new title bar with initial phase.
+    /// Create a new title bar.
     #[must_use]
     pub fn new() -> Self {
-        Self { phase: 0.0 }
+        Self
     }
 
-    /// Advance the shimmer animation by one tick (~66ms at 15fps render).
-    pub fn tick(&mut self) {
-        self.phase += 0.12;
-        if self.phase > std::f32::consts::TAU * 100.0 {
-            self.phase -= std::f32::consts::TAU * 100.0;
+    /// Compute the brand area within the given title bar area.
+    ///
+    /// The brand starts at column +1 (after a leading space) and spans
+    /// `BRAND_WIDTH` columns. Returns an empty rect if the area is too small.
+    #[must_use]
+    pub fn brand_area(area: Rect) -> Rect {
+        if area.width < BRAND_WIDTH + 2 || area.height == 0 {
+            return Rect::new(area.x, area.y, 0, 0);
         }
+        Rect::new(area.x + 1, area.y, BRAND_WIDTH, 1)
     }
 
     /// Render the title bar into the given area.
@@ -55,9 +56,21 @@ impl TitleBar {
 
         let mut spans = Vec::new();
 
-        // Animated gradient brand
+        // Brand: spaced characters at the base accent color. The
+        // tachyonfx title_shimmer effect (running as MotionKey::TitleShimmer)
+        // overrides each cell's foreground every render frame.
         spans.push(Span::raw(" "));
-        build_gradient_brand(&mut spans, self.phase);
+        for (i, ch) in "HYPERCOLOR".chars().enumerate() {
+            spans.push(Span::styled(
+                ch.to_string(),
+                Style::default()
+                    .fg(theme::accent_primary())
+                    .add_modifier(Modifier::BOLD),
+            ));
+            if i < 9 {
+                spans.push(Span::raw(" "));
+            }
+        }
 
         // Separator + active screen name
         spans.push(Span::styled(
@@ -141,76 +154,4 @@ fn build_status_spans(state: &AppState) -> Vec<Span<'static>> {
 
     spans.push(Span::raw(" "));
     spans
-}
-
-/// Render `H Y P E R C O L O R` with layered animated gradient effects.
-///
-/// Combines multiple animation layers for a dynamic, organic shimmer:
-/// 1. Primary traveling wave — fast ripple across the gradient
-/// 2. Secondary slow wave — different frequency adds depth
-/// 3. Global color drift — the whole gradient breathes over time
-/// 4. Traveling spark — a bright highlight rolls across periodically
-#[allow(
-    clippy::as_conversions,
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
-fn build_gradient_brand(spans: &mut Vec<Span<'static>>, phase: f32) {
-    const BRAND: &str = "HYPERCOLOR";
-    let len = BRAND.len();
-    let len_f = (len - 1).max(1) as f32;
-
-    // Spark: a bright pulse traveling left-to-right (~5s period)
-    let spark_pos = (phase * 1.8) % (len_f + 6.0) - 3.0;
-
-    for (i, ch) in BRAND.chars().enumerate() {
-        let i_f = i as f32;
-        let base_t = i_f / len_f;
-
-        // Layer 1: Primary traveling wave — fast, tight spacing
-        let wave1 = (phase + i_f * 0.4).sin() * 0.25;
-        // Layer 2: Secondary slow wave — different frequency, wider spacing
-        let wave2 = (phase * 0.6 + i_f * 0.7).sin() * 0.15;
-        // Layer 3: Global color drift — the whole gradient shifts slowly
-        let drift = (phase * 0.03).sin() * 0.2;
-
-        let t = (base_t + wave1 + wave2 + drift).clamp(0.0, 1.0);
-        let base_color = theme::gradient_color(t, &theme::BRAND_GRADIENT);
-
-        // Layer 4: Traveling spark — gaussian highlight bloom
-        let spark_d = i_f - spark_pos;
-        let spark = (-spark_d * spark_d * 0.5).exp();
-        let color = if spark > 0.05 {
-            brighten(base_color, spark * 0.7)
-        } else {
-            base_color
-        };
-
-        spans.push(Span::styled(
-            ch.to_string(),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ));
-        if i < len - 1 {
-            spans.push(Span::raw(" "));
-        }
-    }
-}
-
-/// Blend an RGB color toward white by `amount` (0.0 = unchanged, 1.0 = pure white).
-#[allow(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
-fn brighten(color: ratatui::style::Color, amount: f32) -> ratatui::style::Color {
-    use ratatui::style::Color;
-    match color {
-        Color::Rgb(r, g, b) => {
-            let a = amount.clamp(0.0, 1.0);
-            let lerp = |from: u8| (f32::from(from) + (255.0 - f32::from(from)) * a) as u8;
-            Color::Rgb(lerp(r), lerp(g), lerp(b))
-        }
-        other => other,
-    }
 }
