@@ -201,6 +201,91 @@ impl ServoRenderer {
         }
     }
 
+    fn initialize_with_canvas_size(
+        &mut self,
+        metadata: &EffectMetadata,
+        canvas_width: u32,
+        canvas_height: u32,
+    ) -> Result<()> {
+        let EffectSource::Html { path } = &metadata.source else {
+            bail!(
+                "ServoRenderer requires EffectSource::Html, got source {:?} for effect '{}'",
+                metadata.source,
+                metadata.name
+            );
+        };
+
+        let resolved = resolve_html_source_path(path).with_context(|| {
+            format!(
+                "failed to resolve HTML source for effect '{}' from '{}'",
+                metadata.name,
+                path.display()
+            )
+        })?;
+
+        self.cleanup_runtime_html();
+        self.worker = None;
+        self.controls.clear();
+        self.runtime = LightscriptRuntime::new(canvas_width, canvas_height);
+        self.pending_scripts.clear();
+        self.warned_fallback_frame = false;
+        self.warned_stalled_frame = false;
+        self.include_audio_updates = effect_is_audio_reactive(metadata);
+        self.last_animation_fps_cap = None;
+        self.queued_frame = None;
+        self.in_flight_render = None;
+        self.last_canvas = None;
+        self.controls = metadata
+            .controls
+            .iter()
+            .map(|control| {
+                (
+                    control.control_id().to_owned(),
+                    control.default_value.clone(),
+                )
+            })
+            .collect();
+        if !self.controls.is_empty() {
+            debug!(
+                effect = %metadata.name,
+                control_count = self.controls.len(),
+                controls = ?self.controls.keys().collect::<Vec<_>>(),
+                "Loaded HTML default controls from metadata"
+            );
+        }
+
+        let (runtime_source, runtime_html_path) =
+            prepare_runtime_html_source(&resolved, &self.controls).with_context(|| {
+                format!(
+                    "failed to prepare runtime HTML source for '{}'",
+                    resolved.display()
+                )
+            })?;
+
+        let worker = acquire_servo_worker(canvas_width, canvas_height)?;
+        if let Err(error) = worker.load_effect(&runtime_source, canvas_width, canvas_height) {
+            poison_shared_servo_worker_if_fatal("Servo effect page load failed", &error);
+            return Err(error);
+        }
+        self.worker = Some(worker);
+        self.html_source = Some(path.clone());
+        self.html_resolved_path = Some(runtime_source.clone());
+        self.runtime_html_path = runtime_html_path;
+        self.initialized = true;
+        self.enqueue_bootstrap_scripts();
+
+        info!(
+            effect = %metadata.name,
+            source = %path.display(),
+            resolved = %runtime_source.display(),
+            canvas_width,
+            canvas_height,
+            "Initialized ServoRenderer worker"
+        );
+
+        Ok(())
+    }
+
     fn queue_frame(&mut self, input: &FrameInput<'_>) {
         if let Some(frame) = self.queued_frame.as_mut() {
             frame.merge_from_input(input);
@@ -339,81 +424,16 @@ impl ServoRenderer {
 
 impl EffectRenderer for ServoRenderer {
     fn init(&mut self, metadata: &EffectMetadata) -> Result<()> {
-        let EffectSource::Html { path } = &metadata.source else {
-            bail!(
-                "ServoRenderer requires EffectSource::Html, got source {:?} for effect '{}'",
-                metadata.source,
-                metadata.name
-            );
-        };
+        self.initialize_with_canvas_size(metadata, DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT)
+    }
 
-        let resolved = resolve_html_source_path(path).with_context(|| {
-            format!(
-                "failed to resolve HTML source for effect '{}' from '{}'",
-                metadata.name,
-                path.display()
-            )
-        })?;
-
-        self.cleanup_runtime_html();
-        self.worker = None;
-        self.controls.clear();
-        self.runtime = LightscriptRuntime::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
-        self.pending_scripts.clear();
-        self.warned_fallback_frame = false;
-        self.warned_stalled_frame = false;
-        self.include_audio_updates = effect_is_audio_reactive(metadata);
-        self.last_animation_fps_cap = None;
-        self.queued_frame = None;
-        self.in_flight_render = None;
-        self.last_canvas = None;
-        self.controls = metadata
-            .controls
-            .iter()
-            .map(|control| {
-                (
-                    control.control_id().to_owned(),
-                    control.default_value.clone(),
-                )
-            })
-            .collect();
-        if !self.controls.is_empty() {
-            debug!(
-                effect = %metadata.name,
-                control_count = self.controls.len(),
-                controls = ?self.controls.keys().collect::<Vec<_>>(),
-                "Loaded HTML default controls from metadata"
-            );
-        }
-
-        let (runtime_source, runtime_html_path) =
-            prepare_runtime_html_source(&resolved, &self.controls).with_context(|| {
-                format!(
-                    "failed to prepare runtime HTML source for '{}'",
-                    resolved.display()
-                )
-            })?;
-
-        let worker = acquire_servo_worker(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT)?;
-        if let Err(error) = worker.load_effect(&runtime_source) {
-            poison_shared_servo_worker_if_fatal("Servo effect page load failed", &error);
-            return Err(error);
-        }
-        self.worker = Some(worker);
-        self.html_source = Some(path.clone());
-        self.html_resolved_path = Some(runtime_source.clone());
-        self.runtime_html_path = runtime_html_path;
-        self.initialized = true;
-        self.enqueue_bootstrap_scripts();
-
-        info!(
-            effect = %metadata.name,
-            source = %path.display(),
-            resolved = %runtime_source.display(),
-            "Initialized ServoRenderer worker"
-        );
-
-        Ok(())
+    fn init_with_canvas_size(
+        &mut self,
+        metadata: &EffectMetadata,
+        canvas_width: u32,
+        canvas_height: u32,
+    ) -> Result<()> {
+        self.initialize_with_canvas_size(metadata, canvas_width, canvas_height)
     }
 
     fn render_into(&mut self, input: &FrameInput<'_>, target: &mut Canvas) -> Result<()> {
@@ -547,11 +567,13 @@ struct ServoWorkerClient {
 }
 
 impl ServoWorkerClient {
-    fn load_effect(&self, html_path: &Path) -> Result<()> {
+    fn load_effect(&self, html_path: &Path, width: u32, height: u32) -> Result<()> {
         let (response_tx, response_rx) = mpsc::sync_channel(1);
         self.command_tx
             .send(WorkerCommand::Load {
                 html_path: html_path.to_path_buf(),
+                width,
+                height,
                 response_tx,
             })
             .context("failed to send load command to Servo worker")?;
@@ -715,6 +737,8 @@ impl Drop for ServoWorker {
 enum WorkerCommand {
     Load {
         html_path: PathBuf,
+        width: u32,
+        height: u32,
         response_tx: SyncSender<Result<()>>,
     },
     Unload {
@@ -782,9 +806,11 @@ impl ServoWorkerRuntime {
             match command {
                 WorkerCommand::Load {
                     html_path,
+                    width,
+                    height,
                     response_tx,
                 } => {
-                    let result = self.load_effect(&html_path);
+                    let result = self.load_effect(&html_path, width, height);
                     let _ = response_tx.send(result);
                 }
                 WorkerCommand::Unload { response_tx } => {
@@ -859,8 +885,9 @@ impl ServoWorkerRuntime {
         self.wait_for_load_completion(timeout, Some(url.as_str()))
     }
 
-    fn load_effect(&mut self, html_path: &Path) -> Result<()> {
+    fn load_effect(&mut self, html_path: &Path, width: u32, height: u32) -> Result<()> {
         let had_loaded_effect = self.loaded_html_path.is_some();
+        self.resize_if_needed(width, height)?;
         let url = file_url_for_path(html_path)?;
         self.loaded_html_path = Some(html_path.to_path_buf());
         debug!(url = %url, "Loading Servo effect page");
@@ -1533,6 +1560,12 @@ mod tests {
         height: u32,
     }
 
+    #[derive(Debug)]
+    struct RecordedLoadCommand {
+        width: u32,
+        height: u32,
+    }
+
     fn spawn_test_worker() -> (ServoWorker, Arc<AtomicBool>) {
         let (command_tx, command_rx) = mpsc::channel();
         let stopped = Arc::new(AtomicBool::new(false));
@@ -1631,6 +1664,56 @@ mod tests {
         )
     }
 
+    fn spawn_load_test_worker() -> (
+        ServoWorker,
+        Receiver<RecordedLoadCommand>,
+        Receiver<()>,
+        Arc<AtomicBool>,
+    ) {
+        let (command_tx, command_rx) = mpsc::channel();
+        let (load_tx, load_rx) = mpsc::channel();
+        let (unload_tx, unload_rx) = mpsc::channel();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped_clone = Arc::clone(&stopped);
+        let thread_handle = thread::spawn(move || {
+            while let Ok(command) = command_rx.recv() {
+                match command {
+                    WorkerCommand::Load {
+                        width,
+                        height,
+                        response_tx,
+                        ..
+                    } => {
+                        let _ = load_tx.send(RecordedLoadCommand { width, height });
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    WorkerCommand::Unload { response_tx } => {
+                        let _ = unload_tx.send(());
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    WorkerCommand::Render { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(solid_canvas(12, 34, 56)));
+                    }
+                    WorkerCommand::Shutdown { response_tx } => {
+                        stopped_clone.store(true, Ordering::SeqCst);
+                        let _ = response_tx.send(());
+                        break;
+                    }
+                }
+            }
+        });
+
+        (
+            ServoWorker {
+                command_tx: Some(command_tx),
+                thread_handle: Some(thread_handle),
+            },
+            load_rx,
+            unload_rx,
+            stopped,
+        )
+    }
+
     fn frame_input(delta_secs: f32) -> FrameInput<'static> {
         FrameInput {
             time_secs: 0.0,
@@ -1687,6 +1770,24 @@ mod tests {
         let mut canvas = Canvas::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
         canvas.fill(Rgba::new(r, g, b, 255));
         canvas
+    }
+
+    fn html_metadata(path: PathBuf) -> EffectMetadata {
+        EffectMetadata {
+            id: EffectId::from(Uuid::nil()),
+            name: "HTML Test".to_owned(),
+            author: "hypercolor".to_owned(),
+            version: "0.1.0".to_owned(),
+            description: "test".to_owned(),
+            category: EffectCategory::Interactive,
+            tags: Vec::new(),
+            controls: Vec::new(),
+            presets: Vec::new(),
+            audio_reactive: false,
+            screen_reactive: false,
+            source: EffectSource::Html { path },
+            license: None,
+        }
     }
 
     fn reset_shared_servo_worker_state() {
@@ -1980,6 +2081,61 @@ mod tests {
                 .iter()
                 .any(|script| script == "window.__hypercolorFpsCap = 30;")
         );
+    }
+
+    #[test]
+    fn init_with_canvas_size_loads_servo_page_at_target_resolution() {
+        let _lock = SHARED_WORKER_STATE_TEST_LOCK
+            .lock()
+            .expect("shared worker test lock");
+        reset_shared_servo_worker_state();
+
+        let (worker, load_rx, unload_rx, stopped) = spawn_load_test_worker();
+        let slot = SERVO_WORKER.get_or_init(|| Mutex::new(SharedServoWorkerState::Vacant));
+        {
+            let mut guard = match slot.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            *guard = SharedServoWorkerState::Running(worker);
+        }
+
+        let temp_dir = tempfile::tempdir().expect("temporary directory");
+        let source_path = temp_dir.path().join("effect.html");
+        std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
+            .expect("write source html");
+
+        let metadata = html_metadata(source_path);
+        let mut renderer = ServoRenderer::new();
+        renderer
+            .init_with_canvas_size(&metadata, 640, 480)
+            .expect("renderer should initialize");
+
+        let load = load_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("load command should be recorded");
+        assert_eq!(load.width, 640);
+        assert_eq!(load.height, 480);
+        assert!(
+            renderer
+                .pending_scripts
+                .iter()
+                .any(|script| script.contains("window.engine.width = 640"))
+        );
+        assert!(
+            renderer
+                .pending_scripts
+                .iter()
+                .any(|script| script.contains("window.engine.height = 480"))
+        );
+
+        renderer.destroy();
+        unload_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("destroy should unload test worker");
+
+        shutdown_shared_servo_worker().expect("shared worker shutdown should succeed");
+        assert!(stopped.load(Ordering::SeqCst));
     }
 
     #[test]

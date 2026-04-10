@@ -46,7 +46,12 @@ impl EffectPool {
                 .is_none_or(|slot| slot.effect_id != effect_id);
             if needs_rebuild {
                 let metadata = lookup_effect_metadata(registry, effect_id)?;
-                let slot = EffectSlot::build(metadata, &group.controls)?;
+                let slot = EffectSlot::build(
+                    metadata,
+                    &group.controls,
+                    group.layout.canvas_width,
+                    group.layout.canvas_height,
+                )?;
                 self.slots.insert(group.id, slot);
                 continue;
             }
@@ -116,9 +121,11 @@ impl EffectSlot {
     fn build(
         metadata: EffectMetadata,
         group_controls: &HashMap<String, ControlValue>,
+        canvas_width: u32,
+        canvas_height: u32,
     ) -> Result<Self> {
         let mut renderer = create_renderer_for_metadata(&metadata)?;
-        renderer.init(&metadata)?;
+        renderer.init_with_canvas_size(&metadata, canvas_width, canvas_height)?;
 
         let mut slot = Self {
             effect_id: metadata.id,

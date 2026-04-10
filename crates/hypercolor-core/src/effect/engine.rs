@@ -128,7 +128,7 @@ impl EffectEngine {
         info!(effect = %metadata.name, "Activating effect");
         self.state = EffectState::Initializing;
 
-        match renderer.init(&metadata) {
+        match renderer.init_with_canvas_size(&metadata, self.canvas_width, self.canvas_height) {
             Ok(()) => {
                 self.controls = metadata
                     .controls

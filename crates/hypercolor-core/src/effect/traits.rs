@@ -83,6 +83,21 @@ pub trait EffectRenderer: Send {
     /// allocation, missing source files, etc.).
     fn init(&mut self, metadata: &EffectMetadata) -> anyhow::Result<()>;
 
+    /// Initialize the renderer for the given effect and target canvas size.
+    ///
+    /// Renderers that need the final presentation size before their first
+    /// frame can override this. Backends that do not care can keep the default
+    /// behavior and defer size handling to [`render_into`](Self::render_into).
+    fn init_with_canvas_size(
+        &mut self,
+        metadata: &EffectMetadata,
+        canvas_width: u32,
+        canvas_height: u32,
+    ) -> anyhow::Result<()> {
+        let _ = (canvas_width, canvas_height);
+        self.init(metadata)
+    }
+
     /// Produce a single frame into caller-owned target storage.
     ///
     /// Called once per render loop iteration while the effect is `Running`.
