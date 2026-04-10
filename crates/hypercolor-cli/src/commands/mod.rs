@@ -1,5 +1,7 @@
 //! CLI subcommand modules.
 
+pub mod audio;
+pub mod brightness;
 pub mod completions;
 pub mod config;
 pub mod devices;
@@ -9,6 +11,7 @@ pub mod layouts;
 pub mod library;
 pub mod profiles;
 pub mod scenes;
+pub mod server;
 pub mod servers;
 pub mod service;
 pub mod status;

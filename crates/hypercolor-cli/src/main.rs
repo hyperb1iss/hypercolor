@@ -81,6 +81,12 @@ pub enum Commands {
     Library(commands::library::LibraryArgs),
     /// Spatial layout management.
     Layouts(commands::layouts::LayoutsArgs),
+    /// Global output brightness control.
+    Brightness(commands::brightness::BrightnessArgs),
+    /// Audio input device management.
+    Audio(commands::audio::AudioArgs),
+    /// Daemon identity and health.
+    Server(commands::server::ServerArgs),
     /// Configuration management.
     Config(commands::config::ConfigArgs),
     /// Daemon service lifecycle management.
@@ -127,6 +133,9 @@ async fn main() -> Result<()> {
         Commands::Profiles(args) => commands::profiles::execute(args, &client, &ctx).await,
         Commands::Library(args) => commands::library::execute(args, &client, &ctx).await,
         Commands::Layouts(args) => commands::layouts::execute(args, &client, &ctx).await,
+        Commands::Brightness(args) => commands::brightness::execute(args, &client, &ctx).await,
+        Commands::Audio(args) => commands::audio::execute(args, &client, &ctx).await,
+        Commands::Server(args) => commands::server::execute(args, &client, &ctx).await,
         Commands::Config(args) => commands::config::execute(args, &client, &ctx).await,
         Commands::Service(args) => commands::service::execute(args, &ctx).await,
         Commands::Diagnose(args) => commands::diagnose::execute(args, &client, &ctx).await,

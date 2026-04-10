@@ -72,6 +72,8 @@ pub enum PresetsCommand {
     List,
     /// Show one preset.
     Info(PresetInfoArgs),
+    /// Update an existing preset.
+    Update(PresetUpdateArgs),
     /// Apply a preset.
     Apply(PresetApplyArgs),
     /// Delete a preset.
@@ -100,6 +102,16 @@ pub struct PresetDeleteArgs {
     /// Skip confirmation prompt.
     #[arg(long)]
     pub yes: bool,
+}
+
+/// Arguments for `library presets update`.
+#[derive(Debug, Args)]
+pub struct PresetUpdateArgs {
+    /// Preset ID or name.
+    pub preset: String,
+    /// JSON data with fields to update.
+    #[arg(long)]
+    pub data: String,
 }
 
 /// Arguments for `library presets create`.
@@ -137,6 +149,8 @@ pub enum PlaylistsCommand {
     List,
     /// Show one playlist.
     Info(PlaylistInfoArgs),
+    /// Update an existing playlist.
+    Update(PlaylistUpdateArgs),
     /// Activate a playlist runtime.
     Activate(PlaylistActivateArgs),
     /// Show currently active playlist runtime.
@@ -169,6 +183,16 @@ pub struct PlaylistDeleteArgs {
     /// Skip confirmation prompt.
     #[arg(long)]
     pub yes: bool,
+}
+
+/// Arguments for `library playlists update`.
+#[derive(Debug, Args)]
+pub struct PlaylistUpdateArgs {
+    /// Playlist ID or name.
+    pub playlist: String,
+    /// JSON data with fields to update.
+    #[arg(long)]
+    pub data: String,
 }
 
 /// Parsed playlist item target kind.
@@ -438,6 +462,18 @@ async fn execute_presets(
                 }
             }
         }
+        PresetsCommand::Update(update_args) => {
+            let path = format!("/library/presets/{}", urlencoded(&update_args.preset));
+            let body: serde_json::Value = serde_json::from_str(&update_args.data)
+                .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+            let response = client.put(&path, &body).await?;
+            match ctx.format {
+                OutputFormat::Json => ctx.print_json(&response)?,
+                OutputFormat::Plain | OutputFormat::Table => {
+                    ctx.success(&format!("Preset updated: {}", update_args.preset));
+                }
+            }
+        }
     }
 
     Ok(())
@@ -616,6 +652,21 @@ async fn execute_playlists(
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
                     ctx.success(&format!("Playlist deleted: {}", delete_args.playlist));
+                }
+            }
+        }
+        PlaylistsCommand::Update(update_args) => {
+            let path = format!(
+                "/library/playlists/{}",
+                urlencoded(&update_args.playlist)
+            );
+            let body: serde_json::Value = serde_json::from_str(&update_args.data)
+                .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+            let response = client.put(&path, &body).await?;
+            match ctx.format {
+                OutputFormat::Json => ctx.print_json(&response)?,
+                OutputFormat::Plain | OutputFormat::Table => {
+                    ctx.success(&format!("Playlist updated: {}", update_args.playlist));
                 }
             }
         }

@@ -92,6 +92,25 @@ impl DaemonClient {
         parse_api_response(response).await
     }
 
+    /// Send a PATCH request with a JSON body and parse the response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the daemon is unreachable, the body cannot be
+    /// serialized, or the daemon returns a non-success status code.
+    pub async fn patch(&self, path: &str, body: &impl Serialize) -> Result<serde_json::Value> {
+        let url = format!("{}/api/v1{path}", self.base_url);
+        let response = self
+            .with_auth(self.http.patch(&url))
+            .json(body)
+            .send()
+            .await
+            .with_context(|| {
+                format!("Failed to connect to daemon at {url}. Is the daemon running?")
+            })?;
+        parse_api_response(response).await
+    }
+
     /// Send a DELETE request and parse the response.
     ///
     /// # Errors

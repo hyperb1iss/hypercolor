@@ -24,6 +24,14 @@ pub enum EffectCommand {
     Stop,
     /// Show detailed information about an effect.
     Info(EffectInfoArgs),
+    /// Patch controls on the currently running effect (without re-applying).
+    Patch(EffectPatchArgs),
+    /// Reset controls on the currently running effect to defaults.
+    Reset,
+    /// Rescan the effect library for new or changed effects.
+    Rescan,
+    /// Manage effect-to-layout associations.
+    Layout(EffectLayoutArgs),
 }
 
 /// Arguments for `effects list`.
@@ -76,6 +84,55 @@ pub struct EffectInfoArgs {
     pub effect: String,
 }
 
+/// Arguments for `effects patch`.
+#[derive(Debug, Args)]
+pub struct EffectPatchArgs {
+    /// Control parameters to update (repeatable, format: key=value).
+    #[arg(long, short, value_parser = parse_key_value, required = true)]
+    pub param: Vec<(String, String)>,
+}
+
+/// Arguments for `effects layout`.
+#[derive(Debug, Args)]
+pub struct EffectLayoutArgs {
+    #[command(subcommand)]
+    pub command: EffectLayoutCommand,
+}
+
+/// Effect layout subcommands.
+#[derive(Debug, Subcommand)]
+pub enum EffectLayoutCommand {
+    /// Show the layout associated with an effect.
+    Show(EffectLayoutShowArgs),
+    /// Associate an effect with a specific layout.
+    Set(EffectLayoutSetArgs),
+    /// Remove the layout association from an effect.
+    Clear(EffectLayoutClearArgs),
+}
+
+/// Arguments for `effects layout show`.
+#[derive(Debug, Args)]
+pub struct EffectLayoutShowArgs {
+    /// Effect name or ID.
+    pub effect: String,
+}
+
+/// Arguments for `effects layout set`.
+#[derive(Debug, Args)]
+pub struct EffectLayoutSetArgs {
+    /// Effect name or ID.
+    pub effect: String,
+    /// Layout ID to associate.
+    pub layout: String,
+}
+
+/// Arguments for `effects layout clear`.
+#[derive(Debug, Args)]
+pub struct EffectLayoutClearArgs {
+    /// Effect name or ID.
+    pub effect: String,
+}
+
 /// Parse a `key=value` string.
 fn parse_key_value(s: &str) -> Result<(String, String), String> {
     let pos = s
@@ -102,6 +159,10 @@ pub async fn execute(args: &EffectsArgs, client: &DaemonClient, ctx: &OutputCont
         }
         EffectCommand::Stop => execute_stop(client, ctx).await,
         EffectCommand::Info(info_args) => execute_info(info_args, client, ctx).await,
+        EffectCommand::Patch(patch_args) => execute_patch(patch_args, client, ctx).await,
+        EffectCommand::Reset => execute_reset(client, ctx).await,
+        EffectCommand::Rescan => execute_rescan(client, ctx).await,
+        EffectCommand::Layout(layout_args) => execute_layout(layout_args, client, ctx).await,
     }
 }
 
@@ -256,6 +317,118 @@ async fn execute_info(
                 ctx.info(&format!("Description  {desc}"));
             }
             println!();
+        }
+    }
+
+    Ok(())
+}
+
+async fn execute_patch(
+    args: &EffectPatchArgs,
+    client: &DaemonClient,
+    ctx: &OutputContext,
+) -> Result<()> {
+    let mut controls = serde_json::Map::new();
+    for (key, value) in &args.param {
+        controls.insert(key.clone(), parse_control_value(value));
+    }
+
+    let body = serde_json::json!({ "controls": controls });
+    let response = client
+        .patch("/effects/current/controls", &body)
+        .await?;
+
+    match ctx.format {
+        OutputFormat::Json => ctx.print_json(&response)?,
+        OutputFormat::Plain | OutputFormat::Table => {
+            let count = args.param.len();
+            ctx.success(&format!("Patched {count} control(s)"));
+        }
+    }
+
+    Ok(())
+}
+
+async fn execute_reset(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
+    let response = client
+        .post("/effects/current/reset", &serde_json::json!({}))
+        .await?;
+
+    match ctx.format {
+        OutputFormat::Json => ctx.print_json(&response)?,
+        OutputFormat::Plain | OutputFormat::Table => {
+            ctx.success("Controls reset to defaults");
+        }
+    }
+
+    Ok(())
+}
+
+async fn execute_rescan(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
+    let response = client
+        .post("/effects/rescan", &serde_json::json!({}))
+        .await?;
+
+    match ctx.format {
+        OutputFormat::Json => ctx.print_json(&response)?,
+        OutputFormat::Plain | OutputFormat::Table => {
+            let count = response
+                .get("count")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            ctx.success(&format!("Rescanned: {count} effects found"));
+        }
+    }
+
+    Ok(())
+}
+
+async fn execute_layout(
+    args: &EffectLayoutArgs,
+    client: &DaemonClient,
+    ctx: &OutputContext,
+) -> Result<()> {
+    match &args.command {
+        EffectLayoutCommand::Show(show_args) => {
+            let path = format!("/effects/{}/layout", urlencoded(&show_args.effect));
+            let response = client.get(&path).await?;
+
+            match ctx.format {
+                OutputFormat::Json => ctx.print_json(&response)?,
+                OutputFormat::Plain | OutputFormat::Table => {
+                    let layout_id = extract_str(&response, "layout_id");
+                    ctx.info(&format!("{}: layout = {layout_id}", show_args.effect));
+                }
+            }
+        }
+        EffectLayoutCommand::Set(set_args) => {
+            let path = format!("/effects/{}/layout", urlencoded(&set_args.effect));
+            let body = serde_json::json!({ "layout_id": set_args.layout });
+            let response = client.put(&path, &body).await?;
+
+            match ctx.format {
+                OutputFormat::Json => ctx.print_json(&response)?,
+                OutputFormat::Plain | OutputFormat::Table => {
+                    ctx.success(&format!(
+                        "Effect {:?} linked to layout {:?}",
+                        set_args.effect, set_args.layout
+                    ));
+                }
+            }
+        }
+        EffectLayoutCommand::Clear(clear_args) => {
+            let path = format!("/effects/{}/layout", urlencoded(&clear_args.effect));
+            let response = client.delete(&path).await?;
+
+            match ctx.format {
+                OutputFormat::Json => ctx.print_json(&response)?,
+                OutputFormat::Plain | OutputFormat::Table => {
+                    ctx.success(&format!(
+                        "Layout association cleared for {:?}",
+                        clear_args.effect
+                    ));
+                }
+            }
         }
     }
 
