@@ -1613,7 +1613,7 @@ on real hardware.
 | 2.5 | Implement `SensorRenderer` (numeric + gauge + bar, SVG template, color interpolation) | core | Regression signature tests with mock sensor data at various values |
 | 2.6 | Implement `ImageRenderer` (PNG/JPEG/WebP static + animated GIF with frame cycling, `ImageFit` modes) | core | Load test images, GIF frame timing test |
 | 2.7 | Implement `TextRenderer` (cosmic-text layout, horizontal scroll, `{sensor:label}` interpolation from `OverlayInput::sensors`) | core | Text layout tests, scroll animation test, interpolation tests |
-| 2.8 | Ship default SVG templates (2 clock faces, 2 gauge styles, 1 frame border) under `assets/overlay-templates/` | assets | Templates render correctly via resvg, with bundled-asset render coverage and visual regression signatures |
+| 2.8 | Ship default SVG templates (3 clock faces, 3 gauge styles, 2 frame borders) under `assets/overlay-templates/` | assets | Templates render correctly via resvg, with bundled-asset render coverage and visual regression signatures |
 | 2.9 | Wire renderer factory: `OverlaySource` → `Box<dyn OverlayRenderer>` | core | Factory dispatches correctly for all types |
 | 2.10 | End-to-end hardware test: clock + sensor gauge on Corsair LCD alongside a running effect | daemon | Manual visual verification (`just overlay-demo <display-id-or-name>`) |
 | 2.11 | Benchmarks: per-renderer render cost at 480×480 and 120×120, plus cached 2-overlay compose-only and compose+writeback deltas vs 0 overlays | daemon | Clock ≤500 µs, sensor gauge ≤500 µs, compose-only ≤200 µs, compose+writeback ≤1.5 ms extra at 2 overlays |
