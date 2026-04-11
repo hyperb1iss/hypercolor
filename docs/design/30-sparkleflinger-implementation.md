@@ -632,7 +632,7 @@ still Wave 6 work.
 
 ## 8. Benchmarks
 
-`crates/hypercolor-daemon/benches/render_pipeline.rs` has three groups:
+`crates/hypercolor-daemon/benches/render_pipeline.rs` has four groups:
 
 - `daemon_render_pipeline` — end-to-end pipeline at 60 FPS with 3 mock
   devices × 120 LEDs. Two scenarios: active effect with shared publish, and
@@ -642,8 +642,12 @@ still Wave 6 work.
 - `daemon_sparkleflinger` — isolates composition cost: `single_replace_bypass`
   measures the bypass fast path at 320×200, `alpha_two_layer_compose`
   measures a non-bypass two-layer alpha compose.
+- `daemon_display_overlays` — isolates the display overlay worker path at
+  480×480, including zero-overlay bypass, cached overlay compose-only, and
+  compose-plus-RGB-writeback timings for 1, 2, and 4 layers.
 
-Run with `just bench daemon_sparkleflinger` or
+Run with `just bench-daemon daemon_display_overlays`,
+`just bench-daemon daemon_sparkleflinger`, or
 `cargo bench -p hypercolor-daemon --bench render_pipeline`.
 
 ## 9. Implementation references

@@ -59,6 +59,7 @@ test-one name *args='':
 bench-smoke:
     ./scripts/cargo-cache-build.sh cargo test -p hypercolor-core --bench core_pipeline
     ./scripts/cargo-cache-build.sh cargo test -p hypercolor-hal --bench protocol_encoding
+    ./scripts/cargo-cache-build.sh cargo test -p hypercolor-daemon --bench render_pipeline
 
 # Run the core benchmark suite (Criterion HTML reports land in target/criterion/)
 bench-core *args='':
@@ -68,20 +69,27 @@ bench-core *args='':
 bench-hal *args='':
     ./scripts/cargo-cache-build.sh cargo bench -p hypercolor-hal --bench protocol_encoding -- {{ args }}
 
+# Run the daemon render-pipeline benchmark suite
+bench-daemon *args='':
+    ./scripts/cargo-cache-build.sh cargo bench -p hypercolor-daemon --bench render_pipeline -- {{ args }}
+
 # Run all benchmark suites
 bench:
     just bench-core
     just bench-hal
+    just bench-daemon
 
 # Save a named Criterion baseline for all benchmark suites
 bench-baseline name:
     just bench-core -- --save-baseline {{ name }}
     just bench-hal -- --save-baseline {{ name }}
+    just bench-daemon -- --save-baseline {{ name }}
 
 # Compare all benchmark suites against a named Criterion baseline
 bench-compare name:
     just bench-core -- --baseline {{ name }}
     just bench-hal -- --baseline {{ name }}
+    just bench-daemon -- --baseline {{ name }}
 
 # ─── Linting & Formatting ────────────────────────────────
 
