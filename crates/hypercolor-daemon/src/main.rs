@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use clap::Parser;
-use hypercolor_types::config::{HypercolorConfig, LogLevel};
+use clap::{Parser, ValueEnum};
+use hypercolor_types::config::{HypercolorConfig, LogLevel, RenderAccelerationMode};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,9 +33,30 @@ struct DaemonArgs {
     #[arg(long)]
     log_level: Option<String>,
 
+    /// Override the configured compositor acceleration mode.
+    #[arg(long, value_enum)]
+    render_acceleration_mode: Option<RenderAccelerationModeArg>,
+
     /// Serve the web UI from this directory (static files with SPA fallback).
     #[arg(long)]
     ui_dir: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum RenderAccelerationModeArg {
+    Cpu,
+    Auto,
+    Gpu,
+}
+
+impl From<RenderAccelerationModeArg> for RenderAccelerationMode {
+    fn from(value: RenderAccelerationModeArg) -> Self {
+        match value {
+            RenderAccelerationModeArg::Cpu => Self::Cpu,
+            RenderAccelerationModeArg::Auto => Self::Auto,
+            RenderAccelerationModeArg::Gpu => Self::Gpu,
+        }
+    }
 }
 
 // ── Entry Point ─────────────────────────────────────────────────────────────
@@ -58,7 +79,10 @@ async fn async_main() -> Result<()> {
 
     // Load configuration before tracing so we can honor config-driven log
     // levels when the CLI flag is omitted.
-    let (config, config_path) = load_config(args.config.as_deref()).await?;
+    let (mut config, config_path) = load_config(args.config.as_deref()).await?;
+    if let Some(mode) = args.render_acceleration_mode {
+        config.effect_engine.render_acceleration_mode = mode.into();
+    }
     let log_level = resolve_log_level(args.log_level.as_deref(), &config);
 
     // 1. Initialize tracing with the requested log level.
@@ -264,8 +288,10 @@ fn is_loopback_host(host: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_env_filter, resolve_log_level};
-    use hypercolor_types::config::{HypercolorConfig, LogLevel};
+    use clap::Parser;
+
+    use super::{DaemonArgs, default_env_filter, resolve_log_level};
+    use hypercolor_types::config::{HypercolorConfig, LogLevel, RenderAccelerationMode};
 
     #[test]
     fn resolve_log_level_prefers_cli_flag() {
@@ -288,6 +314,23 @@ mod tests {
         assert_eq!(
             default_env_filter("debug"),
             "warn,hypercolor=debug,hypercolor_daemon=debug,hypercolor_core=debug,hypercolor_hal=debug,hypercolor_types=debug"
+        );
+    }
+
+    #[test]
+    fn render_acceleration_mode_cli_override_updates_config() {
+        let args =
+            DaemonArgs::try_parse_from(["hypercolor-daemon", "--render-acceleration-mode", "gpu"])
+                .expect("CLI override should parse");
+        let mut config = HypercolorConfig::default();
+
+        if let Some(mode) = args.render_acceleration_mode {
+            config.effect_engine.render_acceleration_mode = mode.into();
+        }
+
+        assert_eq!(
+            config.effect_engine.render_acceleration_mode,
+            RenderAccelerationMode::Gpu
         );
     }
 }
