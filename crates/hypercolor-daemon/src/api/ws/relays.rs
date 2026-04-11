@@ -241,7 +241,7 @@ pub(super) async fn relay_canvas(
 ) {
     let mut canvas_rx = None::<crate::preview_runtime::PreviewFrameReceiver>;
     let mut active_canvas_config = None::<CanvasConfig>;
-    let mut latest_canvas = None::<hypercolor_core::bus::CanvasFrame>;
+    let mut receiver_initialized = false;
     let mut last_sent_frame_number: Option<u32> = None;
     let mut last_sent_brightness_bits: Option<u32> = None;
     let mut pending_send = false;
@@ -266,7 +266,7 @@ pub(super) async fn relay_canvas(
         let Some(canvas_config) = active_canvas_config.as_ref() else {
             last_sent_frame_number = None;
             last_sent_brightness_bits = None;
-            latest_canvas = None;
+            receiver_initialized = false;
             pending_send = false;
             last_sent_at = preview_initial_last_sent();
             tokio::select! {
@@ -293,8 +293,9 @@ pub(super) async fn relay_canvas(
         if canvas_config.fps != active_fps {
             active_fps = canvas_config.fps.max(1);
         }
-        if latest_canvas.is_none() {
-            latest_canvas = Some(canvas_rx.borrow_and_update().clone());
+        if !receiver_initialized {
+            let _ = canvas_rx.borrow_and_update();
+            receiver_initialized = true;
             pending_send = true;
         }
 
@@ -303,7 +304,7 @@ pub(super) async fn relay_canvas(
                 if changed.is_err() {
                     break;
                 }
-                latest_canvas = Some(canvas_rx.borrow_and_update().clone());
+                let _ = canvas_rx.borrow_and_update();
                 pending_send = true;
             }
             changed = power_state_rx.changed() => {
@@ -311,7 +312,7 @@ pub(super) async fn relay_canvas(
                     break;
                 }
                 let _ = power_state_rx.borrow_and_update();
-                pending_send |= latest_canvas.is_some();
+                pending_send |= receiver_initialized;
             }
             changed = subscriptions.changed() => {
                 if changed.is_err() {
@@ -321,10 +322,7 @@ pub(super) async fn relay_canvas(
                 active_canvas_config = None;
             }
             _ = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
-                let Some(latest_canvas) = latest_canvas.as_ref() else {
-                    pending_send = false;
-                    continue;
-                };
+                let latest_canvas = canvas_rx.borrow();
                 let brightness = power_state_rx.borrow().effective_brightness();
                 let brightness_bits = brightness.to_bits();
                 if last_sent_frame_number == Some(latest_canvas.frame_number)
@@ -336,7 +334,7 @@ pub(super) async fn relay_canvas(
 
                 if binary_tx
                     .try_send(encode_cached_canvas_preview_binary(
-                        latest_canvas,
+                        &latest_canvas,
                         canvas_config.format,
                         brightness,
                     ))
@@ -365,7 +363,7 @@ pub(super) async fn relay_screen_canvas(
 ) {
     let mut canvas_rx = None::<crate::preview_runtime::PreviewFrameReceiver>;
     let mut active_canvas_config = None::<CanvasConfig>;
-    let mut latest_canvas = None::<hypercolor_core::bus::CanvasFrame>;
+    let mut receiver_initialized = false;
     let mut last_sent_frame_number: Option<u32> = None;
     let mut pending_send = false;
     let mut active_fps = 15_u32;
@@ -388,7 +386,7 @@ pub(super) async fn relay_screen_canvas(
 
         let Some(canvas_config) = active_canvas_config.as_ref() else {
             last_sent_frame_number = None;
-            latest_canvas = None;
+            receiver_initialized = false;
             pending_send = false;
             last_sent_at = preview_initial_last_sent();
             if subscriptions.changed().await.is_err() {
@@ -405,8 +403,9 @@ pub(super) async fn relay_screen_canvas(
         if canvas_config.fps != active_fps {
             active_fps = canvas_config.fps.max(1);
         }
-        if latest_canvas.is_none() {
-            latest_canvas = Some(canvas_rx.borrow_and_update().clone());
+        if !receiver_initialized {
+            let _ = canvas_rx.borrow_and_update();
+            receiver_initialized = true;
             pending_send = true;
         }
 
@@ -415,7 +414,7 @@ pub(super) async fn relay_screen_canvas(
                 if changed.is_err() {
                     break;
                 }
-                latest_canvas = Some(canvas_rx.borrow_and_update().clone());
+                let _ = canvas_rx.borrow_and_update();
                 pending_send = true;
             }
             changed = subscriptions.changed() => {
@@ -426,10 +425,7 @@ pub(super) async fn relay_screen_canvas(
                 active_canvas_config = None;
             }
             _ = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
-                let Some(latest_canvas) = latest_canvas.as_ref() else {
-                    pending_send = false;
-                    continue;
-                };
+                let latest_canvas = canvas_rx.borrow();
                 if last_sent_frame_number == Some(latest_canvas.frame_number) {
                     pending_send = false;
                     continue;
@@ -437,7 +433,7 @@ pub(super) async fn relay_screen_canvas(
 
                 if binary_tx
                     .try_send(encode_cached_canvas_binary_with_header(
-                        latest_canvas,
+                        &latest_canvas,
                         canvas_config.format,
                         WS_SCREEN_CANVAS_HEADER,
                     ))
