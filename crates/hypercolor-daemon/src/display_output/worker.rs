@@ -181,6 +181,7 @@ async fn run_display_worker(
     let mut last_warned_at = None::<Instant>;
     let mut last_delivered_input = None::<DisplayFrameInputState>;
     let mut last_delivered_source = None::<Arc<CanvasFrame>>;
+    let mut last_overlay_runtime_snapshot = None::<crate::display_overlays::DisplayOverlayRuntime>;
     let mut next_hold_refresh_at = None::<Instant>;
     let mut encode_state = match DisplayEncodeState::new() {
         Ok(state) => state,
@@ -208,6 +209,7 @@ async fn run_display_worker(
     publish_overlay_runtime(
         &overlay_runtime,
         device_id,
+        &mut last_overlay_runtime_snapshot,
         overlay_composer.runtime_snapshot(),
     )
     .await;
@@ -237,7 +239,13 @@ async fn run_display_worker(
                         }
                         let config = overlay_config_rx.borrow_and_update().clone();
                         overlay_composer.reconcile(config.as_ref());
-                        publish_overlay_runtime(&overlay_runtime, device_id, overlay_composer.runtime_snapshot()).await;
+                        publish_overlay_runtime(
+                            &overlay_runtime,
+                            device_id,
+                            &mut last_overlay_runtime_snapshot,
+                            overlay_composer.runtime_snapshot(),
+                        )
+                        .await;
                         if let Some(source) = last_delivered_source.as_ref() {
                             pending = Some(PendingDisplayFrame::forced(Arc::clone(source)));
                         }
@@ -284,7 +292,13 @@ async fn run_display_worker(
                         }
                         let config = overlay_config_rx.borrow_and_update().clone();
                         overlay_composer.reconcile(config.as_ref());
-                        publish_overlay_runtime(&overlay_runtime, device_id, overlay_composer.runtime_snapshot()).await;
+                        publish_overlay_runtime(
+                            &overlay_runtime,
+                            device_id,
+                            &mut last_overlay_runtime_snapshot,
+                            overlay_composer.runtime_snapshot(),
+                        )
+                        .await;
                         if let Some(source) = last_delivered_source.as_ref() {
                             pending = Some(PendingDisplayFrame::forced(Arc::clone(source)));
                         }
@@ -323,7 +337,13 @@ async fn run_display_worker(
                     }
                     let config = overlay_config_rx.borrow_and_update().clone();
                     overlay_composer.reconcile(config.as_ref());
-                    publish_overlay_runtime(&overlay_runtime, device_id, overlay_composer.runtime_snapshot()).await;
+                    publish_overlay_runtime(
+                        &overlay_runtime,
+                        device_id,
+                        &mut last_overlay_runtime_snapshot,
+                        overlay_composer.runtime_snapshot(),
+                    )
+                    .await;
                     if let Some(source) = last_delivered_source.as_ref() {
                         pending = Some(PendingDisplayFrame::forced(Arc::clone(source)));
                     }
@@ -401,6 +421,7 @@ async fn run_display_worker(
             publish_overlay_runtime(
                 &overlay_runtime,
                 device_id,
+                &mut last_overlay_runtime_snapshot,
                 overlay_composer.runtime_snapshot(),
             )
             .await;
@@ -512,8 +533,17 @@ async fn run_display_worker(
 async fn publish_overlay_runtime(
     overlay_runtime: &DisplayOverlayRuntimeRegistry,
     device_id: DeviceId,
+    last_runtime_snapshot: &mut Option<crate::display_overlays::DisplayOverlayRuntime>,
     runtime_snapshot: crate::display_overlays::DisplayOverlayRuntime,
 ) {
+    if last_runtime_snapshot
+        .as_ref()
+        .is_some_and(|previous| previous == &runtime_snapshot)
+    {
+        return;
+    }
+
+    *last_runtime_snapshot = Some(runtime_snapshot.clone());
     overlay_runtime.set(device_id, runtime_snapshot).await;
 }
 

@@ -82,7 +82,7 @@ pub enum OverlaySlotStatus {
     HtmlGated,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverlaySlotRuntime {
     pub last_rendered_at: Option<SystemTime>,
     pub consecutive_failures: u32,
@@ -106,7 +106,7 @@ impl OverlaySlotRuntime {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DisplayOverlayRuntime {
     pub slots: HashMap<OverlaySlotId, OverlaySlotRuntime>,
 }
