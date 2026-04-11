@@ -87,13 +87,13 @@ struct DisplayTargetCache {
     registry_generation: u64,
     layout_ptr: usize,
     logical_signature: u64,
-    targets: Vec<DisplayTarget>,
+    targets: Vec<Arc<DisplayTarget>>,
 }
 
 #[derive(Clone)]
 struct DisplayWorkItem {
     source: Arc<CanvasFrame>,
-    target: DisplayTarget,
+    target: Arc<DisplayTarget>,
 }
 
 #[derive(Clone, Debug)]
@@ -224,11 +224,11 @@ async fn run_display_output(
         let frame = Arc::new(canvas_rx.borrow().clone());
 
         for target in targets {
-            let key = display_worker_key(&target);
+            let key = display_worker_key(target.as_ref());
             if let Some(worker) = workers.get(&key) {
                 worker.push(DisplayWorkItem {
                     source: Arc::clone(&frame),
-                    target,
+                    target: Arc::clone(&target),
                 });
             }
         }
@@ -242,11 +242,11 @@ async fn run_display_output(
 async fn reconcile_display_workers(
     state: &DisplayOutputState,
     workers: &mut HashMap<DisplayWorkerKey, DisplayWorkerHandle>,
-    targets: &[DisplayTarget],
+    targets: &[Arc<DisplayTarget>],
 ) {
     let expected_keys = targets
         .iter()
-        .map(display_worker_key)
+        .map(|target| display_worker_key(target.as_ref()))
         .collect::<HashSet<_>>();
     let stale_keys = workers
         .keys()
@@ -261,7 +261,7 @@ async fn reconcile_display_workers(
     }
 
     for target in targets {
-        let key = display_worker_key(target);
+        let key = display_worker_key(target.as_ref());
         let needs_restart = workers
             .get(&key)
             .is_some_and(|worker| worker.target_fps != target.target_fps);
@@ -283,7 +283,7 @@ async fn reconcile_display_workers(
                 workers.insert(
                     key,
                     DisplayWorkerHandle::spawn(
-                        target,
+                        target.as_ref(),
                         backend_io,
                         state.power_state.clone(),
                         state.static_hold_refresh_interval,
@@ -311,7 +311,7 @@ async fn display_targets(
     spatial_engine: &Arc<RwLock<SpatialEngine>>,
     logical_devices: &Arc<RwLock<HashMap<String, LogicalDevice>>>,
     cache: &mut DisplayTargetCache,
-) -> Vec<DisplayTarget> {
+) -> Vec<Arc<DisplayTarget>> {
     let layout = {
         let spatial = spatial_engine.read().await;
         spatial.layout()
@@ -366,7 +366,7 @@ async fn display_targets(
             continue;
         };
 
-        targets.push(DisplayTarget {
+        targets.push(Arc::new(DisplayTarget {
             backend_id: backend_id_for_device(&tracked.info.family, metadata.as_ref()),
             device_id: tracked.info.id,
             name: tracked.info.name,
@@ -374,7 +374,7 @@ async fn display_targets(
             brightness: tracked.user_settings.brightness,
             geometry,
             viewport,
-        });
+        }));
     }
 
     targets.sort_by(|left, right| {

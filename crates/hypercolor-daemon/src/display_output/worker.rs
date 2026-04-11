@@ -16,8 +16,8 @@ use hypercolor_types::session::OffOutputBehavior;
 use super::encode::{DisplayEncodeState, display_brightness_factor, encode_canvas_frame};
 use super::render::display_viewport_signature;
 use super::{
-    DISPLAY_ERROR_WARN_INTERVAL, DisplayGeometry, DisplayTarget, DisplayViewport,
-    DisplayViewportSignature, DisplayWorkItem,
+    DISPLAY_ERROR_WARN_INTERVAL, DisplayGeometry, DisplayTarget, DisplayViewportSignature,
+    DisplayWorkItem,
 };
 use crate::session::OutputPowerState;
 
@@ -51,13 +51,7 @@ impl DisplaySourceIdentity {
 }
 
 impl DisplayFrameInputState {
-    fn matches(
-        &self,
-        source: &Arc<CanvasFrame>,
-        viewport: &DisplayViewport,
-        geometry: &DisplayGeometry,
-        brightness: f32,
-    ) -> bool {
+    fn matches(&self, source: &Arc<CanvasFrame>, target: &DisplayTarget) -> bool {
         let source_identity = display_source_identity(source.as_ref());
         let source_matches = if source_identity.is_stable() {
             self.source_identity == source_identity
@@ -68,24 +62,19 @@ impl DisplayFrameInputState {
         };
 
         source_matches
-            && self.brightness_factor == display_brightness_factor(brightness)
-            && self.geometry == *geometry
-            && self.viewport == display_viewport_signature(viewport)
+            && self.brightness_factor == display_brightness_factor(target.brightness)
+            && self.geometry == target.geometry
+            && self.viewport == display_viewport_signature(&target.viewport)
     }
 
-    fn capture(
-        source: &Arc<CanvasFrame>,
-        viewport: &DisplayViewport,
-        geometry: &DisplayGeometry,
-        brightness: f32,
-    ) -> Self {
+    fn capture(source: &Arc<CanvasFrame>, target: &DisplayTarget) -> Self {
         let source_identity = display_source_identity(source.as_ref());
         Self {
             source_snapshot: (!source_identity.is_stable()).then(|| Arc::clone(source)),
             source_identity,
-            brightness_factor: display_brightness_factor(brightness),
-            geometry: geometry.clone(),
-            viewport: display_viewport_signature(viewport),
+            brightness_factor: display_brightness_factor(target.brightness),
+            geometry: target.geometry.clone(),
+            viewport: display_viewport_signature(&target.viewport),
         }
     }
 }
@@ -236,13 +225,10 @@ async fn run_display_worker(
         };
 
         let source = Arc::clone(&work.source);
-        let viewport = work.target.viewport.clone();
-        let geometry = work.target.geometry.clone();
-        let brightness = work.target.brightness;
-        let target = work.target.clone();
+        let target = Arc::clone(&work.target);
         if last_delivered_input
             .as_ref()
-            .is_some_and(|previous| previous.matches(&source, &viewport, &geometry, brightness))
+            .is_some_and(|previous| previous.matches(&source, target.as_ref()))
         {
             trace!(
                 device = %target.name,
@@ -254,15 +240,14 @@ async fn run_display_worker(
             continue;
         }
         let encode_source = Arc::clone(&source);
-        let encode_viewport = viewport.clone();
-        let encode_geometry = geometry.clone();
+        let encode_target = Arc::clone(&target);
         let encode_result = tokio::task::spawn_blocking(move || {
             let mut encode_state = encode_state;
             let encoded = encode_canvas_frame(
                 encode_source.as_ref(),
-                &encode_viewport,
-                &encode_geometry,
-                brightness,
+                &encode_target.viewport,
+                &encode_target.geometry,
+                encode_target.brightness,
                 &mut encode_state,
             );
             (encode_state, encoded)
@@ -311,12 +296,10 @@ async fn run_display_worker(
             encode_state.jpeg_buffer = reusable_jpeg;
         }
         if let Err(error) = write_result {
-            maybe_warn_display_error(&mut last_warned_at, &target, &error);
+            maybe_warn_display_error(&mut last_warned_at, target.as_ref(), &error);
             continue;
         }
-        last_delivered_input = Some(DisplayFrameInputState::capture(
-            &source, &viewport, &geometry, brightness,
-        ));
+        last_delivered_input = Some(DisplayFrameInputState::capture(&source, target.as_ref()));
         last_delivered_work = Some(Arc::clone(&work));
         next_hold_refresh_at = static_hold_refresh_deadline(
             &power_state,
