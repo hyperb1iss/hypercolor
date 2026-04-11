@@ -92,7 +92,7 @@ struct DisplayTargetCache {
 
 #[derive(Clone)]
 struct DisplayWorkItem {
-    source: CanvasFrame,
+    source: Arc<CanvasFrame>,
     target: DisplayTarget,
 }
 
@@ -221,13 +221,13 @@ async fn run_display_output(
         // `watch` gives us latest-value semantics, so after target discovery we can
         // cheaply snapshot the newest frame instead of cloning every canvas update
         // while no display target is active.
-        let frame = canvas_rx.borrow().clone();
+        let frame = Arc::new(canvas_rx.borrow().clone());
 
         for target in targets {
             let key = display_worker_key(&target);
             if let Some(worker) = workers.get(&key) {
                 worker.push(DisplayWorkItem {
-                    source: frame.clone(),
+                    source: Arc::clone(&frame),
                     target,
                 });
             }

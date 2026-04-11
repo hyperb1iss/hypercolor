@@ -30,7 +30,7 @@ pub(super) struct DisplayWorkerHandle {
 #[derive(Clone, Debug)]
 struct DisplayFrameInputState {
     source_identity: DisplaySourceIdentity,
-    source_snapshot: Option<CanvasFrame>,
+    source_snapshot: Option<Arc<CanvasFrame>>,
     brightness_factor: u16,
     geometry: DisplayGeometry,
     viewport: DisplayViewportSignature,
@@ -53,12 +53,12 @@ impl DisplaySourceIdentity {
 impl DisplayFrameInputState {
     fn matches(
         &self,
-        source: &CanvasFrame,
+        source: &Arc<CanvasFrame>,
         viewport: &DisplayViewport,
         geometry: &DisplayGeometry,
         brightness: f32,
     ) -> bool {
-        let source_identity = display_source_identity(source);
+        let source_identity = display_source_identity(source.as_ref());
         let source_matches = if source_identity.is_stable() {
             self.source_identity == source_identity
         } else {
@@ -74,14 +74,14 @@ impl DisplayFrameInputState {
     }
 
     fn capture(
-        source: &CanvasFrame,
+        source: &Arc<CanvasFrame>,
         viewport: &DisplayViewport,
         geometry: &DisplayGeometry,
         brightness: f32,
     ) -> Self {
-        let source_identity = display_source_identity(source);
+        let source_identity = display_source_identity(source.as_ref());
         Self {
-            source_snapshot: (!source_identity.is_stable()).then(|| source.clone()),
+            source_snapshot: (!source_identity.is_stable()).then(|| Arc::clone(source)),
             source_identity,
             brightness_factor: display_brightness_factor(brightness),
             geometry: geometry.clone(),
@@ -235,7 +235,7 @@ async fn run_display_worker(
             continue;
         };
 
-        let source = work.source.clone();
+        let source = Arc::clone(&work.source);
         let viewport = work.target.viewport.clone();
         let geometry = work.target.geometry.clone();
         let brightness = work.target.brightness;
@@ -253,13 +253,13 @@ async fn run_display_worker(
             );
             continue;
         }
-        let encode_source = source.clone();
+        let encode_source = Arc::clone(&source);
         let encode_viewport = viewport.clone();
         let encode_geometry = geometry.clone();
         let encode_result = tokio::task::spawn_blocking(move || {
             let mut encode_state = encode_state;
             let encoded = encode_canvas_frame(
-                &encode_source,
+                encode_source.as_ref(),
                 &encode_viewport,
                 &encode_geometry,
                 brightness,
