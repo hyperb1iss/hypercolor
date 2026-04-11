@@ -238,15 +238,24 @@ pub fn CanvasPreview(
                                         let elapsed_ms =
                                             (raf_time_ms - previous_presented_at).max(0.0);
                                         if elapsed_ms > 0.0 {
+                                            let max_present_fps = {
+                                                let target = fps_target.get_untracked();
+                                                if target > 0 {
+                                                    f64::from(target)
+                                                } else {
+                                                    120.0
+                                                }
+                                            };
                                             let instant_fps =
-                                                (1000.0 / elapsed_ms).clamp(0.0, 120.0);
+                                                (1000.0 / elapsed_ms).clamp(0.0, max_present_fps);
                                             let previous_fps =
                                                 f64::from(presented_fps.get_untracked());
                                             let next_fps = if previous_fps <= 0.0 {
                                                 instant_fps
                                             } else {
                                                 previous_fps * 0.82 + instant_fps * 0.18
-                                            };
+                                            }
+                                            .clamp(0.0, max_present_fps);
                                             #[allow(clippy::cast_possible_truncation)]
                                             {
                                                 next_fps as f32
