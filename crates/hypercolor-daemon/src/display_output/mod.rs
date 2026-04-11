@@ -305,7 +305,7 @@ async fn run_display_output(
 
 fn stable_display_source_identity(frame: &CanvasFrame) -> Option<StableDisplaySourceIdentity> {
     let surface = frame.surface();
-    (surface.generation() > 0).then_some(StableDisplaySourceIdentity {
+    (frame.width > 0 && frame.height > 0).then_some(StableDisplaySourceIdentity {
         generation: surface.generation(),
         storage: surface.storage_identity(),
         width: frame.width,

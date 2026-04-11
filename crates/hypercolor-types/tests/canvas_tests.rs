@@ -420,6 +420,14 @@ fn published_surface_storage_identity_distinguishes_new_owned_surfaces() {
 }
 
 #[test]
+fn empty_published_surfaces_share_a_stable_storage_identity() {
+    assert_eq!(
+        PublishedSurface::empty().storage_identity(),
+        PublishedSurface::empty().storage_identity()
+    );
+}
+
+#[test]
 fn render_surface_pool_slot_counts_match_visible_states() {
     let descriptor = SurfaceDescriptor::rgba8888(2, 2);
     let mut pool = RenderSurfacePool::with_slot_count(descriptor, 3);

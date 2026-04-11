@@ -21,6 +21,7 @@ pub const DEFAULT_CANVAS_HEIGHT: u32 = 480;
 pub const BYTES_PER_PIXEL: usize = 4;
 
 static NEXT_PUBLISHED_SURFACE_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
+const EMPTY_PUBLISHED_SURFACE_STORAGE_ID: u64 = 0;
 
 fn next_published_surface_storage_id() -> u64 {
     NEXT_PUBLISHED_SURFACE_STORAGE_ID.fetch_add(1, Ordering::Relaxed)
@@ -855,7 +856,7 @@ impl PublishedSurface {
             frame_number: 0,
             timestamp_ms: 0,
             storage: PublishedSurfaceStorage::CpuRgba {
-                id: next_published_surface_storage_id(),
+                id: EMPTY_PUBLISHED_SURFACE_STORAGE_ID,
                 rgba: Arc::new(Vec::new()),
             },
         }

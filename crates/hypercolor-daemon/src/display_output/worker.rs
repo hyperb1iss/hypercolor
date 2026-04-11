@@ -74,22 +74,14 @@ struct DisplaySourceIdentity {
     height: u32,
 }
 
-impl DisplaySourceIdentity {
-    fn is_stable(self) -> bool {
-        self.generation > 0
-    }
-}
-
 impl DisplayFrameInputState {
     fn matches(&self, source: &Arc<CanvasFrame>, target: &DisplayTarget) -> bool {
         let source_identity = display_source_identity(source.as_ref());
-        let source_matches = if source_identity.is_stable() {
-            self.source_identity == source_identity
-        } else {
-            self.source_snapshot.as_ref().is_some_and(|snapshot| {
-                Arc::ptr_eq(snapshot, source) || snapshot.rgba_bytes() == source.rgba_bytes()
-            })
-        };
+        let source_matches = self.source_identity == source_identity
+            || self
+                .source_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.rgba_bytes() == source.rgba_bytes());
 
         source_matches
             && self.brightness_factor == display_brightness_factor(target.brightness)
@@ -100,8 +92,8 @@ impl DisplayFrameInputState {
     fn capture(source: &Arc<CanvasFrame>, target: &DisplayTarget) -> Self {
         let source_identity = display_source_identity(source.as_ref());
         Self {
-            source_snapshot: (!source_identity.is_stable()).then(|| Arc::clone(source)),
             source_identity,
+            source_snapshot: Some(Arc::clone(source)),
             brightness_factor: display_brightness_factor(target.brightness),
             geometry: target.geometry.clone(),
             viewport: display_viewport_signature(&target.viewport),
