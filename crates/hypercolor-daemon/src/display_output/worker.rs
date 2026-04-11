@@ -26,12 +26,35 @@ use super::{
     DISPLAY_ERROR_WARN_INTERVAL, DisplayGeometry, DisplayTarget, DisplayViewportSignature,
     DisplayWorkerConfigSignature,
 };
+use crate::display_overlays::DisplayOverlayRuntimeRegistry;
 use crate::session::OutputPowerState;
 
 pub(super) struct DisplayWorkerHandle {
     tx: watch::Sender<Option<Arc<CanvasFrame>>>,
     join_handle: JoinHandle<()>,
     pub config_signature: DisplayWorkerConfigSignature,
+}
+
+#[derive(Clone)]
+struct PendingDisplayFrame {
+    source: Arc<CanvasFrame>,
+    force_send: bool,
+}
+
+impl PendingDisplayFrame {
+    fn fresh(source: Arc<CanvasFrame>) -> Self {
+        Self {
+            source,
+            force_send: false,
+        }
+    }
+
+    fn forced(source: Arc<CanvasFrame>) -> Self {
+        Self {
+            source,
+            force_send: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -102,6 +125,7 @@ impl DisplayWorkerHandle {
         power_state: watch::Receiver<OutputPowerState>,
         static_hold_refresh_interval: Duration,
         overlay_config_rx: watch::Receiver<Arc<DisplayOverlayConfig>>,
+        overlay_runtime: Arc<DisplayOverlayRuntimeRegistry>,
         sensor_snapshot_rx: watch::Receiver<Arc<SystemSnapshot>>,
         overlay_factory: Arc<dyn OverlayRendererFactory>,
     ) -> Self {
@@ -118,6 +142,7 @@ impl DisplayWorkerHandle {
             power_state,
             static_hold_refresh_interval,
             overlay_config_rx,
+            overlay_runtime,
             sensor_snapshot_rx,
             overlay_factory,
         ));
@@ -152,6 +177,7 @@ async fn run_display_worker(
     mut power_state: watch::Receiver<OutputPowerState>,
     static_hold_refresh_interval: Duration,
     mut overlay_config_rx: watch::Receiver<Arc<DisplayOverlayConfig>>,
+    overlay_runtime: Arc<DisplayOverlayRuntimeRegistry>,
     mut sensor_snapshot_rx: watch::Receiver<Arc<SystemSnapshot>>,
     overlay_factory: Arc<dyn OverlayRendererFactory>,
 ) {
@@ -174,8 +200,9 @@ async fn run_display_worker(
             return;
         }
     };
-    let mut pending = None::<Arc<CanvasFrame>>;
+    let mut pending = None::<PendingDisplayFrame>;
     let mut delivered_frame_number = 0_u64;
+    let mut last_delivered_jpeg = None::<Arc<Vec<u8>>>;
     let mut overlay_composer = OverlayComposer::new(
         target.geometry.width,
         target.geometry.height,
@@ -184,6 +211,12 @@ async fn run_display_worker(
     );
     let initial_overlay_config = overlay_config_rx.borrow_and_update().clone();
     overlay_composer.reconcile(initial_overlay_config.as_ref());
+    publish_overlay_runtime(
+        &overlay_runtime,
+        device_id,
+        overlay_composer.runtime_snapshot(),
+    )
+    .await;
 
     loop {
         if pending.is_none() {
@@ -196,7 +229,7 @@ async fn run_display_worker(
                         if changed.is_err() {
                             break;
                         }
-                        pending.clone_from(&rx.borrow_and_update());
+                        pending = rx.borrow_and_update().clone().map(PendingDisplayFrame::fresh);
                     }
                     changed = power_state.changed() => {
                         if changed.is_err() {
@@ -210,9 +243,9 @@ async fn run_display_worker(
                         }
                         let config = overlay_config_rx.borrow_and_update().clone();
                         overlay_composer.reconcile(config.as_ref());
+                        publish_overlay_runtime(&overlay_runtime, device_id, overlay_composer.runtime_snapshot()).await;
                         if let Some(source) = last_delivered_source.as_ref() {
-                            pending = Some(Arc::clone(source));
-                            last_delivered_input = None;
+                            pending = Some(PendingDisplayFrame::forced(Arc::clone(source)));
                         }
                     }
                     changed = sensor_snapshot_rx.changed(), if overlay_composer.has_active_slots() => {
@@ -221,8 +254,7 @@ async fn run_display_worker(
                         }
                         let _ = sensor_snapshot_rx.borrow_and_update();
                         if let Some(source) = last_delivered_source.as_ref() {
-                            pending = Some(Arc::clone(source));
-                            last_delivered_input = None;
+                            pending = Some(PendingDisplayFrame::forced(Arc::clone(source)));
                         }
                     }
                     () = tokio::time::sleep_until(tokio::time::Instant::from_std(wake_deadline)) => {
@@ -230,13 +262,11 @@ async fn run_display_worker(
                         if should_refresh_static_hold(&power_state)
                             && next_hold_refresh_at.is_some_and(|deadline| now >= deadline)
                             && let Some(source) = last_delivered_source.as_ref() {
-                            pending = Some(Arc::clone(source));
-                            last_delivered_input = None;
+                            pending = Some(PendingDisplayFrame::forced(Arc::clone(source)));
                         }
                         if overlay_deadline.is_some_and(|deadline| now >= deadline)
                             && let Some(source) = last_delivered_source.as_ref() {
-                            pending = Some(Arc::clone(source));
-                            last_delivered_input = None;
+                            pending = Some(PendingDisplayFrame::forced(Arc::clone(source)));
                         }
                     }
                 }
@@ -246,7 +276,7 @@ async fn run_display_worker(
                         if changed.is_err() {
                             break;
                         }
-                        pending.clone_from(&rx.borrow_and_update());
+                        pending = rx.borrow_and_update().clone().map(PendingDisplayFrame::fresh);
                     }
                     changed = power_state.changed() => {
                         if changed.is_err() {
@@ -260,9 +290,9 @@ async fn run_display_worker(
                         }
                         let config = overlay_config_rx.borrow_and_update().clone();
                         overlay_composer.reconcile(config.as_ref());
+                        publish_overlay_runtime(&overlay_runtime, device_id, overlay_composer.runtime_snapshot()).await;
                         if let Some(source) = last_delivered_source.as_ref() {
-                            pending = Some(Arc::clone(source));
-                            last_delivered_input = None;
+                            pending = Some(PendingDisplayFrame::forced(Arc::clone(source)));
                         }
                     }
                     changed = sensor_snapshot_rx.changed(), if overlay_composer.has_active_slots() => {
@@ -271,8 +301,7 @@ async fn run_display_worker(
                         }
                         let _ = sensor_snapshot_rx.borrow_and_update();
                         if let Some(source) = last_delivered_source.as_ref() {
-                            pending = Some(Arc::clone(source));
-                            last_delivered_input = None;
+                            pending = Some(PendingDisplayFrame::forced(Arc::clone(source)));
                         }
                     }
                 }
@@ -291,7 +320,7 @@ async fn run_display_worker(
                     if changed.is_err() {
                         break;
                     }
-                    pending.clone_from(&rx.borrow_and_update());
+                    pending = rx.borrow_and_update().clone().map(PendingDisplayFrame::fresh);
                     continue;
                 }
                 changed = overlay_config_rx.changed() => {
@@ -300,9 +329,9 @@ async fn run_display_worker(
                     }
                     let config = overlay_config_rx.borrow_and_update().clone();
                     overlay_composer.reconcile(config.as_ref());
+                    publish_overlay_runtime(&overlay_runtime, device_id, overlay_composer.runtime_snapshot()).await;
                     if let Some(source) = last_delivered_source.as_ref() {
-                        pending = Some(Arc::clone(source));
-                        last_delivered_input = None;
+                        pending = Some(PendingDisplayFrame::forced(Arc::clone(source)));
                     }
                     continue;
                 }
@@ -312,8 +341,7 @@ async fn run_display_worker(
                     }
                     let _ = sensor_snapshot_rx.borrow_and_update();
                     if let Some(source) = last_delivered_source.as_ref() {
-                        pending = Some(Arc::clone(source));
-                        last_delivered_input = None;
+                        pending = Some(PendingDisplayFrame::forced(Arc::clone(source)));
                     }
                     continue;
                 }
@@ -321,14 +349,14 @@ async fn run_display_worker(
             }
         }
 
-        let Some(source) = pending.take() else {
+        let Some(PendingDisplayFrame { source, force_send }) = pending.take() else {
             continue;
         };
 
-        if last_delivered_input
+        let input_matches = last_delivered_input
             .as_ref()
-            .is_some_and(|previous| previous.matches(&source, target.as_ref()))
-        {
+            .is_some_and(|previous| previous.matches(&source, target.as_ref()));
+        if input_matches && !force_send {
             trace!(
                 device = %target.name,
                 backend_id = %backend_key,
@@ -336,6 +364,27 @@ async fn run_display_worker(
                 target_fps,
                 "skipping unchanged display frame"
             );
+            continue;
+        }
+        if force_send
+            && input_matches
+            && !overlay_composer.has_active_slots()
+            && let Some(jpeg) = last_delivered_jpeg.as_ref()
+        {
+            if let Err(error) = backend_io
+                .write_display_frame_owned(device_id, Arc::clone(jpeg))
+                .await
+            {
+                maybe_warn_display_error(&mut last_warned_at, target.as_ref(), &error);
+                continue;
+            }
+            last_delivered_source = Some(source);
+            next_hold_refresh_at = static_hold_refresh_deadline(
+                &power_state,
+                last_delivered_source.as_ref(),
+                static_hold_refresh_interval,
+            );
+            delivered_frame_number = delivered_frame_number.saturating_add(1);
             continue;
         }
         let sensor_snapshot = Arc::clone(&sensor_snapshot_rx.borrow());
@@ -355,6 +404,12 @@ async fn run_display_worker(
             ) {
                 staging.write_into_rgb(&mut encode_state.rgb_buffer);
             }
+            publish_overlay_runtime(
+                &overlay_runtime,
+                device_id,
+                overlay_composer.runtime_snapshot(),
+            )
+            .await;
             let geometry = target.geometry.clone();
             let brightness = target.brightness;
             tokio::task::spawn_blocking(move || {
@@ -418,7 +473,14 @@ async fn run_display_worker(
         let write_result = backend_io
             .write_display_frame_owned(device_id, Arc::clone(&jpeg))
             .await;
-        if let Some(reusable_jpeg) = Arc::into_inner(jpeg) {
+        let keep_cached_jpeg =
+            should_refresh_static_hold(&power_state) && !overlay_composer.has_active_slots();
+        if keep_cached_jpeg {
+            last_delivered_jpeg = Some(Arc::clone(&jpeg));
+        } else {
+            last_delivered_jpeg = None;
+        }
+        if !keep_cached_jpeg && let Some(reusable_jpeg) = Arc::into_inner(jpeg) {
             encode_state.jpeg_buffer = reusable_jpeg;
         }
         if let Err(error) = write_result {
@@ -447,6 +509,16 @@ async fn run_display_worker(
             next_send_at = advance_deadline(next_send_at, interval, Instant::now());
         }
     }
+
+    overlay_runtime.clear(device_id).await;
+}
+
+async fn publish_overlay_runtime(
+    overlay_runtime: &DisplayOverlayRuntimeRegistry,
+    device_id: DeviceId,
+    runtime_snapshot: crate::display_overlays::DisplayOverlayRuntime,
+) {
+    overlay_runtime.set(device_id, runtime_snapshot).await;
 }
 
 fn target_interval_for_fps(target_fps: u32) -> Option<Duration> {
