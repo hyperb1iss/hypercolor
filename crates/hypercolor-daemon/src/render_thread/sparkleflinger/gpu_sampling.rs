@@ -36,7 +36,7 @@ pub(super) struct GpuSamplingPlan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct GpuSamplingPlanKey {
+pub(super) struct GpuSamplingPlanKey {
     ptr: usize,
     len: usize,
 }
@@ -61,6 +61,13 @@ struct CachedGpuSamplingBindGroup {
 }
 
 impl GpuSamplingPlan {
+    pub(super) fn key(prepared_zones: &[PreparedZonePlan]) -> Option<GpuSamplingPlanKey> {
+        Self::supports_prepared_zones(prepared_zones).then_some(GpuSamplingPlanKey {
+            ptr: prepared_zones.as_ptr() as usize,
+            len: prepared_zones.len(),
+        })
+    }
+
     pub(super) fn supports_prepared_zones(prepared_zones: &[PreparedZonePlan]) -> bool {
         prepared_zones.iter().all(|zone| {
             matches!(
@@ -113,6 +120,8 @@ pub(super) struct GpuSpatialSampler {
     cached_plan: Option<CachedGpuSamplingPlan>,
     uploaded_plan: Option<UploadedGpuSamplingPlan>,
     cached_bind_groups: Vec<CachedGpuSamplingBindGroup>,
+    #[cfg(test)]
+    sample_dispatch_count: usize,
 }
 
 impl GpuSpatialSampler {
@@ -201,6 +210,8 @@ impl GpuSpatialSampler {
             cached_plan: None,
             uploaded_plan: None,
             cached_bind_groups: Vec::with_capacity(2),
+            #[cfg(test)]
+            sample_dispatch_count: 0,
         }
     }
 
@@ -265,6 +276,10 @@ impl GpuSpatialSampler {
                 1,
                 1,
             );
+        }
+        #[cfg(test)]
+        {
+            self.sample_dispatch_count = self.sample_dispatch_count.saturating_add(1);
         }
         encoder.copy_buffer_to_buffer(&output_buffer, 0, &readback_buffer, 0, output_buffer.size());
 
@@ -398,6 +413,11 @@ impl GpuSpatialSampler {
             bind_group: bind_group.clone(),
         });
         bind_group
+    }
+
+    #[cfg(test)]
+    pub(super) fn sample_dispatch_count(&self) -> usize {
+        self.sample_dispatch_count
     }
 }
 

@@ -12,7 +12,9 @@ use hypercolor_types::event::ZoneColors;
 use super::{ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan};
 use crate::performance::CompositorBackendKind;
 use crate::render_thread::producer_queue::ProducerFrame;
-use crate::render_thread::sparkleflinger::gpu_sampling::{GpuSamplingPlan, GpuSpatialSampler};
+use crate::render_thread::sparkleflinger::gpu_sampling::{
+    GpuSamplingPlan, GpuSamplingPlanKey, GpuSpatialSampler,
+};
 
 const COMPOSITOR_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const COMPOSE_WORKGROUP_WIDTH: u32 = 8;
@@ -41,6 +43,8 @@ pub(crate) struct GpuSparkleFlinger {
     cached_composition_key: Option<CachedReadbackKey>,
     cached_readback_surface: Option<CachedReadbackSurface>,
     pending_output_submission: Option<wgpu::CommandEncoder>,
+    output_generation: u64,
+    cached_sample_result: Option<CachedSampleResult>,
 }
 
 struct GpuCompositorPipeline {
@@ -106,6 +110,18 @@ struct CachedReadbackLayer {
 struct CachedReadbackSurface {
     key: CachedReadbackKey,
     surface: PublishedSurface,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CachedSampleResultKey {
+    output_generation: u64,
+    sampling_plan: GpuSamplingPlanKey,
+}
+
+#[derive(Debug, Clone)]
+struct CachedSampleResult {
+    key: CachedSampleResultKey,
+    zones: Vec<ZoneColors>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,6 +194,8 @@ impl GpuSparkleFlinger {
             cached_composition_key: None,
             cached_readback_surface: None,
             pending_output_submission: None,
+            output_generation: 0,
+            cached_sample_result: None,
         })
     }
 
@@ -207,6 +225,7 @@ impl GpuSparkleFlinger {
             self.pending_output_submission = None;
             return Ok(self.compose_bypass_layer(
                 plan,
+                readback_key,
                 layer,
                 requires_cpu_sampling_canvas,
                 requires_preview_surface,
@@ -305,6 +324,8 @@ impl GpuSparkleFlinger {
         };
         self.current_output = Some(current_output);
         self.cached_composition_key = readback_key.clone();
+        self.output_generation = self.output_generation.saturating_add(1);
+        self.cached_sample_result = None;
         if !requires_cpu_sampling_canvas && !requires_preview_surface {
             self.pending_output_submission = Some(encoder);
             return Ok(gpu_composed_without_surfaces());
@@ -368,6 +389,18 @@ impl GpuSparkleFlinger {
         zones: &mut Vec<ZoneColors>,
     ) -> Result<bool> {
         let pending_output_submission = self.pending_output_submission.take();
+        let sampling_plan = GpuSamplingPlan::key(prepared_zones);
+        if let Some(sampling_plan) = sampling_plan
+            && let Some(cached) = self.cached_sample_result.as_ref()
+            && cached.key
+                == (CachedSampleResultKey {
+                    output_generation: self.output_generation,
+                    sampling_plan,
+                })
+        {
+            zones.clone_from(&cached.zones);
+            return Ok(true);
+        }
         let Some(output) = self.current_output else {
             return Ok(false);
         };
@@ -378,7 +411,7 @@ impl GpuSparkleFlinger {
             GpuCompositorOutputSurface::Front => &surfaces.front.view,
             GpuCompositorOutputSurface::Back => &surfaces.back.view,
         };
-        self.spatial_sampler.sample_texture_into(
+        let sampled = self.spatial_sampler.sample_texture_into(
             &self.device,
             &self.queue,
             source_view,
@@ -387,7 +420,17 @@ impl GpuSparkleFlinger {
             prepared_zones,
             zones,
             pending_output_submission,
-        )
+        )?;
+        if sampled && let Some(sampling_plan) = sampling_plan {
+            self.cached_sample_result = Some(CachedSampleResult {
+                key: CachedSampleResultKey {
+                    output_generation: self.output_generation,
+                    sampling_plan,
+                },
+                zones: zones.clone(),
+            });
+        }
+        Ok(sampled)
     }
 
     pub(crate) fn ensure_surface_size(&mut self, width: u32, height: u32) {
@@ -411,6 +454,7 @@ impl GpuSparkleFlinger {
         self.current_output = None;
         self.cached_composition_key = None;
         self.pending_output_submission = None;
+        self.cached_sample_result = None;
     }
 
     pub(crate) fn surface_snapshot(&self) -> Option<GpuCompositorSurfaceSnapshot> {
@@ -422,6 +466,7 @@ impl GpuSparkleFlinger {
     fn compose_bypass_layer(
         &mut self,
         plan: &CompositionPlan,
+        readback_key: Option<CachedReadbackKey>,
         layer: &CompositionLayer,
         requires_cpu_sampling_canvas: bool,
         requires_preview_surface: bool,
@@ -438,8 +483,14 @@ impl GpuSparkleFlinger {
             );
             surfaces.back_contents = None;
         }
+        let same_output = self.current_output == Some(GpuCompositorOutputSurface::Front)
+            && self.cached_composition_key == readback_key;
         self.current_output = Some(GpuCompositorOutputSurface::Front);
-        self.cached_composition_key = cached_readback_key(plan);
+        self.cached_composition_key = readback_key;
+        if !same_output {
+            self.output_generation = self.output_generation.saturating_add(1);
+            self.cached_sample_result = None;
+        }
         self.cached_readback_surface = bypass_preview_surface(&layer.frame).and_then(|surface| {
             self.cached_composition_key
                 .clone()
@@ -1634,6 +1685,52 @@ mod tests {
             )
         );
         assert_eq!(sampled[0].colors.as_ptr(), first_colors_ptr);
+    }
+
+    #[test]
+    fn gpu_sampler_reuses_cached_zone_results_for_identical_retained_surfaces() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
+        let retained_base = slot_surface(Rgba::new(255, 32, 0, 255));
+        let retained_overlay = slot_surface(Rgba::new(32, 64, 255, 255));
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Surface(retained_base)),
+                CompositionLayer::alpha(ProducerFrame::Surface(retained_overlay), 0.35),
+            ],
+        );
+
+        compositor
+            .compose(&plan, false, false)
+            .expect("initial GPU composition should succeed");
+        let mut first_sample = Vec::new();
+        assert!(
+            compositor
+                .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut first_sample)
+                .expect("initial GPU sample should succeed")
+        );
+        let first_dispatch_count = compositor.spatial_sampler.sample_dispatch_count();
+
+        compositor
+            .compose(&plan, false, false)
+            .expect("cached GPU composition should succeed");
+        let mut second_sample = Vec::new();
+        assert!(
+            compositor
+                .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut second_sample)
+                .expect("cached GPU sample should succeed")
+        );
+
+        assert_eq!(second_sample, first_sample);
+        assert_eq!(
+            compositor.spatial_sampler.sample_dispatch_count(),
+            first_dispatch_count
+        );
     }
 
     #[test]
