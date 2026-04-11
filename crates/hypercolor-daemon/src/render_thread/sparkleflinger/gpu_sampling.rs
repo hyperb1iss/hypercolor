@@ -113,7 +113,6 @@ pub(super) struct GpuSpatialSampler {
     cached_plan: Option<CachedGpuSamplingPlan>,
     uploaded_plan: Option<UploadedGpuSamplingPlan>,
     cached_bind_groups: Vec<CachedGpuSamplingBindGroup>,
-    packed_samples: Vec<u32>,
 }
 
 impl GpuSpatialSampler {
@@ -202,7 +201,6 @@ impl GpuSpatialSampler {
             cached_plan: None,
             uploaded_plan: None,
             cached_bind_groups: Vec::with_capacity(2),
-            packed_samples: Vec::new(),
         }
     }
 
@@ -267,22 +265,15 @@ impl GpuSpatialSampler {
         }
         encoder.copy_buffer_to_buffer(&output_buffer, 0, &readback_buffer, 0, output_buffer.size());
 
-        readback_samples_into(
+        readback_zone_colors_into(
             device,
             &readback_buffer,
-            sample_count,
-            queue.submit(Some(encoder.finish())),
-            &mut self.packed_samples,
-        )?;
-        rebuild_zone_colors_into(
-            &self
-                .cached_plan
+            self.cached_plan
                 .as_ref()
-                .expect("GPU sampling plan should remain cached after sampling")
-                .plan,
-            &self.packed_samples,
+                .expect("GPU sampling plan should remain cached after sampling"),
+            queue.submit(Some(encoder.finish())),
             zones,
-        );
+        )?;
         Ok(true)
     }
 
@@ -430,12 +421,12 @@ fn encode_sample_params(width: u32, height: u32, sample_count: usize) -> [u8; SA
     bytes
 }
 
-fn readback_samples_into(
+fn readback_zone_colors_into(
     device: &wgpu::Device,
     buffer: &wgpu::Buffer,
-    sample_count: usize,
+    cached_plan: &CachedGpuSamplingPlan,
     submission_index: wgpu::SubmissionIndex,
-    packed: &mut Vec<u32>,
+    zones: &mut Vec<ZoneColors>,
 ) -> Result<()> {
     let slice = buffer.slice(..);
     let (sender, receiver) = mpsc::channel();
@@ -454,17 +445,17 @@ fn readback_samples_into(
         .context("GPU sample buffer mapping failed")?;
 
     let mapped = slice.get_mapped_range();
-    packed.clear();
-    packed.reserve(sample_count.saturating_sub(packed.capacity()));
-    for chunk in mapped.chunks_exact(4).take(sample_count) {
-        packed.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-    }
+    rebuild_zone_colors_from_mapped_bytes(&cached_plan.plan, &mapped, zones);
     drop(mapped);
     buffer.unmap();
     Ok(())
 }
 
-fn rebuild_zone_colors_into(plan: &GpuSamplingPlan, packed: &[u32], zones: &mut Vec<ZoneColors>) {
+fn rebuild_zone_colors_from_mapped_bytes(
+    plan: &GpuSamplingPlan,
+    packed_bytes: &[u8],
+    zones: &mut Vec<ZoneColors>,
+) {
     zones.reserve(plan.zones.len().saturating_sub(zones.len()));
 
     for (index, zone_plan) in plan.zones.iter().enumerate() {
@@ -480,11 +471,15 @@ fn rebuild_zone_colors_into(plan: &GpuSamplingPlan, packed: &[u32], zones: &mut 
             zone.zone_id.clone_from(&zone_plan.zone_id);
         }
         zone.colors.resize(zone_plan.len, [0_u8; 3]);
-        for (color, packed_rgb) in zone
-            .colors
-            .iter_mut()
-            .zip(packed[zone_plan.start..zone_plan.start.saturating_add(zone_plan.len)].iter())
-        {
+        let start = zone_plan.start.saturating_mul(4);
+        let end = zone_plan
+            .start
+            .saturating_add(zone_plan.len)
+            .saturating_mul(4);
+        let packed_zone = &packed_bytes[start..end];
+        for (color, packed_rgb) in zone.colors.iter_mut().zip(packed_zone.chunks_exact(4)) {
+            let packed_rgb =
+                u32::from_le_bytes([packed_rgb[0], packed_rgb[1], packed_rgb[2], packed_rgb[3]]);
             *color = [
                 u8::try_from(packed_rgb & 0xff).expect("red channel fits"),
                 u8::try_from((packed_rgb >> 8) & 0xff).expect("green channel fits"),
