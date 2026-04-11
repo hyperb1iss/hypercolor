@@ -575,7 +575,9 @@ impl App {
                 self.sync_daemon_device_summary();
             }
             Action::SimulatedDisplaysUpdated(simulators) => {
-                self.simulator_preview.simulators.clone_from(simulators.as_ref());
+                self.simulator_preview
+                    .simulators
+                    .clone_from(simulators.as_ref());
                 self.simulator_preview.list_requested_at = Some(Instant::now());
                 if let Some(simulator_id) = self.simulator_preview.source.simulator_id()
                     && !self
@@ -861,13 +863,14 @@ impl App {
     }
 
     fn poll_simulated_displays(&mut self) {
-        if self.active_screen != ScreenId::EffectBrowser {
+        if self.active_screen != ScreenId::EffectBrowser || !self.is_connected() {
             return;
         }
 
-        let should_refresh = self.simulator_preview.list_requested_at.is_none_or(|requested_at| {
-            requested_at.elapsed() >= SIMULATOR_LIST_REFRESH_INTERVAL
-        });
+        let should_refresh = self
+            .simulator_preview
+            .list_requested_at
+            .is_none_or(|requested_at| requested_at.elapsed() >= SIMULATOR_LIST_REFRESH_INTERVAL);
         if !should_refresh {
             return;
         }
@@ -888,18 +891,22 @@ impl App {
     }
 
     fn poll_selected_simulator_frame(&mut self) {
+        if !self.is_connected() {
+            return;
+        }
+
         let Some(simulator_id) = self.active_effect_browser_simulator_id() else {
             return;
         };
 
-        let should_refresh =
-            self.simulator_preview
-                .frame_requested_at
-                .as_ref()
-                .is_none_or(|(requested_id, requested_at)| {
-                    requested_id != simulator_id
-                        || requested_at.elapsed() >= SIMULATOR_FRAME_REFRESH_INTERVAL
-                });
+        let should_refresh = self
+            .simulator_preview
+            .frame_requested_at
+            .as_ref()
+            .is_none_or(|(requested_id, requested_at)| {
+                requested_id != simulator_id
+                    || requested_at.elapsed() >= SIMULATOR_FRAME_REFRESH_INTERVAL
+            });
         if !should_refresh {
             return;
         }
@@ -1159,7 +1166,11 @@ impl App {
             frame.render_widget(block, canvas_area);
 
             // Centered "no signal" text
-            let msg = "No canvas data — apply an effect to preview";
+            let msg = if self.active_effect_browser_simulator_id().is_some() {
+                "No simulator frame yet"
+            } else {
+                "No canvas data — apply an effect to preview"
+            };
             let msg_width = (msg.len() as u16).min(canvas_area.width);
             let msg_x = canvas_area.x + (canvas_area.width.saturating_sub(msg_width)) / 2;
             let msg_y = canvas_area.y + canvas_area.height / 2;
@@ -1171,12 +1182,19 @@ impl App {
         }
 
         // Info bar: effect name + hint to exit
-        let effect_name = self
-            .state
-            .daemon
-            .as_ref()
-            .and_then(|d| d.effect_name.as_deref())
-            .unwrap_or("—");
+        let effect_name = if let Some(simulator_id) = self.active_effect_browser_simulator_id() {
+            self.simulator_preview
+                .simulators
+                .iter()
+                .find(|simulator| simulator.id == simulator_id)
+                .map_or("Simulator", |simulator| simulator.name.as_str())
+        } else {
+            self.state
+                .daemon
+                .as_ref()
+                .and_then(|d| d.effect_name.as_deref())
+                .unwrap_or("—")
+        };
 
         let fps = self.state.daemon.as_ref().map_or(0.0, |d| d.fps_actual);
 

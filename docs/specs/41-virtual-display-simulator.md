@@ -324,8 +324,15 @@ WebSocket mode intact.
 ### 7.4 TUI
 
 TUI support should consume the same simulator runtime and render the selected
-simulator frame with the existing preview machinery. This is a follow-on wave,
-not a blocker for daemon usefulness.
+simulator frame with the existing preview machinery.
+
+Wave 3 landed on 2026-04-11 in the effect browser preview pane:
+
+- `←` and `→` cycle between the live canvas and enabled simulator targets
+- simulator frames are decoded from the daemon inspection route and rendered
+  through the existing ratatui preview transport
+- fullscreen preview reflects the selected simulator source instead of always
+  showing the upstream effect canvas
 
 ---
 
@@ -377,6 +384,10 @@ layout, and inspect the final rendered result in the browser.
 
 **Exit criteria:** A developer can inspect a simulated display from `hyper tui`
 without needing a browser.
+
+Wave 3 landed on 2026-04-11 with simulator source selection in the effect
+browser preview pane and fullscreen preview routing through the same selected
+simulator frame.
 
 ### Wave 4 — CI and Developer Tooling
 
