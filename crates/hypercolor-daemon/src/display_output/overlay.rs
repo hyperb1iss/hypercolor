@@ -6,11 +6,12 @@ use anyhow::anyhow;
 
 use hypercolor_core::blend_math::blend_rgba_pixel;
 use hypercolor_core::overlay::{
-    ImageRenderer, OverlayBuffer, OverlayError, OverlayInput, OverlayRenderer, OverlaySize,
-    TextRenderer,
+    ClockRenderer, ImageRenderer, OverlayBuffer, OverlayError, OverlayInput, OverlayRenderer,
+    OverlaySize, TextRenderer,
 };
 use hypercolor_types::overlay::{
-    Anchor, DisplayOverlayConfig, OverlayBlendMode, OverlayPosition, OverlaySlot, OverlaySource,
+    Anchor, ClockConfig, ClockStyle, DisplayOverlayConfig, OverlayBlendMode, OverlayPosition,
+    OverlaySlot, OverlaySource,
 };
 use hypercolor_types::sensor::SystemSnapshot;
 
@@ -45,6 +46,12 @@ impl OverlayRendererFactory for DefaultOverlayRendererFactory {
         _target_size: OverlaySize,
     ) -> Result<OverlayRendererBinding, OverlayError> {
         match &slot.source {
+            OverlaySource::Clock(config) => Ok(OverlayRendererBinding {
+                renderer: Box::new(
+                    ClockRenderer::new(config.clone()).map_err(OverlayError::Asset)?,
+                ),
+                render_interval: clock_render_interval(config),
+            }),
             OverlaySource::Image(config) => Ok(OverlayRendererBinding {
                 renderer: Box::new(
                     ImageRenderer::new(config.clone()).map_err(OverlayError::Asset)?,
@@ -71,6 +78,14 @@ fn text_render_interval(config: &hypercolor_types::overlay::TextOverlayConfig) -
     }
 
     Duration::MAX
+}
+
+fn clock_render_interval(config: &ClockConfig) -> Duration {
+    if matches!(config.style, ClockStyle::Analog) && config.show_seconds {
+        return Duration::from_millis(500);
+    }
+
+    Duration::from_secs(1)
 }
 
 pub(crate) struct OverlayComposer {

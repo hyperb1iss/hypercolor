@@ -47,6 +47,7 @@ image = { workspace = true }
 tiny-skia = { workspace = true }
 cosmic-text = { workspace = true }
 resvg = { workspace = true }
+time = { workspace = true }
 webrtc-dtls = { workspace = true, optional = true }
 webrtc-util = { workspace = true, optional = true }
 cpal = { workspace = true }

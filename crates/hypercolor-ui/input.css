@@ -268,6 +268,70 @@ input[type="color"]::-webkit-color-swatch {
     border-top: 1px solid rgba(255, 255, 255, 0.02);
 }
 
+/* Preset-specific dropdown items — each row is painted with its own color,
+   sourced from the preset's control values (or a stable hash fallback) via
+   the `--item-rgb` custom property set inline on the element. */
+
+.preset-option {
+    --item-rgb: 225, 53, 255;
+    position: relative;
+    background: linear-gradient(90deg,
+        rgba(var(--item-rgb), 0.05) 0%,
+        transparent 78%);
+    transition: background 0.22s var(--ease-silk),
+                padding-left 0.22s var(--ease-spring),
+                color 0.18s var(--ease-silk);
+}
+.preset-option::before {
+    content: "";
+    position: absolute;
+    left: 6px;
+    top: 8px;
+    bottom: 8px;
+    width: 3px;
+    border-radius: 999px;
+    background: rgb(var(--item-rgb));
+    box-shadow: 0 0 8px rgba(var(--item-rgb), 0.55);
+    opacity: 0.72;
+    transition: opacity 0.22s var(--ease-silk),
+                width 0.22s var(--ease-spring),
+                box-shadow 0.22s var(--ease-silk);
+}
+.preset-option:hover {
+    background: linear-gradient(90deg,
+        rgba(var(--item-rgb), 0.16) 0%,
+        rgba(var(--item-rgb), 0.02) 80%);
+    padding-left: 20px;
+    color: var(--text-primary);
+}
+.preset-option:hover::before {
+    opacity: 1;
+    width: 4px;
+    box-shadow: 0 0 12px rgba(var(--item-rgb), 0.85),
+                0 0 2px rgba(var(--item-rgb), 1);
+}
+.preset-option:active {
+    background: linear-gradient(90deg,
+        rgba(var(--item-rgb), 0.22) 0%,
+        rgba(var(--item-rgb), 0.04) 75%);
+}
+.preset-option-active {
+    color: var(--text-primary);
+    background: linear-gradient(90deg,
+        rgba(var(--item-rgb), 0.22) 0%,
+        rgba(var(--item-rgb), 0.04) 85%);
+    padding-left: 18px;
+}
+.preset-option-active::before {
+    opacity: 1;
+    width: 4px;
+    box-shadow: 0 0 14px rgba(var(--item-rgb), 0.95),
+                0 0 2px rgba(var(--item-rgb), 1);
+}
+.preset-option + .preset-option {
+    border-top: 1px solid rgba(255, 255, 255, 0.02);
+}
+
 /* ── Dropdown Scrollbars ───────────────────────────────────────────────── */
 
 .scrollbar-dropdown {

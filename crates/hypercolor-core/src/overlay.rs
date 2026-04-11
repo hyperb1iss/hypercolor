@@ -1,3 +1,4 @@
+mod clock;
 mod image;
 mod pixmap;
 mod text;
@@ -10,6 +11,7 @@ use tiny_skia::Pixmap;
 
 use hypercolor_types::sensor::SystemSnapshot;
 
+pub use clock::ClockRenderer;
 pub use image::ImageRenderer;
 pub use pixmap::overlay_buffer_from_pixmap;
 pub use text::TextRenderer;

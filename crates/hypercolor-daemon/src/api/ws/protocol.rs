@@ -343,11 +343,12 @@ pub(super) enum FrameFormat {
     Json,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum CanvasFormat {
     Rgb,
     Rgba,
+    Jpeg,
 }
 
 /// Client-to-server subscription messages.
@@ -761,6 +762,7 @@ pub(super) fn ws_capabilities() -> Vec<String> {
         .map(|channel| channel.as_str().to_owned())
         .collect();
     capabilities.push("commands".to_owned());
+    capabilities.push("canvas_format_jpeg".to_owned());
     capabilities
 }
 

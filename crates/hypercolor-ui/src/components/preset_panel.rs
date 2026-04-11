@@ -16,6 +16,69 @@ use crate::api;
 use crate::icons::*;
 use crate::toasts;
 
+// ── Per-preset swatch colouring ──────────────────────────────────────────────
+
+/// Derives a vivid, stable swatch colour from a preset's name so every
+/// row in the dropdown is visually distinct. Real control-value extraction
+/// was tried and rejected — most presets in an effect share one or two
+/// "primary palette" colours, which meant every row in a dropdown landed
+/// on the same shared hue. Name hashing gives guaranteed uniqueness across
+/// the group while still being deterministic across reloads, so users
+/// learn to recognise presets by their colour at a glance.
+///
+/// Returns an `"r, g, b"` string ready for interpolation into `rgb(...)`
+/// / `rgba(...)` CSS (including as the `--item-rgb` custom property on
+/// `.preset-option`).
+fn preset_swatch(name: &str) -> String {
+    // Two independent hashes so hue and saturation/lightness don't move in
+    // lockstep — otherwise similar names would produce colour pairs that
+    // sit suspiciously close in both hue and brightness.
+    let h1 = djb2_hash(name);
+    let h2 = djb2_hash_reversed(name);
+
+    let hue = (h1 % 360) as f32;
+    // Keep saturation vivid and lightness in the readable "neon" band so
+    // every swatch reads cleanly against the dropdown's dark background.
+    let saturation = 0.72 + ((h2 % 28) as f32) / 100.0; // 0.72 .. 0.99
+    let lightness = 0.58 + (((h2 / 31) % 18) as f32) / 100.0; // 0.58 .. 0.75
+    hsl_to_rgb_triplet(hue, saturation, lightness)
+}
+
+fn djb2_hash(s: &str) -> u32 {
+    let mut h: u32 = 5381;
+    for b in s.bytes() {
+        h = h.wrapping_mul(33).wrapping_add(u32::from(b));
+    }
+    h
+}
+
+fn djb2_hash_reversed(s: &str) -> u32 {
+    let mut h: u32 = 5381;
+    for b in s.bytes().rev() {
+        h = h.wrapping_mul(33).wrapping_add(u32::from(b));
+    }
+    h
+}
+
+/// Plain HSL → sRGB triplet string — vivid but still within a readable
+/// neon band once the saturation/lightness are pre-clamped by caller.
+fn hsl_to_rgb_triplet(h: f32, s: f32, l: f32) -> String {
+    let c = (1.0 - (2.0f32 * l - 1.0).abs()) * s;
+    let h_prime = h / 60.0;
+    let x = c * (1.0 - ((h_prime % 2.0) - 1.0).abs());
+    let (r1, g1, b1) = match h_prime as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    let to_byte = |v: f32| -> u8 { ((v + m) * 255.0).round() as u8 };
+    format!("{}, {}, {}", to_byte(r1), to_byte(g1), to_byte(b1))
+}
+
 /// Compact preset toolbar for the effect detail sidebar.
 ///
 /// Single line: `[Preset dropdown] [Save] [+] [···]`
@@ -27,9 +90,10 @@ pub fn PresetToolbar(
     /// Current live control values — snapshotted when saving.
     #[prop(into)]
     control_values: Signal<HashMap<String, ControlValue>>,
-    /// Category accent color as "r, g, b" string.
+    /// Category accent color as "r, g, b" string. Drives the dropdown
+    /// chrome (trigger border, popover border, group header glyphs) so
+    /// the toolbar feels tied to whatever effect is currently rendering.
     #[prop(into)]
-    #[allow(unused)]
     accent_rgb: Signal<String>,
     /// Callback fired after a preset is applied (so parent can refresh controls).
     #[prop(into)]
@@ -326,6 +390,7 @@ pub fn PresetToolbar(
                                     bundled_presets=bundled_presets
                                     selected_id=selected_id
                                     has_editable_selection=has_editable_selection
+                                    accent_rgb=accent_rgb
                                     on_select=Callback::new(on_select_value)
                                     on_save=on_save
                                     on_new=move |_| set_mode.set(ToolbarMode::Creating)
@@ -385,6 +450,7 @@ fn PresetSelectorRow(
     bundled_presets: ReadSignal<Vec<PresetTemplate>>,
     selected_id: ReadSignal<Option<String>>,
     has_editable_selection: Memo<bool>,
+    accent_rgb: Signal<String>,
     on_select: Callback<String>,
     on_save: impl Fn(leptos::ev::MouseEvent) + 'static,
     on_new: impl Fn(leptos::ev::MouseEvent) + 'static,
@@ -406,7 +472,7 @@ fn PresetSelectorRow(
         {
             let bp = bundled_presets.get();
             if let Some(template) = bp.get(idx) {
-                return format!("\u{2726} {}", template.name);
+                return template.name.clone();
             }
         }
 
@@ -418,6 +484,33 @@ fn PresetSelectorRow(
             .map(|p| p.name.clone())
             .unwrap_or_else(|| "Default".to_string())
     });
+
+    // The swatch the trigger shows — pulled from whichever preset is
+    // currently selected so the trigger button itself is tinted to match
+    // the row that's "active" in the dropdown.
+    let selected_swatch = Memo::new(move |_| {
+        let sid = selected_id.get();
+        let Some(ref sid) = sid else {
+            return None::<String>;
+        };
+        if let Some(idx_str) = sid.strip_prefix("bundled:")
+            && let Ok(idx) = idx_str.parse::<usize>()
+        {
+            let bp = bundled_presets.get();
+            if let Some(template) = bp.get(idx) {
+                return Some(preset_swatch(&template.name));
+            }
+        }
+        effect_presets
+            .get()
+            .iter()
+            .find(|p| p.id == *sid)
+            .map(|p| preset_swatch(&p.name))
+    });
+
+    // Has a real (non-Default) preset been picked? Drives the trigger
+    // indicator dot and the accent-leaning background gradient.
+    let has_selection = Memo::new(move |_| selected_id.get().is_some());
 
     // Click-outside handler — close dropdown when clicking outside
     install_dropdown_outside_handler(set_is_open);
@@ -434,20 +527,62 @@ fn PresetSelectorRow(
         <div class="flex items-center gap-2" on:keydown=on_keydown>
             // Custom dropdown
             <div class="relative flex-1 min-w-0 preset-dropdown">
-                // Trigger button
+                // Trigger button — accent-tinted with the selected preset's
+                // own swatch falling back to the effect category accent.
                 <button
                     type="button"
-                    class="w-full flex items-center gap-1.5 bg-surface-sunken/60 border px-2.5 py-1.5
-                           text-xs cursor-pointer select-silk-trigger"
+                    class="w-full flex items-center gap-2 border pl-2.5 pr-2 py-[7px] \
+                           text-xs cursor-pointer select-silk-trigger transition-all"
                     class=("rounded-t-lg", move || is_open.get())
+                    class=("rounded-b-none", move || is_open.get())
                     class=("rounded-lg", move || !is_open.get())
-                    class=("border-accent-muted", move || is_open.get())
-                    class=("border-edge-subtle", move || !is_open.get())
+                    style=move || {
+                        let tint = selected_swatch.get().unwrap_or_else(|| accent_rgb.get());
+                        let active = has_selection.get() || is_open.get();
+                        let border_alpha = if active { 0.42 } else { 0.18 };
+                        let glow_alpha = if active { 0.12 } else { 0.05 };
+                        format!(
+                            "background: linear-gradient(135deg, \
+                               rgba({tint}, 0.08) 0%, \
+                               rgba(10, 9, 16, 0.72) 60%, \
+                               rgba(10, 9, 16, 0.82) 100%); \
+                             border-color: rgba({tint}, {border_alpha}); \
+                             box-shadow: 0 0 14px rgba({tint}, {glow_alpha}), \
+                                         inset 0 1px 0 rgba(255, 255, 255, 0.04)"
+                        )
+                    }
                     on:click=move |_| set_is_open.update(|v| *v = !*v)
                 >
-                    <span class="flex-1 min-w-0 text-left truncate text-fg-primary">
+                    // Leading accent dot — pulses when a real preset is active
+                    <span
+                        class="w-1.5 h-1.5 rounded-full shrink-0 transition-all"
+                        class=("animate-pulse", move || has_selection.get())
+                        style=move || {
+                            let tint = selected_swatch.get().unwrap_or_else(|| accent_rgb.get());
+                            let sat = if has_selection.get() { 1.0 } else { 0.4 };
+                            format!(
+                                "background: rgb({tint}); \
+                                 box-shadow: 0 0 8px rgba({tint}, {sat}), \
+                                             0 0 2px rgba({tint}, 1); \
+                                 opacity: {}",
+                                if has_selection.get() { "1" } else { "0.55" }
+                            )
+                        }
+                    />
+
+                    <span
+                        class="flex-1 min-w-0 text-left truncate"
+                        style=move || {
+                            if has_selection.get() {
+                                "color: var(--text-primary); font-weight: 500".to_string()
+                            } else {
+                                "color: var(--text-secondary)".to_string()
+                            }
+                        }
+                    >
                         {move || selected_label.get()}
                     </span>
+
                     <svg
                         class="w-3 h-3 shrink-0 transition-transform duration-200"
                         class=("rotate-180", move || is_open.get())
@@ -457,33 +592,56 @@ fn PresetSelectorRow(
                         stroke-width="2"
                         stroke-linecap="round"
                         stroke-linejoin="round"
+                        style=move || {
+                            let tint = selected_swatch.get().unwrap_or_else(|| accent_rgb.get());
+                            format!("color: rgba({tint}, 0.85)")
+                        }
                     >
                         <path d="m6 9 6 6 6-6" />
                     </svg>
                 </button>
 
-                // Dropdown popover
+                // Dropdown popover — glass with category-tinted border.
                 <Show when=move || is_open.get()>
                     <div
                         class="absolute left-0 right-0 top-full
-                               rounded-b-xl overflow-hidden
-                               bg-surface-overlay
-                               border border-t-0 border-edge-subtle
-                               dropdown-glow animate-slide-down
-                               max-h-[320px] overflow-y-auto scrollbar-dropdown"
-                        style="z-index: 9999; margin-top: -1px"
+                               rounded-b-lg
+                               backdrop-blur-xl
+                               border border-t-0
+                               animate-slide-down
+                               max-h-[340px] overflow-y-auto scrollbar-dropdown py-1"
+                        style=move || {
+                            let tint = accent_rgb.get();
+                            format!(
+                                "z-index: 9999; \
+                                 margin-top: -1px; \
+                                 background: linear-gradient(180deg, \
+                                   rgba(14, 12, 22, 0.92) 0%, \
+                                   rgba(10, 9, 16, 0.94) 100%); \
+                                 border-color: rgba({tint}, 0.38); \
+                                 box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55), \
+                                             0 0 32px rgba({tint}, 0.10), \
+                                             inset 0 1px 0 rgba(255, 255, 255, 0.04)"
+                            )
+                        }
                         on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()
                     >
                         // Default preset option — resets controls to effect defaults
-                        <DropdownItem
-                            value="".to_string()
-                            label="Default".to_string()
-                            is_selected=Signal::derive(move || selected_id.get().is_none())
-                            on_click=Callback::new(move |val: String| {
-                                on_select.run(val);
-                                set_is_open.set(false);
-                            })
-                        />
+                        {
+                            let default_swatch = preset_swatch("Default");
+                            view! {
+                                <DropdownItem
+                                    value="".to_string()
+                                    label="Default".to_string()
+                                    swatch_rgb=default_swatch
+                                    is_selected=Signal::derive(move || selected_id.get().is_none())
+                                    on_click=Callback::new(move |val: String| {
+                                        on_select.run(val);
+                                        set_is_open.set(false);
+                                    })
+                                />
+                            }
+                        }
 
                         // Bundled presets group
                         {move || {
@@ -495,23 +653,52 @@ fn PresetSelectorRow(
                                     ().into_any()
                                 };
                             }
+                            let tint = accent_rgb.get();
                             view! {
                                 <>
-                                    {(has_user).then(|| view! {
-                                        <div class="px-2.5 pt-2 pb-1">
-                                            <span class="text-[9px] font-mono uppercase tracking-[0.15em] text-fg-tertiary/50">
-                                                "Built-in"
-                                            </span>
-                                        </div>
+                                    {(has_user).then(|| {
+                                        let label_style = format!(
+                                            "color: rgba({tint}, 0.72); \
+                                             text-shadow: 0 0 6px rgba({tint}, 0.3)"
+                                        );
+                                        view! {
+                                            <div class="px-3 pt-2.5 pb-1 flex items-center gap-1.5">
+                                                <div
+                                                    class="h-px flex-1"
+                                                    style=format!(
+                                                        "background: linear-gradient(90deg, \
+                                                           transparent 0%, \
+                                                           rgba({tint}, 0.35) 50%, \
+                                                           transparent 100%)"
+                                                    )
+                                                />
+                                                <span
+                                                    class="text-[8px] font-mono uppercase tracking-[0.18em]"
+                                                    style=label_style
+                                                >
+                                                    "Built-in"
+                                                </span>
+                                                <div
+                                                    class="h-px flex-1"
+                                                    style=format!(
+                                                        "background: linear-gradient(90deg, \
+                                                           transparent 0%, \
+                                                           rgba({tint}, 0.35) 50%, \
+                                                           transparent 100%)"
+                                                    )
+                                                />
+                                            </div>
+                                        }
                                     })}
                                     {bp.into_iter().enumerate().map(|(idx, p)| {
                                         let val = format!("bundled:{idx}");
-                                        let label = format!("\u{2726} {}", p.name);
+                                        let swatch = preset_swatch(&p.name);
                                         let option_value = val.clone();
                                         view! {
                                             <DropdownItem
                                                 value=val
-                                                label=label
+                                                label=p.name
+                                                swatch_rgb=swatch
                                                 is_selected=Signal::derive(move || selected_id.get().as_deref() == Some(option_value.as_str()))
                                                 on_click=Callback::new(move |val: String| {
                                                     on_select.run(val);
@@ -534,22 +721,52 @@ fn PresetSelectorRow(
                                     ().into_any()
                                 };
                             }
+                            let tint = accent_rgb.get();
                             view! {
                                 <>
-                                    {(has_bundled).then(|| view! {
-                                        <div class="px-2.5 pt-2 pb-1">
-                                            <span class="text-[9px] font-mono uppercase tracking-[0.15em] text-fg-tertiary/50">
-                                                "My Presets"
-                                            </span>
-                                        </div>
+                                    {(has_bundled).then(|| {
+                                        let label_style = format!(
+                                            "color: rgba({tint}, 0.72); \
+                                             text-shadow: 0 0 6px rgba({tint}, 0.3)"
+                                        );
+                                        view! {
+                                            <div class="px-3 pt-2.5 pb-1 flex items-center gap-1.5">
+                                                <div
+                                                    class="h-px flex-1"
+                                                    style=format!(
+                                                        "background: linear-gradient(90deg, \
+                                                           transparent 0%, \
+                                                           rgba({tint}, 0.35) 50%, \
+                                                           transparent 100%)"
+                                                    )
+                                                />
+                                                <span
+                                                    class="text-[8px] font-mono uppercase tracking-[0.18em]"
+                                                    style=label_style
+                                                >
+                                                    "My Presets"
+                                                </span>
+                                                <div
+                                                    class="h-px flex-1"
+                                                    style=format!(
+                                                        "background: linear-gradient(90deg, \
+                                                           transparent 0%, \
+                                                           rgba({tint}, 0.35) 50%, \
+                                                           transparent 100%)"
+                                                    )
+                                                />
+                                            </div>
+                                        }
                                     })}
                                     {user.into_iter().map(|p| {
                                         let id = p.id.clone();
+                                        let swatch = preset_swatch(&p.name);
                                         let option_value = id.clone();
                                         view! {
                                             <DropdownItem
                                                 value=id
                                                 label=p.name
+                                                swatch_rgb=swatch
                                                 is_selected=Signal::derive(move || selected_id.get().as_deref() == Some(option_value.as_str()))
                                                 on_click=Callback::new(move |val: String| {
                                                     on_select.run(val);
@@ -577,31 +794,46 @@ fn PresetSelectorRow(
     }
 }
 
-/// A single item in the custom dropdown.
+/// A single item in the custom dropdown. Painted with its preset's own
+/// swatch colour via the `--item-rgb` custom property on `.preset-option`.
 #[component]
 fn DropdownItem(
     #[prop(into)] value: String,
     #[prop(into)] label: String,
+    #[prop(into)] swatch_rgb: String,
     #[prop(into)] is_selected: Signal<bool>,
     on_click: Callback<String>,
 ) -> impl IntoView {
     let val = value.clone();
+    let swatch_for_dot = swatch_rgb.clone();
     view! {
         <button
             type="button"
-            class="dropdown-option w-full text-left px-3 py-[7px] text-xs cursor-pointer
-                   flex items-center gap-2"
-            class=("dropdown-option-active", move || is_selected.get())
+            class="preset-option w-full text-left pl-4 pr-3 py-[9px] text-xs cursor-pointer \
+                   flex items-center gap-2.5"
+            class=("preset-option-active", move || is_selected.get())
             class=("text-fg-tertiary", move || !is_selected.get())
+            style=format!("--item-rgb: {swatch_rgb}")
             on:click=move |_| on_click.run(val.clone())
         >
-            <span
-                class="w-1 h-1 rounded-full shrink-0 transition-all duration-200"
-                class=("bg-accent-muted", move || is_selected.get())
-                class=("scale-100 opacity-100", move || is_selected.get())
-                class=("scale-0 opacity-0", move || !is_selected.get())
-            />
-            <span class="truncate">{label}</span>
+            <span class="flex-1 min-w-0 truncate">{label}</span>
+
+            // Right-side "● Now" dot when selected — pulses in the item's
+            // own colour, so the active row's accent bleeds all the way
+            // across from the left bar to the right-side marker.
+            {move || is_selected.get().then(|| {
+                let rgb = swatch_for_dot.clone();
+                view! {
+                    <span
+                        class="w-1.5 h-1.5 rounded-full shrink-0 animate-pulse"
+                        style=format!(
+                            "background: rgb({rgb}); \
+                             box-shadow: 0 0 8px rgba({rgb}, 0.95), \
+                                         0 0 2px rgba({rgb}, 1)"
+                        )
+                    />
+                }
+            })}
         </button>
     }
 }

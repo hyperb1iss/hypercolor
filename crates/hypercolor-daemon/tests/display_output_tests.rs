@@ -22,7 +22,7 @@ use hypercolor_types::device::{
 use hypercolor_types::overlay::{
     Anchor, ClockConfig, ClockStyle, DisplayOverlayConfig, HourFormat, ImageFit,
     ImageOverlayConfig, OverlayBlendMode, OverlayPosition, OverlaySlot, OverlaySlotId,
-    OverlaySource, TextAlign, TextOverlayConfig,
+    OverlaySource, SensorDisplayStyle, SensorOverlayConfig, TextAlign, TextOverlayConfig,
 };
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::session::OffOutputBehavior;
@@ -1246,15 +1246,15 @@ async fn automatic_display_output_publishes_overlay_runtime_failures() {
                 overlays: vec![OverlaySlot {
                     id: slot_id,
                     name: "Broken Overlay".to_owned(),
-                    source: OverlaySource::Clock(ClockConfig {
-                        style: ClockStyle::Analog,
-                        hour_format: HourFormat::TwentyFour,
-                        show_seconds: true,
-                        show_date: false,
-                        date_format: None,
+                    source: OverlaySource::Sensor(SensorOverlayConfig {
+                        sensor: "cpu_temp".to_owned(),
+                        style: SensorDisplayStyle::Gauge,
+                        unit_label: Some("C".to_owned()),
+                        range_min: 20.0,
+                        range_max: 100.0,
+                        color_min: "#80ffea".to_owned(),
+                        color_max: "#ff6ac1".to_owned(),
                         font_family: None,
-                        color: "#ffffff".to_owned(),
-                        secondary_color: None,
                         template: None,
                     }),
                     position: OverlayPosition::Anchored {
@@ -1332,6 +1332,118 @@ async fn automatic_display_output_publishes_overlay_runtime_failures() {
         overlay_runtime.get(device_id).await.slot(slot_id).is_none(),
         "worker shutdown should clear runtime state"
     );
+}
+
+#[tokio::test]
+async fn automatic_display_output_renders_clock_overlay_with_default_factory() {
+    let event_bus = Arc::new(HypercolorBus::new());
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(
+        Vec::new(),
+    ))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let device_registry = DeviceRegistry::new();
+    let overlays = default_display_overlays();
+    let overlay_runtime = default_display_overlay_runtime();
+    let device_id = DeviceId::new();
+    let slot_id = OverlaySlotId::from(Uuid::now_v7());
+
+    overlays
+        .set(
+            device_id,
+            DisplayOverlayConfig {
+                overlays: vec![OverlaySlot {
+                    id: slot_id,
+                    name: "Clock Overlay".to_owned(),
+                    source: OverlaySource::Clock(ClockConfig {
+                        style: ClockStyle::Digital,
+                        hour_format: HourFormat::TwentyFour,
+                        show_seconds: true,
+                        show_date: true,
+                        date_format: Some("%Y-%m-%d".to_owned()),
+                        font_family: None,
+                        color: "#ffffff".to_owned(),
+                        secondary_color: Some("#80ffea".to_owned()),
+                        template: None,
+                    }),
+                    position: OverlayPosition::Anchored {
+                        anchor: Anchor::TopLeft,
+                        offset_x: 72,
+                        offset_y: 48,
+                        width: 240,
+                        height: 120,
+                    },
+                    blend_mode: OverlayBlendMode::Normal,
+                    opacity: 1.0,
+                    enabled: true,
+                }],
+            },
+        )
+        .await;
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![display_zone(
+            &format!("device:{device_id}"),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 480, 480, true))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        device_settings: default_device_settings(),
+        event_bus: Arc::clone(&event_bus),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        display_overlays: Arc::clone(&overlays),
+        display_overlay_runtime: Arc::clone(&overlay_runtime),
+        sensor_snapshot_rx: default_sensor_snapshot_rx(),
+        overlay_factory: default_overlay_factory(),
+    });
+
+    let canvas = solid_canvas(Rgba::BLACK);
+    let _ = event_bus
+        .canvas_sender()
+        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
+
+    let writes =
+        wait_for_display_writes_with_timeout(&display_writes, Duration::from_secs(3)).await;
+    let image = decode_jpeg(&writes[0]);
+    assert!(
+        region_contains_visible_pixels(&image, 72, 48, 240, 120),
+        "expected clock overlay to paint visible pixels inside its bounds"
+    );
+
+    let runtime = wait_for_overlay_runtime(&overlay_runtime, device_id, slot_id).await;
+    assert_eq!(runtime.status, OverlaySlotStatus::Active);
+    assert!(runtime.last_error.is_none());
+    assert!(runtime.last_rendered_at.is_some());
+
+    thread.shutdown().await.expect("display thread should stop");
 }
 
 #[tokio::test]

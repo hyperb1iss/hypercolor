@@ -7,15 +7,12 @@ use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::app::{EffectsContext, WsContext};
-use crate::color;
-use crate::components::canvas_preview::CanvasPreview;
 use crate::components::control_panel::ControlPanel;
 use crate::components::effect_card::EffectCard;
 use crate::components::page_header::PageHeader;
-use crate::components::preset_panel::PresetToolbar;
+use crate::components::preview_cabinet::PreviewCabinet;
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
-use crate::thumbnails::ThumbnailStore;
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
 
 use crate::style_utils::{category_accent_rgb, filter_chips};
@@ -139,45 +136,7 @@ pub fn EffectsPage() -> impl IntoView {
     let accent_rgb =
         Signal::derive(move || category_accent_rgb(&fx.active_effect_category.get()).to_string());
 
-    // Palette-aware accent for preview overlay text — prefers the thumbnail's extracted
-    // primary color so text matches the card, falling back to category accent.
-    let thumb_store = use_context::<ThumbnailStore>();
-    let preview_accent_rgb = Memo::new(move |_| {
-        if let Some(store) = thumb_store {
-            if let Some(id) = fx.active_effect_id.get() {
-                let palette_primary = fx.effects_index.with(|effects| {
-                    effects
-                        .iter()
-                        .find(|e| e.effect.id == id)
-                        .and_then(|e| store.get(&id, &e.effect.version).map(|t| t.palette.primary))
-                });
-                if let Some(primary) = palette_primary {
-                    return primary;
-                }
-            }
-        }
-        category_accent_rgb(&fx.active_effect_category.get()).to_string()
-    });
-
-    let preview_title_tint =
-        Memo::new(move |_| color::accent_text_tint(&preview_accent_rgb.get(), 0.86, 0.65));
-    let preview_body_tint =
-        Memo::new(move |_| color::accent_text_tint(&preview_accent_rgb.get(), 0.78, 0.22));
-    let preview_meta_tint =
-        Memo::new(move |_| color::accent_text_tint(&preview_accent_rgb.get(), 0.68, 0.65));
-
     let has_active = Memo::new(move |_| fx.active_effect_id.get().is_some());
-
-    // Derive the full active effect metadata from the index
-    let active_effect_meta = Memo::new(move |_| {
-        let id = fx.active_effect_id.get()?;
-        fx.effects_index.with(|effects| {
-            effects
-                .iter()
-                .find(|e| e.effect.id == id)
-                .map(|e| e.effect.clone())
-        })
-    });
 
     // Filter effects
     let filtered_effects = Memo::new(move |_| {
@@ -612,123 +571,12 @@ pub fn EffectsPage() -> impl IntoView {
                                     class="shrink-0 flex flex-col min-h-0 animate-slide-in-right"
                                     style=move || format!("width: {}px", detail_width.get())
                                 >
-                                    // Cinematic live preview — canvas as background, effect info overlaid on the bottom
+                                    // Unified cinematic cabinet — canvas + preset strip, shared
+                                    // with the dashboard. The effects page owns no telemetry
+                                    // reporting, so `report_telemetry` stays at its default
+                                    // `false`; canvas sizes via its own aspect ratio here.
                                     <div class="shrink-0 pb-3">
-                                        <div
-                                            class="relative rounded-xl overflow-hidden border border-edge-subtle bg-black edge-glow group"
-                                            style:--glow-rgb=move || accent_rgb.get()
-                                            style:border-top=move || format!("2px solid rgba({}, 0.45)", accent_rgb.get())
-                                        >
-                                            <CanvasPreview
-                                                frame=ws.canvas_frame
-                                                fps=ws.preview_fps
-                                                show_fps=false
-                                                fps_target=ws.preview_target_fps
-                                            />
-
-                                            // Scrim — transparent at the top, fades dark at the bottom so the overlay stays legible
-                                            <div
-                                                class="absolute inset-0 pointer-events-none"
-                                                style="background: linear-gradient(180deg, \
-                                                       rgba(0, 0, 0, 0) 0%, \
-                                                       rgba(0, 0, 0, 0) 45%, \
-                                                       rgba(0, 0, 0, 0.78) 78%, \
-                                                       rgba(0, 0, 0, 0.95) 100%)"
-                                            />
-
-                                            // Top accent wash — a subtle colored highlight along the top edge
-                                            <div
-                                                class="absolute top-0 left-0 right-0 h-px pointer-events-none"
-                                                style=move || format!(
-                                                    "background: linear-gradient(90deg, transparent 0%, rgba({0}, 0.8) 50%, transparent 100%); box-shadow: 0 0 14px rgba({0}, 0.55)",
-                                                    accent_rgb.get()
-                                                )
-                                            />
-
-                                            // Info overlay — title, description, meta row (card-style)
-                                            <div class="absolute left-0 right-0 bottom-0 px-4 pb-3.5 pt-10 pointer-events-none">
-                                                <div class="flex items-baseline justify-between gap-3 mb-1">
-                                                    <h3
-                                                        class="text-[15px] font-semibold line-clamp-1 leading-tight drop-shadow-[0_2px_8px_rgba(0,0,0,0.85)]"
-                                                        style:color=move || format!("rgb({})", preview_title_tint.get())
-                                                    >
-                                                        {move || fx.active_effect_name.get().unwrap_or_default()}
-                                                    </h3>
-                                                    {move || active_effect_meta.get().and_then(|meta| {
-                                                        (!meta.author.is_empty()).then(|| view! {
-                                                            <span
-                                                                class="text-[10px] font-mono uppercase tracking-wider shrink-0 truncate max-w-[140px] drop-shadow-[0_1px_4px_rgba(0,0,0,0.85)]"
-                                                                style:color=move || format!("rgba({}, 0.65)", preview_meta_tint.get())
-                                                            >
-                                                                {meta.author.clone()}
-                                                            </span>
-                                                        })
-                                                    })}
-                                                </div>
-
-                                                {move || active_effect_meta.get().and_then(|meta| {
-                                                    (!meta.description.is_empty()).then(|| view! {
-                                                        <p
-                                                            class="text-[11px] line-clamp-2 leading-relaxed mb-2.5 drop-shadow-[0_1px_4px_rgba(0,0,0,0.85)]"
-                                                            style:color=move || format!("rgba({}, 0.88)", preview_body_tint.get())
-                                                        >
-                                                            {meta.description.clone()}
-                                                        </p>
-                                                    })
-                                                })}
-
-                                                // Meta row — category dot + source/audio badges
-                                                {move || active_effect_meta.get().map(|meta| {
-                                                    let category = meta.category.clone();
-                                                    let source = meta.source.clone();
-                                                    let audio_reactive = meta.audio_reactive;
-                                                    let show_source_icon = source != "native";
-                                                    let is_html = source == "html";
-                                                    view! {
-                                                        <div class="flex items-center justify-between gap-2">
-                                                            <div class="flex items-center gap-1.5 min-w-0">
-                                                                <div
-                                                                    class="w-1.5 h-1.5 rounded-full shrink-0 dot-alive"
-                                                                    style:background=move || format!("rgb({})", accent_rgb.get())
-                                                                    style:box-shadow=move || format!("0 0 6px rgba({}, 0.75)", accent_rgb.get())
-                                                                />
-                                                                <span
-                                                                    class="text-[10px] font-mono uppercase tracking-wider capitalize truncate drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]"
-                                                                    style:color=move || format!("rgb({})", preview_meta_tint.get())
-                                                                >
-                                                                    {category}
-                                                                </span>
-                                                            </div>
-                                                            <div class="flex items-center gap-1.5 shrink-0">
-                                                                {show_source_icon.then(|| {
-                                                                    let icon_view = if is_html {
-                                                                        view! { <Icon icon=LuGlobe width="11px" height="11px" /> }.into_any()
-                                                                    } else {
-                                                                        view! { <Icon icon=LuCode width="11px" height="11px" /> }.into_any()
-                                                                    };
-                                                                    view! {
-                                                                        <span
-                                                                            class="inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-white/5 backdrop-blur-sm"
-                                                                            style:color=move || format!("rgba({}, 0.85)", preview_meta_tint.get())
-                                                                        >
-                                                                            {icon_view}
-                                                                        </span>
-                                                                    }
-                                                                })}
-                                                                {audio_reactive.then(|| view! {
-                                                                    <span
-                                                                        class="inline-flex items-center text-coral/90 px-1.5 py-0.5 rounded-full bg-coral/15 backdrop-blur-sm"
-                                                                        title="Audio-reactive"
-                                                                    >
-                                                                        <Icon icon=LuAudioLines width="11px" height="11px" />
-                                                                    </span>
-                                                                })}
-                                                            </div>
-                                                        </div>
-                                                    }
-                                                })}
-                                            </div>
-                                        </div>
+                                        <PreviewCabinet />
                                     </div>
 
                                     // Controls (docked mode — inside preview panel)
@@ -769,16 +617,6 @@ pub fn EffectsPage() -> impl IntoView {
                                                             <Icon icon=LuUnlink width="11px" height="11px" />
                                                         </button>
                                                     </div>
-                                                    <div class="relative z-50">
-                                                        <PresetToolbar
-                                                            effect_id=Signal::derive(move || fx.active_effect_id.get())
-                                                            control_values=control_values
-                                                            accent_rgb=accent_rgb
-                                                            on_preset_applied=Callback::new(move |()| fx.refresh_active_effect())
-                                                            active_preset_id_signal=Signal::derive(move || fx.active_preset_id.get())
-                                                        />
-                                                    </div>
-                                                    <div class="h-px bg-edge-subtle/40 my-3" />
                                                     <ControlPanel
                                                         controls=controls
                                                         control_values=control_values
@@ -839,14 +677,6 @@ pub fn EffectsPage() -> impl IntoView {
                                                                 <Icon icon=LuLink width="11px" height="11px" />
                                                             </button>
                                                         </div>
-                                                        <PresetToolbar
-                                                            effect_id=Signal::derive(move || fx.active_effect_id.get())
-                                                            control_values=control_values
-                                                            accent_rgb=accent_rgb
-                                                            on_preset_applied=Callback::new(move |()| fx.refresh_active_effect())
-                                                            active_preset_id_signal=Signal::derive(move || fx.active_preset_id.get())
-                                                        />
-                                                        <div class="h-px bg-edge-subtle/40 my-3" />
                                                         <ControlPanel
                                                             controls=controls
                                                             control_values=control_values

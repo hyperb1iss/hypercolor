@@ -15,6 +15,7 @@ use leptos_icons::Icon;
 use crate::api;
 use crate::app::WsContext;
 use crate::components::perf_charts::PhaseFrame;
+use crate::components::preview_cabinet::PreviewCabinet;
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::preview_telemetry::PreviewTelemetryContext;
@@ -27,7 +28,7 @@ mod timeline;
 
 use charts::{DistributionPanel, FavoritesPanel, PipelinePanel, ThroughputPanel};
 use gauges::{HeroGauges, MemoryAndDevicesPanel, ReuseRatesPanel};
-use header::{PresetDashboardStrip, PreviewCard, StatusSkeleton, StatusStrip};
+use header::{StatusSkeleton, StatusStrip};
 use timeline::{BackpressureBanner, FrameTimelinePanel, LatestFramePanel, PacingPanel};
 
 // ── Layout tunables ──────────────────────────────────────────────────
@@ -260,13 +261,10 @@ pub fn DashboardPage() -> impl IntoView {
                         style=move || format!("height: {HERO_ROW_HEIGHT_PX}px")
                     >
                         <div
-                            class="shrink-0 h-full flex flex-col gap-2 min-h-0"
+                            class="shrink-0 h-full"
                             style=move || format!("width: {}px", preview_width.get())
                         >
-                            <div class="flex-1 min-h-0">
-                                <PreviewCard />
-                            </div>
-                            <PresetDashboardStrip />
+                            <PreviewCabinet report_telemetry=true fill_height=true />
                         </div>
 
                         <ResizeHandle

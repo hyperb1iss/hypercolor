@@ -17,6 +17,7 @@ use serde::ser::SerializeSeq;
 
 use hypercolor_types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
 
+use super::preview_encode::encode_canvas_jpeg_binary_stateless;
 use super::protocol::{ActiveFramesConfig, CanvasFormat, FrameFormat, FrameZoneSelection};
 use crate::api::AppState;
 
@@ -454,6 +455,12 @@ fn encode_canvas_binary_with_header_and_brightness(
 ) -> Vec<u8> {
     const CANVAS_HEADER_LEN: usize = 14;
 
+    if format == CanvasFormat::Jpeg {
+        return encode_canvas_jpeg_binary_stateless(canvas, header, brightness)
+            .map(|bytes| bytes.to_vec())
+            .unwrap_or_default();
+    }
+
     let brightness = brightness.clamp(0.0, 1.0);
     let width_u16 = u16::try_from(canvas.width).unwrap_or(u16::MAX);
     let height_u16 = u16::try_from(canvas.height).unwrap_or(u16::MAX);
@@ -464,6 +471,7 @@ fn encode_canvas_binary_with_header_and_brightness(
     let bpp = match format {
         CanvasFormat::Rgb => 3_usize,
         CanvasFormat::Rgba => 4_usize,
+        CanvasFormat::Jpeg => 0_usize,
     };
     let payload_len = px_count.saturating_mul(bpp);
     let mut out = Vec::with_capacity(CANVAS_HEADER_LEN.saturating_add(payload_len));
@@ -475,6 +483,7 @@ fn encode_canvas_binary_with_header_and_brightness(
     out.push(match format {
         CanvasFormat::Rgb => 0,
         CanvasFormat::Rgba => 1,
+        CanvasFormat::Jpeg => 2,
     });
 
     let rgba = canvas.rgba_bytes();
@@ -511,6 +520,7 @@ fn encode_canvas_binary_with_header_and_brightness(
                 }
             }
         }
+        CanvasFormat::Jpeg => unreachable!("JPEG previews return early"),
     }
 
     debug_assert_eq!(out.len(), CANVAS_HEADER_LEN.saturating_add(payload_len));
@@ -691,6 +701,7 @@ const fn canvas_format_tag(format: CanvasFormat) -> u8 {
     match format {
         CanvasFormat::Rgb => 0,
         CanvasFormat::Rgba => 1,
+        CanvasFormat::Jpeg => 2,
     }
 }
 

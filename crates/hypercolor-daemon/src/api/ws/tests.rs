@@ -21,6 +21,7 @@ use super::cache::{
 use super::command::{
     command_response_from_http, dispatch_command, normalize_command_path, parse_command_method,
 };
+use super::preview_encode::{PreviewJpegEncoder, encode_canvas_jpeg_binary_stateless};
 use super::protocol::{
     ActiveFramesConfig, CanvasFormat, ChannelConfig, ChannelConfigPatch, ChannelSet, FrameFormat,
     FrameZoneSelection, FramesConfig, ServerMessage, SubscriptionState, WsChannel,
@@ -346,8 +347,8 @@ fn channel_config_apply_patch_supports_all_channels() {
     let patch: ChannelConfigPatch = serde_json::from_value(serde_json::json!({
         "frames": {"fps": 30, "format": "binary"},
         "spectrum": {"fps": 20, "bins": 32},
-        "canvas": {"fps": 60, "format": "rgba"},
-        "screen_canvas": {"fps": 24, "format": "rgb"},
+        "canvas": {"fps": 60, "format": "jpeg"},
+        "screen_canvas": {"fps": 24, "format": "jpeg"},
         "metrics": {"interval_ms": 500}
     }))
     .expect("valid json patch");
@@ -358,9 +359,9 @@ fn channel_config_apply_patch_supports_all_channels() {
 
     let json = serde_json::to_value(config).expect("config serializes");
     assert_eq!(json["canvas"]["fps"], 60);
-    assert_eq!(json["canvas"]["format"], "rgba");
+    assert_eq!(json["canvas"]["format"], "jpeg");
     assert_eq!(json["screen_canvas"]["fps"], 24);
-    assert_eq!(json["screen_canvas"]["format"], "rgb");
+    assert_eq!(json["screen_canvas"]["format"], "jpeg");
     assert_eq!(json["metrics"]["interval_ms"], 500);
 }
 
@@ -457,6 +458,7 @@ fn ws_capabilities_include_commands() {
     assert!(capabilities.contains(&"screen_canvas".to_owned()));
     assert!(capabilities.contains(&"metrics".to_owned()));
     assert!(capabilities.contains(&"commands".to_owned()));
+    assert!(capabilities.contains(&"canvas_format_jpeg".to_owned()));
 }
 
 #[tokio::test]
@@ -993,6 +995,20 @@ fn canvas_binary_encoder_writes_rgba_payload_without_repacking() {
 }
 
 #[test]
+fn canvas_binary_encoder_writes_jpeg_payload() {
+    let mut canvas = Canvas::new(2, 1);
+    canvas.set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
+    canvas.set_pixel(1, 0, Rgba::new(40, 50, 60, 200));
+    let frame = CanvasFrame::from_canvas(&canvas, 7, 99);
+
+    let encoded = encode_canvas_jpeg_binary_stateless(&frame, WS_CANVAS_HEADER, 1.0)
+        .expect("JPEG preview encoding should succeed");
+    assert_eq!(encoded[0], WS_CANVAS_HEADER);
+    assert_eq!(encoded[13], 2);
+    assert!(encoded.len() > 14);
+}
+
+#[test]
 fn canvas_preview_binary_applies_brightness_without_mutating_source() {
     let mut canvas = Canvas::new(1, 1);
     canvas.set_pixel(0, 0, Rgba::new(255, 128, 0, 200));
@@ -1022,6 +1038,20 @@ fn canvas_preview_binary_zero_brightness_preserves_alpha() {
 }
 
 #[test]
+fn canvas_preview_jpeg_binary_keys_brightness_separately() {
+    let mut canvas = Canvas::new(1, 1);
+    canvas.set_pixel(0, 0, Rgba::new(255, 255, 255, 255));
+    let frame = CanvasFrame::from_canvas(&canvas, 7003, 9903);
+
+    let full = encode_canvas_jpeg_binary_stateless(&frame, WS_CANVAS_HEADER, 1.0)
+        .expect("full-brightness JPEG preview encoding should succeed");
+    let dimmed = encode_canvas_jpeg_binary_stateless(&frame, WS_CANVAS_HEADER, 0.0)
+        .expect("dimmed JPEG preview encoding should succeed");
+
+    assert_ne!(full, dimmed);
+}
+
+#[test]
 fn cached_canvas_preview_binary_reuses_bytes_for_matching_requests() {
     let mut canvas = Canvas::new(1, 1);
     canvas.set_pixel(0, 0, Rgba::new(90, 80, 70, 123));
@@ -1032,6 +1062,23 @@ fn cached_canvas_preview_binary_reuses_bytes_for_matching_requests() {
 
     assert_eq!(first, second);
     assert_eq!(first.as_ptr(), second.as_ptr());
+}
+
+#[test]
+fn preview_jpeg_encoder_reuses_state_across_frames() {
+    let mut canvas = Canvas::new(1, 1);
+    canvas.set_pixel(0, 0, Rgba::new(90, 80, 70, 255));
+    let frame = CanvasFrame::from_canvas(&canvas, 5, 44);
+    let mut encoder = PreviewJpegEncoder::new().expect("JPEG preview encoder should initialize");
+
+    let first = encoder
+        .encode(&frame, WS_CANVAS_HEADER, 1.0)
+        .expect("first JPEG preview encode should succeed");
+    let second = encoder
+        .encode(&frame, WS_CANVAS_HEADER, 0.5)
+        .expect("second JPEG preview encode should succeed");
+
+    assert_ne!(first, second);
 }
 
 #[test]

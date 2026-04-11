@@ -1127,7 +1127,8 @@ diagnose broken overlays without reading daemon logs.
 Renders digital or analog clock faces.
 
 **Digital mode:**
-- Render time string via cosmic-text with configurable font, size, color
+- Render time string via cosmic-text with configurable font family and color,
+  auto-sized to the overlay bounds
 - Optional date string below
 - Optional SVG background template via resvg
 
