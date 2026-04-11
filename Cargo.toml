@@ -149,7 +149,8 @@ tokio-tungstenite = "0.26"
 open = "5"
 
 # Imaging
-image = { version = "0.25.9", default-features = false, features = ["jpeg"] }
+image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+gif = "0.14.2"
 turbojpeg = { version = "1.4.0", default-features = false, features = ["cmake", "require-simd"] }
 wgpu = { version = "29.0.1", default-features = false, features = ["std", "vulkan", "metal", "dx12", "gles", "wgsl"] }
 pollster = "0.4.0"

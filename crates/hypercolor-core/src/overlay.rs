@@ -1,9 +1,13 @@
-use std::time::SystemTime;
+mod image;
+
+use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use thiserror::Error;
 
 use hypercolor_types::sensor::SystemSnapshot;
+
+pub use image::ImageRenderer;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverlayBuffer {
@@ -79,6 +83,10 @@ pub trait OverlayRenderer: Send {
 
     fn content_changed(&self, _input: &OverlayInput<'_>) -> bool {
         true
+    }
+
+    fn next_refresh_after(&self) -> Option<Duration> {
+        None
     }
 
     fn destroy(&mut self) {}

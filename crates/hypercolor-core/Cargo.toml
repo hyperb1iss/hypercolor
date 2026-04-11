@@ -43,6 +43,7 @@ realfft = { workspace = true }
 rustfft = { workspace = true }
 aes-gcm = { workspace = true }
 rand = { workspace = true }
+image = { workspace = true }
 webrtc-dtls = { workspace = true, optional = true }
 webrtc-util = { workspace = true, optional = true }
 cpal = { workspace = true }
@@ -67,6 +68,7 @@ tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
 log = "0.4"
 criterion = { workspace = true }
+gif = { workspace = true }
 
 [[bench]]
 name = "core_pipeline"
