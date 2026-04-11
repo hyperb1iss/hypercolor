@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::hint::black_box;
 use std::path::PathBuf;
 use std::sync::LazyLock;
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::Result;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -20,6 +20,10 @@ use hypercolor_core::input::InteractionData;
 use hypercolor_core::input::audio::AudioInput;
 use hypercolor_core::input::audio::beat::{BeatDetector, BeatFrame};
 use hypercolor_core::input::audio::fft::FftPipeline;
+use hypercolor_core::overlay::{
+    ClockRenderer, ImageRenderer, OverlayBuffer, OverlayInput, OverlayRenderer, OverlaySize,
+    SensorRenderer, TextRenderer,
+};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::canvas::{Canvas, Rgba};
@@ -29,12 +33,18 @@ use hypercolor_types::effect::{
     EffectId, EffectMetadata, EffectSource,
 };
 use hypercolor_types::event::ZoneColors;
+use hypercolor_types::overlay::{
+    ClockConfig, ClockStyle, HourFormat, ImageFit, ImageOverlayConfig, SensorDisplayStyle,
+    SensorOverlayConfig, TextAlign, TextOverlayConfig,
+};
 use hypercolor_types::scene::{RenderGroup, RenderGroupId};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
     Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
 };
+use image::{Rgba as ImageRgba, RgbaImage};
+use tempfile::TempDir;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 
@@ -48,6 +58,7 @@ static DEFAULT_INTERACTION: LazyLock<InteractionData> = LazyLock::new(Interactio
 static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
 static BINDING_SNAPSHOTS: LazyLock<[SystemSnapshot; 2]> =
     LazyLock::new(|| [binding_snapshot(false), binding_snapshot(true)]);
+static OVERLAY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(|| binding_snapshot(true));
 
 struct BindingBenchRenderer {
     controls: HashMap<String, ControlValue>,
@@ -201,6 +212,23 @@ fn frame_input(time_secs: f32, frame_number: u64, audio: &AudioData) -> FrameInp
         sensors: &EMPTY_SENSORS,
         canvas_width: CANVAS_WIDTH,
         canvas_height: CANVAS_HEIGHT,
+    }
+}
+
+fn overlay_input(
+    size: OverlaySize,
+    sensors: &SystemSnapshot,
+    elapsed_secs: f32,
+    frame_number: u64,
+) -> OverlayInput<'_> {
+    OverlayInput {
+        now: UNIX_EPOCH + Duration::from_secs(13 * 3_600 + 5 * 60 + 42),
+        display_width: size.width,
+        display_height: size.height,
+        circular: false,
+        sensors,
+        elapsed_secs,
+        frame_number,
     }
 }
 
@@ -381,6 +409,26 @@ fn synthetic_beat_frame(frame_number: u64) -> BeatFrame {
         dt: FRAME_DT_SECONDS,
         current_time: frame_time_f64(frame_number),
     }
+}
+
+fn write_bench_overlay_image() -> (TempDir, PathBuf) {
+    let dir = tempfile::tempdir().expect("overlay benchmark tempdir should exist");
+    let path = dir.path().join("overlay-bench.png");
+    let mut image = RgbaImage::new(192, 192);
+    for y in 0..image.height() {
+        for x in 0..image.width() {
+            let red =
+                u8::try_from((x * 255) / image.width().saturating_sub(1).max(1)).expect("red fits");
+            let green = u8::try_from((y * 255) / image.height().saturating_sub(1).max(1))
+                .expect("green fits");
+            let blue = u8::try_from(((x ^ y) & u32::from(u8::MAX)) as u64).expect("blue fits");
+            image.put_pixel(x, y, ImageRgba([red, green, blue, 220]));
+        }
+    }
+    image
+        .save(&path)
+        .expect("overlay benchmark image should save");
+    (dir, path)
 }
 
 #[expect(
@@ -710,6 +758,133 @@ fn bench_sensor_control_bindings(c: &mut Criterion) {
     group.finish();
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "overlay benchmarks intentionally cover multiple renderer families and sizes"
+)]
+fn bench_overlay_renderers(c: &mut Criterion) {
+    let mut group = c.benchmark_group("core_overlay_renderers");
+    let (_image_dir, image_path) = write_bench_overlay_image();
+
+    for size in [OverlaySize::new(120, 120), OverlaySize::new(480, 480)] {
+        let pixel_count = u64::from(size.width).saturating_mul(u64::from(size.height));
+        group.throughput(Throughput::Elements(pixel_count));
+
+        let clock_input = overlay_input(size, &OVERLAY_SENSORS, 0.0, 1);
+        let mut clock = ClockRenderer::new(ClockConfig {
+            style: ClockStyle::Digital,
+            hour_format: HourFormat::TwentyFour,
+            show_seconds: true,
+            show_date: true,
+            date_format: Some("%Y-%m-%d".to_owned()),
+            font_family: None,
+            color: "#80ffea".to_owned(),
+            secondary_color: Some("#ff6ac1".to_owned()),
+            template: None,
+        })
+        .expect("clock renderer should build");
+        clock.init(size).expect("clock renderer should init");
+        let mut clock_buffer = OverlayBuffer::new(size);
+        group.bench_function(
+            BenchmarkId::new(
+                "clock_render_into",
+                format!("{}x{}", size.width, size.height),
+            ),
+            |b| {
+                b.iter(|| {
+                    clock
+                        .render_into(black_box(&clock_input), black_box(&mut clock_buffer))
+                        .expect("clock render should succeed");
+                    black_box(clock_buffer.pixels.as_ptr());
+                });
+            },
+        );
+
+        let sensor_input = overlay_input(size, &OVERLAY_SENSORS, 0.0, 1);
+        let mut sensor = SensorRenderer::new(SensorOverlayConfig {
+            sensor: "cpu_temp".to_owned(),
+            style: SensorDisplayStyle::Gauge,
+            unit_label: None,
+            range_min: 20.0,
+            range_max: 100.0,
+            color_min: "#80ffea".to_owned(),
+            color_max: "#ff6363".to_owned(),
+            font_family: None,
+            template: None,
+        })
+        .expect("sensor renderer should build");
+        sensor.init(size).expect("sensor renderer should init");
+        let mut sensor_buffer = OverlayBuffer::new(size);
+        group.bench_function(
+            BenchmarkId::new(
+                "sensor_render_into",
+                format!("{}x{}", size.width, size.height),
+            ),
+            |b| {
+                b.iter(|| {
+                    sensor
+                        .render_into(black_box(&sensor_input), black_box(&mut sensor_buffer))
+                        .expect("sensor render should succeed");
+                    black_box(sensor_buffer.pixels.as_ptr());
+                });
+            },
+        );
+
+        let text_input = overlay_input(size, &OVERLAY_SENSORS, 0.0, 1);
+        let mut text = TextRenderer::new(TextOverlayConfig {
+            text: "CPU {sensor:cpu_temp}°C".to_owned(),
+            font_family: None,
+            font_size: if size.width >= 480 { 48.0 } else { 24.0 },
+            color: "#ffffff".to_owned(),
+            align: TextAlign::Center,
+            scroll: false,
+            scroll_speed: 30.0,
+        })
+        .expect("text renderer should build");
+        text.init(size).expect("text renderer should init");
+        let mut text_buffer = OverlayBuffer::new(size);
+        group.bench_function(
+            BenchmarkId::new(
+                "text_render_into",
+                format!("{}x{}", size.width, size.height),
+            ),
+            |b| {
+                b.iter(|| {
+                    text.render_into(black_box(&text_input), black_box(&mut text_buffer))
+                        .expect("text render should succeed");
+                    black_box(text_buffer.pixels.as_ptr());
+                });
+            },
+        );
+
+        let image_input = overlay_input(size, &OVERLAY_SENSORS, 0.0, 1);
+        let mut image = ImageRenderer::new(ImageOverlayConfig {
+            path: image_path.to_string_lossy().into_owned(),
+            speed: 1.0,
+            fit: ImageFit::Contain,
+        })
+        .expect("image renderer should build");
+        image.init(size).expect("image renderer should init");
+        let mut image_buffer = OverlayBuffer::new(size);
+        group.bench_function(
+            BenchmarkId::new(
+                "image_render_into",
+                format!("{}x{}", size.width, size.height),
+            ),
+            |b| {
+                b.iter(|| {
+                    image
+                        .render_into(black_box(&image_input), black_box(&mut image_buffer))
+                        .expect("image render should succeed");
+                    black_box(image_buffer.pixels.as_ptr());
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 fn bench_audio_pipeline(c: &mut Criterion) {
     let mut group = c.benchmark_group("core_audio");
 
@@ -906,6 +1081,6 @@ fn bench_backend_routing(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = benchmark_config();
-    targets = bench_builtin_renderers, bench_spatial_sampling, bench_render_groups, bench_sensor_control_bindings, bench_audio_pipeline, bench_canvas_handoff, bench_backend_routing
+    targets = bench_builtin_renderers, bench_spatial_sampling, bench_render_groups, bench_sensor_control_bindings, bench_overlay_renderers, bench_audio_pipeline, bench_canvas_handoff, bench_backend_routing
 }
 criterion_main!(benches);
