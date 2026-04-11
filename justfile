@@ -158,6 +158,10 @@ daemon-release *args='':
 overlay-demo *args='':
     ./scripts/manual-verify-display-overlays.sh {{ args }}
 
+# Create or update a virtual display simulator, apply an effect, and print a browser preview URL
+simulator-demo *args='':
+    ./scripts/simulator-demo.sh {{ args }}
+
 # Report whether connected displays satisfy Spec 40's Wave 2 hardware verification matrix
 overlay-matrix:
     ./scripts/check-display-overlay-matrix.sh

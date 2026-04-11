@@ -390,6 +390,10 @@ without needing a browser.
 **Exit criteria:** Overlay and display workflows can be exercised in CI without
 physical LCD hardware.
 
+`just simulator-demo` landed on 2026-04-11 as the first tooling helper in this
+wave. It creates or updates a simulator, applies an effect, and prints a
+browser preview URL.
+
 ---
 
 ## 9. Verification Strategy
