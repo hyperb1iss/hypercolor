@@ -147,7 +147,7 @@ fi
 # ── Phase 3: Assemble Distribution ──────────────────────────
 info "Assembling distribution at ${DIST_DIR}"
 rm -rf "${DIST_DIR}"
-mkdir -p "${DIST_DIR}"/{bin,share/hypercolor/{ui,effects/bundled}}
+mkdir -p "${DIST_DIR}"/{bin,share/hypercolor/{ui,effects/bundled,overlay-templates}}
 mkdir -p "${DIST_DIR}"/share/{applications,bash-completion/completions,zsh/site-functions}
 mkdir -p "${DIST_DIR}"/share/icons/hicolor/{scalable,48x48,128x128,256x256}/apps
 
@@ -180,6 +180,13 @@ elif [[ -d effects/hypercolor ]]; then
   cp -R effects/hypercolor/. "${DIST_DIR}/share/hypercolor/effects/bundled/"
 else
   warn "No built effects found — run 'just effects-build' or pass --web-assets"
+fi
+
+# Overlay templates
+if [[ -d assets/overlay-templates ]]; then
+  cp -R assets/overlay-templates/. "${DIST_DIR}/share/hypercolor/overlay-templates/"
+else
+  warn "No overlay templates found at assets/overlay-templates"
 fi
 
 # Desktop entry

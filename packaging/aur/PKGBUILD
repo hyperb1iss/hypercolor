@@ -51,10 +51,13 @@ package() {
   install -Dm755 bin/hypercolor-tui  "${pkgdir}/usr/bin/hypercolor-tui"
   install -Dm755 bin/hypercolor-open "${pkgdir}/usr/bin/hypercolor-open"
 
-  # Web UI + effects
+  # Web UI + bundled assets
   install -dm755 "${pkgdir}/usr/share/hypercolor"
   cp -R share/hypercolor/ui      "${pkgdir}/usr/share/hypercolor/"
   cp -R share/hypercolor/effects "${pkgdir}/usr/share/hypercolor/"
+  if [[ -d share/hypercolor/overlay-templates ]]; then
+    cp -R share/hypercolor/overlay-templates "${pkgdir}/usr/share/hypercolor/"
+  fi
 
   # Desktop entry
   install -Dm644 share/applications/hypercolor.desktop \

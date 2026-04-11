@@ -29,6 +29,7 @@ INSTALL_DIR="${HYPERCOLOR_INSTALL_DIR:-${INSTALL_PREFIX}/bin}"
 DATA_DIR="${INSTALL_PREFIX}/share/hypercolor"
 UI_DIR="${DATA_DIR}/ui"
 EFFECTS_DIR="${DATA_DIR}/effects/bundled"
+OVERLAY_TEMPLATES_DIR="${DATA_DIR}/overlay-templates"
 BASH_COMPLETION_DIR="${INSTALL_PREFIX}/share/bash-completion/completions"
 ZSH_COMPLETION_DIR="${INSTALL_PREFIX}/share/zsh/site-functions"
 FISH_COMPLETION_DIR="${HOME}/.config/fish/completions"
@@ -263,6 +264,13 @@ install_release_payload() {
         mkdir -p "$(dirname "$EFFECTS_DIR")"
         cp -R "${RELEASE_DIR}/share/hypercolor/effects/." "${DATA_DIR}/effects/"
         success "Installed bundled effects to ${EFFECTS_DIR}"
+    fi
+
+    if [[ -d "${RELEASE_DIR}/share/hypercolor/overlay-templates" ]]; then
+        rm -rf "${OVERLAY_TEMPLATES_DIR}"
+        mkdir -p "${OVERLAY_TEMPLATES_DIR}"
+        cp -R "${RELEASE_DIR}/share/hypercolor/overlay-templates/." "${OVERLAY_TEMPLATES_DIR}/"
+        success "Installed overlay templates to ${OVERLAY_TEMPLATES_DIR}"
     fi
 
     install_desktop_entry
