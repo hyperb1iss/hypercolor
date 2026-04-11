@@ -3,7 +3,7 @@ use std::sync::mpsc;
 
 use anyhow::{Context, Result};
 use hypercolor_core::spatial::PreparedZonePlan;
-use hypercolor_core::types::canvas::{BYTES_PER_PIXEL, Canvas};
+use hypercolor_core::types::canvas::{BYTES_PER_PIXEL, Canvas, PublishedSurface};
 use hypercolor_types::event::ZoneColors;
 
 use super::{
@@ -280,10 +280,15 @@ impl GpuSparkleFlinger {
             surfaces.padded_bytes_per_row,
             self.queue.submit(Some(encoder.finish())),
         )?;
-        let canvas = Canvas::from_vec(bytes, plan.width, plan.height);
-        let mut composed = publish_composed_frame((canvas, None), false);
-        composed.backend = CompositorBackendKind::Gpu;
-        Ok(composed)
+        let sampling_surface = PublishedSurface::from_vec(bytes, plan.width, plan.height, 0, 0);
+        let sampling_canvas = Canvas::from_published_surface(&sampling_surface);
+        Ok(ComposedFrameSet {
+            sampling_canvas: Some(sampling_canvas),
+            sampling_surface: Some(sampling_surface),
+            preview_surface: None,
+            bypassed: false,
+            backend: CompositorBackendKind::Gpu,
+        })
     }
 
     pub(crate) fn sample_zone_plan_into(

@@ -833,6 +833,39 @@ impl PublishedSurface {
         }
     }
 
+    /// Create a shared published surface from owned RGBA bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `rgba.len() != width * height * 4`.
+    #[must_use]
+    #[allow(clippy::as_conversions)]
+    pub fn from_vec(
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+        frame_number: u32,
+        timestamp_ms: u32,
+    ) -> Self {
+        let expected = width as usize * height as usize * BYTES_PER_PIXEL;
+        assert_eq!(
+            rgba.len(),
+            expected,
+            "RGBA data length {} does not match {}x{}x4 = {}",
+            rgba.len(),
+            width,
+            height,
+            expected,
+        );
+        Self {
+            descriptor: SurfaceDescriptor::rgba8888(width, height),
+            generation: 0,
+            frame_number,
+            timestamp_ms,
+            storage: PublishedSurfaceStorage::CpuRgba(Arc::new(rgba)),
+        }
+    }
+
     /// Create a shared published surface from owned canvas storage.
     #[must_use]
     pub fn from_owned_canvas(canvas: Canvas, frame_number: u32, timestamp_ms: u32) -> Self {
