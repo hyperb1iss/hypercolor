@@ -111,8 +111,9 @@ impl PreviewJpegEncoder {
         let height = usize::try_from(frame.height).unwrap_or(0);
         let pixel_count = width.saturating_mul(height);
         let required_len = pixel_count.saturating_mul(TurboJpegPixelFormat::RGBA.size());
-        self.rgba_buffer.clear();
-        self.rgba_buffer.resize(required_len, 0);
+        if self.rgba_buffer.len() != required_len {
+            self.rgba_buffer.resize(required_len, 0);
+        }
         let rgba = frame.rgba_bytes();
         for (pixel, out) in rgba
             .chunks_exact(4)
