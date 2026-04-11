@@ -289,6 +289,9 @@ Add simulator CRUD endpoints:
 - `PATCH /api/v1/simulators/displays/{id}`
 - `DELETE /api/v1/simulators/displays/{id}`
 
+These management routes landed on 2026-04-11. Frame inspection remains a
+follow-on wave.
+
 These APIs manage the synthetic device definitions, not the live frame data.
 
 ### 7.2 Inspection API

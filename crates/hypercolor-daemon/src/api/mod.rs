@@ -20,6 +20,7 @@ pub mod profiles;
 pub mod scenes;
 pub mod security;
 pub mod settings;
+pub mod simulators;
 pub mod system;
 pub mod ws;
 
@@ -529,6 +530,13 @@ pub(crate) async fn persist_layouts(state: &Arc<AppState>) {
     }
 }
 
+pub(crate) async fn persist_simulated_displays(state: &Arc<AppState>) {
+    let store = state.simulated_displays.read().await;
+    if let Err(error) = store.save() {
+        warn!(%error, "Failed to persist simulated display store");
+    }
+}
+
 /// Persist layout-specific discovery auto-sync exclusions to disk.
 pub(crate) async fn persist_layout_auto_exclusions(state: &Arc<AppState>) {
     let exclusions = state.layout_auto_exclusions.read().await;
@@ -661,6 +669,17 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(displays::get_overlay)
                 .patch(displays::patch_overlay)
                 .delete(displays::delete_overlay),
+        )
+        .route(
+            "/simulators/displays",
+            axum::routing::get(simulators::list_simulated_displays)
+                .post(simulators::create_simulated_display),
+        )
+        .route(
+            "/simulators/displays/{id}",
+            axum::routing::get(simulators::get_simulated_display)
+                .patch(simulators::patch_simulated_display)
+                .delete(simulators::delete_simulated_display),
         )
         .route(
             "/logical-devices",

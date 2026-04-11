@@ -1,7 +1,7 @@
 use std::sync::{Arc, LazyLock, Mutex};
 
 use axum::body::Body;
-use http::Request;
+use http::{Method, Request};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::simulators::{
@@ -152,4 +152,103 @@ async fn activate_simulated_displays_keeps_disabled_simulator_non_renderable() {
         .await
         .expect("disabled simulated display should still be tracked");
     assert_eq!(tracked.state, DeviceState::Disabled);
+}
+
+#[tokio::test]
+async fn simulated_display_crud_routes_update_runtime_state() {
+    let (state, _tempdir) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+
+    let created = body_json(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/simulators/displays")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "name": "Desk Preview",
+                            "width": 320,
+                            "height": 240,
+                            "circular": false,
+                            "enabled": true
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed"),
+    )
+    .await;
+    let device_id: DeviceId = created["data"]["id"]
+        .as_str()
+        .expect("created simulator should include an id")
+        .parse()
+        .expect("created simulator id should parse");
+
+    let tracked = state
+        .device_registry
+        .get(&device_id)
+        .await
+        .expect("created simulator should be tracked");
+    assert!(tracked.state.is_renderable());
+
+    let patched = body_json(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri(format!("/api/v1/simulators/displays/{device_id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "enabled": false,
+                            "circular": true
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed"),
+    )
+    .await;
+    assert_eq!(patched["data"]["enabled"], false);
+    assert_eq!(patched["data"]["circular"], true);
+    let tracked = state
+        .device_registry
+        .get(&device_id)
+        .await
+        .expect("patched simulator should still be tracked");
+    assert_eq!(tracked.state, DeviceState::Disabled);
+
+    let deleted = body_json(
+        app.oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri(format!("/api/v1/simulators/displays/{device_id}"))
+                .body(Body::empty())
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed"),
+    )
+    .await;
+    assert_eq!(deleted["data"]["deleted"], true);
+    assert!(state.device_registry.get(&device_id).await.is_none());
+    assert!(
+        logical_device_ids_for_simulator(&state.logical_devices, device_id)
+            .await
+            .is_empty()
+    );
+    assert!(
+        state
+            .simulated_displays
+            .read()
+            .await
+            .get(device_id)
+            .is_none()
+    );
 }
