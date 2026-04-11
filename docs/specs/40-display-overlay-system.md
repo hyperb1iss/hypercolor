@@ -1176,8 +1176,8 @@ Displays styled text with optional `{sensor:label}` interpolation.
 - Sensor interpolation evaluated on each render from the latest
   `SystemSnapshot`
 
-**Update interval:** 2 seconds (sensor interpolation cadence), or 33 ms if
-scrolling.
+**Update interval:** Static text renders once and reuses the cached buffer.
+Sensor interpolation refreshes every 2 seconds, or 33 ms if scrolling.
 
 ---
 

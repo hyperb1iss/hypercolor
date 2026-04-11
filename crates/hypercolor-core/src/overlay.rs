@@ -1,5 +1,6 @@
 mod image;
 mod pixmap;
+mod text;
 
 use std::time::{Duration, SystemTime};
 
@@ -11,6 +12,7 @@ use hypercolor_types::sensor::SystemSnapshot;
 
 pub use image::ImageRenderer;
 pub use pixmap::overlay_buffer_from_pixmap;
+pub use text::TextRenderer;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverlayBuffer {
