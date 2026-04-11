@@ -1609,11 +1609,11 @@ on real hardware.
 | 2.1 | Add `tiny-skia`, `cosmic-text`, `resvg`, `image`, `gif` dependencies | core | `just check`, license compatibility check via `cargo deny` |
 | 2.2 | Implement tiny-skia `Pixmap` → `OverlayBuffer` bridge (premul→premul byte copy, width/height match, tests for alpha edge cases per §6.3) | core | Round-trip pixel accuracy tests with hand-computed reference values |
 | 2.3 | Add `ClockConfig`, `SensorOverlayConfig`, `ImageOverlayConfig`, `TextOverlayConfig` types | types | Serde round-trip tests |
-| 2.4 | Implement `ClockRenderer` (digital + analog, SVG template support, cosmic-text digits) | core | Visual snapshot tests at 480×480, 240×240, 120×120 |
-| 2.5 | Implement `SensorRenderer` (numeric + gauge + bar, SVG template, color interpolation) | core | Snapshot tests with mock sensor data at various values |
+| 2.4 | Implement `ClockRenderer` (digital + analog, SVG template support, cosmic-text digits) | core | Visual regression signature tests at 480×480, 240×240, 120×120 |
+| 2.5 | Implement `SensorRenderer` (numeric + gauge + bar, SVG template, color interpolation) | core | Regression signature tests with mock sensor data at various values |
 | 2.6 | Implement `ImageRenderer` (PNG/JPEG/WebP static + animated GIF with frame cycling, `ImageFit` modes) | core | Load test images, GIF frame timing test |
 | 2.7 | Implement `TextRenderer` (cosmic-text layout, horizontal scroll, `{sensor:label}` interpolation from `OverlayInput::sensors`) | core | Text layout tests, scroll animation test, interpolation tests |
-| 2.8 | Ship default SVG templates (2 clock faces, 2 gauge styles, 1 frame border) under `assets/overlay-templates/` | assets | Templates render correctly via resvg, visual regression snapshots |
+| 2.8 | Ship default SVG templates (2 clock faces, 2 gauge styles, 1 frame border) under `assets/overlay-templates/` | assets | Templates render correctly via resvg, with bundled-asset render coverage and visual regression signatures |
 | 2.9 | Wire renderer factory: `OverlaySource` → `Box<dyn OverlayRenderer>` | core | Factory dispatches correctly for all types |
 | 2.10 | End-to-end hardware test: clock + sensor gauge on Corsair LCD alongside a running effect | daemon | Manual visual verification (`just overlay-demo <display-id-or-name>`) |
 | 2.11 | Benchmarks: per-renderer render cost at 480×480 and 120×120, plus cached 2-overlay compose-only and compose+writeback deltas vs 0 overlays | daemon | Clock ≤500 µs, sensor gauge ≤500 µs, compose-only ≤200 µs, compose+writeback ≤1.5 ms extra at 2 overlays |
@@ -1737,9 +1737,10 @@ Every wave must produce benchmark evidence:
 
 ### 16.3 Visual Parity
 
-Snapshot tests compare overlay renders against reference images with a
-per-pixel tolerance (sRGB ±2 per channel) to catch rendering regressions
-without being brittle to anti-aliasing differences.
+Visual parity uses stable regression signatures over rendered tile grids,
+plus direct pixel comparisons where the output is deterministic. This
+catches renderer regressions without brittle full-frame goldens tied to
+font rasterization or anti-aliasing details.
 
 ### 16.4 Failure Policy Testing
 
