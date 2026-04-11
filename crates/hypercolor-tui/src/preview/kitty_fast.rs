@@ -10,7 +10,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
-use image::DynamicImage;
+use image::RgbImage;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui_image::picker::cap_parser::Parser;
@@ -28,7 +28,7 @@ pub(crate) struct KittyFrame {
 
 impl KittyFrame {
     pub(crate) fn new(
-        image: DynamicImage,
+        image: RgbImage,
         area: Rect,
         image_id: u32,
         is_tmux: bool,
@@ -37,17 +37,16 @@ impl KittyFrame {
     }
 
     fn new_with_medium(
-        image: DynamicImage,
+        image: RgbImage,
         area: Rect,
         image_id: u32,
         is_tmux: bool,
         medium: KittyMedium,
     ) -> Result<Self, String> {
-        let rgb = image.to_rgb8();
-        let image_width = rgb.width();
-        let image_height = rgb.height();
+        let image_width = image.width();
+        let image_height = image.height();
         let (transmit, temp_path) = build_transmit(
-            rgb.as_raw(),
+            image.as_raw(),
             image_width,
             image_height,
             area,
@@ -609,27 +608,23 @@ static DIACRITICS: [char; 297] = [
 #[cfg(test)]
 mod tests {
     use super::{KittyFrame, KittyMedium, preferred_medium};
-    use image::{DynamicImage, RgbImage};
+    use image::RgbImage;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use std::path::PathBuf;
 
-    fn solid_image(width: u32, height: u32) -> DynamicImage {
-        DynamicImage::ImageRgb8(
-            RgbImage::from_raw(width, height, vec![0; (width * height * 3) as usize])
-                .expect("valid image buffer"),
-        )
+    fn solid_image(width: u32, height: u32) -> RgbImage {
+        RgbImage::from_raw(width, height, vec![0; (width * height * 3) as usize])
+            .expect("valid image buffer")
     }
 
     #[test]
     fn transmit_sequence_uses_compressed_rgb_payload() {
-        let image = DynamicImage::ImageRgb8(
-            RgbImage::from_raw(2, 2, vec![0, 0, 0, 255, 0, 0, 0, 255, 0, 255, 255, 255])
-                .expect("valid image buffer"),
-        );
+        let image = RgbImage::from_raw(2, 2, vec![0, 0, 0, 255, 0, 0, 0, 255, 0, 255, 255, 255])
+            .expect("valid image buffer");
 
-        let kitty =
-            KittyFrame::new(image, Rect::new(0, 0, 2, 2), 42, false).expect("kitty frame should build");
+        let kitty = KittyFrame::new(image, Rect::new(0, 0, 2, 2), 42, false)
+            .expect("kitty frame should build");
 
         let transmit = kitty.transmit.as_deref().expect("transmit should exist");
         assert!(transmit.contains("i=42"));

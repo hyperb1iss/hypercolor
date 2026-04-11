@@ -10,9 +10,9 @@ use std::sync::mpsc::{self as std_mpsc, Receiver as StdReceiver, Sender as StdSe
 use std::thread;
 use std::time::{Duration, Instant};
 
+use image::imageops::FilterType;
 use image::DynamicImage;
 use image::GenericImageView;
-use image::imageops::FilterType;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui_image::picker::{Picker, ProtocolType};
@@ -146,7 +146,6 @@ struct PreviewBuildRequest {
     transport: PreviewTransport,
     area: Rect,
     fullscreen: bool,
-    queued_at: Instant,
 }
 
 struct PreviewBuildResponse {
@@ -275,6 +274,55 @@ impl DrawBackpressure {
             1 => Duration::from_millis(167),
             2 => Duration::from_millis(250),
             _ => Duration::from_millis(500),
+        }
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct BuildBackpressure {
+    pressure_level: u8,
+    fast_build_streak: u8,
+}
+
+impl BuildBackpressure {
+    fn observe_build(&mut self, elapsed: Duration) {
+        let next_level = if elapsed >= Duration::from_millis(120) {
+            3
+        } else if elapsed >= Duration::from_millis(80) {
+            2
+        } else if elapsed >= Duration::from_millis(40) {
+            1
+        } else {
+            0
+        };
+
+        if next_level > 0 {
+            self.pressure_level = self.pressure_level.max(next_level);
+            self.fast_build_streak = 0;
+            return;
+        }
+
+        if self.pressure_level == 0 {
+            return;
+        }
+
+        self.fast_build_streak = self.fast_build_streak.saturating_add(1);
+        if self.fast_build_streak >= 2 {
+            self.pressure_level = self.pressure_level.saturating_sub(1);
+            self.fast_build_streak = 0;
+        }
+    }
+
+    fn frame_interval(self) -> Duration {
+        match self.pressure_level {
+            0 => Duration::ZERO,
+            1 => Duration::from_millis(50),
+            2 => Duration::from_millis(83),
+            _ => Duration::from_millis(125),
         }
     }
 
@@ -467,6 +515,7 @@ pub(crate) struct PreviewManager {
     next_request_id: u64,
     in_flight_request_id: Option<u64>,
     last_build_started: Option<Instant>,
+    build_backpressure: BuildBackpressure,
     draw_backpressure: DrawBackpressure,
     primary_cooloff_until: Option<Instant>,
     fullscreen_primary_locked_out: bool,
@@ -483,8 +532,8 @@ impl PreviewManager {
         let build_primary_picker = primary_picker.clone();
         let build_halfblocks_picker = halfblocks_picker.clone();
         let build_use_kitty_fast = build_primary_protocol == ProtocolType::Kitty;
-        let build_use_kitty_fast_fullscreen = env::var("HYPERCOLOR_TUI_KITTY_FAST_FULLSCREEN")
-            .is_ok_and(|value| value == "1");
+        let build_use_kitty_fast_fullscreen =
+            env::var("HYPERCOLOR_TUI_KITTY_FAST_FULLSCREEN").is_ok_and(|value| value == "1");
         let build_use_fast_halfblocks = build_primary_protocol == ProtocolType::Halfblocks;
         let build_is_tmux = env::var("TERM").is_ok_and(|term| term.starts_with("tmux"))
             || env::var("TERM_PROGRAM").is_ok_and(|term_program| term_program == "tmux");
@@ -493,10 +542,11 @@ impl PreviewManager {
             .name("hypercolor-tui-preview".to_string())
             .spawn(move || {
                 while let Ok(request) = build_requests.recv() {
+                    let build_started = Instant::now();
+
                     if request.transport == PreviewTransport::Halfblocks
                         || build_use_fast_halfblocks
                     {
-                        let build_duration = request.queued_at.elapsed();
                         match halfblocks_fast::HalfblocksFrame::new(
                             request.frame.as_ref(),
                             request.area,
@@ -508,7 +558,7 @@ impl PreviewManager {
                                         frame_number: request.frame.frame_number,
                                         transport: request.transport,
                                         area: request.area,
-                                        build_duration,
+                                        build_duration: build_started.elapsed(),
                                         surface: PreviewSurface::Halfblocks(frame),
                                     }))
                                     .is_err()
@@ -523,7 +573,7 @@ impl PreviewManager {
                                         frame_number: request.frame.frame_number,
                                         transport: request.transport,
                                         area: request.area,
-                                        build_duration,
+                                        build_duration: build_started.elapsed(),
                                         error,
                                     })
                                     .is_err()
@@ -539,12 +589,12 @@ impl PreviewManager {
                         && build_use_kitty_fast
                         && (!request.fullscreen || build_use_kitty_fast_fullscreen)
                     {
-                        let build_duration = request.queued_at.elapsed();
-                        let img = match build_stateful_image(
+                        let img = match build_preview_image(
                             request.frame.as_ref(),
                             request.area,
                             build_primary_picker.font_size(),
                             StatefulResizeMode::Cover,
+                            request.fullscreen,
                         ) {
                             Ok(img) => img,
                             Err(error) => {
@@ -554,7 +604,7 @@ impl PreviewManager {
                                         frame_number: request.frame.frame_number,
                                         transport: request.transport,
                                         area: request.area,
-                                        build_duration,
+                                        build_duration: build_started.elapsed(),
                                         error,
                                     })
                                     .is_err()
@@ -565,7 +615,7 @@ impl PreviewManager {
                             }
                         };
                         match kitty_fast::KittyFrame::new(
-                            img,
+                            img.into_rgb8(),
                             request.area,
                             kitty_image_id,
                             build_is_tmux,
@@ -577,7 +627,7 @@ impl PreviewManager {
                                         frame_number: request.frame.frame_number,
                                         transport: request.transport,
                                         area: request.area,
-                                        build_duration,
+                                        build_duration: build_started.elapsed(),
                                         surface: PreviewSurface::Kitty(frame),
                                     }))
                                     .is_err()
@@ -592,7 +642,7 @@ impl PreviewManager {
                                         frame_number: request.frame.frame_number,
                                         transport: request.transport,
                                         area: request.area,
-                                        build_duration,
+                                        build_duration: build_started.elapsed(),
                                         error,
                                     })
                                     .is_err()
@@ -610,22 +660,22 @@ impl PreviewManager {
                     };
                     let resize_mode =
                         primary_resize_mode(request.transport, build_primary_protocol);
-                    let img = match build_stateful_image(
+                    let img = match build_preview_image(
                         request.frame.as_ref(),
                         request.area,
                         picker.font_size(),
                         resize_mode,
+                        false,
                     ) {
                         Ok(img) => img,
                         Err(error) => {
-                            let build_duration = request.queued_at.elapsed();
                             if build_results_tx
                                 .send(PreviewBuildResult::Failed {
                                     request_id: request.request_id,
                                     frame_number: request.frame.frame_number,
                                     transport: request.transport,
                                     area: request.area,
-                                    build_duration,
+                                    build_duration: build_started.elapsed(),
                                     error,
                                 })
                                 .is_err()
@@ -642,14 +692,13 @@ impl PreviewManager {
                     if let Some(target_rect) = protocol.needs_resize(&resize, request.area) {
                         protocol.resize_encode(&resize, target_rect);
                         if let Some(Err(error)) = protocol.last_encoding_result() {
-                            let build_duration = request.queued_at.elapsed();
                             if build_results_tx
                                 .send(PreviewBuildResult::Failed {
                                     request_id: request.request_id,
                                     frame_number: request.frame.frame_number,
                                     transport: request.transport,
                                     area: request.area,
-                                    build_duration,
+                                    build_duration: build_started.elapsed(),
                                     error: error.to_string(),
                                 })
                                 .is_err()
@@ -666,7 +715,7 @@ impl PreviewManager {
                             frame_number: request.frame.frame_number,
                             transport: request.transport,
                             area: request.area,
-                            build_duration: request.queued_at.elapsed(),
+                            build_duration: build_started.elapsed(),
                             surface: PreviewSurface::Stateful(StatefulSurface {
                                 protocol,
                                 resize_mode,
@@ -699,6 +748,7 @@ impl PreviewManager {
             next_request_id: 0,
             in_flight_request_id: None,
             last_build_started: None,
+            build_backpressure: BuildBackpressure::default(),
             draw_backpressure: DrawBackpressure::default(),
             primary_cooloff_until: None,
             fullscreen_primary_locked_out: false,
@@ -762,6 +812,9 @@ impl PreviewManager {
                             completed.area,
                             completed.build_duration,
                         );
+                        if completed.transport == PreviewTransport::Primary {
+                            self.build_backpressure.observe_build(completed.build_duration);
+                        }
                         self.current = Some(completed.surface);
                         self.current_frame_number = Some(completed.frame_number);
                         self.current_transport = Some(completed.transport);
@@ -782,6 +835,9 @@ impl PreviewManager {
                         self.in_flight_request_id = None;
                         self.telemetry
                             .note_build_failed(transport, area, build_duration);
+                        if transport == PreviewTransport::Primary {
+                            self.build_backpressure.observe_build(build_duration);
+                        }
                     } else {
                         self.telemetry.note_stale_result();
                     }
@@ -831,6 +887,7 @@ impl PreviewManager {
         }
 
         if self.latest_frame.is_none() || self.selected_transport != PreviewTransport::Primary {
+            self.build_backpressure.reset();
             self.draw_backpressure.reset();
             self.maybe_log_telemetry();
             return;
@@ -873,6 +930,10 @@ impl PreviewManager {
                 self.primary_picker.font_size(),
                 Some(area),
             ),
+            self.build_backpressure.frame_interval(),
+        );
+        let frame_interval = std::cmp::max(
+            frame_interval,
             self.draw_backpressure.frame_interval(),
         );
 
@@ -908,7 +969,6 @@ impl PreviewManager {
                 transport,
                 area: resize_area,
                 fullscreen: self.fullscreen,
-                queued_at: Instant::now(),
             })
             .is_ok()
         {
@@ -993,6 +1053,7 @@ impl PreviewManager {
             frame_lag,
             inflight_ms,
             draw_pressure = self.draw_backpressure.pressure_level,
+            build_pressure = self.build_backpressure.pressure_level,
             cooloff_ms,
             frame_interval_ms = self.telemetry.last_frame_interval.as_millis(),
             last_build_ms = self.telemetry.last_build_duration.as_millis(),
@@ -1017,6 +1078,7 @@ impl PreviewManager {
     fn reset_protocols(&mut self) {
         self.invalidate_current();
         self.preview_area = None;
+        self.build_backpressure.reset();
         self.draw_backpressure.reset();
         self.primary_cooloff_until = None;
         self.fullscreen_primary_locked_out = false;
@@ -1038,11 +1100,12 @@ fn primary_resize_mode(
     }
 }
 
-fn build_stateful_image(
+fn build_preview_image(
     frame: &CanvasFrame,
     area: Rect,
     font_size: (u16, u16),
     resize_mode: StatefulResizeMode,
+    fullscreen: bool,
 ) -> Result<DynamicImage, String> {
     let Some(img) = image::RgbImage::from_raw(
         u32::from(frame.width),
@@ -1052,30 +1115,35 @@ fn build_stateful_image(
         return Err("invalid preview frame length".to_string());
     };
 
-    let image = DynamicImage::ImageRgb8(img);
     if resize_mode != StatefulResizeMode::Cover || area.width == 0 || area.height == 0 {
-        return Ok(image);
+        return Ok(DynamicImage::ImageRgb8(img));
     }
 
     let target_width = u32::from(area.width) * u32::from(font_size.0.max(1));
     let target_height = u32::from(area.height) * u32::from(font_size.1.max(1));
     if target_width == 0 || target_height == 0 {
-        return Ok(image);
+        return Ok(DynamicImage::ImageRgb8(img));
     }
 
+    let image = DynamicImage::ImageRgb8(img);
     let (source_width, source_height) = image.dimensions();
     if source_width == target_width && source_height == target_height {
         return Ok(image);
     }
 
-    Ok(image.resize_to_fill(target_width, target_height, FilterType::Triangle))
+    let filter = if fullscreen {
+        FilterType::Nearest
+    } else {
+        FilterType::Triangle
+    };
+    Ok(image.resize_to_fill(target_width, target_height, filter))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        DrawBackpressure, PreviewPolicy, PreviewTransport, StatefulResizeMode,
-        build_stateful_image, primary_resize_mode,
+        BuildBackpressure, DrawBackpressure, PreviewPolicy, PreviewTransport,
+        StatefulResizeMode, build_preview_image, primary_resize_mode,
     };
     use crate::state::CanvasFrame;
     use ratatui::layout::Rect;
@@ -1200,11 +1268,12 @@ mod tests {
             pixels: Arc::new(vec![255; 4 * 2 * 3]),
         };
 
-        let image = build_stateful_image(
+        let image = build_preview_image(
             &frame,
             Rect::new(0, 0, 2, 2),
             (2, 2),
             StatefulResizeMode::Cover,
+            false,
         )
         .expect("cover image should build");
 
@@ -1225,6 +1294,23 @@ mod tests {
         backpressure.observe_draw(Duration::from_millis(150));
         for _ in 0..4 {
             backpressure.observe_draw(Duration::from_millis(20));
+        }
+        assert_eq!(backpressure.frame_interval(), Duration::ZERO);
+    }
+
+    #[test]
+    fn build_backpressure_escalates_after_slow_builds() {
+        let mut backpressure = BuildBackpressure::default();
+        backpressure.observe_build(Duration::from_millis(130));
+        assert_eq!(backpressure.frame_interval(), Duration::from_millis(125));
+    }
+
+    #[test]
+    fn build_backpressure_relaxes_after_fast_builds() {
+        let mut backpressure = BuildBackpressure::default();
+        backpressure.observe_build(Duration::from_millis(90));
+        for _ in 0..2 {
+            backpressure.observe_build(Duration::from_millis(15));
         }
         assert_eq!(backpressure.frame_interval(), Duration::ZERO);
     }
