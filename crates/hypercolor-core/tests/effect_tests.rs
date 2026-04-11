@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::SystemTime;
 
 use hypercolor_core::effect::{
@@ -12,8 +12,8 @@ use hypercolor_core::input::InteractionData;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
-    EffectMetadata, EffectSource, EffectState,
+    ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
+    EffectId, EffectMetadata, EffectSource, EffectState,
 };
 use hypercolor_types::sensor::SystemSnapshot;
 use uuid::Uuid;
@@ -33,6 +33,7 @@ struct MockRenderer {
     init_error: Option<String>,
     /// Fill color for produced canvases (R, G, B, A).
     fill_color: [u8; 4],
+    shared_controls: Option<Arc<Mutex<HashMap<String, ControlValue>>>>,
 }
 
 impl MockRenderer {
@@ -44,11 +45,17 @@ impl MockRenderer {
             controls: HashMap::new(),
             init_error: None,
             fill_color: [255, 0, 128, 255], // Electric pink
+            shared_controls: None,
         }
     }
 
     fn with_init_error(mut self, message: &str) -> Self {
         self.init_error = Some(message.to_owned());
+        self
+    }
+
+    fn with_control_sink(mut self, controls: Arc<Mutex<HashMap<String, ControlValue>>>) -> Self {
+        self.shared_controls = Some(controls);
         self
     }
 }
@@ -79,6 +86,12 @@ impl EffectRenderer for MockRenderer {
 
     fn set_control(&mut self, name: &str, value: &ControlValue) {
         self.controls.insert(name.to_owned(), value.clone());
+        if let Some(shared) = &self.shared_controls {
+            shared
+                .lock()
+                .expect("shared control sink should not be poisoned")
+                .insert(name.to_owned(), value.clone());
+        }
     }
 
     fn destroy(&mut self) {
@@ -123,6 +136,7 @@ fn sample_controlled_metadata() -> EffectMetadata {
             labels: Vec::new(),
             group: Some("General".to_owned()),
             tooltip: None,
+            binding: None,
         },
         ControlDefinition {
             id: "mode".to_owned(),
@@ -136,8 +150,27 @@ fn sample_controlled_metadata() -> EffectMetadata {
             labels: vec!["normal".to_owned(), "sparkle".to_owned()],
             group: Some("General".to_owned()),
             tooltip: None,
+            binding: None,
         },
     ];
+    metadata
+}
+
+fn sample_speed_binding() -> ControlBinding {
+    ControlBinding {
+        sensor: "cpu_temp".to_owned(),
+        sensor_min: 30.0,
+        sensor_max: 100.0,
+        target_min: 0.0,
+        target_max: 10.0,
+        deadband: 0.0,
+        smoothing: 0.0,
+    }
+}
+
+fn sample_bound_metadata() -> EffectMetadata {
+    let mut metadata = sample_controlled_metadata();
+    metadata.controls[0].binding = Some(sample_speed_binding());
     metadata
 }
 
@@ -522,6 +555,93 @@ fn engine_set_control_checked_validates_against_schema() {
     assert!(
         error.to_string().contains("invalid option 'invalid'"),
         "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn engine_sensor_binding_updates_renderer_without_overwriting_manual_control() {
+    let captured_controls = Arc::new(Mutex::new(HashMap::new()));
+    let renderer = Box::new(MockRenderer::new().with_control_sink(Arc::clone(&captured_controls)));
+    let mut engine = EffectEngine::new();
+    engine
+        .activate(renderer, sample_bound_metadata())
+        .expect("activate");
+
+    let sensors = SystemSnapshot {
+        cpu_temp_celsius: Some(58.0),
+        ..SystemSnapshot::empty()
+    };
+    let mut canvas = Canvas::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
+    engine
+        .tick_with_inputs_and_sensors_into(
+            0.016,
+            &AudioData::silence(),
+            &InteractionData::default(),
+            None,
+            &sensors,
+            &mut canvas,
+        )
+        .expect("tick with bound sensor");
+
+    let applied = captured_controls
+        .lock()
+        .expect("shared control sink should not be poisoned");
+    assert_eq!(applied.get("speed"), Some(&ControlValue::Float(4.0)));
+    drop(applied);
+    assert_eq!(
+        engine.active_controls().get("speed"),
+        Some(&ControlValue::Float(5.0))
+    );
+}
+
+#[test]
+fn engine_sensor_binding_restores_manual_value_when_sensor_disappears() {
+    let captured_controls = Arc::new(Mutex::new(HashMap::new()));
+    let renderer = Box::new(MockRenderer::new().with_control_sink(Arc::clone(&captured_controls)));
+    let mut engine = EffectEngine::new();
+    engine
+        .activate(renderer, sample_bound_metadata())
+        .expect("activate");
+
+    let hot_snapshot = SystemSnapshot {
+        cpu_temp_celsius: Some(86.0),
+        ..SystemSnapshot::empty()
+    };
+    let mut canvas = Canvas::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
+    engine
+        .tick_with_inputs_and_sensors_into(
+            0.016,
+            &AudioData::silence(),
+            &InteractionData::default(),
+            None,
+            &hot_snapshot,
+            &mut canvas,
+        )
+        .expect("tick with bound sensor");
+    assert_eq!(
+        captured_controls
+            .lock()
+            .expect("shared control sink should not be poisoned")
+            .get("speed"),
+        Some(&ControlValue::Float(8.0))
+    );
+
+    engine
+        .tick_with_inputs_and_sensors_into(
+            0.016,
+            &AudioData::silence(),
+            &InteractionData::default(),
+            None,
+            &SystemSnapshot::empty(),
+            &mut canvas,
+        )
+        .expect("tick without sensor");
+    assert_eq!(
+        captured_controls
+            .lock()
+            .expect("shared control sink should not be poisoned")
+            .get("speed"),
+        Some(&ControlValue::Float(5.0))
     );
 }
 

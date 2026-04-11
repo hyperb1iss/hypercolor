@@ -8,7 +8,7 @@ use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use hypercolor_tui::client::rest::DaemonClient;
 use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlType, ControlValue, PresetTemplate,
+    ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, PresetTemplate,
 };
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -80,6 +80,15 @@ async fn get_effects_enriches_summaries_with_detail_controls() {
                     labels: Vec::new(),
                     group: None,
                     tooltip: None,
+                    binding: Some(ControlBinding {
+                        sensor: "cpu_temp".to_string(),
+                        sensor_min: 30.0,
+                        sensor_max: 100.0,
+                        target_min: 0.0,
+                        target_max: 1.0,
+                        deadband: 0.5,
+                        smoothing: 0.2,
+                    }),
                 }];
                 let presets = vec![PresetTemplate {
                     name: "Soft".to_string(),

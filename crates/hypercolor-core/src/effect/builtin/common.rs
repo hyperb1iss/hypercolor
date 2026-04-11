@@ -29,6 +29,7 @@ pub(super) fn color_control(
         labels: Vec::new(),
         group: Some(group.to_owned()),
         tooltip: Some(tooltip.to_owned()),
+        binding: None,
     }
 }
 
@@ -58,6 +59,7 @@ pub(super) fn slider_control(
         labels: Vec::new(),
         group: Some(group.to_owned()),
         tooltip: Some(tooltip.to_owned()),
+        binding: None,
     }
 }
 
@@ -80,6 +82,7 @@ pub(super) fn toggle_control(
         labels: Vec::new(),
         group: Some(group.to_owned()),
         tooltip: Some(tooltip.to_owned()),
+        binding: None,
     }
 }
 
@@ -103,6 +106,7 @@ pub(super) fn dropdown_control(
         labels: labels.iter().map(|label| (*label).to_owned()).collect(),
         group: Some(group.to_owned()),
         tooltip: Some(tooltip.to_owned()),
+        binding: None,
     }
 }
 

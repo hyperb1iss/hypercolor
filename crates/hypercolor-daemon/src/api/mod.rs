@@ -678,6 +678,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::patch(effects::update_current_controls),
         )
         .route(
+            "/effects/current/controls/{name}/binding",
+            axum::routing::put(effects::set_current_control_binding),
+        )
+        .route(
             "/effects/current/reset",
             axum::routing::post(effects::reset_controls),
         )

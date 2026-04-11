@@ -35,8 +35,8 @@ use hypercolor_types::device::{
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
-    EffectMetadata, EffectSource, EffectState,
+    ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
+    EffectId, EffectMetadata, EffectSource, EffectState,
 };
 use hypercolor_types::event::{ChangeTrigger, EffectStopReason, HypercolorEvent};
 use hypercolor_types::spatial::{
@@ -813,6 +813,7 @@ async fn insert_test_effect(state: &Arc<AppState>, name: &str) {
             labels: Vec::new(),
             group: Some("General".to_owned()),
             tooltip: Some("Animation speed".to_owned()),
+            binding: None,
         }],
         presets: Vec::new(),
         audio_reactive: false,
@@ -1543,6 +1544,84 @@ async fn update_current_controls_updates_active_effect() {
     assert_eq!(active_response.status(), StatusCode::OK);
     let active_json = body_json(active_response).await;
     assert_eq!(active_json["data"]["control_values"]["speed"]["float"], 7.5);
+}
+
+#[tokio::test]
+async fn put_current_control_binding_updates_active_effect_schema() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let binding = ControlBinding {
+        sensor: " cpu_temp ".to_owned(),
+        sensor_min: 30.0,
+        sensor_max: 100.0,
+        target_min: 0.0,
+        target_max: 1.0,
+        deadband: -0.5,
+        smoothing: 1.2,
+    };
+    let binding_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/effects/current/controls/speed/binding")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&binding).expect("binding should serialize"),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(binding_response.status(), StatusCode::OK);
+    let binding_json = body_json(binding_response).await;
+    assert_eq!(binding_json["data"]["control"], "speed");
+    assert_eq!(binding_json["data"]["binding"]["sensor"], "cpu_temp");
+    assert_eq!(binding_json["data"]["binding"]["deadband"], 0.0);
+    assert!(
+        (binding_json["data"]["binding"]["smoothing"]
+            .as_f64()
+            .expect("smoothing should be numeric")
+            - 0.99)
+            .abs()
+            < 1.0e-6
+    );
+
+    let active_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_response.status(), StatusCode::OK);
+    let active_json = body_json(active_response).await;
+    assert_eq!(
+        active_json["data"]["controls"][0]["binding"]["sensor"],
+        "cpu_temp"
+    );
+    assert_eq!(
+        active_json["data"]["controls"][0]["binding"]["target_max"],
+        1.0
+    );
+    assert_eq!(active_json["data"]["control_values"]["speed"]["float"], 5.0);
 }
 
 #[tokio::test]

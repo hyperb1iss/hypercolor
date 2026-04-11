@@ -345,6 +345,53 @@ fn parse_hex_color(text: &str) -> Option<[f32; 4]> {
     ])
 }
 
+// ── ControlBinding ────────────────────────────────────────────────────────────
+
+/// Live mapping from a system sensor reading into a control value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ControlBinding {
+    /// Stable sensor label to sample from the current system snapshot.
+    pub sensor: String,
+    /// Lower bound of the source sensor range.
+    pub sensor_min: f32,
+    /// Upper bound of the source sensor range.
+    pub sensor_max: f32,
+    /// Lower bound of the mapped control range.
+    pub target_min: f32,
+    /// Upper bound of the mapped control range.
+    pub target_max: f32,
+    /// Minimum source-value delta required before the binding updates.
+    #[serde(default)]
+    pub deadband: f32,
+    /// Temporal smoothing factor. `0.0` is immediate, `0.99` is very slow.
+    #[serde(default)]
+    pub smoothing: f32,
+}
+
+impl ControlBinding {
+    /// Clamp and trim user-provided binding values into runtime-safe ranges.
+    #[must_use]
+    pub fn normalized(&self) -> Self {
+        Self {
+            sensor: self.sensor.trim().to_owned(),
+            sensor_min: self.sensor_min,
+            sensor_max: self.sensor_max,
+            target_min: self.target_min,
+            target_max: self.target_max,
+            deadband: if self.deadband.is_finite() {
+                self.deadband.max(0.0)
+            } else {
+                0.0
+            },
+            smoothing: if self.smoothing.is_finite() {
+                self.smoothing.clamp(0.0, 0.99)
+            } else {
+                0.0
+            },
+        }
+    }
+}
+
 // ── ControlDefinition ─────────────────────────────────────────────────────────
 
 /// A single user-facing parameter declared by an effect.
@@ -383,6 +430,9 @@ pub struct ControlDefinition {
     /// Help text shown on hover/focus.
     #[serde(default)]
     pub tooltip: Option<String>,
+    /// Optional live sensor mapping for this control.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<ControlBinding>,
 }
 
 impl ControlDefinition {
@@ -554,6 +604,13 @@ impl EffectMetadata {
     pub fn control_by_id(&self, id: &str) -> Option<&ControlDefinition> {
         self.controls
             .iter()
+            .find(|control| control.control_id().eq_ignore_ascii_case(id))
+    }
+
+    /// Look up a mutable control definition by id (case-insensitive).
+    pub fn control_by_id_mut(&mut self, id: &str) -> Option<&mut ControlDefinition> {
+        self.controls
+            .iter_mut()
             .find(|control| control.control_id().eq_ignore_ascii_case(id))
     }
 

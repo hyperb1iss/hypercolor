@@ -11,7 +11,8 @@ use tracing::{info, warn};
 
 use hypercolor_core::effect::{EffectRegistry, create_renderer_for_metadata_with_mode};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectId, EffectMetadata, EffectSource, PresetTemplate,
+    ControlBinding, ControlDefinition, ControlValue, EffectId, EffectMetadata, EffectSource,
+    PresetTemplate,
 };
 use hypercolor_types::event::{ChangeTrigger, EffectRef, EffectStopReason, HypercolorEvent};
 use hypercolor_types::spatial::SpatialLayout;
@@ -531,6 +532,47 @@ pub async fn update_current_controls(
         "effect": effect_name,
         "applied": applied,
         "rejected": rejected,
+    }))
+}
+
+/// `PUT /api/v1/effects/current/controls/{name}/binding` — Attach a live sensor
+/// binding to a control on the active effect.
+pub async fn set_current_control_binding(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(binding): Json<ControlBinding>,
+) -> Response {
+    let normalized: ControlBinding;
+    let effect_id: String;
+    let effect_name: String;
+    let control_id: String;
+    {
+        let mut engine = state.effect_engine.lock().await;
+        let Some(active_meta) = engine.active_metadata().cloned() else {
+            return ApiError::not_found("No effect is currently active");
+        };
+        let Some(control) = active_meta.control_by_id(&name) else {
+            return ApiError::not_found(format!("Control not found on active effect: {name}"));
+        };
+
+        effect_id = active_meta.id.to_string();
+        effect_name = active_meta.name.clone();
+        control_id = control.control_id().to_owned();
+        normalized = match engine.set_control_binding(&name, binding) {
+            Ok(normalized) => normalized,
+            Err(error) => return ApiError::validation(error.to_string()),
+        };
+    }
+
+    super::persist_runtime_session(&state).await;
+
+    ApiResponse::ok(serde_json::json!({
+        "effect": {
+            "id": effect_id,
+            "name": effect_name,
+        },
+        "control": control_id,
+        "binding": normalized,
     }))
 }
 

@@ -10,7 +10,10 @@ use tracing::{debug, error, info, warn};
 
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
-use hypercolor_types::effect::{ControlValidationError, ControlValue, EffectMetadata, EffectState};
+use hypercolor_types::effect::{
+    ControlBinding, ControlDefinition, ControlKind, ControlValidationError, ControlValue,
+    EffectMetadata, EffectState,
+};
 use hypercolor_types::sensor::SystemSnapshot;
 
 use super::factory::create_renderer_for_metadata;
@@ -18,6 +21,12 @@ use super::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 use crate::input::{InteractionData, ScreenData};
 
 static EMPTY_SYSTEM_SNAPSHOT: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
+
+#[derive(Debug, Clone, PartialEq)]
+struct ActiveBindingState {
+    sensor_value: Option<f32>,
+    control_value: ControlValue,
+}
 
 // ── EffectEngine ─────────────────────────────────────────────────────────────
 
@@ -41,6 +50,9 @@ pub struct EffectEngine {
 
     /// Current control values, keyed by control name.
     controls: HashMap<String, ControlValue>,
+
+    /// Runtime state for controls currently managed by live sensor bindings.
+    binding_state: HashMap<String, ActiveBindingState>,
 
     /// Cumulative elapsed time since effect activation (seconds).
     elapsed_secs: f32,
@@ -71,6 +83,7 @@ impl EffectEngine {
             metadata: None,
             state: EffectState::Loading,
             controls: HashMap::new(),
+            binding_state: HashMap::new(),
             elapsed_secs: 0.0,
             frame_number: 0,
             canvas_width: DEFAULT_CANVAS_WIDTH,
@@ -166,6 +179,7 @@ impl EffectEngine {
                         )
                     })
                     .collect();
+                self.binding_state.clear();
                 for (name, value) in &self.controls {
                     renderer.set_control(name, value);
                 }
@@ -218,6 +232,7 @@ impl EffectEngine {
         self.renderer = None;
         self.metadata = None;
         self.controls.clear();
+        self.binding_state.clear();
         self.elapsed_secs = 0.0;
         self.frame_number = 0;
         self.active_preset_id = None;
@@ -255,10 +270,17 @@ impl EffectEngine {
     /// The value is stored and forwarded to the active renderer. If no
     /// renderer is active, the value is stored for when one is activated.
     pub fn set_control(&mut self, name: &str, value: &ControlValue) {
-        let changed = self.controls.get(name) != Some(value);
-        self.controls.insert(name.to_owned(), value.clone());
-        if let Some(ref mut renderer) = self.renderer {
-            renderer.set_control(name, value);
+        let target_name = self
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.control_by_id(name))
+            .map_or_else(|| name.to_owned(), |control| control.control_id().to_owned());
+        let changed = self.controls.get(&target_name) != Some(value);
+        self.controls.insert(target_name.clone(), value.clone());
+        if !self.control_has_binding(&target_name)
+            && let Some(ref mut renderer) = self.renderer
+        {
+            renderer.set_control(&target_name, value);
         }
         self.active_preset_id = None;
         if changed {
@@ -303,6 +325,35 @@ impl EffectEngine {
     #[must_use]
     pub fn active_preset_id(&self) -> Option<&str> {
         self.active_preset_id.as_deref()
+    }
+
+    /// Attach or replace a live sensor binding for an active control.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no effect is active, the control is unknown, or the
+    /// binding uses an invalid sensor/range configuration.
+    pub fn set_control_binding(
+        &mut self,
+        name: &str,
+        binding: ControlBinding,
+    ) -> anyhow::Result<ControlBinding> {
+        let normalized = binding.normalized();
+        let Some(metadata) = self.metadata.as_mut() else {
+            return Err(anyhow::anyhow!("No active effect"));
+        };
+        let Some(control) = metadata.control_by_id_mut(name) else {
+            return Err(anyhow::anyhow!("Unknown control '{name}'"));
+        };
+
+        validate_control_binding(control, &normalized)?;
+
+        let control_id = control.control_id().to_owned();
+        control.binding = Some(normalized.clone());
+        self.binding_state.remove(&control_id);
+        self.active_preset_id = None;
+        self.touch_scene();
+        Ok(normalized)
     }
 
     /// Set the active preset ID (called after preset controls are successfully applied).
@@ -516,6 +567,13 @@ impl EffectEngine {
         };
 
         self.elapsed_secs += delta_secs;
+        apply_sensor_bindings(
+            renderer.as_mut(),
+            self.metadata.as_ref(),
+            &self.controls,
+            &mut self.binding_state,
+            sensors,
+        );
 
         let input = FrameInput {
             time_secs: self.elapsed_secs,
@@ -538,10 +596,153 @@ impl EffectEngine {
     fn touch_scene(&mut self) {
         self.scene_generation = self.scene_generation.wrapping_add(1);
     }
+
+    fn control_has_binding(&self, name: &str) -> bool {
+        self.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.control_by_id(name))
+            .and_then(|control| control.binding.as_ref())
+            .is_some()
+    }
 }
 
 impl Default for EffectEngine {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn apply_sensor_bindings(
+    renderer: &mut dyn EffectRenderer,
+    metadata: Option<&EffectMetadata>,
+    controls: &HashMap<String, ControlValue>,
+    binding_state: &mut HashMap<String, ActiveBindingState>,
+    sensors: &SystemSnapshot,
+) {
+    let Some(metadata) = metadata else {
+        binding_state.clear();
+        return;
+    };
+
+    for control in &metadata.controls {
+        let control_id = control.control_id();
+        let Some(binding) = control.binding.as_ref() else {
+            if binding_state.remove(control_id).is_some()
+                && let Some(base_value) = controls.get(control_id)
+            {
+                renderer.set_control(control_id, base_value);
+            }
+            continue;
+        };
+
+        let Some(base_value) = controls.get(control_id) else {
+            continue;
+        };
+
+        let next_state = sensors
+            .reading(&binding.sensor)
+            .and_then(|reading| {
+                evaluate_sensor_binding(control, binding, reading.value, binding_state.get(control_id))
+                    .map(|value| ActiveBindingState {
+                        sensor_value: Some(reading.value),
+                        control_value: value,
+                    })
+            })
+            .unwrap_or_else(|| ActiveBindingState {
+                sensor_value: None,
+                control_value: base_value.clone(),
+            });
+
+        if binding_state.get(control_id) != Some(&next_state) {
+            renderer.set_control(control_id, &next_state.control_value);
+        }
+        binding_state.insert(control_id.to_owned(), next_state);
+    }
+}
+
+fn evaluate_sensor_binding(
+    control: &ControlDefinition,
+    binding: &ControlBinding,
+    sensor_value: f32,
+    previous: Option<&ActiveBindingState>,
+) -> Option<ControlValue> {
+    let source_span = binding.sensor_max - binding.sensor_min;
+    if !source_span.is_finite()
+        || source_span.abs() < f32::EPSILON
+        || !binding.target_min.is_finite()
+        || !binding.target_max.is_finite()
+    {
+        return None;
+    }
+
+    if let Some(previous) = previous
+        && let Some(previous_sensor) = previous.sensor_value
+        && (sensor_value - previous_sensor).abs() <= binding.deadband
+    {
+        return Some(previous.control_value.clone());
+    }
+
+    let normalized = ((sensor_value - binding.sensor_min) / source_span).clamp(0.0, 1.0);
+    let mapped = binding.target_min + normalized * (binding.target_max - binding.target_min);
+    let smoothed = previous
+        .and_then(|state| state.control_value.as_f32())
+        .map_or(mapped, |previous_value| {
+            let alpha = 1.0 - binding.smoothing;
+            previous_value + (mapped - previous_value) * alpha
+        });
+
+    match control.kind {
+        ControlKind::Number | ControlKind::Hue | ControlKind::Area => {
+            control.validate_value(&ControlValue::Float(smoothed)).ok()
+        }
+        ControlKind::Boolean => {
+            let midpoint = binding.target_min + (binding.target_max - binding.target_min) * 0.5;
+            control
+                .validate_value(&ControlValue::Boolean(smoothed >= midpoint))
+                .ok()
+        }
+        _ => None,
+    }
+}
+
+fn validate_control_binding(
+    control: &ControlDefinition,
+    binding: &ControlBinding,
+) -> anyhow::Result<()> {
+    if binding.sensor.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Control '{}' requires a non-empty sensor label",
+            control.control_id()
+        ));
+    }
+
+    if !matches!(
+        control.kind,
+        ControlKind::Number | ControlKind::Boolean | ControlKind::Hue | ControlKind::Area
+    ) {
+        return Err(anyhow::anyhow!(
+            "Control '{}' does not support sensor bindings",
+            control.control_id()
+        ));
+    }
+
+    if !binding.sensor_min.is_finite()
+        || !binding.sensor_max.is_finite()
+        || !binding.target_min.is_finite()
+        || !binding.target_max.is_finite()
+    {
+        return Err(anyhow::anyhow!(
+            "Control '{}' binding range values must be finite",
+            control.control_id()
+        ));
+    }
+
+    if (binding.sensor_max - binding.sensor_min).abs() < f32::EPSILON {
+        return Err(anyhow::anyhow!(
+            "Control '{}' binding sensor range must not be zero",
+            control.control_id()
+        ));
+    }
+
+    Ok(())
 }

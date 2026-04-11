@@ -330,6 +330,7 @@ fn control_definition_from_html(raw: &HtmlControlMetadata) -> Option<ControlDefi
             .tooltip
             .as_ref()
             .map(|tooltip| decode_html_entities(tooltip)),
+        binding: None,
     })
 }
 

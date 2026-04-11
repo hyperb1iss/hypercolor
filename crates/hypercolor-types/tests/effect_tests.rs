@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
+    ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
     EffectMetadata, EffectSource, EffectState, GradientStop,
 };
 use uuid::Uuid;
@@ -518,6 +518,7 @@ fn sample_slider_control() -> ControlDefinition {
         labels: vec![],
         group: Some("Animation".into()),
         tooltip: Some("Animation speed multiplier".into()),
+        binding: None,
     }
 }
 
@@ -534,6 +535,7 @@ fn sample_dropdown_control() -> ControlDefinition {
         labels: vec!["Aurora".into(), "Sunset".into(), "Ocean".into()],
         group: None,
         tooltip: None,
+        binding: None,
     }
 }
 
@@ -550,6 +552,19 @@ fn sample_color_picker_control() -> ControlDefinition {
         labels: vec![],
         group: Some("Colors".into()),
         tooltip: None,
+        binding: None,
+    }
+}
+
+fn sample_control_binding() -> ControlBinding {
+    ControlBinding {
+        sensor: " cpu_temp ".into(),
+        sensor_min: 30.0,
+        sensor_max: 100.0,
+        target_min: 0.0,
+        target_max: 1.0,
+        deadband: -2.0,
+        smoothing: 1.5,
     }
 }
 
@@ -591,6 +606,24 @@ fn control_definition_serde_round_trip() {
     assert_eq!(back.max, ctrl.max);
     assert_eq!(back.step, ctrl.step);
     assert_eq!(back.tooltip, ctrl.tooltip);
+}
+
+#[test]
+fn control_binding_normalized_clamps_runtime_fields() {
+    let binding = sample_control_binding().normalized();
+
+    assert_eq!(binding.sensor, "cpu_temp");
+    assert_eq!(binding.deadband, 0.0);
+    assert!((binding.smoothing - 0.99).abs() < f32::EPSILON);
+}
+
+#[test]
+fn control_binding_serde_round_trip() {
+    let binding = sample_control_binding();
+    let json = serde_json::to_string_pretty(&binding).expect("serialize");
+    let back: ControlBinding = serde_json::from_str(&json).expect("deserialize");
+
+    assert_eq!(back, binding);
 }
 
 #[test]

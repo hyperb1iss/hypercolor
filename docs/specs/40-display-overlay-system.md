@@ -568,8 +568,9 @@ is always dereferenceable even before the poller has produced real data.
    system at `hypercolor-types/src/effect.rs:197`) can bind to a sensor
    label. Wave 4 completes the binding — a small mapper reads the bound
    sensor value from `FrameInputs::sensors` at frame-prepare time and
-   writes it into the effect's control store, mapped from the sensor's
-   range to the control's `[0.0, 1.0]`.
+   injects the mapped value into the live renderer state, using the
+   binding's configured source and target ranges while leaving the
+   durable user control value intact for persistence and UI state.
 4. **REST API** exposes the latest snapshot at `GET /api/v1/system/sensors`.
 5. **MCP tools** expose the snapshot via `get_sensor_data` for AI access.
 
@@ -1674,13 +1675,13 @@ rather than JS-level polling.
 
 | # | Task | Crates | Verify |
 |---|------|--------|--------|
-| 4.1 | Add `ControlBinding` type with source (sensor label), target range, dead-band, and smoothing | types | Serde tests |
+| 4.1 | Add `ControlBinding` type with source sensor label, source range, target range, dead-band, and smoothing | types | Serde tests |
 | 4.2 | Add `effect.controls[name].binding = ControlBinding` serialization | types | Round-trip tests |
-| 4.3 | Wire binding evaluation into `EffectEngine::prepare_frame` (reads sensor from `FrameInputs::sensors`, maps to control range, writes to control store) | core | Unit test: bound control value reflects sensor reading |
+| 4.3 | Wire binding evaluation into `EffectEngine::prepare_frame` (reads sensor from `FrameInputs::sensors`, maps to control range, injects the result into the live renderer state) | core | Unit test: bound control value reflects sensor reading |
 | 4.4 | Add binding API: `PUT /api/v1/effects/current/controls/{name}/binding` | daemon | API test: bind CPU temp to a slider control |
 | 4.5 | Benchmarks: effect frame cost with 0, 1, 5 sensor bindings | core | ≤20 µs overhead per binding |
 
-**Exit criteria:** An effect's slider or color control can be bound to
+**Exit criteria:** An effect's numeric control can be bound to
 CPU temperature, transitioning from 0.0 at 30°C to 1.0 at 100°C
 automatically. Both native and HTML effects honor the binding.
 
