@@ -1,6 +1,7 @@
 //! App — the central coordinator and main event loop.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -21,10 +22,16 @@ use crate::event::{Event, EventReader};
 use crate::motion::{MotionSensitivity, MotionSystem};
 use crate::preview::PreviewManager;
 use crate::screen::ScreenId;
-use crate::state::{AppState, ConnectionStatus, ControlValue, Notification, NotificationLevel};
+use crate::state::{
+    AppState, CanvasFrame, ConnectionStatus, ControlValue, Notification, NotificationLevel,
+    PreviewSource, SimulatedDisplaySummary,
+};
 use crate::theme_picker::ThemePicker;
 use opaline::widgets::ThemeSelectorAction;
 use ratatui_image::picker::Picker;
+
+const SIMULATOR_LIST_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+const SIMULATOR_FRAME_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Top-level application that owns all screens and drives the event loop.
 pub struct App {
@@ -44,6 +51,10 @@ pub struct App {
     lifecycle: LifecycleState,
     /// UI flags for overlays, redraws, and fullscreen mode.
     view: ViewState,
+    /// Cached preview routing state for simulator inspection.
+    simulator_preview: SimulatorPreviewState,
+    /// Latest live canvas frame from the daemon WebSocket.
+    latest_canvas_frame: Option<Arc<CanvasFrame>>,
     /// Active live theme picker, when modal is open.
     theme_picker: Option<ThemePicker>,
     /// Motion effects engine (tachyonfx-backed).
@@ -82,6 +93,16 @@ struct ViewState {
     help_visible: bool,
     fullscreen_preview: bool,
     render_dirty: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SimulatorPreviewState {
+    source: PreviewSource,
+    simulators: Vec<SimulatedDisplaySummary>,
+    latest_frame: Option<Arc<CanvasFrame>>,
+    latest_frame_id: Option<String>,
+    list_requested_at: Option<Instant>,
+    frame_requested_at: Option<(String, Instant)>,
 }
 
 impl App {
@@ -126,6 +147,8 @@ impl App {
                 fullscreen_preview: false,
                 render_dirty: true,
             },
+            simulator_preview: SimulatorPreviewState::default(),
+            latest_canvas_frame: None,
             theme_picker: None,
             motion: MotionSystem::new(MotionSensitivity::resolve(MotionSensitivity::Full)),
             preview: PreviewManager::new(picker),
@@ -443,6 +466,7 @@ impl App {
                         self.motion.sensitivity(),
                     ),
                 );
+                self.refresh_preview_surface();
             }
 
             Action::GoBack => {
@@ -475,6 +499,7 @@ impl App {
             Action::ToggleFullscreenPreview => {
                 self.view.fullscreen_preview = !self.view.fullscreen_preview;
                 self.preview.set_fullscreen(self.view.fullscreen_preview);
+                self.refresh_preview_surface();
                 self.view.render_dirty = true;
             }
 
@@ -509,6 +534,9 @@ impl App {
                 self.state.connection_status = ConnectionStatus::Disconnected;
                 self.state.disconnect_reason = Some(reason.clone());
                 self.state.spectrum = None;
+                self.latest_canvas_frame = None;
+                self.simulator_preview.latest_frame = None;
+                self.simulator_preview.latest_frame_id = None;
                 self.motion.spectrum_channel().clear();
                 self.motion.canvas_color_channel().clear();
                 self.preview.clear();
@@ -546,10 +574,26 @@ impl App {
                 self.state.devices.clone_from(devices.as_ref());
                 self.sync_daemon_device_summary();
             }
+            Action::SimulatedDisplaysUpdated(simulators) => {
+                self.simulator_preview.simulators.clone_from(simulators.as_ref());
+                self.simulator_preview.list_requested_at = Some(Instant::now());
+                if let Some(simulator_id) = self.simulator_preview.source.simulator_id()
+                    && !self
+                        .simulator_preview
+                        .simulators
+                        .iter()
+                        .any(|simulator| simulator.enabled && simulator.id == simulator_id)
+                {
+                    let _ = self
+                        .action_tx
+                        .send(Action::SetPreviewSource(PreviewSource::Canvas));
+                }
+            }
             Action::FavoritesUpdated(favorites) => {
                 self.state.favorites.clone_from(favorites.as_ref());
             }
             Action::CanvasFrameReceived(frame) => {
+                self.latest_canvas_frame = Some(frame.clone());
                 // Sample border pixels for the canvas bleed reactive layer
                 if let Some((r, g, b)) = crate::motion::sample_canvas_border(
                     frame.width,
@@ -558,8 +602,41 @@ impl App {
                 ) {
                     self.motion.canvas_color_channel().write(r, g, b);
                 }
-                self.preview
-                    .on_frame(frame.clone(), self.view.fullscreen_preview);
+                if self.active_effect_browser_simulator_id().is_none() {
+                    self.preview
+                        .on_frame(frame.clone(), self.view.fullscreen_preview);
+                }
+            }
+            Action::SimulatorFrameUpdated {
+                simulator_id,
+                frame,
+            } => {
+                self.simulator_preview.latest_frame = Some(frame.clone());
+                self.simulator_preview.latest_frame_id = Some(simulator_id.clone());
+                self.simulator_preview.frame_requested_at =
+                    Some((simulator_id.clone(), Instant::now()));
+                self.refresh_preview_surface();
+            }
+            Action::SimulatorFrameCleared(simulator_id) => {
+                if self.simulator_preview.latest_frame_id.as_deref() == Some(simulator_id.as_str())
+                {
+                    self.simulator_preview.latest_frame = None;
+                    self.simulator_preview.latest_frame_id = None;
+                }
+                self.simulator_preview.frame_requested_at =
+                    Some((simulator_id.clone(), Instant::now()));
+                self.refresh_preview_surface();
+            }
+            Action::SetPreviewSource(source) => {
+                self.simulator_preview.source = source.clone();
+                if let Some(simulator_id) = source.simulator_id()
+                    && self.simulator_preview.latest_frame_id.as_deref() != Some(simulator_id)
+                {
+                    self.simulator_preview.latest_frame = None;
+                    self.simulator_preview.latest_frame_id = None;
+                }
+                self.simulator_preview.frame_requested_at = None;
+                self.refresh_preview_surface();
             }
             Action::SpectrumUpdated(spectrum) => {
                 self.state.spectrum = Some(spectrum.clone());
@@ -692,6 +769,8 @@ impl App {
                     self.notification = None;
                 }
                 self.check_idle();
+                self.poll_simulated_displays();
+                self.poll_selected_simulator_frame();
             }
 
             _ => {}
@@ -707,8 +786,11 @@ impl App {
                 | Action::DaemonReconnecting
                 | Action::EffectsUpdated(_)
                 | Action::DevicesUpdated(_)
+                | Action::SimulatedDisplaysUpdated(_)
                 | Action::FavoritesUpdated(_)
                 | Action::CanvasFrameReceived(_)
+                | Action::SimulatorFrameUpdated { .. }
+                | Action::SimulatorFrameCleared(_)
                 | Action::SpectrumUpdated(_)
         );
 
@@ -747,6 +829,105 @@ impl App {
     /// Whether the daemon connection is active.
     fn is_connected(&self) -> bool {
         self.state.connection_status == ConnectionStatus::Connected
+    }
+
+    fn active_effect_browser_simulator_id(&self) -> Option<&str> {
+        if self.active_screen == ScreenId::EffectBrowser {
+            self.simulator_preview.source.simulator_id()
+        } else {
+            None
+        }
+    }
+
+    fn refresh_preview_surface(&mut self) {
+        if let Some(simulator_id) = self.active_effect_browser_simulator_id() {
+            if self.simulator_preview.latest_frame_id.as_deref() == Some(simulator_id) {
+                if let Some(frame) = self.simulator_preview.latest_frame.clone() {
+                    self.preview.on_frame(frame, self.view.fullscreen_preview);
+                } else {
+                    self.preview.clear();
+                }
+            } else {
+                self.preview.clear();
+            }
+            return;
+        }
+
+        if let Some(frame) = self.latest_canvas_frame.clone() {
+            self.preview.on_frame(frame, self.view.fullscreen_preview);
+        } else {
+            self.preview.clear();
+        }
+    }
+
+    fn poll_simulated_displays(&mut self) {
+        if self.active_screen != ScreenId::EffectBrowser {
+            return;
+        }
+
+        let should_refresh = self.simulator_preview.list_requested_at.is_none_or(|requested_at| {
+            requested_at.elapsed() >= SIMULATOR_LIST_REFRESH_INTERVAL
+        });
+        if !should_refresh {
+            return;
+        }
+
+        self.simulator_preview.list_requested_at = Some(Instant::now());
+        let tx = self.action_tx.clone();
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            match client.get_simulated_displays().await {
+                Ok(simulators) => {
+                    let _ = tx.send(Action::SimulatedDisplaysUpdated(Arc::new(simulators)));
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "Failed to refresh simulated display list");
+                }
+            }
+        });
+    }
+
+    fn poll_selected_simulator_frame(&mut self) {
+        let Some(simulator_id) = self.active_effect_browser_simulator_id() else {
+            return;
+        };
+
+        let should_refresh =
+            self.simulator_preview
+                .frame_requested_at
+                .as_ref()
+                .is_none_or(|(requested_id, requested_at)| {
+                    requested_id != simulator_id
+                        || requested_at.elapsed() >= SIMULATOR_FRAME_REFRESH_INTERVAL
+                });
+        if !should_refresh {
+            return;
+        }
+
+        let simulator_id = simulator_id.to_owned();
+        self.simulator_preview.frame_requested_at = Some((simulator_id.clone(), Instant::now()));
+        let tx = self.action_tx.clone();
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            match client.get_simulated_display_frame(&simulator_id).await {
+                Ok(Some(frame)) => {
+                    let _ = tx.send(Action::SimulatorFrameUpdated {
+                        simulator_id,
+                        frame: Arc::new(frame),
+                    });
+                }
+                Ok(None) => {
+                    let _ = tx.send(Action::SimulatorFrameCleared(simulator_id));
+                }
+                Err(error) => {
+                    tracing::debug!(
+                        %error,
+                        simulator_id = %simulator_id,
+                        "Failed to refresh simulator frame"
+                    );
+                }
+            }
+        });
     }
 
     /// Show a "not connected" notification (debounced — won't replace an existing one).

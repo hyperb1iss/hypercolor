@@ -16,7 +16,7 @@ use crate::component::Component;
 use crate::state::{
     CanvasPreviewState, ConnectionStatus, DaemonState, DeviceSummary, EffectSummary,
 };
-use crate::widgets::{ParamSlider, Split, SplitDirection, aspect_fit};
+use crate::widgets::{ParamSlider, Split, SplitDirection};
 
 // ── SilkCircuit Neon palette ───────────────────────────────────────────
 
@@ -459,11 +459,8 @@ impl DashboardView {
         }
 
         if let Some(cf) = &self.canvas_frame {
-            // Aspect-fit the canvas inside the inner area so the live image
-            // overlay (rendered by App) fills exactly its preserved-ratio rect
-            // without leaving empty pads on one axis.
-            let fitted = aspect_fit(cf.width, cf.height, inner);
-            self.preview_inner.set(Some(fitted));
+            let _ = cf;
+            self.preview_inner.set(Some(inner));
         } else {
             // No data yet — clear the cached rect and show a centered hint.
             self.preview_inner.set(None);

@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use hypercolor_tui::state::{
     CanvasFrame, CanvasPreviewState, ConnectionStatus, ControlDefinition, ControlValue,
-    DaemonState, DeviceSummary, EffectSummary, Notification, NotificationLevel, SpectrumSnapshot,
+    DaemonState, DeviceSummary, EffectSummary, Notification, NotificationLevel, PreviewSource,
+    SimulatedDisplaySummary, SpectrumSnapshot,
 };
 
 // ── ControlValue conversion tests ────────────────────────────────
@@ -131,6 +132,33 @@ fn device_summary_serde_roundtrip() {
     assert_eq!(parsed.id, "razer-1");
     assert_eq!(parsed.led_count, 104);
     assert_eq!(parsed.fps, Some(30.0));
+}
+
+#[test]
+fn simulated_display_summary_deserialize_defaults_enabled() {
+    let summary: SimulatedDisplaySummary = serde_json::from_str(
+        r#"{
+            "id": "sim-1",
+            "name": "Desk Preview",
+            "width": 480,
+            "height": 480,
+            "circular": true
+        }"#,
+    )
+    .expect("deserialize simulator summary");
+
+    assert_eq!(summary.id, "sim-1");
+    assert!(summary.enabled);
+    assert!(summary.circular);
+}
+
+#[test]
+fn preview_source_reports_selected_simulator_id() {
+    assert_eq!(PreviewSource::Canvas.simulator_id(), None);
+    assert_eq!(
+        PreviewSource::Simulator("sim-1".to_string()).simulator_id(),
+        Some("sim-1")
+    );
 }
 
 #[test]

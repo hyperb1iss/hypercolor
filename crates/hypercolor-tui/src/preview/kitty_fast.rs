@@ -10,13 +10,11 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
+use image::DynamicImage;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui_image::picker::cap_parser::Parser;
 
-use crate::state::CanvasFrame;
-
-const TEMP_FILE_CELL_THRESHOLD: usize = 1_200;
 static NEXT_TEMP_FILE_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) struct KittyFrame {
@@ -30,12 +28,33 @@ pub(crate) struct KittyFrame {
 
 impl KittyFrame {
     pub(crate) fn new(
-        frame: &CanvasFrame,
+        image: DynamicImage,
         area: Rect,
         image_id: u32,
         is_tmux: bool,
     ) -> Result<Self, String> {
-        let (transmit, temp_path) = build_transmit(frame, area, image_id, is_tmux)?;
+        Self::new_with_medium(image, area, image_id, is_tmux, preferred_medium(area))
+    }
+
+    fn new_with_medium(
+        image: DynamicImage,
+        area: Rect,
+        image_id: u32,
+        is_tmux: bool,
+        medium: KittyMedium,
+    ) -> Result<Self, String> {
+        let rgb = image.to_rgb8();
+        let image_width = rgb.width();
+        let image_height = rgb.height();
+        let (transmit, temp_path) = build_transmit(
+            rgb.as_raw(),
+            image_width,
+            image_height,
+            area,
+            image_id,
+            is_tmux,
+            medium,
+        )?;
         let [id_extra, id_r, id_g, id_b] = image_id.to_be_bytes();
         Ok(Self {
             rect: area,
@@ -80,13 +99,16 @@ impl Drop for KittyFrame {
 }
 
 fn build_transmit(
-    frame: &CanvasFrame,
+    pixels: &[u8],
+    image_width: u32,
+    image_height: u32,
     area: Rect,
     image_id: u32,
     is_tmux: bool,
+    medium: KittyMedium,
 ) -> Result<(String, Option<PathBuf>), String> {
-    if preferred_medium(area) == KittyMedium::TempFile {
-        match transmit_temp_file(frame, area, image_id, is_tmux) {
+    if medium == KittyMedium::TempFile {
+        match transmit_temp_file(pixels, image_width, image_height, area, image_id, is_tmux) {
             Ok(result) => return Ok(result),
             Err(error) => {
                 tracing::debug!(
@@ -96,16 +118,19 @@ fn build_transmit(
         }
     }
 
-    transmit_direct(frame, area, image_id, is_tmux).map(|transmit| (transmit, None))
+    transmit_direct(pixels, image_width, image_height, area, image_id, is_tmux)
+        .map(|transmit| (transmit, None))
 }
 
 fn transmit_direct(
-    frame: &CanvasFrame,
-    area: Rect,
+    pixels: &[u8],
+    image_width: u32,
+    image_height: u32,
+    _area: Rect,
     image_id: u32,
     is_tmux: bool,
 ) -> Result<String, String> {
-    let compressed = compress_pixels(frame.pixels.as_slice())?;
+    let compressed = compress_pixels(pixels)?;
     let encoded = BASE64_STANDARD.encode(compressed);
     let (start, escape, end) = Parser::escape_tmux(is_tmux);
 
@@ -120,8 +145,8 @@ fn transmit_direct(
         if index == 0 {
             write!(
                 data,
-                "i={image_id},a=T,U=1,c={},r={},f=24,o=z,s={},v={},",
-                area.width, area.height, frame.width, frame.height
+                "i={image_id},a=T,U=1,f=24,o=z,s={},v={},",
+                image_width, image_height
             )
             .map_err(|error| error.to_string())?;
         }
@@ -136,12 +161,14 @@ fn transmit_direct(
 }
 
 fn transmit_temp_file(
-    frame: &CanvasFrame,
-    area: Rect,
+    pixels: &[u8],
+    image_width: u32,
+    image_height: u32,
+    _area: Rect,
     image_id: u32,
     is_tmux: bool,
 ) -> Result<(String, Option<PathBuf>), String> {
-    let compressed = compress_pixels(frame.pixels.as_slice())?;
+    let compressed = compress_pixels(pixels)?;
     let path = write_temp_payload(&compressed)?;
     let encoded_path = BASE64_STANDARD.encode(path.to_string_lossy().as_bytes());
     let (start, escape, end) = Parser::escape_tmux(is_tmux);
@@ -150,11 +177,9 @@ fn transmit_temp_file(
     data.push_str(start);
     write!(
         data,
-        "{escape}_Gq=2,i={image_id},a=T,U=1,c={},r={},f=24,t=t,o=z,s={},v={},S={};",
-        area.width,
-        area.height,
-        frame.width,
-        frame.height,
+        "{escape}_Gq=2,i={image_id},a=T,U=1,f=24,t=t,o=z,s={},v={},S={};",
+        image_width,
+        image_height,
         compressed.len()
     )
     .map_err(|error| error.to_string())?;
@@ -186,11 +211,8 @@ fn preferred_medium(area: Rect) -> KittyMedium {
         _ => {}
     }
 
-    if usize::from(area.width) * usize::from(area.height) >= TEMP_FILE_CELL_THRESHOLD {
-        KittyMedium::TempFile
-    } else {
-        KittyMedium::Direct
-    }
+    let _ = area;
+    KittyMedium::Direct
 }
 
 fn write_temp_payload(payload: &[u8]) -> Result<PathBuf, String> {
@@ -587,24 +609,27 @@ static DIACRITICS: [char; 297] = [
 #[cfg(test)]
 mod tests {
     use super::{KittyFrame, KittyMedium, preferred_medium};
-    use crate::state::CanvasFrame;
+    use image::{DynamicImage, RgbImage};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use std::path::PathBuf;
-    use std::sync::Arc;
+
+    fn solid_image(width: u32, height: u32) -> DynamicImage {
+        DynamicImage::ImageRgb8(
+            RgbImage::from_raw(width, height, vec![0; (width * height * 3) as usize])
+                .expect("valid image buffer"),
+        )
+    }
 
     #[test]
     fn transmit_sequence_uses_compressed_rgb_payload() {
-        let frame = CanvasFrame {
-            frame_number: 7,
-            timestamp_ms: 0,
-            width: 2,
-            height: 2,
-            pixels: Arc::new(vec![0, 0, 0, 255, 0, 0, 0, 255, 0, 255, 255, 255]),
-        };
+        let image = DynamicImage::ImageRgb8(
+            RgbImage::from_raw(2, 2, vec![0, 0, 0, 255, 0, 0, 0, 255, 0, 255, 255, 255])
+                .expect("valid image buffer"),
+        );
 
-        let kitty = KittyFrame::new(&frame, Rect::new(0, 0, 2, 2), 42, false)
-            .expect("kitty frame should build");
+        let kitty =
+            KittyFrame::new(image, Rect::new(0, 0, 2, 2), 42, false).expect("kitty frame should build");
 
         let transmit = kitty.transmit.as_deref().expect("transmit should exist");
         assert!(transmit.contains("i=42"));
@@ -615,15 +640,7 @@ mod tests {
 
     #[test]
     fn render_marks_trailing_cells_as_skip() {
-        let frame = CanvasFrame {
-            frame_number: 1,
-            timestamp_ms: 0,
-            width: 2,
-            height: 2,
-            pixels: Arc::new(vec![0; 12]),
-        };
-
-        let mut kitty = KittyFrame::new(&frame, Rect::new(0, 0, 2, 2), 7, false)
+        let mut kitty = KittyFrame::new(solid_image(2, 2), Rect::new(0, 0, 2, 2), 7, false)
             .expect("kitty frame should build");
         let mut buf = Buffer::empty(Rect::new(0, 0, 2, 2));
         kitty.render(Rect::new(0, 0, 2, 2), &mut buf);
@@ -634,27 +651,25 @@ mod tests {
     }
 
     #[test]
-    fn large_area_prefers_temp_file_transport() {
+    fn large_area_defaults_to_direct_transport() {
         assert_eq!(
             preferred_medium(Rect::new(0, 0, 50, 30)),
-            KittyMedium::TempFile
+            KittyMedium::Direct
         );
     }
 
     #[test]
     fn temp_file_transport_cleans_up_payload() {
-        let frame = CanvasFrame {
-            frame_number: 9,
-            timestamp_ms: 0,
-            width: 2,
-            height: 2,
-            pixels: Arc::new(vec![0; 12]),
-        };
-
         let payload_path: PathBuf;
         {
-            let kitty = KittyFrame::new(&frame, Rect::new(0, 0, 50, 30), 17, false)
-                .expect("kitty frame should build");
+            let kitty = KittyFrame::new_with_medium(
+                solid_image(2, 2),
+                Rect::new(0, 0, 50, 30),
+                17,
+                false,
+                KittyMedium::TempFile,
+            )
+            .expect("kitty frame should build");
             let transmit = kitty.transmit.as_deref().expect("transmit should exist");
             assert!(transmit.contains("t=t"));
             payload_path = kitty

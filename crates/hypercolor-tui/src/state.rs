@@ -146,6 +146,43 @@ pub struct DeviceSummary {
     pub fps: Option<f32>,
 }
 
+/// Summary of a daemon-managed virtual display simulator.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SimulatedDisplaySummary {
+    pub id: String,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    #[serde(default)]
+    pub circular: bool,
+    #[serde(default = "simulator_enabled_default")]
+    pub enabled: bool,
+}
+
+const fn simulator_enabled_default() -> bool {
+    true
+}
+
+/// Selected source for the TUI preview surface.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewSource {
+    #[default]
+    Canvas,
+    Simulator(String),
+}
+
+impl PreviewSource {
+    /// Return the selected simulator id, when the preview is simulator-backed.
+    #[must_use]
+    pub fn simulator_id(&self) -> Option<&str> {
+        match self {
+            Self::Canvas => None,
+            Self::Simulator(id) => Some(id.as_str()),
+        }
+    }
+}
+
 // ── Canvas & Audio ──────────────────────────────────────────────────
 
 /// A decoded canvas frame from the WebSocket binary stream.

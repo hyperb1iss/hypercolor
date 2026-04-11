@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -31,6 +32,16 @@ async fn spawn_server(router: Router) -> SocketAddr {
     });
 
     addr
+}
+
+fn encoded_preview_bytes() -> Vec<u8> {
+    let image = image::RgbImage::from_vec(2, 1, vec![255, 0, 0, 0, 255, 0])
+        .expect("preview pixels should match dimensions");
+    let mut bytes = Vec::new();
+    image::DynamicImage::ImageRgb8(image)
+        .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .expect("preview image should encode");
+    bytes
 }
 
 #[tokio::test]
@@ -234,6 +245,74 @@ async fn get_devices_and_favorites_parse_enveloped_lists() {
     assert_eq!(devices[0].state, "connected");
     assert_eq!(devices[0].led_count, 120);
     assert_eq!(favorites, vec!["rainbow".to_string()]);
+}
+
+#[tokio::test]
+async fn get_simulated_displays_and_frame_decode_preview_image() {
+    let frame_bytes = encoded_preview_bytes();
+    let router = Router::new()
+        .route(
+            "/api/v1/simulators/displays",
+            get(|| async {
+                Json(json!({
+                    "data": [{
+                        "id": "sim-1",
+                        "name": "Desk Preview",
+                        "width": 480,
+                        "height": 480,
+                        "circular": true,
+                        "enabled": true
+                    }]
+                }))
+            }),
+        )
+        .route(
+            "/api/v1/simulators/displays/{id}/frame",
+            get(move |Path(id): Path<String>| {
+                let bytes = frame_bytes.clone();
+                async move {
+                    assert_eq!(id, "sim-1");
+                    (StatusCode::OK, bytes)
+                }
+            }),
+        );
+
+    let client = client_for(spawn_server(router).await);
+    let simulators = client
+        .get_simulated_displays()
+        .await
+        .expect("fetch simulators");
+    let frame = client
+        .get_simulated_display_frame("sim-1")
+        .await
+        .expect("fetch simulator frame")
+        .expect("simulator frame should exist");
+
+    assert_eq!(simulators.len(), 1);
+    assert_eq!(simulators[0].id, "sim-1");
+    assert_eq!(simulators[0].name, "Desk Preview");
+    assert_eq!(frame.width, 2);
+    assert_eq!(frame.height, 1);
+    assert_eq!(frame.pixels.as_ref(), &[255, 0, 0, 0, 255, 0]);
+}
+
+#[tokio::test]
+async fn get_simulated_display_frame_returns_none_for_missing_frame() {
+    let router = Router::new().route(
+        "/api/v1/simulators/displays/{id}/frame",
+        get(|Path(id): Path<String>| async move {
+            assert_eq!(id, "sim-missing");
+            StatusCode::NOT_FOUND
+        }),
+    );
+
+    let client = client_for(spawn_server(router).await);
+    let frame = client
+        .get_simulated_display_frame("sim-missing")
+        .await
+        .expect("missing simulator frame should not error");
+
+    assert!(frame.is_none());
 }
 
 #[tokio::test]

@@ -11,6 +11,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use image::DynamicImage;
+use image::GenericImageView;
+use image::imageops::FilterType;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui_image::picker::{Picker, ProtocolType};
@@ -143,6 +145,7 @@ struct PreviewBuildRequest {
     frame: Arc<CanvasFrame>,
     transport: PreviewTransport,
     area: Rect,
+    fullscreen: bool,
     queued_at: Instant,
 }
 
@@ -168,12 +171,20 @@ enum PreviewBuildResult {
 }
 
 enum PreviewSurface {
-    Stateful(StatefulProtocol),
+    Stateful(StatefulSurface),
     Halfblocks(halfblocks_fast::HalfblocksFrame),
     Kitty(kitty_fast::KittyFrame),
 }
 
 impl PreviewSurface {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Stateful(_) => "stateful",
+            Self::Halfblocks(_) => "halfblocks",
+            Self::Kitty(_) => "kitty_fast",
+        }
+    }
+
     fn render(&mut self, area: Rect, buf: &mut Buffer) {
         match self {
             Self::Stateful(protocol) => protocol.render(area, buf),
@@ -184,12 +195,42 @@ impl PreviewSurface {
 
     fn matches_area(&self, resize_area: Rect) -> bool {
         match self {
-            Self::Stateful(protocol) => protocol
-                .needs_resize(&Resize::Scale(None), resize_area)
-                .is_none(),
+            Self::Stateful(surface) => surface.matches_area(resize_area),
             Self::Halfblocks(frame) => frame.area() == resize_area,
             Self::Kitty(frame) => frame.area() == resize_area,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatefulResizeMode {
+    Scale,
+    Cover,
+}
+
+impl StatefulResizeMode {
+    fn resize(self) -> Resize {
+        match self {
+            Self::Scale => Resize::Scale(None),
+            Self::Cover => Resize::Crop(None),
+        }
+    }
+}
+
+struct StatefulSurface {
+    protocol: StatefulProtocol,
+    resize_mode: StatefulResizeMode,
+}
+
+impl StatefulSurface {
+    fn render(&mut self, area: Rect, buf: &mut Buffer) {
+        self.protocol.render(area, buf);
+    }
+
+    fn matches_area(&self, resize_area: Rect) -> bool {
+        self.protocol
+            .needs_resize(&self.resize_mode.resize(), resize_area)
+            .is_none()
     }
 }
 
@@ -441,8 +482,9 @@ impl PreviewManager {
         let build_primary_protocol = primary_picker.protocol_type();
         let build_primary_picker = primary_picker.clone();
         let build_halfblocks_picker = halfblocks_picker.clone();
-        let build_use_kitty_fast = build_primary_protocol == ProtocolType::Kitty
-            && env::var("HYPERCOLOR_TUI_EXPERIMENTAL_KITTY_FAST").is_ok_and(|value| value == "1");
+        let build_use_kitty_fast = build_primary_protocol == ProtocolType::Kitty;
+        let build_use_kitty_fast_fullscreen = env::var("HYPERCOLOR_TUI_KITTY_FAST_FULLSCREEN")
+            .is_ok_and(|value| value == "1");
         let build_use_fast_halfblocks = build_primary_protocol == ProtocolType::Halfblocks;
         let build_is_tmux = env::var("TERM").is_ok_and(|term| term.starts_with("tmux"))
             || env::var("TERM_PROGRAM").is_ok_and(|term_program| term_program == "tmux");
@@ -493,10 +535,37 @@ impl PreviewManager {
                         continue;
                     }
 
-                    if request.transport == PreviewTransport::Primary && build_use_kitty_fast {
+                    if request.transport == PreviewTransport::Primary
+                        && build_use_kitty_fast
+                        && (!request.fullscreen || build_use_kitty_fast_fullscreen)
+                    {
                         let build_duration = request.queued_at.elapsed();
-                        match kitty_fast::KittyFrame::new(
+                        let img = match build_stateful_image(
                             request.frame.as_ref(),
+                            request.area,
+                            build_primary_picker.font_size(),
+                            StatefulResizeMode::Cover,
+                        ) {
+                            Ok(img) => img,
+                            Err(error) => {
+                                if build_results_tx
+                                    .send(PreviewBuildResult::Failed {
+                                        request_id: request.request_id,
+                                        frame_number: request.frame.frame_number,
+                                        transport: request.transport,
+                                        area: request.area,
+                                        build_duration,
+                                        error,
+                                    })
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                                continue;
+                            }
+                        };
+                        match kitty_fast::KittyFrame::new(
+                            img,
                             request.area,
                             kitty_image_id,
                             build_is_tmux,
@@ -539,35 +608,39 @@ impl PreviewManager {
                         PreviewTransport::Primary => &build_primary_picker,
                         PreviewTransport::Halfblocks => &build_halfblocks_picker,
                     };
-
-                    let Some(img) = image::RgbImage::from_raw(
-                        u32::from(request.frame.width),
-                        u32::from(request.frame.height),
-                        request.frame.pixels.as_ref().clone(),
-                    ) else {
-                        let build_duration = request.queued_at.elapsed();
-                        if build_results_tx
-                            .send(PreviewBuildResult::Failed {
-                                request_id: request.request_id,
-                                frame_number: request.frame.frame_number,
-                                transport: request.transport,
-                                area: request.area,
-                                build_duration,
-                                error: "invalid preview frame length".to_string(),
-                            })
-                            .is_err()
-                        {
-                            break;
+                    let resize_mode =
+                        primary_resize_mode(request.transport, build_primary_protocol);
+                    let img = match build_stateful_image(
+                        request.frame.as_ref(),
+                        request.area,
+                        picker.font_size(),
+                        resize_mode,
+                    ) {
+                        Ok(img) => img,
+                        Err(error) => {
+                            let build_duration = request.queued_at.elapsed();
+                            if build_results_tx
+                                .send(PreviewBuildResult::Failed {
+                                    request_id: request.request_id,
+                                    frame_number: request.frame.frame_number,
+                                    transport: request.transport,
+                                    area: request.area,
+                                    build_duration,
+                                    error,
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                            continue;
                         }
-                        continue;
                     };
 
-                    let mut protocol = picker.new_resize_protocol(DynamicImage::ImageRgb8(img));
+                    let mut protocol = picker.new_resize_protocol(img);
+                    let resize = resize_mode.resize();
 
-                    if let Some(target_rect) =
-                        protocol.needs_resize(&Resize::Scale(None), request.area)
-                    {
-                        protocol.resize_encode(&Resize::Scale(None), target_rect);
+                    if let Some(target_rect) = protocol.needs_resize(&resize, request.area) {
+                        protocol.resize_encode(&resize, target_rect);
                         if let Some(Err(error)) = protocol.last_encoding_result() {
                             let build_duration = request.queued_at.elapsed();
                             if build_results_tx
@@ -594,7 +667,10 @@ impl PreviewManager {
                             transport: request.transport,
                             area: request.area,
                             build_duration: request.queued_at.elapsed(),
-                            surface: PreviewSurface::Stateful(protocol),
+                            surface: PreviewSurface::Stateful(StatefulSurface {
+                                protocol,
+                                resize_mode,
+                            }),
                         }))
                         .is_err()
                     {
@@ -787,7 +863,6 @@ impl PreviewManager {
         else {
             return;
         };
-
         let resize_area = Self::resize_area(area);
         let transport = self.transport_for(Some(frame.as_ref()), Some(area));
         self.selected_transport = transport;
@@ -832,6 +907,7 @@ impl PreviewManager {
                 frame,
                 transport,
                 area: resize_area,
+                fullscreen: self.fullscreen,
                 queued_at: Instant::now(),
             })
             .is_ok()
@@ -895,6 +971,7 @@ impl PreviewManager {
             protocol = ?self.primary_protocol,
             selected_transport = ?self.selected_transport,
             current_transport = ?self.current_transport,
+            current_surface = self.current.as_ref().map_or("none", PreviewSurface::kind),
             fullscreen = self.fullscreen,
             fullscreen_primary_locked_out = self.fullscreen_primary_locked_out,
             area_width = area.map_or(0, |rect| rect.width),
@@ -950,9 +1027,56 @@ impl PreviewManager {
     }
 }
 
+fn primary_resize_mode(
+    transport: PreviewTransport,
+    primary_protocol: ProtocolType,
+) -> StatefulResizeMode {
+    if transport == PreviewTransport::Primary && primary_protocol == ProtocolType::Kitty {
+        StatefulResizeMode::Cover
+    } else {
+        StatefulResizeMode::Scale
+    }
+}
+
+fn build_stateful_image(
+    frame: &CanvasFrame,
+    area: Rect,
+    font_size: (u16, u16),
+    resize_mode: StatefulResizeMode,
+) -> Result<DynamicImage, String> {
+    let Some(img) = image::RgbImage::from_raw(
+        u32::from(frame.width),
+        u32::from(frame.height),
+        frame.pixels.as_ref().clone(),
+    ) else {
+        return Err("invalid preview frame length".to_string());
+    };
+
+    let image = DynamicImage::ImageRgb8(img);
+    if resize_mode != StatefulResizeMode::Cover || area.width == 0 || area.height == 0 {
+        return Ok(image);
+    }
+
+    let target_width = u32::from(area.width) * u32::from(font_size.0.max(1));
+    let target_height = u32::from(area.height) * u32::from(font_size.1.max(1));
+    if target_width == 0 || target_height == 0 {
+        return Ok(image);
+    }
+
+    let (source_width, source_height) = image.dimensions();
+    if source_width == target_width && source_height == target_height {
+        return Ok(image);
+    }
+
+    Ok(image.resize_to_fill(target_width, target_height, FilterType::Triangle))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DrawBackpressure, PreviewPolicy, PreviewTransport};
+    use super::{
+        DrawBackpressure, PreviewPolicy, PreviewTransport, StatefulResizeMode,
+        build_stateful_image, primary_resize_mode,
+    };
     use crate::state::CanvasFrame;
     use ratatui::layout::Rect;
     use ratatui_image::picker::ProtocolType;
@@ -1052,6 +1176,40 @@ mod tests {
             ),
             Duration::from_millis(33)
         );
+    }
+
+    #[test]
+    fn kitty_primary_uses_cover_resize_mode() {
+        assert_eq!(
+            primary_resize_mode(PreviewTransport::Primary, ProtocolType::Kitty),
+            StatefulResizeMode::Cover
+        );
+        assert_eq!(
+            primary_resize_mode(PreviewTransport::Primary, ProtocolType::Halfblocks),
+            StatefulResizeMode::Scale
+        );
+    }
+
+    #[test]
+    fn cover_resize_prep_scales_to_exact_target_pixels() {
+        let frame = CanvasFrame {
+            frame_number: 1,
+            timestamp_ms: 0,
+            width: 4,
+            height: 2,
+            pixels: Arc::new(vec![255; 4 * 2 * 3]),
+        };
+
+        let image = build_stateful_image(
+            &frame,
+            Rect::new(0, 0, 2, 2),
+            (2, 2),
+            StatefulResizeMode::Cover,
+        )
+        .expect("cover image should build");
+
+        assert_eq!(image.width(), 4);
+        assert_eq!(image.height(), 4);
     }
 
     #[test]

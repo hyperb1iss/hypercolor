@@ -1,6 +1,7 @@
 //! REST client for the Hypercolor daemon HTTP API.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use futures_util::stream::{self, StreamExt};
@@ -8,11 +9,13 @@ use hypercolor_types::effect::{
     ControlDefinition as ApiControlDefinition, ControlType as ApiControlType,
     ControlValue as ApiControlValue, PresetTemplate as ApiPresetTemplate,
 };
+use reqwest::StatusCode;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::state::{
-    ControlDefinition, ControlValue, DaemonState, DeviceSummary, EffectSummary, PresetTemplate,
+    CanvasFrame, ControlDefinition, ControlValue, DaemonState, DeviceSummary, EffectSummary,
+    PresetTemplate, SimulatedDisplaySummary,
 };
 
 /// HTTP client for the daemon REST API.
@@ -104,6 +107,38 @@ impl DaemonClient {
     pub async fn get_devices(&self) -> Result<Vec<DeviceSummary>> {
         let response: DeviceListResponse = self.get_data("/devices").await?;
         Ok(response.items.into_iter().map(map_device_summary).collect())
+    }
+
+    /// Fetch all configured virtual display simulators.
+    pub async fn get_simulated_displays(&self) -> Result<Vec<SimulatedDisplaySummary>> {
+        self.get_data("/simulators/displays").await
+    }
+
+    /// Fetch the latest rendered frame for a virtual display simulator.
+    pub async fn get_simulated_display_frame(&self, simulator_id: &str) -> Result<Option<CanvasFrame>> {
+        let url = format!(
+            "{}/api/v1/simulators/displays/{simulator_id}/frame",
+            self.base_url
+        );
+        let response = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("Failed to fetch simulator frame for {simulator_id}"))?;
+
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Simulator frame request failed ({status}): {body}");
+        }
+
+        let bytes = response.bytes().await?;
+        decode_simulated_display_frame(bytes.as_ref()).map(Some)
     }
 
     /// Fetch the favorites list (effect IDs).
@@ -402,6 +437,26 @@ fn map_device_summary(device: ApiDeviceSummary) -> DeviceSummary {
         state: device.status,
         fps: None,
     }
+}
+
+fn decode_simulated_display_frame(bytes: &[u8]) -> Result<CanvasFrame> {
+    let image = image::load_from_memory(bytes).context("Failed to decode simulator preview image")?;
+    let rgb = image.to_rgb8();
+    let width = rgb.width();
+    let height = rgb.height();
+
+    if width > u32::from(u16::MAX) || height > u32::from(u16::MAX) {
+        anyhow::bail!("Simulator preview dimensions exceed TUI limits: {width}x{height}");
+    }
+
+    #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+    Ok(CanvasFrame {
+        frame_number: 0,
+        timestamp_ms: 0,
+        width: width as u16,
+        height: height as u16,
+        pixels: Arc::new(rgb.into_raw()),
+    })
 }
 
 async fn ensure_success(response: reqwest::Response, context: &str) -> Result<()> {

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::screen::ScreenId;
 use crate::state::{
     CanvasFrame, ControlValue, DaemonState, DeviceSummary, EffectSummary, Notification,
-    SpectrumSnapshot,
+    PreviewSource, SimulatedDisplaySummary, SpectrumSnapshot,
 };
 
 /// Every state change in the TUI flows through an Action.
@@ -47,10 +47,19 @@ pub enum Action {
     EffectsUpdated(Arc<Vec<EffectSummary>>),
     /// Device list refreshed.
     DevicesUpdated(Arc<Vec<DeviceSummary>>),
+    /// Virtual display simulator list refreshed.
+    SimulatedDisplaysUpdated(Arc<Vec<SimulatedDisplaySummary>>),
     /// Favorites list refreshed.
     FavoritesUpdated(Arc<Vec<String>>),
     /// New canvas frame received (binary WS).
     CanvasFrameReceived(Arc<CanvasFrame>),
+    /// New simulator-backed preview frame received.
+    SimulatorFrameUpdated {
+        simulator_id: String,
+        frame: Arc<CanvasFrame>,
+    },
+    /// Selected simulator has no preview frame available.
+    SimulatorFrameCleared(String),
     /// New spectrum snapshot received (binary WS).
     SpectrumUpdated(Arc<SpectrumSnapshot>),
 
@@ -87,6 +96,8 @@ pub enum Action {
     CycleMotionSensitivity,
     /// Toggle fullscreen canvas preview.
     ToggleFullscreenPreview,
+    /// Switch the active preview source.
+    SetPreviewSource(PreviewSource),
     /// Show a transient notification.
     Notify(Notification),
     /// Dismiss the current notification.

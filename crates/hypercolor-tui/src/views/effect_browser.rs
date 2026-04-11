@@ -15,9 +15,12 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::action::Action;
 use crate::component::Component;
-use crate::state::{CanvasPreviewState, ControlDefinition, ControlValue, EffectSummary};
+use crate::state::{
+    CanvasPreviewState, ControlDefinition, ControlValue, EffectSummary, PreviewSource,
+    SimulatedDisplaySummary,
+};
 use crate::widgets::{
-    ColorPickerPopup, ParamSlider, Split, SplitDirection, aspect_fit, hsl_to_rgb, rgb_to_hsl,
+    ColorPickerPopup, ParamSlider, Split, SplitDirection, hsl_to_rgb, rgb_to_hsl,
 };
 
 // ── SilkCircuit Neon palette ───────────────────────────────────────────
@@ -70,6 +73,10 @@ pub struct EffectBrowserView {
 
     // Canvas preview
     canvas_frame: Option<CanvasPreviewState>,
+    simulators: Vec<SimulatedDisplaySummary>,
+    preview_source: PreviewSource,
+    simulator_frame: Option<CanvasPreviewState>,
+    simulator_frame_id: Option<String>,
 
     // Control interaction state
     control_values: HashMap<String, ControlValue>,
@@ -120,6 +127,10 @@ impl EffectBrowserView {
             search_active: false,
             search_query: String::new(),
             canvas_frame: None,
+            simulators: Vec::new(),
+            preview_source: PreviewSource::Canvas,
+            simulator_frame: None,
+            simulator_frame_id: None,
             control_values: HashMap::new(),
             selected_control: 0,
             color_picker: None,
@@ -177,6 +188,69 @@ impl EffectBrowserView {
 
     fn selected_effect(&self) -> Option<&EffectSummary> {
         self.effects.get(self.selected_index)
+    }
+
+    fn preview_sources(&self) -> Vec<PreviewSource> {
+        let mut sources = vec![PreviewSource::Canvas];
+        sources.extend(
+            self.simulators
+                .iter()
+                .filter(|simulator| simulator.enabled)
+                .map(|simulator| PreviewSource::Simulator(simulator.id.clone())),
+        );
+        sources
+    }
+
+    fn next_preview_source(&self, forward: bool) -> Option<PreviewSource> {
+        let sources = self.preview_sources();
+        if sources.len() <= 1 {
+            return None;
+        }
+
+        let current_index = sources
+            .iter()
+            .position(|source| source == &self.preview_source)
+            .unwrap_or(0);
+        let next_index = if forward {
+            (current_index + 1) % sources.len()
+        } else if current_index == 0 {
+            sources.len().saturating_sub(1)
+        } else {
+            current_index - 1
+        };
+
+        sources.get(next_index).cloned()
+    }
+
+    fn preview_source_label(&self) -> String {
+        match &self.preview_source {
+            PreviewSource::Canvas => "Canvas".to_string(),
+            PreviewSource::Simulator(id) => self
+                .simulators
+                .iter()
+                .find(|simulator| simulator.id == *id)
+                .map_or_else(|| "Simulator".to_string(), |simulator| simulator.name.clone()),
+        }
+    }
+
+    fn current_preview_frame(&self) -> Option<CanvasPreviewState> {
+        match &self.preview_source {
+            PreviewSource::Canvas => self.canvas_frame,
+            PreviewSource::Simulator(id) => self
+                .simulator_frame
+                .filter(|_| self.simulator_frame_id.as_deref() == Some(id.as_str())),
+        }
+    }
+
+    fn current_preview_placeholder(&self) -> &'static str {
+        match self.preview_source {
+            PreviewSource::Canvas => "No canvas data yet",
+            PreviewSource::Simulator(_) => "Waiting for simulator frame",
+        }
+    }
+
+    fn sync_preview_source(&mut self, source: PreviewSource) {
+        self.preview_source = source;
     }
 
     /// Load control defaults for the selected effect.
@@ -585,6 +659,8 @@ impl EffectBrowserView {
                 self.focus_pane = FocusPane::List;
                 None
             }
+            KeyCode::Left => self.next_preview_source(false).map(Action::SetPreviewSource),
+            KeyCode::Right => self.next_preview_source(true).map(Action::SetPreviewSource),
             KeyCode::Home => {
                 self.selected_preset = 0;
                 None
@@ -836,9 +912,21 @@ impl EffectBrowserView {
     fn render_preview_pane(&self, frame: &mut Frame, area: Rect) {
         let is_focused = self.focus_pane == FocusPane::Preview;
         let border_color = if is_focused { NEON_CYAN } else { BORDER_DIM };
+        let source_style = if is_focused {
+            Style::default()
+                .fg(ELECTRIC_YELLOW)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(DIM_GRAY)
+        };
+        let source_badge = if self.preview_sources().len() > 1 {
+            format!(" \u{25C2} {} \u{25B8} ", self.preview_source_label())
+        } else {
+            format!(" {} ", self.preview_source_label())
+        };
 
         // Title shows the effect name (or "Preview" when nothing selected)
-        let title = self.selected_effect().map_or_else(
+        let mut title = self.selected_effect().map_or_else(
             || {
                 vec![Span::styled(
                     " Preview ",
@@ -872,6 +960,7 @@ impl EffectBrowserView {
                 ]
             },
         );
+        title.push(Span::styled(source_badge, source_style));
 
         let block = Block::default()
             .title(Line::from(title))
@@ -900,20 +989,32 @@ impl EffectBrowserView {
     }
 
     fn render_canvas_preview(&self, frame: &mut Frame, area: Rect) {
-        if let Some(ref cf) = self.canvas_frame {
-            // Compute the aspect-fit rect for the live canvas. Cache it for
-            // App's image overlay (ratatui-image protocol).
-            let fitted = aspect_fit(cf.width, cf.height, area);
-            self.preview_inner.set(Some(fitted));
+        if self.current_preview_frame().is_some() {
+            self.preview_inner.set(Some(area));
             // Don't render anything here — App will overlay the live image
             // protocol on the cached rect.
         } else {
             self.preview_inner.set(None);
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "\u{2584}".repeat(usize::from(area.width)),
+                    Style::default().fg(Color::Rgb(30, 30, 50)),
+                ))),
+                area,
+            );
+
+            let message = self.current_preview_placeholder();
+            let message_width = (message.len() as u16).min(area.width);
+            let message_x = area.x + (area.width.saturating_sub(message_width)) / 2;
+            let message_y = area.y + area.height / 2;
             let placeholder = Paragraph::new(Line::from(Span::styled(
-                "\u{2584}".repeat(usize::from(area.width)),
-                Style::default().fg(Color::Rgb(30, 30, 50)),
+                message,
+                Style::default().fg(DIM_GRAY),
             )));
-            frame.render_widget(placeholder, area);
+            frame.render_widget(
+                placeholder,
+                Rect::new(message_x, message_y, message_width, 1),
+            );
         }
     }
 
@@ -1456,8 +1557,38 @@ impl Component for EffectBrowserView {
             Action::CanvasFrameReceived(cf) => {
                 self.canvas_frame = Some(CanvasPreviewState::from(cf.as_ref()));
             }
+            Action::SimulatedDisplaysUpdated(simulators) => {
+                self.simulators.clone_from(simulators.as_ref());
+                if let Some(simulator_id) = self.preview_source.simulator_id()
+                    && !self
+                        .simulators
+                        .iter()
+                        .any(|simulator| simulator.enabled && simulator.id == simulator_id)
+                {
+                    self.sync_preview_source(PreviewSource::Canvas);
+                    return Ok(Some(Action::SetPreviewSource(PreviewSource::Canvas)));
+                }
+            }
+            Action::SetPreviewSource(source) => {
+                self.sync_preview_source(source.clone());
+            }
+            Action::SimulatorFrameUpdated {
+                simulator_id,
+                frame,
+            } => {
+                self.simulator_frame = Some(CanvasPreviewState::from(frame.as_ref()));
+                self.simulator_frame_id = Some(simulator_id.clone());
+            }
+            Action::SimulatorFrameCleared(simulator_id) => {
+                if self.simulator_frame_id.as_deref() == Some(simulator_id.as_str()) {
+                    self.simulator_frame = None;
+                    self.simulator_frame_id = None;
+                }
+            }
             Action::DaemonDisconnected(_) => {
                 self.canvas_frame = None;
+                self.simulator_frame = None;
+                self.simulator_frame_id = None;
             }
             _ => {}
         }
