@@ -21,6 +21,8 @@ uniform int iColorMode;
 // 0=Dopamine 1=Serotonin 2=Norepinephrine 3=Melatonin 4=Cortisol
 // 5=Hyperfocus 6=Bubblegum 7=Neon 8=Void 9=Mono
 
+const float PI = 3.14159265359;
+
 // ── Helpers ──────────────────────────────────────────────────────
 
 float hash11(float p) {
@@ -207,12 +209,19 @@ void mainImage(out vec4 color, vec2 fragCoord) {
     float breath = 1.0 + sin(t * 0.47) * 0.03 + sin(t * 0.83) * 0.015;
     warpedR *= breath;
 
-    // Layered ring frequencies with evolving angular modulation
-    float rings1 = sin(12.0 * warpedR - 3.5 * t + sin(warpedA * 2.0 + t * 0.1) * 0.3);
-    float rings2 = sin(7.3 * warpedR + 2.1 * t + warpedA * 0.4) * 0.5;
-    float rings3 = sin(19.0 * warpedR - 5.2 * t + sin(t * 0.3) * warpedA * 0.5) * 0.25;
-    float rings4 = sin(4.7 * warpedR + 1.3 * t + n1 * 3.0) * 0.3;
-    float rings = rings1 + rings2 + rings3 + rings4;
+    // Layered ring frequencies with seam-safe angular modulation.
+    // Any raw `atan` branch cut lives on the left edge, so angular terms
+    // must stay 2π-periodic in the original angle to avoid a visible pinch.
+    float angularFlow = sin(warpedA + t * 0.21 + n2 * 1.4);
+    float angularPetals = sin(3.0 * warpedA - t * 0.16 + n3 * 1.8);
+    float angularLattice = cos(2.0 * warpedA + t * 0.12 + n1 * 2.2);
+
+    float rings1 = sin(12.0 * warpedR - 3.5 * t + angularLattice * 0.32);
+    float rings2 = sin(7.3 * warpedR + 2.1 * t + angularFlow * 0.75 + angularPetals * 0.25) * 0.5;
+    float rings3 = sin(17.0 * warpedR - 4.4 * t + angularPetals * 0.7 + angularLattice * 0.3) * 0.24;
+    float rings4 = sin(5.4 * warpedR + 1.8 * t + angularFlow * 1.2 + n1 * 2.4) * 0.32;
+    float ringPulse = sin(9.2 * warpedR - 2.6 * t + angularPetals * 1.15 - angularFlow * 0.55);
+    float rings = rings1 + rings2 + rings3 + rings4 + ringPulse * 0.18;
 
     // Base color
     float hueT = fract(0.62 + 0.12 * t + 0.15 * rings + n1 * 0.06);
@@ -230,6 +239,20 @@ void mainImage(out vec4 color, vec2 fragCoord) {
     ringBright += pow(max(0.0, rings4 * 2.0), 2.0) * 0.04;
     float ringZone = smoothstep(0.0, focusR * 1.3, r) * smoothstep(0.95, focusR * 0.5, r);
     base += palette(hueT + 0.15, iColorMode) * ringBright * ringZone * energy * 0.6;
+
+    float haloRadius = focusR * (1.02 + 0.16 * sin(t * 0.9 + angularPetals));
+    float haloWidth = mix(0.04, 0.11, focusR);
+    float halo = exp(-pow((r - haloRadius) / haloWidth, 2.0));
+    float haloPulse = 0.55 + 0.45 * sin(t * 1.35 - warpedR * 13.0 + angularFlow * PI);
+    base += palette(hueT + 0.28 + angularFlow * 0.04, iColorMode)
+            * halo
+            * haloPulse
+            * energy
+            * (0.08 + 0.10 * focusStr);
+
+    float orbitBand = exp(-pow((r - (focusR * 0.72 + 0.03 * angularFlow + 0.02 * sin(t * 0.6))) / 0.09, 2.0));
+    float orbitSpark = pow(max(0.0, 0.5 + 0.5 * sin(2.0 * warpedA + 10.0 * warpedR - 2.2 * t)), 4.0);
+    base += palette(hueT + 0.42, iColorMode) * orbitBand * orbitSpark * energy * 0.11 * dynamism;
 
     // Peripheral desaturation + darkening
     float periph = smoothstep(focusR * 0.8, 0.75, r);
@@ -251,7 +274,7 @@ void mainImage(out vec4 color, vec2 fragCoord) {
     // Dopamine sparks — follow drifting center
     vec2 sparkCtr = center + vec2(drift.x * iResolution.y / iResolution.x, drift.y);
     float sp = sparks(uv, sparkCtr, t, sparkDens, para);
-    vec3 sparkCol = palette(hueT + 0.1, iColorMode);
+    vec3 sparkCol = palette(hueT + 0.1 + angularFlow * 0.03, iColorMode);
     base += sparkCol * sp * (0.7 + 0.6 * sat);
 
     // Reinhard tone mapping to prevent blowout

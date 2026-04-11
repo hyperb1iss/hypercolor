@@ -20,24 +20,24 @@ export default effect(
                 'Mono',
             ],
             {
-                default: 'Dopamine',
+                default: 'Hyperfocus',
                 group: 'Color',
                 tooltip: 'Color palette — each named for a neurotransmitter or mental state',
             },
         ),
-        energy: num('Energy', [10, 200], 120, {
+        energy: num('Energy', [10, 200], 145, {
             group: 'Color',
             tooltip: 'Brightness/energy of the effect',
         }),
-        focusRadius: num('Focus Radius', [5, 100], 28, {
+        focusRadius: num('Focus Radius', [5, 100], 24, {
             group: 'Focus',
             tooltip: 'Radius of the sharp center region',
         }),
-        focusStrength: num('Focus Strength', [0, 200], 120, {
+        focusStrength: num('Focus Strength', [0, 200], 145, {
             group: 'Focus',
             tooltip: 'Center boost/magnification',
         }),
-        noise: num('Noise', [0, 200], 40, {
+        noise: num('Noise', [0, 200], 24, {
             group: 'Motion',
             tooltip: 'Film/noise amount, stronger in periphery',
         }),
@@ -45,26 +45,26 @@ export default effect(
             group: 'Motion',
             tooltip: 'Executive dysfunction; reduces motion and spark speed',
         }),
-        peripheralBlur: num('Peripheral Blur', [0, 200], 60, {
+        peripheralBlur: num('Peripheral Blur', [0, 200], 105, {
             group: 'Focus',
             tooltip: 'How much the periphery fades/softens',
         }),
-        saturation: num('Saturation', [0, 200], 120, {
+        saturation: num('Saturation', [0, 200], 150, {
             group: 'Color',
             tooltip: 'Color saturation',
         }),
-        sparkDensity: num('Spark Density', [0, 200], 80, {
+        sparkDensity: num('Spark Density', [0, 200], 110, {
             group: 'Motion',
             tooltip: 'Amount of dopamine sparks',
         }),
-        tunnelSpeed: num('Tunnel Speed', [0, 200], 70, {
+        tunnelSpeed: num('Tunnel Speed', [0, 200], 95, {
             group: 'Motion',
             tooltip: 'Motion speed of the tunnel rings',
         }),
     },
     {
         description:
-            'Lock into the tunnel — dopamine sparks ignite through dissolving periphery as the world collapses to a single blazing point',
+            'Lock into the tunnel — dopamine sparks, breathing halos, and orbital pulses collapse the world to a single blazing point',
         presets: [
             {
                 controls: {
@@ -110,8 +110,8 @@ export default effect(
                     paralysis: 10,
                     peripheralBlur: 200,
                     saturation: 150,
-                    sparkDensity: 100,
-                    tunnelSpeed: 50,
+                    sparkDensity: 120,
+                    tunnelSpeed: 72,
                 },
                 description:
                     'Six hours vanished — the center is absolute, peripheral reality no longer exists, time has no meaning',
@@ -144,8 +144,8 @@ export default effect(
                     paralysis: 15,
                     peripheralBlur: 90,
                     saturation: 120,
-                    sparkDensity: 65,
-                    tunnelSpeed: 80,
+                    sparkDensity: 90,
+                    tunnelSpeed: 108,
                 },
                 description:
                     'The rare equilibrium — focus is wide but clear, energy is sustained, the tunnel breathes in perfect rhythm',
@@ -162,7 +162,7 @@ export default effect(
                     peripheralBlur: 50,
                     saturation: 140,
                     sparkDensity: 40,
-                    tunnelSpeed: 35,
+                    tunnelSpeed: 48,
                 },
                 description:
                     'Soft warmth after the storm — the tunnel opens wide, colors cool to seafoam and teal, everything gentles',
