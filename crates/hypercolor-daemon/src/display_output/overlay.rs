@@ -4,7 +4,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::anyhow;
 
-use hypercolor_core::blend_math::blend_rgba_pixel;
+use hypercolor_core::blend_math::blend_rgba_pixels_in_place;
 use hypercolor_core::overlay::{
     ClockRenderer, ImageRenderer, OverlayBuffer, OverlayError, OverlayInput, OverlayRenderer,
     OverlaySize, SensorRenderer, TextRenderer,
@@ -579,31 +579,24 @@ fn blend_slot_into_staging(
         return;
     }
 
+    let row_width = usize::try_from(clip_right - clip_left).unwrap_or_default();
+    let row_bytes = row_width.saturating_mul(4);
+    let src_x = u32::try_from(clip_left - rect.x).unwrap_or_default();
+
     for y in clip_top..clip_bottom {
-        for x in clip_left..clip_right {
-            let dst_offset = pixel_offset(
-                staging.width,
-                u32::try_from(x).unwrap_or_default(),
-                u32::try_from(y).unwrap_or_default(),
-            );
-            let src_x = u32::try_from(x - rect.x).unwrap_or_default();
-            let src_y = u32::try_from(y - rect.y).unwrap_or_default();
-            let src_offset = pixel_offset(buffer.width, src_x, src_y);
-            let dst = [
-                staging.pixels[dst_offset],
-                staging.pixels[dst_offset + 1],
-                staging.pixels[dst_offset + 2],
-                staging.pixels[dst_offset + 3],
-            ];
-            let src = [
-                buffer.pixels[src_offset],
-                buffer.pixels[src_offset + 1],
-                buffer.pixels[src_offset + 2],
-                buffer.pixels[src_offset + 3],
-            ];
-            let blended = blend_rgba_pixel(dst, src, blend_mode, opacity);
-            staging.pixels[dst_offset..dst_offset + 4].copy_from_slice(&blended);
-        }
+        let dst_offset = pixel_offset(
+            staging.width,
+            u32::try_from(clip_left).unwrap_or_default(),
+            u32::try_from(y).unwrap_or_default(),
+        );
+        let src_offset = pixel_offset(
+            buffer.width,
+            src_x,
+            u32::try_from(y - rect.y).unwrap_or_default(),
+        );
+        let dst_row = &mut staging.pixels[dst_offset..dst_offset + row_bytes];
+        let src_row = &buffer.pixels[src_offset..src_offset + row_bytes];
+        blend_rgba_pixels_in_place(dst_row, src_row, blend_mode, opacity);
     }
 }
 
