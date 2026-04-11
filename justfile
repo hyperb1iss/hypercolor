@@ -162,6 +162,10 @@ overlay-demo *args='':
 simulator-demo *args='':
     ./scripts/simulator-demo.sh {{ args }}
 
+# Create or update a simulator and wait for its frame endpoint to produce image data
+simulator-smoke *args='':
+    ./scripts/simulator-demo.sh --wait-frame {{ args }}
+
 # Report whether connected displays satisfy Spec 40's Wave 2 hardware verification matrix
 overlay-matrix:
     ./scripts/check-display-overlay-matrix.sh

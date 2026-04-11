@@ -16,19 +16,27 @@ NAME="Preview Simulator"
 WIDTH=480
 HEIGHT=480
 CIRCULAR=true
-EFFECT_ID="solid_color"
+EFFECT_ID=""
+WAIT_FRAME=false
+FRAME_OUT=""
+TIMEOUT_SECONDS=10
 
 usage() {
   cat <<'EOF'
-Usage: scripts/simulator-demo.sh [--name NAME] [--width PX] [--height PX] [--square|--circle] [--effect ID_OR_NAME]
+Usage: scripts/simulator-demo.sh [--name NAME] [--width PX] [--height PX] [--square|--circle] [--effect ID_OR_NAME] [--wait-frame] [--frame-out PATH] [--timeout SECONDS]
 
 Creates or updates a virtual display simulator through the local daemon API,
 optionally applies an effect, and prints a ready-to-open browser preview URL.
+When requested, it can also wait for the frame endpoint to produce image bytes
+and save that frame for CI or visual inspection. If `--effect` is omitted, the
+helper auto-selects the first native effect, falling back to the first listed
+effect.
 
 Examples:
   scripts/simulator-demo.sh
   scripts/simulator-demo.sh --name "Square Preview" --square
   scripts/simulator-demo.sh --name "Wide Preview" --width 640 --height 240 --effect rainbow
+  scripts/simulator-demo.sh --wait-frame --frame-out /tmp/simulator.jpg
 EOF
 }
 
@@ -113,6 +121,53 @@ resolve_effect_id() {
   ' <<<"$effects_json" | head -n1
 }
 
+resolve_default_effect_id() {
+  local effects_json="$1"
+  jq -r '
+    (
+      [.data.items[] | select(.source == "native") | .id][0]
+      // .data.items[0].id
+    ) // empty
+  ' <<<"$effects_json"
+}
+
+wait_for_frame() {
+  local frame_url="$1"
+  local timeout_seconds="$2"
+  local frame_out="${3-}"
+  local deadline=$((SECONDS + timeout_seconds))
+  local tmp
+  local status
+
+  while (( SECONDS <= deadline )); do
+    tmp="$(mktemp)"
+    status="$(
+      curl --silent --show-error \
+        --output "$tmp" \
+        --write-out '%{http_code}' \
+        "$frame_url"
+    )"
+
+    if [[ "$status" == "200" && -s "$tmp" ]]; then
+      if [[ -n "$frame_out" ]]; then
+        mkdir -p "$(dirname "$frame_out")"
+        cp "$tmp" "$frame_out"
+        rm -f "$tmp"
+        log_success "Saved simulator frame to ${frame_out}"
+      else
+        rm -f "$tmp"
+        log_success "Simulator frame is available"
+      fi
+      return 0
+    fi
+
+    rm -f "$tmp"
+    sleep 0.25
+  done
+
+  return 1
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --name)
@@ -139,6 +194,19 @@ while [[ $# -gt 0 ]]; do
       EFFECT_ID="${2-}"
       shift 2
       ;;
+    --wait-frame)
+      WAIT_FRAME=true
+      shift
+      ;;
+    --frame-out)
+      FRAME_OUT="${2-}"
+      WAIT_FRAME=true
+      shift 2
+      ;;
+    --timeout)
+      TIMEOUT_SECONDS="${2-}"
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
@@ -156,6 +224,7 @@ need_cmd mktemp
 [[ -n "$NAME" ]] || die "simulator name must not be empty"
 [[ "$WIDTH" =~ ^[0-9]+$ ]] || die "width must be a positive integer"
 [[ "$HEIGHT" =~ ^[0-9]+$ ]] || die "height must be a positive integer"
+[[ "$TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || die "timeout must be a positive integer"
 
 log_step "Checking daemon health at ${BASE_URL}"
 curl --silent --show-error --fail "${BASE_URL}/health" >/dev/null \
@@ -200,19 +269,33 @@ simulator_width="$(jq -r '.data.width' <<<"$simulator_json")"
 simulator_height="$(jq -r '.data.height' <<<"$simulator_json")"
 simulator_circular="$(jq -r '.data.circular' <<<"$simulator_json")"
 
-if [[ -n "$EFFECT_ID" ]]; then
-  log_step "Resolving effect ${EFFECT_ID}"
+if [[ -n "$EFFECT_ID" || "$WAIT_FRAME" == true ]]; then
+  log_step "Loading effect inventory"
   effects_json="$(api_json GET "${BASE_URL}/api/v1/effects")"
-  resolved_effect_id="$(resolve_effect_id "$EFFECT_ID" "$effects_json")"
-  [[ -n "$resolved_effect_id" ]] || die "effect not found: ${EFFECT_ID}"
+  if [[ -n "$EFFECT_ID" ]]; then
+    log_step "Resolving effect ${EFFECT_ID}"
+    resolved_effect_id="$(resolve_effect_id "$EFFECT_ID" "$effects_json")"
+    [[ -n "$resolved_effect_id" ]] || die "effect not found: ${EFFECT_ID}"
+  else
+    resolved_effect_id="$(resolve_default_effect_id "$effects_json")"
+    [[ -n "$resolved_effect_id" ]] || die "no effects are available to render the simulator"
+    log_step "Auto-selected effect ${resolved_effect_id}"
+  fi
 
   log_step "Applying effect ${resolved_effect_id}"
   api_json POST "${BASE_URL}/api/v1/effects/${resolved_effect_id}/apply" '{}' >/dev/null
 fi
 
 preview_url="${BASE_URL}/preview?mode=simulator&display=$(urlencode "$simulator_id")"
+frame_url="${BASE_URL}/api/v1/simulators/displays/${simulator_id}/frame"
 
 log_success "Simulator ready: ${simulator_name} [${simulator_id}] ${simulator_width}x${simulator_height} circular=${simulator_circular}"
 log_info "Browser preview: ${preview_url}"
 log_info "Canvas preview: ${BASE_URL}/preview"
-log_info "Frame endpoint: ${BASE_URL}/api/v1/simulators/displays/${simulator_id}/frame"
+log_info "Frame endpoint: ${frame_url}"
+
+if [[ "$WAIT_FRAME" == true ]]; then
+  log_step "Waiting up to ${TIMEOUT_SECONDS}s for a simulator frame"
+  wait_for_frame "$frame_url" "$TIMEOUT_SECONDS" "$FRAME_OUT" \
+    || die "timed out waiting for simulator frame at ${frame_url}"
+fi

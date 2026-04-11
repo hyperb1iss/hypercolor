@@ -403,7 +403,9 @@ physical LCD hardware.
 
 `just simulator-demo` landed on 2026-04-11 as the first tooling helper in this
 wave. It creates or updates a simulator, applies an effect, and prints a
-browser preview URL.
+browser preview URL. The helper now also supports `--wait-frame` and
+`--frame-out <path>` so CI or local smoke checks can block until the simulator
+frame endpoint returns image bytes and optionally save the rendered frame.
 
 ---
 
