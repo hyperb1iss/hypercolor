@@ -19,7 +19,6 @@ const JPEG_SUBSAMP: TurboJpegSubsamp = TurboJpegSubsamp::Sub2x2;
 
 pub(super) struct DisplayEncodeState {
     pub rgb_buffer: Vec<u8>,
-    pub overlay_base_rgb_buffer: Vec<u8>,
     pub jpeg_buffer: Vec<u8>,
     pub jpeg_compressor: TurboJpegCompressor,
     pub axis_plan: Option<PreparedDisplayPlan>,
@@ -40,7 +39,6 @@ impl DisplayEncodeState {
 
         Ok(Self {
             rgb_buffer: Vec::new(),
-            overlay_base_rgb_buffer: Vec::new(),
             jpeg_buffer: Vec::new(),
             jpeg_compressor,
             axis_plan: None,
@@ -95,15 +93,14 @@ pub(super) fn encode_canvas_frame(
     encode_rgb_to_jpeg(geometry, encode_state)
 }
 
-pub(super) fn render_canvas_frame_rgb_into(
+pub(super) fn render_canvas_frame_rgb(
     source: &CanvasFrame,
     viewport: &DisplayViewport,
     geometry: &DisplayGeometry,
-    rgb_buffer: &mut Vec<u8>,
-    axis_plan: &mut Option<PreparedDisplayPlan>,
+    encode_state: &mut DisplayEncodeState,
 ) {
     if geometry.width == 0 || geometry.height == 0 {
-        rgb_buffer.clear();
+        encode_state.rgb_buffer.clear();
         return;
     }
 
@@ -112,8 +109,8 @@ pub(super) fn render_canvas_frame_rgb_into(
         viewport,
         geometry.width,
         geometry.height,
-        rgb_buffer,
-        axis_plan,
+        &mut encode_state.rgb_buffer,
+        &mut encode_state.axis_plan,
         None,
     );
 }
