@@ -3,7 +3,9 @@ use std::sync::mpsc;
 
 use anyhow::{Context, Result};
 use hypercolor_core::spatial::PreparedZonePlan;
-use hypercolor_core::types::canvas::{BYTES_PER_PIXEL, Canvas, PublishedSurface};
+use hypercolor_core::types::canvas::{
+    BYTES_PER_PIXEL, Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor,
+};
 use hypercolor_types::event::ZoneColors;
 
 use super::{
@@ -56,6 +58,7 @@ struct GpuCompositorSurfaceSet {
     source: GpuCompositorTexture,
     bind_groups: GpuCompositorBindGroups,
     readback: wgpu::Buffer,
+    readback_surfaces: RenderSurfacePool,
     front_contents: Option<CachedSourceUpload>,
     back_contents: Option<CachedSourceUpload>,
     cached_source_upload: Option<CachedSourceUpload>,
@@ -330,15 +333,17 @@ impl GpuSparkleFlinger {
             texture_extent(plan.width, plan.height),
         );
 
-        let bytes = read_back_texture(
+        let readback_buffer = &surfaces.readback;
+        let readback_surfaces = &mut surfaces.readback_surfaces;
+        let sampling_surface = read_back_texture_into_surface(
             &self.device,
-            &surfaces.readback,
+            readback_buffer,
             plan.width,
             plan.height,
             surfaces.padded_bytes_per_row,
             self.queue.submit(Some(encoder.finish())),
+            readback_surfaces,
         )?;
-        let sampling_surface = PublishedSurface::from_vec(bytes, plan.width, plan.height, 0, 0);
         if let Some(key) = readback_key {
             self.cached_readback_surface = Some(CachedReadbackSurface {
                 key,
@@ -446,15 +451,17 @@ impl GpuSparkleFlinger {
             texture_extent(width, height),
         );
 
-        let bytes = read_back_texture(
+        let readback_buffer = &surfaces.readback;
+        let readback_surfaces = &mut surfaces.readback_surfaces;
+        let sampling_surface = read_back_texture_into_surface(
             &self.device,
-            &surfaces.readback,
+            readback_buffer,
             width,
             height,
             surfaces.padded_bytes_per_row,
             self.queue.submit(Some(encoder.finish())),
+            readback_surfaces,
         )?;
-        let sampling_surface = PublishedSurface::from_vec(bytes, width, height, 0, 0);
         if let Some(key) = readback_key {
             self.cached_readback_surface = Some(CachedReadbackSurface {
                 key,
@@ -588,6 +595,7 @@ impl GpuCompositorSurfaceSet {
             back,
             source,
             readback,
+            readback_surfaces: RenderSurfacePool::new(SurfaceDescriptor::rgba8888(width, height)),
             front_contents: None,
             back_contents: None,
             cached_source_upload: None,
@@ -874,14 +882,15 @@ fn set_texture_contents(
     }
 }
 
-fn read_back_texture(
+fn read_back_texture_into_surface(
     device: &wgpu::Device,
     buffer: &wgpu::Buffer,
     width: u32,
     height: u32,
     padded_bytes_per_row: u32,
     submission_index: wgpu::SubmissionIndex,
-) -> Result<Vec<u8>> {
+    surfaces: &mut RenderSurfacePool,
+) -> Result<PublishedSurface> {
     let slice = buffer.slice(..);
     let (sender, receiver) = mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |result| {
@@ -900,25 +909,35 @@ fn read_back_texture(
 
     let mapped = slice.get_mapped_range();
     let unpadded_bytes_per_row = width * BYTES_PER_PIXEL as u32;
-    let bytes = if padded_bytes_per_row == unpadded_bytes_per_row {
-        mapped.to_vec()
+    let mut lease = surfaces
+        .dequeue()
+        .context("GPU readback surface pool should provide a reusable slot")?;
+    let target = lease.canvas_mut().as_rgba_bytes_mut();
+    if padded_bytes_per_row == unpadded_bytes_per_row {
+        target.copy_from_slice(
+            &mapped[..usize::try_from(unpadded_bytes_per_row)
+                .expect("row width should fit in usize")
+                .saturating_mul(height as usize)],
+        );
     } else {
-        let mut bytes = Vec::with_capacity(width as usize * height as usize * BYTES_PER_PIXEL);
-        for row in mapped
-            .chunks(usize::try_from(padded_bytes_per_row).expect("row pitch should fit in usize"))
-            .take(height as usize)
-        {
-            bytes.extend_from_slice(
-                &row[..usize::try_from(unpadded_bytes_per_row)
-                    .expect("row width should fit in usize")],
-            );
+        let row_width = usize::try_from(unpadded_bytes_per_row).expect("row width should fit");
+        let padded_row_width =
+            usize::try_from(padded_bytes_per_row).expect("row pitch should fit in usize");
+        for (target_row, row) in target.chunks_exact_mut(row_width).zip(
+            mapped
+                .chunks(
+                    usize::try_from(padded_bytes_per_row).expect("row pitch should fit in usize"),
+                )
+                .take(height as usize),
+        ) {
+            debug_assert_eq!(row.len(), padded_row_width);
+            target_row.copy_from_slice(&row[..row_width]);
         }
-        bytes
-    };
+    }
     drop(mapped);
     buffer.unmap();
 
-    Ok(bytes)
+    Ok(lease.submit(0, 0))
 }
 
 fn create_compose_bind_group(
@@ -1337,6 +1356,39 @@ mod tests {
         assert_eq!(second_front_upload_count, first_front_upload_count);
         assert_eq!(first_compose_dispatch_count, 1);
         assert_eq!(second_compose_dispatch_count, first_compose_dispatch_count);
+    }
+
+    #[test]
+    fn gpu_compositor_readback_surfaces_are_slot_backed() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                    255, 32, 0, 255,
+                )))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(solid_canvas(Rgba::new(32, 64, 255, 255))),
+                    0.35,
+                ),
+            ],
+        );
+
+        let composed = compositor
+            .compose(&plan, true, true)
+            .expect("GPU composition should materialize a CPU readback surface");
+
+        assert!(
+            composed
+                .sampling_surface
+                .expect("readback should publish a surface")
+                .generation()
+                > 0
+        );
     }
 
     #[test]
