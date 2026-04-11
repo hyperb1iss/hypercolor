@@ -484,7 +484,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
         });
         group.bench_function("gpu_alpha_two_layer_compose_no_readback", |b| {
             b.iter(|| {
-                let composed = sparkleflinger.compose_with_cpu_readback(
+                let composed = sparkleflinger.compose_for_outputs(
                     CompositionPlan::with_layers(
                         CANVAS_WIDTH,
                         CANVAS_HEIGHT,
@@ -493,6 +493,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                             CompositionLayer::alpha_canvas(black_box(overlay.clone()), 0.35),
                         ],
                     ),
+                    false,
                     false,
                 );
                 black_box(composed.bypassed);
@@ -523,7 +524,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
         });
         group.bench_function("gpu_alpha_two_layer_compose_640x480_no_readback", |b| {
             b.iter(|| {
-                let composed = preview_sparkleflinger.compose_with_cpu_readback(
+                let composed = preview_sparkleflinger.compose_for_outputs(
                     CompositionPlan::with_layers(
                         PREVIEW_WIDTH,
                         PREVIEW_HEIGHT,
@@ -535,6 +536,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                             ),
                         ],
                     ),
+                    false,
                     false,
                 );
                 black_box(composed.bypassed);
@@ -573,7 +575,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
         group.bench_function("gpu_compose_and_zone_sample_640x480", |b| {
             b.iter(|| {
                 let composed =
-                    gpu_end_to_end.compose_with_cpu_readback(preview_plan.clone(), false);
+                    gpu_end_to_end.compose_for_outputs(preview_plan.clone(), false, false);
                 black_box(composed.bypassed);
                 assert!(
                     gpu_end_to_end

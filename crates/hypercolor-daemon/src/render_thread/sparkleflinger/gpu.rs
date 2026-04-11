@@ -37,6 +37,7 @@ pub(crate) struct GpuSparkleFlinger {
     spatial_sampler: GpuSpatialSampler,
     surfaces: Option<GpuCompositorSurfaceSet>,
     current_output: Option<GpuCompositorOutputSurface>,
+    cached_composition_key: Option<CachedReadbackKey>,
     cached_readback_surface: Option<CachedReadbackSurface>,
 }
 
@@ -62,6 +63,8 @@ struct GpuCompositorSurfaceSet {
     front_upload_count: usize,
     #[cfg(test)]
     source_upload_count: usize,
+    #[cfg(test)]
+    compose_dispatch_count: usize,
 }
 
 struct GpuCompositorTexture {
@@ -169,6 +172,7 @@ impl GpuSparkleFlinger {
             spatial_sampler,
             surfaces: None,
             current_output: None,
+            cached_composition_key: None,
             cached_readback_surface: None,
         })
     }
@@ -196,13 +200,38 @@ impl GpuSparkleFlinger {
             && layer.is_bypass_candidate()
         {
             self.current_output = None;
+            self.cached_composition_key = None;
             let mut composed =
                 publish_composed_frame(layer.frame.clone().into_render_frame(), true);
             composed.backend = CompositorBackendKind::Gpu;
             return Ok(composed);
         }
 
+        let readback_key = cached_readback_key(plan);
         self.ensure_surface_size(plan.width, plan.height);
+        if let Some(key) = readback_key.as_ref()
+            && self.current_output.is_some()
+            && self.cached_composition_key.as_ref() == Some(key)
+        {
+            if !requires_cpu_sampling_canvas && !requires_preview_surface {
+                return Ok(gpu_composed_without_surfaces());
+            }
+            if let Some(cached) = self.cached_readback_surface.as_ref()
+                && cached.key == *key
+            {
+                return Ok(gpu_composed_from_surface(
+                    cached.surface.clone(),
+                    requires_cpu_sampling_canvas,
+                ));
+            }
+            return self.read_back_current_output_surface(
+                plan.width,
+                plan.height,
+                Some(key.clone()),
+                requires_cpu_sampling_canvas,
+            );
+        }
+
         let surfaces = self
             .surfaces
             .as_mut()
@@ -266,41 +295,21 @@ impl GpuSparkleFlinger {
             GpuCompositorOutputSurface::Back => &surfaces.back.texture,
         };
         self.current_output = Some(current_output);
+        self.cached_composition_key = readback_key.clone();
         if !requires_cpu_sampling_canvas && !requires_preview_surface {
             self.queue.submit(Some(encoder.finish()));
-            return Ok(ComposedFrameSet {
-                sampling_canvas: None,
-                sampling_surface: None,
-                preview_surface: None,
-                bypassed: false,
-                backend: CompositorBackendKind::Gpu,
-            });
+            return Ok(gpu_composed_without_surfaces());
         }
 
-        let readback_key = cached_readback_key(plan);
         if let Some(key) = readback_key.as_ref()
             && let Some(cached) = self.cached_readback_surface.as_ref()
             && cached.key == *key
         {
             self.queue.submit(Some(encoder.finish()));
-            let sampling_surface = cached.surface.clone();
-            if requires_cpu_sampling_canvas {
-                let sampling_canvas = Canvas::from_published_surface(&sampling_surface);
-                return Ok(ComposedFrameSet {
-                    sampling_canvas: Some(sampling_canvas),
-                    sampling_surface: Some(sampling_surface),
-                    preview_surface: None,
-                    bypassed: false,
-                    backend: CompositorBackendKind::Gpu,
-                });
-            }
-            return Ok(ComposedFrameSet {
-                sampling_canvas: None,
-                sampling_surface: None,
-                preview_surface: Some(sampling_surface),
-                bypassed: false,
-                backend: CompositorBackendKind::Gpu,
-            });
+            return Ok(gpu_composed_from_surface(
+                cached.surface.clone(),
+                requires_cpu_sampling_canvas,
+            ));
         }
 
         encoder.copy_texture_to_buffer(
@@ -336,23 +345,10 @@ impl GpuSparkleFlinger {
                 surface: sampling_surface.clone(),
             });
         }
-        if requires_cpu_sampling_canvas {
-            let sampling_canvas = Canvas::from_published_surface(&sampling_surface);
-            return Ok(ComposedFrameSet {
-                sampling_canvas: Some(sampling_canvas),
-                sampling_surface: Some(sampling_surface),
-                preview_surface: None,
-                bypassed: false,
-                backend: CompositorBackendKind::Gpu,
-            });
-        }
-        Ok(ComposedFrameSet {
-            sampling_canvas: None,
-            sampling_surface: None,
-            preview_surface: Some(sampling_surface),
-            bypassed: false,
-            backend: CompositorBackendKind::Gpu,
-        })
+        Ok(gpu_composed_from_surface(
+            sampling_surface,
+            requires_cpu_sampling_canvas,
+        ))
     }
 
     pub(crate) fn sample_zone_plan_into(
@@ -400,12 +396,75 @@ impl GpuSparkleFlinger {
             height,
         ));
         self.current_output = None;
+        self.cached_composition_key = None;
     }
 
     pub(crate) fn surface_snapshot(&self) -> Option<GpuCompositorSurfaceSnapshot> {
         self.surfaces
             .as_ref()
             .map(GpuCompositorSurfaceSet::snapshot)
+    }
+
+    fn read_back_current_output_surface(
+        &mut self,
+        width: u32,
+        height: u32,
+        readback_key: Option<CachedReadbackKey>,
+        requires_cpu_sampling_canvas: bool,
+    ) -> Result<ComposedFrameSet> {
+        let Some(current_output) = self.current_output else {
+            anyhow::bail!("GPU readback requested without a composed output surface");
+        };
+        let surfaces = self
+            .surfaces
+            .as_mut()
+            .context("GPU readback requested before compositor surfaces were allocated")?;
+        let current_texture = match current_output {
+            GpuCompositorOutputSurface::Front => &surfaces.front.texture,
+            GpuCompositorOutputSurface::Back => &surfaces.back.texture,
+        };
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("SparkleFlinger GPU cached readback"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: current_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &surfaces.readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(surfaces.padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            texture_extent(width, height),
+        );
+
+        let bytes = read_back_texture(
+            &self.device,
+            &surfaces.readback,
+            width,
+            height,
+            surfaces.padded_bytes_per_row,
+            self.queue.submit(Some(encoder.finish())),
+        )?;
+        let sampling_surface = PublishedSurface::from_vec(bytes, width, height, 0, 0);
+        if let Some(key) = readback_key {
+            self.cached_readback_surface = Some(CachedReadbackSurface {
+                key,
+                surface: sampling_surface.clone(),
+            });
+        }
+        Ok(gpu_composed_from_surface(
+            sampling_surface,
+            requires_cpu_sampling_canvas,
+        ))
     }
 }
 
@@ -536,6 +595,8 @@ impl GpuCompositorSurfaceSet {
             front_upload_count: 0,
             #[cfg(test)]
             source_upload_count: 0,
+            #[cfg(test)]
+            compose_dispatch_count: 0,
         }
     }
 
@@ -655,6 +716,10 @@ fn compose_layer_into_gpu(
         0,
         &encode_compose_params(surfaces.width, surfaces.height, shader_mode, layer.opacity),
     );
+    #[cfg(test)]
+    {
+        surfaces.compose_dispatch_count = surfaces.compose_dispatch_count.saturating_add(1);
+    }
     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
         label: Some("SparkleFlinger GPU compose pass"),
         timestamp_writes: None,
@@ -741,6 +806,14 @@ fn cached_source_upload(frame: &ProducerFrame) -> Option<CachedSourceUpload> {
 }
 
 fn cached_readback_key(plan: &CompositionPlan) -> Option<CachedReadbackKey> {
+    if !plan
+        .layers
+        .iter()
+        .all(|layer| matches!(layer.frame, ProducerFrame::Surface(_)))
+    {
+        return None;
+    }
+
     let mut layers = Vec::with_capacity(plan.layers.len());
     for layer in &plan.layers {
         layers.push(CachedReadbackLayer {
@@ -754,6 +827,40 @@ fn cached_readback_key(plan: &CompositionPlan) -> Option<CachedReadbackKey> {
         height: plan.height,
         layers,
     })
+}
+
+fn gpu_composed_without_surfaces() -> ComposedFrameSet {
+    ComposedFrameSet {
+        sampling_canvas: None,
+        sampling_surface: None,
+        preview_surface: None,
+        bypassed: false,
+        backend: CompositorBackendKind::Gpu,
+    }
+}
+
+fn gpu_composed_from_surface(
+    sampling_surface: PublishedSurface,
+    requires_cpu_sampling_canvas: bool,
+) -> ComposedFrameSet {
+    if requires_cpu_sampling_canvas {
+        let sampling_canvas = Canvas::from_published_surface(&sampling_surface);
+        return ComposedFrameSet {
+            sampling_canvas: Some(sampling_canvas),
+            sampling_surface: Some(sampling_surface),
+            preview_surface: None,
+            bypassed: false,
+            backend: CompositorBackendKind::Gpu,
+        };
+    }
+
+    ComposedFrameSet {
+        sampling_canvas: None,
+        sampling_surface: None,
+        preview_surface: Some(sampling_surface),
+        bypassed: false,
+        backend: CompositorBackendKind::Gpu,
+    }
 }
 
 fn set_texture_contents(
@@ -1022,7 +1129,7 @@ mod tests {
         );
         let expected = CpuSparkleFlinger::new().compose(plan.clone());
         let composed = compositor
-            .compose(&plan, true)
+            .compose(&plan, true, true)
             .expect("GPU composition should succeed for replace + alpha plans");
 
         assert_eq!(
@@ -1061,7 +1168,7 @@ mod tests {
         );
         let expected = CpuSparkleFlinger::new().compose(plan.clone());
         let composed = compositor
-            .compose(&plan, true)
+            .compose(&plan, true, true)
             .expect("GPU composition should succeed for add plans");
 
         assert_eq!(
@@ -1100,7 +1207,7 @@ mod tests {
         );
         let expected = CpuSparkleFlinger::new().compose(plan.clone());
         let composed = compositor
-            .compose(&plan, true)
+            .compose(&plan, true, true)
             .expect("GPU composition should succeed for screen plans");
 
         assert_eq!(
@@ -1131,7 +1238,7 @@ mod tests {
             CompositionLayer::replace(ProducerFrame::Surface(source.clone())),
         );
         let composed = compositor
-            .compose(&plan, true)
+            .compose(&plan, true, true)
             .expect("single replace surface should bypass GPU composition");
 
         let surface = composed
@@ -1161,7 +1268,7 @@ mod tests {
         );
 
         let composed = compositor
-            .compose(&plan, false)
+            .compose(&plan, false, false)
             .expect("GPU composition should support no-readback mode");
 
         assert!(composed.sampling_canvas.is_none());
@@ -1187,7 +1294,7 @@ mod tests {
         );
 
         compositor
-            .compose(&plan, false)
+            .compose(&plan, false, false)
             .expect("initial GPU composition should succeed");
         let first_upload_count = compositor
             .surfaces
@@ -1199,9 +1306,14 @@ mod tests {
             .as_ref()
             .expect("surface allocation should exist after composition")
             .front_upload_count;
+        let first_compose_dispatch_count = compositor
+            .surfaces
+            .as_ref()
+            .expect("surface allocation should exist after composition")
+            .compose_dispatch_count;
 
         compositor
-            .compose(&plan, false)
+            .compose(&plan, false, false)
             .expect("cached GPU composition should succeed");
         let second_upload_count = compositor
             .surfaces
@@ -1213,11 +1325,18 @@ mod tests {
             .as_ref()
             .expect("surface allocation should persist across compositions")
             .front_upload_count;
+        let second_compose_dispatch_count = compositor
+            .surfaces
+            .as_ref()
+            .expect("surface allocation should persist across compositions")
+            .compose_dispatch_count;
 
         assert_eq!(first_upload_count, 1);
         assert_eq!(second_upload_count, first_upload_count);
         assert_eq!(first_front_upload_count, 1);
         assert_eq!(second_front_upload_count, first_front_upload_count);
+        assert_eq!(first_compose_dispatch_count, 1);
+        assert_eq!(second_compose_dispatch_count, first_compose_dispatch_count);
     }
 
     #[test]
@@ -1248,7 +1367,7 @@ mod tests {
                 .expect("CPU compose should materialize a canvas"),
         );
         compositor
-            .compose(&plan, false)
+            .compose(&plan, false, false)
             .expect("GPU composition should succeed before GPU sampling");
         let mut sampled = Vec::new();
         assert!(
@@ -1282,7 +1401,7 @@ mod tests {
         );
         let expected = CpuSparkleFlinger::new().compose(plan.clone());
         compositor
-            .compose(&plan, false)
+            .compose(&plan, false, false)
             .expect("GPU composition should succeed before output reuse testing");
 
         let mut sampled = vec![ZoneColors {
@@ -1332,7 +1451,7 @@ mod tests {
             ],
         );
         compositor
-            .compose(&plan, false)
+            .compose(&plan, false, false)
             .expect("GPU composition should succeed before checking area fallback");
         let mut sampled = Vec::new();
         assert!(
