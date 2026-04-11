@@ -489,10 +489,7 @@ fn PresetSelectorRow(
     // currently selected so the trigger button itself is tinted to match
     // the row that's "active" in the dropdown.
     let selected_swatch = Memo::new(move |_| {
-        let sid = selected_id.get();
-        let Some(ref sid) = sid else {
-            return None::<String>;
-        };
+        let sid = selected_id.get()?;
         if let Some(idx_str) = sid.strip_prefix("bundled:")
             && let Ok(idx) = idx_str.parse::<usize>()
         {
@@ -504,7 +501,7 @@ fn PresetSelectorRow(
         effect_presets
             .get()
             .iter()
-            .find(|p| p.id == *sid)
+            .find(|p| p.id == sid)
             .map(|p| preset_swatch(&p.name))
     });
 

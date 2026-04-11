@@ -10,6 +10,7 @@ mod icons;
 mod layout_geometry;
 mod layout_utils;
 mod pages;
+mod preferences;
 mod preview_telemetry;
 mod storage;
 mod style_utils;

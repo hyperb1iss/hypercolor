@@ -8,12 +8,14 @@ use leptos_router::path;
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
 
 use crate::api;
+use crate::components::preset_matching::controls_to_json;
 use crate::components::shell::Shell;
 use crate::pages::dashboard::DashboardPage;
 use crate::pages::devices::DevicesPage;
 use crate::pages::effects::EffectsPage;
 use crate::pages::layout::LayoutPage;
 use crate::pages::settings::SettingsPage;
+use crate::preferences::{EffectPreferences, PreferencesStore};
 use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
 use crate::thumbnails::{self, ThumbnailStore};
 use crate::ws::{
@@ -118,6 +120,20 @@ pub struct EffectsContext {
     pub set_is_playing: WriteSignal<bool>,
     pub favorite_ids: ReadSignal<HashSet<String>>,
     pub set_favorite_ids: WriteSignal<HashSet<String>>,
+    /// Per-effect preferences (preset + control-value snapshot). Embedded
+    /// on the context rather than looked up via `use_context` so the
+    /// save/restore path that runs inside spawned async tasks doesn't
+    /// depend on the reactive owner being live.
+    pub preferences: PreferencesStore,
+    /// Effect IDs we've already checked against preferences this
+    /// session. `apply_active_effect_snapshot` consults this before
+    /// running the restore path so user modifications to the current
+    /// effect (preset selection, control tweaks) only trigger a save
+    /// — without it, every refresh after a user action would see
+    /// "daemon != stored" and mis-fire a restore that clobbers the
+    /// change. Cleared for an effect when `apply_effect(id)` is called,
+    /// so switching away and coming back re-triggers the restore.
+    pub restored_effects: StoredValue<HashSet<String>>,
 }
 
 /// Shared device + layout state — accessible from devices page and layout builder.
@@ -163,6 +179,14 @@ impl EffectsContext {
         if self.active_effect_id.get().as_deref() == Some(&id) {
             return;
         }
+
+        // Drop this effect from the "already checked for restore" set —
+        // the next snapshot for this ID should run through the restore
+        // path so the user's saved preferences get re-applied on top of
+        // whatever defaults the daemon loads.
+        self.restored_effects.update_value(|set| {
+            set.remove(&id);
+        });
 
         let previous = capture_active_effect_state(self);
         let selected_effect = self.effect_summary(&id);
@@ -267,12 +291,106 @@ fn apply_active_effect_snapshot(
     ctx.set_active_effect_name.set(Some(name));
     ctx.set_active_effect_category.set(category);
     ctx.set_active_controls.set(controls);
-    ctx.set_active_control_values.set(control_values);
-    ctx.set_active_preset_id.set(active_preset_id);
+    ctx.set_active_control_values.set(control_values.clone());
+    ctx.set_active_preset_id.set(active_preset_id.clone());
     ctx.set_is_playing.set(true);
     if ctx.active_effect_id.get_untracked().as_deref() != Some(id.as_str()) {
-        ctx.set_active_effect_id.set(Some(id));
+        ctx.set_active_effect_id.set(Some(id.clone()));
     }
+
+    // ── Per-effect preferences: restore or save ───────────────────────
+    //
+    // Two paths:
+    //
+    //   1. First snapshot after a switch → RESTORE. The daemon has just
+    //      loaded defaults; if our stored preferences differ, re-apply
+    //      the saved state to the daemon.
+    //
+    //   2. Any follow-up snapshot (user picked a preset, tweaked a
+    //      control, etc.) → SAVE. The daemon is already in the state
+    //      the user just asked for; we just need to capture it.
+    //
+    // The `restored_effects` set gates this. It's cleared for an effect
+    // ID when `apply_effect(id)` is called, so we re-check on each
+    // genuine switch, and marked after the first check so subsequent
+    // refreshes for the same effect fall through to save.
+    let store = ctx.preferences;
+    let already_checked = ctx
+        .restored_effects
+        .with_value(|set| set.contains(id.as_str()));
+    if !already_checked {
+        ctx.restored_effects.update_value(|set| {
+            set.insert(id.clone());
+        });
+
+        if let Some(prefs) = store.get(&id) {
+            // Compare through the same lossy JSON serializer we use to
+            // send controls to the daemon — colors hex-encode to 256
+            // steps, so a naive `HashMap` equality would mis-fire
+            // thanks to float precision drift on round-trip.
+            let stored_json = controls_to_json(&prefs.control_values);
+            let daemon_json = controls_to_json(&control_values);
+            let needs_restore = prefs.preset_id != active_preset_id || stored_json != daemon_json;
+            if needs_restore {
+                restore_effect_preferences(*ctx, id, prefs);
+                return;
+            }
+        }
+    }
+
+    // Save path — either this was the first snapshot with nothing to
+    // restore, or it's a follow-up after user modification. In both
+    // cases, capture whatever the daemon just confirmed so switching
+    // away and coming back lands us in the same place.
+    store.save(
+        id,
+        EffectPreferences {
+            preset_id: active_preset_id,
+            control_values,
+        },
+    );
+}
+
+/// Re-applies a remembered preset + control snapshot on top of the
+/// daemon's defaults. Runs fully asynchronously — apply_preset first (if
+/// any), then update_controls, then a final refresh so the signals
+/// reflect the restored state. Bails at every step if the user has
+/// switched effects in the meantime, since a late-landing restore from
+/// effect A would trample a freshly-activated effect B.
+/// Re-applies a remembered preset + control snapshot on top of the
+/// daemon's defaults. Fully async — apply_preset first (if any), then
+/// update_controls using the same hex-colour-encoding serializer the
+/// preset picker uses (the daemon silently ignores `ControlValue`'s
+/// default tagged JSON), then a final refresh so the UI mirrors the
+/// restored daemon state. Bails at every step if the user has switched
+/// effects in the meantime — a late-landing restore from effect A would
+/// otherwise trample a freshly-activated effect B.
+fn restore_effect_preferences(ctx: EffectsContext, effect_id: String, prefs: EffectPreferences) {
+    leptos::task::spawn_local(async move {
+        if ctx.active_effect_id.get_untracked().as_deref() != Some(effect_id.as_str()) {
+            return;
+        }
+
+        if let Some(preset_id) = prefs.preset_id.as_ref() {
+            let _ = api::apply_preset(preset_id).await;
+            if ctx.active_effect_id.get_untracked().as_deref() != Some(effect_id.as_str()) {
+                return;
+            }
+        }
+
+        if !prefs.control_values.is_empty() {
+            let controls_json = serde_json::Value::Object(controls_to_json(&prefs.control_values));
+            let _ = api::update_controls(&controls_json).await;
+            if ctx.active_effect_id.get_untracked().as_deref() != Some(effect_id.as_str()) {
+                return;
+            }
+        }
+
+        // Surface the restored daemon state in the UI. This re-enters
+        // `apply_active_effect_snapshot`, but with the effect already
+        // present in `restored_effects` so the save branch fires.
+        ctx.refresh_active_effect();
+    });
 }
 
 fn clear_active_effect_state(ctx: &EffectsContext) {
@@ -371,6 +489,15 @@ pub fn App() -> impl IntoView {
     let (is_playing, set_is_playing) = signal(false);
     let (favorite_ids, set_favorite_ids) = signal(HashSet::<String>::new());
 
+    // Per-effect preferences store — remembers which preset was picked
+    // and what the control values were for every effect the user has
+    // customised, so switching effects feels stateful. Built before
+    // `EffectsContext` so it can be embedded on the context itself —
+    // the save/restore path runs inside spawned async tasks and can't
+    // rely on `use_context` at that point.
+    let preferences_store = PreferencesStore::new();
+    provide_context(preferences_store);
+
     let effects_ctx = EffectsContext {
         effects_index,
         active_effect_id,
@@ -389,6 +516,8 @@ pub fn App() -> impl IntoView {
         set_is_playing,
         favorite_ids,
         set_favorite_ids,
+        preferences: preferences_store,
+        restored_effects: StoredValue::new(HashSet::new()),
     };
     provide_context(effects_ctx);
 

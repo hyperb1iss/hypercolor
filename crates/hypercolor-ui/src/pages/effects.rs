@@ -82,6 +82,7 @@ pub fn EffectsPage() -> impl IntoView {
     ));
     let pending_control_updates =
         StoredValue::new(std::collections::HashMap::<String, serde_json::Value>::new());
+    let preferences_store = use_context::<crate::preferences::PreferencesStore>();
     let flush_control_updates = use_debounce_fn(
         move || {
             let updates = pending_control_updates
@@ -96,6 +97,23 @@ pub fn EffectsPage() -> impl IntoView {
             leptos::task::spawn_local(async move {
                 let _ = api::update_controls(&controls_json).await;
             });
+
+            // Persist the resulting control state so switching effects
+            // and coming back lands on the same tweaks. The daemon has
+            // already seen the change via `update_controls`, so we can
+            // just mirror the current `active_control_values` signal —
+            // the debounce already smoothed out slider drags for us.
+            if let Some(store) = preferences_store
+                && let Some(effect_id) = fx.active_effect_id.get_untracked()
+            {
+                store.save(
+                    effect_id,
+                    crate::preferences::EffectPreferences {
+                        preset_id: fx.active_preset_id.get_untracked(),
+                        control_values: fx.active_control_values.get_untracked(),
+                    },
+                );
+            }
         },
         75.0,
     );
