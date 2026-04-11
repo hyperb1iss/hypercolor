@@ -78,7 +78,7 @@ pub struct DisplayOutputState {
     pub overlay_factory: Arc<dyn OverlayRendererFactory>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct DisplayGeometry {
     width: u32,
     height: u32,
@@ -117,7 +117,7 @@ struct DisplayTargetCache {
     targets: Arc<[Arc<DisplayTarget>]>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 struct DisplayViewport {
     position: NormalizedPosition,
     size: NormalizedPosition,

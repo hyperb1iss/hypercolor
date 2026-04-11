@@ -137,7 +137,7 @@ impl DisplayWorkerHandle {
             backend_io,
             worker_backend_id,
             worker_device_id,
-            Arc::clone(&target),
+            target.as_ref().clone(),
             rx,
             power_state,
             static_hold_refresh_interval,
@@ -172,7 +172,7 @@ async fn run_display_worker(
     backend_io: BackendIo,
     backend_key: String,
     device_id: DeviceId,
-    target: Arc<DisplayTarget>,
+    target: DisplayTarget,
     mut rx: watch::Receiver<Option<Arc<CanvasFrame>>>,
     mut power_state: watch::Receiver<OutputPowerState>,
     static_hold_refresh_interval: Duration,
@@ -355,7 +355,7 @@ async fn run_display_worker(
 
         let input_matches = last_delivered_input
             .as_ref()
-            .is_some_and(|previous| previous.matches(&source, target.as_ref()));
+            .is_some_and(|previous| previous.matches(&source, &target));
         if input_matches && !force_send {
             trace!(
                 device = %target.name,
@@ -375,7 +375,7 @@ async fn run_display_worker(
                 .write_display_frame_owned(device_id, Arc::clone(jpeg))
                 .await
             {
-                maybe_warn_display_error(&mut last_warned_at, target.as_ref(), &error);
+                maybe_warn_display_error(&mut last_warned_at, &target, &error);
                 continue;
             }
             last_delivered_source = Some(source);
@@ -410,7 +410,7 @@ async fn run_display_worker(
                 overlay_composer.runtime_snapshot(),
             )
             .await;
-            let geometry = target.geometry.clone();
+            let geometry = target.geometry;
             let brightness = target.brightness;
             tokio::task::spawn_blocking(move || {
                 let mut encode_state = encode_state;
@@ -420,14 +420,16 @@ async fn run_display_worker(
             .await
         } else {
             let encode_source = Arc::clone(&source);
-            let encode_target = Arc::clone(&target);
+            let viewport = target.viewport;
+            let geometry = target.geometry;
+            let brightness = target.brightness;
             tokio::task::spawn_blocking(move || {
                 let mut encode_state = encode_state;
                 let encoded = encode_canvas_frame(
                     encode_source.as_ref(),
-                    &encode_target.viewport,
-                    &encode_target.geometry,
-                    encode_target.brightness,
+                    &viewport,
+                    &geometry,
+                    brightness,
                     &mut encode_state,
                 );
                 (encode_state, encoded)
@@ -484,10 +486,10 @@ async fn run_display_worker(
             encode_state.jpeg_buffer = reusable_jpeg;
         }
         if let Err(error) = write_result {
-            maybe_warn_display_error(&mut last_warned_at, target.as_ref(), &error);
+            maybe_warn_display_error(&mut last_warned_at, &target, &error);
             continue;
         }
-        last_delivered_input = Some(DisplayFrameInputState::capture(&source, target.as_ref()));
+        last_delivered_input = Some(DisplayFrameInputState::capture(&source, &target));
         last_delivered_source = Some(source);
         next_hold_refresh_at = static_hold_refresh_deadline(
             &power_state,
