@@ -3,6 +3,8 @@
 //! Subscribes to canvas frames, spectrum data, and events over a persistent
 //! WebSocket connection. Binary frames are decoded inline.
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
@@ -147,7 +149,7 @@ pub fn decode_canvas(data: &[u8]) -> Option<WsMessage> {
         timestamp_ms,
         width,
         height,
-        pixels,
+        pixels: Arc::new(pixels),
     }))
 }
 

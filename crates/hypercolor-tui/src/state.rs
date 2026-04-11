@@ -156,7 +156,7 @@ pub struct CanvasFrame {
     pub width: u16,
     pub height: u16,
     /// RGB pixel data, 3 bytes per pixel, row-major.
-    pub pixels: Vec<u8>,
+    pub pixels: Arc<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

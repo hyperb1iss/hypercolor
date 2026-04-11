@@ -1,5 +1,7 @@
 //! Tests for WebSocket binary frame decoding.
 
+use std::sync::Arc;
+
 use hypercolor_tui::client::ws::{self, WsMessage};
 
 /// Helper: build a minimal valid canvas frame (type 0x03, RGB format).
@@ -49,7 +51,7 @@ fn decode_canvas_rgb_1x1() {
     assert_eq!(frame.timestamp_ms, 42);
     assert_eq!(frame.width, 1);
     assert_eq!(frame.height, 1);
-    assert_eq!(frame.pixels, vec![255, 0, 128]);
+    assert_eq!(frame.pixels, Arc::new(vec![255, 0, 128]));
 }
 
 #[test]
@@ -82,7 +84,7 @@ fn decode_canvas_rgba_strips_alpha() {
     let WsMessage::Canvas(frame) = msg.expect("should decode") else {
         panic!("expected Canvas variant");
     };
-    assert_eq!(frame.pixels, vec![100, 200, 50]); // alpha stripped
+    assert_eq!(frame.pixels, Arc::new(vec![100, 200, 50])); // alpha stripped
 }
 
 #[test]

@@ -1,6 +1,10 @@
 //! Preview transport manager for the live canvas overlay.
 
+mod kitty_fast;
+
+use std::env;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self as std_mpsc, Receiver as StdReceiver, Sender as StdSender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -8,11 +12,13 @@ use std::time::{Duration, Instant};
 use image::DynamicImage;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui_image::picker::Picker;
+use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::{Resize, ResizeEncodeRender};
 
 use crate::state::CanvasFrame;
+
+static NEXT_KITTY_IMAGE_ID: AtomicU32 = AtomicU32::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PreviewTransport {
@@ -132,7 +138,7 @@ struct PreviewBuildResponse {
     request_id: u64,
     frame_number: u32,
     transport: PreviewTransport,
-    protocol: StatefulProtocol,
+    surface: PreviewSurface,
 }
 
 enum PreviewBuildResult {
@@ -144,13 +150,85 @@ enum PreviewBuildResult {
     },
 }
 
+enum PreviewSurface {
+    Stateful(StatefulProtocol),
+    Kitty(kitty_fast::KittyFrame),
+}
+
+impl PreviewSurface {
+    fn render(&mut self, area: Rect, buf: &mut Buffer) {
+        match self {
+            Self::Stateful(protocol) => protocol.render(area, buf),
+            Self::Kitty(frame) => frame.render(area, buf),
+        }
+    }
+
+    fn matches_area(&self, resize_area: Rect) -> bool {
+        match self {
+            Self::Stateful(protocol) => protocol
+                .needs_resize(&Resize::Scale(None), resize_area)
+                .is_none(),
+            Self::Kitty(frame) => frame.area() == resize_area,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DrawBackpressure {
+    pressure_level: u8,
+    fast_draw_streak: u8,
+}
+
+impl DrawBackpressure {
+    fn observe_draw(&mut self, elapsed: Duration) {
+        let next_level = if elapsed >= Duration::from_millis(250) {
+            3
+        } else if elapsed >= Duration::from_millis(125) {
+            2
+        } else if elapsed >= Duration::from_millis(60) {
+            1
+        } else {
+            0
+        };
+
+        if next_level > 0 {
+            self.pressure_level = self.pressure_level.max(next_level);
+            self.fast_draw_streak = 0;
+            return;
+        }
+
+        if self.pressure_level == 0 {
+            return;
+        }
+
+        self.fast_draw_streak = self.fast_draw_streak.saturating_add(1);
+        if self.fast_draw_streak >= 2 {
+            self.pressure_level = self.pressure_level.saturating_sub(1);
+            self.fast_draw_streak = 0;
+        }
+    }
+
+    fn frame_interval(self) -> Duration {
+        match self.pressure_level {
+            0 => Duration::ZERO,
+            1 => Duration::from_millis(167),
+            2 => Duration::from_millis(250),
+            _ => Duration::from_millis(500),
+        }
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
 pub(crate) struct PreviewManager {
     primary_picker: Picker,
     policy: PreviewPolicy,
     build_tx: Option<StdSender<PreviewBuildRequest>>,
     build_rx: StdReceiver<PreviewBuildResult>,
     build_worker: Option<thread::JoinHandle<()>>,
-    current: Option<StatefulProtocol>,
+    current: Option<PreviewSurface>,
     current_frame_number: Option<u32>,
     current_transport: Option<PreviewTransport>,
     preview_area: Option<Rect>,
@@ -160,6 +238,7 @@ pub(crate) struct PreviewManager {
     next_request_id: u64,
     in_flight_request_id: Option<u64>,
     last_build_started: Option<Instant>,
+    draw_backpressure: DrawBackpressure,
 }
 
 impl PreviewManager {
@@ -170,10 +249,50 @@ impl PreviewManager {
         let halfblocks_picker = Picker::halfblocks();
         let build_primary_picker = primary_picker.clone();
         let build_halfblocks_picker = halfblocks_picker.clone();
+        let build_use_kitty_fast = primary_picker.protocol_type() == ProtocolType::Kitty;
+        let build_is_tmux = env::var("TERM").is_ok_and(|term| term.starts_with("tmux"))
+            || env::var("TERM_PROGRAM").is_ok_and(|term_program| term_program == "tmux");
+        let kitty_image_id = NEXT_KITTY_IMAGE_ID.fetch_add(1, Ordering::Relaxed).max(1);
         let build_worker = thread::Builder::new()
             .name("hypercolor-tui-preview".to_string())
             .spawn(move || {
                 while let Ok(request) = build_requests.recv() {
+                    if request.transport == PreviewTransport::Primary && build_use_kitty_fast {
+                        match kitty_fast::KittyFrame::new(
+                            request.frame.as_ref(),
+                            request.area,
+                            kitty_image_id,
+                            build_is_tmux,
+                        ) {
+                            Ok(frame) => {
+                                if build_results_tx
+                                    .send(PreviewBuildResult::Ready(PreviewBuildResponse {
+                                        request_id: request.request_id,
+                                        frame_number: request.frame.frame_number,
+                                        transport: request.transport,
+                                        surface: PreviewSurface::Kitty(frame),
+                                    }))
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            Err(error) => {
+                                if build_results_tx
+                                    .send(PreviewBuildResult::Failed {
+                                        request_id: request.request_id,
+                                        frame_number: request.frame.frame_number,
+                                        error,
+                                    })
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
                     let picker = match request.transport {
                         PreviewTransport::Primary => &build_primary_picker,
                         PreviewTransport::Halfblocks => &build_halfblocks_picker,
@@ -182,7 +301,7 @@ impl PreviewManager {
                     let Some(img) = image::RgbImage::from_raw(
                         u32::from(request.frame.width),
                         u32::from(request.frame.height),
-                        request.frame.pixels.clone(),
+                        request.frame.pixels.as_ref().clone(),
                     ) else {
                         if build_results_tx
                             .send(PreviewBuildResult::Failed {
@@ -223,7 +342,7 @@ impl PreviewManager {
                             request_id: request.request_id,
                             frame_number: request.frame.frame_number,
                             transport: request.transport,
-                            protocol,
+                            surface: PreviewSurface::Stateful(protocol),
                         }))
                         .is_err()
                     {
@@ -251,6 +370,7 @@ impl PreviewManager {
             next_request_id: 0,
             in_flight_request_id: None,
             last_build_started: None,
+            draw_backpressure: DrawBackpressure::default(),
         }
     }
 
@@ -299,7 +419,7 @@ impl PreviewManager {
                 PreviewBuildResult::Ready(completed) => {
                     if self.in_flight_request_id == Some(completed.request_id) {
                         dirty = true;
-                        self.current = Some(completed.protocol);
+                        self.current = Some(completed.surface);
                         self.current_frame_number = Some(completed.frame_number);
                         self.current_transport = Some(completed.transport);
                         self.in_flight_request_id = None;
@@ -342,14 +462,23 @@ impl PreviewManager {
         self.preview_area = Some(area);
         self.maybe_queue_build();
 
-        if let Some(protocol) = self.current.as_mut() {
-            protocol.render(area, buf);
+        if let Some(surface) = self.current.as_mut() {
+            surface.render(area, buf);
         }
     }
 
     #[must_use]
     pub(crate) fn has_current_frame(&self) -> bool {
         self.current.is_some()
+    }
+
+    pub(crate) fn note_draw_duration(&mut self, elapsed: Duration) {
+        if self.latest_frame.is_none() || self.selected_transport != PreviewTransport::Primary {
+            self.draw_backpressure.reset();
+            return;
+        }
+
+        self.draw_backpressure.observe_draw(elapsed);
     }
 
     fn maybe_queue_build(&mut self) {
@@ -370,17 +499,18 @@ impl PreviewManager {
         let resize_area = Self::resize_area(area);
         let transport = self.transport_for(Some(frame.as_ref()), Some(area));
         self.selected_transport = transport;
-        let frame_interval =
+        let frame_interval = std::cmp::max(
             self.policy
-                .frame_interval_for(transport, self.primary_picker.font_size(), Some(area));
+                .frame_interval_for(transport, self.primary_picker.font_size(), Some(area)),
+            self.draw_backpressure.frame_interval(),
+        );
 
         if self.current_frame_number == Some(frame.frame_number)
             && self.current_transport == Some(transport)
-            && self.current.as_ref().is_some_and(|protocol| {
-                protocol
-                    .needs_resize(&Resize::Scale(None), resize_area)
-                    .is_none()
-            })
+            && self
+                .current
+                .as_ref()
+                .is_some_and(|surface| surface.matches_area(resize_area))
         {
             return;
         }
@@ -433,6 +563,7 @@ impl PreviewManager {
     fn reset_protocols(&mut self) {
         self.invalidate_current();
         self.preview_area = None;
+        self.draw_backpressure.reset();
     }
 
     fn resize_area(area: Rect) -> Rect {
@@ -442,9 +573,11 @@ impl PreviewManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{PreviewPolicy, PreviewTransport};
+    use super::{DrawBackpressure, PreviewPolicy, PreviewTransport};
     use crate::state::CanvasFrame;
     use ratatui::layout::Rect;
+    use std::sync::Arc;
+    use std::time::Duration;
 
     #[test]
     fn default_policy_uses_primary_windowed_and_halfblocks_fullscreen() {
@@ -455,7 +588,7 @@ mod tests {
             timestamp_ms: 0,
             width: 320,
             height: 200,
-            pixels: vec![0; 320 * 200 * 3],
+            pixels: Arc::new(vec![0; 320 * 200 * 3]),
         };
 
         assert_eq!(
@@ -476,7 +609,7 @@ mod tests {
             timestamp_ms: 0,
             width: 320,
             height: 200,
-            pixels: vec![0; 320 * 200 * 3],
+            pixels: Arc::new(vec![0; 320 * 200 * 3]),
         };
 
         assert_eq!(
@@ -493,12 +626,29 @@ mod tests {
             timestamp_ms: 0,
             width: 320,
             height: 200,
-            pixels: vec![0; 320 * 200 * 3],
+            pixels: Arc::new(vec![0; 320 * 200 * 3]),
         };
 
         assert_eq!(
             policy.transport_for(false, (9, 18), Some(&frame), Some(Rect::new(0, 0, 55, 16))),
             PreviewTransport::Halfblocks
         );
+    }
+
+    #[test]
+    fn draw_backpressure_escalates_after_slow_draws() {
+        let mut backpressure = DrawBackpressure::default();
+        backpressure.observe_draw(Duration::from_millis(280));
+        assert_eq!(backpressure.frame_interval(), Duration::from_millis(500));
+    }
+
+    #[test]
+    fn draw_backpressure_relaxes_after_fast_draws() {
+        let mut backpressure = DrawBackpressure::default();
+        backpressure.observe_draw(Duration::from_millis(150));
+        for _ in 0..4 {
+            backpressure.observe_draw(Duration::from_millis(20));
+        }
+        assert_eq!(backpressure.frame_interval(), Duration::ZERO);
     }
 }

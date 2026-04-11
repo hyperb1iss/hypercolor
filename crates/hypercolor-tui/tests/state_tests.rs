@@ -1,5 +1,7 @@
 //! Tests for TUI state types and their conversions.
 
+use std::sync::Arc;
+
 use hypercolor_tui::state::{
     CanvasFrame, CanvasPreviewState, ConnectionStatus, ControlDefinition, ControlValue,
     DaemonState, DeviceSummary, EffectSummary, Notification, NotificationLevel, SpectrumSnapshot,
@@ -205,7 +207,7 @@ fn canvas_preview_state_captures_frame_metadata_without_pixels() {
         timestamp_ms: 1337,
         width: 320,
         height: 200,
-        pixels: vec![1, 2, 3, 4, 5, 6],
+        pixels: Arc::new(vec![1, 2, 3, 4, 5, 6]),
     };
 
     let preview = CanvasPreviewState::from(&frame);

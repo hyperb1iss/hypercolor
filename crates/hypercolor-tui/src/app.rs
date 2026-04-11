@@ -251,6 +251,7 @@ impl App {
     }
 
     fn draw_terminal(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        let draw_started = Instant::now();
         let sync_started = match terminal
             .backend_mut()
             .execute(BeginSynchronizedUpdate)
@@ -265,10 +266,11 @@ impl App {
 
         let draw_result = terminal.draw(|frame| self.render(frame)).map(|_| ());
         if !sync_started {
+            self.preview.note_draw_duration(draw_started.elapsed());
             return draw_result.map_err(Into::into);
         }
 
-        match terminal
+        let result = match terminal
             .backend_mut()
             .execute(EndSynchronizedUpdate)
             .map(|_| ())
@@ -281,7 +283,9 @@ impl App {
                     Err(draw_error.into())
                 }
             },
-        }
+        };
+        self.preview.note_draw_duration(draw_started.elapsed());
+        result
     }
 
     /// Reset the idle timer and cancel the breathing effect if it's running.
@@ -525,9 +529,11 @@ impl App {
             }
             Action::CanvasFrameReceived(frame) => {
                 // Sample border pixels for the canvas bleed reactive layer
-                if let Some((r, g, b)) =
-                    crate::motion::sample_canvas_border(frame.width, frame.height, &frame.pixels)
-                {
+                if let Some((r, g, b)) = crate::motion::sample_canvas_border(
+                    frame.width,
+                    frame.height,
+                    frame.pixels.as_slice(),
+                ) {
                     self.motion.canvas_color_channel().write(r, g, b);
                 }
                 self.preview

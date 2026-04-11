@@ -25,6 +25,8 @@ tachyonfx = { workspace = true }
 # Multi-protocol image rendering (Kitty/Sixel/iTerm2/halfblocks)
 ratatui-image = { workspace = true }
 image = { workspace = true }
+base64 = "0.22"
+flate2 = "1.0"
 
 # Theme
 opaline = { workspace = true }
