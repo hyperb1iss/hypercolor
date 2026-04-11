@@ -55,8 +55,42 @@ pub(super) fn encode_canvas_frame(
     brightness: f32,
     encode_state: &mut DisplayEncodeState,
 ) -> Result<Vec<u8>> {
-    render_canvas_frame_rgb(source, viewport, geometry, encode_state);
-    encode_prepared_rgb_frame(geometry, brightness, encode_state)
+    let brightness_factor = display_brightness_factor(brightness);
+    if brightness_factor == 0 {
+        prepare_black_frame(geometry, &mut encode_state.rgb_buffer);
+        return encode_rgb_to_jpeg(geometry, encode_state);
+    }
+
+    let brightness_lut = if brightness_factor >= u16::from(u8::MAX) {
+        None
+    } else {
+        refresh_display_brightness_lut(encode_state, brightness_factor);
+        Some(&encode_state.brightness_lut)
+    };
+
+    if geometry.width == 0 || geometry.height == 0 {
+        encode_state.rgb_buffer.clear();
+    } else {
+        render_display_view(
+            source,
+            viewport,
+            geometry.width,
+            geometry.height,
+            &mut encode_state.rgb_buffer,
+            &mut encode_state.axis_plan,
+            brightness_lut,
+        );
+    }
+
+    if geometry.circular {
+        apply_circular_mask(
+            &mut encode_state.rgb_buffer,
+            geometry.width,
+            geometry.height,
+        );
+    }
+
+    encode_rgb_to_jpeg(geometry, encode_state)
 }
 
 pub(super) fn render_canvas_frame_rgb(
