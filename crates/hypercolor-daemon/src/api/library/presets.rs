@@ -239,7 +239,11 @@ pub async fn apply_preset(State(state): State<Arc<AppState>>, Path(id): Path<Str
         }
         engine.set_active_preset_id(preset.id.to_string());
 
-        ActivationResult { applied, rejected }
+        ActivationResult {
+            applied,
+            rejected,
+            warnings: Vec::new(),
+        }
     } else {
         // Different effect — full activation path
         match activate_effect_with_controls(&state, &metadata, &preset.controls).await {
@@ -275,6 +279,7 @@ pub async fn apply_preset(State(state): State<Arc<AppState>>, Path(id): Path<Str
         },
         "applied_controls": activation.applied,
         "rejected_controls": activation.rejected,
+        "warnings": activation.warnings,
     }))
 }
 

@@ -1,5 +1,6 @@
 //! Display overlay endpoints and runtime diagnostics — `/api/v1/displays/*`.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -8,17 +9,18 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint};
-use hypercolor_types::effect::EffectSource;
+use hypercolor_types::effect::{EffectMetadata, EffectSource};
 use hypercolor_types::overlay::{
     DisplayOverlayConfig, OverlayBlendMode, OverlayPosition, OverlaySlot, OverlaySlotId,
     OverlaySource,
 };
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::api::AppState;
 use crate::api::devices;
 use crate::api::envelope::{ApiError, ApiResponse, iso8601_system_time};
-use crate::display_overlays::OverlaySlotRuntime;
+use crate::display_overlays::{OverlaySlotRuntime, OverlaySlotStatus};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DisplaySummary {
@@ -80,6 +82,19 @@ pub struct OverlayRuntimeResponse {
 pub struct OverlaySlotResponse {
     pub slot: OverlaySlot,
     pub runtime: OverlayRuntimeResponse,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OverlayCompatibilityWarning {
+    pub code: &'static str,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+    pub device_key: String,
+    pub slot_id: String,
+    pub slot_name: String,
 }
 
 pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
@@ -358,7 +373,7 @@ pub(crate) async fn validate_overlay_config(
         let effect_engine = state.effect_engine.lock().await;
         if effect_engine.is_running()
             && let Some(metadata) = effect_engine.active_metadata()
-            && matches!(metadata.source, EffectSource::Html { .. })
+            && effect_source_is_html(&metadata.source)
         {
             return Err(format!(
                 "HTML overlays cannot be enabled while HTML effect '{}' is active; Servo multi-session rendering is still pending",
@@ -374,6 +389,14 @@ async fn current_overlay_runtime(
     device_id: DeviceId,
     slot: &OverlaySlot,
 ) -> OverlayRuntimeResponse {
+    OverlayRuntimeResponse::from(overlay_runtime_for_slot(state.as_ref(), device_id, slot).await)
+}
+
+pub(crate) async fn overlay_runtime_for_slot(
+    state: &AppState,
+    device_id: DeviceId,
+    slot: &OverlaySlot,
+) -> OverlaySlotRuntime {
     let runtime = state
         .display_overlay_runtime
         .get(device_id)
@@ -381,7 +404,7 @@ async fn current_overlay_runtime(
         .slot(slot.id)
         .cloned()
         .unwrap_or_else(|| OverlaySlotRuntime::from_slot(slot));
-    OverlayRuntimeResponse::from(runtime)
+    apply_html_gate_runtime_status(state, slot, runtime).await
 }
 
 pub(crate) async fn persist_overlay_config(
@@ -402,6 +425,107 @@ pub(crate) async fn persist_overlay_config(
         state.display_overlays.set(device_id, config.clone()).await;
     }
     Ok(())
+}
+
+pub async fn auto_disable_html_overlays_for_effect(
+    state: &AppState,
+    effect: &EffectMetadata,
+) -> Vec<OverlayCompatibilityWarning> {
+    if !effect_source_is_html(&effect.source) {
+        return Vec::new();
+    }
+
+    let mut connected_displays = Vec::new();
+    let mut connected_keys = HashSet::new();
+    for tracked in state.device_registry.list().await {
+        if display_surface_info(&tracked.info).is_none() {
+            continue;
+        }
+        let key = devices::device_settings_key(state, tracked.info.id).await;
+        connected_keys.insert(key.clone());
+        connected_displays.push((tracked.info.id, tracked.info.name.clone(), key));
+    }
+    connected_displays
+        .sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.2.cmp(&right.2)));
+
+    let mut warnings = Vec::new();
+    for (device_id, device_name, key) in connected_displays {
+        let config = current_overlay_config(state, device_id).await;
+        let Some((updated_config, disabled_slots)) = disable_enabled_html_overlays(&config) else {
+            continue;
+        };
+
+        warnings.extend(disabled_slots.into_iter().map(|slot| {
+            overlay_warning(
+                effect.name.as_str(),
+                &key,
+                Some(device_id),
+                Some(device_name.as_str()),
+                &slot,
+            )
+        }));
+
+        if let Err(error) = persist_overlay_config(state, device_id, &updated_config).await {
+            if updated_config.is_empty() {
+                state.display_overlays.clear(device_id).await;
+            } else {
+                state.display_overlays.set(device_id, updated_config).await;
+            }
+            warn!(
+                effect = %effect.name,
+                device_id = %device_id,
+                device_name = %device_name,
+                %error,
+                "Failed to persist auto-disabled HTML overlays for connected display"
+            );
+        }
+    }
+
+    let mut disconnected_entries = {
+        let store = state.device_settings.read().await;
+        store.display_overlay_entries()
+    };
+    disconnected_entries.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut disconnected_updates = Vec::new();
+    for (key, device_name, config) in disconnected_entries {
+        if connected_keys.contains(&key) {
+            continue;
+        }
+        let Some((updated_config, disabled_slots)) = disable_enabled_html_overlays(&config) else {
+            continue;
+        };
+
+        warnings.extend(disabled_slots.into_iter().map(|slot| {
+            overlay_warning(
+                effect.name.as_str(),
+                &key,
+                None,
+                device_name.as_deref(),
+                &slot,
+            )
+        }));
+        disconnected_updates.push((key, updated_config));
+    }
+
+    if !disconnected_updates.is_empty() {
+        let mut store = state.device_settings.write().await;
+        for (key, updated_config) in &disconnected_updates {
+            store.set_display_overlays(
+                key,
+                (!updated_config.is_empty()).then(|| updated_config.clone()),
+            );
+        }
+        if let Err(error) = store.save() {
+            warn!(
+                effect = %effect.name,
+                %error,
+                "Failed to persist auto-disabled HTML overlays for disconnected displays"
+            );
+        }
+    }
+
+    warnings
 }
 
 fn find_slot_index(config: &DisplayOverlayConfig, slot_id: OverlaySlotId) -> Option<usize> {
@@ -439,6 +563,70 @@ fn contains_enabled_html_overlay(config: &DisplayOverlayConfig) -> bool {
         .overlays
         .iter()
         .any(|slot| slot.enabled && matches!(slot.source, OverlaySource::Html(_)))
+}
+
+fn disable_enabled_html_overlays(
+    config: &DisplayOverlayConfig,
+) -> Option<(DisplayOverlayConfig, Vec<OverlaySlot>)> {
+    let mut updated = config.clone();
+    let mut disabled_slots = Vec::new();
+    for slot in &mut updated.overlays {
+        if slot.enabled && matches!(slot.source, OverlaySource::Html(_)) {
+            disabled_slots.push(slot.clone());
+            slot.enabled = false;
+        }
+    }
+
+    if disabled_slots.is_empty() {
+        None
+    } else {
+        Some((updated.normalized(), disabled_slots))
+    }
+}
+
+async fn apply_html_gate_runtime_status(
+    state: &AppState,
+    slot: &OverlaySlot,
+    mut runtime: OverlaySlotRuntime,
+) -> OverlaySlotRuntime {
+    if slot.enabled || !matches!(slot.source, OverlaySource::Html(_)) {
+        return runtime;
+    }
+
+    let effect_engine = state.effect_engine.lock().await;
+    if effect_engine.is_running()
+        && let Some(metadata) = effect_engine.active_metadata()
+        && effect_source_is_html(&metadata.source)
+    {
+        runtime.status = OverlaySlotStatus::HtmlGated;
+    }
+    runtime
+}
+
+fn overlay_warning(
+    effect_name: &str,
+    device_key: &str,
+    device_id: Option<DeviceId>,
+    device_name: Option<&str>,
+    slot: &OverlaySlot,
+) -> OverlayCompatibilityWarning {
+    let display_label = device_name.unwrap_or(device_key);
+    OverlayCompatibilityWarning {
+        code: "html_overlay_disabled",
+        message: format!(
+            "Disabled HTML overlay '{}' on '{}' because HTML effect '{}' is active; Servo multi-session rendering is still pending",
+            slot.name, display_label, effect_name
+        ),
+        device_id: device_id.map(|id| id.to_string()),
+        device_name: device_name.map(ToOwned::to_owned),
+        device_key: device_key.to_owned(),
+        slot_id: slot.id.to_string(),
+        slot_name: slot.name.clone(),
+    }
+}
+
+fn effect_source_is_html(source: &EffectSource) -> bool {
+    matches!(source, EffectSource::Html { .. })
 }
 
 fn has_duplicate_overlay_ids(config: &DisplayOverlayConfig) -> bool {

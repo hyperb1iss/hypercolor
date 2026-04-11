@@ -9,9 +9,9 @@ use super::{ToolDefinition, ToolError, default_output_schema};
 use crate::api::AppState;
 use crate::api::displays::{
     CreateOverlaySlotRequest, OverlayRuntimeResponse, UpdateOverlaySlotRequest,
-    current_overlay_config, display_surface_info, persist_overlay_config, validate_overlay_config,
+    current_overlay_config, display_surface_info, overlay_runtime_for_slot, persist_overlay_config,
+    validate_overlay_config,
 };
-use crate::display_overlays::OverlaySlotRuntime;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::overlay::{DisplayOverlayConfig, OverlaySlot, OverlaySlotId};
 
@@ -481,12 +481,5 @@ async fn runtime_for_slot(
     device_id: DeviceId,
     slot: &OverlaySlot,
 ) -> OverlayRuntimeResponse {
-    let runtime = state
-        .display_overlay_runtime
-        .get(device_id)
-        .await
-        .slot(slot.id)
-        .cloned()
-        .unwrap_or_else(|| OverlaySlotRuntime::from_slot(slot));
-    OverlayRuntimeResponse::from(runtime)
+    OverlayRuntimeResponse::from(overlay_runtime_for_slot(state, device_id, slot).await)
 }

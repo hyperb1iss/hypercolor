@@ -85,7 +85,7 @@ pub(super) async fn handle_set_profile_with_state(
         }));
     };
 
-    crate::api::profiles::apply_profile_snapshot(state, &profile)
+    let warnings = crate::api::profiles::apply_profile_snapshot(state, &profile)
         .await
         .map_err(ToolError::Internal)?;
     state.event_bus.publish(HypercolorEvent::ProfileLoaded {
@@ -102,6 +102,7 @@ pub(super) async fn handle_set_profile_with_state(
             "effect_id": profile.effect_id,
             "layout_id": profile.layout_id
         },
-        "applied": true
+        "applied": true,
+        "warnings": warnings
     }))
 }

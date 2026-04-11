@@ -230,9 +230,10 @@ pub async fn apply_profile(
             .clone()
     };
 
-    if let Err(error) = apply_profile_snapshot(&state, &profile).await {
-        return ApiError::internal(error);
-    }
+    let warnings = match apply_profile_snapshot(&state, &profile).await {
+        Ok(warnings) => warnings,
+        Err(error) => return ApiError::internal(error),
+    };
 
     state
         .event_bus
@@ -246,13 +247,14 @@ pub async fn apply_profile(
     ApiResponse::ok(serde_json::json!({
         "profile": profile,
         "applied": true,
+        "warnings": warnings,
     }))
 }
 
 pub(crate) async fn apply_profile_snapshot(
     state: &AppState,
     profile: &Profile,
-) -> Result<(), String> {
+) -> Result<Vec<crate::api::displays::OverlayCompatibilityWarning>, String> {
     let brightness = profile.brightness.map(|value| f32::from(value) / 100.0);
     let layout = if let Some(layout_id) = profile.layout_id.as_deref() {
         let layouts = state.layouts.read().await;
@@ -287,6 +289,7 @@ pub(crate) async fn apply_profile_snapshot(
     } else {
         None
     };
+    let mut warnings = Vec::new();
 
     if let Some((metadata, renderer)) = prepared_effect {
         let mut engine = state.effect_engine.lock().await;
@@ -317,6 +320,9 @@ pub(crate) async fn apply_profile_snapshot(
                 "Profile apply skipped one or more invalid control values"
             );
         }
+        drop(engine);
+        warnings =
+            crate::api::displays::auto_disable_html_overlays_for_effect(state, &metadata).await;
     }
 
     if let Some(layout) = layout {
@@ -336,7 +342,7 @@ pub(crate) async fn apply_profile_snapshot(
         set_global_brightness(&state.power_state, normalized);
     }
 
-    Ok(())
+    Ok(warnings)
 }
 
 async fn snapshot_profile(

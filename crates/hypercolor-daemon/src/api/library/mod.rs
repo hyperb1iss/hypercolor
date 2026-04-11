@@ -23,6 +23,7 @@ use crate::library::LibraryStoreError;
 pub(crate) struct ActivationResult {
     pub applied: HashMap<String, ControlValue>,
     pub rejected: Vec<String>,
+    pub warnings: Vec<crate::api::displays::OverlayCompatibilityWarning>,
 }
 
 pub(crate) enum ActivateEffectError {
@@ -91,9 +92,15 @@ pub(crate) async fn activate_effect_with_controls(
         }
     }
     drop(engine);
+    let warnings =
+        crate::api::displays::auto_disable_html_overlays_for_effect(state, metadata).await;
     crate::api::persist_runtime_session(state).await;
 
-    Ok(ActivationResult { applied, rejected })
+    Ok(ActivationResult {
+        applied,
+        rejected,
+        warnings,
+    })
 }
 
 pub(crate) fn store_error_to_response(error: &LibraryStoreError) -> axum::response::Response {

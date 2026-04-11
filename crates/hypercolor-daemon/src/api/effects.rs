@@ -404,6 +404,8 @@ pub async fn apply_effect(
             }
         }
     }
+    let warnings =
+        super::displays::auto_disable_html_overlays_for_effect(state.as_ref(), &metadata).await;
 
     log_effect_apply_completion(
         previous_effect.as_ref().map(|effect| effect.name.as_str()),
@@ -431,6 +433,7 @@ pub async fn apply_effect(
             "type": applied_transition.transition_type,
             "duration_ms": applied_transition.duration_ms,
         },
+        "warnings": warnings,
     }))
 }
 

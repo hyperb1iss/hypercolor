@@ -451,6 +451,14 @@ async fn activate_playlist_item(state: &Arc<AppState>, item: &PlaylistItem) -> R
                     "Rejected controls while activating playlist effect item"
                 );
             }
+            if !activation.warnings.is_empty() {
+                warn!(
+                    effect_id = %metadata.id,
+                    effect = %metadata.name,
+                    warnings = ?activation.warnings,
+                    "Auto-disabled HTML overlays while activating playlist effect item"
+                );
+            }
         }
         PlaylistItemTarget::Preset { preset_id } => {
             let Some(preset) = state.library_store.get_preset(*preset_id).await else {
@@ -466,6 +474,14 @@ async fn activate_playlist_item(state: &Arc<AppState>, item: &PlaylistItem) -> R
                     preset = %preset.name,
                     rejected = ?activation.rejected,
                     "Rejected controls while activating playlist preset item"
+                );
+            }
+            if !activation.warnings.is_empty() {
+                warn!(
+                    preset_id = %preset.id,
+                    preset = %preset.name,
+                    warnings = ?activation.warnings,
+                    "Auto-disabled HTML overlays while activating playlist preset item"
                 );
             }
         }

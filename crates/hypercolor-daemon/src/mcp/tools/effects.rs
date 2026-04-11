@@ -323,6 +323,9 @@ pub(super) async fn handle_set_effect_with_state(
         }
         previous
     };
+    let warnings =
+        crate::api::displays::auto_disable_html_overlays_for_effect(state, &best_match.effect)
+            .await;
 
     state.event_bus.publish(HypercolorEvent::EffectStarted {
         effect: EffectRef {
@@ -349,7 +352,8 @@ pub(super) async fn handle_set_effect_with_state(
             "score": candidate.score
         })).collect::<Vec<_>>(),
         "applied": true,
-        "transition_ms": transition_ms
+        "transition_ms": transition_ms,
+        "warnings": warnings
     }))
 }
 

@@ -21,10 +21,14 @@ use tokio::net::{TcpListener, TcpStream};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use hypercolor_core::effect::EffectEntry;
+use hypercolor_core::effect::{EffectEntry, EffectRenderer, FrameInput};
 use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::display_overlays::{
+    DisplayOverlayRuntime, OverlaySlotRuntime, OverlaySlotStatus,
+};
 use hypercolor_daemon::profile_store::Profile;
 use hypercolor_daemon::session::{current_global_brightness, set_global_brightness};
+use hypercolor_types::canvas::Canvas;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
@@ -185,6 +189,25 @@ async fn body_text(response: axum::response::Response) -> String {
         .await
         .expect("failed to read response body");
     String::from_utf8(bytes.to_vec()).expect("failed to decode UTF-8 body")
+}
+
+struct TestHtmlRenderer;
+
+impl EffectRenderer for TestHtmlRenderer {
+    fn init(&mut self, _metadata: &EffectMetadata) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> anyhow::Result<()> {
+        if canvas.width() != input.canvas_width || canvas.height() != input.canvas_height {
+            *canvas = Canvas::new(input.canvas_width, input.canvas_height);
+        }
+        Ok(())
+    }
+
+    fn set_control(&mut self, _name: &str, _value: &ControlValue) {}
+
+    fn destroy(&mut self) {}
 }
 
 // ── Health / Status ──────────────────────────────────────────────────────
@@ -806,6 +829,35 @@ async fn insert_test_effect(state: &Arc<AppState>, name: &str) {
         state: EffectState::Loading,
     };
     let _ = registry.register(entry);
+}
+
+fn test_html_effect_metadata(name: &str) -> EffectMetadata {
+    EffectMetadata {
+        id: EffectId::new(Uuid::now_v7()),
+        name: name.to_owned(),
+        author: "test".to_owned(),
+        version: "0.1.0".to_owned(),
+        description: format!("{name} html effect"),
+        category: EffectCategory::Ambient,
+        tags: vec!["test".to_owned(), "html".to_owned()],
+        controls: Vec::new(),
+        presets: Vec::new(),
+        audio_reactive: false,
+        screen_reactive: false,
+        source: EffectSource::Html {
+            path: format!("/tmp/{name}.html").into(),
+        },
+        license: None,
+    }
+}
+
+async fn activate_test_html_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
+    let metadata = test_html_effect_metadata(name);
+    let mut engine = state.effect_engine.lock().await;
+    engine
+        .activate(Box::new(TestHtmlRenderer), metadata.clone())
+        .expect("html test effect should activate");
+    metadata
 }
 
 fn default_config_path() -> String {
@@ -3993,6 +4045,147 @@ async fn display_overlay_endpoints_reject_non_display_devices_and_invalid_reorde
     assert_eq!(reorder_response.status(), StatusCode::CONFLICT);
     let reorder_json = body_json(reorder_response).await;
     assert_eq!(reorder_json["error"]["code"], "conflict");
+}
+
+#[tokio::test]
+async fn display_overlay_endpoints_reject_enabled_html_overlay_while_html_effect_active() {
+    let (state, _tmp) = test_state_with_temp_output_store();
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let active_effect = activate_test_html_effect(&state, "Servo Aurora").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/displays/{display_id}/overlays"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r##"{
+                        "name":"HTML Face",
+                        "source":{"type":"html","path":"/tmp/face.html","properties":{"label":"cpu"},"render_interval_ms":1000},
+                        "position":"full_screen"
+                    }"##,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "conflict");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("message should be a string")
+            .contains(active_effect.name.as_str())
+    );
+}
+
+#[tokio::test]
+async fn auto_disable_html_overlays_for_html_effect_persists_and_reports_html_gated() {
+    let (state, tmp) = test_state_with_temp_output_store();
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/displays/{display_id}/overlays"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r##"{
+                        "name":"HTML Face",
+                        "source":{"type":"html","path":"/tmp/face.html","properties":{"label":"cpu"},"render_interval_ms":1000},
+                        "position":"full_screen"
+                    }"##,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let create_json = body_json(create_response).await;
+    let slot_id = create_json["data"]["id"]
+        .as_str()
+        .expect("slot id should be present")
+        .to_owned();
+
+    let active_effect = activate_test_html_effect(&state, "Servo Aurora").await;
+    let warnings = hypercolor_daemon::api::displays::auto_disable_html_overlays_for_effect(
+        state.as_ref(),
+        &active_effect,
+    )
+    .await;
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].code, "html_overlay_disabled");
+    assert_eq!(warnings[0].slot_id, slot_id);
+    assert_eq!(warnings[0].slot_name, "HTML Face");
+    assert_eq!(
+        warnings[0].device_id.as_deref(),
+        Some(display_id.to_string().as_str())
+    );
+
+    let list_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{display_id}/overlays"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let list_json = body_json(list_response).await;
+    assert_eq!(list_json["data"]["overlays"][0]["enabled"], false);
+
+    let parsed_slot_id = slot_id
+        .parse()
+        .expect("slot id should parse as an overlay slot id");
+    state
+        .display_overlay_runtime
+        .set(
+            display_id,
+            DisplayOverlayRuntime {
+                slots: std::collections::HashMap::from([(
+                    parsed_slot_id,
+                    OverlaySlotRuntime {
+                        last_rendered_at: None,
+                        consecutive_failures: 3,
+                        last_error: Some("stale failure".to_owned()),
+                        status: OverlaySlotStatus::Failed,
+                    },
+                )]),
+            },
+        )
+        .await;
+
+    let slot_response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{display_id}/overlays/{slot_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(slot_response.status(), StatusCode::OK);
+    let slot_json = body_json(slot_response).await;
+    assert_eq!(slot_json["data"]["slot"]["enabled"], false);
+    assert_eq!(slot_json["data"]["runtime"]["status"], "html_gated");
+
+    let persisted_raw = fs::read_to_string(tmp.path().join("device-settings.json"))
+        .expect("device settings file should exist");
+    let persisted_json: serde_json::Value =
+        serde_json::from_str(&persisted_raw).expect("device settings file should be valid json");
+    assert_eq!(
+        persisted_json["devices"][display_id.to_string()]["display_overlays"]["overlays"][0]["enabled"],
+        false
+    );
 }
 
 #[tokio::test]

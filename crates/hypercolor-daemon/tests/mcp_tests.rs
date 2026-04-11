@@ -5,6 +5,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use hypercolor_core::config::ConfigManager;
+use hypercolor_core::effect::{EffectRenderer, FrameInput};
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::mcp;
 use hypercolor_daemon::mcp::prompts::{
@@ -16,14 +17,19 @@ use hypercolor_daemon::mcp::resources::{
 use hypercolor_daemon::mcp::tools::{
     ToolError, build_tool_definitions, execute_tool, execute_tool_with_state,
 };
+use hypercolor_types::canvas::Canvas;
 use hypercolor_types::config::{CURRENT_SCHEMA_VERSION, McpConfig};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
+use hypercolor_types::effect::{
+    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
+};
 use reqwest::{Client, Response};
 use serde_json::{Value, json};
 use tempfile::TempDir;
+use uuid::Uuid;
 
 const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#;
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -100,6 +106,54 @@ async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> Device
     };
     let _ = state.device_registry.add(info).await;
     id
+}
+
+struct TestHtmlRenderer;
+
+impl EffectRenderer for TestHtmlRenderer {
+    fn init(&mut self, _metadata: &EffectMetadata) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> anyhow::Result<()> {
+        if canvas.width() != input.canvas_width || canvas.height() != input.canvas_height {
+            *canvas = Canvas::new(input.canvas_width, input.canvas_height);
+        }
+        Ok(())
+    }
+
+    fn set_control(&mut self, _name: &str, _value: &ControlValue) {}
+
+    fn destroy(&mut self) {}
+}
+
+fn test_html_effect_metadata(name: &str) -> EffectMetadata {
+    EffectMetadata {
+        id: EffectId::new(Uuid::now_v7()),
+        name: name.to_owned(),
+        author: "test".to_owned(),
+        version: "0.1.0".to_owned(),
+        description: format!("{name} html effect"),
+        category: EffectCategory::Ambient,
+        tags: vec!["test".to_owned(), "html".to_owned()],
+        controls: Vec::new(),
+        presets: Vec::new(),
+        audio_reactive: false,
+        screen_reactive: false,
+        source: EffectSource::Html {
+            path: format!("/tmp/{name}.html").into(),
+        },
+        license: None,
+    }
+}
+
+async fn activate_test_html_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
+    let metadata = test_html_effect_metadata(name);
+    let mut engine = state.effect_engine.lock().await;
+    engine
+        .activate(Box::new(TestHtmlRenderer), metadata.clone())
+        .expect("html test effect should activate");
+    metadata
 }
 
 async fn post_raw(client: &Client, url: &str, body: &str, session_id: Option<&str>) -> Response {
@@ -524,6 +578,62 @@ async fn stateful_overlay_tools_manage_display_configs() {
     assert_eq!(
         update_result["config"]["overlays"][0]["opacity"],
         json!(0.5)
+    );
+}
+
+#[tokio::test]
+async fn list_display_overlays_reports_html_gated_runtime() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+
+    let create_result = execute_tool_with_state(
+        "set_display_overlay",
+        &json!({
+            "device": display_id.to_string(),
+            "slot": {
+                "name": "HTML Face",
+                "source": {
+                    "type": "html",
+                    "path": "/tmp/face.html",
+                    "properties": {
+                        "label": "cpu"
+                    },
+                    "render_interval_ms": 1000
+                },
+                "position": "full_screen"
+            }
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("append html overlay should succeed");
+    assert_eq!(create_result["applied"], true);
+
+    let active_effect = activate_test_html_effect(&state, "Servo Aurora").await;
+    let warnings = hypercolor_daemon::api::displays::auto_disable_html_overlays_for_effect(
+        state.as_ref(),
+        &active_effect,
+    )
+    .await;
+    assert_eq!(warnings.len(), 1);
+
+    let list_result = execute_tool_with_state(
+        "list_display_overlays",
+        &json!({
+            "device": display_id.to_string(),
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("list overlays should succeed");
+    assert_eq!(
+        list_result["displays"][0]["overlays"][0]["slot"]["enabled"],
+        false
+    );
+    assert_eq!(
+        list_result["displays"][0]["overlays"][0]["runtime"]["status"],
+        "html_gated"
     );
 }
 

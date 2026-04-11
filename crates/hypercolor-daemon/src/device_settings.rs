@@ -194,6 +194,21 @@ impl DeviceSettingsStore {
         self.set_device_settings(key, settings);
     }
 
+    /// Return every stored display overlay config alongside its persistence key.
+    #[must_use]
+    pub fn display_overlay_entries(&self) -> Vec<(String, Option<String>, DisplayOverlayConfig)> {
+        self.snapshot
+            .devices
+            .iter()
+            .filter_map(|(key, settings)| {
+                settings
+                    .display_overlays
+                    .clone()
+                    .map(|config| (key.clone(), settings.name.clone(), config.normalized()))
+            })
+            .collect()
+    }
+
     /// Save the current snapshot to disk.
     pub fn save(&self) -> anyhow::Result<()> {
         if let Some(parent) = self.path.parent() {
