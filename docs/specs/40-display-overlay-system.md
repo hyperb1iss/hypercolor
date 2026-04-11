@@ -1717,6 +1717,8 @@ overlay layers.
 - `just verify` (fmt + lint + test) after every wave
 - Targeted crate tests for all new types and traits
 - Integration tests for API endpoints
+- `just overlay-matrix` before scheduling the manual pass, so the required
+  circular/square/non-square hardware is actually connected
 - Manual hardware verification on Corsair LCD for visual correctness (`just overlay-demo <display-id-or-name>` seeds the reference clock + sensor layout)
 
 ### 16.2 Performance Benchmarks
