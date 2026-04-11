@@ -213,6 +213,7 @@ impl GpuSpatialSampler {
         height: u32,
         prepared_zones: &[PreparedZonePlan],
         zones: &mut Vec<ZoneColors>,
+        encoder: Option<wgpu::CommandEncoder>,
     ) -> Result<bool> {
         if !self.ensure_plan(prepared_zones) {
             return Ok(false);
@@ -245,8 +246,10 @@ impl GpuSpatialSampler {
 
         let bind_group = self.bind_group_for(device, source_view, &points_buffer, &output_buffer);
 
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("SparkleFlinger GPU sample encoder"),
+        let mut encoder = encoder.unwrap_or_else(|| {
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("SparkleFlinger GPU sample encoder"),
+            })
         });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {

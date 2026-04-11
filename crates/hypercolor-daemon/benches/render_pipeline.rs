@@ -437,6 +437,11 @@ fn bench_sparkleflinger(c: &mut Criterion) {
             strip_zone("bench-zone-2", "bench-device-2", 120),
         ]));
         let sampling_plan = sampling_engine.sampling_plan();
+        let bypass_surface_plan = CompositionPlan::single(
+            PREVIEW_WIDTH,
+            PREVIEW_HEIGHT,
+            CompositionLayer::replace_surface(split_surface_for(PREVIEW_WIDTH, PREVIEW_HEIGHT)),
+        );
         let preview_plan = CompositionPlan::with_layers(
             PREVIEW_WIDTH,
             PREVIEW_HEIGHT,
@@ -542,6 +547,21 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                 black_box(composed.bypassed);
             });
         });
+        let mut gpu_bypass_sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Gpu)
+            .expect("GPU SparkleFlinger should initialize for bypass sampling");
+        group.bench_function(
+            "gpu_single_replace_surface_compose_640x480_no_readback",
+            |b| {
+                b.iter(|| {
+                    let composed = gpu_bypass_sparkleflinger.compose_for_outputs(
+                        bypass_surface_plan.clone(),
+                        false,
+                        false,
+                    );
+                    black_box(composed.bypassed);
+                });
+            },
+        );
         preview_sparkleflinger.compose(preview_plan.clone());
         group.bench_function("gpu_zone_sample_640x480", |b| {
             b.iter(|| {
@@ -568,6 +588,21 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                 black_box(cpu_end_to_end_sampled.first());
             });
         });
+        let mut cpu_bypass_end_to_end = SparkleFlinger::cpu();
+        let mut cpu_bypass_sampled = Vec::new();
+        group.bench_function("cpu_single_replace_surface_and_zone_sample_640x480", |b| {
+            b.iter(|| {
+                let composed = cpu_bypass_end_to_end.compose(bypass_surface_plan.clone());
+                sampling_engine.sample_into(
+                    composed
+                        .sampling_canvas
+                        .as_ref()
+                        .expect("CPU bypass benchmark expects a materialized canvas"),
+                    &mut cpu_bypass_sampled,
+                );
+                black_box(cpu_bypass_sampled.first());
+            });
+        });
 
         let mut gpu_end_to_end = SparkleFlinger::new(RenderAccelerationMode::Gpu)
             .expect("GPU SparkleFlinger should initialize for end-to-end sampling");
@@ -583,6 +618,28 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                         .expect("GPU end-to-end zone sampling should not fail")
                 );
                 black_box(gpu_end_to_end_sampled.first());
+            });
+        });
+        let mut gpu_bypass_end_to_end = SparkleFlinger::new(RenderAccelerationMode::Gpu)
+            .expect("GPU SparkleFlinger should initialize for bypass end-to-end sampling");
+        let mut gpu_bypass_end_to_end_sampled = Vec::new();
+        group.bench_function("gpu_single_replace_surface_and_zone_sample_640x480", |b| {
+            b.iter(|| {
+                let composed = gpu_bypass_end_to_end.compose_for_outputs(
+                    bypass_surface_plan.clone(),
+                    false,
+                    false,
+                );
+                black_box(composed.bypassed);
+                assert!(
+                    gpu_bypass_end_to_end
+                        .sample_zone_plan_into(
+                            sampling_plan.as_ref(),
+                            &mut gpu_bypass_end_to_end_sampled,
+                        )
+                        .expect("GPU bypass zone sampling should not fail")
+                );
+                black_box(gpu_bypass_end_to_end_sampled.first());
             });
         });
     }
