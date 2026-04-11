@@ -46,6 +46,8 @@ const SAMPLE_RATE_HZ: u32 = 48_000;
 static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
 static DEFAULT_INTERACTION: LazyLock<InteractionData> = LazyLock::new(InteractionData::default);
 static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
+static BINDING_SNAPSHOTS: LazyLock<[SystemSnapshot; 2]> =
+    LazyLock::new(|| [binding_snapshot(false), binding_snapshot(true)]);
 
 struct BindingBenchRenderer {
     controls: HashMap<String, ControlValue>,
@@ -68,7 +70,6 @@ impl EffectRenderer for BindingBenchRenderer {
         if target.width() != input.canvas_width || target.height() != input.canvas_height {
             *target = Canvas::new(input.canvas_width, input.canvas_height);
         }
-        target.clear();
         black_box(self.controls.len());
         Ok(())
     }
@@ -169,16 +170,20 @@ fn binding_metadata(binding_count: usize) -> EffectMetadata {
     metadata
 }
 
-fn binding_snapshot() -> SystemSnapshot {
+fn binding_snapshot(hot: bool) -> SystemSnapshot {
     SystemSnapshot {
-        cpu_load_percent: 41.0,
-        cpu_loads: vec![38.0, 44.0, 40.0, 42.0],
-        cpu_temp_celsius: Some(58.0),
-        gpu_temp_celsius: Some(63.0),
-        gpu_load_percent: Some(72.0),
-        gpu_vram_used_mb: Some(2048.0),
-        ram_used_percent: 54.0,
-        ram_used_mb: 16_384.0,
+        cpu_load_percent: if hot { 71.0 } else { 41.0 },
+        cpu_loads: if hot {
+            vec![68.0, 72.0, 70.0, 74.0]
+        } else {
+            vec![38.0, 44.0, 40.0, 42.0]
+        },
+        cpu_temp_celsius: Some(if hot { 84.0 } else { 58.0 }),
+        gpu_temp_celsius: Some(if hot { 79.0 } else { 63.0 }),
+        gpu_load_percent: Some(if hot { 91.0 } else { 72.0 }),
+        gpu_vram_used_mb: Some(if hot { 3_072.0 } else { 2_048.0 }),
+        ram_used_percent: if hot { 73.0 } else { 54.0 },
+        ram_used_mb: if hot { 22_528.0 } else { 16_384.0 },
         ram_total_mb: 32_768.0,
         components: Vec::new(),
         polled_at_ms: 1_715_000_000,
@@ -669,7 +674,6 @@ fn bench_render_groups(c: &mut Criterion) {
 
 fn bench_sensor_control_bindings(c: &mut Criterion) {
     let mut group = c.benchmark_group("core_effect_bindings");
-    let sensors = binding_snapshot();
 
     for binding_count in [0_usize, 1, 5] {
         let mut engine = EffectEngine::new().with_canvas_size(CANVAS_WIDTH, CANVAS_HEIGHT);
@@ -680,22 +684,27 @@ fn bench_sensor_control_bindings(c: &mut Criterion) {
             )
             .expect("binding benchmark effect should activate");
         let mut canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
+        let mut iteration = 0_usize;
 
-        group.bench_function(BenchmarkId::new("tick_with_sensor_bindings", binding_count), |b| {
-            b.iter(|| {
-                engine
-                    .tick_with_inputs_and_sensors_into(
-                        FRAME_DT_SECONDS,
-                        &SILENCE,
-                        &DEFAULT_INTERACTION,
-                        None,
-                        black_box(&sensors),
-                        black_box(&mut canvas),
-                    )
-                    .expect("binding benchmark tick should succeed");
-                black_box(canvas.as_rgba_bytes());
-            });
-        });
+        group.bench_function(
+            BenchmarkId::new("tick_with_sensor_bindings", binding_count),
+            |b| {
+                b.iter(|| {
+                    let sensors = &BINDING_SNAPSHOTS[iteration % BINDING_SNAPSHOTS.len()];
+                    iteration = iteration.wrapping_add(1);
+                    engine
+                        .tick_with_inputs_and_sensors_into(
+                            FRAME_DT_SECONDS,
+                            &SILENCE,
+                            &DEFAULT_INTERACTION,
+                            None,
+                            black_box(sensors),
+                            black_box(&mut canvas),
+                        )
+                        .expect("binding benchmark tick should succeed");
+                });
+            },
+        );
     }
 
     group.finish();
