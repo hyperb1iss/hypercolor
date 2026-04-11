@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use hypercolor_types::effect::{
-    ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
-    EffectMetadata, EffectSource, EffectState, GradientStop,
+    ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
+    EffectId, EffectMetadata, EffectSource, EffectState, GradientStop,
 };
 use uuid::Uuid;
 

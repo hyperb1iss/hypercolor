@@ -4,7 +4,10 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use crossterm::ExecutableCommand;
 use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+use ratatui::DefaultTerminal;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc;
@@ -232,7 +235,7 @@ impl App {
                 || (render_requested && !self.view.fullscreen_preview && self.motion.is_active())
             {
                 self.view.render_dirty |= self.preview.drain_resize_results();
-                terminal.draw(|frame| self.render(frame))?;
+                self.draw_terminal(&mut terminal)?;
                 self.view.render_dirty = false;
             }
         }
@@ -245,6 +248,40 @@ impl App {
         ratatui::restore();
         tracing::info!("TUI event loop ended");
         Ok(())
+    }
+
+    fn draw_terminal(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        let sync_started = match terminal
+            .backend_mut()
+            .execute(BeginSynchronizedUpdate)
+            .map(|_| ())
+        {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::debug!("sync update unavailable, drawing without it: {error}");
+                false
+            }
+        };
+
+        let draw_result = terminal.draw(|frame| self.render(frame)).map(|_| ());
+        if !sync_started {
+            return draw_result.map_err(Into::into);
+        }
+
+        match terminal
+            .backend_mut()
+            .execute(EndSynchronizedUpdate)
+            .map(|_| ())
+        {
+            Ok(()) => draw_result.map_err(Into::into),
+            Err(error) => match draw_result {
+                Ok(()) => Err(error.into()),
+                Err(draw_error) => {
+                    tracing::debug!("failed to end sync update after draw error: {error}");
+                    Err(draw_error.into())
+                }
+            },
+        }
     }
 
     /// Reset the idle timer and cancel the breathing effect if it's running.

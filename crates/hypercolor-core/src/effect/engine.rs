@@ -274,7 +274,10 @@ impl EffectEngine {
             .metadata
             .as_ref()
             .and_then(|metadata| metadata.control_by_id(name))
-            .map_or_else(|| name.to_owned(), |control| control.control_id().to_owned());
+            .map_or_else(
+                || name.to_owned(),
+                |control| control.control_id().to_owned(),
+            );
         let changed = self.controls.get(&target_name) != Some(value);
         self.controls.insert(target_name.clone(), value.clone());
         if !self.control_has_binding(&target_name)
@@ -643,11 +646,16 @@ fn apply_sensor_bindings(
         let next_state = sensors
             .reading(&binding.sensor)
             .and_then(|reading| {
-                evaluate_sensor_binding(control, binding, reading.value, binding_state.get(control_id))
-                    .map(|value| ActiveBindingState {
-                        sensor_value: Some(reading.value),
-                        control_value: value,
-                    })
+                evaluate_sensor_binding(
+                    control,
+                    binding,
+                    reading.value,
+                    binding_state.get(control_id),
+                )
+                .map(|value| ActiveBindingState {
+                    sensor_value: Some(reading.value),
+                    control_value: value,
+                })
             })
             .unwrap_or_else(|| ActiveBindingState {
                 sensor_value: None,

@@ -3,13 +3,13 @@
 use std::sync::Arc;
 use std::sync::mpsc::{self as std_mpsc, Receiver as StdReceiver, Sender as StdSender};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use image::DynamicImage;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui_image::errors::Errors as ImageProtocolError;
 use ratatui_image::picker::Picker;
-use ratatui_image::thread::{ResizeRequest, ResizeResponse, ThreadProtocol};
+use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::{Resize, ResizeEncodeRender};
 
 use crate::state::CanvasFrame;
@@ -26,6 +26,11 @@ struct PreviewPolicy {
     fullscreen: PreviewTransport,
     max_primary_rgba_bytes: usize,
     max_primary_scale_tenths: u16,
+    medium_primary_rgba_bytes: usize,
+    large_primary_rgba_bytes: usize,
+    default_frame_interval: Duration,
+    medium_primary_frame_interval: Duration,
+    large_primary_frame_interval: Duration,
 }
 
 impl PreviewPolicy {
@@ -50,10 +55,7 @@ impl PreviewPolicy {
             return base;
         };
 
-        let char_width = usize::from(font_size.0.max(1));
-        let char_height = usize::from(font_size.1.max(1));
-        let target_rgba_bytes =
-            usize::from(area.width) * usize::from(area.height) * char_width * char_height * 4;
+        let target_rgba_bytes = Self::target_rgba_bytes(font_size, area);
 
         if target_rgba_bytes > self.max_primary_rgba_bytes {
             return PreviewTransport::Halfblocks;
@@ -71,6 +73,36 @@ impl PreviewPolicy {
 
         base
     }
+
+    fn frame_interval_for(
+        self,
+        transport: PreviewTransport,
+        font_size: (u16, u16),
+        area: Option<Rect>,
+    ) -> Duration {
+        if transport != PreviewTransport::Primary {
+            return self.default_frame_interval;
+        }
+
+        let Some(area) = area else {
+            return self.default_frame_interval;
+        };
+
+        let target_rgba_bytes = Self::target_rgba_bytes(font_size, area);
+        if target_rgba_bytes >= self.large_primary_rgba_bytes {
+            self.large_primary_frame_interval
+        } else if target_rgba_bytes >= self.medium_primary_rgba_bytes {
+            self.medium_primary_frame_interval
+        } else {
+            self.default_frame_interval
+        }
+    }
+
+    fn target_rgba_bytes(font_size: (u16, u16), area: Rect) -> usize {
+        let char_width = usize::from(font_size.0.max(1));
+        let char_height = usize::from(font_size.1.max(1));
+        usize::from(area.width) * usize::from(area.height) * char_width * char_height * 4
+    }
 }
 
 impl Default for PreviewPolicy {
@@ -80,36 +112,121 @@ impl Default for PreviewPolicy {
             fullscreen: PreviewTransport::Halfblocks,
             max_primary_rgba_bytes: 768 * 1024,
             max_primary_scale_tenths: 15,
+            medium_primary_rgba_bytes: 256 * 1024,
+            large_primary_rgba_bytes: 512 * 1024,
+            default_frame_interval: Duration::from_millis(100),
+            medium_primary_frame_interval: Duration::from_millis(167),
+            large_primary_frame_interval: Duration::from_millis(250),
         }
     }
 }
 
+struct PreviewBuildRequest {
+    request_id: u64,
+    frame: Arc<CanvasFrame>,
+    transport: PreviewTransport,
+    area: Rect,
+}
+
+struct PreviewBuildResponse {
+    request_id: u64,
+    frame_number: u32,
+    transport: PreviewTransport,
+    protocol: StatefulProtocol,
+}
+
+enum PreviewBuildResult {
+    Ready(PreviewBuildResponse),
+    Failed {
+        request_id: u64,
+        frame_number: u32,
+        error: String,
+    },
+}
+
 pub(crate) struct PreviewManager {
     primary_picker: Picker,
-    halfblocks_picker: Picker,
     policy: PreviewPolicy,
-    resize_tx: Option<StdSender<ResizeRequest>>,
-    resize_rx: StdReceiver<Result<ResizeResponse, ImageProtocolError>>,
-    resize_worker: Option<thread::JoinHandle<()>>,
-    current: Option<ThreadProtocol>,
-    pending: Option<ThreadProtocol>,
+    build_tx: Option<StdSender<PreviewBuildRequest>>,
+    build_rx: StdReceiver<PreviewBuildResult>,
+    build_worker: Option<thread::JoinHandle<()>>,
+    current: Option<StatefulProtocol>,
+    current_frame_number: Option<u32>,
+    current_transport: Option<PreviewTransport>,
     preview_area: Option<Rect>,
     latest_frame: Option<Arc<CanvasFrame>>,
     fullscreen: bool,
     selected_transport: PreviewTransport,
+    next_request_id: u64,
+    in_flight_request_id: Option<u64>,
+    last_build_started: Option<Instant>,
 }
 
 impl PreviewManager {
     pub(crate) fn new(primary_picker: Picker) -> Self {
-        let (resize_tx, resize_requests) = std_mpsc::channel::<ResizeRequest>();
-        let (resize_results_tx, resize_rx) =
-            std_mpsc::channel::<Result<ResizeResponse, ImageProtocolError>>();
+        let (build_tx, build_requests) = std_mpsc::channel::<PreviewBuildRequest>();
+        let (build_results_tx, build_rx) = std_mpsc::channel::<PreviewBuildResult>();
 
-        let resize_worker = thread::Builder::new()
+        let halfblocks_picker = Picker::halfblocks();
+        let build_primary_picker = primary_picker.clone();
+        let build_halfblocks_picker = halfblocks_picker.clone();
+        let build_worker = thread::Builder::new()
             .name("hypercolor-tui-preview".to_string())
             .spawn(move || {
-                while let Ok(request) = resize_requests.recv() {
-                    if resize_results_tx.send(request.resize_encode()).is_err() {
+                while let Ok(request) = build_requests.recv() {
+                    let picker = match request.transport {
+                        PreviewTransport::Primary => &build_primary_picker,
+                        PreviewTransport::Halfblocks => &build_halfblocks_picker,
+                    };
+
+                    let Some(img) = image::RgbImage::from_raw(
+                        u32::from(request.frame.width),
+                        u32::from(request.frame.height),
+                        request.frame.pixels.clone(),
+                    ) else {
+                        if build_results_tx
+                            .send(PreviewBuildResult::Failed {
+                                request_id: request.request_id,
+                                frame_number: request.frame.frame_number,
+                                error: "invalid preview frame length".to_string(),
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                        continue;
+                    };
+
+                    let mut protocol = picker.new_resize_protocol(DynamicImage::ImageRgb8(img));
+
+                    if let Some(target_rect) =
+                        protocol.needs_resize(&Resize::Scale(None), request.area)
+                    {
+                        protocol.resize_encode(&Resize::Scale(None), target_rect);
+                        if let Some(Err(error)) = protocol.last_encoding_result() {
+                            if build_results_tx
+                                .send(PreviewBuildResult::Failed {
+                                    request_id: request.request_id,
+                                    frame_number: request.frame.frame_number,
+                                    error: error.to_string(),
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                            continue;
+                        }
+                    }
+
+                    if build_results_tx
+                        .send(PreviewBuildResult::Ready(PreviewBuildResponse {
+                            request_id: request.request_id,
+                            frame_number: request.frame.frame_number,
+                            transport: request.transport,
+                            protocol,
+                        }))
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -120,36 +237,42 @@ impl PreviewManager {
 
         Self {
             primary_picker,
-            halfblocks_picker: Picker::halfblocks(),
             policy,
-            resize_tx: Some(resize_tx),
-            resize_rx,
-            resize_worker,
+            build_tx: Some(build_tx),
+            build_rx,
+            build_worker,
             current: None,
-            pending: None,
+            current_frame_number: None,
+            current_transport: None,
             preview_area: None,
             latest_frame: None,
             fullscreen: false,
             selected_transport: PreviewTransport::Primary,
+            next_request_id: 0,
+            in_flight_request_id: None,
+            last_build_started: None,
         }
     }
 
     pub(crate) fn on_frame(&mut self, frame: Arc<CanvasFrame>, fullscreen: bool) {
         self.fullscreen = fullscreen;
-        self.selected_transport = self.transport_for(Some(frame.as_ref()), self.preview_area);
-        self.queue_protocol(frame.as_ref());
+        let next_transport = self.transport_for(Some(frame.as_ref()), self.preview_area);
+        if next_transport != self.selected_transport {
+            self.selected_transport = next_transport;
+            self.invalidate_current();
+        }
         self.latest_frame = Some(frame);
+        self.maybe_queue_build();
     }
 
     pub(crate) fn set_fullscreen(&mut self, fullscreen: bool) {
         self.fullscreen = fullscreen;
         let next_transport = self.transport_for(self.latest_frame.as_deref(), self.preview_area);
-        self.selected_transport = next_transport;
-        self.reset_protocols();
-
-        if let Some(frame) = self.latest_frame.clone() {
-            self.queue_protocol(frame.as_ref());
+        if next_transport != self.selected_transport {
+            self.selected_transport = next_transport;
+            self.invalidate_current();
         }
+        self.maybe_queue_build();
     }
 
     pub(crate) fn clear(&mut self) {
@@ -159,41 +282,44 @@ impl PreviewManager {
 
     pub(crate) fn shutdown(&mut self) {
         self.clear();
-        self.resize_tx = None;
+        self.build_tx = None;
 
-        if let Some(worker) = self.resize_worker.take()
+        if let Some(worker) = self.build_worker.take()
             && let Err(error) = worker.join()
         {
-            tracing::warn!("preview resize worker panicked during shutdown: {error:?}");
+            tracing::warn!("preview worker panicked during shutdown: {error:?}");
         }
     }
 
     pub(crate) fn drain_resize_results(&mut self) -> bool {
         let mut dirty = false;
 
-        while let Ok(result) = self.resize_rx.try_recv() {
+        while let Ok(result) = self.build_rx.try_recv() {
             match result {
-                Ok(completed) => {
-                    if let Some(protocol) = self.pending.as_mut()
-                        && protocol.update_resized_protocol(completed)
-                    {
+                PreviewBuildResult::Ready(completed) => {
+                    if self.in_flight_request_id == Some(completed.request_id) {
                         dirty = true;
-                        let ready_for_current_area = self
-                            .preview_area
-                            .map(Self::resize_area)
-                            .is_some_and(|area| {
-                                protocol.needs_resize(&Resize::Scale(None), area).is_none()
-                            });
-
-                        if ready_for_current_area || self.current.is_none() {
-                            self.current = self.pending.take();
-                        }
+                        self.current = Some(completed.protocol);
+                        self.current_frame_number = Some(completed.frame_number);
+                        self.current_transport = Some(completed.transport);
+                        self.in_flight_request_id = None;
                     }
                 }
-                Err(error) => {
-                    tracing::debug!("preview resize/encode failed: {error}");
+                PreviewBuildResult::Failed {
+                    request_id,
+                    frame_number,
+                    error,
+                } => {
+                    if self.in_flight_request_id == Some(request_id) {
+                        self.in_flight_request_id = None;
+                    }
+                    tracing::debug!("preview build failed for frame {frame_number}: {error}");
                 }
             }
+        }
+
+        if self.in_flight_request_id.is_none() {
+            self.maybe_queue_build();
         }
 
         dirty
@@ -209,19 +335,12 @@ impl PreviewManager {
             let next_transport = self.transport_for(Some(frame.as_ref()), Some(area));
             if next_transport != self.selected_transport {
                 self.selected_transport = next_transport;
-                self.reset_protocols();
-                self.queue_protocol(frame.as_ref());
+                self.invalidate_current();
             }
         }
 
         self.preview_area = Some(area);
-        let resize_area = Self::resize_area(area);
-
-        if let Some(protocol) = self.pending.as_mut()
-            && let Some(target_rect) = protocol.needs_resize(&Resize::Scale(None), resize_area)
-        {
-            protocol.resize_encode(&Resize::Scale(None), target_rect);
-        }
+        self.maybe_queue_build();
 
         if let Some(protocol) = self.current.as_mut() {
             protocol.render(area, buf);
@@ -233,32 +352,64 @@ impl PreviewManager {
         self.current.is_some()
     }
 
-    fn queue_protocol(&mut self, frame: &CanvasFrame) {
-        let Some(img) = image::RgbImage::from_raw(
-            u32::from(frame.width),
-            u32::from(frame.height),
-            frame.pixels.clone(),
-        ) else {
+    fn maybe_queue_build(&mut self) {
+        if self.in_flight_request_id.is_some() {
+            return;
+        }
+
+        let Some(frame) = self.latest_frame.clone() else {
+            return;
+        };
+        let Some(area) = self
+            .preview_area
+            .filter(|area| area.width > 0 && area.height > 0)
+        else {
             return;
         };
 
-        let next_protocol = self
-            .picker_for(self.selected_transport)
-            .new_resize_protocol(DynamicImage::ImageRgb8(img));
+        let resize_area = Self::resize_area(area);
+        let transport = self.transport_for(Some(frame.as_ref()), Some(area));
+        self.selected_transport = transport;
+        let frame_interval =
+            self.policy
+                .frame_interval_for(transport, self.primary_picker.font_size(), Some(area));
 
-        if let Some(protocol) = self.pending.as_mut() {
-            if protocol.protocol_type().is_some() {
-                protocol.replace_protocol(next_protocol);
-            }
-        } else if let Some(resize_tx) = self.resize_tx.as_ref() {
-            self.pending = Some(ThreadProtocol::new(resize_tx.clone(), Some(next_protocol)));
+        if self.current_frame_number == Some(frame.frame_number)
+            && self.current_transport == Some(transport)
+            && self.current.as_ref().is_some_and(|protocol| {
+                protocol
+                    .needs_resize(&Resize::Scale(None), resize_area)
+                    .is_none()
+            })
+        {
+            return;
         }
-    }
 
-    fn picker_for(&self, transport: PreviewTransport) -> &Picker {
-        match transport {
-            PreviewTransport::Primary => &self.primary_picker,
-            PreviewTransport::Halfblocks => &self.halfblocks_picker,
+        if self.current.is_some()
+            && self
+                .last_build_started
+                .is_some_and(|started| started.elapsed() < frame_interval)
+        {
+            return;
+        }
+
+        let Some(build_tx) = self.build_tx.as_ref() else {
+            return;
+        };
+
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+        let request_id = self.next_request_id;
+        if build_tx
+            .send(PreviewBuildRequest {
+                request_id,
+                frame,
+                transport,
+                area: resize_area,
+            })
+            .is_ok()
+        {
+            self.in_flight_request_id = Some(request_id);
+            self.last_build_started = Some(Instant::now());
         }
     }
 
@@ -271,9 +422,16 @@ impl PreviewManager {
         )
     }
 
-    fn reset_protocols(&mut self) {
+    fn invalidate_current(&mut self) {
         self.current = None;
-        self.pending = None;
+        self.current_frame_number = None;
+        self.current_transport = None;
+        self.in_flight_request_id = None;
+        self.last_build_started = None;
+    }
+
+    fn reset_protocols(&mut self) {
+        self.invalidate_current();
         self.preview_area = None;
     }
 
