@@ -914,4 +914,12 @@ mod tests {
             preview_surface_identity(&second)
         );
     }
+
+    #[test]
+    fn preview_surface_identity_keeps_empty_frames_stable() {
+        assert_eq!(
+            preview_surface_identity(&CanvasFrame::empty()),
+            preview_surface_identity(&CanvasFrame::empty())
+        );
+    }
 }
