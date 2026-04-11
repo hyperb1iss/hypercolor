@@ -29,10 +29,25 @@ pub(super) struct DisplayWorkerHandle {
 
 #[derive(Clone, Debug)]
 struct DisplayFrameInputState {
-    source: CanvasFrame,
+    source_identity: DisplaySourceIdentity,
+    source_snapshot: Option<CanvasFrame>,
     brightness_factor: u16,
     geometry: DisplayGeometry,
     viewport: DisplayViewportSignature,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DisplaySourceIdentity {
+    generation: u64,
+    storage_ptr: usize,
+    width: u32,
+    height: u32,
+}
+
+impl DisplaySourceIdentity {
+    fn is_stable(self) -> bool {
+        self.generation > 0
+    }
 }
 
 impl DisplayFrameInputState {
@@ -43,12 +58,19 @@ impl DisplayFrameInputState {
         geometry: &DisplayGeometry,
         brightness: f32,
     ) -> bool {
-        self.source.width == source.width
-            && self.source.height == source.height
+        let source_identity = display_source_identity(source);
+        let source_matches = if source_identity.is_stable() {
+            self.source_identity == source_identity
+        } else {
+            self.source_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.rgba_bytes() == source.rgba_bytes())
+        };
+
+        source_matches
             && self.brightness_factor == display_brightness_factor(brightness)
             && self.geometry == *geometry
             && self.viewport == display_viewport_signature(viewport)
-            && self.source.rgba_bytes() == source.rgba_bytes()
     }
 
     fn capture(
@@ -57,12 +79,23 @@ impl DisplayFrameInputState {
         geometry: &DisplayGeometry,
         brightness: f32,
     ) -> Self {
+        let source_identity = display_source_identity(source);
         Self {
-            source: source.clone(),
+            source_snapshot: (!source_identity.is_stable()).then(|| source.clone()),
+            source_identity,
             brightness_factor: display_brightness_factor(brightness),
             geometry: geometry.clone(),
             viewport: display_viewport_signature(viewport),
         }
+    }
+}
+
+fn display_source_identity(source: &CanvasFrame) -> DisplaySourceIdentity {
+    DisplaySourceIdentity {
+        generation: source.surface().generation(),
+        storage_ptr: source.rgba_bytes().as_ptr() as usize,
+        width: source.width,
+        height: source.height,
     }
 }
 
