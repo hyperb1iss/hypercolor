@@ -130,6 +130,10 @@ docs-build:
 daemon *args='':
     ./scripts/cargo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview -- --log-level debug {{ args }}
 
+# Run the daemon with the feature-gated GPU compositor enabled
+daemon-wgpu *args='':
+    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features wgpu -- --log-level debug {{ args }}
+
 # Run the CLI
 cli *args='':
     ./scripts/cargo-cache-build.sh cargo run -p hypercolor-cli --bin hypercolor -- {{ args }}
@@ -145,6 +149,10 @@ daemon-release *args='':
 # Run Servo daemon (dev profile) with cache wrapper
 daemon-servo *args='':
     ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features servo -- --log-level debug --bind 127.0.0.1:9420 {{ args }}
+
+# Run Servo daemon with the GPU compositor enabled
+daemon-servo-wgpu *args='':
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu" -- --log-level debug --bind 127.0.0.1:9420 {{ args }}
 
 # Run Servo daemon in release mode with cache wrapper
 daemon-servo-release *args='':
@@ -230,6 +238,16 @@ dev *args='':
     set -euo pipefail
     trap 'kill 0' EXIT
     ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features servo -- --log-level debug --bind 127.0.0.1:9420 {{ args }} &
+    sleep 2
+    cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev &
+    wait
+
+# Run Servo GPU daemon + UI dev server together
+dev-wgpu *args='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'kill 0' EXIT
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu" -- --log-level debug --bind 127.0.0.1:9420 {{ args }} &
     sleep 2
     cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev &
     wait
