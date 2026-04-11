@@ -1,13 +1,16 @@
 mod image;
+mod pixmap;
 
 use std::time::{Duration, SystemTime};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use thiserror::Error;
+use tiny_skia::Pixmap;
 
 use hypercolor_types::sensor::SystemSnapshot;
 
 pub use image::ImageRenderer;
+pub use pixmap::overlay_buffer_from_pixmap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverlayBuffer {
@@ -34,6 +37,23 @@ impl OverlayBuffer {
 
     pub fn clear(&mut self) {
         self.pixels.fill(0);
+    }
+
+    pub fn copy_from_pixmap(&mut self, pixmap: &Pixmap) -> Result<()> {
+        let width = pixmap.width();
+        let height = pixmap.height();
+        if self.width != width || self.height != height {
+            bail!(
+                "pixmap size {}x{} did not match overlay buffer {}x{}",
+                width,
+                height,
+                self.width,
+                self.height
+            );
+        }
+
+        self.pixels.copy_from_slice(pixmap.data());
+        Ok(())
     }
 }
 

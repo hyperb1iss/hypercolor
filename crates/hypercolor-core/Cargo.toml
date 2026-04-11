@@ -44,6 +44,9 @@ rustfft = { workspace = true }
 aes-gcm = { workspace = true }
 rand = { workspace = true }
 image = { workspace = true }
+tiny-skia = { workspace = true }
+cosmic-text = { workspace = true }
+resvg = { workspace = true }
 webrtc-dtls = { workspace = true, optional = true }
 webrtc-util = { workspace = true, optional = true }
 cpal = { workspace = true }
