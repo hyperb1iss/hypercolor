@@ -22,7 +22,7 @@ use super::{
 use crate::session::OutputPowerState;
 
 pub(super) struct DisplayWorkerHandle {
-    tx: watch::Sender<Option<Arc<DisplayWorkItem>>>,
+    tx: watch::Sender<Option<DisplayWorkItem>>,
     join_handle: JoinHandle<()>,
     pub target_fps: u32,
 }
@@ -95,7 +95,7 @@ impl DisplayWorkerHandle {
         power_state: watch::Receiver<OutputPowerState>,
         static_hold_refresh_interval: Duration,
     ) -> Self {
-        let (tx, rx) = watch::channel(None::<Arc<DisplayWorkItem>>);
+        let (tx, rx) = watch::channel(None::<DisplayWorkItem>);
         let worker_backend_id = target.backend_id.clone();
         let worker_device_id = target.device_id;
         let target_fps = target.target_fps;
@@ -117,7 +117,7 @@ impl DisplayWorkerHandle {
     }
 
     pub fn push(&self, work: DisplayWorkItem) {
-        self.tx.send_replace(Some(Arc::new(work)));
+        self.tx.send_replace(Some(work));
     }
 
     pub async fn shutdown(self) {
@@ -135,7 +135,7 @@ async fn run_display_worker(
     backend_key: String,
     device_id: DeviceId,
     target_fps: u32,
-    mut rx: watch::Receiver<Option<Arc<DisplayWorkItem>>>,
+    mut rx: watch::Receiver<Option<DisplayWorkItem>>,
     mut power_state: watch::Receiver<OutputPowerState>,
     static_hold_refresh_interval: Duration,
 ) {
@@ -143,7 +143,7 @@ async fn run_display_worker(
     let mut next_send_at = Instant::now();
     let mut last_warned_at = None::<Instant>;
     let mut last_delivered_input = None::<DisplayFrameInputState>;
-    let mut last_delivered_work = None::<Arc<DisplayWorkItem>>;
+    let mut last_delivered_work = None::<DisplayWorkItem>;
     let mut next_hold_refresh_at = None::<Instant>;
     let mut encode_state = match DisplayEncodeState::new() {
         Ok(state) => state,
@@ -157,7 +157,7 @@ async fn run_display_worker(
             return;
         }
     };
-    let mut pending = None::<Arc<DisplayWorkItem>>;
+    let mut pending = None::<DisplayWorkItem>;
 
     loop {
         if pending.is_none() {
@@ -178,7 +178,7 @@ async fn run_display_worker(
                     () = tokio::time::sleep_until(tokio::time::Instant::from_std(hold_deadline)) => {
                         if should_refresh_static_hold(&power_state)
                             && let Some(work) = last_delivered_work.as_ref() {
-                            pending = Some(Arc::clone(work));
+                            pending = Some(work.clone());
                             last_delivered_input = None;
                         }
                     }
@@ -300,7 +300,7 @@ async fn run_display_worker(
             continue;
         }
         last_delivered_input = Some(DisplayFrameInputState::capture(&source, target.as_ref()));
-        last_delivered_work = Some(Arc::clone(&work));
+        last_delivered_work = Some(work.clone());
         next_hold_refresh_at = static_hold_refresh_deadline(
             &power_state,
             last_delivered_work.as_ref(),
@@ -344,7 +344,7 @@ fn should_refresh_static_hold(power_state: &watch::Receiver<OutputPowerState>) -
 
 fn static_hold_refresh_deadline(
     power_state: &watch::Receiver<OutputPowerState>,
-    last_delivered_work: Option<&Arc<DisplayWorkItem>>,
+    last_delivered_work: Option<&DisplayWorkItem>,
     refresh_interval: Duration,
 ) -> Option<Instant> {
     if !should_refresh_static_hold(power_state) || last_delivered_work.is_none() {
