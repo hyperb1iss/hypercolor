@@ -54,7 +54,11 @@ struct GpuCompositorSurfaceSet {
     source: GpuCompositorTexture,
     bind_groups: GpuCompositorBindGroups,
     readback: wgpu::Buffer,
+    front_contents: Option<CachedSourceUpload>,
+    back_contents: Option<CachedSourceUpload>,
     cached_source_upload: Option<CachedSourceUpload>,
+    #[cfg(test)]
+    front_upload_count: usize,
     #[cfg(test)]
     source_upload_count: usize,
 }
@@ -194,10 +198,18 @@ impl GpuSparkleFlinger {
             .context("GPU composition requires at least one layer")?;
 
         if first_layer.mode == CompositionMode::Replace && first_layer.opacity >= 1.0 {
-            upload_frame_into_texture(&self.queue, &surfaces.front.texture, &first_layer.frame);
+            upload_frame_into_cached_texture(
+                &self.queue,
+                &surfaces.front.texture,
+                &mut surfaces.front_contents,
+                &first_layer.frame,
+                #[cfg(test)]
+                &mut surfaces.front_upload_count,
+            );
         } else {
             let full_range = wgpu::ImageSubresourceRange::default();
             encoder.clear_texture(&surfaces.front.texture, &full_range);
+            surfaces.front_contents = None;
             compose_layer_into_gpu(
                 &self.queue,
                 &self.pipeline,
@@ -448,7 +460,11 @@ impl GpuCompositorSurfaceSet {
             back,
             source,
             readback,
+            front_contents: None,
+            back_contents: None,
             cached_source_upload: None,
+            #[cfg(test)]
+            front_upload_count: 0,
             #[cfg(test)]
             source_upload_count: 0,
         }
@@ -530,6 +546,11 @@ fn compose_layer_into_gpu(
         }
     };
     upload_frame_into_source_texture(queue, surfaces, &layer.frame);
+    let output_surface = if use_front_as_current {
+        GpuCompositorOutputSurface::Back
+    } else {
+        GpuCompositorOutputSurface::Front
+    };
     let output = if use_front_as_current {
         &surfaces.back
     } else {
@@ -556,6 +577,7 @@ fn compose_layer_into_gpu(
             },
             texture_extent(surfaces.width, surfaces.height),
         );
+        set_texture_contents(surfaces, output_surface, cached_source_upload(&layer.frame));
         return;
     }
 
@@ -576,6 +598,7 @@ fn compose_layer_into_gpu(
         1,
     );
     drop(pass);
+    set_texture_contents(surfaces, output_surface, None);
 }
 
 fn upload_frame_into_source_texture(
@@ -583,17 +606,14 @@ fn upload_frame_into_source_texture(
     surfaces: &mut GpuCompositorSurfaceSet,
     frame: &ProducerFrame,
 ) {
-    let next_upload = cached_source_upload(frame);
-    if next_upload.is_some() && surfaces.cached_source_upload == next_upload {
-        return;
-    }
-
-    upload_frame_into_texture(queue, &surfaces.source.texture, frame);
-    surfaces.cached_source_upload = next_upload;
-    #[cfg(test)]
-    {
-        surfaces.source_upload_count = surfaces.source_upload_count.saturating_add(1);
-    }
+    upload_frame_into_cached_texture(
+        queue,
+        &surfaces.source.texture,
+        &mut surfaces.cached_source_upload,
+        frame,
+        #[cfg(test)]
+        &mut surfaces.source_upload_count,
+    );
 }
 
 fn upload_frame_into_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, frame: &ProducerFrame) {
@@ -615,6 +635,26 @@ fn upload_frame_into_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, frame
     );
 }
 
+fn upload_frame_into_cached_texture(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    cached_upload: &mut Option<CachedSourceUpload>,
+    frame: &ProducerFrame,
+    #[cfg(test)] upload_count: &mut usize,
+) {
+    let next_upload = cached_source_upload(frame);
+    if next_upload.is_some() && *cached_upload == next_upload {
+        return;
+    }
+
+    upload_frame_into_texture(queue, texture, frame);
+    *cached_upload = next_upload;
+    #[cfg(test)]
+    {
+        *upload_count = upload_count.saturating_add(1);
+    }
+}
+
 fn cached_source_upload(frame: &ProducerFrame) -> Option<CachedSourceUpload> {
     let ProducerFrame::Surface(surface) = frame else {
         return None;
@@ -629,6 +669,17 @@ fn cached_source_upload(frame: &ProducerFrame) -> Option<CachedSourceUpload> {
         width: surface.width(),
         height: surface.height(),
     })
+}
+
+fn set_texture_contents(
+    surfaces: &mut GpuCompositorSurfaceSet,
+    output: GpuCompositorOutputSurface,
+    contents: Option<CachedSourceUpload>,
+) {
+    match output {
+        GpuCompositorOutputSurface::Front => surfaces.front_contents = contents,
+        GpuCompositorOutputSurface::Back => surfaces.back_contents = contents,
+    }
 }
 
 fn read_back_texture(
@@ -1034,19 +1085,18 @@ mod tests {
     }
 
     #[test]
-    fn gpu_compositor_reuses_cached_slot_backed_source_uploads() {
+    fn gpu_compositor_reuses_cached_slot_backed_frame_uploads() {
         let mut compositor = match GpuSparkleFlinger::new() {
             Ok(compositor) => compositor,
             Err(_) => return,
         };
+        let retained_base = slot_surface(Rgba::new(255, 32, 0, 255));
         let retained_overlay = slot_surface(Rgba::new(32, 64, 255, 255));
         let plan = CompositionPlan::with_layers(
             4,
             4,
             vec![
-                CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
-                    255, 32, 0, 255,
-                )))),
+                CompositionLayer::replace(ProducerFrame::Surface(retained_base)),
                 CompositionLayer::alpha(
                     ProducerFrame::Surface(retained_overlay),
                     0.35,
@@ -1062,6 +1112,11 @@ mod tests {
             .as_ref()
             .expect("surface allocation should exist after composition")
             .source_upload_count;
+        let first_front_upload_count = compositor
+            .surfaces
+            .as_ref()
+            .expect("surface allocation should exist after composition")
+            .front_upload_count;
 
         compositor
             .compose(&plan, false)
@@ -1071,9 +1126,16 @@ mod tests {
             .as_ref()
             .expect("surface allocation should persist across compositions")
             .source_upload_count;
+        let second_front_upload_count = compositor
+            .surfaces
+            .as_ref()
+            .expect("surface allocation should persist across compositions")
+            .front_upload_count;
 
         assert_eq!(first_upload_count, 1);
         assert_eq!(second_upload_count, first_upload_count);
+        assert_eq!(first_front_upload_count, 1);
+        assert_eq!(second_front_upload_count, first_front_upload_count);
     }
 
     #[test]
