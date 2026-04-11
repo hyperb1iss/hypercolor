@@ -21,6 +21,7 @@ use tracing::{debug, info, warn};
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::device::{DeviceId, DeviceTopologyHint};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
@@ -143,6 +144,14 @@ struct DisplayTargetsSnapshot {
     targets: Arc<[Arc<DisplayTarget>]>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StableDisplaySourceIdentity {
+    generation: u64,
+    storage: PublishedSurfaceStorageIdentity,
+    width: u32,
+    height: u32,
+}
+
 impl DisplayTarget {
     pub(super) fn worker_config_signature(&self) -> DisplayWorkerConfigSignature {
         DisplayWorkerConfigSignature {
@@ -221,6 +230,8 @@ async fn run_display_output(
     let mut workers = HashMap::<DisplayWorkerKey, DisplayWorkerHandle>::new();
     let mut targets_cache = DisplayTargetCache::default();
     let mut last_reconciled_target_version = None::<u64>;
+    let mut last_dispatched_target_version = None::<u64>;
+    let mut last_dispatched_frame = None::<StableDisplaySourceIdentity>;
 
     loop {
         tokio::select! {
@@ -256,13 +267,29 @@ async fn run_display_output(
             last_reconciled_target_version = Some(targets.version);
         }
         if targets.targets.is_empty() {
+            last_dispatched_target_version = None;
             continue;
         }
 
-        // `watch` gives us latest-value semantics, so after target discovery we can
-        // cheaply snapshot the newest frame instead of cloning every canvas update
-        // while no display target is active.
-        let frame = Arc::new(canvas_rx.borrow().clone());
+        // Stable slot-backed surfaces can be retained and republished across ticks.
+        // Skip waking every display worker when both the target set and surface are unchanged.
+        let frame = {
+            let frame = canvas_rx.borrow();
+            let stable_identity = stable_display_source_identity(&frame);
+            if stable_identity.is_some()
+                && last_dispatched_target_version == Some(targets.version)
+                && last_dispatched_frame == stable_identity
+            {
+                None
+            } else {
+                last_dispatched_target_version = Some(targets.version);
+                last_dispatched_frame = stable_identity;
+                Some(Arc::new(frame.clone()))
+            }
+        };
+        let Some(frame) = frame else {
+            continue;
+        };
 
         for target in targets.targets.iter() {
             if let Some(worker) = workers.get(&target.worker_key) {
@@ -274,6 +301,16 @@ async fn run_display_output(
     for (_, worker) in workers {
         worker.shutdown().await;
     }
+}
+
+fn stable_display_source_identity(frame: &CanvasFrame) -> Option<StableDisplaySourceIdentity> {
+    let surface = frame.surface();
+    (surface.generation() > 0).then_some(StableDisplaySourceIdentity {
+        generation: surface.generation(),
+        storage: surface.storage_identity(),
+        width: frame.width,
+        height: frame.height,
+    })
 }
 
 async fn reconcile_display_workers(
