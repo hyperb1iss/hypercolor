@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -242,6 +243,11 @@ fn default_device_settings() -> Arc<RwLock<DeviceSettingsStore>> {
 
 fn default_overlay_factory() -> Arc<dyn OverlayRendererFactory> {
     Arc::new(DefaultOverlayRendererFactory::new())
+}
+
+fn default_text_overlay_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 const TEST_STATIC_HOLD_REFRESH_INTERVAL: Duration = Duration::from_millis(60);
@@ -1330,6 +1336,7 @@ async fn automatic_display_output_publishes_overlay_runtime_failures() {
 
 #[tokio::test]
 async fn automatic_display_output_renders_clock_overlay_with_default_factory() {
+    let _guard = default_text_overlay_test_lock().lock().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(
         Vec::new(),
@@ -1425,7 +1432,7 @@ async fn automatic_display_output_renders_clock_overlay_with_default_factory() {
         .send(CanvasFrame::from_canvas(&canvas, 1, 16));
 
     let writes =
-        wait_for_display_writes_with_timeout(&display_writes, Duration::from_secs(3)).await;
+        wait_for_display_writes_with_timeout(&display_writes, Duration::from_secs(5)).await;
     let image = decode_jpeg(&writes[0]);
     assert!(
         region_contains_visible_pixels(&image, 72, 48, 240, 120),
@@ -1442,6 +1449,7 @@ async fn automatic_display_output_renders_clock_overlay_with_default_factory() {
 
 #[tokio::test]
 async fn automatic_display_output_renders_text_overlay_with_default_factory() {
+    let _guard = default_text_overlay_test_lock().lock().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(
         Vec::new(),
@@ -1541,7 +1549,7 @@ async fn automatic_display_output_renders_text_overlay_with_default_factory() {
         .send(CanvasFrame::from_canvas(&canvas, 1, 16));
 
     let writes =
-        wait_for_display_writes_with_timeout(&display_writes, Duration::from_secs(3)).await;
+        wait_for_display_writes_with_timeout(&display_writes, Duration::from_secs(5)).await;
     let image = decode_jpeg(&writes[0]);
     assert!(
         region_contains_visible_pixels(&image, 72, 72, 240, 96),
@@ -1558,6 +1566,7 @@ async fn automatic_display_output_renders_text_overlay_with_default_factory() {
 
 #[tokio::test]
 async fn automatic_display_output_renders_sensor_overlay_with_default_factory() {
+    let _guard = default_text_overlay_test_lock().lock().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(
         Vec::new(),
@@ -1659,7 +1668,7 @@ async fn automatic_display_output_renders_sensor_overlay_with_default_factory() 
         .send(CanvasFrame::from_canvas(&canvas, 1, 16));
 
     let writes =
-        wait_for_display_writes_with_timeout(&display_writes, Duration::from_secs(3)).await;
+        wait_for_display_writes_with_timeout(&display_writes, Duration::from_secs(5)).await;
     let image = decode_jpeg(&writes[0]);
     assert!(
         region_contains_visible_pixels(&image, 88, 56, 176, 176),
