@@ -1,6 +1,7 @@
 //! Integration tests for the MCP HTTP surface and its reusable domain helpers.
 
-use std::sync::Arc;
+use std::fs;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use hypercolor_core::config::ConfigManager;
@@ -12,13 +13,20 @@ use hypercolor_daemon::mcp::prompts::{
 use hypercolor_daemon::mcp::resources::{
     build_resource_definitions, is_valid_resource_uri, read_resource,
 };
-use hypercolor_daemon::mcp::tools::{ToolError, build_tool_definitions, execute_tool};
+use hypercolor_daemon::mcp::tools::{
+    ToolError, build_tool_definitions, execute_tool, execute_tool_with_state,
+};
 use hypercolor_types::config::{CURRENT_SCHEMA_VERSION, McpConfig};
+use hypercolor_types::device::{
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
+    DeviceInfo, DeviceTopologyHint, ZoneInfo,
+};
 use reqwest::{Client, Response};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
 const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#;
+static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 async fn spawn_router(router: axum::Router) -> (Client, String) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -44,6 +52,54 @@ fn stateless_mcp_config() -> McpConfig {
         json_response: true,
         ..McpConfig::default()
     }
+}
+
+fn isolated_state_with_tempdir() -> (AppState, TempDir) {
+    let _lock = DATA_DIR_LOCK
+        .lock()
+        .expect("data dir lock should not be poisoned");
+    let tempdir = TempDir::new().expect("create temp dir");
+    let data_dir = tempdir.path().join("data");
+    fs::create_dir_all(&data_dir).expect("create temp data dir");
+    ConfigManager::set_data_dir_override(Some(data_dir));
+    let state = AppState::new();
+    ConfigManager::set_data_dir_override(None);
+    (state, tempdir)
+}
+
+async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> DeviceId {
+    let id = DeviceId::new();
+    let info = DeviceInfo {
+        id,
+        name: name.to_owned(),
+        vendor: "test-vendor".to_owned(),
+        family: DeviceFamily::Wled,
+        model: Some("LCD".to_owned()),
+        connection_type: ConnectionType::Usb,
+        zones: vec![ZoneInfo {
+            name: "LCD".to_owned(),
+            led_count: 320 * 320,
+            topology: DeviceTopologyHint::Display {
+                width: 320,
+                height: 320,
+                circular: true,
+            },
+            color_format: DeviceColorFormat::Rgb,
+        }],
+        firmware_version: Some("0.1.0".to_owned()),
+        capabilities: DeviceCapabilities {
+            led_count: 320 * 320,
+            supports_direct: true,
+            supports_brightness: true,
+            has_display: true,
+            display_resolution: Some((320, 320)),
+            max_fps: 30,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    };
+    let _ = state.device_registry.add(info).await;
+    id
 }
 
 async fn post_raw(client: &Client, url: &str, body: &str, session_id: Option<&str>) -> Response {
@@ -153,8 +209,18 @@ async fn mcp_http_tools_list_and_call_return_structured_results() {
     let tools = list_payload["result"]["tools"]
         .as_array()
         .expect("tools list array");
-    assert_eq!(tools.len(), 14);
+    assert_eq!(tools.len(), 17);
     assert!(tools.iter().all(|tool| tool["outputSchema"].is_object()));
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool["name"] == "list_display_overlays")
+    );
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool["name"] == "set_display_overlay")
+    );
 
     let call_response = post_json(
         &client,
@@ -382,10 +448,89 @@ async fn api_router_mounts_mcp_when_enabled_in_config() {
     assert_eq!(payload["result"]["serverInfo"]["name"], "hypercolor");
 }
 
+#[tokio::test]
+async fn stateful_overlay_tools_manage_display_configs() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+
+    let create_result = execute_tool_with_state(
+        "set_display_overlay",
+        &json!({
+            "device": display_id.to_string(),
+            "slot": {
+                "name": "CPU Temp",
+                "source": {
+                    "type": "text",
+                    "text": "CPU {sensor:cpu_temp}\u{00b0}C",
+                    "font_size": 20,
+                    "color": "#ffffff",
+                    "align": "center"
+                },
+                "position": "full_screen",
+                "opacity": 0.85
+            }
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("append overlay should succeed");
+    assert_eq!(create_result["applied"], true);
+    assert_eq!(create_result["overlay_count"], 1);
+    let slot_id = create_result["affected_slot"]["id"]
+        .as_str()
+        .expect("slot id should be returned")
+        .to_owned();
+
+    let list_result = execute_tool_with_state(
+        "list_display_overlays",
+        &json!({
+            "device": display_id.to_string(),
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("list overlays should succeed");
+    assert_eq!(list_result["total"], 1);
+    assert_eq!(
+        list_result["displays"][0]["device"]["id"],
+        display_id.to_string()
+    );
+    assert_eq!(
+        list_result["displays"][0]["overlays"][0]["slot"]["id"],
+        slot_id
+    );
+    assert_eq!(
+        list_result["displays"][0]["overlays"][0]["runtime"]["status"],
+        "active"
+    );
+
+    let update_result = execute_tool_with_state(
+        "set_display_overlay",
+        &json!({
+            "device": display_id.to_string(),
+            "operation": "update",
+            "slot_id": slot_id,
+            "slot": {
+                "name": "CPU Label",
+                "opacity": 0.5
+            }
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("update overlay should succeed");
+    assert_eq!(update_result["affected_slot"]["name"], "CPU Label");
+    assert_eq!(
+        update_result["config"]["overlays"][0]["opacity"],
+        json!(0.5)
+    );
+}
+
 #[test]
 fn tool_definitions_have_valid_schemas() {
     let tools = build_tool_definitions();
-    assert_eq!(tools.len(), 14);
+    assert_eq!(tools.len(), 17);
     assert!(
         tools
             .iter()

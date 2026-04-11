@@ -34,10 +34,10 @@ pub struct DisplaySummary {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct DisplaySurfaceInfo {
-    width: u32,
-    height: u32,
-    circular: bool,
+pub(crate) struct DisplaySurfaceInfo {
+    pub width: u32,
+    pub height: u32,
+    pub circular: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,7 +90,7 @@ pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
         let Some(surface) = display_surface_info(&tracked.info) else {
             continue;
         };
-        let config = current_overlay_config(&state, tracked.info.id).await;
+        let config = current_overlay_config(state.as_ref(), tracked.info.id).await;
         displays.push(DisplaySummary {
             id: tracked.info.id.to_string(),
             name: tracked.info.name.clone(),
@@ -116,7 +116,7 @@ pub async fn list_overlays(
         Ok(id) => id,
         Err(response) => return response,
     };
-    ApiResponse::ok(current_overlay_config(&state, device_id).await)
+    ApiResponse::ok(current_overlay_config(state.as_ref(), device_id).await)
 }
 
 pub async fn get_overlay(
@@ -131,7 +131,7 @@ pub async fn get_overlay(
         Ok(slot_id) => slot_id,
         Err(_) => return ApiError::validation(format!("Invalid overlay slot id: {slot_id}")),
     };
-    let config = current_overlay_config(&state, device_id).await;
+    let config = current_overlay_config(state.as_ref(), device_id).await;
     match config.overlays.into_iter().find(|slot| slot.id == slot_id) {
         Some(slot) => ApiResponse::ok(OverlaySlotResponse {
             runtime: current_overlay_runtime(&state, device_id, &slot).await,
@@ -151,10 +151,10 @@ pub async fn replace_overlays(
         Err(response) => return response,
     };
     let config = body.normalized();
-    if let Err(response) = validate_overlay_config(&state, &config).await {
-        return response;
+    if let Err(error) = validate_overlay_config(state.as_ref(), &config).await {
+        return ApiError::conflict(error);
     }
-    if let Err(error) = persist_overlay_config(&state, device_id, &config).await {
+    if let Err(error) = persist_overlay_config(state.as_ref(), device_id, &config).await {
         return ApiError::internal(format!("Failed to persist display overlays: {error}"));
     }
     ApiResponse::ok(config)
@@ -169,7 +169,7 @@ pub async fn add_overlay(
         Ok(id) => id,
         Err(response) => return response,
     };
-    let mut config = current_overlay_config(&state, device_id).await;
+    let mut config = current_overlay_config(state.as_ref(), device_id).await;
     let slot = OverlaySlot {
         id: OverlaySlotId::generate(),
         name: body.name,
@@ -181,11 +181,11 @@ pub async fn add_overlay(
     }
     .normalized();
     config.overlays.push(slot.clone());
-    if let Err(response) = validate_overlay_config(&state, &config).await {
-        return response;
+    if let Err(error) = validate_overlay_config(state.as_ref(), &config).await {
+        return ApiError::conflict(error);
     }
 
-    if let Err(error) = persist_overlay_config(&state, device_id, &config).await {
+    if let Err(error) = persist_overlay_config(state.as_ref(), device_id, &config).await {
         return ApiError::internal(format!("Failed to persist display overlays: {error}"));
     }
     ApiResponse::created(slot)
@@ -205,7 +205,7 @@ pub async fn patch_overlay(
         Err(_) => return ApiError::validation(format!("Invalid overlay slot id: {slot_id}")),
     };
 
-    let mut config = current_overlay_config(&state, device_id).await;
+    let mut config = current_overlay_config(state.as_ref(), device_id).await;
     let Some(slot_index) = find_slot_index(&config, slot_id) else {
         return ApiError::not_found(format!("Overlay not found: {slot_id}"));
     };
@@ -231,11 +231,11 @@ pub async fn patch_overlay(
     }
     let slot = slot.clone().normalized();
     config.overlays[slot_index] = slot.clone();
-    if let Err(response) = validate_overlay_config(&state, &config).await {
-        return response;
+    if let Err(error) = validate_overlay_config(state.as_ref(), &config).await {
+        return ApiError::conflict(error);
     }
 
-    if let Err(error) = persist_overlay_config(&state, device_id, &config).await {
+    if let Err(error) = persist_overlay_config(state.as_ref(), device_id, &config).await {
         return ApiError::internal(format!("Failed to persist display overlays: {error}"));
     }
     ApiResponse::ok(slot)
@@ -254,14 +254,14 @@ pub async fn delete_overlay(
         Err(_) => return ApiError::validation(format!("Invalid overlay slot id: {slot_id}")),
     };
 
-    let mut config = current_overlay_config(&state, device_id).await;
+    let mut config = current_overlay_config(state.as_ref(), device_id).await;
     let previous_len = config.overlays.len();
     config.overlays.retain(|slot| slot.id != slot_id);
     if config.overlays.len() == previous_len {
         return ApiError::not_found(format!("Overlay not found: {slot_id}"));
     }
 
-    if let Err(error) = persist_overlay_config(&state, device_id, &config).await {
+    if let Err(error) = persist_overlay_config(state.as_ref(), device_id, &config).await {
         return ApiError::internal(format!("Failed to persist display overlays: {error}"));
     }
     StatusCode::NO_CONTENT.into_response()
@@ -276,7 +276,7 @@ pub async fn reorder_overlays(
         Ok(id) => id,
         Err(response) => return response,
     };
-    let config = current_overlay_config(&state, device_id).await;
+    let config = current_overlay_config(state.as_ref(), device_id).await;
     if has_duplicate_slot_ids(&body.slot_ids) {
         return ApiError::conflict("slot_ids must not contain duplicates");
     }
@@ -296,7 +296,7 @@ pub async fn reorder_overlays(
         overlays: reordered,
     }
     .normalized();
-    if let Err(error) = persist_overlay_config(&state, device_id, &config).await {
+    if let Err(error) = persist_overlay_config(state.as_ref(), device_id, &config).await {
         return ApiError::internal(format!("Failed to persist display overlays: {error}"));
     }
     ApiResponse::ok(config)
@@ -321,8 +321,8 @@ async fn resolve_display_device_id_or_response(
     Ok(device_id)
 }
 
-async fn current_overlay_config(
-    state: &Arc<AppState>,
+pub(crate) async fn current_overlay_config(
+    state: &AppState,
     device_id: DeviceId,
 ) -> DisplayOverlayConfig {
     let live = state.display_overlays.get(device_id).await;
@@ -347,12 +347,12 @@ async fn current_overlay_config(
     persisted
 }
 
-async fn validate_overlay_config(
-    state: &Arc<AppState>,
+pub(crate) async fn validate_overlay_config(
+    state: &AppState,
     config: &DisplayOverlayConfig,
-) -> Result<(), Response> {
+) -> Result<(), String> {
     if has_duplicate_overlay_ids(config) {
-        return Err(ApiError::conflict("overlay ids must be unique"));
+        return Err("overlay ids must be unique".to_owned());
     }
     if contains_enabled_html_overlay(config) {
         let effect_engine = state.effect_engine.lock().await;
@@ -360,10 +360,10 @@ async fn validate_overlay_config(
             && let Some(metadata) = effect_engine.active_metadata()
             && matches!(metadata.source, EffectSource::Html { .. })
         {
-            return Err(ApiError::conflict(format!(
+            return Err(format!(
                 "HTML overlays cannot be enabled while HTML effect '{}' is active; Servo multi-session rendering is still pending",
                 metadata.name
-            )));
+            ));
         }
     }
     Ok(())
@@ -384,8 +384,8 @@ async fn current_overlay_runtime(
     OverlayRuntimeResponse::from(runtime)
 }
 
-async fn persist_overlay_config(
-    state: &Arc<AppState>,
+pub(crate) async fn persist_overlay_config(
+    state: &AppState,
     device_id: DeviceId,
     config: &DisplayOverlayConfig,
 ) -> Result<(), String> {
@@ -408,7 +408,7 @@ fn find_slot_index(config: &DisplayOverlayConfig, slot_id: OverlaySlotId) -> Opt
     config.overlays.iter().position(|slot| slot.id == slot_id)
 }
 
-fn display_surface_info(info: &DeviceInfo) -> Option<DisplaySurfaceInfo> {
+pub(crate) fn display_surface_info(info: &DeviceInfo) -> Option<DisplaySurfaceInfo> {
     for zone in &info.zones {
         if let DeviceTopologyHint::Display {
             width,

@@ -141,7 +141,7 @@ pub fn build_overlay_catalog() -> Vec<OverlayCatalogEntry> {
             default_config: json!({
                 "sensor": "cpu_temp",
                 "style": "numeric",
-                "unit_label": "°C",
+                "unit_label": "\u{00b0}C",
                 "range_min": 0.0,
                 "range_max": 100.0,
                 "color_min": "#80ffea",
@@ -221,7 +221,7 @@ pub fn build_overlay_catalog() -> Vec<OverlayCatalogEntry> {
                 },
             }),
             default_config: json!({
-                "text": "CPU {sensor:cpu_temp}°C",
+                "text": "CPU {sensor:cpu_temp}\u{00b0}C",
                 "font_family": null,
                 "font_size": 28.0,
                 "color": "#ffffff",
