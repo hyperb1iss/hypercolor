@@ -568,39 +568,51 @@ fn encode_canvas_body(
         CanvasFormat::Jpeg => 0_usize,
     };
     let payload_len = px_count.saturating_mul(bpp);
-    let mut body = Vec::with_capacity(payload_len);
+    let mut body = vec![0; payload_len];
 
     let rgba = canvas.rgba_bytes();
     let scale_lut = (brightness < 0.999).then(|| preview_scale_lut(brightness));
     match format {
         CanvasFormat::Rgb => {
             if brightness >= 0.999 {
-                for pixel in rgba.chunks_exact(4).take(px_count) {
-                    body.extend_from_slice(&pixel[..3]);
+                for (pixel, out) in rgba
+                    .chunks_exact(4)
+                    .take(px_count)
+                    .zip(body.chunks_exact_mut(3))
+                {
+                    out.copy_from_slice(&pixel[..3]);
                 }
             } else {
                 let scale_lut = scale_lut
                     .as_ref()
                     .expect("dimmed preview path should precompute scale table");
-                for pixel in rgba.chunks_exact(4).take(px_count) {
-                    body.push(scale_lut[usize::from(pixel[0])]);
-                    body.push(scale_lut[usize::from(pixel[1])]);
-                    body.push(scale_lut[usize::from(pixel[2])]);
+                for (pixel, out) in rgba
+                    .chunks_exact(4)
+                    .take(px_count)
+                    .zip(body.chunks_exact_mut(3))
+                {
+                    out[0] = scale_lut[usize::from(pixel[0])];
+                    out[1] = scale_lut[usize::from(pixel[1])];
+                    out[2] = scale_lut[usize::from(pixel[2])];
                 }
             }
         }
         CanvasFormat::Rgba => {
             if brightness >= 0.999 {
-                body.extend_from_slice(&rgba[..payload_len]);
+                body.copy_from_slice(&rgba[..payload_len]);
             } else {
                 let scale_lut = scale_lut
                     .as_ref()
                     .expect("dimmed preview path should precompute scale table");
-                for pixel in rgba.chunks_exact(4).take(px_count) {
-                    body.push(scale_lut[usize::from(pixel[0])]);
-                    body.push(scale_lut[usize::from(pixel[1])]);
-                    body.push(scale_lut[usize::from(pixel[2])]);
-                    body.push(pixel[3]);
+                for (pixel, out) in rgba
+                    .chunks_exact(4)
+                    .take(px_count)
+                    .zip(body.chunks_exact_mut(4))
+                {
+                    out[0] = scale_lut[usize::from(pixel[0])];
+                    out[1] = scale_lut[usize::from(pixel[1])];
+                    out[2] = scale_lut[usize::from(pixel[2])];
+                    out[3] = pixel[3];
                 }
             }
         }
