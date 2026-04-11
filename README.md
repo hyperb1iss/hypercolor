@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="docs/images/dashboard.png" alt="Hypercolor — Neon City effect live on dashboard" width="800">
+  <img src="docs/images/dashboard.png" alt="Hypercolor dashboard running the Neon City effect" width="800">
 </p>
 
 <h1 align="center">Hypercolor</h1>
 
 <p align="center">
-  <strong>Open-Source RGB Lighting Engine for Linux</strong><br>
-  <sub>✦ Effects are web pages. Your desk is the canvas. ✦</sub>
+  <strong>Open-Source RGB Lighting Engine for Linux, macOS, and Windows</strong><br>
+  <sub>✦ Your world is a canvas: paint every pixel. ✦</sub>
 </p>
 
 <p align="center">
@@ -39,18 +39,18 @@
 
 ## 🔮 The Vision
 
-RGB lighting on Linux has always been fragmented — a patchwork of single-vendor tools, half-working
-daemons, and effects that look like they were designed in 2012. Meanwhile, the best effects engine
-is proprietary, Windows-only, and locked behind a subscription.
+RGB lighting is a mess. Single-vendor tools that don't talk to each other, half-working daemons,
+and effects that look like they were designed in 2012. The one great effects engine is proprietary,
+Windows-only, and behind a subscription.
 
-**Hypercolor changes that.**
+**Hypercolor is the fix.**
 
-One daemon. Every RGB device on your desk. Keyboards, mice, LED strips, smart lights, case fans —
-all unified under a single engine that runs at 60fps. Effects aren't hardcoded routines; they're
-**web pages** rendered by an embedded Servo browser and sampled onto your physical LED layout in
-real time.
+One daemon. Every RGB device you own. Motherboards, keyboards, mice, LED strips, smart lights,
+case fans, all driven by the same engine at 60fps. Effects aren't hardcoded routines. They're
+web pages, rendered by an embedded Servo browser and sampled onto your physical LED layout
+every frame.
 
-Your entire desk becomes a single synchronized canvas.
+Your world is a canvas. Paint every pixel.
 
 ## ⚡ How It Works
 
@@ -80,13 +80,13 @@ graph LR
     F --> G & H & I
 ```
 
-Effects render to a virtual RGBA canvas — 640×480 by default, tunable in the daemon's rendering
+Effects render to a virtual RGBA canvas, 640×480 by default and tunable in the daemon's rendering
 settings. **SparkleFlinger**, the render-thread compositor, latches the newest surface from each
-producer at the frame boundary and blends them into a single canonical frame every tick. The
-spatial engine then samples that frame at each LED's physical position. Effects use normalized
-`[0.0, 1.0]` coordinates, so they stay resolution-independent across canvas sizes. Audio, screen
-capture, and keyboard input feed into effects in real time. One effect paints the whole room —
-your keyboard, your LED strip, your case fans — all synchronized from the same visual source.
+producer at the frame boundary and blends them into one canonical frame every tick. The spatial
+engine samples that frame at each LED's physical position. Effects use normalized `[0.0, 1.0]`
+coordinates, so they stay resolution-independent across canvas sizes. Audio, screen capture, and
+keyboard input feed the render every frame. One effect paints the whole room. Your keyboard,
+your LED strip, your case fans, all drawing from the same source.
 
 ## 🌈 Features
 
@@ -105,56 +105,55 @@ your keyboard, your LED strip, your case fans — all synchronized from the same
 | **QMK** | USB HID | Any QMK-compatible keyboard |
 | **Ableton Push 2** | USB Bulk | Push 2 pad/button grid |
 
-More drivers are being added regularly. Community driver contributions are especially welcome —
-see [CONTRIBUTING.md](CONTRIBUTING.md) for how to get started.
+New drivers land often. If you own hardware Hypercolor doesn't support yet, see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### 🖥️ Dual Render Path
 
-- **Servo** — an embedded browser rendering HTML Canvas, WebGL, and GLSL shaders headless at
+- **Servo:** an embedded browser rendering HTML Canvas, WebGL, and GLSL shaders headless at
   60fps. Existing community effects work unmodified.
-- **wgpu** — native GPU shaders compiled to Vulkan, OpenGL, or Metal for maximum performance.
+- **wgpu:** native GPU shaders compiled to Vulkan, OpenGL, or Metal for maximum performance.
 
-### 🎨 30+ Built-In Effects
+### 🎨 40+ Built-In Effects
 
-Hypercolor ships with a curated library of handcrafted effects spanning ambient, audio-reactive,
-generative, and interactive categories:
+Hypercolor ships 40+ effects across four packs: Synthwave, Cosmic, Audio Reactive, and Organic.
+Ambient backgrounds, shader-heavy showpieces, and beat-synced visualizers. Every one is open
+source and built to be forked.
 
 | | | | |
 |---|---|---|---|
-| Borealis | Neon City | Digital Rain | Meteor Storm |
-| Shockwave | Voronoi Glass | Bubble Garden | Spectral Fire |
-| Plasma Engine | Synth Horizon | Deep Current | Lava Lamp |
-| Poisonous | Fiberflies | Ember Glow | Frost Crystal |
-| Nebula Drift | Nyan Dash | Retro Rink | Frequency Cascade |
-
-Every effect is open source, well-documented, and serves as a reference for writing your own.
+| Borealis | Neon City | Hyperspace | Cymatics |
+| Synth Horizon | Fractalux | Iris | Arc Storm |
+| Voidweaver | Lava Lamp | Ink Tide | Wormhole |
+| Nebula Drift | Frequency Cascade | Spectral Fire | Cyber Descent |
+| Bubble Garden | Nyan Dash | Deep Current | Breakthrough |
 
 ### 🗺️ Spatial Layout Engine
 
 Map your physical desk in the UI. Drag devices onto a 2D canvas, define LED topologies (strips,
-matrices, rings), and the spatial sampler handles the rest — bilinear interpolation, area
-averaging, or Gaussian sampling at every LED position.
+matrices, rings), and the spatial sampler resolves pixels to LEDs. Pick nearest, bilinear, area
+average, or Gaussian sampling at every position.
 
 ### 🎧 Audio-Reactive Pipeline
 
-Real-time FFT with beat detection, mel-band analysis, chromagram, and spectral features. Effects
-react to bass hits, BPM, spectral centroid, or the full 200-bin spectrum. Lock-free buffering
-ensures the render loop never blocks on audio.
+FFT with beat detection, mel-band analysis, chromagram, and spectral features. Effects react
+to bass hits, BPM, spectral centroid, or the full 200-bin spectrum. Lock-free buffering keeps
+the render loop from ever blocking on audio.
 
 ### 🌊 And More
 
 - **Scene engine** with priority stacking, Oklab cross-fades, and automation rules
 - **REST API + WebSocket** for full programmatic control
-- **MCP server** for AI assistant integration (Claude Code, Cursor, etc.)
+- **MCP server** for AI assistant integration (Claude Code, Cursor, and friends)
 - **CLI tool** (`hyper`) with table/JSON output and shell completions
-- **Hot-reload** — edit an effect, see it live instantly
+- **Hot-reload** on effect changes, no restart required
 - **Screen capture** input for ambient backlighting
 - **D-Bus integration** for desktop automation triggers
 
 ## 💎 The UI
 
-A web UI served directly by the daemon. Browse effects, tweak controls in real time, manage
-devices, and design spatial layouts — all from your browser.
+A web UI served directly by the daemon. Browse effects, tweak controls live, manage devices,
+and design spatial layouts from any browser.
 
 <table>
   <tr>
@@ -164,7 +163,7 @@ devices, and design spatial layouts — all from your browser.
     </td>
     <td align="center">
       <img src="docs/images/effect-controls.png" alt="Effect Controls" width="400"><br>
-      <sub>Real-time controls with canvas preview</sub>
+      <sub>Control panel with canvas preview</sub>
     </td>
   </tr>
   <tr>
@@ -179,18 +178,18 @@ devices, and design spatial layouts — all from your browser.
   </tr>
 </table>
 
-- **Effects browser** — search, filter by category, favorites, audio-reactive tags
-- **Live canvas preview** — the active effect streams in the sidebar and control panel
-- **Auto-generated controls** — sliders, dropdowns, color pickers, and toggles derived from
+- **Effects browser:** search, filter by category, favorites, audio-reactive tags
+- **Live canvas preview:** the active effect streams in the sidebar and control panel
+- **Auto-generated controls:** sliders, dropdowns, color pickers, and toggles derived from
   effect metadata
-- **Spatial layout editor** — drag-and-drop device placement on a 2D canvas
-- **Ambient reactivity** — the UI subtly tints its edges to match the active effect
+- **Spatial layout editor:** drag-and-drop device placement on a 2D canvas
+- **Ambient reactivity:** the UI tints its edges to match the active effect
 - **Command palette** (⌘K) for keyboard-driven navigation
 
 ## 🖥️ The TUI
 
 A terminal UI with true-color LED preview, audio visualization, and fullscreen effect rendering.
-Runs anywhere you have a terminal.
+Runs wherever you have a terminal.
 
 <table>
   <tr>
@@ -205,24 +204,27 @@ Runs anywhere you have a terminal.
   </tr>
   <tr>
     <td align="center">
-      <img src="docs/images/tui-fullscreen-bubbles.png" alt="Fullscreen Preview — Bubble Garden" width="400"><br>
-      <sub>Fullscreen preview — Bubble Garden</sub>
+      <img src="docs/images/tui-fullscreen-bubbles.png" alt="Bubble Garden fullscreen" width="400"><br>
+      <sub>Bubble Garden fullscreen</sub>
     </td>
     <td align="center">
-      <img src="docs/images/tui-fullscreen-cymatics.png" alt="Fullscreen Preview — Cymatics" width="400"><br>
-      <sub>Fullscreen preview — Cymatics</sub>
+      <img src="docs/images/tui-fullscreen-cymatics.png" alt="Cymatics fullscreen" width="400"><br>
+      <sub>Cymatics fullscreen</sub>
     </td>
   </tr>
 </table>
 
 - **Live effect preview** rendered in true-color half-block characters
-- **Fullscreen mode** (F11) — effect fills the entire terminal
-- **Audio spectrum** — real-time level meter and beat indicators
-- **Quick actions** — number keys for instant effect switching
+- **Fullscreen mode** (F11) fills the entire terminal with the active effect
+- **Audio spectrum** with level meter and beat indicators
+- **Quick actions:** number keys for instant effect switching
 
 ## 🎯 Get Started
 
-### Install
+Hypercolor is Linux-first with working macOS and Windows support. Deeper integration on Mac
+and Windows is actively growing.
+
+### Install on Linux
 
 ```bash
 git clone https://github.com/hyperb1iss/hypercolor.git
@@ -230,8 +232,20 @@ cd hypercolor
 ./scripts/install.sh
 ```
 
-The installer builds the daemon, CLI, TUI, and web UI, installs a systemd user service, sets up
-udev rules for USB device access, and persists `i2c-dev` so SMBus RGB devices survive reboot.
+The installer builds the daemon, CLI, TUI, and web UI, installs a systemd user service, sets
+up udev rules for USB device access, and persists `i2c-dev` so SMBus RGB devices survive
+reboot.
+
+### Install on macOS and Windows
+
+```bash
+git clone https://github.com/hyperb1iss/hypercolor.git
+cd hypercolor
+cargo build --release
+```
+
+The daemon and CLI build clean on all three platforms. Service management and permission setup
+are still manual outside Linux.
 
 ### Run
 
@@ -250,8 +264,8 @@ hyper devices
 
 ### Development
 
-If you're hacking on Hypercolor itself, we use [just](https://github.com/casey/just) for
-development workflows:
+Hacking on Hypercolor itself? We use [just](https://github.com/casey/just) for development
+workflows.
 
 ```bash
 just daemon          # Run daemon with hot reload
@@ -263,9 +277,9 @@ just verify          # fmt + lint + test
 
 ## ✦ The Effect SDK
 
-Effects are TypeScript (or pure GLSL). The SDK compiles them to self-contained HTML files
-that the engine renders at 60fps. Audio data, control values, and canvas context are all
-injected automatically.
+Effects are TypeScript, Canvas, or pure GLSL. The SDK compiles them to self-contained HTML
+files that the engine renders at 60fps. Audio data, control values, and canvas context are
+all injected automatically.
 
 ```typescript
 import { effect } from '@hypercolor/sdk'
@@ -276,13 +290,13 @@ export default effect('Borealis', shader, {
     intensity:      [0, 100, 82],     // → slider
     palette:        ['Northern Lights', 'SilkCircuit', 'Cyberpunk'],  // → dropdown
 }, {
-    description: 'Aurora borealis — layered curtains of light',
+    description: 'Aurora borealis, layered curtains of light',
 })
 ```
 
-Four tiers meet you where you are: **GLSL** (single file, zero JS), **`effect()`** (one-liner
-shader binding), **`canvas()`** (Canvas 2D draw functions), and **full OOP** (class-based
-with lifecycle hooks).
+Four tiers, pick the one that fits: **GLSL** (single file, zero JS), **`effect()`** (one-liner
+shader binding), **`canvas()`** (Canvas 2D draw functions), and **full OOP** (class-based with
+lifecycle hooks).
 
 See the [Effect SDK Guide](docs/content/effects/sdk.md) for the full API reference.
 
@@ -328,43 +342,44 @@ graph TD
 ```
 
 It's Rust all the way down. 14 crates, zero `unsafe`, clippy pedantic. The daemon, CLI, TUI,
-tray applet, and HAL drivers are all Rust. The web UI is Rust compiled to WASM via Leptos. Even
-the embedded browser is Servo (Rust). The only non-Rust code is the TypeScript effect SDK and
-the GLSL shaders it compiles.
+tray applet, and HAL drivers are all Rust. The web UI is Rust compiled to WASM via Leptos.
+Even the embedded browser is Servo (Rust). The only non-Rust code is the TypeScript effect
+SDK and the GLSL shaders it compiles.
 
-The render thread runs on a dedicated OS thread with adaptive FPS (10-60fps, auto-shifting across
-5 tiers based on measured budget). Each tick, SparkleFlinger composes frame producers into one
-canonical surface — with a zero-copy bypass fast path when a single full-opacity layer is active.
-The event bus uses lock-free `tokio::sync::watch` channels for high-frequency frame data and
-`broadcast` for discrete events. `zerocopy` structs handle wire-format encoding at zero allocation
-cost per frame. The spatial engine caches LED positions and samples the composed frame with
-configurable interpolation (nearest, bilinear, area average, Gaussian).
+The render thread runs on a dedicated OS thread with adaptive FPS (10 to 60, auto-shifting
+across 5 tiers based on measured budget). Each tick, SparkleFlinger composes frame producers
+into one canonical surface, with a zero-copy bypass fast path when a single full-opacity
+layer is active. The event bus uses lock-free `tokio::sync::watch` channels for high-frequency
+frame data and `broadcast` for discrete events. `zerocopy` structs handle wire-format encoding
+at zero allocation cost per frame. The spatial engine caches LED positions and samples the
+composed frame with configurable interpolation (nearest, bilinear, area average, Gaussian).
 
 `#![forbid(unsafe_code)]` across the entire workspace. Edition 2024. Rust 1.94+.
 
 ## 📡 Status
 
 Hypercolor is in active development (v0.1.0). The core engine, effect SDK, web UI, TUI, and
-10 device backends are functional. We use Hypercolor daily — every screenshot in this README
-was captured from a live instance with real hardware.
+10 device backends all work today. Linux has the deepest support, with macOS and Windows
+tracking closely. Every screenshot in this README was captured from a live instance running
+on real hardware.
 
-**Coming soon:** Lian Li Uni Hub support, scene automation engine, effect marketplace,
+**Coming soon:** Lian Li Uni Hub support, scene automation engine, effect marketplace, and a
 Wasmtime plugin system for community backends.
 
 ## 💜 Contributing
 
-We welcome contributions! Whether it's new device drivers, effects, UI improvements, or
-documentation — there's plenty to build.
+Hypercolor grows on contributions. Drivers, effects, UI polish, docs, all of it lands here.
 
-**Writing effects** is the easiest way to start — the SDK makes it straightforward to create
-something beautiful. **Device drivers** are where we need the most help — if you own hardware
-Hypercolor doesn't support yet, you're in a unique position to contribute.
+**Writing effects** is the fastest way in. The SDK compiles TypeScript, Canvas, or GLSL
+straight to HTML, and the engine picks them up on save. **Device drivers** are where the
+leverage is highest. If you own hardware that isn't on the supported list, you're the person
+to add it.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for guidelines.
 
 ## 📄 License
 
-Apache-2.0 — See [LICENSE](LICENSE)
+Apache-2.0. See [LICENSE](LICENSE).
 
 ---
 
