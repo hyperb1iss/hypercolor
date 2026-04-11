@@ -7,6 +7,7 @@ use anyhow::anyhow;
 use hypercolor_core::blend_math::blend_rgba_pixel;
 use hypercolor_core::overlay::{
     ImageRenderer, OverlayBuffer, OverlayError, OverlayInput, OverlayRenderer, OverlaySize,
+    TextRenderer,
 };
 use hypercolor_types::overlay::{
     Anchor, DisplayOverlayConfig, OverlayBlendMode, OverlayPosition, OverlaySlot, OverlaySource,
@@ -50,11 +51,26 @@ impl OverlayRendererFactory for DefaultOverlayRendererFactory {
                 ),
                 render_interval: Duration::MAX,
             }),
+            OverlaySource::Text(config) => Ok(OverlayRendererBinding {
+                renderer: Box::new(TextRenderer::new(config.clone()).map_err(OverlayError::Asset)?),
+                render_interval: text_render_interval(config),
+            }),
             source => Err(OverlayError::Asset(anyhow!(
                 "overlay renderer is not implemented yet for source {source:?}"
             ))),
         }
     }
+}
+
+fn text_render_interval(config: &hypercolor_types::overlay::TextOverlayConfig) -> Duration {
+    if config.scroll {
+        return Duration::from_millis(33);
+    }
+    if config.text.contains("{sensor:") {
+        return Duration::from_secs(2);
+    }
+
+    Duration::MAX
 }
 
 pub(crate) struct OverlayComposer {
