@@ -6,10 +6,10 @@ use anyhow::anyhow;
 
 use hypercolor_core::blend_math::blend_rgba_pixel;
 use hypercolor_core::overlay::{
-    OverlayBuffer, OverlayError, OverlayInput, OverlayRenderer, OverlaySize,
+    ImageRenderer, OverlayBuffer, OverlayError, OverlayInput, OverlayRenderer, OverlaySize,
 };
 use hypercolor_types::overlay::{
-    Anchor, DisplayOverlayConfig, OverlayBlendMode, OverlayPosition, OverlaySlot,
+    Anchor, DisplayOverlayConfig, OverlayBlendMode, OverlayPosition, OverlaySlot, OverlaySource,
 };
 use hypercolor_types::sensor::SystemSnapshot;
 
@@ -43,10 +43,17 @@ impl OverlayRendererFactory for DefaultOverlayRendererFactory {
         slot: &OverlaySlot,
         _target_size: OverlaySize,
     ) -> Result<OverlayRendererBinding, OverlayError> {
-        Err(OverlayError::Asset(anyhow!(
-            "overlay renderer is not implemented yet for source {:?}",
-            slot.source
-        )))
+        match &slot.source {
+            OverlaySource::Image(config) => Ok(OverlayRendererBinding {
+                renderer: Box::new(
+                    ImageRenderer::new(config.clone()).map_err(OverlayError::Asset)?,
+                ),
+                render_interval: Duration::MAX,
+            }),
+            source => Err(OverlayError::Asset(anyhow!(
+                "overlay renderer is not implemented yet for source {source:?}"
+            ))),
+        }
     }
 }
 
@@ -262,6 +269,15 @@ impl OverlayInstance {
         }
         if !self.has_valid_render {
             return Some(now);
+        }
+        if let Some(refresh_after) = self
+            .renderer
+            .as_ref()
+            .and_then(|renderer| renderer.next_refresh_after())
+        {
+            return self
+                .last_rendered_at
+                .and_then(|last| last.checked_add(refresh_after));
         }
         self.last_rendered_at
             .and_then(|last| last.checked_add(self.render_interval))
@@ -841,5 +857,75 @@ mod tests {
         assert_eq!(runtime.consecutive_failures, 5);
         let error = runtime.last_error.as_deref().expect("error should exist");
         assert!(error.contains("disabled after 5 consecutive transient failures"));
+    }
+
+    #[test]
+    fn renderer_refresh_hint_overrides_binding_interval() {
+        struct HintRenderer {
+            refresh_after: Duration,
+        }
+
+        impl OverlayRenderer for HintRenderer {
+            fn init(&mut self, _target_size: OverlaySize) -> Result<()> {
+                Ok(())
+            }
+
+            fn resize(&mut self, _target_size: OverlaySize) -> Result<()> {
+                Ok(())
+            }
+
+            fn render_into(
+                &mut self,
+                _input: &OverlayInput<'_>,
+                target: &mut OverlayBuffer,
+            ) -> std::result::Result<(), OverlayError> {
+                for pixel in target.pixels.chunks_exact_mut(4) {
+                    pixel.copy_from_slice(&[255, 0, 0, 255]);
+                }
+                Ok(())
+            }
+
+            fn next_refresh_after(&self) -> Option<Duration> {
+                Some(self.refresh_after)
+            }
+        }
+
+        struct HintFactory {
+            refresh_after: Duration,
+        }
+
+        impl OverlayRendererFactory for HintFactory {
+            fn build(
+                &self,
+                _slot: &OverlaySlot,
+                _target_size: OverlaySize,
+            ) -> std::result::Result<OverlayRendererBinding, OverlayError> {
+                Ok(OverlayRendererBinding {
+                    renderer: Box::new(HintRenderer {
+                        refresh_after: self.refresh_after,
+                    }),
+                    render_interval: Duration::from_secs(60),
+                })
+            }
+        }
+
+        let refresh_after = Duration::from_millis(250);
+        let factory: Arc<dyn OverlayRendererFactory> = Arc::new(HintFactory { refresh_after });
+        let mut composer = OverlayComposer::new(4, 4, false, factory);
+        composer.reconcile(&DisplayOverlayConfig {
+            overlays: vec![sample_slot(OverlayPosition::FullScreen)],
+        });
+
+        let base = vec![0_u8; 4 * 4 * 3];
+        let sensors = SystemSnapshot::empty();
+        let start = Instant::now();
+        let _ = composer
+            .compose_rgb_frame(&base, &sensors, 1, SystemTime::now(), start)
+            .expect("overlay should compose");
+
+        let deadline = composer
+            .next_refresh_at(start)
+            .expect("renderer hint should drive refresh");
+        assert_eq!(deadline.duration_since(start), refresh_after);
     }
 }

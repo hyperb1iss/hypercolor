@@ -780,8 +780,10 @@ pub struct HtmlOverlayConfig {
 
 The trait mirrors `EffectRenderer::render_into` so overlay renderers never
 allocate canvases on the hot path. Cadence and cache policy live in the
-composer, not the trait — keeping the trait focused on "turn state into
-pixels" and the composer focused on "decide when to redraw."
+composer, with one escape hatch for variable-rate sources: renderers may
+optionally provide a "next refresh" hint so animated assets (for example,
+GIFs with uneven frame delays) can wake the worker exactly when the next
+frame becomes visible.
 
 ```rust
 /// Renders overlay content into a caller-owned target buffer. Send but not
@@ -815,6 +817,13 @@ pub trait OverlayRenderer: Send {
     /// true to match conservative behavior.
     fn content_changed(&self, _input: &OverlayInput<'_>) -> bool {
         true
+    }
+
+    /// Optional refresh hint used by variable-cadence sources whose next
+    /// visible change is not a fixed interval. Static images return None;
+    /// animated GIFs return the remaining delay until the next frame.
+    fn next_refresh_after(&self) -> Option<Duration> {
+        None
     }
 
     /// Release resources (font caches, image buffers, SVG trees).
