@@ -196,6 +196,11 @@ impl PreviewManager {
         }
     }
 
+    #[must_use]
+    pub(crate) fn has_current_frame(&self) -> bool {
+        self.current.is_some()
+    }
+
     fn queue_protocol(&mut self, frame: &CanvasFrame) {
         let Some(img) = image::RgbImage::from_raw(
             u32::from(frame.width),
