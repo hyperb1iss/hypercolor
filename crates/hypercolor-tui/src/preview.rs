@@ -1,5 +1,6 @@
 //! Preview transport manager for the live canvas overlay.
 
+mod halfblocks_fast;
 mod kitty_fast;
 
 use std::env;
@@ -43,6 +44,7 @@ impl PreviewPolicy {
     fn transport_for(
         self,
         fullscreen: bool,
+        primary_protocol: ProtocolType,
         font_size: (u16, u16),
         frame: Option<&CanvasFrame>,
         area: Option<Rect>,
@@ -60,6 +62,10 @@ impl PreviewPolicy {
         let (Some(frame), Some(area)) = (frame, area) else {
             return base;
         };
+
+        if primary_protocol == ProtocolType::Kitty {
+            return base;
+        }
 
         let target_rgba_bytes = Self::target_rgba_bytes(font_size, area);
 
@@ -115,7 +121,7 @@ impl Default for PreviewPolicy {
     fn default() -> Self {
         Self {
             windowed: PreviewTransport::Primary,
-            fullscreen: PreviewTransport::Halfblocks,
+            fullscreen: PreviewTransport::Primary,
             max_primary_rgba_bytes: 768 * 1024,
             max_primary_scale_tenths: 15,
             medium_primary_rgba_bytes: 256 * 1024,
@@ -152,6 +158,7 @@ enum PreviewBuildResult {
 
 enum PreviewSurface {
     Stateful(StatefulProtocol),
+    Halfblocks(halfblocks_fast::HalfblocksFrame),
     Kitty(kitty_fast::KittyFrame),
 }
 
@@ -159,6 +166,7 @@ impl PreviewSurface {
     fn render(&mut self, area: Rect, buf: &mut Buffer) {
         match self {
             Self::Stateful(protocol) => protocol.render(area, buf),
+            Self::Halfblocks(frame) => frame.render(area, buf),
             Self::Kitty(frame) => frame.render(area, buf),
         }
     }
@@ -168,6 +176,7 @@ impl PreviewSurface {
             Self::Stateful(protocol) => protocol
                 .needs_resize(&Resize::Scale(None), resize_area)
                 .is_none(),
+            Self::Halfblocks(frame) => frame.area() == resize_area,
             Self::Kitty(frame) => frame.area() == resize_area,
         }
     }
@@ -224,6 +233,7 @@ impl DrawBackpressure {
 
 pub(crate) struct PreviewManager {
     primary_picker: Picker,
+    primary_protocol: ProtocolType,
     policy: PreviewPolicy,
     build_tx: Option<StdSender<PreviewBuildRequest>>,
     build_rx: StdReceiver<PreviewBuildResult>,
@@ -239,6 +249,7 @@ pub(crate) struct PreviewManager {
     in_flight_request_id: Option<u64>,
     last_build_started: Option<Instant>,
     draw_backpressure: DrawBackpressure,
+    primary_cooloff_until: Option<Instant>,
 }
 
 impl PreviewManager {
@@ -247,9 +258,11 @@ impl PreviewManager {
         let (build_results_tx, build_rx) = std_mpsc::channel::<PreviewBuildResult>();
 
         let halfblocks_picker = Picker::halfblocks();
+        let build_primary_protocol = primary_picker.protocol_type();
         let build_primary_picker = primary_picker.clone();
         let build_halfblocks_picker = halfblocks_picker.clone();
-        let build_use_kitty_fast = primary_picker.protocol_type() == ProtocolType::Kitty;
+        let build_use_kitty_fast = build_primary_protocol == ProtocolType::Kitty;
+        let build_use_fast_halfblocks = build_primary_protocol == ProtocolType::Halfblocks;
         let build_is_tmux = env::var("TERM").is_ok_and(|term| term.starts_with("tmux"))
             || env::var("TERM_PROGRAM").is_ok_and(|term_program| term_program == "tmux");
         let kitty_image_id = NEXT_KITTY_IMAGE_ID.fetch_add(1, Ordering::Relaxed).max(1);
@@ -257,6 +270,42 @@ impl PreviewManager {
             .name("hypercolor-tui-preview".to_string())
             .spawn(move || {
                 while let Ok(request) = build_requests.recv() {
+                    if request.transport == PreviewTransport::Halfblocks
+                        || build_use_fast_halfblocks
+                    {
+                        match halfblocks_fast::HalfblocksFrame::new(
+                            request.frame.as_ref(),
+                            request.area,
+                        ) {
+                            Ok(frame) => {
+                                if build_results_tx
+                                    .send(PreviewBuildResult::Ready(PreviewBuildResponse {
+                                        request_id: request.request_id,
+                                        frame_number: request.frame.frame_number,
+                                        transport: request.transport,
+                                        surface: PreviewSurface::Halfblocks(frame),
+                                    }))
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            Err(error) => {
+                                if build_results_tx
+                                    .send(PreviewBuildResult::Failed {
+                                        request_id: request.request_id,
+                                        frame_number: request.frame.frame_number,
+                                        error,
+                                    })
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
                     if request.transport == PreviewTransport::Primary && build_use_kitty_fast {
                         match kitty_fast::KittyFrame::new(
                             request.frame.as_ref(),
@@ -356,6 +405,7 @@ impl PreviewManager {
 
         Self {
             primary_picker,
+            primary_protocol: build_primary_protocol,
             policy,
             build_tx: Some(build_tx),
             build_rx,
@@ -371,6 +421,7 @@ impl PreviewManager {
             in_flight_request_id: None,
             last_build_started: None,
             draw_backpressure: DrawBackpressure::default(),
+            primary_cooloff_until: None,
         }
     }
 
@@ -479,6 +530,9 @@ impl PreviewManager {
         }
 
         self.draw_backpressure.observe_draw(elapsed);
+        if self.draw_backpressure.pressure_level >= 3 {
+            self.primary_cooloff_until = Some(Instant::now() + Duration::from_secs(2));
+        }
     }
 
     fn maybe_queue_build(&mut self) {
@@ -544,12 +598,23 @@ impl PreviewManager {
     }
 
     fn transport_for(&self, frame: Option<&CanvasFrame>, area: Option<Rect>) -> PreviewTransport {
-        self.policy.transport_for(
+        let transport = self.policy.transport_for(
             self.fullscreen,
+            self.primary_protocol,
             self.primary_picker.font_size(),
             frame,
             area,
-        )
+        );
+
+        if transport == PreviewTransport::Primary
+            && self
+                .primary_cooloff_until
+                .is_some_and(|until| until > Instant::now())
+        {
+            PreviewTransport::Halfblocks
+        } else {
+            transport
+        }
     }
 
     fn invalidate_current(&mut self) {
@@ -564,6 +629,7 @@ impl PreviewManager {
         self.invalidate_current();
         self.preview_area = None;
         self.draw_backpressure.reset();
+        self.primary_cooloff_until = None;
     }
 
     fn resize_area(area: Rect) -> Rect {
@@ -576,6 +642,7 @@ mod tests {
     use super::{DrawBackpressure, PreviewPolicy, PreviewTransport};
     use crate::state::CanvasFrame;
     use ratatui::layout::Rect;
+    use ratatui_image::picker::ProtocolType;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -592,12 +659,24 @@ mod tests {
         };
 
         assert_eq!(
-            policy.transport_for(false, (9, 18), Some(&frame), Some(Rect::new(0, 0, 30, 12))),
+            policy.transport_for(
+                false,
+                ProtocolType::Halfblocks,
+                (9, 18),
+                Some(&frame),
+                Some(Rect::new(0, 0, 30, 12)),
+            ),
             PreviewTransport::Primary
         );
         assert_eq!(
-            policy.transport_for(true, (9, 18), Some(&frame), Some(Rect::new(0, 0, 30, 12))),
-            PreviewTransport::Halfblocks
+            policy.transport_for(
+                true,
+                ProtocolType::Halfblocks,
+                (9, 18),
+                Some(&frame),
+                Some(Rect::new(0, 0, 30, 12)),
+            ),
+            PreviewTransport::Primary
         );
     }
 
@@ -613,7 +692,13 @@ mod tests {
         };
 
         assert_eq!(
-            policy.transport_for(false, (9, 18), Some(&frame), Some(Rect::new(0, 0, 52, 24))),
+            policy.transport_for(
+                false,
+                ProtocolType::Halfblocks,
+                (9, 18),
+                Some(&frame),
+                Some(Rect::new(0, 0, 52, 24)),
+            ),
             PreviewTransport::Halfblocks
         );
     }
@@ -630,7 +715,13 @@ mod tests {
         };
 
         assert_eq!(
-            policy.transport_for(false, (9, 18), Some(&frame), Some(Rect::new(0, 0, 55, 16))),
+            policy.transport_for(
+                false,
+                ProtocolType::Halfblocks,
+                (9, 18),
+                Some(&frame),
+                Some(Rect::new(0, 0, 55, 16)),
+            ),
             PreviewTransport::Halfblocks
         );
     }

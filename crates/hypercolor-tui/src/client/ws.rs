@@ -12,7 +12,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::state::{CanvasFrame, SpectrumSnapshot};
 
-const TUI_CANVAS_FPS: u8 = 10;
+const TUI_CANVAS_FPS: u8 = 30;
 
 /// Messages decoded from the WebSocket stream.
 #[derive(Debug)]

@@ -221,13 +221,35 @@ impl App {
             self.view.render_dirty |= self.preview.drain_resize_results();
 
             // Drain and process all queued actions
+            let mut latest_canvas_frame = None;
+            let mut latest_spectrum = None;
             while let Ok(action) = self.action_rx.try_recv() {
                 if let Action::Render = action {
                     render_requested = true;
                     continue;
                 }
 
+                if let Action::CanvasFrameReceived(frame) = action {
+                    latest_canvas_frame = Some(frame);
+                    continue;
+                }
+
+                if let Action::SpectrumUpdated(snapshot) = action {
+                    latest_spectrum = Some(snapshot);
+                    continue;
+                }
+
                 self.process_action(&action);
+                self.view.render_dirty = true;
+            }
+
+            if let Some(snapshot) = latest_spectrum {
+                self.process_action(&Action::SpectrumUpdated(snapshot));
+                self.view.render_dirty = true;
+            }
+
+            if let Some(frame) = latest_canvas_frame {
+                self.process_action(&Action::CanvasFrameReceived(frame));
                 self.view.render_dirty = true;
             }
 
