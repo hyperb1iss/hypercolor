@@ -213,9 +213,12 @@ impl ApiError {
 fn iso8601_now() -> String {
     use std::time::SystemTime;
 
-    let now = SystemTime::now();
+    iso8601_system_time(SystemTime::now())
+}
+
+pub(crate) fn iso8601_system_time(now: std::time::SystemTime) -> String {
     let duration = now
-        .duration_since(SystemTime::UNIX_EPOCH)
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .unwrap_or_default();
 
     let total_secs = duration.as_secs();

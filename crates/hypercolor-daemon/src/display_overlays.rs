@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use tokio::sync::{Mutex, RwLock, watch};
 
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::overlay::DisplayOverlayConfig;
+use hypercolor_types::overlay::{DisplayOverlayConfig, OverlaySlot, OverlaySlotId};
+use serde::Serialize;
 
 #[derive(Debug, Default)]
 pub struct DisplayOverlayRegistry {
@@ -69,4 +71,85 @@ impl DisplayOverlayRegistry {
 
 fn empty_overlay_config() -> Arc<DisplayOverlayConfig> {
     Arc::new(DisplayOverlayConfig::default())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlaySlotStatus {
+    Active,
+    Disabled,
+    Failed,
+    HtmlGated,
+}
+
+#[derive(Debug, Clone)]
+pub struct OverlaySlotRuntime {
+    pub last_rendered_at: Option<SystemTime>,
+    pub consecutive_failures: u32,
+    pub last_error: Option<String>,
+    pub status: OverlaySlotStatus,
+}
+
+impl OverlaySlotRuntime {
+    #[must_use]
+    pub fn from_slot(slot: &OverlaySlot) -> Self {
+        Self {
+            last_rendered_at: None,
+            consecutive_failures: 0,
+            last_error: None,
+            status: if slot.enabled {
+                OverlaySlotStatus::Active
+            } else {
+                OverlaySlotStatus::Disabled
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DisplayOverlayRuntime {
+    pub slots: HashMap<OverlaySlotId, OverlaySlotRuntime>,
+}
+
+impl DisplayOverlayRuntime {
+    #[must_use]
+    pub fn slot(&self, slot_id: OverlaySlotId) -> Option<&OverlaySlotRuntime> {
+        self.slots.get(&slot_id)
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct DisplayOverlayRuntimeRegistry {
+    runtimes: RwLock<HashMap<DeviceId, Arc<DisplayOverlayRuntime>>>,
+}
+
+impl DisplayOverlayRuntimeRegistry {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn get(&self, device_id: DeviceId) -> Arc<DisplayOverlayRuntime> {
+        self.runtimes
+            .read()
+            .await
+            .get(&device_id)
+            .cloned()
+            .unwrap_or_else(empty_overlay_runtime)
+    }
+
+    pub async fn set(&self, device_id: DeviceId, runtime: DisplayOverlayRuntime) {
+        self.runtimes
+            .write()
+            .await
+            .insert(device_id, Arc::new(runtime));
+    }
+
+    pub async fn clear(&self, device_id: DeviceId) {
+        self.runtimes.write().await.remove(&device_id);
+    }
+}
+
+fn empty_overlay_runtime() -> Arc<DisplayOverlayRuntime> {
+    Arc::new(DisplayOverlayRuntime::default())
 }

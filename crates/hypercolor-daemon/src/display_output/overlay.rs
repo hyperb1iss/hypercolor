@@ -13,6 +13,8 @@ use hypercolor_types::overlay::{
 };
 use hypercolor_types::sensor::SystemSnapshot;
 
+use crate::display_overlays::{DisplayOverlayRuntime, OverlaySlotRuntime, OverlaySlotStatus};
+
 pub trait OverlayRendererFactory: Send + Sync {
     fn build(
         &self,
@@ -88,6 +90,17 @@ impl OverlayComposer {
 
     pub fn has_active_slots(&self) -> bool {
         self.instances.iter().any(OverlayInstance::is_active)
+    }
+
+    #[must_use]
+    pub fn runtime_snapshot(&self) -> DisplayOverlayRuntime {
+        DisplayOverlayRuntime {
+            slots: self
+                .instances
+                .iter()
+                .map(|instance| (instance.slot.id, instance.runtime()))
+                .collect(),
+        }
     }
 
     pub fn next_refresh_at(&self, now: Instant) -> Option<Instant> {
@@ -172,6 +185,7 @@ struct OverlayInstance {
     cached_buffer: OverlayBuffer,
     has_valid_render: bool,
     last_rendered_at: Option<Instant>,
+    last_rendered_at_wall: Option<SystemTime>,
     render_interval: Duration,
     consecutive_failures: u32,
     backoff_until: Option<Instant>,
@@ -189,6 +203,7 @@ impl OverlayInstance {
             cached_buffer: OverlayBuffer::new(target_size),
             has_valid_render: false,
             last_rendered_at: None,
+            last_rendered_at_wall: None,
             render_interval: binding.render_interval.max(Duration::from_millis(16)),
             consecutive_failures: 0,
             backoff_until: None,
@@ -208,6 +223,7 @@ impl OverlayInstance {
             cached_buffer: OverlayBuffer::new(target_size),
             has_valid_render: false,
             last_rendered_at: None,
+            last_rendered_at_wall: None,
             render_interval: Duration::from_secs(1),
             consecutive_failures: 0,
             backoff_until: None,
@@ -218,6 +234,23 @@ impl OverlayInstance {
 
     fn is_active(&self) -> bool {
         self.slot.enabled && !self.disabled
+    }
+
+    fn runtime(&self) -> OverlaySlotRuntime {
+        let status = if !self.slot.enabled {
+            OverlaySlotStatus::Disabled
+        } else if self.disabled {
+            OverlaySlotStatus::Failed
+        } else {
+            OverlaySlotStatus::Active
+        };
+
+        OverlaySlotRuntime {
+            last_rendered_at: self.last_rendered_at_wall,
+            consecutive_failures: self.consecutive_failures,
+            last_error: self.last_error.as_ref().map(ToString::to_string),
+            status,
+        }
     }
 
     fn next_refresh_at(&self, now: Instant) -> Option<Instant> {
@@ -255,6 +288,7 @@ impl OverlayInstance {
             Ok(()) => {
                 self.has_valid_render = true;
                 self.last_rendered_at = Some(now);
+                self.last_rendered_at_wall = Some(copied_system_time(&input.now));
                 self.consecutive_failures = 0;
                 self.backoff_until = None;
                 self.last_error = None;
@@ -268,12 +302,14 @@ impl OverlayInstance {
             OverlayError::Asset(error) => {
                 self.has_valid_render = false;
                 self.disabled = true;
+                self.backoff_until = None;
                 self.last_error = Some(OverlayError::Asset(error));
                 self.destroy();
             }
             OverlayError::Fatal(error) => {
                 self.has_valid_render = false;
                 self.disabled = true;
+                self.backoff_until = None;
                 self.last_error = Some(OverlayError::Fatal(error));
                 self.destroy();
             }
@@ -281,8 +317,14 @@ impl OverlayInstance {
                 self.consecutive_failures = self.consecutive_failures.saturating_add(1);
                 self.backoff_until = now.checked_add(backoff_duration(self.consecutive_failures));
                 if self.consecutive_failures >= 5 {
+                    self.backoff_until = None;
                     self.disabled = true;
+                    self.last_error = Some(OverlayError::Asset(anyhow!(
+                        "disabled after {} consecutive transient failures: {error}",
+                        self.consecutive_failures
+                    )));
                     self.destroy();
+                    return;
                 }
                 self.last_error = Some(OverlayError::Transient(error));
             }
@@ -573,6 +615,15 @@ fn unpremultiply_channel(channel: u8, alpha: u8) -> u8 {
     u8::try_from(scaled.min(u32::from(u8::MAX))).unwrap_or(u8::MAX)
 }
 
+fn copied_system_time(time: &SystemTime) -> SystemTime {
+    SystemTime::UNIX_EPOCH
+        .checked_add(
+            time.duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default(),
+        )
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
 fn backoff_duration(consecutive_failures: u32) -> Duration {
     let shift = consecutive_failures.saturating_sub(1).min(5);
     let millis = 500_u64.saturating_mul(1_u64 << shift);
@@ -695,13 +746,7 @@ mod tests {
         let base = vec![0_u8; 4 * 4 * 3];
         let sensors = SystemSnapshot::empty();
         let staging = composer
-            .compose_rgb_frame(
-                &base,
-                &sensors,
-                1,
-                SystemTime::now(),
-                Instant::now(),
-            )
+            .compose_rgb_frame(&base, &sensors, 1, SystemTime::now(), Instant::now())
             .expect("overlay should compose");
 
         let mut rgb = Vec::new();
@@ -711,5 +756,90 @@ mod tests {
         assert!(rgb[offset] > 0);
         assert_eq!(rgb[offset + 1], 0);
         assert_eq!(rgb[offset + 2], 0);
+    }
+
+    #[test]
+    fn runtime_snapshot_marks_disabled_slots() {
+        let factory: Arc<dyn OverlayRendererFactory> = Arc::new(SolidFactory {
+            color: [255, 0, 0, 255],
+            interval: Duration::from_secs(1),
+        });
+        let mut composer = OverlayComposer::new(4, 4, false, factory);
+        let mut slot = sample_slot(OverlayPosition::FullScreen);
+        slot.enabled = false;
+        composer.reconcile(&DisplayOverlayConfig {
+            overlays: vec![slot.clone()],
+        });
+
+        let snapshot = composer.runtime_snapshot();
+        let runtime = snapshot.slot(slot.id).expect("runtime should exist");
+        assert_eq!(runtime.status, OverlaySlotStatus::Disabled);
+        assert_eq!(runtime.consecutive_failures, 0);
+        assert!(runtime.last_error.is_none());
+    }
+
+    #[test]
+    fn transient_failures_escalate_to_failed_runtime() {
+        struct FlakyRenderer;
+
+        impl OverlayRenderer for FlakyRenderer {
+            fn init(&mut self, _target_size: OverlaySize) -> Result<()> {
+                Ok(())
+            }
+
+            fn resize(&mut self, _target_size: OverlaySize) -> Result<()> {
+                Ok(())
+            }
+
+            fn render_into(
+                &mut self,
+                _input: &OverlayInput<'_>,
+                _target: &mut OverlayBuffer,
+            ) -> std::result::Result<(), OverlayError> {
+                Err(OverlayError::Transient(
+                    "temporary render failure".to_owned(),
+                ))
+            }
+        }
+
+        struct FlakyFactory;
+
+        impl OverlayRendererFactory for FlakyFactory {
+            fn build(
+                &self,
+                _slot: &OverlaySlot,
+                _target_size: OverlaySize,
+            ) -> std::result::Result<OverlayRendererBinding, OverlayError> {
+                Ok(OverlayRendererBinding {
+                    renderer: Box::new(FlakyRenderer),
+                    render_interval: Duration::from_millis(16),
+                })
+            }
+        }
+
+        let factory: Arc<dyn OverlayRendererFactory> = Arc::new(FlakyFactory);
+        let mut composer = OverlayComposer::new(4, 4, false, factory);
+        let slot = sample_slot(OverlayPosition::FullScreen);
+        composer.reconcile(&DisplayOverlayConfig {
+            overlays: vec![slot.clone()],
+        });
+
+        let base = vec![0_u8; 4 * 4 * 3];
+        let sensors = SystemSnapshot::empty();
+        let start = Instant::now();
+
+        for step in 0_u64..5 {
+            let now = start
+                .checked_add(Duration::from_secs(step.saturating_mul(31)))
+                .expect("instant add should succeed");
+            let _ = composer.compose_rgb_frame(&base, &sensors, step + 1, SystemTime::now(), now);
+        }
+
+        let snapshot = composer.runtime_snapshot();
+        let runtime = snapshot.slot(slot.id).expect("runtime should exist");
+        assert_eq!(runtime.status, OverlaySlotStatus::Failed);
+        assert_eq!(runtime.consecutive_failures, 5);
+        let error = runtime.last_error.as_deref().expect("error should exist");
+        assert!(error.contains("disabled after 5 consecutive transient failures"));
     }
 }

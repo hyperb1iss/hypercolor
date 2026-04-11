@@ -33,7 +33,9 @@ use hypercolor_daemon::display_output::overlay::{
     DefaultOverlayRendererFactory, OverlayRendererBinding, OverlayRendererFactory,
 };
 use hypercolor_daemon::display_output::{DisplayOutputState, DisplayOutputThread};
-use hypercolor_daemon::display_overlays::DisplayOverlayRegistry;
+use hypercolor_daemon::display_overlays::{
+    DisplayOverlayRegistry, DisplayOverlayRuntimeRegistry, OverlaySlotRuntime, OverlaySlotStatus,
+};
 use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::session::OutputPowerState;
 
@@ -226,6 +228,10 @@ fn default_display_overlays() -> Arc<DisplayOverlayRegistry> {
     Arc::new(DisplayOverlayRegistry::new())
 }
 
+fn default_display_overlay_runtime() -> Arc<DisplayOverlayRuntimeRegistry> {
+    Arc::new(DisplayOverlayRuntimeRegistry::new())
+}
+
 fn default_device_settings() -> Arc<RwLock<DeviceSettingsStore>> {
     Arc::new(RwLock::new(DeviceSettingsStore::new(
         std::path::PathBuf::from("device-settings.json"),
@@ -377,6 +383,24 @@ async fn wait_for_display_write_count(
     .expect("display output should reach expected write count within timeout")
 }
 
+async fn wait_for_overlay_runtime(
+    runtime_registry: &Arc<DisplayOverlayRuntimeRegistry>,
+    device_id: DeviceId,
+    slot_id: OverlaySlotId,
+) -> OverlaySlotRuntime {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(runtime) = runtime_registry.get(device_id).await.slot(slot_id).cloned() {
+                return runtime;
+            }
+
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("overlay runtime should arrive within timeout")
+}
+
 fn decode_jpeg(bytes: &[u8]) -> image::RgbaImage {
     image::load_from_memory(bytes)
         .expect("display output should decode as an image")
@@ -471,6 +495,7 @@ async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_device
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         display_overlays: default_display_overlays(),
+        display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
     });
@@ -522,6 +547,7 @@ async fn automatic_display_output_skips_devices_without_display_capabilities() {
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         display_overlays: default_display_overlays(),
+        display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
     });
@@ -576,6 +602,7 @@ async fn automatic_display_output_skips_display_devices_that_are_not_in_layout()
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         display_overlays: default_display_overlays(),
+        display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
     });
@@ -639,6 +666,7 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         display_overlays: default_display_overlays(),
+        display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
     });
@@ -713,6 +741,7 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         display_overlays: default_display_overlays(),
+        display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
     });
@@ -787,6 +816,7 @@ async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         display_overlays: default_display_overlays(),
+        display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
     });
@@ -885,6 +915,7 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         display_overlays: default_display_overlays(),
+        display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
     });
@@ -1013,6 +1044,7 @@ async fn automatic_display_output_composites_mock_overlay_into_display_frame() {
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         display_overlays: Arc::clone(&overlays),
+        display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: Arc::new(SolidOverlayFactory {
             color: [255, 0, 0, 255],
@@ -1131,6 +1163,7 @@ async fn automatic_display_output_hydrates_persisted_overlay_config_on_worker_sp
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         display_overlays: Arc::clone(&overlays),
+        display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: Arc::new(SolidOverlayFactory {
             color: [255, 0, 0, 255],
@@ -1154,6 +1187,113 @@ async fn automatic_display_output_hydrates_persisted_overlay_config_on_worker_sp
     assert_eq!(overlays.get(device_id).await.overlays.len(), 1);
 
     thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
+async fn automatic_display_output_publishes_overlay_runtime_failures() {
+    let event_bus = Arc::new(HypercolorBus::new());
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(
+        Vec::new(),
+    ))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let device_registry = DeviceRegistry::new();
+    let overlays = default_display_overlays();
+    let overlay_runtime = default_display_overlay_runtime();
+    let device_id = DeviceId::new();
+    let slot_id = OverlaySlotId::from(Uuid::now_v7());
+
+    overlays
+        .set(
+            device_id,
+            DisplayOverlayConfig {
+                overlays: vec![OverlaySlot {
+                    id: slot_id,
+                    name: "Broken Overlay".to_owned(),
+                    source: OverlaySource::Text(TextOverlayConfig {
+                        text: "broken".to_owned(),
+                        font_family: None,
+                        font_size: 12.0,
+                        color: "#ffffff".to_owned(),
+                        align: TextAlign::Center,
+                        scroll: false,
+                        scroll_speed: 30.0,
+                    }),
+                    position: OverlayPosition::Anchored {
+                        anchor: Anchor::TopLeft,
+                        offset_x: 16,
+                        offset_y: 16,
+                        width: 120,
+                        height: 48,
+                    },
+                    blend_mode: OverlayBlendMode::Normal,
+                    opacity: 1.0,
+                    enabled: true,
+                }],
+            },
+        )
+        .await;
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![display_zone(
+            &format!("device:{device_id}"),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 480, 480, true))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        device_settings: default_device_settings(),
+        event_bus: Arc::clone(&event_bus),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        display_overlays: Arc::clone(&overlays),
+        display_overlay_runtime: Arc::clone(&overlay_runtime),
+        sensor_snapshot_rx: default_sensor_snapshot_rx(),
+        overlay_factory: default_overlay_factory(),
+    });
+
+    let canvas = solid_canvas(Rgba::BLACK);
+    let _ = event_bus
+        .canvas_sender()
+        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
+
+    let runtime = wait_for_overlay_runtime(&overlay_runtime, device_id, slot_id).await;
+    assert_eq!(runtime.status, OverlaySlotStatus::Failed);
+    let error = runtime.last_error.as_deref().expect("error should exist");
+    assert!(error.contains("overlay renderer is not implemented yet"));
+    assert!(runtime.last_rendered_at.is_none());
+
+    thread.shutdown().await.expect("display thread should stop");
+    assert!(
+        overlay_runtime.get(device_id).await.slot(slot_id).is_none(),
+        "worker shutdown should clear runtime state"
+    );
 }
 
 #[tokio::test]
@@ -1204,6 +1344,7 @@ async fn automatic_display_output_skips_unchanged_frames() {
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         display_overlays: default_display_overlays(),
+        display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
     });
@@ -1291,6 +1432,7 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         display_overlays: default_display_overlays(),
+        display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
     });
@@ -1384,6 +1526,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         display_overlays: default_display_overlays(),
+        display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
     });
@@ -1472,6 +1615,7 @@ async fn automatic_display_output_refreshes_static_hold_frames_while_sleeping() 
         power_state,
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         display_overlays: default_display_overlays(),
+        display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
     });

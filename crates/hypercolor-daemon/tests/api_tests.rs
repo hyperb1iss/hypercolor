@@ -3767,7 +3767,13 @@ async fn display_overlay_crud_persists_and_reorders_slots() {
         .expect("failed to execute request");
     assert_eq!(single_get_response.status(), StatusCode::OK);
     let single_get_json = body_json(single_get_response).await;
-    assert_eq!(single_get_json["data"]["name"], "CPU Temp Gauge");
+    assert_eq!(single_get_json["data"]["slot"]["name"], "CPU Temp Gauge");
+    assert_eq!(single_get_json["data"]["runtime"]["status"], "active");
+    assert_eq!(
+        single_get_json["data"]["runtime"]["consecutive_failures"],
+        serde_json::json!(0)
+    );
+    assert!(single_get_json["data"]["runtime"]["last_rendered_at"].is_null());
 
     let reorder_response = app
         .clone()

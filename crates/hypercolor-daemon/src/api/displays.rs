@@ -1,6 +1,7 @@
-//! Display overlay endpoints — `/api/v1/displays/*`.
+//! Display overlay endpoints and runtime diagnostics — `/api/v1/displays/*`.
 
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -16,7 +17,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
 use crate::api::devices;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::{ApiError, ApiResponse, iso8601_system_time};
+use crate::display_overlays::OverlaySlotRuntime;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DisplaySummary {
@@ -64,6 +66,20 @@ pub struct UpdateOverlaySlotRequest {
 #[derive(Debug, Deserialize)]
 pub struct ReorderOverlaySlotsRequest {
     pub slot_ids: Vec<OverlaySlotId>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OverlayRuntimeResponse {
+    pub last_rendered_at: Option<String>,
+    pub consecutive_failures: u32,
+    pub last_error: Option<String>,
+    pub status: crate::display_overlays::OverlaySlotStatus,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OverlaySlotResponse {
+    pub slot: OverlaySlot,
+    pub runtime: OverlayRuntimeResponse,
 }
 
 pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
@@ -117,7 +133,10 @@ pub async fn get_overlay(
     };
     let config = current_overlay_config(&state, device_id).await;
     match config.overlays.into_iter().find(|slot| slot.id == slot_id) {
-        Some(slot) => ApiResponse::ok(slot),
+        Some(slot) => ApiResponse::ok(OverlaySlotResponse {
+            runtime: current_overlay_runtime(&state, device_id, &slot).await,
+            slot,
+        }),
         None => ApiError::not_found(format!("Overlay not found: {slot_id}")),
     }
 }
@@ -350,6 +369,21 @@ async fn validate_overlay_config(
     Ok(())
 }
 
+async fn current_overlay_runtime(
+    state: &Arc<AppState>,
+    device_id: DeviceId,
+    slot: &OverlaySlot,
+) -> OverlayRuntimeResponse {
+    let runtime = state
+        .display_overlay_runtime
+        .get(device_id)
+        .await
+        .slot(slot.id)
+        .cloned()
+        .unwrap_or_else(|| OverlaySlotRuntime::from_slot(slot));
+    OverlayRuntimeResponse::from(runtime)
+}
+
 async fn persist_overlay_config(
     state: &Arc<AppState>,
     device_id: DeviceId,
@@ -423,4 +457,19 @@ fn default_enabled() -> bool {
 
 fn default_opacity() -> f32 {
     1.0
+}
+
+impl From<OverlaySlotRuntime> for OverlayRuntimeResponse {
+    fn from(runtime: OverlaySlotRuntime) -> Self {
+        Self {
+            last_rendered_at: runtime.last_rendered_at.map(format_system_time),
+            consecutive_failures: runtime.consecutive_failures,
+            last_error: runtime.last_error,
+            status: runtime.status,
+        }
+    }
+}
+
+fn format_system_time(time: SystemTime) -> String {
+    iso8601_system_time(time)
 }
