@@ -70,6 +70,7 @@ struct DisplayGeometry {
 
 #[derive(Clone, Debug)]
 struct DisplayTarget {
+    worker_key: DisplayWorkerKey,
     backend_id: String,
     device_id: DeviceId,
     name: String,
@@ -84,10 +85,11 @@ type DisplayWorkerKey = (String, DeviceId);
 #[derive(Default)]
 struct DisplayTargetCache {
     initialized: bool,
+    version: u64,
     registry_generation: u64,
     layout_ptr: usize,
     logical_signature: u64,
-    targets: Vec<Arc<DisplayTarget>>,
+    targets: Arc<[Arc<DisplayTarget>]>,
 }
 
 #[derive(Clone)]
@@ -115,6 +117,12 @@ struct DisplayViewportSignature {
     scale_bits: u32,
     edge_behavior: u8,
     fade_falloff_bits: u32,
+}
+
+#[derive(Clone)]
+struct DisplayTargetsSnapshot {
+    version: u64,
+    targets: Arc<[Arc<DisplayTarget>]>,
 }
 
 impl DisplayOutputThread {
@@ -183,6 +191,7 @@ async fn run_display_output(
 ) {
     let mut workers = HashMap::<DisplayWorkerKey, DisplayWorkerHandle>::new();
     let mut targets_cache = DisplayTargetCache::default();
+    let mut last_reconciled_target_version = None::<u64>;
 
     loop {
         tokio::select! {
@@ -213,8 +222,11 @@ async fn run_display_output(
             &mut targets_cache,
         )
         .await;
-        reconcile_display_workers(&state, &mut workers, &targets).await;
-        if targets.is_empty() {
+        if last_reconciled_target_version != Some(targets.version) {
+            reconcile_display_workers(&state, &mut workers, targets.targets.as_ref()).await;
+            last_reconciled_target_version = Some(targets.version);
+        }
+        if targets.targets.is_empty() {
             continue;
         }
 
@@ -223,12 +235,11 @@ async fn run_display_output(
         // while no display target is active.
         let frame = Arc::new(canvas_rx.borrow().clone());
 
-        for target in targets {
-            let key = display_worker_key(target.as_ref());
-            if let Some(worker) = workers.get(&key) {
+        for target in targets.targets.iter() {
+            if let Some(worker) = workers.get(&target.worker_key) {
                 worker.push(DisplayWorkItem {
                     source: Arc::clone(&frame),
-                    target: Arc::clone(&target),
+                    target: Arc::clone(target),
                 });
             }
         }
@@ -246,7 +257,7 @@ async fn reconcile_display_workers(
 ) {
     let expected_keys = targets
         .iter()
-        .map(|target| display_worker_key(target.as_ref()))
+        .map(|target| target.worker_key.clone())
         .collect::<HashSet<_>>();
     let stale_keys = workers
         .keys()
@@ -261,7 +272,7 @@ async fn reconcile_display_workers(
     }
 
     for target in targets {
-        let key = display_worker_key(target.as_ref());
+        let key = target.worker_key.clone();
         let needs_restart = workers
             .get(&key)
             .is_some_and(|worker| worker.target_fps != target.target_fps);
@@ -302,16 +313,12 @@ async fn reconcile_display_workers(
     }
 }
 
-fn display_worker_key(target: &DisplayTarget) -> DisplayWorkerKey {
-    (target.backend_id.clone(), target.device_id)
-}
-
 async fn display_targets(
     registry: &DeviceRegistry,
     spatial_engine: &Arc<RwLock<SpatialEngine>>,
     logical_devices: &Arc<RwLock<HashMap<String, LogicalDevice>>>,
     cache: &mut DisplayTargetCache,
-) -> Vec<Arc<DisplayTarget>> {
+) -> DisplayTargetsSnapshot {
     let layout = {
         let spatial = spatial_engine.read().await;
         spatial.layout()
@@ -330,7 +337,10 @@ async fn display_targets(
         && cache.layout_ptr == layout_ptr
         && cache.logical_signature == logical_signature
     {
-        return cache.targets.clone();
+        return DisplayTargetsSnapshot {
+            version: cache.version,
+            targets: Arc::clone(&cache.targets),
+        };
     }
 
     let mut targets = Vec::new();
@@ -366,8 +376,10 @@ async fn display_targets(
             continue;
         };
 
+        let backend_id = backend_id_for_device(&tracked.info.family, metadata.as_ref());
         targets.push(Arc::new(DisplayTarget {
-            backend_id: backend_id_for_device(&tracked.info.family, metadata.as_ref()),
+            worker_key: (backend_id.clone(), tracked.info.id),
+            backend_id,
             device_id: tracked.info.id,
             name: tracked.info.name,
             target_fps: capped_display_target_fps(tracked.info.capabilities.max_fps),
@@ -383,11 +395,15 @@ async fn display_targets(
             .then(left.device_id.to_string().cmp(&right.device_id.to_string()))
     });
     cache.initialized = true;
+    cache.version = cache.version.saturating_add(1);
     cache.registry_generation = registry_generation;
     cache.layout_ptr = layout_ptr;
     cache.logical_signature = logical_signature;
-    cache.targets.clone_from(&targets);
-    targets
+    cache.targets = Arc::from(targets);
+    DisplayTargetsSnapshot {
+        version: cache.version,
+        targets: Arc::clone(&cache.targets),
+    }
 }
 
 fn display_geometry_for_device(
