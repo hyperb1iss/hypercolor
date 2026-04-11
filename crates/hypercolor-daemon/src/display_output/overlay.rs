@@ -410,6 +410,7 @@ pub struct PremulStaging {
     pixels: Vec<u8>,
     width: u32,
     height: u32,
+    fully_opaque: bool,
 }
 
 impl PremulStaging {
@@ -418,11 +419,13 @@ impl PremulStaging {
             pixels: vec![0; pixel_len(width, height, 4)],
             width,
             height,
+            fully_opaque: true,
         }
     }
 
     pub fn write_from_rgb(&mut self, source: &[u8], width: u32, height: u32) {
         self.resize(width, height);
+        self.fully_opaque = true;
         for (rgba, rgb) in self.pixels.chunks_exact_mut(4).zip(source.chunks_exact(3)) {
             rgba[0] = rgb[0];
             rgba[1] = rgb[1];
@@ -433,10 +436,12 @@ impl PremulStaging {
 
     pub fn write_from_straight_rgba(&mut self, source: &[u8], width: u32, height: u32) {
         self.resize(width, height);
+        let mut fully_opaque = true;
         for (premul, straight) in self.pixels.chunks_exact_mut(4).zip(source.chunks_exact(4)) {
             let alpha = u16::from(straight[3]);
             premul[3] = straight[3];
             if alpha == 0 {
+                fully_opaque = false;
                 premul[0] = 0;
                 premul[1] = 0;
                 premul[2] = 0;
@@ -448,16 +453,24 @@ impl PremulStaging {
                 premul[2] = straight[2];
                 continue;
             }
+            fully_opaque = false;
             premul[0] = premultiply_channel(straight[0], straight[3]);
             premul[1] = premultiply_channel(straight[1], straight[3]);
             premul[2] = premultiply_channel(straight[2], straight[3]);
         }
+        self.fully_opaque = fully_opaque;
     }
 
     pub fn write_into_rgb(&self, target: &mut Vec<u8>) {
         let target_len = pixel_len(self.width, self.height, 3);
         if target.len() != target_len {
             target.resize(target_len, 0);
+        }
+        if self.fully_opaque {
+            for (rgb, premul) in target.chunks_exact_mut(3).zip(self.pixels.chunks_exact(4)) {
+                rgb.copy_from_slice(&premul[..3]);
+            }
+            return;
         }
         for (rgb, premul) in target.chunks_exact_mut(3).zip(self.pixels.chunks_exact(4)) {
             let alpha = premul[3];
@@ -483,6 +496,13 @@ impl PremulStaging {
         let target_len = pixel_len(self.width, self.height, 4);
         if target.len() != target_len {
             target.resize(target_len, 0);
+        }
+        if self.fully_opaque {
+            for (straight, premul) in target.chunks_exact_mut(4).zip(self.pixels.chunks_exact(4)) {
+                straight[..3].copy_from_slice(&premul[..3]);
+                straight[3] = u8::MAX;
+            }
+            return;
         }
         for (straight, premul) in target.chunks_exact_mut(4).zip(self.pixels.chunks_exact(4)) {
             let alpha = premul[3];
