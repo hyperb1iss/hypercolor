@@ -14,6 +14,7 @@ pub mod effects;
 pub mod envelope;
 pub mod layouts;
 pub mod library;
+pub mod overlays;
 pub mod preview;
 pub mod profiles;
 pub mod scenes;
@@ -615,6 +616,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::post(devices::pair_device).delete(devices::delete_pairing),
         )
         // ── Displays ─────────────────────────────────────────────────
+        .route(
+            "/overlays/catalog",
+            axum::routing::get(overlays::get_overlay_catalog),
+        )
         .route("/displays", axum::routing::get(displays::list_displays))
         .route(
             "/displays/{id}/overlays",

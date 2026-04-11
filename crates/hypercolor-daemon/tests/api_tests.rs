@@ -264,6 +264,51 @@ async fn spa_fallback_serves_index_html_for_client_routes() {
 }
 
 #[tokio::test]
+async fn overlay_catalog_endpoint_lists_builtin_types() {
+    let app = test_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/overlays/catalog")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let json = body_json(response).await;
+    let items = json["data"]
+        .as_array()
+        .expect("catalog items should be an array");
+    assert_eq!(items.len(), 5);
+
+    let html = items
+        .iter()
+        .find(|entry| entry["type"] == "html")
+        .expect("html overlay entry should exist");
+    assert_eq!(html["availability"], "gated");
+    assert!(
+        html["gating_reason"]
+            .as_str()
+            .expect("html gating reason should be a string")
+            .contains("Servo")
+    );
+
+    let sensor = items
+        .iter()
+        .find(|entry| entry["type"] == "sensor")
+        .expect("sensor overlay entry should exist");
+    assert_eq!(sensor["availability"], "available");
+    assert_eq!(sensor["default_config"]["sensor"], "cpu_temp");
+    assert_eq!(
+        sensor["config_schema"]["properties"]["style"]["enum"],
+        serde_json::json!(["numeric", "gauge", "bar", "minimal"])
+    );
+}
+
+#[tokio::test]
 async fn status_returns_200_with_envelope() {
     let app = test_app();
 
