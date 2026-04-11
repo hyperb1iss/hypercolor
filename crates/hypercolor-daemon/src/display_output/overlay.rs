@@ -168,28 +168,33 @@ impl OverlayComposer {
         now_system: SystemTime,
         now_instant: Instant,
     ) -> Option<&'a PremulStaging> {
-        if !self.has_active_slots() {
+        if self.instances.is_empty() {
             return None;
         }
 
-        self.staging
-            .write_from_rgb(base_rgb, self.display_width, self.display_height);
-        let input = OverlayInput {
-            now: now_system,
-            display_width: self.display_width,
-            display_height: self.display_height,
-            circular: self.circular,
-            sensors,
-            elapsed_secs: now_instant.duration_since(self.created_at).as_secs_f32(),
-            frame_number,
-        };
+        let mut has_active_slot = false;
+        let mut input = None::<OverlayInput<'_>>;
 
         for instance in &mut self.instances {
             if !instance.slot.enabled || instance.disabled {
                 continue;
             }
+            if !has_active_slot {
+                self.staging
+                    .write_from_rgb(base_rgb, self.display_width, self.display_height);
+                has_active_slot = true;
+            }
+            let input = input.get_or_insert_with(|| OverlayInput {
+                now: now_system,
+                display_width: self.display_width,
+                display_height: self.display_height,
+                circular: self.circular,
+                sensors,
+                elapsed_secs: now_instant.duration_since(self.created_at).as_secs_f32(),
+                frame_number,
+            });
 
-            instance.maybe_render(&input, now_instant);
+            instance.maybe_render(input, now_instant);
             if !instance.has_valid_render {
                 continue;
             }
@@ -201,6 +206,10 @@ impl OverlayComposer {
                 instance.slot.blend_mode,
                 instance.slot.opacity,
             );
+        }
+
+        if !has_active_slot {
+            return None;
         }
 
         Some(&self.staging)
