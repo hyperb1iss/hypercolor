@@ -9,9 +9,7 @@ use hypercolor_core::types::canvas::{
 };
 use hypercolor_types::event::ZoneColors;
 
-use super::{
-    ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, publish_composed_frame,
-};
+use super::{ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan};
 use crate::performance::CompositorBackendKind;
 use crate::render_thread::producer_queue::ProducerFrame;
 use crate::render_thread::sparkleflinger::gpu_sampling::{GpuSamplingPlan, GpuSpatialSampler};
@@ -203,12 +201,12 @@ impl GpuSparkleFlinger {
             && let Some(layer) = plan.layers.first()
             && layer.is_bypass_candidate()
         {
-            self.current_output = None;
-            self.cached_composition_key = None;
-            let mut composed =
-                publish_composed_frame(layer.frame.clone().into_render_frame(), true);
-            composed.backend = CompositorBackendKind::Gpu;
-            return Ok(composed);
+            return Ok(self.compose_bypass_layer(
+                plan,
+                layer,
+                requires_cpu_sampling_canvas,
+                requires_preview_surface,
+            ));
         }
 
         let readback_key = cached_readback_key(plan);
@@ -409,6 +407,49 @@ impl GpuSparkleFlinger {
         self.surfaces
             .as_ref()
             .map(GpuCompositorSurfaceSet::snapshot)
+    }
+
+    fn compose_bypass_layer(
+        &mut self,
+        plan: &CompositionPlan,
+        layer: &CompositionLayer,
+        requires_cpu_sampling_canvas: bool,
+        requires_preview_surface: bool,
+    ) -> ComposedFrameSet {
+        self.ensure_surface_size(plan.width, plan.height);
+        if let Some(surfaces) = self.surfaces.as_mut() {
+            upload_frame_into_cached_texture(
+                &self.queue,
+                &surfaces.front.texture,
+                &mut surfaces.front_contents,
+                &layer.frame,
+                #[cfg(test)]
+                &mut surfaces.front_upload_count,
+            );
+            surfaces.back_contents = None;
+        }
+        self.current_output = Some(GpuCompositorOutputSurface::Front);
+        self.cached_composition_key = cached_readback_key(plan);
+        self.cached_readback_surface = bypass_preview_surface(&layer.frame).and_then(|surface| {
+            self.cached_composition_key
+                .clone()
+                .map(|key| CachedReadbackSurface { key, surface })
+        });
+
+        let mut composed = match &layer.frame {
+            ProducerFrame::Surface(surface) => gpu_bypassed_surface_frame(
+                surface,
+                requires_cpu_sampling_canvas,
+                requires_preview_surface,
+            ),
+            ProducerFrame::Canvas(canvas) => gpu_bypassed_canvas_frame(
+                canvas,
+                requires_cpu_sampling_canvas,
+                requires_preview_surface,
+            ),
+        };
+        composed.backend = CompositorBackendKind::Gpu;
+        composed
     }
 
     fn read_back_current_output_surface(
@@ -872,6 +913,61 @@ fn gpu_composed_from_surface(
     }
 }
 
+fn gpu_bypassed_surface_frame(
+    surface: &PublishedSurface,
+    requires_cpu_sampling_canvas: bool,
+    requires_preview_surface: bool,
+) -> ComposedFrameSet {
+    let preview_surface =
+        (!requires_cpu_sampling_canvas && requires_preview_surface).then(|| surface.clone());
+    let (sampling_canvas, sampling_surface) = if requires_cpu_sampling_canvas {
+        (
+            Some(Canvas::from_published_surface(surface)),
+            Some(surface.clone()),
+        )
+    } else {
+        (None, None)
+    };
+    ComposedFrameSet {
+        sampling_canvas,
+        sampling_surface,
+        preview_surface,
+        bypassed: true,
+        backend: CompositorBackendKind::Gpu,
+    }
+}
+
+fn gpu_bypassed_canvas_frame(
+    canvas: &Canvas,
+    requires_cpu_sampling_canvas: bool,
+    requires_preview_surface: bool,
+) -> ComposedFrameSet {
+    let preview_surface = (!requires_cpu_sampling_canvas && requires_preview_surface)
+        .then(|| PublishedSurface::from_owned_canvas(canvas.clone(), 0, 0));
+    let (sampling_canvas, sampling_surface) = if requires_cpu_sampling_canvas {
+        (
+            Some(canvas.clone()),
+            Some(PublishedSurface::from_owned_canvas(canvas.clone(), 0, 0)),
+        )
+    } else {
+        (None, None)
+    };
+    ComposedFrameSet {
+        sampling_canvas,
+        sampling_surface,
+        preview_surface,
+        bypassed: true,
+        backend: CompositorBackendKind::Gpu,
+    }
+}
+
+fn bypass_preview_surface(frame: &ProducerFrame) -> Option<PublishedSurface> {
+    match frame {
+        ProducerFrame::Surface(surface) => Some(surface.clone()),
+        ProducerFrame::Canvas(_) => None,
+    }
+}
+
 fn set_texture_contents(
     surfaces: &mut GpuCompositorSurfaceSet,
     output: GpuCompositorOutputSurface,
@@ -1265,6 +1361,36 @@ mod tests {
             .sampling_surface
             .expect("bypass path should preserve the source surface");
         assert_eq!(surface.rgba_bytes().as_ptr(), source.rgba_bytes().as_ptr());
+    }
+
+    #[test]
+    fn gpu_compositor_bypass_surfaces_still_support_gpu_zone_sampling() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
+        let source = slot_surface(Rgba::new(24, 88, 160, 255));
+        let plan = CompositionPlan::single(
+            4,
+            4,
+            CompositionLayer::replace(ProducerFrame::Surface(source.clone())),
+        );
+        let expected = engine.sample(&Canvas::from_published_surface(&source));
+
+        let composed = compositor
+            .compose(&plan, false, false)
+            .expect("single replace surface should still compose on the GPU");
+        assert!(composed.sampling_canvas.is_none());
+        assert!(composed.preview_surface.is_none());
+
+        let mut sampled = Vec::new();
+        assert!(
+            compositor
+                .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
+                .expect("GPU sampler should reuse bypassed front textures")
+        );
+        assert_eq!(sampled, expected);
     }
 
     #[test]
