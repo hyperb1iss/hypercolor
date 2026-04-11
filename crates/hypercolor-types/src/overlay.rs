@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -46,7 +47,7 @@ impl OverlaySlot {
     #[must_use]
     pub fn normalized(mut self) -> Self {
         self.name = normalized_name(self.name);
-        self.opacity = self.opacity.clamp(0.0, 1.0);
+        self.opacity = normalized_opacity(self.opacity);
         self.source = self.source.normalized();
         self.position = self.position.normalized();
         self
@@ -83,6 +84,14 @@ impl fmt::Display for OverlaySlotId {
 impl From<Uuid> for OverlaySlotId {
     fn from(uuid: Uuid) -> Self {
         Self(uuid)
+    }
+}
+
+impl FromStr for OverlaySlotId {
+    type Err = uuid::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Uuid::parse_str(s).map(Self)
     }
 }
 
@@ -228,6 +237,8 @@ impl SensorOverlayConfig {
     pub fn normalized(mut self) -> Self {
         self.sensor = normalized_required_string(self.sensor, "cpu_temp");
         self.unit_label = normalized_optional_string(self.unit_label);
+        self.range_min = normalized_finite(self.range_min, 0.0);
+        self.range_max = normalized_finite(self.range_max, 100.0);
         if self.range_max < self.range_min {
             std::mem::swap(&mut self.range_min, &mut self.range_max);
         }
@@ -297,7 +308,7 @@ impl TextOverlayConfig {
     pub fn normalized(mut self) -> Self {
         self.text = normalized_required_string(self.text, "Overlay");
         self.font_family = normalized_optional_string(self.font_family);
-        self.font_size = self.font_size.max(1.0);
+        self.font_size = normalized_finite(self.font_size, 12.0).max(1.0);
         self.color = normalized_required_string(self.color, "#ffffff");
         self.scroll_speed = normalized_speed(self.scroll_speed);
         self
@@ -376,4 +387,16 @@ fn normalized_speed(value: f32) -> f32 {
     } else {
         1.0
     }
+}
+
+fn normalized_opacity(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
+}
+
+fn normalized_finite(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() { value } else { fallback }
 }

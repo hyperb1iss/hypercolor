@@ -942,7 +942,7 @@ fn scale_channel(value: u8, factor: u16) -> u8 {
     u8::try_from(scaled).unwrap_or(u8::MAX)
 }
 
-async fn device_settings_key(state: &AppState, device_id: DeviceId) -> String {
+pub(super) async fn device_settings_key(state: &AppState, device_id: DeviceId) -> String {
     state
         .device_registry
         .fingerprint_for_id(&device_id)
@@ -960,12 +960,14 @@ async fn persist_device_settings_for(
 ) -> Result<(), String> {
     let key = device_settings_key(state, device_id).await;
     let mut store = state.device_settings.write().await;
+    let existing_overlays = store.display_overlays_for_key(&key);
     store.set_device_settings(
         &key,
         crate::device_settings::StoredDeviceSettings {
             name: settings.name.clone(),
             disabled: !settings.enabled,
             brightness: settings.brightness,
+            display_overlays: existing_overlays,
         },
     );
     store.save().map_err(|error| error.to_string())

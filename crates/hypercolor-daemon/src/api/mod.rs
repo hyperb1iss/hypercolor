@@ -9,6 +9,7 @@ pub mod config;
 pub mod control_values;
 pub mod devices;
 pub mod diagnose;
+pub mod displays;
 pub mod effects;
 pub mod envelope;
 pub mod layouts;
@@ -606,6 +607,24 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route(
             "/devices/{id}/pair",
             axum::routing::post(devices::pair_device).delete(devices::delete_pairing),
+        )
+        // ── Displays ─────────────────────────────────────────────────
+        .route("/displays", axum::routing::get(displays::list_displays))
+        .route(
+            "/displays/{id}/overlays",
+            axum::routing::get(displays::list_overlays)
+                .put(displays::replace_overlays)
+                .post(displays::add_overlay),
+        )
+        .route(
+            "/displays/{id}/overlays/reorder",
+            axum::routing::post(displays::reorder_overlays),
+        )
+        .route(
+            "/displays/{id}/overlays/{slot_id}",
+            axum::routing::get(displays::get_overlay)
+                .patch(displays::patch_overlay)
+                .delete(displays::delete_overlay),
         )
         .route(
             "/logical-devices",

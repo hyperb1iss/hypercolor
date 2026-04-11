@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
+use hypercolor_types::overlay::DisplayOverlayConfig;
+
 fn default_brightness() -> f32 {
     1.0
 }
@@ -18,6 +20,8 @@ pub struct StoredDeviceSettings {
     pub disabled: bool,
     #[serde(default = "default_brightness")]
     pub brightness: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_overlays: Option<DisplayOverlayConfig>,
 }
 
 impl Default for StoredDeviceSettings {
@@ -26,6 +30,7 @@ impl Default for StoredDeviceSettings {
             name: None,
             disabled: false,
             brightness: default_brightness(),
+            display_overlays: None,
         }
     }
 }
@@ -38,12 +43,19 @@ impl StoredDeviceSettings {
             .map(|name| name.trim().to_owned())
             .filter(|name| !name.is_empty());
         self.brightness = self.brightness.clamp(0.0, 1.0);
+        self.display_overlays = self
+            .display_overlays
+            .map(DisplayOverlayConfig::normalized)
+            .filter(|config| !config.is_empty());
         self
     }
 
     #[must_use]
     pub fn is_default(&self) -> bool {
-        self.name.is_none() && !self.disabled && self.brightness >= 0.999
+        self.name.is_none()
+            && !self.disabled
+            && self.brightness >= 0.999
+            && self.display_overlays.is_none()
     }
 }
 
@@ -165,6 +177,20 @@ impl DeviceSettingsStore {
     pub fn set_device_enabled(&mut self, key: &str, enabled: bool) {
         let mut settings = self.device_settings_for_key(key).unwrap_or_default();
         settings.disabled = !enabled;
+        self.set_device_settings(key, settings);
+    }
+
+    /// Return persisted display overlays for a device fingerprint or legacy key.
+    #[must_use]
+    pub fn display_overlays_for_key(&self, key: &str) -> Option<DisplayOverlayConfig> {
+        self.device_settings_for_key(key)
+            .and_then(|settings| settings.display_overlays)
+    }
+
+    /// Persist display overlays for a device fingerprint or legacy key.
+    pub fn set_display_overlays(&mut self, key: &str, overlays: Option<DisplayOverlayConfig>) {
+        let mut settings = self.device_settings_for_key(key).unwrap_or_default();
+        settings.display_overlays = overlays;
         self.set_device_settings(key, settings);
     }
 

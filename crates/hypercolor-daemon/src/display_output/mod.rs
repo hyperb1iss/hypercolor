@@ -25,6 +25,7 @@ use hypercolor_types::device::{DeviceId, DeviceTopologyHint};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
 
+use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::backend_id_for_device;
 use crate::display_overlays::DisplayOverlayRegistry;
 use crate::logical_devices::{self, LogicalDevice};
@@ -58,6 +59,8 @@ pub struct DisplayOutputState {
     pub spatial_engine: Arc<RwLock<SpatialEngine>>,
     /// Logical-device aliases used to match physical devices to layout zones.
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
+    /// Persisted per-device settings used to hydrate overlay config on worker spawn.
+    pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
     /// Event bus canvas stream produced by the render thread.
     pub event_bus: Arc<HypercolorBus>,
     /// Session power policy used to decide whether static hold refresh is active.
@@ -312,6 +315,7 @@ async fn reconcile_display_workers(
 
         match backend_io {
             Some(backend_io) => {
+                hydrate_persisted_display_overlays(state, target.device_id).await;
                 workers.insert(
                     key,
                     DisplayWorkerHandle::spawn(
@@ -335,6 +339,33 @@ async fn reconcile_display_workers(
             }
         }
     }
+}
+
+async fn hydrate_persisted_display_overlays(state: &DisplayOutputState, device_id: DeviceId) {
+    if !state.display_overlays.get(device_id).await.is_empty() {
+        return;
+    }
+
+    let key = state
+        .device_registry
+        .fingerprint_for_id(&device_id)
+        .await
+        .map_or_else(
+            || device_id.to_string(),
+            |fingerprint| fingerprint.to_string(),
+        );
+    let persisted = state
+        .device_settings
+        .read()
+        .await
+        .display_overlays_for_key(&key)
+        .unwrap_or_default()
+        .normalized();
+    if persisted.is_empty() {
+        return;
+    }
+
+    state.display_overlays.set(device_id, persisted).await;
 }
 
 async fn display_targets(

@@ -801,6 +801,41 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
     id
 }
 
+async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> DeviceId {
+    let id = DeviceId::new();
+    let info = DeviceInfo {
+        id,
+        name: name.to_owned(),
+        vendor: "test-vendor".to_owned(),
+        family: DeviceFamily::Wled,
+        model: Some("LCD".to_owned()),
+        connection_type: ConnectionType::Usb,
+        zones: vec![ZoneInfo {
+            name: "LCD".to_owned(),
+            led_count: 320 * 320,
+            topology: DeviceTopologyHint::Display {
+                width: 320,
+                height: 320,
+                circular: true,
+            },
+            color_format: DeviceColorFormat::Rgb,
+        }],
+        firmware_version: Some("0.1.0".to_owned()),
+        capabilities: DeviceCapabilities {
+            led_count: 320 * 320,
+            supports_direct: true,
+            supports_brightness: true,
+            has_display: true,
+            display_resolution: Some((320, 320)),
+            max_fps: 30,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    };
+    let _ = state.device_registry.add(info).await;
+    id
+}
+
 #[cfg(feature = "hue")]
 async fn insert_test_hue_bridge_device(
     state: &Arc<AppState>,
@@ -3607,6 +3642,306 @@ async fn update_device_disable_runs_lifecycle_disconnect_cleanup() {
     assert_eq!(json["data"]["status"], "disabled");
     assert_eq!(disconnects.load(Ordering::Relaxed), 1);
     assert_eq!(state.backend_manager.lock().await.mapped_device_count(), 0);
+}
+
+#[tokio::test]
+async fn list_displays_only_returns_display_capable_devices() {
+    let state = Arc::new(isolated_state());
+    let _ = insert_test_device(&state, "Desk Strip").await;
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/displays")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let items = json["data"]
+        .as_array()
+        .expect("display list should be an array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], display_id.to_string());
+    assert_eq!(items[0]["name"], "Pump LCD");
+    assert_eq!(items[0]["width"], 320);
+    assert_eq!(items[0]["height"], 320);
+    assert_eq!(items[0]["circular"], true);
+    assert_eq!(items[0]["overlay_count"], 0);
+    assert_eq!(items[0]["enabled_overlay_count"], 0);
+}
+
+#[tokio::test]
+async fn display_overlay_crud_persists_and_reorders_slots() {
+    let (state, tmp) = test_state_with_temp_output_store();
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let first_create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/displays/{display_id}/overlays"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r##"{
+                        "name":"CPU Label",
+                        "source":{"type":"text","text":"CPU","font_size":18,"color":"#ffffff","align":"center"},
+                        "position":{"anchored":{"anchor":"top_left","offset_x":8,"offset_y":12,"width":120,"height":32}},
+                        "blend_mode":"screen",
+                        "opacity":0.8
+                    }"##,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(first_create.status(), StatusCode::CREATED);
+    let first_json = body_json(first_create).await;
+    let first_slot_id = first_json["data"]["id"]
+        .as_str()
+        .expect("slot id should be string")
+        .to_owned();
+
+    let second_create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/displays/{display_id}/overlays"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r##"{
+                        "name":"CPU Temp",
+                        "source":{"type":"sensor","sensor":"cpu_temp","style":"numeric","range_min":0,"range_max":100,"color_min":"#80ffea","color_max":"#ff6ac1"},
+                        "position":{"anchored":{"anchor":"bottom_right","offset_x":-8,"offset_y":-12,"width":128,"height":40}}
+                    }"##,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(second_create.status(), StatusCode::CREATED);
+    let second_json = body_json(second_create).await;
+    let second_slot_id = second_json["data"]["id"]
+        .as_str()
+        .expect("slot id should be string")
+        .to_owned();
+
+    let patch_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!(
+                    "/api/v1/displays/{display_id}/overlays/{second_slot_id}"
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"CPU Temp Gauge","opacity":0.5}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(patch_response.status(), StatusCode::OK);
+    let patch_json = body_json(patch_response).await;
+    assert_eq!(patch_json["data"]["name"], "CPU Temp Gauge");
+    assert_eq!(patch_json["data"]["opacity"], serde_json::json!(0.5));
+
+    let single_get_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/displays/{display_id}/overlays/{second_slot_id}"
+                ))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(single_get_response.status(), StatusCode::OK);
+    let single_get_json = body_json(single_get_response).await;
+    assert_eq!(single_get_json["data"]["name"], "CPU Temp Gauge");
+
+    let reorder_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/displays/{display_id}/overlays/reorder"))
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"slot_ids":["{second_slot_id}","{first_slot_id}"]}}"#
+                )))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(reorder_response.status(), StatusCode::OK);
+    let reorder_json = body_json(reorder_response).await;
+    assert_eq!(reorder_json["data"]["overlays"][0]["id"], second_slot_id);
+    assert_eq!(reorder_json["data"]["overlays"][1]["id"], first_slot_id);
+
+    let get_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{display_id}/overlays"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let get_json = body_json(get_response).await;
+    assert_eq!(get_json["data"]["overlays"][0]["name"], "CPU Temp Gauge");
+    assert_eq!(get_json["data"]["overlays"][1]["name"], "CPU Label");
+
+    let persisted_raw = fs::read_to_string(tmp.path().join("device-settings.json"))
+        .expect("device settings file should exist");
+    let persisted_json: serde_json::Value =
+        serde_json::from_str(&persisted_raw).expect("device settings file should be valid json");
+    let persisted_overlays =
+        &persisted_json["devices"][display_id.to_string()]["display_overlays"]["overlays"];
+    assert_eq!(persisted_overlays[0]["id"], second_slot_id);
+    assert_eq!(persisted_overlays[1]["id"], first_slot_id);
+
+    let first_delete = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/api/v1/displays/{display_id}/overlays/{first_slot_id}"
+                ))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(first_delete.status(), StatusCode::NO_CONTENT);
+
+    let second_delete = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/api/v1/displays/{display_id}/overlays/{second_slot_id}"
+                ))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(second_delete.status(), StatusCode::NO_CONTENT);
+
+    let final_list = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{display_id}/overlays"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(final_list.status(), StatusCode::OK);
+    let final_json = body_json(final_list).await;
+    assert!(
+        final_json["data"]["overlays"]
+            .as_array()
+            .expect("overlays should be an array")
+            .is_empty()
+    );
+
+    let final_persisted_raw = fs::read_to_string(tmp.path().join("device-settings.json"))
+        .expect("device settings file should exist");
+    let final_persisted_json: serde_json::Value = serde_json::from_str(&final_persisted_raw)
+        .expect("device settings file should be valid json");
+    assert!(
+        final_persisted_json["devices"][display_id.to_string()].is_null(),
+        "device settings entry should be removed once overlays are cleared"
+    );
+}
+
+#[tokio::test]
+async fn display_overlay_endpoints_reject_non_display_devices_and_invalid_reorder() {
+    let (state, _tmp) = test_state_with_temp_output_store();
+    let strip_id = insert_test_device(&state, "Desk Strip").await;
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let non_display_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{strip_id}/overlays"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(
+        non_display_response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let non_display_json = body_json(non_display_response).await;
+    assert_eq!(non_display_json["error"]["code"], "validation_error");
+
+    let replace_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/displays/{display_id}/overlays"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r##"{
+                        "overlays":[
+                            {
+                                "id":"00000000-0000-7000-8000-000000000001",
+                                "name":"Clock",
+                                "source":{"type":"text","text":"12:34","font_size":20,"color":"#ffffff","align":"center"},
+                                "position":"full_screen"
+                            },
+                            {
+                                "id":"00000000-0000-7000-8000-000000000002",
+                                "name":"Temp",
+                                "source":{"type":"sensor","sensor":"cpu_temp","style":"numeric","range_min":0,"range_max":100,"color_min":"#80ffea","color_max":"#ff6ac1"},
+                                "position":{"anchored":{"anchor":"bottom_right","offset_x":-8,"offset_y":-8,"width":120,"height":32}}
+                            }
+                        ]
+                    }"##,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(replace_response.status(), StatusCode::OK);
+
+    let reorder_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/displays/{display_id}/overlays/reorder"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"slot_ids":["00000000-0000-7000-8000-000000000001"]}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(reorder_response.status(), StatusCode::CONFLICT);
+    let reorder_json = body_json(reorder_response).await;
+    assert_eq!(reorder_json["error"]["code"], "conflict");
 }
 
 #[tokio::test]

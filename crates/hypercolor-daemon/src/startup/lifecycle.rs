@@ -111,6 +111,7 @@ impl DaemonState {
             device_registry: self.device_registry.clone(),
             spatial_engine: Arc::clone(&self.spatial_engine),
             logical_devices: Arc::clone(&self.logical_devices),
+            device_settings: Arc::clone(&self.device_settings),
             event_bus: Arc::clone(&self.event_bus),
             power_state: self.power_state.subscribe(),
             static_hold_refresh_interval: DEFAULT_STATIC_HOLD_REFRESH_INTERVAL,
