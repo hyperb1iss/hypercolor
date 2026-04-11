@@ -244,9 +244,9 @@ pub(super) async fn relay_canvas(
     let mut latest_canvas = None::<hypercolor_core::bus::CanvasFrame>;
     let mut last_sent_frame_number: Option<u32> = None;
     let mut last_sent_brightness_bits: Option<u32> = None;
+    let mut pending_send = false;
     let mut active_fps = 15_u32;
-    let mut ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_sent_at = preview_initial_last_sent();
 
     loop {
         if active_canvas_config.is_none() {
@@ -267,6 +267,8 @@ pub(super) async fn relay_canvas(
             last_sent_frame_number = None;
             last_sent_brightness_bits = None;
             latest_canvas = None;
+            pending_send = false;
+            last_sent_at = preview_initial_last_sent();
             tokio::select! {
                 changed = power_state_rx.changed() => {
                     if changed.is_err() {
@@ -290,11 +292,10 @@ pub(super) async fn relay_canvas(
 
         if canvas_config.fps != active_fps {
             active_fps = canvas_config.fps.max(1);
-            ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         }
         if latest_canvas.is_none() {
             latest_canvas = Some(canvas_rx.borrow_and_update().clone());
+            pending_send = true;
         }
 
         tokio::select! {
@@ -303,12 +304,14 @@ pub(super) async fn relay_canvas(
                     break;
                 }
                 latest_canvas = Some(canvas_rx.borrow_and_update().clone());
+                pending_send = true;
             }
             changed = power_state_rx.changed() => {
                 if changed.is_err() {
                     break;
                 }
                 let _ = power_state_rx.borrow_and_update();
+                pending_send |= latest_canvas.is_some();
             }
             changed = subscriptions.changed() => {
                 if changed.is_err() {
@@ -317,8 +320,9 @@ pub(super) async fn relay_canvas(
                 let _ = subscriptions.borrow_and_update();
                 active_canvas_config = None;
             }
-            _ = ticker.tick() => {
+            _ = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
                 let Some(latest_canvas) = latest_canvas.as_ref() else {
+                    pending_send = false;
                     continue;
                 };
                 let brightness = power_state_rx.borrow().effective_brightness();
@@ -326,6 +330,7 @@ pub(super) async fn relay_canvas(
                 if last_sent_frame_number == Some(latest_canvas.frame_number)
                     && last_sent_brightness_bits == Some(brightness_bits)
                 {
+                    pending_send = false;
                     continue;
                 }
 
@@ -342,8 +347,10 @@ pub(super) async fn relay_canvas(
                     continue;
                 }
 
+                last_sent_at = Instant::now();
                 last_sent_frame_number = Some(latest_canvas.frame_number);
                 last_sent_brightness_bits = Some(brightness_bits);
+                pending_send = false;
             }
         }
     }
@@ -360,9 +367,9 @@ pub(super) async fn relay_screen_canvas(
     let mut active_canvas_config = None::<CanvasConfig>;
     let mut latest_canvas = None::<hypercolor_core::bus::CanvasFrame>;
     let mut last_sent_frame_number: Option<u32> = None;
+    let mut pending_send = false;
     let mut active_fps = 15_u32;
-    let mut ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_sent_at = preview_initial_last_sent();
 
     loop {
         if active_canvas_config.is_none() {
@@ -382,6 +389,8 @@ pub(super) async fn relay_screen_canvas(
         let Some(canvas_config) = active_canvas_config.as_ref() else {
             last_sent_frame_number = None;
             latest_canvas = None;
+            pending_send = false;
+            last_sent_at = preview_initial_last_sent();
             if subscriptions.changed().await.is_err() {
                 break;
             }
@@ -395,11 +404,10 @@ pub(super) async fn relay_screen_canvas(
 
         if canvas_config.fps != active_fps {
             active_fps = canvas_config.fps.max(1);
-            ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         }
         if latest_canvas.is_none() {
             latest_canvas = Some(canvas_rx.borrow_and_update().clone());
+            pending_send = true;
         }
 
         tokio::select! {
@@ -408,6 +416,7 @@ pub(super) async fn relay_screen_canvas(
                     break;
                 }
                 latest_canvas = Some(canvas_rx.borrow_and_update().clone());
+                pending_send = true;
             }
             changed = subscriptions.changed() => {
                 if changed.is_err() {
@@ -416,11 +425,13 @@ pub(super) async fn relay_screen_canvas(
                 let _ = subscriptions.borrow_and_update();
                 active_canvas_config = None;
             }
-            _ = ticker.tick() => {
+            _ = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
                 let Some(latest_canvas) = latest_canvas.as_ref() else {
+                    pending_send = false;
                     continue;
                 };
                 if last_sent_frame_number == Some(latest_canvas.frame_number) {
+                    pending_send = false;
                     continue;
                 }
 
@@ -437,7 +448,9 @@ pub(super) async fn relay_screen_canvas(
                     continue;
                 }
 
+                last_sent_at = Instant::now();
                 last_sent_frame_number = Some(latest_canvas.frame_number);
+                pending_send = false;
             }
         }
     }
@@ -553,6 +566,18 @@ fn should_emit(last_sent: &mut Instant, fps: u32) -> bool {
     }
     *last_sent = now;
     true
+}
+
+fn preview_initial_last_sent() -> Instant {
+    Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now)
+}
+
+fn preview_send_delay(last_sent: Instant, fps: u32, now: Instant) -> Duration {
+    let clamped_fps = fps.max(1);
+    let interval = Duration::from_secs_f64(1.0 / f64::from(clamped_fps));
+    interval.saturating_sub(now.saturating_duration_since(last_sent))
 }
 
 fn enqueue_backpressure_notice(
@@ -825,4 +850,29 @@ pub(super) fn publish_subscriptions(
     subscriptions: &SubscriptionState,
 ) {
     let _ = subscriptions_tx.send(subscriptions.clone());
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::preview_send_delay;
+
+    #[test]
+    fn preview_send_delay_is_zero_after_interval_elapses() {
+        let now = Instant::now();
+        let last_sent = now.checked_sub(Duration::from_millis(100)).unwrap_or(now);
+
+        assert_eq!(preview_send_delay(last_sent, 60, now), Duration::ZERO);
+    }
+
+    #[test]
+    fn preview_send_delay_returns_remaining_budget() {
+        let now = Instant::now();
+        let last_sent = now.checked_sub(Duration::from_millis(5)).unwrap_or(now);
+        let delay = preview_send_delay(last_sent, 60, now);
+
+        assert!(delay > Duration::ZERO);
+        assert!(delay <= Duration::from_millis(12));
+    }
 }
