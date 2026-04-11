@@ -242,7 +242,7 @@ pub(super) async fn relay_canvas(
     let mut canvas_rx = None::<crate::preview_runtime::PreviewFrameReceiver>;
     let mut active_canvas_config = None::<CanvasConfig>;
     let mut receiver_initialized = false;
-    let mut last_sent_frame_number: Option<u32> = None;
+    let mut last_sent_surface = None::<PreviewSurfaceIdentity>;
     let mut last_sent_brightness_bits: Option<u32> = None;
     let mut pending_send = false;
     let mut active_fps = 15_u32;
@@ -264,7 +264,7 @@ pub(super) async fn relay_canvas(
         });
 
         let Some(canvas_config) = active_canvas_config.as_ref() else {
-            last_sent_frame_number = None;
+            last_sent_surface = None;
             last_sent_brightness_bits = None;
             receiver_initialized = false;
             pending_send = false;
@@ -325,7 +325,8 @@ pub(super) async fn relay_canvas(
                 let latest_canvas = canvas_rx.borrow();
                 let brightness = power_state_rx.borrow().effective_brightness();
                 let brightness_bits = brightness.to_bits();
-                if last_sent_frame_number == Some(latest_canvas.frame_number)
+                let surface_identity = preview_surface_identity(&latest_canvas);
+                if last_sent_surface == Some(surface_identity)
                     && last_sent_brightness_bits == Some(brightness_bits)
                 {
                     pending_send = false;
@@ -346,7 +347,7 @@ pub(super) async fn relay_canvas(
                 }
 
                 last_sent_at = Instant::now();
-                last_sent_frame_number = Some(latest_canvas.frame_number);
+                last_sent_surface = Some(surface_identity);
                 last_sent_brightness_bits = Some(brightness_bits);
                 pending_send = false;
             }
@@ -364,7 +365,7 @@ pub(super) async fn relay_screen_canvas(
     let mut canvas_rx = None::<crate::preview_runtime::PreviewFrameReceiver>;
     let mut active_canvas_config = None::<CanvasConfig>;
     let mut receiver_initialized = false;
-    let mut last_sent_frame_number: Option<u32> = None;
+    let mut last_sent_surface = None::<PreviewSurfaceIdentity>;
     let mut pending_send = false;
     let mut active_fps = 15_u32;
     let mut last_sent_at = preview_initial_last_sent();
@@ -385,7 +386,7 @@ pub(super) async fn relay_screen_canvas(
         });
 
         let Some(canvas_config) = active_canvas_config.as_ref() else {
-            last_sent_frame_number = None;
+            last_sent_surface = None;
             receiver_initialized = false;
             pending_send = false;
             last_sent_at = preview_initial_last_sent();
@@ -426,7 +427,8 @@ pub(super) async fn relay_screen_canvas(
             }
             _ = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
                 let latest_canvas = canvas_rx.borrow();
-                if last_sent_frame_number == Some(latest_canvas.frame_number) {
+                let surface_identity = preview_surface_identity(&latest_canvas);
+                if last_sent_surface == Some(surface_identity) {
                     pending_send = false;
                     continue;
                 }
@@ -445,7 +447,7 @@ pub(super) async fn relay_screen_canvas(
                 }
 
                 last_sent_at = Instant::now();
-                last_sent_frame_number = Some(latest_canvas.frame_number);
+                last_sent_surface = Some(surface_identity);
                 pending_send = false;
             }
         }
@@ -574,6 +576,23 @@ fn preview_send_delay(last_sent: Instant, fps: u32, now: Instant) -> Duration {
     let clamped_fps = fps.max(1);
     let interval = Duration::from_secs_f64(1.0 / f64::from(clamped_fps));
     interval.saturating_sub(now.saturating_duration_since(last_sent))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PreviewSurfaceIdentity {
+    generation: u64,
+    storage_ptr: usize,
+    width: u32,
+    height: u32,
+}
+
+fn preview_surface_identity(frame: &hypercolor_core::bus::CanvasFrame) -> PreviewSurfaceIdentity {
+    PreviewSurfaceIdentity {
+        generation: frame.surface().generation(),
+        storage_ptr: frame.rgba_bytes().as_ptr() as usize,
+        width: frame.width,
+        height: frame.height,
+    }
 }
 
 fn enqueue_backpressure_notice(
@@ -852,7 +871,10 @@ pub(super) fn publish_subscriptions(
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::preview_send_delay;
+    use hypercolor_core::bus::CanvasFrame;
+    use hypercolor_types::canvas::{Canvas, PublishedSurface};
+
+    use super::{preview_send_delay, preview_surface_identity};
 
     #[test]
     fn preview_send_delay_is_zero_after_interval_elapses() {
@@ -870,5 +892,14 @@ mod tests {
 
         assert!(delay > Duration::ZERO);
         assert!(delay <= Duration::from_millis(12));
+    }
+
+    #[test]
+    fn preview_surface_identity_ignores_frame_metadata_updates() {
+        let surface = PublishedSurface::from_owned_canvas(Canvas::new(2, 1), 7, 99);
+        let first = CanvasFrame::from_surface(surface.clone());
+        let second = CanvasFrame::from_surface(surface.with_frame_metadata(8, 100));
+
+        assert_eq!(preview_surface_identity(&first), preview_surface_identity(&second));
     }
 }
