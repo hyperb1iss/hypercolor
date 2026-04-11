@@ -317,6 +317,10 @@ page:
 
 This keeps the preview shell familiar and avoids needless UI sprawl.
 
+The browser preview mode switch landed on 2026-04-11. `/preview` can now poll
+simulator frames via the inspection API while keeping the original live canvas
+WebSocket mode intact.
+
 ### 7.4 TUI
 
 TUI support should consume the same simulator runtime and render the selected

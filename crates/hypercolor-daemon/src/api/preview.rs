@@ -7,7 +7,7 @@ pub async fn preview_page() -> Response {
     Html(PREVIEW_HTML).into_response()
 }
 
-const PREVIEW_HTML: &str = r#"<!doctype html>
+const PREVIEW_HTML: &str = r##"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -86,6 +86,11 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
       border-color: var(--accent);
       transform: translateY(-1px);
     }
+    button:disabled, select:disabled, input:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      transform: none;
+    }
 
     .toggle {
       display: inline-flex;
@@ -150,6 +155,10 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
       background: #000;
     }
 
+    .circular-mask {
+      border-radius: 999px;
+    }
+
     .log {
       width: min(960px, 100%);
       max-height: 140px;
@@ -170,6 +179,11 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
     <header class="top">
       <div class="title">Hypercolor Live Preview</div>
       <div class="controls">
+        <select id="previewMode">
+          <option value="canvas">canvas</option>
+          <option value="simulator">simulator</option>
+        </select>
+        <select id="simulatorSelect"></select>
         <select id="effectSelect"></select>
         <button id="applyBtn" type="button">Apply Effect</button>
         <button id="stopBtn" type="button">Stop</button>
@@ -182,6 +196,7 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
       </div>
       <div class="meta">
         <span>WS: <strong id="wsState" class="status-warn">connecting...</strong></span>
+        <span>Preview: <strong id="previewModeLabel">canvas</strong></span>
         <span>Frames: <strong id="frameCount">0</strong></span>
         <span>Size: <strong id="canvasSize">-</strong></span>
         <span>Effect: <strong id="activeEffect">-</strong></span>
@@ -199,6 +214,9 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
     const frameCountEl = document.getElementById("frameCount");
     const canvasSizeEl = document.getElementById("canvasSize");
     const activeEffectEl = document.getElementById("activeEffect");
+    const modeEl = document.getElementById("previewMode");
+    const modeLabelEl = document.getElementById("previewModeLabel");
+    const simulatorEl = document.getElementById("simulatorSelect");
     const selectEl = document.getElementById("effectSelect");
     const applyBtn = document.getElementById("applyBtn");
     const fpsEl = document.getElementById("fpsInput");
@@ -208,10 +226,15 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
     const canvas = document.getElementById("previewCanvas");
     const ctx = canvas.getContext("2d");
     const SERVO_RUN_HINT = "./scripts/run-preview-servo.sh";
+    const urlState = new URLSearchParams(window.location.search);
 
     let ws = null;
     let frameCount = 0;
-    let token = new URLSearchParams(window.location.search).get("token") || "";
+    let token = urlState.get("token") || "";
+    let simulatorConfigs = [];
+    let simulatorPollHandle = null;
+    const requestedDisplay = urlState.get("display") || "";
+    const requestedMode = urlState.get("mode") || (requestedDisplay ? "simulator" : "canvas");
 
     function toDisplayName(name) {
       if (!name) return "-";
@@ -265,6 +288,79 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
     function setWsState(label, cls) {
       stateEl.textContent = label;
       stateEl.className = cls;
+    }
+
+    function resetFrameCount() {
+      frameCount = 0;
+      frameCountEl.textContent = "0";
+    }
+
+    function clearCanvas(width = 320, height = 200, message = "") {
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (message) {
+        ctx.fillStyle = "#8fb0c4";
+        ctx.font = '16px "JetBrains Mono", monospace';
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(message, canvas.width / 2, canvas.height / 2);
+      }
+    }
+
+    function selectedSimulator() {
+      return simulatorConfigs.find((config) => config.id === simulatorEl.value) || null;
+    }
+
+    function closeWs() {
+      if (!ws) return;
+      const socket = ws;
+      ws = null;
+      socket.onopen = null;
+      socket.onclose = null;
+      socket.onerror = null;
+      socket.onmessage = null;
+      try { socket.close(); } catch (_) {}
+    }
+
+    function stopSimulatorPolling() {
+      if (!simulatorPollHandle) return;
+      clearInterval(simulatorPollHandle);
+      simulatorPollHandle = null;
+    }
+
+    function syncPreviewQuery() {
+      const next = new URLSearchParams(window.location.search);
+      next.set("mode", modeEl.value);
+      if (modeEl.value === "simulator" && simulatorEl.value) {
+        next.set("display", simulatorEl.value);
+      } else {
+        next.delete("display");
+      }
+      const query = next.toString();
+      const nextUrl = query ? `${window.location.pathname}?${query}` : window.location.pathname;
+      window.history.replaceState(null, "", nextUrl);
+    }
+
+    function updatePreviewUi() {
+      const simulatorMode = modeEl.value === "simulator";
+      const simulator = selectedSimulator();
+      modeLabelEl.textContent = simulatorMode ? "simulator" : "canvas";
+      simulatorEl.disabled = !simulatorMode || simulatorConfigs.length === 0;
+      fpsEl.disabled = simulatorMode;
+      document.getElementById("reconnectBtn").textContent = simulatorMode ? "Refresh Frame" : "Reconnect";
+      canvas.classList.toggle("circular-mask", simulatorMode && !!simulator?.circular);
+      if (simulatorMode && simulator) {
+        canvas.style.aspectRatio = `${simulator.width} / ${simulator.height}`;
+        canvasSizeEl.textContent = `${simulator.width}x${simulator.height}`;
+      } else {
+        canvas.classList.remove("circular-mask");
+        canvas.style.aspectRatio = "16 / 10";
+      }
+      syncPreviewQuery();
     }
 
     function apiHeaders() {
@@ -333,6 +429,46 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
       }
     }
 
+    async function loadSimulators() {
+      const previousSelection = simulatorEl.value;
+      const res = await fetch("/api/v1/simulators/displays", { headers: apiHeaders() });
+      if (!res.ok) throw new Error(`simulator list failed (${res.status})`);
+      const body = await res.json();
+      simulatorConfigs = [...(body?.data || [])].sort((left, right) =>
+        (left?.name || "").localeCompare(right?.name || "", undefined, {
+          sensitivity: "base",
+          numeric: true,
+        })
+      );
+
+      simulatorEl.innerHTML = "";
+      for (const simulator of simulatorConfigs) {
+        const option = document.createElement("option");
+        option.value = simulator.id;
+        option.textContent = `${simulator.name} (${simulator.width}x${simulator.height}${simulator.circular ? ", circle" : ""})`;
+        simulatorEl.appendChild(option);
+      }
+      if (simulatorConfigs.length === 0) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "no simulators configured";
+        simulatorEl.appendChild(option);
+      }
+
+      const preferredId = previousSelection || requestedDisplay;
+      if (preferredId) {
+        const preferredIndex = Array.from(simulatorEl.options).findIndex((option) => option.value === preferredId);
+        if (preferredIndex >= 0) {
+          simulatorEl.selectedIndex = preferredIndex;
+        }
+      }
+      if (!simulatorEl.value && simulatorConfigs.length > 0) {
+        simulatorEl.selectedIndex = 0;
+      }
+      updatePreviewUi();
+      log(`loaded ${simulatorConfigs.length} simulator(s)`);
+    }
+
     async function fetchActiveEffect() {
       const res = await fetch("/api/v1/effects/active", { headers: apiHeaders() });
       if (res.status === 404) {
@@ -383,6 +519,8 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
     }
 
     function connectWs() {
+      if (modeEl.value !== "canvas") return;
+      stopSimulatorPolling();
       if (ws) ws.close();
 
       const scheme = window.location.protocol === "https:" ? "wss" : "ws";
@@ -423,6 +561,78 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
           handleBinary(event.data);
         }
       };
+    }
+
+    async function refreshSimulatorFrame(options = {}) {
+      if (modeEl.value !== "simulator") return;
+
+      const quiet = options.quiet === true;
+      const simulator = selectedSimulator();
+      updatePreviewUi();
+      if (!simulator) {
+        clearCanvas(320, 200, "no simulator selected");
+        setWsState("idle", "status-warn");
+        return;
+      }
+
+      try {
+        const res = await fetch(
+          `/api/v1/simulators/displays/${encodeURIComponent(simulator.id)}/frame?ts=${Date.now()}`,
+          { headers: apiHeaders() }
+        );
+        if (modeEl.value !== "simulator") return;
+        if (res.status === 404) {
+          clearCanvas(simulator.width, simulator.height, "waiting for first frame");
+          setWsState("waiting", "status-warn");
+          canvasSizeEl.textContent = `${simulator.width}x${simulator.height}`;
+          return;
+        }
+        if (!res.ok) throw new Error(`simulator frame failed (${res.status})`);
+
+        const blob = await res.blob();
+        const bitmap = await createImageBitmap(blob);
+        if (canvas.width !== simulator.width || canvas.height !== simulator.height) {
+          canvas.width = simulator.width;
+          canvas.height = simulator.height;
+        }
+        ctx.save();
+        ctx.clearRect(0, 0, simulator.width, simulator.height);
+        if (simulator.circular) {
+          const radius = Math.min(simulator.width, simulator.height) / 2;
+          ctx.beginPath();
+          ctx.arc(simulator.width / 2, simulator.height / 2, radius, 0, Math.PI * 2);
+          ctx.clip();
+        }
+        ctx.drawImage(bitmap, 0, 0, simulator.width, simulator.height);
+        ctx.restore();
+        if (typeof bitmap.close === "function") bitmap.close();
+
+        frameCount += 1;
+        frameCountEl.textContent = String(frameCount);
+        canvasSizeEl.textContent = `${simulator.width}x${simulator.height}`;
+        setWsState("simulator", "status-ok");
+      } catch (err) {
+        setWsState("error", "status-err");
+        if (!quiet) log(`simulator frame error: ${String(err)}`);
+      }
+    }
+
+    async function activatePreviewMode() {
+      resetFrameCount();
+      updatePreviewUi();
+
+      if (modeEl.value === "simulator") {
+        closeWs();
+        stopSimulatorPolling();
+        await refreshSimulatorFrame();
+        simulatorPollHandle = setInterval(() => {
+          refreshSimulatorFrame({ quiet: true });
+        }, 1000);
+        return;
+      }
+
+      stopSimulatorPolling();
+      connectWs();
     }
 
     function handleJson(raw) {
@@ -489,26 +699,48 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
     document.getElementById("stopBtn").addEventListener("click", async () => {
       try { await stopEffect(); } catch (err) { log(String(err)); }
     });
-    document.getElementById("reconnectBtn").addEventListener("click", connectWs);
-    fpsEl.addEventListener("change", connectWs);
+    document.getElementById("reconnectBtn").addEventListener("click", async () => {
+      try {
+        if (modeEl.value === "simulator") {
+          await loadSimulators();
+          resetFrameCount();
+          await refreshSimulatorFrame();
+          return;
+        }
+        connectWs();
+      } catch (err) { log(String(err)); }
+    });
+    fpsEl.addEventListener("change", () => {
+      if (modeEl.value === "canvas") connectWs();
+    });
     showUnavailableEl.addEventListener("change", async () => {
       try { await loadEffects(); } catch (err) { log(String(err)); }
     });
     selectEl.addEventListener("change", updateApplyButtonState);
+    modeEl.addEventListener("change", async () => {
+      try { await activatePreviewMode(); } catch (err) { log(String(err)); }
+    });
+    simulatorEl.addEventListener("change", async () => {
+      try { await activatePreviewMode(); } catch (err) { log(String(err)); }
+    });
 
     async function bootstrap() {
       try { await loadEffects(); } catch (err) { log(String(err)); }
+      try { await loadSimulators(); } catch (err) { log(String(err)); }
+      if (requestedMode === "simulator" && (requestedDisplay ? simulatorConfigs.some((config) => config.id === requestedDisplay) : simulatorConfigs.length > 0)) {
+        modeEl.value = "simulator";
+      }
       try {
         const active = await fetchActiveEffect();
         if (!active && selectEl.value) {
           await applySelectedEffect();
         }
       } catch (err) { log(String(err)); }
-      connectWs();
+      try { await activatePreviewMode(); } catch (err) { log(String(err)); }
     }
 
     bootstrap();
   </script>
 </body>
 </html>
-"#;
+"##;

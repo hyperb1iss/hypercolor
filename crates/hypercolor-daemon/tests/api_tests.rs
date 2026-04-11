@@ -787,6 +787,8 @@ async fn preview_page_returns_html() {
     let body = body_text(response).await;
     assert!(body.contains("Hypercolor Live Preview"));
     assert!(body.contains("/api/v1/ws"));
+    assert!(body.contains("/api/v1/simulators/displays"));
+    assert!(body.contains("id=\"previewMode\""));
     assert!(body.contains("show unavailable"));
     assert!(body.contains("run-preview-servo.sh"));
     assert!(body.contains("value=\"30\""));
