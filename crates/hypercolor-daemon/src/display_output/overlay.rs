@@ -7,7 +7,7 @@ use anyhow::anyhow;
 use hypercolor_core::blend_math::blend_rgba_pixel;
 use hypercolor_core::overlay::{
     ClockRenderer, ImageRenderer, OverlayBuffer, OverlayError, OverlayInput, OverlayRenderer,
-    OverlaySize, TextRenderer,
+    OverlaySize, SensorRenderer, TextRenderer,
 };
 use hypercolor_types::overlay::{
     Anchor, ClockConfig, ClockStyle, DisplayOverlayConfig, OverlayBlendMode, OverlayPosition,
@@ -62,6 +62,12 @@ impl OverlayRendererFactory for DefaultOverlayRendererFactory {
                 renderer: Box::new(TextRenderer::new(config.clone()).map_err(OverlayError::Asset)?),
                 render_interval: text_render_interval(config),
             }),
+            OverlaySource::Sensor(config) => Ok(OverlayRendererBinding {
+                renderer: Box::new(
+                    SensorRenderer::new(config.clone()).map_err(OverlayError::Asset)?,
+                ),
+                render_interval: sensor_render_interval(),
+            }),
             source => Err(OverlayError::Asset(anyhow!(
                 "overlay renderer is not implemented yet for source {source:?}"
             ))),
@@ -86,6 +92,10 @@ fn clock_render_interval(config: &ClockConfig) -> Duration {
     }
 
     Duration::from_secs(1)
+}
+
+fn sensor_render_interval() -> Duration {
+    Duration::from_secs(2)
 }
 
 pub(crate) struct OverlayComposer {

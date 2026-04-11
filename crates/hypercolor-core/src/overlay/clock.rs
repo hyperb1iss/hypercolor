@@ -1,29 +1,25 @@
 use std::f32::consts::{FRAC_PI_2, TAU};
 use std::fmt::Write as _;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, anyhow, bail};
-use cosmic_text::{
-    Align, Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Wrap,
-};
-use resvg::{tiny_skia, usvg};
+use anyhow::{Context, Result, anyhow};
+use cosmic_text::{FontSystem, SwashCache};
 use time::{OffsetDateTime, UtcOffset};
-use tiny_skia::{
-    FillRule, LineCap, Paint, PathBuilder, Pixmap, PremultipliedColorU8, Stroke, Transform,
-};
+use tiny_skia::{FillRule, LineCap, PathBuilder, Pixmap, Stroke, Transform};
 
 use hypercolor_types::overlay::{ClockConfig, ClockStyle, HourFormat};
 
+use super::common::{
+    OverlayColor, draw_text_line, paint_from_color, parse_hex_color, render_svg_template,
+    resolve_template_path,
+};
 use super::{OverlayBuffer, OverlayError, OverlayInput, OverlayRenderer, OverlaySize};
-
-const LINE_HEIGHT_SCALE: f32 = 1.2;
 
 pub struct ClockRenderer {
     config: ClockConfig,
-    primary_color: Color,
-    secondary_color: Color,
+    primary_color: OverlayColor,
+    secondary_color: OverlayColor,
     font_system: FontSystem,
     swash_cache: SwashCache,
     target_size: OverlaySize,
@@ -41,19 +37,17 @@ struct ClockSignature {
 
 impl ClockRenderer {
     pub fn new(config: ClockConfig) -> Result<Self> {
-        let primary_color = parse_color(&config.color)?;
+        let primary_color = parse_hex_color(&config.color, "clock overlay")?;
         let secondary_color = config
             .secondary_color
             .as_deref()
-            .map(parse_color)
+            .map(|color| parse_hex_color(color, "clock overlay"))
             .transpose()?
-            .unwrap_or_else(|| {
-                Color::rgba(primary_color.r(), primary_color.g(), primary_color.b(), 180)
-            });
+            .unwrap_or_else(|| primary_color.with_alpha(180));
         let template_path = config
             .template
             .as_deref()
-            .map(|path| resolve_template_path(Path::new(path)))
+            .map(|path| resolve_template_path(Path::new(path), "clock overlay template"))
             .transpose()
             .with_context(|| "failed to resolve clock overlay template")?;
 
@@ -75,7 +69,7 @@ impl ClockRenderer {
         self.template_buffer = self
             .template_path
             .as_deref()
-            .map(|path| render_svg_template(path, target_size))
+            .map(|path| render_svg_template(path, target_size, "clock overlay"))
             .transpose()?;
         self.last_signature = None;
         Ok(())
@@ -455,173 +449,13 @@ fn digital_font_size(width: f32, height: f32, text: &str, height_ratio: f32) -> 
     width_limited.min(height * height_ratio).max(1.0)
 }
 
-fn draw_text_line(
-    pixmap: &mut Pixmap,
-    font_system: &mut FontSystem,
-    swash_cache: &mut SwashCache,
-    text: &str,
-    font_family: Option<&str>,
-    font_size: f32,
-    color: Color,
-    top: f32,
-    height: f32,
-) -> Result<()> {
-    if text.trim().is_empty() || height <= 0.0 {
-        return Ok(());
-    }
-
-    let metrics = Metrics::relative(font_size.max(1.0), LINE_HEIGHT_SCALE);
-    let mut buffer = Buffer::new(font_system, metrics);
-    buffer.set_wrap(font_system, Wrap::None);
-    buffer.set_size(
-        font_system,
-        Some(pixmap.width() as f32),
-        Some(height.max(1.0)),
-    );
-    buffer.set_text(
-        font_system,
-        text,
-        &text_attrs(font_family, color),
-        Shaping::Advanced,
-        Some(Align::Center),
-    );
-
-    let layout = measure_buffer(&buffer);
-    let vertical_offset = (top + ((height - layout.content_height).max(0.0) / 2.0)).round() as i32;
-    render_text_buffer(
-        pixmap,
-        &mut buffer,
-        font_system,
-        swash_cache,
-        color,
-        0,
-        vertical_offset,
-    );
-    Ok(())
-}
-
-fn text_attrs<'a>(font_family: Option<&'a str>, color: Color) -> Attrs<'a> {
-    let attrs = Attrs::new().color(color);
-    match font_family {
-        Some(family) if !family.trim().is_empty() => attrs.family(Family::Name(family)),
-        _ => attrs,
-    }
-}
-
-struct BufferLayout {
-    content_height: f32,
-}
-
-fn measure_buffer(buffer: &Buffer) -> BufferLayout {
-    let mut content_height = 0.0_f32;
-    for run in buffer.layout_runs() {
-        content_height = content_height.max(run.line_top + run.line_height);
-    }
-
-    BufferLayout { content_height }
-}
-
-fn render_text_buffer(
-    pixmap: &mut Pixmap,
-    buffer: &mut Buffer,
-    font_system: &mut FontSystem,
-    swash_cache: &mut SwashCache,
-    color: Color,
-    offset_x: i32,
-    offset_y: i32,
-) {
-    let width = pixmap.width();
-    let height = pixmap.height();
-    let pixels = pixmap.pixels_mut();
-    buffer.draw(
-        font_system,
-        swash_cache,
-        color,
-        |x, y, w, h, pixel_color| {
-            for draw_y in 0..h {
-                for draw_x in 0..w {
-                    let px = x
-                        .saturating_add(offset_x)
-                        .saturating_add(i32::try_from(draw_x).unwrap_or_default());
-                    let py = y
-                        .saturating_add(offset_y)
-                        .saturating_add(i32::try_from(draw_y).unwrap_or_default());
-                    blend_text_pixel(pixels, width, height, px, py, pixel_color);
-                }
-            }
-        },
-    );
-}
-
-fn blend_text_pixel(
-    pixels: &mut [PremultipliedColorU8],
-    width: u32,
-    height: u32,
-    x: i32,
-    y: i32,
-    color: Color,
-) {
-    if x < 0 || y < 0 {
-        return;
-    }
-    let x = u32::try_from(x).unwrap_or_default();
-    let y = u32::try_from(y).unwrap_or_default();
-    if x >= width || y >= height {
-        return;
-    }
-
-    let source =
-        tiny_skia::ColorU8::from_rgba(color.r(), color.g(), color.b(), color.a()).premultiply();
-    if source.alpha() == 0 {
-        return;
-    }
-
-    let index = usize::try_from(y)
-        .unwrap_or_default()
-        .saturating_mul(usize::try_from(width).unwrap_or_default())
-        .saturating_add(usize::try_from(x).unwrap_or_default());
-    let destination = pixels[index];
-    pixels[index] = blend_source_over(destination, source);
-}
-
-fn blend_source_over(
-    destination: PremultipliedColorU8,
-    source: PremultipliedColorU8,
-) -> PremultipliedColorU8 {
-    if source.alpha() == u8::MAX {
-        return source;
-    }
-    if source.alpha() == 0 {
-        return destination;
-    }
-
-    let inverse_alpha = u16::from(u8::MAX.saturating_sub(source.alpha()));
-    let blend = |dst: u8, src: u8| -> u8 {
-        let composed = u16::from(src).saturating_add(
-            u16::from(dst)
-                .saturating_mul(inverse_alpha)
-                .saturating_add(127)
-                / 255,
-        );
-        u8::try_from(composed.min(u16::from(u8::MAX))).unwrap_or(u8::MAX)
-    };
-    let alpha = blend(destination.alpha(), source.alpha());
-    PremultipliedColorU8::from_rgba(
-        blend(destination.red(), source.red()).min(alpha),
-        blend(destination.green(), source.green()).min(alpha),
-        blend(destination.blue(), source.blue()).min(alpha),
-        alpha,
-    )
-    .expect("source-over blend should preserve premultiplied pixel invariants")
-}
-
 fn draw_default_dial(
     pixmap: &mut Pixmap,
     center_x: f32,
     center_y: f32,
     radius: f32,
-    primary: Color,
-    secondary: Color,
+    primary: OverlayColor,
+    secondary: OverlayColor,
 ) -> Result<()> {
     let ring = PathBuilder::from_circle(center_x, center_y, radius)
         .ok_or_else(|| anyhow!("failed to build analog clock ring"))?;
@@ -660,7 +494,7 @@ fn draw_hand(
     angle: f32,
     length: f32,
     width: f32,
-    color: Color,
+    color: OverlayColor,
     tail_length: f32,
 ) -> Result<()> {
     let tail = polar_point(
@@ -683,7 +517,7 @@ fn fill_circle(
     center_x: f32,
     center_y: f32,
     radius: f32,
-    color: Color,
+    color: OverlayColor,
 ) -> Result<()> {
     let path = PathBuilder::from_circle(center_x, center_y, radius)
         .ok_or_else(|| anyhow!("failed to build analog clock center"))?;
@@ -707,16 +541,9 @@ fn line_path(start: (f32, f32), end: (f32, f32)) -> Result<tiny_skia::Path> {
         .ok_or_else(|| anyhow!("failed to build analog clock hand path"))
 }
 
-fn stroke_path(pixmap: &mut Pixmap, path: &tiny_skia::Path, color: Color, stroke: &Stroke) {
+fn stroke_path(pixmap: &mut Pixmap, path: &tiny_skia::Path, color: OverlayColor, stroke: &Stroke) {
     let paint = paint_from_color(color);
     pixmap.stroke_path(path, &paint, stroke, Transform::identity(), None);
-}
-
-fn paint_from_color(color: Color) -> Paint<'static> {
-    let mut paint = Paint::default();
-    paint.set_color_rgba8(color.r(), color.g(), color.b(), color.a());
-    paint.anti_alias = true;
-    paint
 }
 
 fn polar_point(center_x: f32, center_y: f32, distance: f32, angle: f32) -> (f32, f32) {
@@ -728,109 +555,4 @@ fn polar_point(center_x: f32, center_y: f32, distance: f32, angle: f32) -> (f32,
 
 fn clock_angle(progress: f32) -> f32 {
     progress * TAU - FRAC_PI_2
-}
-
-fn render_svg_template(path: &Path, target_size: OverlaySize) -> Result<OverlayBuffer> {
-    let data = fs::read(path)
-        .with_context(|| format!("failed to read clock overlay template '{}'", path.display()))?;
-    let mut options = usvg::Options::default();
-    options.resources_dir = path.parent().map(Path::to_path_buf);
-    options.fontdb_mut().load_system_fonts();
-    let tree = usvg::Tree::from_data(&data, &options).with_context(|| {
-        format!(
-            "failed to parse clock overlay template '{}'",
-            path.display()
-        )
-    })?;
-
-    let mut pixmap = Pixmap::new(target_size.width.max(1), target_size.height.max(1))
-        .ok_or_else(|| anyhow!("failed to allocate clock template pixmap"))?;
-    let svg_size = tree.size();
-    let scale = (target_size.width as f32 / svg_size.width())
-        .min(target_size.height as f32 / svg_size.height());
-    let dx = ((target_size.width as f32 - svg_size.width() * scale) / 2.0).max(0.0);
-    let dy = ((target_size.height as f32 - svg_size.height() * scale) / 2.0).max(0.0);
-    let transform = Transform::from_scale(scale, scale).post_translate(dx, dy);
-    let mut pixmap_mut = pixmap.as_mut();
-    resvg::render(&tree, transform, &mut pixmap_mut);
-
-    let mut buffer = OverlayBuffer::new(target_size);
-    buffer.copy_from_pixmap(&pixmap)?;
-    Ok(buffer)
-}
-
-fn resolve_template_path(path: &Path) -> Result<PathBuf> {
-    if path.is_absolute() {
-        if path.exists() {
-            return Ok(path.to_path_buf());
-        }
-        bail!(
-            "absolute clock template path does not exist: {}",
-            path.display()
-        );
-    }
-
-    let mut candidates = Vec::new();
-    if let Ok(current_dir) = std::env::current_dir() {
-        candidates.push(current_dir.join(path));
-    }
-    candidates.push(path.to_path_buf());
-
-    for candidate in candidates {
-        if candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-
-    bail!(
-        "could not resolve clock overlay template '{}'; searched current and raw relative paths",
-        path.display()
-    );
-}
-
-fn parse_color(raw: &str) -> Result<Color> {
-    let hex = raw.trim().trim_start_matches('#');
-    let rgba = match hex.len() {
-        3 => {
-            let bytes = hex.as_bytes();
-            [
-                expanded_nibble(bytes[0])?,
-                expanded_nibble(bytes[1])?,
-                expanded_nibble(bytes[2])?,
-                u8::MAX,
-            ]
-        }
-        6 => [
-            u8::from_str_radix(&hex[0..2], 16)
-                .map_err(|_| anyhow!("invalid clock overlay color '{raw}'"))?,
-            u8::from_str_radix(&hex[2..4], 16)
-                .map_err(|_| anyhow!("invalid clock overlay color '{raw}'"))?,
-            u8::from_str_radix(&hex[4..6], 16)
-                .map_err(|_| anyhow!("invalid clock overlay color '{raw}'"))?,
-            u8::MAX,
-        ],
-        8 => [
-            u8::from_str_radix(&hex[0..2], 16)
-                .map_err(|_| anyhow!("invalid clock overlay color '{raw}'"))?,
-            u8::from_str_radix(&hex[2..4], 16)
-                .map_err(|_| anyhow!("invalid clock overlay color '{raw}'"))?,
-            u8::from_str_radix(&hex[4..6], 16)
-                .map_err(|_| anyhow!("invalid clock overlay color '{raw}'"))?,
-            u8::from_str_radix(&hex[6..8], 16)
-                .map_err(|_| anyhow!("invalid clock overlay color '{raw}'"))?,
-        ],
-        _ => bail!("unsupported clock overlay color '{raw}'; expected #rgb, #rrggbb, or #rrggbbaa"),
-    };
-
-    Ok(Color::rgba(rgba[0], rgba[1], rgba[2], rgba[3]))
-}
-
-fn expanded_nibble(byte: u8) -> Result<u8> {
-    let nibble = match byte {
-        b'0'..=b'9' => byte - b'0',
-        b'a'..=b'f' => byte - b'a' + 10,
-        b'A'..=b'F' => byte - b'A' + 10,
-        _ => bail!("invalid clock overlay color nibble"),
-    };
-    Ok((nibble << 4) | nibble)
 }

@@ -1,6 +1,8 @@
 mod clock;
+mod common;
 mod image;
 mod pixmap;
+mod sensor;
 mod text;
 
 use std::time::{Duration, SystemTime};
@@ -14,6 +16,7 @@ use hypercolor_types::sensor::SystemSnapshot;
 pub use clock::ClockRenderer;
 pub use image::ImageRenderer;
 pub use pixmap::overlay_buffer_from_pixmap;
+pub use sensor::SensorRenderer;
 pub use text::TextRenderer;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

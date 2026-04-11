@@ -1153,7 +1153,7 @@ Displays system sensor values as numeric readouts or visual gauges.
 
 **Bar mode:** Horizontal or vertical fill bar with gradient.
 
-**Update interval:** 2 seconds (configurable).
+**Update interval:** 2 seconds with the current schema.
 
 ### 10.3 ImageRenderer
 
