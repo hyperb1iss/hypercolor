@@ -89,10 +89,15 @@ impl PreviewPolicy {
     fn frame_interval_for(
         self,
         transport: PreviewTransport,
+        primary_protocol: ProtocolType,
         font_size: (u16, u16),
         area: Option<Rect>,
     ) -> Duration {
         if transport != PreviewTransport::Primary {
+            return self.default_frame_interval;
+        }
+
+        if primary_protocol == ProtocolType::Kitty {
             return self.default_frame_interval;
         }
 
@@ -126,7 +131,7 @@ impl Default for PreviewPolicy {
             max_primary_scale_tenths: 15,
             medium_primary_rgba_bytes: 256 * 1024,
             large_primary_rgba_bytes: 512 * 1024,
-            default_frame_interval: Duration::from_millis(100),
+            default_frame_interval: Duration::from_millis(33),
             medium_primary_frame_interval: Duration::from_millis(167),
             large_primary_frame_interval: Duration::from_millis(250),
         }
@@ -138,12 +143,15 @@ struct PreviewBuildRequest {
     frame: Arc<CanvasFrame>,
     transport: PreviewTransport,
     area: Rect,
+    queued_at: Instant,
 }
 
 struct PreviewBuildResponse {
     request_id: u64,
     frame_number: u32,
     transport: PreviewTransport,
+    area: Rect,
+    build_duration: Duration,
     surface: PreviewSurface,
 }
 
@@ -152,6 +160,9 @@ enum PreviewBuildResult {
     Failed {
         request_id: u64,
         frame_number: u32,
+        transport: PreviewTransport,
+        area: Rect,
+        build_duration: Duration,
         error: String,
     },
 }
@@ -231,6 +242,173 @@ impl DrawBackpressure {
     }
 }
 
+#[derive(Debug)]
+struct PreviewTelemetry {
+    enabled: bool,
+    last_log_at: Instant,
+    received_frames: u32,
+    queued_builds: u32,
+    completed_builds: u32,
+    build_failures: u32,
+    stale_results: u32,
+    busy_skips: u32,
+    interval_skips: u32,
+    presented_frames: u32,
+    draw_calls: u32,
+    last_received_frame: Option<u32>,
+    last_completed_frame: Option<u32>,
+    last_presented_frame: Option<u32>,
+    last_transport: Option<PreviewTransport>,
+    last_area: Option<Rect>,
+    last_frame_interval: Duration,
+    last_build_duration: Duration,
+    max_build_duration: Duration,
+    last_draw_duration: Duration,
+    max_draw_duration: Duration,
+}
+
+impl PreviewTelemetry {
+    fn new() -> Self {
+        Self {
+            enabled: env::var("HYPERCOLOR_TUI_PREVIEW_TELEMETRY").is_ok_and(|value| value != "0"),
+            last_log_at: Instant::now(),
+            received_frames: 0,
+            queued_builds: 0,
+            completed_builds: 0,
+            build_failures: 0,
+            stale_results: 0,
+            busy_skips: 0,
+            interval_skips: 0,
+            presented_frames: 0,
+            draw_calls: 0,
+            last_received_frame: None,
+            last_completed_frame: None,
+            last_presented_frame: None,
+            last_transport: None,
+            last_area: None,
+            last_frame_interval: Duration::ZERO,
+            last_build_duration: Duration::ZERO,
+            max_build_duration: Duration::ZERO,
+            last_draw_duration: Duration::ZERO,
+            max_draw_duration: Duration::ZERO,
+        }
+    }
+
+    fn note_frame_received(&mut self, frame_number: u32) {
+        if !self.enabled {
+            return;
+        }
+
+        self.received_frames = self.received_frames.saturating_add(1);
+        self.last_received_frame = Some(frame_number);
+    }
+
+    fn note_build_queued(
+        &mut self,
+        transport: PreviewTransport,
+        area: Rect,
+        frame_interval: Duration,
+    ) {
+        if !self.enabled {
+            return;
+        }
+
+        self.queued_builds = self.queued_builds.saturating_add(1);
+        self.last_transport = Some(transport);
+        self.last_area = Some(area);
+        self.last_frame_interval = frame_interval;
+    }
+
+    fn note_build_completed(
+        &mut self,
+        frame_number: u32,
+        transport: PreviewTransport,
+        area: Rect,
+        build_duration: Duration,
+    ) {
+        if !self.enabled {
+            return;
+        }
+
+        self.completed_builds = self.completed_builds.saturating_add(1);
+        self.last_completed_frame = Some(frame_number);
+        self.last_transport = Some(transport);
+        self.last_area = Some(area);
+        self.last_build_duration = build_duration;
+        self.max_build_duration = self.max_build_duration.max(build_duration);
+    }
+
+    fn note_build_failed(
+        &mut self,
+        transport: PreviewTransport,
+        area: Rect,
+        build_duration: Duration,
+    ) {
+        if !self.enabled {
+            return;
+        }
+
+        self.build_failures = self.build_failures.saturating_add(1);
+        self.last_transport = Some(transport);
+        self.last_area = Some(area);
+        self.last_build_duration = build_duration;
+        self.max_build_duration = self.max_build_duration.max(build_duration);
+    }
+
+    fn note_stale_result(&mut self) {
+        if !self.enabled {
+            return;
+        }
+
+        self.stale_results = self.stale_results.saturating_add(1);
+    }
+
+    fn note_busy_skip(&mut self) {
+        if !self.enabled {
+            return;
+        }
+
+        self.busy_skips = self.busy_skips.saturating_add(1);
+    }
+
+    fn note_interval_skip(&mut self) {
+        if !self.enabled {
+            return;
+        }
+
+        self.interval_skips = self.interval_skips.saturating_add(1);
+    }
+
+    fn note_presented(&mut self, frame_number: u32, draw_duration: Duration) {
+        if !self.enabled {
+            return;
+        }
+
+        self.draw_calls = self.draw_calls.saturating_add(1);
+        self.last_draw_duration = draw_duration;
+        self.max_draw_duration = self.max_draw_duration.max(draw_duration);
+
+        if self.last_presented_frame != Some(frame_number) {
+            self.presented_frames = self.presented_frames.saturating_add(1);
+            self.last_presented_frame = Some(frame_number);
+        }
+    }
+
+    fn reset_window(&mut self) {
+        self.received_frames = 0;
+        self.queued_builds = 0;
+        self.completed_builds = 0;
+        self.build_failures = 0;
+        self.stale_results = 0;
+        self.busy_skips = 0;
+        self.interval_skips = 0;
+        self.presented_frames = 0;
+        self.draw_calls = 0;
+        self.max_build_duration = self.last_build_duration;
+        self.max_draw_duration = self.last_draw_duration;
+    }
+}
+
 pub(crate) struct PreviewManager {
     primary_picker: Picker,
     primary_protocol: ProtocolType,
@@ -250,6 +428,8 @@ pub(crate) struct PreviewManager {
     last_build_started: Option<Instant>,
     draw_backpressure: DrawBackpressure,
     primary_cooloff_until: Option<Instant>,
+    fullscreen_primary_locked_out: bool,
+    telemetry: PreviewTelemetry,
 }
 
 impl PreviewManager {
@@ -261,7 +441,8 @@ impl PreviewManager {
         let build_primary_protocol = primary_picker.protocol_type();
         let build_primary_picker = primary_picker.clone();
         let build_halfblocks_picker = halfblocks_picker.clone();
-        let build_use_kitty_fast = build_primary_protocol == ProtocolType::Kitty;
+        let build_use_kitty_fast = build_primary_protocol == ProtocolType::Kitty
+            && env::var("HYPERCOLOR_TUI_EXPERIMENTAL_KITTY_FAST").is_ok_and(|value| value == "1");
         let build_use_fast_halfblocks = build_primary_protocol == ProtocolType::Halfblocks;
         let build_is_tmux = env::var("TERM").is_ok_and(|term| term.starts_with("tmux"))
             || env::var("TERM_PROGRAM").is_ok_and(|term_program| term_program == "tmux");
@@ -273,6 +454,7 @@ impl PreviewManager {
                     if request.transport == PreviewTransport::Halfblocks
                         || build_use_fast_halfblocks
                     {
+                        let build_duration = request.queued_at.elapsed();
                         match halfblocks_fast::HalfblocksFrame::new(
                             request.frame.as_ref(),
                             request.area,
@@ -283,6 +465,8 @@ impl PreviewManager {
                                         request_id: request.request_id,
                                         frame_number: request.frame.frame_number,
                                         transport: request.transport,
+                                        area: request.area,
+                                        build_duration,
                                         surface: PreviewSurface::Halfblocks(frame),
                                     }))
                                     .is_err()
@@ -295,6 +479,9 @@ impl PreviewManager {
                                     .send(PreviewBuildResult::Failed {
                                         request_id: request.request_id,
                                         frame_number: request.frame.frame_number,
+                                        transport: request.transport,
+                                        area: request.area,
+                                        build_duration,
                                         error,
                                     })
                                     .is_err()
@@ -307,6 +494,7 @@ impl PreviewManager {
                     }
 
                     if request.transport == PreviewTransport::Primary && build_use_kitty_fast {
+                        let build_duration = request.queued_at.elapsed();
                         match kitty_fast::KittyFrame::new(
                             request.frame.as_ref(),
                             request.area,
@@ -319,6 +507,8 @@ impl PreviewManager {
                                         request_id: request.request_id,
                                         frame_number: request.frame.frame_number,
                                         transport: request.transport,
+                                        area: request.area,
+                                        build_duration,
                                         surface: PreviewSurface::Kitty(frame),
                                     }))
                                     .is_err()
@@ -331,6 +521,9 @@ impl PreviewManager {
                                     .send(PreviewBuildResult::Failed {
                                         request_id: request.request_id,
                                         frame_number: request.frame.frame_number,
+                                        transport: request.transport,
+                                        area: request.area,
+                                        build_duration,
                                         error,
                                     })
                                     .is_err()
@@ -352,10 +545,14 @@ impl PreviewManager {
                         u32::from(request.frame.height),
                         request.frame.pixels.as_ref().clone(),
                     ) else {
+                        let build_duration = request.queued_at.elapsed();
                         if build_results_tx
                             .send(PreviewBuildResult::Failed {
                                 request_id: request.request_id,
                                 frame_number: request.frame.frame_number,
+                                transport: request.transport,
+                                area: request.area,
+                                build_duration,
                                 error: "invalid preview frame length".to_string(),
                             })
                             .is_err()
@@ -372,10 +569,14 @@ impl PreviewManager {
                     {
                         protocol.resize_encode(&Resize::Scale(None), target_rect);
                         if let Some(Err(error)) = protocol.last_encoding_result() {
+                            let build_duration = request.queued_at.elapsed();
                             if build_results_tx
                                 .send(PreviewBuildResult::Failed {
                                     request_id: request.request_id,
                                     frame_number: request.frame.frame_number,
+                                    transport: request.transport,
+                                    area: request.area,
+                                    build_duration,
                                     error: error.to_string(),
                                 })
                                 .is_err()
@@ -391,6 +592,8 @@ impl PreviewManager {
                             request_id: request.request_id,
                             frame_number: request.frame.frame_number,
                             transport: request.transport,
+                            area: request.area,
+                            build_duration: request.queued_at.elapsed(),
                             surface: PreviewSurface::Stateful(protocol),
                         }))
                         .is_err()
@@ -422,11 +625,14 @@ impl PreviewManager {
             last_build_started: None,
             draw_backpressure: DrawBackpressure::default(),
             primary_cooloff_until: None,
+            fullscreen_primary_locked_out: false,
+            telemetry: PreviewTelemetry::new(),
         }
     }
 
     pub(crate) fn on_frame(&mut self, frame: Arc<CanvasFrame>, fullscreen: bool) {
         self.fullscreen = fullscreen;
+        self.telemetry.note_frame_received(frame.frame_number);
         let next_transport = self.transport_for(Some(frame.as_ref()), self.preview_area);
         if next_transport != self.selected_transport {
             self.selected_transport = next_transport;
@@ -434,9 +640,13 @@ impl PreviewManager {
         }
         self.latest_frame = Some(frame);
         self.maybe_queue_build();
+        self.maybe_log_telemetry();
     }
 
     pub(crate) fn set_fullscreen(&mut self, fullscreen: bool) {
+        if self.fullscreen != fullscreen {
+            self.fullscreen_primary_locked_out = false;
+        }
         self.fullscreen = fullscreen;
         let next_transport = self.transport_for(self.latest_frame.as_deref(), self.preview_area);
         if next_transport != self.selected_transport {
@@ -470,19 +680,34 @@ impl PreviewManager {
                 PreviewBuildResult::Ready(completed) => {
                     if self.in_flight_request_id == Some(completed.request_id) {
                         dirty = true;
+                        self.telemetry.note_build_completed(
+                            completed.frame_number,
+                            completed.transport,
+                            completed.area,
+                            completed.build_duration,
+                        );
                         self.current = Some(completed.surface);
                         self.current_frame_number = Some(completed.frame_number);
                         self.current_transport = Some(completed.transport);
                         self.in_flight_request_id = None;
+                    } else {
+                        self.telemetry.note_stale_result();
                     }
                 }
                 PreviewBuildResult::Failed {
                     request_id,
                     frame_number,
+                    transport,
+                    area,
+                    build_duration,
                     error,
                 } => {
                     if self.in_flight_request_id == Some(request_id) {
                         self.in_flight_request_id = None;
+                        self.telemetry
+                            .note_build_failed(transport, area, build_duration);
+                    } else {
+                        self.telemetry.note_stale_result();
                     }
                     tracing::debug!("preview build failed for frame {frame_number}: {error}");
                 }
@@ -493,6 +718,7 @@ impl PreviewManager {
             self.maybe_queue_build();
         }
 
+        self.maybe_log_telemetry();
         dirty
     }
 
@@ -524,19 +750,31 @@ impl PreviewManager {
     }
 
     pub(crate) fn note_draw_duration(&mut self, elapsed: Duration) {
+        if let Some(frame_number) = self.current_frame_number {
+            self.telemetry.note_presented(frame_number, elapsed);
+        }
+
         if self.latest_frame.is_none() || self.selected_transport != PreviewTransport::Primary {
             self.draw_backpressure.reset();
+            self.maybe_log_telemetry();
             return;
         }
 
         self.draw_backpressure.observe_draw(elapsed);
         if self.draw_backpressure.pressure_level >= 3 {
             self.primary_cooloff_until = Some(Instant::now() + Duration::from_secs(2));
+            if self.fullscreen {
+                self.fullscreen_primary_locked_out = true;
+                self.selected_transport = PreviewTransport::Halfblocks;
+                self.invalidate_current();
+            }
         }
+        self.maybe_log_telemetry();
     }
 
     fn maybe_queue_build(&mut self) {
         if self.in_flight_request_id.is_some() {
+            self.telemetry.note_busy_skip();
             return;
         }
 
@@ -554,8 +792,12 @@ impl PreviewManager {
         let transport = self.transport_for(Some(frame.as_ref()), Some(area));
         self.selected_transport = transport;
         let frame_interval = std::cmp::max(
-            self.policy
-                .frame_interval_for(transport, self.primary_picker.font_size(), Some(area)),
+            self.policy.frame_interval_for(
+                transport,
+                self.primary_protocol,
+                self.primary_picker.font_size(),
+                Some(area),
+            ),
             self.draw_backpressure.frame_interval(),
         );
 
@@ -574,6 +816,7 @@ impl PreviewManager {
                 .last_build_started
                 .is_some_and(|started| started.elapsed() < frame_interval)
         {
+            self.telemetry.note_interval_skip();
             return;
         }
 
@@ -589,9 +832,12 @@ impl PreviewManager {
                 frame,
                 transport,
                 area: resize_area,
+                queued_at: Instant::now(),
             })
             .is_ok()
         {
+            self.telemetry
+                .note_build_queued(transport, resize_area, frame_interval);
             self.in_flight_request_id = Some(request_id);
             self.last_build_started = Some(Instant::now());
         }
@@ -606,6 +852,10 @@ impl PreviewManager {
             area,
         );
 
+        if self.fullscreen && self.fullscreen_primary_locked_out {
+            return PreviewTransport::Halfblocks;
+        }
+
         if transport == PreviewTransport::Primary
             && self
                 .primary_cooloff_until
@@ -615,6 +865,68 @@ impl PreviewManager {
         } else {
             transport
         }
+    }
+
+    fn maybe_log_telemetry(&mut self) {
+        if !self.telemetry.enabled || self.telemetry.last_log_at.elapsed() < Duration::from_secs(1)
+        {
+            return;
+        }
+
+        let area = self.telemetry.last_area.or(self.preview_area);
+        let latest_frame = self
+            .latest_frame
+            .as_ref()
+            .map_or(0, |frame| frame.frame_number);
+        let current_frame = self.current_frame_number.unwrap_or(0);
+        let frame_lag = latest_frame.saturating_sub(current_frame);
+        let inflight_ms = if self.in_flight_request_id.is_some() {
+            self.last_build_started
+                .map_or(0, |started| started.elapsed().as_millis())
+        } else {
+            0
+        };
+        let cooloff_ms = self.primary_cooloff_until.map_or(0, |until| {
+            until.saturating_duration_since(Instant::now()).as_millis()
+        });
+
+        tracing::info!(
+            target: "hypercolor_tui::preview",
+            protocol = ?self.primary_protocol,
+            selected_transport = ?self.selected_transport,
+            current_transport = ?self.current_transport,
+            fullscreen = self.fullscreen,
+            fullscreen_primary_locked_out = self.fullscreen_primary_locked_out,
+            area_width = area.map_or(0, |rect| rect.width),
+            area_height = area.map_or(0, |rect| rect.height),
+            recv_fps = self.telemetry.received_frames,
+            queued_fps = self.telemetry.queued_builds,
+            build_fps = self.telemetry.completed_builds,
+            present_fps = self.telemetry.presented_frames,
+            draws_per_sec = self.telemetry.draw_calls,
+            busy_skips = self.telemetry.busy_skips,
+            interval_skips = self.telemetry.interval_skips,
+            stale_results = self.telemetry.stale_results,
+            build_failures = self.telemetry.build_failures,
+            last_received = self.telemetry.last_received_frame.unwrap_or(0),
+            last_completed = self.telemetry.last_completed_frame.unwrap_or(0),
+            last_presented = self.telemetry.last_presented_frame.unwrap_or(0),
+            latest_frame,
+            current_frame,
+            frame_lag,
+            inflight_ms,
+            draw_pressure = self.draw_backpressure.pressure_level,
+            cooloff_ms,
+            frame_interval_ms = self.telemetry.last_frame_interval.as_millis(),
+            last_build_ms = self.telemetry.last_build_duration.as_millis(),
+            max_build_ms = self.telemetry.max_build_duration.as_millis(),
+            last_draw_ms = self.telemetry.last_draw_duration.as_millis(),
+            max_draw_ms = self.telemetry.max_draw_duration.as_millis(),
+            "preview telemetry"
+        );
+
+        self.telemetry.last_log_at = Instant::now();
+        self.telemetry.reset_window();
     }
 
     fn invalidate_current(&mut self) {
@@ -630,6 +942,7 @@ impl PreviewManager {
         self.preview_area = None;
         self.draw_backpressure.reset();
         self.primary_cooloff_until = None;
+        self.fullscreen_primary_locked_out = false;
     }
 
     fn resize_area(area: Rect) -> Rect {
@@ -723,6 +1036,21 @@ mod tests {
                 Some(Rect::new(0, 0, 55, 16)),
             ),
             PreviewTransport::Halfblocks
+        );
+    }
+
+    #[test]
+    fn kitty_primary_uses_default_frame_interval_even_for_large_area() {
+        let policy = PreviewPolicy::default();
+
+        assert_eq!(
+            policy.frame_interval_for(
+                PreviewTransport::Primary,
+                ProtocolType::Kitty,
+                (14, 34),
+                Some(Rect::new(0, 0, 37, 14)),
+            ),
+            Duration::from_millis(33)
         );
     }
 

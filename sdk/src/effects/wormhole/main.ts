@@ -27,17 +27,54 @@ interface ResolvedPalette {
     core: Rgb
 }
 
-interface Slice {
-    progress: number
-    alpha: number
+interface RibbonSeed {
+    amplitude: number
+    colorBias: number
+    lane: number
+    phase: number
+    speed: number
+    width: number
+}
+
+interface SparkSeed {
+    colorBias: number
+    phase: number
+    ribbon: number
+    size: number
+    speed: number
+}
+
+interface RenderedRibbon {
+    colorA: Rgb
+    colorB: Rgb
+    core: Rgb
+    fieldIndex: number
+    fringeA: Rgb
+    fringeB: Rgb
+    lane: number
+    leftNode: Point
     points: Point[]
-    wall: Rgb
-    rim: Rgb
-    lineWidth: number
+    rightNode: Point
+    speed: number
+    span: number
+    strength: number
+    width: number
+    phase: number
+}
+
+interface BridgeField {
+    axisDir: Point
+    axisNormal: Point
+    leftNode: Point
+    midpoint: Point
+    nodeRadius: number
+    rightNode: Point
+    span: number
+    strength: number
 }
 
 const THEME_NAMES = ['Abyssal', 'Custom', 'Event Horizon', 'Quantum', 'Solar Flare', 'Spectral', 'Void Gate'] as const
-const GEOMETRY_NAMES = ['Hex Gate', 'Organic Fold', 'Prism Rift', 'Pulse Ring'] as const
+const GEOMETRY_NAMES = ['Braided Flux', 'Prism Bridge', 'Tidal Lattice', 'Halo Exchange'] as const
 
 type ThemeName = (typeof THEME_NAMES)[number]
 type GeometryName = (typeof GEOMETRY_NAMES)[number]
@@ -50,56 +87,51 @@ const TAU = Math.PI * 2
 
 const THEMES: Record<Exclude<ThemeName, 'Custom'>, ThemePalette> = {
     Abyssal: {
-        accent: '#b4154e',
+        accent: '#3ef3ff',
         background: '#080607',
-        core: '#ff9340',
-        wallA: '#4c0c18',
+        core: '#ffd166',
+        wallA: '#5d1028',
         wallB: '#ff6200',
     },
     'Event Horizon': {
-        accent: '#7d52ff',
-        background: '#040814',
-        core: '#2af6ff',
-        wallA: '#082c74',
-        wallB: '#14d8ff',
+        accent: '#ff4fd8',
+        background: '#030714',
+        core: '#ffd166',
+        wallA: '#2840ff',
+        wallB: '#20f0ff',
     },
     Quantum: {
-        accent: '#20f0ff',
+        accent: '#ffde59',
         background: '#031112',
-        core: '#87ffbe',
-        wallA: '#00a9a2',
-        wallB: '#2eff78',
+        core: '#9056ff',
+        wallA: '#00d7ff',
+        wallB: '#7bff58',
     },
     'Solar Flare': {
         accent: '#ff4b7a',
         background: '#140700',
-        core: '#ffd166',
+        core: '#20f0ff',
         wallA: '#ff5e00',
-        wallB: '#ffb100',
+        wallB: '#ffd166',
     },
     Spectral: {
         accent: '#ff4fb4',
         background: '#060612',
-        core: '#8d5cff',
-        wallA: '#1f4fff',
-        wallB: '#18f0ff',
+        core: '#ffd166',
+        wallA: '#20f0ff',
+        wallB: '#8d5cff',
     },
     'Void Gate': {
-        accent: '#7f5cff',
+        accent: '#ff3ca8',
         background: '#0a0416',
-        core: '#ff7bd0',
-        wallA: '#4d127f',
-        wallB: '#ff3ca8',
+        core: '#ffd6ff',
+        wallA: '#6121ff',
+        wallB: '#18f0ff',
     },
 }
 
 function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value))
-}
-
-function smoothstep(edge0: number, edge1: number, value: number): number {
-    const t = clamp((value - edge0) / (edge1 - edge0), 0, 1)
-    return t * t * (3 - 2 * t)
 }
 
 function lerp(start: number, end: number, amount: number): number {
@@ -162,6 +194,28 @@ function saturateRgb(color: Rgb, amount: number): Rgb {
     }
 }
 
+function richenRgb(color: Rgb, saturation = 1.18, maxWhiteness = 0.24, peak = 236): Rgb {
+    const saturated = saturateRgb(color, saturation)
+    const brightest = Math.max(saturated.r, saturated.g, saturated.b)
+
+    if (brightest <= 0) {
+        return saturated
+    }
+
+    let dimmestKey: keyof Rgb = 'r'
+    if (saturated.g < saturated[dimmestKey]) dimmestKey = 'g'
+    if (saturated.b < saturated[dimmestKey]) dimmestKey = 'b'
+
+    const sculpted = { ...saturated }
+    sculpted[dimmestKey] = Math.min(saturated[dimmestKey], Math.round(brightest * clamp(maxWhiteness, 0, 1)))
+
+    if (brightest <= peak) {
+        return sculpted
+    }
+
+    return scaleRgb(sculpted, peak / brightest)
+}
+
 function rgb(color: Rgb): string {
     return `rgb(${color.r}, ${color.g}, ${color.b})`
 }
@@ -202,82 +256,427 @@ function resolvePalette(
     }
 }
 
-function samplePalette(t: number, palette: ResolvedPalette): Rgb {
+function sampleSpectralPalette(t: number, palette: ResolvedPalette): Rgb {
     const phase = wrap(t, 1)
-    if (phase < 0.34) {
-        return mixRgb(palette.wallA, palette.accent, phase / 0.34)
+    const prismA = saturateRgb(mixRgb(palette.wallA, palette.core, 0.34), 1.18)
+    const prismB = saturateRgb(mixRgb(palette.accent, palette.wallB, 0.42), 1.24)
+    const prismC = saturateRgb(mixRgb(palette.core, palette.accent, 0.58), 1.16)
+    const prismD = saturateRgb(mixRgb(palette.wallB, palette.core, 0.28), 1.12)
+
+    if (phase < 0.2) {
+        return mixRgb(prismA, palette.accent, phase / 0.2)
     }
-    if (phase < 0.68) {
-        return mixRgb(palette.accent, palette.wallB, (phase - 0.34) / 0.34)
+    if (phase < 0.4) {
+        return mixRgb(palette.accent, prismB, (phase - 0.2) / 0.2)
     }
-    return mixRgb(palette.wallB, palette.wallA, (phase - 0.68) / 0.32)
+    if (phase < 0.6) {
+        return mixRgb(prismB, palette.core, (phase - 0.4) / 0.2)
+    }
+    if (phase < 0.8) {
+        return mixRgb(palette.core, prismC, (phase - 0.6) / 0.2)
+    }
+    return mixRgb(prismC, prismD, (phase - 0.8) / 0.2)
 }
 
-function geometryPointCount(geometry: GeometryName): number {
-    if (geometry === 'Hex Gate') return 6
-    if (geometry === 'Pulse Ring') return 16
-    if (geometry === 'Prism Rift') return 8
-    return 10
+function addPoint(a: Point, b: Point): Point {
+    return { x: a.x + b.x, y: a.y + b.y }
 }
 
-function buildRing(
-    geometry: GeometryName,
-    centerX: number,
-    centerY: number,
-    radiusX: number,
-    radiusY: number,
-    rotation: number,
-    sliceIndex: number,
-    time: number,
-    twistMix: number,
-    pulseMix: number,
-): Point[] {
-    const count = geometryPointCount(geometry)
-    const points: Point[] = []
+function subPoint(a: Point, b: Point): Point {
+    return { x: a.x - b.x, y: a.y - b.y }
+}
 
-    for (let index = 0; index < count; index++) {
-        const baseAngle = (index / count) * TAU + rotation
-        let localRadiusX = radiusX
-        let localRadiusY = radiusY
+function scalePoint(point: Point, amount: number): Point {
+    return { x: point.x * amount, y: point.y * amount }
+}
 
-        if (geometry === 'Prism Rift') {
-            const fold = index % 2 === 0 ? 1 : 0.72 + pulseMix * 0.08
-            localRadiusX *= fold
-            localRadiusY *= fold
-        } else if (geometry === 'Organic Fold') {
-            const noise = Math.sin(baseAngle * 3 + time * (0.8 + twistMix) + sliceIndex * 0.37)
-            const jitter = (hash(sliceIndex * 17 + index * 5) - 0.5) * 0.18
-            const fold = 1 + noise * (0.08 + pulseMix * 0.05) + jitter
-            localRadiusX *= fold
-            localRadiusY *= fold * (0.94 + hash(sliceIndex * 11 + index) * 0.12)
-        } else if (geometry === 'Pulse Ring') {
-            const wave = Math.sin(baseAngle * 2 + time * 1.7 + sliceIndex * 0.29)
-            const fold = 1 + wave * (0.04 + pulseMix * 0.04)
-            localRadiusX *= fold
-            localRadiusY *= fold
-        }
-
-        points.push({
-            x: centerX + Math.cos(baseAngle) * localRadiusX,
-            y: centerY + Math.sin(baseAngle) * localRadiusY,
-        })
+function lerpPoint(a: Point, b: Point, amount: number): Point {
+    return {
+        x: lerp(a.x, b.x, amount),
+        y: lerp(a.y, b.y, amount),
     }
-
-    return points
 }
 
-function drawClosedPath(ctx: CanvasRenderingContext2D, points: Point[]): void {
+function normalizePoint(point: Point, fallback: Point): Point {
+    const length = Math.hypot(point.x, point.y)
+    if (length <= 0.0001) {
+        return fallback
+    }
+    return {
+        x: point.x / length,
+        y: point.y / length,
+    }
+}
+
+function perpendicular(point: Point): Point {
+    return { x: -point.y, y: point.x }
+}
+
+function cubicBezierPoint(p0: Point, p1: Point, p2: Point, p3: Point, t: number): Point {
+    const inverse = 1 - t
+    const inverse2 = inverse * inverse
+    const inverse3 = inverse2 * inverse
+    const t2 = t * t
+    const t3 = t2 * t
+
+    return {
+        x: p0.x * inverse3 + 3 * p1.x * inverse2 * t + 3 * p2.x * inverse * t2 + p3.x * t3,
+        y: p0.y * inverse3 + 3 * p1.y * inverse2 * t + 3 * p2.y * inverse * t2 + p3.y * t3,
+    }
+}
+
+function drawPolyline(ctx: CanvasRenderingContext2D, points: Point[]): void {
     if (points.length === 0) return
     ctx.beginPath()
     ctx.moveTo(points[0].x, points[0].y)
     for (let index = 1; index < points.length; index++) {
         ctx.lineTo(points[index].x, points[index].y)
     }
+}
+
+function offsetPoints(points: Point[], offset: Point): Point[] {
+    return points.map((point) => addPoint(point, offset))
+}
+
+function samplePolyline(points: Point[], t: number): Point {
+    if (points.length === 0) return { x: 0, y: 0 }
+    if (points.length === 1) return points[0]
+
+    const scaled = clamp(t, 0, 1) * (points.length - 1)
+    const index = Math.floor(scaled)
+    const nextIndex = Math.min(points.length - 1, index + 1)
+    const amount = scaled - index
+    return lerpPoint(points[index], points[nextIndex], amount)
+}
+
+function sampleSegment(points: Point[], start: number, end: number, samples: number): Point[] {
+    const segment: Point[] = []
+    const safeSamples = Math.max(2, samples)
+    for (let index = 0; index < safeSamples; index++) {
+        const t = lerp(start, end, index / (safeSamples - 1))
+        segment.push(samplePolyline(points, t))
+    }
+    return segment
+}
+
+function ribbonWave(
+    geometry: GeometryName,
+    t: number,
+    phase: number,
+    time: number,
+    twistMix: number,
+    pulseMix: number,
+): number {
+    if (geometry === 'Prism Bridge') {
+        const triangle = Math.abs(wrap(t * 2 + phase * 0.1 + time * 0.06, 1) - 0.5) * 2 - 0.5
+        return triangle * 1.1 + Math.sin(t * TAU * 3 + phase + time * (0.4 + pulseMix * 0.4)) * 0.25
+    }
+
+    if (geometry === 'Tidal Lattice') {
+        return (
+            Math.sin(t * TAU * 2 + phase + time * (0.42 + twistMix * 0.5)) * 0.65 +
+            Math.cos(t * TAU * 4 - phase * 0.6 - time * (0.35 + pulseMix * 0.45)) * 0.35
+        )
+    }
+
+    if (geometry === 'Halo Exchange') {
+        return (
+            Math.sin(t * TAU + phase + time * (0.32 + twistMix * 0.38)) *
+            Math.cos(t * TAU * 2.2 - time * (0.24 + pulseMix * 0.36) + phase * 0.3)
+        )
+    }
+
+    return Math.sin(t * TAU * 1.5 + phase + time * (0.46 + twistMix * 0.7))
+}
+
+function buildRibbonPoints(
+    leftNode: Point,
+    rightNode: Point,
+    seed: RibbonSeed,
+    geometry: GeometryName,
+    time: number,
+    twistMix: number,
+    pulseMix: number,
+    thicknessMix: number,
+): Point[] {
+    const axis = subPoint(rightNode, leftNode)
+    const span = Math.hypot(axis.x, axis.y)
+    const tangent = normalizePoint(axis, { x: 1, y: 0 })
+    const normal = perpendicular(tangent)
+    const midpoint = lerpPoint(leftNode, rightNode, 0.5)
+    const laneOffset = seed.lane * span * (0.05 + thicknessMix * 0.05)
+    const bow = span * (0.08 + seed.amplitude * 0.1 + pulseMix * 0.04)
+    const direction = seed.lane >= 0 ? 1 : -1
+
+    const p0 = addPoint(leftNode, scalePoint(normal, laneOffset))
+    const p3 = addPoint(rightNode, scalePoint(normal, -laneOffset))
+    const p1 = addPoint(
+        addPoint(leftNode, scalePoint(tangent, span * 0.24)),
+        scalePoint(normal, bow * direction + laneOffset * 0.5),
+    )
+    const p2 = addPoint(
+        addPoint(rightNode, scalePoint(tangent, -span * 0.24)),
+        scalePoint(normal, -bow * direction - laneOffset * 0.5),
+    )
+
+    const points: Point[] = []
+    const sampleCount = 44
+
+    for (let index = 0; index < sampleCount; index++) {
+        const t = index / (sampleCount - 1)
+        const envelope = Math.sin(t * Math.PI) ** 0.92
+        const weave =
+            ribbonWave(geometry, t, seed.phase, time * seed.speed, twistMix, pulseMix) *
+            span *
+            (0.025 + twistMix * 0.05 + seed.amplitude * 0.025) *
+            envelope
+        const ripple =
+            Math.sin(t * TAU * (2.5 + seed.width * 2.2) - time * (0.36 + pulseMix * 0.55) + seed.phase * 0.7) *
+            span *
+            0.008 *
+            (0.4 + twistMix)
+        const centerPull =
+            Math.cos((t - 0.5) * Math.PI) *
+            span *
+            0.018 *
+            (0.5 + pulseMix * 0.6) *
+            (geometry === 'Halo Exchange' ? 1.2 : 1)
+
+        const base = cubicBezierPoint(p0, p1, p2, p3, t)
+        const towardCenter = subPoint(midpoint, base)
+        const centerDir = normalizePoint(towardCenter, normal)
+
+        points.push(
+            addPoint(
+                addPoint(base, scalePoint(normal, weave)),
+                addPoint(scalePoint(tangent, ripple), scalePoint(centerDir, centerPull * envelope)),
+            ),
+        )
+    }
+
+    return points
+}
+
+function drawNodeHalo(
+    ctx: CanvasRenderingContext2D,
+    node: Point,
+    radius: number,
+    palette: ResolvedPalette,
+    time: number,
+    phase: number,
+    geometry: GeometryName,
+    pulseMix: number,
+    contrastMix: number,
+    strength: number,
+): void {
+    const glowA = richenRgb(sampleSpectralPalette(phase * 0.09 + time * 0.05, palette), 1.16, 0.22, 228)
+    const glowB = richenRgb(sampleSpectralPalette(phase * 0.09 + 0.38 - time * 0.04, palette), 1.16, 0.22, 220)
+    const glow = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, radius * 1.45)
+    glow.addColorStop(0, rgba(glowA, (0.055 + contrastMix * 0.025) * strength))
+    glow.addColorStop(0.44, rgba(glowB, (0.02 + pulseMix * 0.016) * strength))
+    glow.addColorStop(1, 'rgba(0,0,0,0)')
+    ctx.fillStyle = glow
+    ctx.fillRect(node.x - radius * 1.6, node.y - radius * 1.6, radius * 3.2, radius * 3.2)
+
+    ctx.save()
+    ctx.globalCompositeOperation = 'source-over'
+    ctx.lineCap = 'round'
+
+    const haloCount = geometry === 'Halo Exchange' ? 4 : 3
+    for (let ring = 0; ring < haloCount; ring++) {
+        const orbit = ring / Math.max(1, haloCount - 1)
+        const rotation = time * (0.18 + orbit * 0.12) + phase + ring * 0.65
+        const radiusX = radius * (1.05 + orbit * 0.48)
+        const radiusY =
+            radius *
+            (geometry === 'Prism Bridge'
+                ? 0.42 + orbit * 0.12
+                : geometry === 'Tidal Lattice'
+                  ? 0.58 + orbit * 0.16
+                  : 0.5 + orbit * 0.14)
+        const color = richenRgb(
+            sampleSpectralPalette(phase * 0.11 + ring * 0.18 + time * 0.025, palette),
+            1.2,
+            0.2,
+            236,
+        )
+        const fringeA = richenRgb(
+            sampleSpectralPalette(phase * 0.11 + 0.17 + ring * 0.14 - time * 0.035, palette),
+            1.24,
+            0.18,
+            236,
+        )
+        const fringeB = richenRgb(
+            sampleSpectralPalette(phase * 0.11 + 0.53 + ring * 0.2 + time * 0.03, palette),
+            1.24,
+            0.18,
+            236,
+        )
+        const alpha = (0.05 + (1 - orbit) * 0.04 + pulseMix * 0.02) * strength
+        const chromaSpread = radius * (0.02 + pulseMix * 0.018 + orbit * 0.01)
+        const chromaOffset = {
+            x: Math.cos(rotation + Math.PI * 0.5) * chromaSpread,
+            y: Math.sin(rotation + Math.PI * 0.5) * chromaSpread,
+        }
+
+        ctx.setLineDash([radius * 0.22, radius * 0.16 + ring * 2])
+        ctx.lineDashOffset = -time * (22 + ring * 6)
+        ctx.beginPath()
+        ctx.ellipse(node.x - chromaOffset.x, node.y - chromaOffset.y, radiusX, radiusY, rotation, 0, TAU)
+        ctx.lineWidth = Math.max(1, radius * 0.06 * (1 - orbit * 0.25) * (0.7 + strength * 0.3))
+        ctx.strokeStyle = rgba(fringeA, alpha * 0.4)
+        ctx.stroke()
+
+        ctx.beginPath()
+        ctx.ellipse(node.x + chromaOffset.x, node.y + chromaOffset.y, radiusX, radiusY, rotation, 0, TAU)
+        ctx.lineWidth = Math.max(1, radius * 0.06 * (1 - orbit * 0.25) * (0.7 + strength * 0.3))
+        ctx.strokeStyle = rgba(fringeB, alpha * 0.4)
+        ctx.stroke()
+
+        ctx.beginPath()
+        ctx.ellipse(node.x, node.y, radiusX, radiusY, rotation, 0, TAU)
+        ctx.lineWidth = Math.max(1, radius * 0.075 * (1 - orbit * 0.25) * (0.7 + strength * 0.3))
+        ctx.strokeStyle = rgba(color, alpha)
+        ctx.stroke()
+    }
+
+    ctx.setLineDash([])
+    ctx.restore()
+}
+
+function drawLensDiamond(
+    ctx: CanvasRenderingContext2D,
+    leftNode: Point,
+    rightNode: Point,
+    palette: ResolvedPalette,
+    time: number,
+    pulseMix: number,
+    contrastMix: number,
+    strength: number,
+): void {
+    const axis = subPoint(rightNode, leftNode)
+    const span = Math.hypot(axis.x, axis.y)
+    const tangent = normalizePoint(axis, { x: 1, y: 0 })
+    const normal = perpendicular(tangent)
+    const center = lerpPoint(leftNode, rightNode, 0.5)
+    const halfLength = span * (0.15 + pulseMix * 0.025)
+    const halfWidth = span * (0.05 + contrastMix * 0.025)
+
+    const points = [
+        addPoint(center, scalePoint(tangent, halfLength)),
+        addPoint(center, scalePoint(normal, halfWidth)),
+        addPoint(center, scalePoint(tangent, -halfLength)),
+        addPoint(center, scalePoint(normal, -halfWidth)),
+    ]
+
+    const lensGradient = ctx.createLinearGradient(points[2].x, points[2].y, points[0].x, points[0].y)
+    lensGradient.addColorStop(
+        0,
+        rgba(
+            richenRgb(sampleSpectralPalette(time * 0.035 + 0.06, palette), 1.18, 0.22, 228),
+            (0.06 + contrastMix * 0.03) * strength,
+        ),
+    )
+    lensGradient.addColorStop(
+        0.35,
+        rgba(
+            richenRgb(sampleSpectralPalette(time * 0.03 + 0.26, palette), 1.2, 0.2, 228),
+            (0.075 + pulseMix * 0.025) * strength,
+        ),
+    )
+    lensGradient.addColorStop(
+        0.65,
+        rgba(
+            richenRgb(sampleSpectralPalette(time * 0.04 + 0.52, palette), 1.2, 0.2, 228),
+            (0.09 + pulseMix * 0.03) * strength,
+        ),
+    )
+    lensGradient.addColorStop(
+        1,
+        rgba(
+            richenRgb(sampleSpectralPalette(time * 0.025 + 0.78, palette), 1.18, 0.22, 228),
+            (0.06 + contrastMix * 0.03) * strength,
+        ),
+    )
+
+    ctx.beginPath()
+    ctx.moveTo(points[0].x, points[0].y)
+    ctx.lineTo(points[1].x, points[1].y)
+    ctx.lineTo(points[2].x, points[2].y)
+    ctx.lineTo(points[3].x, points[3].y)
     ctx.closePath()
+    ctx.fillStyle = lensGradient
+    ctx.fill()
+
+    ctx.save()
+    ctx.clip()
+    ctx.globalCompositeOperation = 'source-over'
+    for (let stripe = 0; stripe < 3; stripe++) {
+        const stripeShift = (wrap(time * (0.12 + stripe * 0.03), 1) - 0.5) * halfLength * 3
+        const stripeGradient = ctx.createLinearGradient(
+            center.x - tangent.x * halfLength * 2 - normal.x * halfWidth + tangent.x * stripeShift,
+            center.y - tangent.y * halfLength * 2 - normal.y * halfWidth + tangent.y * stripeShift,
+            center.x + tangent.x * halfLength * 2 + normal.x * halfWidth + tangent.x * stripeShift,
+            center.y + tangent.y * halfLength * 2 + normal.y * halfWidth + tangent.y * stripeShift,
+        )
+        stripeGradient.addColorStop(0, 'rgba(0,0,0,0)')
+        stripeGradient.addColorStop(
+            0.5,
+            rgba(
+                richenRgb(sampleSpectralPalette(stripe * 0.21 + time * 0.06, palette), 1.24, 0.18, 236),
+                (0.035 + pulseMix * 0.018) * strength,
+            ),
+        )
+        stripeGradient.addColorStop(1, 'rgba(0,0,0,0)')
+        ctx.fillStyle = stripeGradient
+        ctx.fillRect(center.x - halfLength * 2.4, center.y - halfWidth * 2.4, halfLength * 4.8, halfWidth * 4.8)
+    }
+    ctx.restore()
+
+    const chromaSpread = span * 0.008 * strength
+
+    ctx.beginPath()
+    ctx.moveTo(points[0].x - normal.x * chromaSpread, points[0].y - normal.y * chromaSpread)
+    ctx.lineTo(points[1].x - normal.x * chromaSpread, points[1].y - normal.y * chromaSpread)
+    ctx.lineTo(points[2].x - normal.x * chromaSpread, points[2].y - normal.y * chromaSpread)
+    ctx.lineTo(points[3].x - normal.x * chromaSpread, points[3].y - normal.y * chromaSpread)
+    ctx.closePath()
+    ctx.lineWidth = Math.max(1, span * 0.006)
+    ctx.strokeStyle = rgba(
+        richenRgb(sampleSpectralPalette(time * 0.04 + 0.18, palette), 1.2, 0.18, 236),
+        (0.07 + contrastMix * 0.035) * strength,
+    )
+    ctx.stroke()
+
+    ctx.beginPath()
+    ctx.moveTo(points[0].x + normal.x * chromaSpread, points[0].y + normal.y * chromaSpread)
+    ctx.lineTo(points[1].x + normal.x * chromaSpread, points[1].y + normal.y * chromaSpread)
+    ctx.lineTo(points[2].x + normal.x * chromaSpread, points[2].y + normal.y * chromaSpread)
+    ctx.lineTo(points[3].x + normal.x * chromaSpread, points[3].y + normal.y * chromaSpread)
+    ctx.closePath()
+    ctx.lineWidth = Math.max(1, span * 0.006)
+    ctx.strokeStyle = rgba(
+        richenRgb(sampleSpectralPalette(0.58 - time * 0.035, palette), 1.2, 0.18, 236),
+        (0.07 + contrastMix * 0.035) * strength,
+    )
+    ctx.stroke()
+
+    ctx.beginPath()
+    ctx.moveTo(points[0].x, points[0].y)
+    ctx.lineTo(points[1].x, points[1].y)
+    ctx.lineTo(points[2].x, points[2].y)
+    ctx.lineTo(points[3].x, points[3].y)
+    ctx.closePath()
+    ctx.lineWidth = Math.max(2, span * 0.01)
+    ctx.strokeStyle = rgba(
+        richenRgb(mixRgb(palette.accent, palette.core, 0.25), 1.14, 0.18, 232),
+        (0.14 + contrastMix * 0.08) * strength,
+    )
+    ctx.stroke()
 }
 
 export default canvas.stateful(
-    'Wormhole',
+    'Einstein Bridge',
     {
         background: color('Backdrop', DEFAULT_BACKGROUND, { group: 'Color' }),
         color1: color('Color 1', DEFAULT_COLOR_1, { group: 'Color' }),
@@ -286,7 +685,7 @@ export default canvas.stateful(
         contrast: num('Contrast', [0, 100], 60, { group: 'Atmosphere' }),
         depth: num('Depth', [0, 100], 66, { group: 'Motion' }),
         drift: num('Drift', [0, 100], 42, { group: 'Motion' }),
-        geometry: combo('Geometry', GEOMETRY_NAMES, { default: 'Hex Gate', group: 'Scene' }),
+        geometry: combo('Geometry', GEOMETRY_NAMES, { default: 'Braided Flux', group: 'Scene' }),
         pulse: num('Pulse', [0, 100], 34, { group: 'Atmosphere' }),
         speed: num('Speed', [1, 10], 5, { group: 'Motion' }),
         theme: combo('Theme', THEME_NAMES, { default: 'Event Horizon', group: 'Scene' }),
@@ -294,10 +693,61 @@ export default canvas.stateful(
         twist: num('Twist', [0, 100], 58, { group: 'Motion' }),
     },
     () => {
+        const ribbons: RibbonSeed[] = []
+        const sparks: SparkSeed[] = []
+        let ribbonCount = 0
+        let sparkCount = 0
+
+        function ensureRibbons(count: number): void {
+            const target = clamp(Math.round(count), 6, 14)
+            if (target === ribbonCount && ribbons.length === target) return
+
+            if (target > ribbons.length) {
+                for (let index = ribbons.length; index < target; index++) {
+                    const seed = index + 1
+                    ribbons.push({
+                        amplitude: hash(seed * 2.31 + 0.2),
+                        colorBias: hash(seed * 7.13 + 3.11),
+                        lane: hash(seed * 3.71 + 1.9) * 2 - 1,
+                        phase: hash(seed * 5.19 + 4.07) * TAU,
+                        speed: 0.65 + hash(seed * 9.91 + 2.1) * 1.25,
+                        width: hash(seed * 11.37 + 6.4),
+                    })
+                }
+            } else {
+                ribbons.length = target
+            }
+
+            ribbonCount = target
+        }
+
+        function ensureSparks(count: number): void {
+            const target = clamp(Math.round(count), 10, 26)
+            if (target === sparkCount && sparks.length === target) return
+
+            if (target > sparks.length) {
+                for (let index = sparks.length; index < target; index++) {
+                    const seed = index + 1
+                    sparks.push({
+                        colorBias: hash(seed * 8.93 + 1.17),
+                        phase: hash(seed * 2.81 + 7.42),
+                        ribbon: Math.floor(hash(seed * 3.29 + 5.61) * 32),
+                        size: hash(seed * 6.73 + 2.31),
+                        speed: 0.7 + hash(seed * 9.47 + 4.23) * 1.4,
+                    })
+                }
+            } else {
+                sparks.length = target
+            }
+
+            sparkCount = target
+        }
+
         return (ctx, time, controls) => {
             const width = ctx.canvas.width
             const height = ctx.canvas.height
             const minDim = Math.min(width, height)
+            const maxDim = Math.max(width, height)
 
             if (width === 0 || height === 0) return
 
@@ -309,7 +759,7 @@ export default canvas.stateful(
             const thicknessMix = clamp(((controls.thickness as number) ?? 56) / 100, 0, 1)
             const contrastMix = clamp(((controls.contrast as number) ?? 60) / 100, 0, 1)
             const theme = (controls.theme as ThemeName) ?? 'Event Horizon'
-            const geometry = (controls.geometry as GeometryName) ?? 'Hex Gate'
+            const geometry = (controls.geometry as GeometryName) ?? 'Braided Flux'
 
             const palette = resolvePalette(
                 theme,
@@ -319,158 +769,471 @@ export default canvas.stateful(
                 controls.background as string,
             )
 
-            const centerX = width * 0.5
-            const centerY = height * 0.5
-            const driftTime = time * (0.16 + speedMix * 0.12)
-            const vanishingX =
-                centerX +
-                Math.sin(driftTime * 0.67) * width * (0.04 + driftMix * 0.12) +
-                Math.sin(driftTime * 0.31 + 1.8) * width * driftMix * 0.04
-            const vanishingY =
-                centerY +
-                Math.cos(driftTime * 0.53 + 0.6) * height * (0.05 + driftMix * 0.14) +
-                Math.cos(driftTime * 0.23 + 3.1) * height * driftMix * 0.03
+            const center = { x: width * 0.5, y: height * 0.5 }
+            const axisTime = time * (0.16 + speedMix * 0.1)
+            const axisRotation = Math.sin(axisTime * 0.42) * (0.12 + driftMix * 0.18)
+            const fieldCount = geometry === 'Tidal Lattice' ? 4 : 3
+            const bridgeFields: BridgeField[] = []
+
+            for (let fieldIndex = 0; fieldIndex < fieldCount; fieldIndex++) {
+                const fieldMix = fieldIndex / (fieldCount - 1)
+                const centerBias = fieldMix - 0.5
+                const rotationSpread =
+                    geometry === 'Prism Bridge'
+                        ? 1.18
+                        : geometry === 'Halo Exchange'
+                          ? 1.42
+                          : geometry === 'Tidal Lattice'
+                            ? 0.96
+                            : 0.84
+                const fieldRotation =
+                    axisRotation +
+                    centerBias * rotationSpread +
+                    Math.sin(axisTime * 0.51 + fieldIndex * 1.7) * (0.1 + driftMix * 0.08)
+                const axisDir = normalizePoint(
+                    {
+                        x: Math.cos(fieldRotation),
+                        y: Math.sin(fieldRotation) * (geometry === 'Prism Bridge' ? 0.92 : 0.82),
+                    },
+                    { x: 1, y: 0 },
+                )
+                const axisNormal = perpendicular(axisDir)
+                const span = maxDim * (0.55 + depthMix * 0.26 + Math.abs(centerBias) * 0.08)
+                const sheetOffset =
+                    centerBias * minDim * (0.72 + driftMix * 0.18) +
+                    Math.sin(axisTime * 0.73 + fieldIndex * 1.3) * minDim * (0.05 + driftMix * 0.04)
+                const travelOffset = Math.cos(axisTime * 0.37 + fieldIndex * 1.8) * minDim * (0.06 + driftMix * 0.03)
+                const fieldCenter = addPoint(
+                    center,
+                    addPoint(scalePoint(axisNormal, sheetOffset), scalePoint(axisDir, travelOffset)),
+                )
+                const nodeOffsetY = minDim * (0.08 + driftMix * 0.12 + Math.abs(centerBias) * 0.02)
+                const strength = 1 - Math.abs(centerBias) * 0.58
+                const nodeRadius = minDim * (0.06 + depthMix * 0.035) * (0.82 + strength * 0.38)
+                const leftNode = addPoint(
+                    addPoint(fieldCenter, scalePoint(axisDir, -span)),
+                    addPoint(
+                        scalePoint(axisNormal, Math.sin(axisTime * 0.83 + 0.9 + fieldIndex * 0.9) * nodeOffsetY),
+                        scalePoint(
+                            axisDir,
+                            Math.cos(axisTime * 0.31 + 1.7 + fieldIndex * 0.4) * minDim * driftMix * 0.03,
+                        ),
+                    ),
+                )
+                const rightNode = addPoint(
+                    addPoint(fieldCenter, scalePoint(axisDir, span)),
+                    addPoint(
+                        scalePoint(axisNormal, Math.sin(axisTime * 0.83 + 3.2 + fieldIndex * 0.9) * -nodeOffsetY),
+                        scalePoint(
+                            axisDir,
+                            Math.cos(axisTime * 0.31 + 3.4 + fieldIndex * 0.4) * minDim * driftMix * 0.03,
+                        ),
+                    ),
+                )
+
+                bridgeFields.push({
+                    axisDir,
+                    axisNormal,
+                    leftNode,
+                    midpoint: lerpPoint(leftNode, rightNode, 0.5),
+                    nodeRadius,
+                    rightNode,
+                    span: Math.hypot(rightNode.x - leftNode.x, rightNode.y - leftNode.y),
+                    strength,
+                })
+            }
 
             ctx.fillStyle = rgb(palette.background)
             ctx.fillRect(0, 0, width, height)
 
-            const aura = ctx.createRadialGradient(vanishingX, vanishingY, 0, vanishingX, vanishingY, minDim * 0.78)
-            aura.addColorStop(0, rgba(mixRgb(palette.core, palette.background, 0.42), 0.18 + contrastMix * 0.08))
-            aura.addColorStop(0.48, rgba(mixRgb(palette.accent, palette.background, 0.7), 0.06 + pulseMix * 0.04))
-            aura.addColorStop(1, rgba(palette.background, 0))
-            ctx.fillStyle = aura
+            const backdrop = ctx.createLinearGradient(0, 0, width, height)
+            backdrop.addColorStop(
+                0,
+                rgba(
+                    mixRgb(sampleSpectralPalette(time * 0.01 + 0.04, palette), palette.background, 0.56),
+                    0.24 + contrastMix * 0.05,
+                ),
+            )
+            backdrop.addColorStop(
+                0.26,
+                rgba(
+                    mixRgb(sampleSpectralPalette(time * 0.015 + 0.22, palette), palette.background, 0.68),
+                    0.1 + pulseMix * 0.04,
+                ),
+            )
+            backdrop.addColorStop(
+                0.5,
+                rgba(
+                    mixRgb(sampleSpectralPalette(time * 0.012 + 0.46, palette), palette.background, 0.78),
+                    0.05 + pulseMix * 0.03,
+                ),
+            )
+            backdrop.addColorStop(
+                0.74,
+                rgba(
+                    mixRgb(sampleSpectralPalette(0.68 - time * 0.013, palette), palette.background, 0.66),
+                    0.1 + contrastMix * 0.03,
+                ),
+            )
+            backdrop.addColorStop(
+                1,
+                rgba(
+                    mixRgb(sampleSpectralPalette(0.9 - time * 0.01, palette), palette.background, 0.54),
+                    0.22 + contrastMix * 0.05,
+                ),
+            )
+            ctx.fillStyle = backdrop
             ctx.fillRect(0, 0, width, height)
 
-            const sliceCount = Math.round(14 + depthMix * 18)
-            const travel = 0.04 + speedMix * 0.055
-            const fadeIn = 0.1
-            const fadeOut = 0.1
-            const slices: Slice[] = []
-
-            for (let index = 0; index < sliceCount; index++) {
-                const progress = wrap(index / sliceCount + time * travel, 1)
-
-                // Fade envelope: smooth in/out at wrap boundaries to prevent pop
-                const alpha = smoothstep(0, fadeIn, progress) * smoothstep(0, fadeOut, 1 - progress)
-                if (alpha < 0.005) continue
-
-                const depthCurve = progress * progress * (3 - 2 * progress) // smoothstep curve instead of pow
-                const centerBlend = 1 - progress
-                const pulseWave = 1 + Math.sin(time * (1.4 + pulseMix * 1.9) + index * 0.47) * (0.03 + pulseMix * 0.06)
-                const baseRadius = minDim * (0.05 + depthCurve * (0.18 + depthMix * 0.42)) * pulseWave
-                const radiusX = baseRadius * (geometry === 'Prism Rift' ? 1.08 : 1)
-                const radiusY =
-                    baseRadius * (geometry === 'Pulse Ring' ? 0.72 : geometry === 'Organic Fold' ? 0.82 : 0.88)
-                const ringCenterX = lerp(centerX, vanishingX, centerBlend)
-                const ringCenterY = lerp(centerY, vanishingY, centerBlend)
-                const rotation = time * (0.3 + speedMix * 0.22) + index * 0.18 + depthCurve * (0.8 + twistMix * 4.2)
-                const points = buildRing(
-                    geometry,
-                    ringCenterX,
-                    ringCenterY,
-                    radiusX,
-                    radiusY,
-                    rotation,
-                    index,
-                    time,
-                    twistMix,
-                    pulseMix,
-                )
-
-                const colorPhase = wrap(progress * 0.82 + time * (0.03 + speedMix * 0.02), 1)
-                const edgeBase = samplePalette(colorPhase, palette)
-                const wall = mixRgb(
-                    palette.background,
-                    saturateRgb(edgeBase, 1.08),
-                    0.16 + contrastMix * 0.18 + progress * 0.1,
-                )
-                const rim = mixRgb(edgeBase, palette.core, 0.18 + pulseMix * 0.14)
-                const lineWidth = Math.max(1.8, minDim * (0.004 + thicknessMix * 0.014) * (0.34 + depthCurve))
-
-                slices.push({
-                    alpha,
-                    lineWidth,
-                    points,
-                    progress,
-                    rim,
-                    wall,
-                })
-            }
-
-            slices.sort((left, right) => left.progress - right.progress)
-
-            // Max gap between adjacent sorted slices before we skip the wall panel
-            const wrapGapThreshold = 2.5 / sliceCount
-
-            for (let index = 1; index < slices.length; index++) {
-                const previous = slices[index - 1]
-                const current = slices[index]
-
-                // Skip wall panels that span the wrap boundary
-                if (current.progress - previous.progress > wrapGapThreshold) continue
-
-                const panelAlpha = Math.min(previous.alpha, current.alpha)
-                if (panelAlpha < 0.01) continue
-
-                const pointCount = Math.min(previous.points.length, current.points.length)
-
-                for (let pointIndex = 0; pointIndex < pointCount; pointIndex++) {
-                    const nextIndex = (pointIndex + 1) % pointCount
-                    const pulseBand = 0.5 + 0.5 * Math.sin(time * 1.3 + index * 0.41 + pointIndex * 0.77)
-                    const wallColor = mixRgb(previous.wall, current.wall, 0.42 + pulseBand * 0.12)
-
-                    ctx.fillStyle = rgba(scaleRgb(wallColor, 0.86 + contrastMix * 0.18), panelAlpha)
-                    ctx.beginPath()
-                    ctx.moveTo(previous.points[pointIndex].x, previous.points[pointIndex].y)
-                    ctx.lineTo(previous.points[nextIndex].x, previous.points[nextIndex].y)
-                    ctx.lineTo(current.points[nextIndex].x, current.points[nextIndex].y)
-                    ctx.lineTo(current.points[pointIndex].x, current.points[pointIndex].y)
-                    ctx.closePath()
-                    ctx.fill()
+            ctx.save()
+            ctx.globalCompositeOperation = 'source-over'
+            for (const [fieldIndex, field] of bridgeFields.entries()) {
+                for (let storm = 0; storm < 2; storm++) {
+                    const orbit = time * (0.06 + storm * 0.03 + speedMix * 0.05) + storm * 1.7 + fieldIndex * 1.2
+                    const stormCenter = addPoint(
+                        field.midpoint,
+                        addPoint(
+                            scalePoint(field.axisDir, Math.cos(orbit) * minDim * (0.12 + storm * 0.07)),
+                            scalePoint(field.axisNormal, Math.sin(orbit * 1.2) * minDim * (0.2 + storm * 0.08)),
+                        ),
+                    )
+                    const stormColor = sampleSpectralPalette(fieldIndex * 0.18 + storm * 0.22 + time * 0.035, palette)
+                    const glow = ctx.createRadialGradient(
+                        stormCenter.x,
+                        stormCenter.y,
+                        0,
+                        stormCenter.x,
+                        stormCenter.y,
+                        minDim * (0.22 + storm * 0.08),
+                    )
+                    glow.addColorStop(
+                        0,
+                        rgba(stormColor, (0.028 + contrastMix * 0.014 + pulseMix * 0.012) * field.strength),
+                    )
+                    glow.addColorStop(
+                        0.48,
+                        rgba(
+                            sampleSpectralPalette(fieldIndex * 0.21 + storm * 0.17 + 0.36 - time * 0.028, palette),
+                            (0.012 + pulseMix * 0.01) * field.strength,
+                        ),
+                    )
+                    glow.addColorStop(1, 'rgba(0,0,0,0)')
+                    ctx.fillStyle = glow
+                    ctx.fillRect(0, 0, width, height)
                 }
             }
+            ctx.restore()
 
-            for (const slice of slices) {
-                if (slice.alpha < 0.01) continue
-
-                drawClosedPath(ctx, slice.points)
-                ctx.lineWidth = slice.lineWidth
-                ctx.strokeStyle = rgba(slice.rim, slice.alpha)
-                ctx.stroke()
-
-                drawClosedPath(ctx, slice.points)
-                ctx.lineWidth = Math.max(1, slice.lineWidth * 0.38)
-                ctx.strokeStyle = rgba(mixRgb(slice.rim, palette.core, 0.35), (0.38 + pulseMix * 0.18) * slice.alpha)
-                ctx.stroke()
+            for (const [fieldIndex, field] of bridgeFields.entries()) {
+                drawNodeHalo(
+                    ctx,
+                    field.leftNode,
+                    field.nodeRadius,
+                    palette,
+                    time,
+                    fieldIndex * 0.75,
+                    geometry,
+                    pulseMix,
+                    contrastMix,
+                    field.strength,
+                )
+                drawNodeHalo(
+                    ctx,
+                    field.rightNode,
+                    field.nodeRadius,
+                    palette,
+                    time,
+                    Math.PI + fieldIndex * 0.75,
+                    geometry,
+                    pulseMix,
+                    contrastMix,
+                    field.strength,
+                )
             }
 
-            const coreRadius = minDim * (0.032 + pulseMix * 0.018) * (1 + Math.sin(time * 2.1) * 0.12)
-            const core = buildRing(
-                geometry,
-                vanishingX,
-                vanishingY,
-                coreRadius * 1.12,
-                coreRadius * (geometry === 'Pulse Ring' ? 0.78 : 0.92),
-                time * (0.6 + twistMix * 1.2),
-                99,
-                time,
-                twistMix,
-                pulseMix,
-            )
+            ensureRibbons(5 + Math.round(depthMix * 3))
+            ensureSparks(8 + Math.round(depthMix * 5))
 
-            drawClosedPath(ctx, core)
-            ctx.fillStyle = rgb(mixRgb(palette.background, palette.core, 0.38 + contrastMix * 0.12))
-            ctx.fill()
+            const renderedRibbons: RenderedRibbon[] = []
 
-            drawClosedPath(ctx, core)
-            ctx.lineWidth = Math.max(2, minDim * (0.01 + thicknessMix * 0.012))
-            ctx.strokeStyle = rgb(saturateRgb(palette.core, 1.12))
-            ctx.stroke()
+            ctx.save()
+            ctx.globalCompositeOperation = 'source-over'
+
+            for (const [fieldIndex, field] of bridgeFields.entries()) {
+                const fieldRibbons: RenderedRibbon[] = ribbons.map((seed, index) => {
+                    const fieldSeed: RibbonSeed = {
+                        amplitude: clamp(
+                            seed.amplitude * 0.68 + hash((fieldIndex + 1) * 4.1 + index * 0.77) * 0.48,
+                            0,
+                            1,
+                        ),
+                        colorBias: wrap(seed.colorBias + fieldIndex * 0.17 + index * 0.013, 1),
+                        lane: clamp(seed.lane * (0.8 + field.strength * 0.25) + (fieldIndex - 1) * 0.06, -1, 1),
+                        phase: seed.phase + fieldIndex * 1.3,
+                        speed: seed.speed * (0.92 + field.strength * 0.18),
+                        width: clamp(seed.width * 0.7 + hash((fieldIndex + 2) * 5.4 + index * 1.2) * 0.42, 0, 1),
+                    }
+                    const points = buildRibbonPoints(
+                        field.leftNode,
+                        field.rightNode,
+                        fieldSeed,
+                        geometry,
+                        time,
+                        twistMix,
+                        pulseMix,
+                        thicknessMix,
+                    )
+                    const colorA = richenRgb(
+                        sampleSpectralPalette(fieldSeed.colorBias + time * (0.04 + speedMix * 0.03), palette),
+                        1.2,
+                        0.18,
+                        236,
+                    )
+                    const colorB = richenRgb(
+                        sampleSpectralPalette(fieldSeed.colorBias + 0.31 + time * (0.036 + speedMix * 0.03), palette),
+                        1.2,
+                        0.18,
+                        236,
+                    )
+                    const fringeA = richenRgb(
+                        sampleSpectralPalette(fieldSeed.colorBias + 0.14 - time * (0.024 + speedMix * 0.015), palette),
+                        1.28,
+                        0.14,
+                        240,
+                    )
+                    const fringeB = richenRgb(
+                        sampleSpectralPalette(fieldSeed.colorBias + 0.64 + time * (0.02 + speedMix * 0.014), palette),
+                        1.28,
+                        0.14,
+                        240,
+                    )
+                    const core = richenRgb(
+                        mixRgb(
+                            sampleSpectralPalette(fieldSeed.colorBias + 0.49 + fieldIndex * 0.07, palette),
+                            fieldSeed.lane > 0 ? palette.core : palette.accent,
+                            0.42,
+                        ),
+                        1.16,
+                        0.12,
+                        228,
+                    )
+
+                    return {
+                        colorA,
+                        colorB,
+                        core,
+                        fieldIndex,
+                        fringeA,
+                        fringeB,
+                        lane: fieldSeed.lane,
+                        leftNode: field.leftNode,
+                        phase: fieldSeed.phase,
+                        points,
+                        rightNode: field.rightNode,
+                        speed: fieldSeed.speed,
+                        span: field.span,
+                        strength: field.strength,
+                        width:
+                            minDim *
+                            (0.007 + thicknessMix * 0.016) *
+                            (0.72 + fieldSeed.width * 0.88) *
+                            (0.82 + field.strength * 0.35),
+                    }
+                })
+
+                fieldRibbons.sort((left, right) => Math.abs(right.lane) - Math.abs(left.lane))
+                renderedRibbons.push(...fieldRibbons)
+
+                for (const ribbon of fieldRibbons) {
+                    const ribbonAxis = normalizePoint(subPoint(ribbon.rightNode, ribbon.leftNode), { x: 1, y: 0 })
+                    const ribbonNormal = perpendicular(ribbonAxis)
+                    const fringeOffsetA = addPoint(
+                        scalePoint(ribbonNormal, ribbon.width * (0.1 + contrastMix * 0.05) * ribbon.strength),
+                        scalePoint(ribbonAxis, ribbon.width * 0.05 * Math.sin(time * 0.8 + ribbon.phase)),
+                    )
+                    const fringeOffsetB = addPoint(
+                        scalePoint(ribbonNormal, -ribbon.width * (0.1 + contrastMix * 0.05) * ribbon.strength),
+                        scalePoint(ribbonAxis, -ribbon.width * 0.05 * Math.cos(time * 0.74 + ribbon.phase)),
+                    )
+                    const fringePointsA = offsetPoints(ribbon.points, fringeOffsetA)
+                    const fringePointsB = offsetPoints(ribbon.points, fringeOffsetB)
+                    const gradient = ctx.createLinearGradient(
+                        ribbon.leftNode.x,
+                        ribbon.leftNode.y,
+                        ribbon.rightNode.x,
+                        ribbon.rightNode.y,
+                    )
+                    gradient.addColorStop(0, rgba(ribbon.fringeA, (0.1 + contrastMix * 0.03) * ribbon.strength))
+                    gradient.addColorStop(0.2, rgba(ribbon.colorA, (0.14 + contrastMix * 0.05) * ribbon.strength))
+                    gradient.addColorStop(0.5, rgba(ribbon.core, (0.2 + pulseMix * 0.05) * ribbon.strength))
+                    gradient.addColorStop(0.8, rgba(ribbon.colorB, (0.14 + contrastMix * 0.05) * ribbon.strength))
+                    gradient.addColorStop(1, rgba(ribbon.fringeB, (0.1 + contrastMix * 0.03) * ribbon.strength))
+
+                    drawPolyline(ctx, fringePointsA)
+                    ctx.lineWidth = ribbon.width * 0.38
+                    ctx.strokeStyle = rgba(ribbon.fringeA, (0.09 + contrastMix * 0.03) * ribbon.strength)
+                    ctx.stroke()
+
+                    drawPolyline(ctx, fringePointsB)
+                    ctx.lineWidth = ribbon.width * 0.38
+                    ctx.strokeStyle = rgba(ribbon.fringeB, (0.09 + contrastMix * 0.03) * ribbon.strength)
+                    ctx.stroke()
+
+                    drawPolyline(ctx, ribbon.points)
+                    ctx.lineWidth = ribbon.width * 1.15
+                    ctx.strokeStyle = rgba(
+                        richenRgb(mixRgb(ribbon.fringeA, ribbon.fringeB, 0.5), 1.08, 0.18, 224),
+                        (0.012 + contrastMix * 0.01) * ribbon.strength,
+                    )
+                    ctx.stroke()
+
+                    drawPolyline(ctx, ribbon.points)
+                    ctx.lineWidth = ribbon.width
+                    ctx.strokeStyle = gradient
+                    ctx.stroke()
+
+                    ctx.save()
+                    ctx.setLineDash([ribbon.span * 0.04, ribbon.span * 0.055])
+                    ctx.lineDashOffset = -time * (70 + speedMix * 90) * ribbon.speed
+                    drawPolyline(ctx, ribbon.points)
+                    ctx.lineWidth = Math.max(1, ribbon.width * 0.28)
+                    ctx.strokeStyle = rgba(
+                        richenRgb(mixRgb(ribbon.core, palette.core, 0.4), 1.08, 0.14, 228),
+                        (0.12 + pulseMix * 0.04) * ribbon.strength,
+                    )
+                    ctx.stroke()
+                    ctx.restore()
+
+                    const pulseProgress = wrap(time * (0.07 + speedMix * 0.16) * ribbon.speed + ribbon.phase / TAU, 1)
+                    const segmentRanges =
+                        pulseProgress < 0.07
+                            ? [
+                                  [pulseProgress + 0.93, 1],
+                                  [0, pulseProgress + 0.05],
+                              ]
+                            : pulseProgress > 0.93
+                              ? [
+                                    [pulseProgress - 0.07, 1],
+                                    [0, wrap(pulseProgress + 0.05, 1)],
+                                ]
+                              : [[pulseProgress - 0.07, pulseProgress + 0.05]]
+
+                    for (const [start, end] of segmentRanges) {
+                        const segment = sampleSegment(ribbon.points, start, end, 10)
+                        drawPolyline(ctx, segment)
+                        ctx.lineWidth = ribbon.width * 0.42
+                        ctx.strokeStyle = rgba(
+                            richenRgb(mixRgb(ribbon.core, ribbon.fringeA, 0.38), 1.1, 0.14, 232),
+                            (0.18 + pulseMix * 0.05) * ribbon.strength,
+                        )
+                        ctx.stroke()
+                    }
+                }
+
+                const orderedRibbons = [...fieldRibbons].sort((left, right) => left.lane - right.lane)
+                const meshCount = 5 + Math.round(depthMix * 5)
+                for (let index = 0; index < meshCount; index++) {
+                    const baseT = 0.08 + (index / Math.max(1, meshCount - 1)) * 0.84
+                    const drift = Math.sin(time * (0.18 + speedMix * 0.12) + index * 1.1 + fieldIndex * 0.7) * 0.045
+                    const crossPoints = orderedRibbons.map((ribbon) =>
+                        samplePolyline(ribbon.points, clamp(baseT + drift * ribbon.lane * 0.45, 0, 1)),
+                    )
+
+                    drawPolyline(ctx, crossPoints)
+                    ctx.lineWidth = Math.max(
+                        1,
+                        minDim * (0.0018 + thicknessMix * 0.0035) * (0.8 + field.strength * 0.4),
+                    )
+                    ctx.strokeStyle = rgba(
+                        richenRgb(
+                            sampleSpectralPalette(baseT + time * 0.03 + index * 0.11 + fieldIndex * 0.09, palette),
+                            1.16,
+                            0.18,
+                            232,
+                        ),
+                        (0.025 + contrastMix * 0.02 + pulseMix * 0.012) * field.strength,
+                    )
+                    ctx.stroke()
+                }
+
+                drawLensDiamond(
+                    ctx,
+                    field.leftNode,
+                    field.rightNode,
+                    palette,
+                    time,
+                    pulseMix,
+                    contrastMix,
+                    field.strength * 0.75,
+                )
+            }
+
+            ctx.restore()
+
+            ctx.save()
+            ctx.globalCompositeOperation = 'lighter'
+            for (const spark of sparks) {
+                const ribbon = renderedRibbons[spark.ribbon % Math.max(1, renderedRibbons.length)]
+                const progress = wrap(time * (0.08 + speedMix * 0.14) * spark.speed + spark.phase, 1)
+                const point = samplePolyline(ribbon.points, progress)
+                const tail = sampleSegment(ribbon.points, clamp(progress - 0.05 - spark.size * 0.02, 0, 1), progress, 8)
+                const sparkColor = richenRgb(
+                    mixRgb(
+                        sampleSpectralPalette(spark.colorBias + time * 0.05 + ribbon.fieldIndex * 0.07, palette),
+                        ribbon.core,
+                        0.35,
+                    ),
+                    1.22,
+                    0.1,
+                    244,
+                )
+                const sparkFringeA = richenRgb(
+                    sampleSpectralPalette(spark.colorBias + 0.16 - time * 0.035, palette),
+                    1.28,
+                    0.08,
+                    246,
+                )
+                const sparkFringeB = richenRgb(
+                    sampleSpectralPalette(spark.colorBias + 0.61 + time * 0.03, palette),
+                    1.28,
+                    0.08,
+                    246,
+                )
+                const sparkAxis = normalizePoint(subPoint(ribbon.rightNode, ribbon.leftNode), { x: 1, y: 0 })
+                const sparkNormal = perpendicular(sparkAxis)
+                const sparkSpread = ribbon.width * (0.18 + spark.size * 0.12)
+                const fringeTailA = offsetPoints(tail, scalePoint(sparkNormal, sparkSpread * 0.45))
+                const fringeTailB = offsetPoints(tail, scalePoint(sparkNormal, -sparkSpread * 0.45))
+
+                drawPolyline(ctx, fringeTailA)
+                ctx.lineWidth = Math.max(1, ribbon.width * (0.05 + spark.size * 0.05))
+                ctx.strokeStyle = rgba(sparkFringeA, (0.16 + contrastMix * 0.03 + pulseMix * 0.03) * ribbon.strength)
+                ctx.stroke()
+
+                drawPolyline(ctx, fringeTailB)
+                ctx.lineWidth = Math.max(1, ribbon.width * (0.05 + spark.size * 0.05))
+                ctx.strokeStyle = rgba(sparkFringeB, (0.16 + contrastMix * 0.03 + pulseMix * 0.03) * ribbon.strength)
+                ctx.stroke()
+
+                drawPolyline(ctx, tail)
+                ctx.lineWidth = Math.max(1, ribbon.width * (0.08 + spark.size * 0.08))
+                ctx.strokeStyle = rgba(sparkColor, (0.18 + pulseMix * 0.05) * ribbon.strength)
+                ctx.stroke()
+
+                ctx.fillStyle = rgba(
+                    richenRgb(mixRgb(sparkColor, ribbon.core, 0.18), 1.08, 0.06, 248),
+                    0.34 * ribbon.strength,
+                )
+                ctx.beginPath()
+                ctx.arc(point.x, point.y, Math.max(0.75, ribbon.width * (0.08 + spark.size * 0.05)), 0, TAU)
+                ctx.fill()
+            }
+            ctx.restore()
         }
     },
     {
         description:
-            'Hurtle through an infinite geometric tunnel — solid walls rush past as the vanishing point drifts, bending space around you',
+            'A luminous Einstein bridge stretches between two gravitational anchors, with braided spacetime ribbons ferrying color and light across the gap',
         presets: [
             {
                 controls: {
@@ -478,139 +1241,119 @@ export default canvas.stateful(
                     color1: '#20f0ff',
                     color2: '#9056ff',
                     color3: '#ff5cb7',
-                    contrast: 90,
-                    depth: 95,
-                    drift: 20,
-                    geometry: 'Hex Gate',
-                    pulse: 70,
-                    speed: 9,
+                    contrast: 88,
+                    depth: 86,
+                    drift: 36,
+                    geometry: 'Braided Flux',
+                    pulse: 68,
+                    speed: 7,
                     theme: 'Event Horizon',
-                    thickness: 80,
-                    twist: 85,
+                    thickness: 72,
+                    twist: 88,
                 },
                 description:
-                    'The point of no return — hexagonal walls compress as spacetime folds inward at terminal velocity',
-                name: 'Event Horizon Collapse',
+                    'Two bright anchors trade ribbons of cyan, violet, and rose, woven tight enough to feel like engineered spacetime',
+                name: 'Causal Braid',
             },
             {
                 controls: {
-                    background: '#050913',
+                    background: '#020814',
                     color1: '#20f0ff',
                     color2: '#9056ff',
                     color3: '#ff5cb7',
-                    contrast: 45,
-                    depth: 55,
-                    drift: 75,
-                    geometry: 'Organic Fold',
-                    pulse: 85,
-                    speed: 3,
-                    theme: 'Quantum',
-                    thickness: 40,
-                    twist: 40,
-                },
-                description:
-                    'Biological passage through a living organism — pulsing organic folds in quantum greens and teals',
-                name: 'Organic Spore Channel',
-            },
-            {
-                controls: {
-                    background: '#050913',
-                    color1: '#20f0ff',
-                    color2: '#9056ff',
-                    color3: '#ff5cb7',
-                    contrast: 75,
-                    depth: 80,
-                    drift: 60,
-                    geometry: 'Pulse Ring',
-                    pulse: 95,
+                    contrast: 82,
+                    depth: 74,
+                    drift: 18,
+                    geometry: 'Prism Bridge',
+                    pulse: 44,
                     speed: 5,
-                    theme: 'Abyssal',
-                    thickness: 70,
-                    twist: 30,
-                },
-                description:
-                    'Swallowed by a creature of deep space — fiery rings contract and expand like the breathing of a void leviathan',
-                name: 'Abyssal Maw',
-            },
-            {
-                controls: {
-                    background: '#050913',
-                    color1: '#20f0ff',
-                    color2: '#9056ff',
-                    color3: '#ff5cb7',
-                    contrast: 85,
-                    depth: 70,
-                    drift: 35,
-                    geometry: 'Prism Rift',
-                    pulse: 50,
-                    speed: 6,
                     theme: 'Spectral',
-                    thickness: 55,
-                    twist: 100,
+                    thickness: 58,
+                    twist: 76,
                 },
                 description:
-                    'Ascending through crystalline dimensions — spectral light refracts through razor-edged prismatic geometry',
-                name: 'Prism Gate Ascension',
+                    'A crystalline bridge of spectral facets refracts its own currents, like a portal built by impossible optics',
+                name: 'Prism Treaty',
             },
             {
                 controls: {
-                    background: '#050913',
+                    background: '#04110d',
                     color1: '#20f0ff',
-                    color2: '#9056ff',
-                    color3: '#ff5cb7',
-                    contrast: 35,
-                    depth: 30,
-                    drift: 90,
-                    geometry: 'Hex Gate',
-                    pulse: 20,
-                    speed: 1,
-                    theme: 'Void Gate',
-                    thickness: 30,
-                    twist: 15,
+                    color2: '#41ff7d',
+                    color3: '#88ffd3',
+                    contrast: 58,
+                    depth: 62,
+                    drift: 64,
+                    geometry: 'Tidal Lattice',
+                    pulse: 82,
+                    speed: 4,
+                    theme: 'Quantum',
+                    thickness: 48,
+                    twist: 54,
                 },
                 description:
-                    'Hovering at the threshold of nothingness — slow violet geometry drifts through absolute stillness',
-                name: 'Void Gate Meditation',
+                    'Soft green currents pulse through a breathing lattice, more tidal than violent, like spacetime acting as fabric instead of vacuum',
+                name: 'Living Continuum',
             },
             {
                 controls: {
-                    background: '#140700',
-                    color1: '#ff8800',
-                    color2: '#ff2200',
-                    color3: '#ffd700',
-                    contrast: 80,
-                    depth: 90,
-                    drift: 15,
-                    geometry: 'Pulse Ring',
-                    pulse: 100,
+                    background: '#09040f',
+                    color1: '#ff5c8a',
+                    color2: '#ff8a00',
+                    color3: '#ffd166',
+                    contrast: 84,
+                    depth: 92,
+                    drift: 42,
+                    geometry: 'Halo Exchange',
+                    pulse: 96,
                     speed: 8,
                     theme: 'Solar Flare',
-                    thickness: 90,
-                    twist: 50,
+                    thickness: 76,
+                    twist: 42,
                 },
                 description:
-                    'Plunge into the sun — concentric rings of white-hot plasma contract and explode, each pulse a coronal mass ejection tearing through the corona',
-                name: 'Solar Bore',
+                    'Amber and gold halos whip around twin stars as if a bridge has been forged out of solar weather',
+                name: 'Coronal Relay',
             },
             {
                 controls: {
-                    background: '#020210',
-                    color1: '#4444ff',
-                    color2: '#8800ff',
-                    color3: '#ff00aa',
-                    contrast: 50,
-                    depth: 100,
-                    drift: 50,
-                    geometry: 'Prism Rift',
-                    pulse: 60,
-                    speed: 4,
-                    theme: 'Spectral',
-                    thickness: 45,
-                    twist: 100,
+                    background: '#080607',
+                    color1: '#ff6200',
+                    color2: '#b4154e',
+                    color3: '#ff9340',
+                    contrast: 78,
+                    depth: 88,
+                    drift: 26,
+                    geometry: 'Braided Flux',
+                    pulse: 74,
+                    speed: 6,
+                    theme: 'Abyssal',
+                    thickness: 82,
+                    twist: 72,
                 },
                 description:
-                    'Fall through a kaleidoscope that never repeats — spectral prisms rotate and nest within each other, twisting all the way down to infinity',
-                name: 'Kaleidoscope Descent',
+                    'A heavier, predatory bridge burns with ember-red traffic, like two hungry wells laced together by molten gravity',
+                name: 'Abyssal Exchange',
+            },
+            {
+                controls: {
+                    background: '#0a0416',
+                    color1: '#7f5cff',
+                    color2: '#ff3ca8',
+                    color3: '#ff7bd0',
+                    contrast: 46,
+                    depth: 40,
+                    drift: 72,
+                    geometry: 'Halo Exchange',
+                    pulse: 26,
+                    speed: 2,
+                    theme: 'Void Gate',
+                    thickness: 36,
+                    twist: 28,
+                },
+                description:
+                    'The bridge relaxes into a slow violet conversation, with distant halos whispering between two patient anchors',
+                name: 'Quiet Transfer',
             },
         ],
     },
