@@ -168,11 +168,30 @@ impl OverlayComposer {
         now_system: SystemTime,
         now_instant: Instant,
     ) -> Option<&'a PremulStaging> {
+        self.compose_rgb_frame_with_runtime_change(
+            base_rgb,
+            sensors,
+            frame_number,
+            now_system,
+            now_instant,
+        )
+        .0
+    }
+
+    pub fn compose_rgb_frame_with_runtime_change<'a>(
+        &'a mut self,
+        base_rgb: &[u8],
+        sensors: &SystemSnapshot,
+        frame_number: u64,
+        now_system: SystemTime,
+        now_instant: Instant,
+    ) -> (Option<&'a PremulStaging>, bool) {
         if self.instances.is_empty() {
-            return None;
+            return (None, false);
         }
 
         let mut has_active_slot = false;
+        let mut runtime_changed = false;
         let mut input = None::<OverlayInput<'_>>;
 
         for instance in &mut self.instances {
@@ -194,7 +213,7 @@ impl OverlayComposer {
                 frame_number,
             });
 
-            instance.maybe_render(input, now_instant);
+            runtime_changed |= instance.maybe_render(input, now_instant);
             if !instance.has_valid_render {
                 continue;
             }
@@ -209,10 +228,10 @@ impl OverlayComposer {
         }
 
         if !has_active_slot {
-            return None;
+            return (None, runtime_changed);
         }
 
-        Some(&self.staging)
+        (Some(&self.staging), runtime_changed)
     }
 
     fn build_instance(&self, slot: OverlaySlot) -> OverlayInstance {
@@ -335,12 +354,12 @@ impl OverlayInstance {
             .and_then(|last| last.checked_add(self.render_interval))
     }
 
-    fn maybe_render(&mut self, input: &OverlayInput<'_>, now: Instant) {
+    fn maybe_render(&mut self, input: &OverlayInput<'_>, now: Instant) -> bool {
         let Some(renderer) = self.renderer.as_mut() else {
-            return;
+            return false;
         };
         if self.backoff_until.is_some_and(|deadline| deadline > now) {
-            return;
+            return false;
         }
 
         let cadence_due = self
@@ -348,7 +367,7 @@ impl OverlayInstance {
             .is_none_or(|last| now.duration_since(last) >= self.render_interval);
         let content_dirty = renderer.content_changed(input);
         if !cadence_due && !content_dirty && self.has_valid_render {
-            return;
+            return false;
         }
 
         self.cached_buffer.clear();
@@ -360,8 +379,12 @@ impl OverlayInstance {
                 self.consecutive_failures = 0;
                 self.backoff_until = None;
                 self.last_error = None;
+                true
             }
-            Err(error) => self.handle_error(error, now),
+            Err(error) => {
+                self.handle_error(error, now);
+                true
+            }
         }
     }
 
@@ -992,5 +1015,72 @@ mod tests {
             .next_refresh_at(start)
             .expect("renderer hint should drive refresh");
         assert_eq!(deadline.duration_since(start), refresh_after);
+    }
+
+    #[test]
+    fn compose_runtime_change_stays_false_for_cached_frames() {
+        struct StableRenderer;
+
+        impl OverlayRenderer for StableRenderer {
+            fn init(&mut self, _target_size: OverlaySize) -> Result<()> {
+                Ok(())
+            }
+
+            fn resize(&mut self, _target_size: OverlaySize) -> Result<()> {
+                Ok(())
+            }
+
+            fn render_into(
+                &mut self,
+                _input: &OverlayInput<'_>,
+                target: &mut OverlayBuffer,
+            ) -> std::result::Result<(), OverlayError> {
+                for pixel in target.pixels.chunks_exact_mut(4) {
+                    pixel.copy_from_slice(&[255, 0, 0, 255]);
+                }
+                Ok(())
+            }
+
+            fn content_changed(&self, _input: &OverlayInput<'_>) -> bool {
+                false
+            }
+        }
+
+        struct StableFactory;
+
+        impl OverlayRendererFactory for StableFactory {
+            fn build(
+                &self,
+                _slot: &OverlaySlot,
+                _target_size: OverlaySize,
+            ) -> std::result::Result<OverlayRendererBinding, OverlayError> {
+                Ok(OverlayRendererBinding {
+                    renderer: Box::new(StableRenderer),
+                    render_interval: Duration::from_secs(60),
+                })
+            }
+        }
+
+        let factory: Arc<dyn OverlayRendererFactory> = Arc::new(StableFactory);
+        let mut composer = OverlayComposer::new(4, 4, false, factory);
+        composer.reconcile(&DisplayOverlayConfig {
+            overlays: vec![sample_slot(OverlayPosition::FullScreen)],
+        });
+
+        let base = vec![0_u8; 4 * 4 * 3];
+        let sensors = SystemSnapshot::empty();
+        let start = Instant::now();
+        let (_, first_changed) =
+            composer.compose_rgb_frame_with_runtime_change(&base, &sensors, 1, SystemTime::now(), start);
+        let (_, second_changed) = composer.compose_rgb_frame_with_runtime_change(
+            &base,
+            &sensors,
+            2,
+            SystemTime::now(),
+            start + Duration::from_millis(16),
+        );
+
+        assert!(first_changed);
+        assert!(!second_changed);
     }
 }

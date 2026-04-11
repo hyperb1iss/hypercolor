@@ -409,22 +409,25 @@ async fn run_display_worker(
                 &target.geometry,
                 &mut encode_state,
             );
-            if let Some(staging) = overlay_composer.compose_rgb_frame(
+            let (staging, runtime_changed) = overlay_composer.compose_rgb_frame_with_runtime_change(
                 &encode_state.rgb_buffer,
                 sensor_snapshot.as_ref(),
                 delivered_frame_number,
                 SystemTime::now(),
                 Instant::now(),
-            ) {
+            );
+            if let Some(staging) = staging {
                 staging.write_into_rgb(&mut encode_state.rgb_buffer);
             }
-            publish_overlay_runtime(
-                &overlay_runtime,
-                device_id,
-                &mut last_overlay_runtime_snapshot,
-                overlay_composer.runtime_snapshot(),
-            )
-            .await;
+            if runtime_changed {
+                publish_overlay_runtime(
+                    &overlay_runtime,
+                    device_id,
+                    &mut last_overlay_runtime_snapshot,
+                    overlay_composer.runtime_snapshot(),
+                )
+                .await;
+            }
             let geometry = target.geometry;
             let brightness = target.brightness;
             tokio::task::spawn_blocking(move || {
