@@ -27,6 +27,7 @@ use crate::discovery::backend_id_for_device;
 use crate::logical_devices::{self, LogicalDevice};
 use crate::session::OutputPowerState;
 
+use self::render::display_viewport_signature;
 use worker::DisplayWorkerHandle;
 
 const DISPLAY_ERROR_WARN_INTERVAL: Duration = Duration::from_secs(5);
@@ -82,6 +83,14 @@ struct DisplayTarget {
 
 type DisplayWorkerKey = (String, DeviceId);
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct DisplayWorkerConfigSignature {
+    target_fps: u32,
+    brightness_bits: u32,
+    geometry: DisplayGeometry,
+    viewport: DisplayViewportSignature,
+}
+
 #[derive(Default)]
 struct DisplayTargetCache {
     initialized: bool,
@@ -90,12 +99,6 @@ struct DisplayTargetCache {
     layout_ptr: usize,
     logical_signature: u64,
     targets: Arc<[Arc<DisplayTarget>]>,
-}
-
-#[derive(Clone)]
-struct DisplayWorkItem {
-    source: Arc<CanvasFrame>,
-    target: Arc<DisplayTarget>,
 }
 
 #[derive(Clone, Debug)]
@@ -123,6 +126,17 @@ struct DisplayViewportSignature {
 struct DisplayTargetsSnapshot {
     version: u64,
     targets: Arc<[Arc<DisplayTarget>]>,
+}
+
+impl DisplayTarget {
+    pub(super) fn worker_config_signature(&self) -> DisplayWorkerConfigSignature {
+        DisplayWorkerConfigSignature {
+            target_fps: self.target_fps,
+            brightness_bits: self.brightness.to_bits(),
+            geometry: self.geometry.clone(),
+            viewport: display_viewport_signature(&self.viewport),
+        }
+    }
 }
 
 impl DisplayOutputThread {
@@ -237,10 +251,7 @@ async fn run_display_output(
 
         for target in targets.targets.iter() {
             if let Some(worker) = workers.get(&target.worker_key) {
-                worker.push(DisplayWorkItem {
-                    source: Arc::clone(&frame),
-                    target: Arc::clone(target),
-                });
+                worker.push(Arc::clone(&frame));
             }
         }
     }
@@ -275,7 +286,7 @@ async fn reconcile_display_workers(
         let key = target.worker_key.clone();
         let needs_restart = workers
             .get(&key)
-            .is_some_and(|worker| worker.target_fps != target.target_fps);
+            .is_some_and(|worker| worker.config_signature != target.worker_config_signature());
         if needs_restart && let Some(worker) = workers.remove(&key) {
             worker.shutdown().await;
         }
@@ -294,7 +305,7 @@ async fn reconcile_display_workers(
                 workers.insert(
                     key,
                     DisplayWorkerHandle::spawn(
-                        target.as_ref(),
+                        Arc::clone(target),
                         backend_io,
                         state.power_state.clone(),
                         state.static_hold_refresh_interval,

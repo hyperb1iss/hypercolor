@@ -17,14 +17,14 @@ use super::encode::{DisplayEncodeState, display_brightness_factor, encode_canvas
 use super::render::display_viewport_signature;
 use super::{
     DISPLAY_ERROR_WARN_INTERVAL, DisplayGeometry, DisplayTarget, DisplayViewportSignature,
-    DisplayWorkItem,
+    DisplayWorkerConfigSignature,
 };
 use crate::session::OutputPowerState;
 
 pub(super) struct DisplayWorkerHandle {
-    tx: watch::Sender<Option<DisplayWorkItem>>,
+    tx: watch::Sender<Option<Arc<CanvasFrame>>>,
     join_handle: JoinHandle<()>,
-    pub target_fps: u32,
+    pub config_signature: DisplayWorkerConfigSignature,
 }
 
 #[derive(Clone, Debug)]
@@ -90,20 +90,20 @@ fn display_source_identity(source: &CanvasFrame) -> DisplaySourceIdentity {
 
 impl DisplayWorkerHandle {
     pub fn spawn(
-        target: &DisplayTarget,
+        target: Arc<DisplayTarget>,
         backend_io: BackendIo,
         power_state: watch::Receiver<OutputPowerState>,
         static_hold_refresh_interval: Duration,
     ) -> Self {
-        let (tx, rx) = watch::channel(None::<DisplayWorkItem>);
+        let (tx, rx) = watch::channel(None::<Arc<CanvasFrame>>);
         let worker_backend_id = target.backend_id.clone();
         let worker_device_id = target.device_id;
-        let target_fps = target.target_fps;
+        let config_signature = target.worker_config_signature();
         let join_handle = tokio::spawn(run_display_worker(
             backend_io,
             worker_backend_id,
             worker_device_id,
-            target_fps,
+            Arc::clone(&target),
             rx,
             power_state,
             static_hold_refresh_interval,
@@ -112,12 +112,12 @@ impl DisplayWorkerHandle {
         Self {
             tx,
             join_handle,
-            target_fps,
+            config_signature,
         }
     }
 
-    pub fn push(&self, work: DisplayWorkItem) {
-        self.tx.send_replace(Some(work));
+    pub fn push(&self, source: Arc<CanvasFrame>) {
+        self.tx.send_replace(Some(source));
     }
 
     pub async fn shutdown(self) {
@@ -134,16 +134,17 @@ async fn run_display_worker(
     backend_io: BackendIo,
     backend_key: String,
     device_id: DeviceId,
-    target_fps: u32,
-    mut rx: watch::Receiver<Option<DisplayWorkItem>>,
+    target: Arc<DisplayTarget>,
+    mut rx: watch::Receiver<Option<Arc<CanvasFrame>>>,
     mut power_state: watch::Receiver<OutputPowerState>,
     static_hold_refresh_interval: Duration,
 ) {
+    let target_fps = target.target_fps;
     let send_interval = target_interval_for_fps(target_fps);
     let mut next_send_at = Instant::now();
     let mut last_warned_at = None::<Instant>;
     let mut last_delivered_input = None::<DisplayFrameInputState>;
-    let mut last_delivered_work = None::<DisplayWorkItem>;
+    let mut last_delivered_source = None::<Arc<CanvasFrame>>;
     let mut next_hold_refresh_at = None::<Instant>;
     let mut encode_state = match DisplayEncodeState::new() {
         Ok(state) => state,
@@ -157,7 +158,7 @@ async fn run_display_worker(
             return;
         }
     };
-    let mut pending = None::<DisplayWorkItem>;
+    let mut pending = None::<Arc<CanvasFrame>>;
 
     loop {
         if pending.is_none() {
@@ -177,8 +178,8 @@ async fn run_display_worker(
                     }
                     () = tokio::time::sleep_until(tokio::time::Instant::from_std(hold_deadline)) => {
                         if should_refresh_static_hold(&power_state)
-                            && let Some(work) = last_delivered_work.as_ref() {
-                            pending = Some(work.clone());
+                            && let Some(source) = last_delivered_source.as_ref() {
+                            pending = Some(Arc::clone(source));
                             last_delivered_input = None;
                         }
                     }
@@ -201,7 +202,7 @@ async fn run_display_worker(
             }
             next_hold_refresh_at = static_hold_refresh_deadline(
                 &power_state,
-                last_delivered_work.as_ref(),
+                last_delivered_source.as_ref(),
                 static_hold_refresh_interval,
             );
             continue;
@@ -220,12 +221,10 @@ async fn run_display_worker(
             }
         }
 
-        let Some(work) = pending.take() else {
+        let Some(source) = pending.take() else {
             continue;
         };
 
-        let source = Arc::clone(&work.source);
-        let target = Arc::clone(&work.target);
         if last_delivered_input
             .as_ref()
             .is_some_and(|previous| previous.matches(&source, target.as_ref()))
@@ -300,10 +299,10 @@ async fn run_display_worker(
             continue;
         }
         last_delivered_input = Some(DisplayFrameInputState::capture(&source, target.as_ref()));
-        last_delivered_work = Some(work.clone());
+        last_delivered_source = Some(source);
         next_hold_refresh_at = static_hold_refresh_deadline(
             &power_state,
-            last_delivered_work.as_ref(),
+            last_delivered_source.as_ref(),
             static_hold_refresh_interval,
         );
 
@@ -344,10 +343,10 @@ fn should_refresh_static_hold(power_state: &watch::Receiver<OutputPowerState>) -
 
 fn static_hold_refresh_deadline(
     power_state: &watch::Receiver<OutputPowerState>,
-    last_delivered_work: Option<&DisplayWorkItem>,
+    last_delivered_source: Option<&Arc<CanvasFrame>>,
     refresh_interval: Duration,
 ) -> Option<Instant> {
-    if !should_refresh_static_hold(power_state) || last_delivered_work.is_none() {
+    if !should_refresh_static_hold(power_state) || last_delivered_source.is_none() {
         return None;
     }
 
