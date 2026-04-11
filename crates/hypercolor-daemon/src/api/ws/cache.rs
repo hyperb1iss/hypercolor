@@ -633,14 +633,16 @@ fn build_canvas_binary_payload(
 
     let width_u16 = u16::try_from(canvas.width).unwrap_or(u16::MAX);
     let height_u16 = u16::try_from(canvas.height).unwrap_or(u16::MAX);
-    let mut payload = Vec::with_capacity(CANVAS_HEADER_LEN.saturating_add(body.len()));
-    payload.push(header);
-    payload.extend_from_slice(&canvas.frame_number.to_le_bytes());
-    payload.extend_from_slice(&canvas.timestamp_ms.to_le_bytes());
-    payload.extend_from_slice(&width_u16.to_le_bytes());
-    payload.extend_from_slice(&height_u16.to_le_bytes());
-    payload.push(canvas_format_tag(format));
-    payload.extend_from_slice(body);
+    let mut payload = vec![0; CANVAS_HEADER_LEN.saturating_add(body.len())];
+    write_canvas_payload_header(
+        &mut payload[..CANVAS_HEADER_LEN],
+        header,
+        canvas,
+        width_u16,
+        height_u16,
+        canvas_format_tag(format),
+    );
+    payload[CANVAS_HEADER_LEN..].copy_from_slice(body);
     payload
 }
 
@@ -797,17 +799,38 @@ fn build_canvas_jpeg_payload(
     header: u8,
     jpeg_body: &[u8],
 ) -> Vec<u8> {
+    const CANVAS_HEADER_LEN: usize = 14;
+
     let width_u16 = u16::try_from(canvas.width).unwrap_or(u16::MAX);
     let height_u16 = u16::try_from(canvas.height).unwrap_or(u16::MAX);
-    let mut payload = Vec::with_capacity(14_usize.saturating_add(jpeg_body.len()));
-    payload.push(header);
-    payload.extend_from_slice(&canvas.frame_number.to_le_bytes());
-    payload.extend_from_slice(&canvas.timestamp_ms.to_le_bytes());
-    payload.extend_from_slice(&width_u16.to_le_bytes());
-    payload.extend_from_slice(&height_u16.to_le_bytes());
-    payload.push(canvas_format_tag(CanvasFormat::Jpeg));
-    payload.extend_from_slice(jpeg_body);
+    let mut payload = vec![0; CANVAS_HEADER_LEN.saturating_add(jpeg_body.len())];
+    write_canvas_payload_header(
+        &mut payload[..CANVAS_HEADER_LEN],
+        header,
+        canvas,
+        width_u16,
+        height_u16,
+        canvas_format_tag(CanvasFormat::Jpeg),
+    );
+    payload[CANVAS_HEADER_LEN..].copy_from_slice(jpeg_body);
     payload
+}
+
+fn write_canvas_payload_header(
+    header_bytes: &mut [u8],
+    header: u8,
+    canvas: &hypercolor_core::bus::CanvasFrame,
+    width_u16: u16,
+    height_u16: u16,
+    format_tag: u8,
+) {
+    debug_assert_eq!(header_bytes.len(), 14);
+    header_bytes[0] = header;
+    header_bytes[1..5].copy_from_slice(&canvas.frame_number.to_le_bytes());
+    header_bytes[5..9].copy_from_slice(&canvas.timestamp_ms.to_le_bytes());
+    header_bytes[9..11].copy_from_slice(&width_u16.to_le_bytes());
+    header_bytes[11..13].copy_from_slice(&height_u16.to_le_bytes());
+    header_bytes[13] = format_tag;
 }
 
 #[cfg(test)]
