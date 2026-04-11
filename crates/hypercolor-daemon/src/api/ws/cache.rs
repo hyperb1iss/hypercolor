@@ -54,7 +54,7 @@ type CanvasJpegBodyCacheShard = StdMutex<VecDeque<(CanvasJpegBodyCacheKey, Bytes
 type FramePayloadCacheShard = StdMutex<VecDeque<(FramePayloadCacheKey, FrameRelayMessage)>>;
 type SpectrumPayloadCacheShard = StdMutex<VecDeque<(SpectrumPayloadCacheKey, Bytes)>>;
 type PreviewJpegEncoderShard = StdMutex<PreviewJpegEncoderState>;
-type PreviewScaleLutCache = StdMutex<VecDeque<(u32, [u8; 256])>>;
+type PreviewScaleLutCache = StdMutex<VecDeque<(u32, Arc<[u8; 256]>)>>;
 type CommandRouterCache = StdMutex<Option<(usize, axum::Router)>>;
 
 pub(super) static WS_CANVAS_BINARY_CACHE: LazyLock<Vec<CanvasBinaryCacheShard>> =
@@ -855,7 +855,7 @@ pub(super) fn reset_canvas_raw_body_cache_for_tests() {
     }
 }
 
-fn preview_scale_lut(brightness: f32) -> [u8; 256] {
+fn preview_scale_lut(brightness: f32) -> Arc<[u8; 256]> {
     let brightness_bits = brightness.to_bits();
     {
         let mut cache = WS_PREVIEW_SCALE_LUT_CACHE
@@ -868,7 +868,7 @@ fn preview_scale_lut(brightness: f32) -> [u8; 256] {
             let (cached_bits, lut) = cache
                 .remove(index)
                 .expect("cached preview LUT should exist");
-            let cached_lut = lut;
+            let cached_lut = Arc::clone(&lut);
             cache.push_front((cached_bits, lut));
             return cached_lut;
         }
@@ -876,7 +876,7 @@ fn preview_scale_lut(brightness: f32) -> [u8; 256] {
 
     let mut lut = [0_u8; 256];
     if brightness <= 0.0 {
-        return remember_preview_scale_lut(brightness_bits, lut);
+        return remember_preview_scale_lut(brightness_bits, Arc::new(lut));
     }
 
     for channel in 0_u16..=255 {
@@ -884,10 +884,10 @@ fn preview_scale_lut(brightness: f32) -> [u8; 256] {
         lut[usize::from(channel)] = linear_to_srgb_u8(srgb_u8_to_linear(channel_u8) * brightness);
     }
 
-    remember_preview_scale_lut(brightness_bits, lut)
+    remember_preview_scale_lut(brightness_bits, Arc::new(lut))
 }
 
-fn remember_preview_scale_lut(brightness_bits: u32, lut: [u8; 256]) -> [u8; 256] {
+fn remember_preview_scale_lut(brightness_bits: u32, lut: Arc<[u8; 256]>) -> Arc<[u8; 256]> {
     let mut cache = WS_PREVIEW_SCALE_LUT_CACHE
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
@@ -901,7 +901,12 @@ fn remember_preview_scale_lut(brightness_bits: u32, lut: [u8; 256]) -> [u8; 256]
     while cache.len() > WS_PREVIEW_SCALE_LUT_CACHE_CAPACITY {
         let _ = cache.pop_back();
     }
-    lut
+    Arc::clone(
+        &cache
+            .front()
+            .expect("preview LUT cache should contain the inserted entry")
+            .1,
+    )
 }
 
 fn cached_canvas_binary<F>(
