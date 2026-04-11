@@ -545,6 +545,9 @@ fn encode_canvas_binary_with_header_and_brightness(
             .map(|bytes| bytes.to_vec())
             .unwrap_or_default();
     }
+    if format == CanvasFormat::Rgba && brightness.clamp(0.0, 1.0) >= 0.999 {
+        return build_canvas_rgba_payload_from_source(canvas, header);
+    }
 
     let body = encode_canvas_body(canvas, format, brightness);
     build_canvas_binary_payload(canvas, header, format, &body)
@@ -643,6 +646,29 @@ fn build_canvas_binary_payload(
         canvas_format_tag(format),
     );
     payload[CANVAS_HEADER_LEN..].copy_from_slice(body);
+    payload
+}
+
+fn build_canvas_rgba_payload_from_source(
+    canvas: &hypercolor_core::bus::CanvasFrame,
+    header: u8,
+) -> Vec<u8> {
+    const CANVAS_HEADER_LEN: usize = 14;
+
+    let rgba = canvas.rgba_bytes();
+    let width_u16 = u16::try_from(canvas.width).unwrap_or(u16::MAX);
+    let height_u16 = u16::try_from(canvas.height).unwrap_or(u16::MAX);
+    let payload_len = CANVAS_HEADER_LEN.saturating_add(rgba.len());
+    let mut payload = vec![0; payload_len];
+    write_canvas_payload_header(
+        &mut payload[..CANVAS_HEADER_LEN],
+        header,
+        canvas,
+        width_u16,
+        height_u16,
+        canvas_format_tag(CanvasFormat::Rgba),
+    );
+    payload[CANVAS_HEADER_LEN..].copy_from_slice(rgba);
     payload
 }
 
