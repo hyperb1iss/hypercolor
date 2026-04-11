@@ -51,16 +51,18 @@ impl PreviewJpegEncoder {
         let mut jpeg = self.encode_body(frame, brightness)?;
         let width_u16 = u16::try_from(frame.width).unwrap_or(u16::MAX);
         let height_u16 = u16::try_from(frame.height).unwrap_or(u16::MAX);
-        let mut payload = Vec::with_capacity(CANVAS_HEADER_LEN.saturating_add(jpeg.len()));
+        let body_offset = CANVAS_HEADER_LEN;
+        let payload_len = body_offset.saturating_add(jpeg.len());
+        let mut payload = vec![0; payload_len];
         write_canvas_header(
-            &mut payload,
+            &mut payload[..body_offset],
             header,
             frame,
             width_u16,
             height_u16,
             JPEG_FORMAT_TAG,
         );
-        payload.extend_from_slice(&jpeg);
+        payload[body_offset..].copy_from_slice(&jpeg);
         jpeg.clear();
         self.jpeg_buffer = jpeg;
         Ok(Bytes::from(payload))
@@ -164,19 +166,19 @@ pub(super) fn encode_canvas_jpeg_binary_stateless(
 }
 
 fn write_canvas_header(
-    out: &mut Vec<u8>,
+    out: &mut [u8],
     header: u8,
     frame: &CanvasFrame,
     width_u16: u16,
     height_u16: u16,
     format_tag: u8,
 ) {
-    out.push(header);
-    out.extend_from_slice(&frame.frame_number.to_le_bytes());
-    out.extend_from_slice(&frame.timestamp_ms.to_le_bytes());
-    out.extend_from_slice(&width_u16.to_le_bytes());
-    out.extend_from_slice(&height_u16.to_le_bytes());
-    out.push(format_tag);
+    out[0] = header;
+    out[1..5].copy_from_slice(&frame.frame_number.to_le_bytes());
+    out[5..9].copy_from_slice(&frame.timestamp_ms.to_le_bytes());
+    out[9..11].copy_from_slice(&width_u16.to_le_bytes());
+    out[11..13].copy_from_slice(&height_u16.to_le_bytes());
+    out[13] = format_tag;
 }
 
 fn identity_brightness_lut() -> [u8; 256] {
