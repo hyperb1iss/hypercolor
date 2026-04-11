@@ -304,6 +304,9 @@ Add read-only frame inspection:
 The initial frame route can return PNG for simplicity. WebSocket streaming can
 arrive in a later wave if needed.
 
+`GET /api/v1/simulators/displays/{id}/frame` landed on 2026-04-11 with an
+initial JPEG response backed by the daemon-local simulator runtime.
+
 ### 7.3 Preview Page
 
 Extend the existing preview surface rather than building a second throwaway

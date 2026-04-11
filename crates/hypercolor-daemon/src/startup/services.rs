@@ -49,7 +49,7 @@ use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::{OutputPowerState, set_global_brightness};
-use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayStore};
+use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayRuntime, SimulatedDisplayStore};
 
 use super::DaemonState;
 use super::config::resolve_server_identity;
@@ -288,6 +288,7 @@ impl DaemonState {
                 SimulatedDisplayStore::new(simulated_displays_path)
             });
         let simulated_displays = Arc::new(RwLock::new(simulated_displays_inner));
+        let simulated_display_runtime = Arc::new(RwLock::new(SimulatedDisplayRuntime::new()));
         info!("Simulated display store ready");
 
         // ── Effect/Layout Association Store ──────────────────────────
@@ -408,6 +409,7 @@ impl DaemonState {
             })?;
             backend_manager_inner.register_backend(Box::new(SimulatedDisplayBackend::new(
                 Arc::clone(&simulated_displays),
+                Arc::clone(&simulated_display_runtime),
             )));
             backend_manager_inner.register_backend(Box::new(MockDeviceBackend::new()));
             network::register_enabled_backends(
@@ -460,6 +462,7 @@ impl DaemonState {
             attachment_profiles,
             device_settings,
             simulated_displays,
+            simulated_display_runtime,
             display_overlays: Arc::new(DisplayOverlayRegistry::new()),
             display_overlay_runtime: Arc::new(DisplayOverlayRuntimeRegistry::new()),
             effect_layout_links,

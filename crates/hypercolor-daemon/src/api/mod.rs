@@ -73,7 +73,7 @@ use crate::profile_store::ProfileStore;
 use crate::runtime_state;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::{OutputPowerState, current_global_brightness};
-use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayStore};
+use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayRuntime, SimulatedDisplayStore};
 
 // ── AppState ─────────────────────────────────────────────────────────────
 
@@ -154,6 +154,9 @@ pub struct AppState {
 
     /// Persisted virtual display simulator definitions.
     pub simulated_displays: Arc<RwLock<SimulatedDisplayStore>>,
+
+    /// Latest captured simulator frames for inspection surfaces.
+    pub simulated_display_runtime: Arc<RwLock<SimulatedDisplayRuntime>>,
 
     /// Live per-display overlay configs shared with the display-output workers.
     pub display_overlays: Arc<DisplayOverlayRegistry>,
@@ -335,6 +338,7 @@ impl AppState {
         let attachment_profiles = Arc::new(RwLock::new(attachment_profiles));
         let device_settings = Arc::new(RwLock::new(device_settings));
         let simulated_displays = Arc::new(RwLock::new(simulated_displays));
+        let simulated_display_runtime = Arc::new(RwLock::new(SimulatedDisplayRuntime::new()));
         let display_overlays = Arc::new(DisplayOverlayRegistry::new());
         let display_overlay_runtime = Arc::new(DisplayOverlayRuntimeRegistry::new());
         let layouts = Arc::new(RwLock::new(HashMap::new()));
@@ -378,9 +382,10 @@ impl AppState {
             let mut manager = backend_manager.try_lock().expect(
                 "default app state should register the simulator backend without contention",
             );
-            manager.register_backend(Box::new(SimulatedDisplayBackend::new(Arc::clone(
-                &simulated_displays,
-            ))));
+            manager.register_backend(Box::new(SimulatedDisplayBackend::new(
+                Arc::clone(&simulated_displays),
+                Arc::clone(&simulated_display_runtime),
+            )));
         }
 
         Self {
@@ -405,6 +410,7 @@ impl AppState {
             attachment_profiles,
             device_settings,
             simulated_displays,
+            simulated_display_runtime,
             display_overlays,
             display_overlay_runtime,
             credential_store,
@@ -487,6 +493,7 @@ impl AppState {
             attachment_profiles: Arc::clone(&daemon.attachment_profiles),
             device_settings: Arc::clone(&daemon.device_settings),
             simulated_displays: Arc::clone(&daemon.simulated_displays),
+            simulated_display_runtime: Arc::clone(&daemon.simulated_display_runtime),
             display_overlays: Arc::clone(&daemon.display_overlays),
             display_overlay_runtime: Arc::clone(&daemon.display_overlay_runtime),
             credential_store: Arc::clone(&daemon.credential_store),
@@ -680,6 +687,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(simulators::get_simulated_display)
                 .patch(simulators::patch_simulated_display)
                 .delete(simulators::delete_simulated_display),
+        )
+        .route(
+            "/simulators/displays/{id}/frame",
+            axum::routing::get(simulators::get_simulated_display_frame),
         )
         .route(
             "/logical-devices",

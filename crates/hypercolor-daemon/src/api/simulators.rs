@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::response::IntoResponse;
 use axum::response::Response;
 use serde::Deserialize;
 
@@ -177,10 +179,39 @@ pub async fn delete_simulated_display(
     }
 
     let _ = state.device_registry.remove(&device_id).await;
+    state
+        .simulated_display_runtime
+        .write()
+        .await
+        .remove(device_id);
     ApiResponse::ok(serde_json::json!({
         "id": device_id,
         "deleted": true,
     }))
+}
+
+pub async fn get_simulated_display_frame(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    let device_id = match parse_simulator_id(&id) {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+
+    let runtime = state.simulated_display_runtime.read().await;
+    let Some(frame) = runtime.frame(device_id) else {
+        return ApiError::not_found(format!(
+            "Simulated display frame not available: {device_id}"
+        ));
+    };
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"))],
+        frame.jpeg_data,
+    )
+        .into_response()
 }
 
 fn parse_simulator_id(raw: &str) -> Result<DeviceId, Response> {

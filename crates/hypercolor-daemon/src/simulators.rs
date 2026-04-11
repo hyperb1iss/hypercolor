@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -183,16 +184,54 @@ fn default_enabled() -> bool {
     true
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SimulatedDisplayFrame {
+    pub jpeg_data: Vec<u8>,
+    pub captured_at: SystemTime,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Default)]
+pub struct SimulatedDisplayRuntime {
+    frames: HashMap<DeviceId, SimulatedDisplayFrame>,
+}
+
+impl SimulatedDisplayRuntime {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set_frame(&mut self, device_id: DeviceId, frame: SimulatedDisplayFrame) {
+        self.frames.insert(device_id, frame);
+    }
+
+    #[must_use]
+    pub fn frame(&self, device_id: DeviceId) -> Option<SimulatedDisplayFrame> {
+        self.frames.get(&device_id).cloned()
+    }
+
+    pub fn remove(&mut self, device_id: DeviceId) {
+        self.frames.remove(&device_id);
+    }
+}
+
 pub struct SimulatedDisplayBackend {
     store: Arc<RwLock<SimulatedDisplayStore>>,
+    runtime: Arc<RwLock<SimulatedDisplayRuntime>>,
     connected: HashSet<DeviceId>,
 }
 
 impl SimulatedDisplayBackend {
     #[must_use]
-    pub fn new(store: Arc<RwLock<SimulatedDisplayStore>>) -> Self {
+    pub fn new(
+        store: Arc<RwLock<SimulatedDisplayStore>>,
+        runtime: Arc<RwLock<SimulatedDisplayRuntime>>,
+    ) -> Self {
         Self {
             store,
+            runtime,
             connected: HashSet::new(),
         }
     }
@@ -241,6 +280,7 @@ impl DeviceBackend for SimulatedDisplayBackend {
 
     async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
         self.connected.remove(id);
+        self.runtime.write().await.remove(*id);
         Ok(())
     }
 
@@ -248,10 +288,23 @@ impl DeviceBackend for SimulatedDisplayBackend {
         bail!("simulated display {id} does not accept LED color writes");
     }
 
-    async fn write_display_frame(&mut self, id: &DeviceId, _jpeg_data: &[u8]) -> Result<()> {
+    async fn write_display_frame(&mut self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
         if !self.connected.contains(id) {
             bail!("simulated display {id} is not connected");
         }
+        let store = self.store.read().await;
+        let Some(config) = store.get(*id) else {
+            bail!("simulated display {id} is not configured");
+        };
+        self.runtime.write().await.set_frame(
+            *id,
+            SimulatedDisplayFrame {
+                jpeg_data: jpeg_data.to_vec(),
+                captured_at: SystemTime::now(),
+                width: config.width,
+                height: config.height,
+            },
+        );
         Ok(())
     }
 
@@ -340,8 +393,9 @@ pub async fn logical_device_ids_for_simulator(
 pub async fn register_backend_for_tests(
     backend_manager: &Arc<Mutex<hypercolor_core::device::BackendManager>>,
     store: Arc<RwLock<SimulatedDisplayStore>>,
+    runtime: Arc<RwLock<SimulatedDisplayRuntime>>,
 ) -> bool {
     let mut manager = backend_manager.lock().await;
-    manager.register_backend(Box::new(SimulatedDisplayBackend::new(store)));
+    manager.register_backend(Box::new(SimulatedDisplayBackend::new(store, runtime)));
     true
 }

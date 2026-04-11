@@ -32,6 +32,12 @@ async fn body_json(response: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&bytes).expect("failed to parse JSON body")
 }
 
+async fn body_bytes(response: axum::response::Response) -> axum::body::Bytes {
+    axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("failed to read response body")
+}
+
 fn isolated_state() -> (Arc<AppState>, tempfile::TempDir) {
     let _lock = DATA_DIR_LOCK
         .lock()
@@ -194,6 +200,26 @@ async fn simulated_display_crud_routes_update_runtime_state() {
         .await
         .expect("created simulator should be tracked");
     assert!(tracked.state.is_renderable());
+    {
+        let mut manager = state.backend_manager.lock().await;
+        manager
+            .write_device_display_frame("simulator", device_id, &[9, 8, 7])
+            .await
+            .expect("simulated backend should capture frame bytes");
+    }
+    let frame = body_bytes(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/simulators/displays/{device_id}/frame"))
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed"),
+    )
+    .await;
+    assert_eq!(frame.as_ref(), &[9, 8, 7]);
 
     let patched = body_json(
         app.clone()

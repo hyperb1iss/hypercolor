@@ -47,7 +47,7 @@ use crate::preview_runtime::PreviewRuntime;
 use crate::render_thread::RenderThread;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::{OutputPowerState, SessionController};
-use crate::simulators::SimulatedDisplayStore;
+use crate::simulators::{SimulatedDisplayRuntime, SimulatedDisplayStore};
 
 mod acceleration;
 pub mod banner;
@@ -145,6 +145,9 @@ pub struct DaemonState {
 
     /// Persisted virtual display simulator definitions.
     pub simulated_displays: Arc<RwLock<SimulatedDisplayStore>>,
+
+    /// Latest captured simulator frames for inspection surfaces.
+    pub simulated_display_runtime: Arc<RwLock<SimulatedDisplayRuntime>>,
 
     /// Live per-display overlay configs shared with display workers and the API.
     pub display_overlays: Arc<DisplayOverlayRegistry>,
