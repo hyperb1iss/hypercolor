@@ -13,7 +13,7 @@ use hypercolor_core::overlay::{
 };
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::display_output::overlay::{
-    OverlayComposer, OverlayRendererBinding, OverlayRendererFactory,
+    OverlayComposer, OverlayRendererBinding, OverlayRendererFactory, PremulStaging,
 };
 use hypercolor_daemon::render_thread::sparkleflinger::{
     CompositionLayer, CompositionPlan, SparkleFlinger,
@@ -335,6 +335,61 @@ fn bench_overlay_slot(index: usize) -> OverlaySlot {
 fn overlay_config(layer_count: usize) -> DisplayOverlayConfig {
     DisplayOverlayConfig {
         overlays: (0..layer_count).map(bench_overlay_slot).collect(),
+    }
+}
+
+struct CachedOverlayBench {
+    composer: OverlayComposer,
+    start: Instant,
+    frame_number: u64,
+}
+
+impl CachedOverlayBench {
+    fn new(layer_count: usize, base_rgb: &[u8], start_system: std::time::SystemTime) -> Self {
+        let mut composer = OverlayComposer::new(
+            DISPLAY_BENCH_WIDTH,
+            DISPLAY_BENCH_HEIGHT,
+            false,
+            Arc::new(CachedSolidFactory {
+                color: [255, 64, 64, 255],
+            }),
+        );
+        composer.reconcile(&overlay_config(layer_count));
+        let start = Instant::now();
+        let warm_staging = composer
+            .compose_rgb_frame(base_rgb, &EMPTY_SENSORS, 1, start_system, start)
+            .expect("cached overlays should render during warm-up");
+        black_box(warm_staging.pixels().as_ptr());
+
+        Self {
+            composer,
+            start,
+            frame_number: 2,
+        }
+    }
+
+    fn compose<'a>(
+        &'a mut self,
+        base_rgb: &[u8],
+        start_system: std::time::SystemTime,
+    ) -> &'a PremulStaging {
+        let frame_offset = Duration::from_millis(self.frame_number.saturating_mul(16));
+        let now_system = start_system
+            .checked_add(frame_offset)
+            .unwrap_or(start_system);
+        let now_instant = self.start.checked_add(frame_offset).unwrap_or(self.start);
+        let staging = self
+            .composer
+            .compose_rgb_frame(
+                base_rgb,
+                &EMPTY_SENSORS,
+                self.frame_number,
+                now_system,
+                now_instant,
+            )
+            .expect("overlay layers should stay active");
+        self.frame_number = self.frame_number.saturating_add(1);
+        staging
     }
 }
 
@@ -839,45 +894,26 @@ fn bench_display_overlays(c: &mut Criterion) {
     });
 
     for layer_count in [1_usize, 2, 4] {
-        let mut composer = OverlayComposer::new(
-            DISPLAY_BENCH_WIDTH,
-            DISPLAY_BENCH_HEIGHT,
-            false,
-            Arc::new(CachedSolidFactory {
-                color: [255, 64, 64, 255],
-            }),
-        );
-        composer.reconcile(&overlay_config(layer_count));
-        let start = Instant::now();
-        let mut frame_number = 1_u64;
-        let mut composed_rgb = Vec::new();
-        let warm_staging = composer
-            .compose_rgb_frame(&base_rgb, &EMPTY_SENSORS, frame_number, start_system, start)
-            .expect("cached overlays should render during warm-up");
-        warm_staging.write_into_rgb(&mut composed_rgb);
-        frame_number = frame_number.saturating_add(1);
-
+        let mut compose_only = CachedOverlayBench::new(layer_count, &base_rgb, start_system);
         group.bench_function(
-            BenchmarkId::new("cached_overlay_compose", layer_count),
+            BenchmarkId::new("cached_overlay_compose_only", layer_count),
             |b| {
                 b.iter(|| {
-                    let frame_offset = Duration::from_millis(frame_number.saturating_mul(16));
-                    let now_system = start_system
-                        .checked_add(frame_offset)
-                        .unwrap_or(start_system);
-                    let now_instant = start.checked_add(frame_offset).unwrap_or(start);
-                    let staging = composer
-                        .compose_rgb_frame(
-                            black_box(&base_rgb),
-                            black_box(&*EMPTY_SENSORS),
-                            frame_number,
-                            now_system,
-                            now_instant,
-                        )
-                        .expect("overlay layers should stay active");
+                    let staging = compose_only.compose(black_box(&base_rgb), start_system);
+                    black_box(staging.pixels().as_ptr());
+                });
+            },
+        );
+
+        let mut compose_writeback = CachedOverlayBench::new(layer_count, &base_rgb, start_system);
+        let mut composed_rgb = Vec::new();
+        group.bench_function(
+            BenchmarkId::new("cached_overlay_compose_writeback", layer_count),
+            |b| {
+                b.iter(|| {
+                    let staging = compose_writeback.compose(black_box(&base_rgb), start_system);
                     staging.write_into_rgb(black_box(&mut composed_rgb));
                     black_box(composed_rgb.as_ptr());
-                    frame_number = frame_number.saturating_add(1);
                 });
             },
         );

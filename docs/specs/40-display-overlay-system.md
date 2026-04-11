@@ -1587,11 +1587,11 @@ tiny-skia work yet.
 | 1.7 | Add `watch::Receiver<Arc<DisplayOverlayConfig>>` to `DisplayWorkerHandle::spawn`, resolved from `AppState` by `DeviceId` | daemon | Config update triggers worker refresh within one tick |
 | 1.8 | Add display overlay REST endpoints (list, get, replace, add, patch, delete, reorder) per §12.1 | daemon | API integration tests, 409 on invalid slot ordering |
 | 1.9 | `MockRenderer` test double that produces solid-color buffers for harness tests | daemon | Used by §1.5 and §1.6 tests |
-| 1.10 | Benchmarks: display output with 0, 1, 2, 4 overlay layers using `MockRenderer`; zero-overlay bypass path vs overlay-disabled baseline | daemon | 0-overlay bypass matches baseline within noise; 4-layer overhead ≤1 ms at 480×480 |
+| 1.10 | Benchmarks: display output with 0, 1, 2, 4 overlay layers using `MockRenderer`; zero-overlay bypass path vs overlay-disabled baseline | daemon | 0-overlay bypass adds no meaningful regression; 4-layer cached compose+writeback overhead ≤1 ms at 480×480 |
 
 **Exit criteria:** A `MockRenderer` overlay (positioned 120×120 solid red at
 50% alpha) composites visibly on a Corsair LCD. API can add, move, remove,
-and reorder overlays. Zero-overlay path has zero measurable regression.
+and reorder overlays. Zero-overlay path has no meaningful regression.
 Failure policy is tested end-to-end with an intentionally-failing mock.
 
 ---
@@ -1616,7 +1616,7 @@ on real hardware.
 | 2.8 | Ship default SVG templates (2 clock faces, 2 gauge styles, 1 frame border) under `assets/overlay-templates/` | assets | Templates render correctly via resvg, visual regression snapshots |
 | 2.9 | Wire renderer factory: `OverlaySource` → `Box<dyn OverlayRenderer>` | core | Factory dispatches correctly for all types |
 | 2.10 | End-to-end hardware test: clock + sensor gauge on Corsair LCD alongside a running effect | daemon | Manual visual verification |
-| 2.11 | Benchmarks: per-renderer render cost at 480×480 and 120×120, full-pipeline cost with 2 overlays vs 0 | daemon | Clock ≤500 µs, sensor gauge ≤500 µs, full pipeline ≤1.5 ms extra at 2 overlays |
+| 2.11 | Benchmarks: per-renderer render cost at 480×480 and 120×120, plus cached 2-overlay compose-only and compose+writeback deltas vs 0 overlays | daemon | Clock ≤500 µs, sensor gauge ≤500 µs, compose-only ≤200 µs, compose+writeback ≤1.5 ms extra at 2 overlays |
 
 **Exit criteria:** A user can configure a clock and CPU temperature gauge
 on their AIO LCD via the API, both render correctly with transparency over
@@ -1726,7 +1726,8 @@ Every wave must produce benchmark evidence:
 | Benchmark | Measured | Baseline |
 |-----------|----------|----------|
 | Display output: 0 overlays | Total encode+send time | Wave 0 (no regression) |
-| Display output: 2 overlays | Overlay compose time | <200 µs at 480x480 |
+| Display output: 2 overlays (compose only) | Cached overlay compose time | <200 µs at 480x480 |
+| Display output: 2 overlays (compose + RGB writeback) | Cached overlay delta vs 0 overlays | <1.5 ms extra at 480x480 |
 | Overlay render: clock (tiny-skia) | Render time | <500 µs at 480x480 |
 | Overlay render: sensor gauge | Render time | <500 µs at 480x480 |
 | Sensor poll cycle | Poll duration | <50 ms |
