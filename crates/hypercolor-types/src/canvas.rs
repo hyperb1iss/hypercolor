@@ -800,10 +800,23 @@ enum PublishedSurfaceStorage {
     CpuRgba(Arc<Vec<u8>>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PublishedSurfaceStorageIdentity {
+    CpuRgba { ptr: usize },
+}
+
 impl PublishedSurfaceStorage {
     fn cpu_rgba(&self) -> &Arc<Vec<u8>> {
         match self {
             Self::CpuRgba(rgba) => rgba,
+        }
+    }
+
+    fn identity(&self) -> PublishedSurfaceStorageIdentity {
+        match self {
+            Self::CpuRgba(rgba) => PublishedSurfaceStorageIdentity::CpuRgba {
+                ptr: rgba.as_ptr() as usize,
+            },
         }
     }
 }
@@ -943,6 +956,12 @@ impl PublishedSurface {
     #[must_use]
     pub fn rgba_bytes(&self) -> &[u8] {
         self.storage.cpu_rgba().as_slice()
+    }
+
+    /// Stable identity for the current storage backing this surface.
+    #[must_use]
+    pub fn storage_identity(&self) -> PublishedSurfaceStorageIdentity {
+        self.storage.identity()
     }
 
     /// Published RGBA byte length.

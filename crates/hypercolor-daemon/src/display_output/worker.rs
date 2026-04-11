@@ -1,7 +1,7 @@
 //! Per-device display worker event loop.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::anyhow;
 use tokio::sync::watch;
@@ -10,10 +10,17 @@ use tracing::{trace, warn};
 
 use hypercolor_core::bus::CanvasFrame;
 use hypercolor_core::device::BackendIo;
+use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::device::DeviceId;
+use hypercolor_types::overlay::DisplayOverlayConfig;
+use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::session::OffOutputBehavior;
 
-use super::encode::{DisplayEncodeState, display_brightness_factor, encode_canvas_frame};
+use super::encode::{
+    DisplayEncodeState, display_brightness_factor, encode_canvas_frame, encode_prepared_rgb_frame,
+    render_canvas_frame_rgb,
+};
+use super::overlay::{OverlayComposer, OverlayRendererFactory};
 use super::render::display_viewport_signature;
 use super::{
     DISPLAY_ERROR_WARN_INTERVAL, DisplayGeometry, DisplayTarget, DisplayViewportSignature,
@@ -39,7 +46,7 @@ struct DisplayFrameInputState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DisplaySourceIdentity {
     generation: u64,
-    storage_ptr: usize,
+    storage: PublishedSurfaceStorageIdentity,
     width: u32,
     height: u32,
 }
@@ -82,7 +89,7 @@ impl DisplayFrameInputState {
 fn display_source_identity(source: &CanvasFrame) -> DisplaySourceIdentity {
     DisplaySourceIdentity {
         generation: source.surface().generation(),
-        storage_ptr: source.rgba_bytes().as_ptr() as usize,
+        storage: source.surface().storage_identity(),
         width: source.width,
         height: source.height,
     }
@@ -94,6 +101,9 @@ impl DisplayWorkerHandle {
         backend_io: BackendIo,
         power_state: watch::Receiver<OutputPowerState>,
         static_hold_refresh_interval: Duration,
+        overlay_config_rx: watch::Receiver<Arc<DisplayOverlayConfig>>,
+        sensor_snapshot_rx: watch::Receiver<Arc<SystemSnapshot>>,
+        overlay_factory: Arc<dyn OverlayRendererFactory>,
     ) -> Self {
         let (tx, rx) = watch::channel(None::<Arc<CanvasFrame>>);
         let worker_backend_id = target.backend_id.clone();
@@ -107,6 +117,9 @@ impl DisplayWorkerHandle {
             rx,
             power_state,
             static_hold_refresh_interval,
+            overlay_config_rx,
+            sensor_snapshot_rx,
+            overlay_factory,
         ));
 
         Self {
@@ -138,6 +151,9 @@ async fn run_display_worker(
     mut rx: watch::Receiver<Option<Arc<CanvasFrame>>>,
     mut power_state: watch::Receiver<OutputPowerState>,
     static_hold_refresh_interval: Duration,
+    mut overlay_config_rx: watch::Receiver<Arc<DisplayOverlayConfig>>,
+    mut sensor_snapshot_rx: watch::Receiver<Arc<SystemSnapshot>>,
+    overlay_factory: Arc<dyn OverlayRendererFactory>,
 ) {
     let target_fps = target.target_fps;
     let send_interval = target_interval_for_fps(target_fps);
@@ -159,10 +175,22 @@ async fn run_display_worker(
         }
     };
     let mut pending = None::<Arc<CanvasFrame>>;
+    let mut delivered_frame_number = 0_u64;
+    let mut overlay_composer = OverlayComposer::new(
+        target.geometry.width,
+        target.geometry.height,
+        target.geometry.circular,
+        overlay_factory,
+    );
+    let initial_overlay_config = overlay_config_rx.borrow_and_update().clone();
+    overlay_composer.reconcile(initial_overlay_config.as_ref());
 
     loop {
         if pending.is_none() {
-            if let Some(hold_deadline) = next_hold_refresh_at {
+            let now = Instant::now();
+            let overlay_deadline = overlay_composer.next_refresh_at(now);
+            let wake_deadline = earliest_deadline(next_hold_refresh_at, overlay_deadline);
+            if let Some(wake_deadline) = wake_deadline {
                 tokio::select! {
                     changed = rx.changed() => {
                         if changed.is_err() {
@@ -176,8 +204,36 @@ async fn run_display_worker(
                         }
                         let _ = power_state.borrow_and_update();
                     }
-                    () = tokio::time::sleep_until(tokio::time::Instant::from_std(hold_deadline)) => {
+                    changed = overlay_config_rx.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        let config = overlay_config_rx.borrow_and_update().clone();
+                        overlay_composer.reconcile(config.as_ref());
+                        if let Some(source) = last_delivered_source.as_ref() {
+                            pending = Some(Arc::clone(source));
+                            last_delivered_input = None;
+                        }
+                    }
+                    changed = sensor_snapshot_rx.changed(), if overlay_composer.has_active_slots() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        let _ = sensor_snapshot_rx.borrow_and_update();
+                        if let Some(source) = last_delivered_source.as_ref() {
+                            pending = Some(Arc::clone(source));
+                            last_delivered_input = None;
+                        }
+                    }
+                    () = tokio::time::sleep_until(tokio::time::Instant::from_std(wake_deadline)) => {
+                        let now = Instant::now();
                         if should_refresh_static_hold(&power_state)
+                            && next_hold_refresh_at.is_some_and(|deadline| now >= deadline)
+                            && let Some(source) = last_delivered_source.as_ref() {
+                            pending = Some(Arc::clone(source));
+                            last_delivered_input = None;
+                        }
+                        if overlay_deadline.is_some_and(|deadline| now >= deadline)
                             && let Some(source) = last_delivered_source.as_ref() {
                             pending = Some(Arc::clone(source));
                             last_delivered_input = None;
@@ -198,6 +254,27 @@ async fn run_display_worker(
                         }
                         let _ = power_state.borrow_and_update();
                     }
+                    changed = overlay_config_rx.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        let config = overlay_config_rx.borrow_and_update().clone();
+                        overlay_composer.reconcile(config.as_ref());
+                        if let Some(source) = last_delivered_source.as_ref() {
+                            pending = Some(Arc::clone(source));
+                            last_delivered_input = None;
+                        }
+                    }
+                    changed = sensor_snapshot_rx.changed(), if overlay_composer.has_active_slots() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        let _ = sensor_snapshot_rx.borrow_and_update();
+                        if let Some(source) = last_delivered_source.as_ref() {
+                            pending = Some(Arc::clone(source));
+                            last_delivered_input = None;
+                        }
+                    }
                 }
             }
             next_hold_refresh_at = static_hold_refresh_deadline(
@@ -215,6 +292,29 @@ async fn run_display_worker(
                         break;
                     }
                     pending.clone_from(&rx.borrow_and_update());
+                    continue;
+                }
+                changed = overlay_config_rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let config = overlay_config_rx.borrow_and_update().clone();
+                    overlay_composer.reconcile(config.as_ref());
+                    if let Some(source) = last_delivered_source.as_ref() {
+                        pending = Some(Arc::clone(source));
+                        last_delivered_input = None;
+                    }
+                    continue;
+                }
+                changed = sensor_snapshot_rx.changed(), if overlay_composer.has_active_slots() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let _ = sensor_snapshot_rx.borrow_and_update();
+                    if let Some(source) = last_delivered_source.as_ref() {
+                        pending = Some(Arc::clone(source));
+                        last_delivered_input = None;
+                    }
                     continue;
                 }
                 () = tokio::time::sleep_until(tokio::time::Instant::from_std(next_send_at)) => {}
@@ -238,20 +338,47 @@ async fn run_display_worker(
             );
             continue;
         }
-        let encode_source = Arc::clone(&source);
-        let encode_target = Arc::clone(&target);
-        let encode_result = tokio::task::spawn_blocking(move || {
-            let mut encode_state = encode_state;
-            let encoded = encode_canvas_frame(
-                encode_source.as_ref(),
-                &encode_target.viewport,
-                &encode_target.geometry,
-                encode_target.brightness,
+        let sensor_snapshot = Arc::clone(&sensor_snapshot_rx.borrow());
+        let encode_result = if overlay_composer.has_active_slots() {
+            render_canvas_frame_rgb(
+                source.as_ref(),
+                &target.viewport,
+                &target.geometry,
                 &mut encode_state,
             );
-            (encode_state, encoded)
-        })
-        .await;
+            if let Some(staging) = overlay_composer.compose_rgb_frame(
+                &encode_state.rgb_buffer,
+                sensor_snapshot.as_ref(),
+                delivered_frame_number,
+                SystemTime::now(),
+                Instant::now(),
+            ) {
+                staging.write_into_rgb(&mut encode_state.rgb_buffer);
+            }
+            let geometry = target.geometry.clone();
+            let brightness = target.brightness;
+            tokio::task::spawn_blocking(move || {
+                let mut encode_state = encode_state;
+                let encoded = encode_prepared_rgb_frame(&geometry, brightness, &mut encode_state);
+                (encode_state, encoded)
+            })
+            .await
+        } else {
+            let encode_source = Arc::clone(&source);
+            let encode_target = Arc::clone(&target);
+            tokio::task::spawn_blocking(move || {
+                let mut encode_state = encode_state;
+                let encoded = encode_canvas_frame(
+                    encode_source.as_ref(),
+                    &encode_target.viewport,
+                    &encode_target.geometry,
+                    encode_target.brightness,
+                    &mut encode_state,
+                );
+                (encode_state, encoded)
+            })
+            .await
+        };
 
         let jpeg = match encode_result {
             Ok((returned_state, Ok(encoded))) => {
@@ -305,6 +432,7 @@ async fn run_display_worker(
             last_delivered_source.as_ref(),
             static_hold_refresh_interval,
         );
+        delivered_frame_number = delivered_frame_number.saturating_add(1);
 
         trace!(
             device = %target.name,
@@ -334,6 +462,15 @@ fn advance_deadline(previous_deadline: Instant, interval: Duration, now: Instant
         .checked_add(interval)
         .unwrap_or(now)
         .max(now)
+}
+
+fn earliest_deadline(left: Option<Instant>, right: Option<Instant>) -> Option<Instant> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
 }
 
 fn should_refresh_static_hold(power_state: &watch::Receiver<OutputPowerState>) -> bool {

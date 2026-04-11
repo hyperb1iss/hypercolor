@@ -4,7 +4,8 @@ use std::sync::mpsc;
 use anyhow::{Context, Result};
 use hypercolor_core::spatial::PreparedZonePlan;
 use hypercolor_core::types::canvas::{
-    BYTES_PER_PIXEL, Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor,
+    BYTES_PER_PIXEL, Canvas, PublishedSurface, PublishedSurfaceStorageIdentity, RenderSurfacePool,
+    SurfaceDescriptor,
 };
 use hypercolor_types::event::ZoneColors;
 
@@ -82,7 +83,7 @@ struct GpuCompositorBindGroups {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CachedSourceUpload {
-    storage_ptr: usize,
+    storage: PublishedSurfaceStorageIdentity,
     generation: u64,
     width: u32,
     height: u32,
@@ -806,7 +807,7 @@ fn cached_source_upload(frame: &ProducerFrame) -> Option<CachedSourceUpload> {
     }
 
     Some(CachedSourceUpload {
-        storage_ptr: surface.rgba_bytes().as_ptr() as usize,
+        storage: surface.storage_identity(),
         generation: surface.generation(),
         width: surface.width(),
         height: surface.height(),

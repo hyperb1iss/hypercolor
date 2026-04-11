@@ -12,6 +12,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use axum::body::Bytes;
 use axum::extract::ws::Utf8Bytes;
+use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{broadcast, watch};
 use tracing::{debug, warn};
@@ -581,7 +582,7 @@ fn preview_send_delay(last_sent: Instant, fps: u32, now: Instant) -> Duration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PreviewSurfaceIdentity {
     generation: u64,
-    storage_ptr: usize,
+    storage: PublishedSurfaceStorageIdentity,
     width: u32,
     height: u32,
 }
@@ -589,7 +590,7 @@ struct PreviewSurfaceIdentity {
 fn preview_surface_identity(frame: &hypercolor_core::bus::CanvasFrame) -> PreviewSurfaceIdentity {
     PreviewSurfaceIdentity {
         generation: frame.surface().generation(),
-        storage_ptr: frame.rgba_bytes().as_ptr() as usize,
+        storage: frame.surface().storage_identity(),
         width: frame.width,
         height: frame.height,
     }
@@ -900,6 +901,9 @@ mod tests {
         let first = CanvasFrame::from_surface(surface.clone());
         let second = CanvasFrame::from_surface(surface.with_frame_metadata(8, 100));
 
-        assert_eq!(preview_surface_identity(&first), preview_surface_identity(&second));
+        assert_eq!(
+            preview_surface_identity(&first),
+            preview_surface_identity(&second)
+        );
     }
 }
