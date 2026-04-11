@@ -31,12 +31,9 @@ interface GlassPalette {
     glint: Rgb
 }
 
-interface RasterSurface {
-    canvas: HTMLCanvasElement
-    ctx: CanvasRenderingContext2D
-    image: ImageData
-    width: number
-    height: number
+interface Vec2 {
+    x: number
+    y: number
 }
 
 type PaletteName = 'Custom' | 'Prism' | 'Solar' | 'Rose Quartz' | 'Lagoon' | 'Glacier'
@@ -47,9 +44,8 @@ const DEFAULT_BACKGROUND = '#050913'
 const DEFAULT_COLOR_1 = '#22f0ff'
 const DEFAULT_COLOR_2 = '#ff46c8'
 const DEFAULT_COLOR_3 = '#3659ff'
-const RASTER_SCALE = 0.5
-const MIN_RASTER_WIDTH = 96
-const MIN_RASTER_HEIGHT = 60
+const MIN_CELL_COUNT = 7
+const MAX_CELL_COUNT = 16
 
 const PALETTES: Record<Exclude<PaletteName, 'Custom'>, GlassPalette> = {
     Glacier: {
@@ -86,15 +82,6 @@ const PALETTES: Record<Exclude<PaletteName, 'Custom'>, GlassPalette> = {
 
 function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value))
-}
-
-function smoothstep(edge0: number, edge1: number, value: number): number {
-    if (edge0 === edge1) {
-        return value < edge0 ? 0 : 1
-    }
-
-    const t = clamp((value - edge0) / (edge1 - edge0), 0, 1)
-    return t * t * (3 - 2 * t)
 }
 
 function hash(value: number): number {
@@ -214,6 +201,136 @@ function resolvePalette(name: PaletteName, color1: string, color2: string, color
     }
 }
 
+function intersectHalfPlane(start: Vec2, end: Vec2, nx: number, ny: number, limit: number): Vec2 {
+    const dx = end.x - start.x
+    const dy = end.y - start.y
+    const denominator = dx * nx + dy * ny
+
+    if (Math.abs(denominator) < 0.00001) {
+        return { x: end.x, y: end.y }
+    }
+
+    const t = clamp((limit - (start.x * nx + start.y * ny)) / denominator, 0, 1)
+    return {
+        x: start.x + dx * t,
+        y: start.y + dy * t,
+    }
+}
+
+function clipPolygonHalfPlane(polygon: Vec2[], nx: number, ny: number, limit: number): Vec2[] {
+    if (polygon.length === 0) {
+        return polygon
+    }
+
+    const clipped: Vec2[] = []
+    let previous = polygon[polygon.length - 1]
+    let previousInside = previous.x * nx + previous.y * ny <= limit + 0.0001
+
+    for (const point of polygon) {
+        const inside = point.x * nx + point.y * ny <= limit + 0.0001
+
+        if (inside !== previousInside) {
+            clipped.push(intersectHalfPlane(previous, point, nx, ny, limit))
+        }
+
+        if (inside) {
+            clipped.push(point)
+        }
+
+        previous = point
+        previousInside = inside
+    }
+
+    return clipped
+}
+
+function polygonCentroid(polygon: Vec2[]): Vec2 {
+    let signedArea = 0
+    let centroidX = 0
+    let centroidY = 0
+
+    for (let i = 0; i < polygon.length; i++) {
+        const current = polygon[i]
+        const next = polygon[(i + 1) % polygon.length]
+        const cross = current.x * next.y - next.x * current.y
+        signedArea += cross
+        centroidX += (current.x + next.x) * cross
+        centroidY += (current.y + next.y) * cross
+    }
+
+    if (Math.abs(signedArea) < 0.0001) {
+        const total = polygon.reduce(
+            (sum, point) => ({
+                x: sum.x + point.x,
+                y: sum.y + point.y,
+            }),
+            { x: 0, y: 0 },
+        )
+        return {
+            x: total.x / Math.max(1, polygon.length),
+            y: total.y / Math.max(1, polygon.length),
+        }
+    }
+
+    return {
+        x: centroidX / (3 * signedArea),
+        y: centroidY / (3 * signedArea),
+    }
+}
+
+function averageRadius(polygon: Vec2[], center: Vec2): number {
+    const total = polygon.reduce((sum, point) => sum + Math.hypot(point.x - center.x, point.y - center.y), 0)
+    return total / Math.max(1, polygon.length)
+}
+
+function insetPolygon(polygon: Vec2[], center: Vec2, scale: number): Vec2[] {
+    return polygon.map((point) => ({
+        x: center.x + (point.x - center.x) * scale,
+        y: center.y + (point.y - center.y) * scale,
+    }))
+}
+
+function drawPolygonPath(ctx: CanvasRenderingContext2D, polygon: Vec2[]): void {
+    if (polygon.length < 3) {
+        return
+    }
+
+    ctx.beginPath()
+    ctx.moveTo(polygon[0].x, polygon[0].y)
+    for (let i = 1; i < polygon.length; i++) {
+        ctx.lineTo(polygon[i].x, polygon[i].y)
+    }
+    ctx.closePath()
+}
+
+function buildVoronoiCell(index: number, positions: SeedPosition[], width: number, height: number): Vec2[] {
+    const seed = positions[index]
+    let polygon: Vec2[] = [
+        { x: 0, y: 0 },
+        { x: width, y: 0 },
+        { x: width, y: height },
+        { x: 0, y: height },
+    ]
+
+    for (let i = 0; i < positions.length; i++) {
+        if (i === index) {
+            continue
+        }
+
+        const other = positions[i]
+        const nx = other.x - seed.x
+        const ny = other.y - seed.y
+        const limit = (other.x * other.x + other.y * other.y - seed.x * seed.x - seed.y * seed.y) * 0.5
+        polygon = clipPolygonHalfPlane(polygon, nx, ny, limit)
+
+        if (polygon.length < 3) {
+            return []
+        }
+    }
+
+    return polygon
+}
+
 export default canvas.stateful(
     'Voronoi Glass',
     {
@@ -233,13 +350,9 @@ export default canvas.stateful(
     () => {
         const seeds: GlassSeed[] = []
         let seedCount = 0
-        let rasterCanvas: HTMLCanvasElement | null = null
-        let rasterCtx: CanvasRenderingContext2D | null = null
-        let rasterFrame: ImageData | null = null
-        let rasterKey = ''
 
         function ensureSeedCount(count: number): void {
-            const target = clamp(Math.round(count), 6, 20)
+            const target = clamp(Math.round(count), MIN_CELL_COUNT, MAX_CELL_COUNT)
             if (target === seedCount && seeds.length === target) return
 
             if (target > seeds.length) {
@@ -251,46 +364,6 @@ export default canvas.stateful(
             }
 
             seedCount = target
-        }
-
-        // Full-resolution brute-force Voronoi is expensive in Servo. Rasterize the
-        // cell field to a smaller buffer, then scale it up before the glow passes.
-        function ensureRasterSurface(ctx: CanvasRenderingContext2D): RasterSurface | null {
-            const width = Math.min(
-                ctx.canvas.width,
-                Math.max(MIN_RASTER_WIDTH, Math.round(ctx.canvas.width * RASTER_SCALE)),
-            )
-            const height = Math.min(
-                ctx.canvas.height,
-                Math.max(MIN_RASTER_HEIGHT, Math.round(ctx.canvas.height * RASTER_SCALE)),
-            )
-            const key = `${width}:${height}`
-
-            if (!rasterCanvas) {
-                rasterCanvas = document.createElement('canvas')
-            }
-
-            if (!rasterCtx) {
-                const nextCtx = rasterCanvas.getContext('2d')
-                if (!nextCtx) return null
-                rasterCtx = nextCtx
-                rasterCtx.imageSmoothingEnabled = true
-            }
-
-            if (!rasterFrame || rasterKey !== key) {
-                rasterCanvas.width = width
-                rasterCanvas.height = height
-                rasterFrame = rasterCtx.createImageData(width, height)
-                rasterKey = key
-            }
-
-            return {
-                canvas: rasterCanvas,
-                ctx: rasterCtx,
-                image: rasterFrame,
-                width,
-                height,
-            }
         }
 
         return (ctx, time, c) => {
@@ -307,165 +380,275 @@ export default canvas.stateful(
                 c.color2 as string,
                 c.color3 as string,
             )
-            const background = mixRgb(palette.bg, hexToRgb(c.background as string, palette.bg), 0.82)
+            const background = mixRgb(palette.bg, hexToRgb(c.background as string, palette.bg), 0.78)
 
             const w = ctx.canvas.width
             const h = ctx.canvas.height
             const minDim = Math.min(w, h)
+            const centerX = w * 0.5
+            const centerY = h * 0.5
 
             if (w === 0 || h === 0) return
 
-            const raster = ensureRasterSurface(ctx)
-            if (!raster) return
-
-            const rw = raster.width
-            const rh = raster.height
-
-            ensureSeedCount(6 + Math.round(densityMix * 12))
+            ensureSeedCount(MIN_CELL_COUNT + Math.round(densityMix * (MAX_CELL_COUNT - MIN_CELL_COUNT)))
             if (seeds.length === 0) return
 
-            const image = raster.image
-            const data = image.data
             const positions: SeedPosition[] = new Array(seeds.length)
-
-            const driftRate = 0.08 + speedMix * 0.22 + driftMix * 0.16
-            const refractionRate = 0.16 + speedMix * 0.2
-            const glazeRate = 0.06 + speedMix * 0.08 + glazeMix * 0.08
+            const driftRate = 0.06 + speedMix * 0.18 + driftMix * 0.18
+            const swirlRate = 0.1 + speedMix * 0.16 + refractionMix * 0.12
 
             for (let i = 0; i < seeds.length; i++) {
                 const seed = seeds[i]
                 const orbitX =
                     Math.sin(time * (driftRate * (0.75 + seed.driftX * 0.75)) + seed.phaseX) *
-                    ((0.03 + seed.driftX * 0.06) * (0.45 + driftMix * 0.95))
+                    w *
+                    ((0.012 + seed.driftX * 0.028) * (0.35 + driftMix * 0.85))
                 const orbitY =
                     Math.cos(time * (driftRate * (0.65 + seed.driftY * 0.85)) + seed.phaseY) *
-                    ((0.03 + seed.driftY * 0.05) * (0.45 + driftMix * 0.95))
+                    h *
+                    ((0.015 + seed.driftY * 0.032) * (0.35 + driftMix * 0.9))
+                const baseX = (0.1 + seed.baseX * 0.8) * w + orbitX
+                const baseY = (0.1 + seed.baseY * 0.8) * h + orbitY
+                const localX = baseX - centerX
+                const localY = baseY - centerY
+                const radiusMix = Math.hypot(localX / Math.max(1, w), localY / Math.max(1, h))
+                const swirlAngle =
+                    Math.sin(time * (swirlRate * (0.85 + seed.colorBias * 0.9)) + seed.phase) *
+                    (0.18 + refractionMix * 0.2) *
+                    (0.35 + radiusMix * 1.8)
+                const swirlCos = Math.cos(swirlAngle)
+                const swirlSin = Math.sin(swirlAngle)
 
                 positions[i] = {
                     colorIndex: Math.floor(seed.colorBias * palette.colors.length) % palette.colors.length,
                     phase: seed.phase,
-                    x: clamp(0.08 + seed.baseX * 0.84 + orbitX, 0.04, 0.96) * rw,
-                    y: clamp(0.08 + seed.baseY * 0.84 + orbitY, 0.04, 0.96) * rh,
+                    x: clamp(centerX + localX * swirlCos - localY * swirlSin, w * 0.06, w * 0.94),
+                    y: clamp(centerY + localX * swirlSin + localY * swirlCos, h * 0.06, h * 0.94),
                 }
             }
 
-            const cellRadius = Math.sqrt((rw * rh) / positions.length) * (0.7 + (1 - densityMix) * 0.18)
-            const edgeWidth = cellRadius * (0.1 + edgeGlowMix * 0.1 + contrastMix * 0.05)
+            ctx.fillStyle = `rgb(${background.r},${background.g},${background.b})`
+            ctx.fillRect(0, 0, w, h)
 
-            let offset = 0
+            const ambientGlow = ctx.createRadialGradient(
+                w * (0.28 + Math.sin(time * (0.1 + speedMix * 0.05)) * 0.15),
+                h * (0.24 + Math.cos(time * (0.08 + speedMix * 0.04)) * 0.16),
+                0,
+                centerX,
+                centerY,
+                minDim * (0.9 + refractionMix * 0.2),
+            )
+            ambientGlow.addColorStop(0, toRgba(palette.glint, 0.03 + glazeMix * 0.02))
+            ambientGlow.addColorStop(0.38, toRgba(palette.colors[0], 0.018 + contrastMix * 0.02))
+            ambientGlow.addColorStop(1, 'rgba(0,0,0,0)')
+            ctx.fillStyle = ambientGlow
+            ctx.fillRect(0, 0, w, h)
 
-            for (let y = 0; y < rh; y++) {
-                const cy = (y - rh * 0.5) / Math.max(1, rh * 0.5)
+            const ambientWash = ctx.createLinearGradient(
+                w * (0.08 + Math.sin(time * 0.07) * 0.1),
+                0,
+                w * (0.92 + Math.cos(time * 0.06) * 0.08),
+                h,
+            )
+            ambientWash.addColorStop(0, toRgba(palette.colors[1], 0.02 + glazeMix * 0.01))
+            ambientWash.addColorStop(0.5, 'rgba(0,0,0,0)')
+            ambientWash.addColorStop(1, toRgba(palette.edge, 0.018 + refractionMix * 0.018))
+            ctx.fillStyle = ambientWash
+            ctx.fillRect(0, 0, w, h)
 
-                for (let x = 0; x < rw; x++) {
-                    const cx = (x - rw * 0.5) / Math.max(1, rw * 0.5)
+            const cells: Array<{ centroid: Vec2; polygon: Vec2[]; radius: number; seed: SeedPosition }> = []
+            for (let i = 0; i < positions.length; i++) {
+                const polygon = buildVoronoiCell(i, positions, w, h)
+                if (polygon.length < 3) {
+                    continue
+                }
 
-                    let nearest2 = Number.POSITIVE_INFINITY
-                    let second2 = Number.POSITIVE_INFINITY
-                    let nearestIndex = 0
-                    let secondIndex = 0
-                    let nearestDx = 0
-                    let nearestDy = 0
+                const centroid = polygonCentroid(polygon)
+                cells.push({
+                    centroid,
+                    polygon,
+                    radius: averageRadius(polygon, centroid),
+                    seed: positions[i],
+                })
+            }
 
-                    for (let i = 0; i < positions.length; i++) {
-                        const seed = positions[i]
-                        const dx = x - seed.x
-                        const dy = y - seed.y
-                        const distance2 = dx * dx + dy * dy
+            cells.sort((left, right) => right.radius - left.radius)
 
-                        if (distance2 < nearest2) {
-                            second2 = nearest2
-                            secondIndex = nearestIndex
-                            nearest2 = distance2
-                            nearestIndex = i
-                            nearestDx = dx
-                            nearestDy = dy
-                        } else if (distance2 < second2) {
-                            second2 = distance2
-                            secondIndex = i
-                        }
-                    }
+            ctx.save()
+            ctx.lineCap = 'round'
+            ctx.lineJoin = 'round'
 
-                    const lead = positions[nearestIndex]
-                    const neighbor = positions[secondIndex]
-                    const baseColor = palette.colors[lead.colorIndex]
-                    const neighborColor = palette.colors[neighbor.colorIndex]
+            for (const cell of cells) {
+                const accentColor = palette.colors[(cell.seed.colorIndex + 1) % palette.colors.length]
+                const baseColor = palette.colors[cell.seed.colorIndex]
+                const shimmer = 0.5 + 0.5 * Math.sin(time * (0.24 + speedMix * 0.18) + cell.seed.phase)
+                const refractionDrift = time * (0.18 + speedMix * 0.22) + cell.seed.phase
 
-                    const nearestDistance = Math.sqrt(nearest2)
-                    const secondDistance = Math.sqrt(second2)
-                    const edgeFactor = 1 - smoothstep(0, edgeWidth, secondDistance - nearestDistance)
-                    const centerFactor = 1 - smoothstep(cellRadius * 0.18, cellRadius * 0.94, nearestDistance)
+                const fillGradient = ctx.createLinearGradient(
+                    cell.seed.x - Math.cos(refractionDrift) * cell.radius * 0.8,
+                    cell.seed.y - Math.sin(refractionDrift) * cell.radius * 0.8,
+                    cell.centroid.x + Math.cos(refractionDrift + Math.PI * 0.5) * cell.radius,
+                    cell.centroid.y + Math.sin(refractionDrift + Math.PI * 0.5) * cell.radius,
+                )
+                const deepTone = mixRgb(background, baseColor, 0.26 + contrastMix * 0.24)
+                const refracted = mixRgb(baseColor, accentColor, 0.16 + refractionMix * 0.36)
+                const highlight = scaleRgb(
+                    saturateRgb(mixRgb(palette.glint, baseColor, 0.36 + shimmer * 0.18), 1.12),
+                    0.72 + glazeMix * 0.08 + shimmer * 0.12,
+                )
 
-                    const facet =
+                fillGradient.addColorStop(0, toRgba(deepTone, 0.96))
+                fillGradient.addColorStop(0.64, toRgba(refracted, 0.9))
+                fillGradient.addColorStop(1, toRgba(highlight, 0.84))
+
+                drawPolygonPath(ctx, cell.polygon)
+                ctx.fillStyle = fillGradient
+                ctx.fill()
+
+                ctx.save()
+                drawPolygonPath(ctx, cell.polygon)
+                ctx.clip()
+
+                const beamAngle = cell.seed.phase + time * (0.11 + speedMix * 0.09)
+                const beamDx = Math.cos(beamAngle)
+                const beamDy = Math.sin(beamAngle)
+                const beam = ctx.createLinearGradient(
+                    cell.centroid.x - beamDx * cell.radius * 1.35 - beamDy * cell.radius * 0.45,
+                    cell.centroid.y - beamDy * cell.radius * 1.35 + beamDx * cell.radius * 0.45,
+                    cell.centroid.x + beamDx * cell.radius * 1.35 + beamDy * cell.radius * 0.45,
+                    cell.centroid.y + beamDy * cell.radius * 1.35 - beamDx * cell.radius * 0.45,
+                )
+                beam.addColorStop(0, 'rgba(0,0,0,0)')
+                beam.addColorStop(0.48, toRgba(palette.glint, 0.025 + glazeMix * 0.08 + refractionMix * 0.05))
+                beam.addColorStop(0.54, toRgba(highlight, 0.07 + edgeGlowMix * 0.08))
+                beam.addColorStop(1, 'rgba(0,0,0,0)')
+                ctx.fillStyle = beam
+                ctx.fillRect(
+                    cell.centroid.x - cell.radius * 1.8,
+                    cell.centroid.y - cell.radius * 1.8,
+                    cell.radius * 3.6,
+                    cell.radius * 3.6,
+                )
+                ctx.restore()
+
+                const shardCenter = {
+                    x: cell.centroid.x + Math.cos(time * (0.72 + speedMix * 0.35) + cell.seed.phase) * cell.radius * 0.16,
+                    y:
+                        cell.centroid.y +
+                        Math.sin(time * (0.58 + speedMix * 0.28) + cell.seed.phase * 1.3) * cell.radius * 0.16,
+                }
+                const shardPolygon = insetPolygon(cell.polygon, cell.centroid, 0.42 + shimmer * 0.16 + glazeMix * 0.05)
+                for (let i = 0; i < shardPolygon.length; i++) {
+                    const current = shardPolygon[i]
+                    const next = shardPolygon[(i + 1) % shardPolygon.length]
+                    const shardPulse =
                         0.5 +
                         0.5 *
-                            Math.sin(
-                                nearestDx * (0.052 + refractionMix * 0.04) +
-                                    nearestDy * (0.041 + refractionMix * 0.035) +
-                                    lead.phase +
-                                    time * refractionRate,
-                            )
+                            Math.sin(time * (0.85 + speedMix * 0.45) + cell.seed.phase * 1.1 + i * 1.4)
 
-                    const glaze = 0.5 + 0.5 * Math.sin(x * 0.018 + y * 0.021 + lead.phase * 1.4 + time * glazeRate)
+                    if (shardPulse <= 0.2) {
+                        continue
+                    }
 
-                    const tintMix = clamp(
-                        0.04 + refractionMix * 0.1 + edgeFactor * 0.14 + glaze * glazeMix * 0.04,
-                        0.03,
-                        0.26,
+                    ctx.beginPath()
+                    ctx.moveTo(shardCenter.x, shardCenter.y)
+                    ctx.lineTo(current.x, current.y)
+                    ctx.lineTo(next.x, next.y)
+                    ctx.closePath()
+                    ctx.fillStyle = toRgba(
+                        mixRgb(highlight, accentColor, (i % 3) / 2),
+                        0.018 + shardPulse * 0.05 + glazeMix * 0.02,
                     )
-
-                    const interior = mixRgb(
-                        baseColor,
-                        palette.glint,
-                        0.04 + facet * (0.06 + glazeMix * 0.04) + centerFactor * (0.04 + contrastMix * 0.06),
-                    )
-                    const refracted = mixRgb(interior, neighborColor, tintMix)
-
-                    const light = clamp(
-                        0.12 + centerFactor * (0.22 + contrastMix * 0.12) + facet * 0.06 + glaze * glazeMix * 0.03,
-                        0.1,
-                        0.66 + contrastMix * 0.06,
-                    )
-
-                    let pixel = mixRgb(background, refracted, light)
-
-                    const edgeColor = saturateRgb(mixRgb(palette.edge, neighborColor, 0.06 + glaze * 0.05), 1.08)
-                    pixel = mixRgb(pixel, edgeColor, edgeFactor * (0.1 + edgeGlowMix * 0.26 + contrastMix * 0.06))
-
-                    const vignette = clamp(1 - (cx * cx + cy * cy) * (0.12 + contrastMix * 0.08), 0.72, 1)
-                    pixel = scaleRgb(pixel, vignette)
-
-                    data[offset] = pixel.r
-                    data[offset + 1] = pixel.g
-                    data[offset + 2] = pixel.b
-                    data[offset + 3] = 255
-                    offset += 4
+                    ctx.fill()
                 }
+
+                const leadColor = saturateRgb(mixRgb(palette.edge, accentColor, 0.1 + shimmer * 0.08), 1.08)
+                drawPolygonPath(ctx, cell.polygon)
+                ctx.strokeStyle = toRgba(leadColor, 0.22 + edgeGlowMix * 0.3 + contrastMix * 0.06)
+                ctx.lineWidth = 1.2 + edgeGlowMix * 2.2
+                ctx.stroke()
+
+                ctx.setLineDash([cell.radius * 0.22, cell.radius * 0.12])
+                ctx.lineDashOffset = -(time * (16 + speedMix * 16) + cell.seed.phase * cell.radius * 0.35)
+                drawPolygonPath(ctx, cell.polygon)
+                ctx.strokeStyle = toRgba(palette.glint, 0.04 + edgeGlowMix * 0.08 + glazeMix * 0.02)
+                ctx.lineWidth = 0.8 + edgeGlowMix * 1.1
+                ctx.stroke()
+                ctx.setLineDash([])
+
+                const innerPolygon = insetPolygon(cell.polygon, cell.centroid, 0.78 - glazeMix * 0.12)
+                drawPolygonPath(ctx, innerPolygon)
+                ctx.strokeStyle = toRgba(palette.glint, 0.03 + glazeMix * 0.06 + refractionMix * 0.04)
+                ctx.lineWidth = 0.8 + refractionMix * 1.3
+                ctx.stroke()
             }
 
-            raster.ctx.putImageData(image, 0, 0)
-            ctx.clearRect(0, 0, w, h)
-            ctx.imageSmoothingEnabled = true
-            ctx.drawImage(raster.canvas, 0, 0, w, h)
+            ctx.restore()
 
             ctx.save()
             ctx.globalCompositeOperation = 'lighter'
 
-            const glowX = w * (0.35 + Math.sin(time * (0.09 + speedMix * 0.08)) * 0.12)
-            const glowY = h * (0.32 + Math.cos(time * (0.07 + speedMix * 0.06)) * 0.14)
-            const glow = ctx.createRadialGradient(glowX, glowY, 0, glowX, glowY, minDim * (0.62 + refractionMix * 0.18))
-            glow.addColorStop(0, toRgba(palette.glint, 0.012 + glazeMix * 0.014 + edgeGlowMix * 0.01))
-            glow.addColorStop(0.55, toRgba(palette.edge, 0.008 + edgeGlowMix * 0.016))
-            glow.addColorStop(1, 'rgba(0,0,0,0)')
-            ctx.fillStyle = glow
-            ctx.fillRect(0, 0, w, h)
+            for (const cell of cells) {
+                const sparkle = 0.5 + 0.5 * Math.sin(time * (0.55 + speedMix * 0.35) + cell.seed.phase * 1.7)
+                const glowX = cell.centroid.x + Math.cos(cell.seed.phase + time * 0.4) * cell.radius * 0.18
+                const glowY = cell.centroid.y + Math.sin(cell.seed.phase * 1.2 + time * 0.35) * cell.radius * 0.18
+                const glow = ctx.createRadialGradient(
+                    glowX,
+                    glowY,
+                    0,
+                    glowX,
+                    glowY,
+                    cell.radius * (0.26 + edgeGlowMix * 0.2),
+                )
+                glow.addColorStop(0, toRgba(palette.glint, 0.02 + sparkle * 0.03 + glazeMix * 0.02))
+                glow.addColorStop(0.55, toRgba(palette.edge, 0.014 + edgeGlowMix * 0.016))
+                glow.addColorStop(1, 'rgba(0,0,0,0)')
+                ctx.fillStyle = glow
+                ctx.fillRect(
+                    glowX - cell.radius * 0.7,
+                    glowY - cell.radius * 0.7,
+                    cell.radius * 1.4,
+                    cell.radius * 1.4,
+                )
+            }
+
+            ctx.save()
+            ctx.translate(centerX, centerY)
+            ctx.rotate(-0.58 + Math.sin(time * (0.05 + speedMix * 0.03)) * 0.1)
+            for (let band = 0; band < 3; band++) {
+                const bandWidth = minDim * (0.09 + band * 0.018 + refractionMix * 0.03)
+                const travel =
+                    ((time * (28 + speedMix * 24) + band * minDim * 0.55) % (minDim * 2.8)) - minDim * 1.4
+                const ribbonColor = band % 2 === 0 ? palette.glint : palette.edge
+                const ribbon = ctx.createLinearGradient(0, travel - bandWidth, 0, travel + bandWidth)
+                ribbon.addColorStop(0, 'rgba(0,0,0,0)')
+                ribbon.addColorStop(0.5, toRgba(ribbonColor, 0.016 + edgeGlowMix * 0.018 + glazeMix * 0.01))
+                ribbon.addColorStop(1, 'rgba(0,0,0,0)')
+                ctx.fillStyle = ribbon
+                ctx.fillRect(-w, travel - bandWidth, w * 2, bandWidth * 2)
+            }
+            ctx.restore()
 
             const glazeOverlay = ctx.createLinearGradient(0, 0, w, h)
-            const shimmerStop = clamp(0.42 + Math.sin(time * (0.06 + speedMix * 0.05)) * 0.18, 0.18, 0.82)
-            glazeOverlay.addColorStop(0, toRgba(palette.glint, 0.004 + glazeMix * 0.006))
-            glazeOverlay.addColorStop(shimmerStop, toRgba(palette.edge, 0.01 + glazeMix * 0.01 + refractionMix * 0.01))
+            const shimmerStop = clamp(0.38 + Math.sin(time * (0.05 + speedMix * 0.04)) * 0.18, 0.16, 0.84)
+            glazeOverlay.addColorStop(0, toRgba(palette.glint, 0.005 + glazeMix * 0.008))
+            glazeOverlay.addColorStop(shimmerStop, toRgba(palette.edge, 0.012 + glazeMix * 0.012 + refractionMix * 0.01))
             glazeOverlay.addColorStop(1, 'rgba(0,0,0,0)')
             ctx.fillStyle = glazeOverlay
+            ctx.fillRect(0, 0, w, h)
+
+            const cathedralGlow = ctx.createRadialGradient(
+                w * (0.34 + Math.sin(time * (0.08 + speedMix * 0.06)) * 0.1),
+                h * (0.32 + Math.cos(time * (0.07 + speedMix * 0.05)) * 0.12),
+                0,
+                w * 0.5,
+                h * 0.48,
+                minDim * (0.72 + refractionMix * 0.18),
+            )
+            cathedralGlow.addColorStop(0, toRgba(palette.glint, 0.012 + edgeGlowMix * 0.01 + glazeMix * 0.012))
+            cathedralGlow.addColorStop(0.56, toRgba(palette.edge, 0.01 + edgeGlowMix * 0.016))
+            cathedralGlow.addColorStop(1, 'rgba(0,0,0,0)')
+            ctx.fillStyle = cathedralGlow
             ctx.fillRect(0, 0, w, h)
 
             ctx.restore()
