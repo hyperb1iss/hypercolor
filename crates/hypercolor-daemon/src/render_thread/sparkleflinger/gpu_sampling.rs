@@ -478,13 +478,7 @@ fn rebuild_zone_colors_from_mapped_bytes(
             .saturating_mul(4);
         let packed_zone = &packed_bytes[start..end];
         for (color, packed_rgb) in zone.colors.iter_mut().zip(packed_zone.chunks_exact(4)) {
-            let packed_rgb =
-                u32::from_le_bytes([packed_rgb[0], packed_rgb[1], packed_rgb[2], packed_rgb[3]]);
-            *color = [
-                u8::try_from(packed_rgb & 0xff).expect("red channel fits"),
-                u8::try_from((packed_rgb >> 8) & 0xff).expect("green channel fits"),
-                u8::try_from((packed_rgb >> 16) & 0xff).expect("blue channel fits"),
-            ];
+            *color = [packed_rgb[0], packed_rgb[1], packed_rgb[2]];
         }
     }
 
