@@ -37,6 +37,7 @@ pub(crate) struct GpuSparkleFlinger {
     spatial_sampler: GpuSpatialSampler,
     surfaces: Option<GpuCompositorSurfaceSet>,
     current_output: Option<GpuCompositorOutputSurface>,
+    cached_readback_surface: Option<CachedReadbackSurface>,
 }
 
 struct GpuCompositorPipeline {
@@ -79,6 +80,26 @@ struct CachedSourceUpload {
     generation: u64,
     width: u32,
     height: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CachedReadbackKey {
+    width: u32,
+    height: u32,
+    layers: Vec<CachedReadbackLayer>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CachedReadbackLayer {
+    source: CachedSourceUpload,
+    mode: CompositionMode,
+    opacity_bits: u32,
+}
+
+#[derive(Debug, Clone)]
+struct CachedReadbackSurface {
+    key: CachedReadbackKey,
+    surface: PublishedSurface,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,6 +169,7 @@ impl GpuSparkleFlinger {
             spatial_sampler,
             surfaces: None,
             current_output: None,
+            cached_readback_surface: None,
         })
     }
 
@@ -254,6 +276,23 @@ impl GpuSparkleFlinger {
             });
         }
 
+        let readback_key = cached_readback_key(plan);
+        if let Some(key) = readback_key.as_ref()
+            && let Some(cached) = self.cached_readback_surface.as_ref()
+            && cached.key == *key
+        {
+            self.queue.submit(Some(encoder.finish()));
+            let sampling_surface = cached.surface.clone();
+            let sampling_canvas = Canvas::from_published_surface(&sampling_surface);
+            return Ok(ComposedFrameSet {
+                sampling_canvas: Some(sampling_canvas),
+                sampling_surface: Some(sampling_surface),
+                preview_surface: None,
+                bypassed: false,
+                backend: CompositorBackendKind::Gpu,
+            });
+        }
+
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: current_texture,
@@ -282,6 +321,12 @@ impl GpuSparkleFlinger {
         )?;
         let sampling_surface = PublishedSurface::from_vec(bytes, plan.width, plan.height, 0, 0);
         let sampling_canvas = Canvas::from_published_surface(&sampling_surface);
+        if let Some(key) = readback_key {
+            self.cached_readback_surface = Some(CachedReadbackSurface {
+                key,
+                surface: sampling_surface.clone(),
+            });
+        }
         Ok(ComposedFrameSet {
             sampling_canvas: Some(sampling_canvas),
             sampling_surface: Some(sampling_surface),
@@ -673,6 +718,22 @@ fn cached_source_upload(frame: &ProducerFrame) -> Option<CachedSourceUpload> {
         generation: surface.generation(),
         width: surface.width(),
         height: surface.height(),
+    })
+}
+
+fn cached_readback_key(plan: &CompositionPlan) -> Option<CachedReadbackKey> {
+    let mut layers = Vec::with_capacity(plan.layers.len());
+    for layer in &plan.layers {
+        layers.push(CachedReadbackLayer {
+            source: cached_source_upload(&layer.frame)?,
+            mode: layer.mode,
+            opacity_bits: layer.opacity.to_bits(),
+        });
+    }
+    Some(CachedReadbackKey {
+        width: plan.width,
+        height: plan.height,
+        layers,
     })
 }
 
@@ -1102,10 +1163,7 @@ mod tests {
             4,
             vec![
                 CompositionLayer::replace(ProducerFrame::Surface(retained_base)),
-                CompositionLayer::alpha(
-                    ProducerFrame::Surface(retained_overlay),
-                    0.35,
-                ),
+                CompositionLayer::alpha(ProducerFrame::Surface(retained_overlay), 0.35),
             ],
         );
 
