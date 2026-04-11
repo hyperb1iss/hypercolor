@@ -158,6 +158,10 @@ daemon-release *args='':
 overlay-demo *args='':
     ./scripts/manual-verify-display-overlays.sh {{ args }}
 
+# Report whether connected displays satisfy Spec 40's Wave 2 hardware verification matrix
+overlay-matrix:
+    ./scripts/check-display-overlay-matrix.sh
+
 # Run Servo daemon (dev profile) with cache wrapper
 daemon-servo *args='':
     ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features servo -- --log-level debug --bind 127.0.0.1:9420 {{ args }}
