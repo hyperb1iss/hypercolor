@@ -86,9 +86,9 @@ impl DisplayFrameInputState {
         let source_matches = if source_identity.is_stable() {
             self.source_identity == source_identity
         } else {
-            self.source_snapshot
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.rgba_bytes() == source.rgba_bytes())
+            self.source_snapshot.as_ref().is_some_and(|snapshot| {
+                Arc::ptr_eq(snapshot, source) || snapshot.rgba_bytes() == source.rgba_bytes()
+            })
         };
 
         source_matches
