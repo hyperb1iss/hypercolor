@@ -72,6 +72,7 @@ pub(crate) fn publish_frame_updates(
     audio: &AudioData,
     canvas: Option<Canvas>,
     frame_surface: Option<PublishedSurface>,
+    preview_surface: Option<PublishedSurface>,
     screen_preview_surface: Option<PublishedSurface>,
     frame_number: u32,
     elapsed_ms: u32,
@@ -123,7 +124,7 @@ pub(crate) fn publish_frame_updates(
         .note_canvas_frame(frame_number, elapsed_ms);
     let canvas_receivers = state.preview_canvas_receiver_count();
     if canvas_receivers > 0 {
-        let canvas_frame = if let Some(surface) = frame_surface {
+        let canvas_frame = if let Some(surface) = preview_surface.or(frame_surface) {
             CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
         } else if let Some(canvas) = canvas {
             let canvas_rgba_len = usize_to_u32(canvas.rgba_len());

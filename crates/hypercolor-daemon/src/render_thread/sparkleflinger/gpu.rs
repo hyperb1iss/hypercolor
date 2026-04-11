@@ -189,6 +189,7 @@ impl GpuSparkleFlinger {
         &mut self,
         plan: &CompositionPlan,
         requires_cpu_sampling_canvas: bool,
+        requires_preview_surface: bool,
     ) -> Result<ComposedFrameSet> {
         if plan.layers.len() == 1
             && let Some(layer) = plan.layers.first()
@@ -265,7 +266,7 @@ impl GpuSparkleFlinger {
             GpuCompositorOutputSurface::Back => &surfaces.back.texture,
         };
         self.current_output = Some(current_output);
-        if !requires_cpu_sampling_canvas {
+        if !requires_cpu_sampling_canvas && !requires_preview_surface {
             self.queue.submit(Some(encoder.finish()));
             return Ok(ComposedFrameSet {
                 sampling_canvas: None,
@@ -283,11 +284,20 @@ impl GpuSparkleFlinger {
         {
             self.queue.submit(Some(encoder.finish()));
             let sampling_surface = cached.surface.clone();
-            let sampling_canvas = Canvas::from_published_surface(&sampling_surface);
+            if requires_cpu_sampling_canvas {
+                let sampling_canvas = Canvas::from_published_surface(&sampling_surface);
+                return Ok(ComposedFrameSet {
+                    sampling_canvas: Some(sampling_canvas),
+                    sampling_surface: Some(sampling_surface),
+                    preview_surface: None,
+                    bypassed: false,
+                    backend: CompositorBackendKind::Gpu,
+                });
+            }
             return Ok(ComposedFrameSet {
-                sampling_canvas: Some(sampling_canvas),
-                sampling_surface: Some(sampling_surface),
-                preview_surface: None,
+                sampling_canvas: None,
+                sampling_surface: None,
+                preview_surface: Some(sampling_surface),
                 bypassed: false,
                 backend: CompositorBackendKind::Gpu,
             });
@@ -320,17 +330,26 @@ impl GpuSparkleFlinger {
             self.queue.submit(Some(encoder.finish())),
         )?;
         let sampling_surface = PublishedSurface::from_vec(bytes, plan.width, plan.height, 0, 0);
-        let sampling_canvas = Canvas::from_published_surface(&sampling_surface);
         if let Some(key) = readback_key {
             self.cached_readback_surface = Some(CachedReadbackSurface {
                 key,
                 surface: sampling_surface.clone(),
             });
         }
+        if requires_cpu_sampling_canvas {
+            let sampling_canvas = Canvas::from_published_surface(&sampling_surface);
+            return Ok(ComposedFrameSet {
+                sampling_canvas: Some(sampling_canvas),
+                sampling_surface: Some(sampling_surface),
+                preview_surface: None,
+                bypassed: false,
+                backend: CompositorBackendKind::Gpu,
+            });
+        }
         Ok(ComposedFrameSet {
-            sampling_canvas: Some(sampling_canvas),
-            sampling_surface: Some(sampling_surface),
-            preview_surface: None,
+            sampling_canvas: None,
+            sampling_surface: None,
+            preview_surface: Some(sampling_surface),
             bypassed: false,
             backend: CompositorBackendKind::Gpu,
         })

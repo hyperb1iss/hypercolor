@@ -227,6 +227,7 @@ pub(crate) async fn execute_frame(
         && scene_snapshot.effect_demand.screen_capture_active
     {
         preview_surface
+            .clone()
             .or_else(|| sampling_surface.clone())
             .or_else(|| {
                 inputs
@@ -235,7 +236,7 @@ pub(crate) async fn execute_frame(
                     .and_then(|data| data.canvas_downscale.clone())
             })
     } else {
-        preview_surface.or_else(|| {
+        preview_surface.clone().or_else(|| {
             inputs
                 .screen_data
                 .as_ref()
@@ -248,6 +249,7 @@ pub(crate) async fn execute_frame(
         &inputs.audio,
         sampling_canvas,
         sampling_surface,
+        preview_surface,
         screen_watch_surface,
         frame_num_u32,
         scene_snapshot.elapsed_ms,

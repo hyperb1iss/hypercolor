@@ -161,10 +161,11 @@ impl ComposeContext<'_> {
             &self.scene_snapshot.scene_runtime,
             source_frame,
         );
-        let composed = self
-            .render
-            .sparkleflinger
-            .compose_with_cpu_readback(compiled_plan.plan, self.requires_cpu_sampling_canvas());
+        let composed = self.render.sparkleflinger.compose_for_outputs(
+            compiled_plan.plan,
+            self.requires_cpu_sampling_canvas(),
+            self.requires_preview_surface(),
+        );
         let composition_us = micros_u32(composition_start.elapsed());
         let composition_done_us = micros_u32(stage_start.elapsed());
         RenderStageStats {
@@ -289,9 +290,10 @@ impl ComposeContext<'_> {
                     &self.scene_snapshot.scene_runtime,
                     render_group_result.preview_frame,
                 );
-                let composed = self.render.sparkleflinger.compose_with_cpu_readback(
+                let composed = self.render.sparkleflinger.compose_for_outputs(
                     compiled_plan.plan,
                     self.requires_cpu_sampling_canvas(),
+                    self.requires_preview_surface(),
                 );
                 let composition_bypassed = composed.bypassed;
                 let composition_us = micros_u32(composition_start.elapsed());
@@ -335,9 +337,10 @@ impl ComposeContext<'_> {
                     &self.scene_snapshot.scene_runtime,
                     source_frame,
                 );
-                let composed = self.render.sparkleflinger.compose_with_cpu_readback(
+                let composed = self.render.sparkleflinger.compose_for_outputs(
                     compiled_plan.plan,
                     self.requires_cpu_sampling_canvas(),
+                    self.requires_preview_surface(),
                 );
                 let composition_bypassed = composed.bypassed;
                 let composition_us = micros_u32(composition_start.elapsed());
@@ -401,21 +404,23 @@ impl ComposeContext<'_> {
 
     fn requires_cpu_sampling_canvas(&self) -> bool {
         requires_cpu_sampling_canvas(
-            self.state.preview_canvas_receiver_count(),
             self.render
                 .sparkleflinger
-                .can_sample_zone_plan(
-                    self.scene_snapshot.spatial_engine.sampling_plan().as_ref(),
-                ),
+                .can_sample_zone_plan(self.scene_snapshot.spatial_engine.sampling_plan().as_ref()),
         )
+    }
+
+    fn requires_preview_surface(&self) -> bool {
+        requires_preview_surface(self.state.preview_canvas_receiver_count())
     }
 }
 
-fn requires_cpu_sampling_canvas(
-    preview_canvas_receivers: usize,
-    can_gpu_sample: bool,
-) -> bool {
-    preview_canvas_receivers > 0 || !can_gpu_sample
+fn requires_cpu_sampling_canvas(can_gpu_sample: bool) -> bool {
+    !can_gpu_sample
+}
+
+fn requires_preview_surface(preview_canvas_receivers: usize) -> bool {
+    preview_canvas_receivers > 0
 }
 
 async fn render_effect_frame(
@@ -520,7 +525,9 @@ async fn render_effect_frame(
 
 #[cfg(test)]
 mod tests {
-    use super::{effective_render_group_layer_count, requires_cpu_sampling_canvas};
+    use super::{
+        effective_render_group_layer_count, requires_cpu_sampling_canvas, requires_preview_surface,
+    };
 
     #[test]
     fn render_group_layer_count_adds_transition_base_once() {
@@ -530,8 +537,13 @@ mod tests {
 
     #[test]
     fn cpu_sampling_canvas_only_depends_on_preview_receivers_and_gpu_sampling() {
-        assert!(!requires_cpu_sampling_canvas(0, true));
-        assert!(requires_cpu_sampling_canvas(1, true));
-        assert!(requires_cpu_sampling_canvas(0, false));
+        assert!(!requires_cpu_sampling_canvas(true));
+        assert!(requires_cpu_sampling_canvas(false));
+    }
+
+    #[test]
+    fn preview_surface_only_depends_on_preview_receivers() {
+        assert!(!requires_preview_surface(0));
+        assert!(requires_preview_surface(1));
     }
 }
