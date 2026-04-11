@@ -646,6 +646,66 @@ fn engine_sensor_binding_restores_manual_value_when_sensor_disappears() {
 }
 
 #[test]
+fn reset_to_defaults_clears_binding_runtime_state_for_next_tick() {
+    let captured_controls = Arc::new(Mutex::new(HashMap::new()));
+    let renderer = Box::new(MockRenderer::new().with_control_sink(Arc::clone(&captured_controls)));
+    let mut engine = EffectEngine::new();
+    engine
+        .activate(renderer, sample_bound_metadata())
+        .expect("activate");
+
+    let hot_snapshot = SystemSnapshot {
+        cpu_temp_celsius: Some(86.0),
+        ..SystemSnapshot::empty()
+    };
+    let mut canvas = Canvas::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
+    engine
+        .tick_with_inputs_and_sensors_into(
+            0.016,
+            &AudioData::silence(),
+            &InteractionData::default(),
+            None,
+            &hot_snapshot,
+            &mut canvas,
+        )
+        .expect("tick with bound sensor");
+    assert_eq!(
+        captured_controls
+            .lock()
+            .expect("shared control sink should not be poisoned")
+            .get("speed"),
+        Some(&ControlValue::Float(8.0))
+    );
+
+    engine.reset_to_defaults().expect("reset to defaults");
+    assert_eq!(
+        captured_controls
+            .lock()
+            .expect("shared control sink should not be poisoned")
+            .get("speed"),
+        Some(&ControlValue::Float(5.0))
+    );
+
+    engine
+        .tick_with_inputs_and_sensors_into(
+            0.016,
+            &AudioData::silence(),
+            &InteractionData::default(),
+            None,
+            &hot_snapshot,
+            &mut canvas,
+        )
+        .expect("tick should reapply bound sensor after reset");
+    assert_eq!(
+        captured_controls
+            .lock()
+            .expect("shared control sink should not be poisoned")
+            .get("speed"),
+        Some(&ControlValue::Float(8.0))
+    );
+}
+
+#[test]
 fn engine_custom_canvas_size() {
     let mut engine = EffectEngine::new().with_canvas_size(640, 400);
     engine

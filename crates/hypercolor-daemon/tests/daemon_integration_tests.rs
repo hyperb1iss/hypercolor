@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use hypercolor_core::config::ConfigManager;
@@ -19,9 +19,10 @@ use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
-use hypercolor_types::effect::EffectSource;
+use hypercolor_types::effect::{ControlBinding, ControlValue, EffectSource};
+use hypercolor_types::sensor::SystemSnapshot;
 use tempfile::NamedTempFile;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 
 /// Minimal TOML that parses into a valid `HypercolorConfig`.
 const MINIMAL_TOML: &str = "schema_version = 3\n";
@@ -91,6 +92,13 @@ fn temp_config_file() -> NamedTempFile {
     f
 }
 
+fn test_input_manager() -> InputManager {
+    let (_tx, rx) = watch::channel(Arc::new(SystemSnapshot::empty()));
+    let mut input_manager = InputManager::new();
+    input_manager.set_sensor_snapshot_receiver(rx);
+    input_manager
+}
+
 fn make_device_info(name: &str, led_count: u32) -> DeviceInfo {
     DeviceInfo {
         id: DeviceId::new(),
@@ -130,7 +138,7 @@ async fn daemon_lifecycle_initialize_start_shutdown() {
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
         .expect("initialization should succeed");
-    *state.input_manager.lock().await = InputManager::new();
+    *state.input_manager.lock().await = test_input_manager();
 
     // Verify initial state — all subsystems created but not started
     assert!(state.device_registry.is_empty().await);
@@ -179,7 +187,7 @@ async fn daemon_shutdown_publishes_events() {
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
         .expect("initialization should succeed");
-    *state.input_manager.lock().await = InputManager::new();
+    *state.input_manager.lock().await = test_input_manager();
 
     let mut rx = state.event_bus.subscribe_all();
 
@@ -222,7 +230,7 @@ async fn daemon_double_shutdown_is_safe() {
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
         .expect("initialization should succeed");
-    *state.input_manager.lock().await = InputManager::new();
+    *state.input_manager.lock().await = test_input_manager();
 
     state.start().await.expect("start");
     state.shutdown().await.expect("first shutdown");
@@ -239,20 +247,35 @@ async fn daemon_start_restores_last_runtime_session() {
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
         .expect("initialization should succeed");
-    *state.input_manager.lock().await = InputManager::new();
+    *state.input_manager.lock().await = test_input_manager();
 
     let effect_id = {
         let registry = state.effect_registry.read().await;
         let (_, entry) = registry
             .iter()
-            .find(|(_, entry)| matches!(entry.metadata.source, EffectSource::Native { .. }))
-            .expect("expected at least one native effect in registry");
+            .find(|(_, entry)| {
+                matches!(entry.metadata.source, EffectSource::Native { .. })
+                    && entry.metadata.control_by_id("speed").is_some()
+            })
+            .expect("expected at least one native effect with a speed control in registry");
         entry.metadata.id.to_string()
     };
     let snapshot = RuntimeSessionSnapshot {
         active_effect_id: Some(effect_id.clone()),
         active_preset_id: Some("startup-preset".to_owned()),
-        control_values: HashMap::new(),
+        control_values: HashMap::from([("speed".to_owned(), ControlValue::Float(7.0))]),
+        control_bindings: HashMap::from([(
+            "speed".to_owned(),
+            ControlBinding {
+                sensor: "cpu_temp".to_owned(),
+                sensor_min: 30.0,
+                sensor_max: 100.0,
+                target_min: 0.0,
+                target_max: 1.0,
+                deadband: 0.5,
+                smoothing: 0.25,
+            },
+        )]),
         active_layout_id: None,
         global_brightness: 1.0,
         wled_probe_ips: Vec::new(),
@@ -272,6 +295,15 @@ async fn daemon_start_restores_last_runtime_session() {
             .expect("effect should be restored on startup");
         assert_eq!(active.id.to_string(), effect_id);
         assert_eq!(engine.active_preset_id(), Some("startup-preset"));
+        assert_eq!(
+            engine.active_controls().get("speed"),
+            Some(&ControlValue::Float(7.0))
+        );
+        let binding = active
+            .control_by_id("speed")
+            .and_then(|control| control.binding.as_ref())
+            .expect("speed binding should be restored");
+        assert_eq!(binding.sensor, "cpu_temp");
     }
 
     state.shutdown().await.expect("shutdown should succeed");

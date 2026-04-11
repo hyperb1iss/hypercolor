@@ -15,7 +15,7 @@ use hypercolor_core::device::DeviceRegistry;
 use hypercolor_core::device::wled::WledKnownTarget;
 use hypercolor_core::effect::EffectEngine;
 use hypercolor_types::device::{DeviceColorFormat, DeviceFamily};
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::effect::{ControlBinding, ControlValue};
 
 /// Process-local counter to guarantee per-save temp file uniqueness.
 static SNAPSHOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -32,6 +32,9 @@ pub struct RuntimeSessionSnapshot {
 
     /// Current active control values for the running effect.
     pub control_values: HashMap<String, ControlValue>,
+
+    /// Live sensor bindings attached to active controls.
+    pub control_bindings: HashMap<String, ControlBinding>,
 
     /// Active layout ID, if one was applied to the spatial engine.
     pub active_layout_id: Option<String>,
@@ -95,6 +98,21 @@ pub fn snapshot_from_engine(engine: &EffectEngine) -> RuntimeSessionSnapshot {
         active_effect_id,
         active_preset_id: engine.active_preset_id().map(ToOwned::to_owned),
         control_values: engine.active_controls().clone(),
+        control_bindings: engine
+            .active_metadata()
+            .map(|metadata| {
+                metadata
+                    .controls
+                    .iter()
+                    .filter_map(|control| {
+                        control
+                            .binding
+                            .clone()
+                            .map(|binding| (control.control_id().to_owned(), binding))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         active_layout_id: None, // Populated by the caller with spatial engine state.
         global_brightness: 1.0,
         wled_probe_ips: Vec::new(),
@@ -262,7 +280,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{RuntimeSessionSnapshot, load, save};
-    use hypercolor_types::effect::ControlValue;
+    use hypercolor_types::effect::{ControlBinding, ControlValue};
 
     #[test]
     fn round_trip_snapshot() {
@@ -275,6 +293,18 @@ mod tests {
             active_effect_id: Some("0195e5b0-b2ea-7f22-9ab2-9bc31b48adf3".to_owned()),
             active_preset_id: Some("preset_42".to_owned()),
             control_values: controls,
+            control_bindings: HashMap::from([(
+                "speed".to_owned(),
+                ControlBinding {
+                    sensor: "cpu_temp".to_owned(),
+                    sensor_min: 30.0,
+                    sensor_max: 100.0,
+                    target_min: 0.0,
+                    target_max: 1.0,
+                    deadband: 0.5,
+                    smoothing: 0.2,
+                },
+            )]),
             active_layout_id: Some("layout_abc123".to_owned()),
             global_brightness: 0.42,
             wled_probe_ips: vec![
@@ -291,6 +321,7 @@ mod tests {
         assert_eq!(loaded.active_effect_id, expected.active_effect_id);
         assert_eq!(loaded.active_preset_id, expected.active_preset_id);
         assert_eq!(loaded.control_values, expected.control_values);
+        assert_eq!(loaded.control_bindings, expected.control_bindings);
         assert!((loaded.global_brightness - expected.global_brightness).abs() < f32::EPSILON);
         assert_eq!(loaded.wled_probe_ips, expected.wled_probe_ips);
     }
@@ -311,6 +342,7 @@ mod tests {
             active_effect_id: Some("0195e5b0-b2ea-7f22-9ab2-9bc31b48adf3".to_owned()),
             active_preset_id: Some("preset_42".to_owned()),
             control_values: HashMap::new(),
+            control_bindings: HashMap::new(),
             active_layout_id: None,
             global_brightness: 1.0,
             wled_probe_ips: vec!["10.0.0.42".parse().expect("valid IP")],

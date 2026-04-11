@@ -380,6 +380,7 @@ impl EffectEngine {
         let mut changed = self.active_preset_id.is_some();
 
         for control in &metadata.controls {
+            self.binding_state.remove(control.control_id());
             let previous = self.controls.insert(
                 control.control_id().to_owned(),
                 control.default_value.clone(),

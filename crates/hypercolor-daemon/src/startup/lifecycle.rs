@@ -362,6 +362,7 @@ impl DaemonState {
         .with_context(|| format!("failed to create renderer for '{}'", metadata.name))?;
 
         let mut rejected_controls: Vec<String> = Vec::new();
+        let mut rejected_bindings: Vec<String> = Vec::new();
         {
             let mut engine = self.effect_engine.lock().await;
             engine
@@ -371,6 +372,12 @@ impl DaemonState {
             for (name, value) in &snapshot.control_values {
                 if let Err(error) = engine.set_control_checked(name, value) {
                     rejected_controls.push(format!("{name} ({error})"));
+                }
+            }
+
+            for (name, binding) in &snapshot.control_bindings {
+                if let Err(error) = engine.set_control_binding(name, binding.clone()) {
+                    rejected_bindings.push(format!("{name} ({error})"));
                 }
             }
 
@@ -388,10 +395,20 @@ impl DaemonState {
             );
         }
 
+        if !rejected_bindings.is_empty() {
+            warn!(
+                effect_id = %metadata.id,
+                effect = %metadata.name,
+                rejected_bindings = ?rejected_bindings,
+                "Some persisted control bindings were rejected during restore"
+            );
+        }
+
         info!(
             effect_id = %metadata.id,
             effect = %metadata.name,
             controls = snapshot.control_values.len(),
+            bindings = snapshot.control_bindings.len(),
             "Restored runtime session snapshot"
         );
 

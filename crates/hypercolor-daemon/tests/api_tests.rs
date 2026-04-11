@@ -27,6 +27,7 @@ use hypercolor_daemon::display_overlays::{
     DisplayOverlayRuntime, OverlaySlotRuntime, OverlaySlotStatus,
 };
 use hypercolor_daemon::profile_store::Profile;
+use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::session::{current_global_brightness, set_global_brightness};
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::config::HypercolorConfig;
@@ -1622,6 +1623,18 @@ async fn put_current_control_binding_updates_active_effect_schema() {
         1.0
     );
     assert_eq!(active_json["data"]["control_values"]["speed"]["float"], 5.0);
+
+    let persisted =
+        runtime_state::load(&state.runtime_state_path).expect("runtime state should load");
+    let persisted = persisted.expect("runtime state should exist");
+    assert_eq!(
+        persisted
+            .control_bindings
+            .get("speed")
+            .expect("binding should be persisted")
+            .sensor,
+        "cpu_temp"
+    );
 }
 
 #[tokio::test]
