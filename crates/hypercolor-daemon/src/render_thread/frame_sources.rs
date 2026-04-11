@@ -3,6 +3,7 @@ use tracing::{debug, warn};
 use hypercolor_core::input::{InteractionData, ScreenData};
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface, Rgba};
+use hypercolor_types::sensor::SystemSnapshot;
 
 use super::RenderThreadState;
 use super::pipeline_runtime::{CachedStaticSurface, StaticSurfaceKey};
@@ -49,6 +50,7 @@ pub(crate) async fn render_effect_into(
     audio: &AudioData,
     interaction: &InteractionData,
     screen: Option<&ScreenData>,
+    sensors: &SystemSnapshot,
     target: &mut Canvas,
 ) {
     let mut engine = state.effect_engine.lock().await;
@@ -69,7 +71,14 @@ pub(crate) async fn render_effect_into(
         return;
     }
 
-    match engine.tick_with_inputs_into(delta_secs, audio, interaction, screen, target) {
+    match engine.tick_with_inputs_and_sensors_into(
+        delta_secs,
+        audio,
+        interaction,
+        screen,
+        sensors,
+        target,
+    ) {
         Ok(()) => {}
         Err(error) => {
             warn!(%error, "effect render failed, producing black canvas");

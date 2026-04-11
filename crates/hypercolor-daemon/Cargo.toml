@@ -18,6 +18,7 @@ workspace = true
 [features]
 hue = ["dep:hypercolor-driver-hue"]
 nanoleaf = ["dep:hypercolor-driver-nanoleaf"]
+nvidia = ["hypercolor-core/nvidia"]
 wgpu = ["dep:wgpu", "dep:pollster"]
 default = ["hue", "nanoleaf"]
 servo = ["hypercolor-core/servo"]

@@ -6,6 +6,7 @@ use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
 use hypercolor_types::scene::{RenderGroup, RenderGroupId};
+use hypercolor_types::sensor::SystemSnapshot;
 
 use super::factory::create_renderer_for_metadata;
 use super::registry::EffectRegistry;
@@ -71,6 +72,7 @@ impl EffectPool {
         audio: &AudioData,
         interaction: &InteractionData,
         screen: Option<&ScreenData>,
+        sensors: &SystemSnapshot,
         target: &mut Canvas,
     ) -> Result<()> {
         prepare_target_canvas(
@@ -95,6 +97,7 @@ impl EffectPool {
             audio,
             interaction,
             screen,
+            sensors,
             group.layout.canvas_width,
             group.layout.canvas_height,
             target,
@@ -173,6 +176,7 @@ impl EffectSlot {
         audio: &AudioData,
         interaction: &InteractionData,
         screen: Option<&ScreenData>,
+        sensors: &SystemSnapshot,
         canvas_width: u32,
         canvas_height: u32,
         target: &mut Canvas,
@@ -185,6 +189,7 @@ impl EffectSlot {
             audio,
             interaction,
             screen,
+            sensors,
             canvas_width,
             canvas_height,
         };

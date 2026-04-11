@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use hypercolor_core::effect::{EffectPool, EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::input::InteractionData;
@@ -6,6 +7,7 @@ use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::scene::{RenderGroup, RenderGroupId};
+use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
@@ -16,6 +18,8 @@ fn registry_with_builtins() -> EffectRegistry {
     register_builtin_effects(&mut registry);
     registry
 }
+
+static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
 
 fn builtin_effect_id(registry: &EffectRegistry, stem: &str) -> EffectId {
     registry
@@ -101,6 +105,7 @@ fn effect_pool_reconciles_and_renders_group_controls() {
         &AudioData::silence(),
         &InteractionData::default(),
         None,
+        &EMPTY_SENSORS,
         &mut canvas,
     )
     .expect("group should render");
@@ -130,6 +135,7 @@ fn effect_pool_hot_swaps_effects_for_same_group() {
         &AudioData::silence(),
         &InteractionData::default(),
         None,
+        &EMPTY_SENSORS,
         &mut solid_canvas,
     )
     .expect("solid group should render");
@@ -144,6 +150,7 @@ fn effect_pool_hot_swaps_effects_for_same_group() {
         &AudioData::silence(),
         &InteractionData::default(),
         None,
+        &EMPTY_SENSORS,
         &mut rainbow_canvas,
     )
     .expect("rainbow group should render");
@@ -191,6 +198,7 @@ fn effect_pool_clears_disabled_groups_without_dropping_slots() {
         &AudioData::silence(),
         &InteractionData::default(),
         None,
+        &EMPTY_SENSORS,
         &mut canvas,
     )
     .expect("disabled group should clear");

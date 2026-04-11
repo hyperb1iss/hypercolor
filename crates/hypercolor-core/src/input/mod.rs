@@ -9,16 +9,21 @@ pub mod audio;
 pub mod evdev;
 pub mod interaction;
 pub mod screen;
+pub mod sensor;
 mod traits;
 
 #[cfg(target_os = "linux")]
 pub use evdev::EvdevKeyboardInput;
 pub use interaction::InteractionInput;
+pub use sensor::SensorPoller;
 pub use traits::{InputData, InputSource, InteractionData, KeyboardData, MouseData, ScreenData};
 
 use crate::input::audio::AudioInput;
 use crate::types::audio::AudioPipelineConfig;
 use crate::types::event::InputEvent;
+use hypercolor_types::sensor::SystemSnapshot;
+use std::sync::Arc;
+use tokio::sync::watch;
 
 use tracing::{error, info};
 
@@ -45,6 +50,8 @@ use tracing::{error, info};
 /// ```
 pub struct InputManager {
     sources: Vec<Box<dyn InputSource>>,
+    sensor_poller: Option<SensorPoller>,
+    sensor_snapshot_rx: Option<watch::Receiver<Arc<SystemSnapshot>>>,
 }
 
 impl InputManager {
@@ -53,6 +60,8 @@ impl InputManager {
     pub fn new() -> Self {
         Self {
             sources: Vec::new(),
+            sensor_poller: None,
+            sensor_snapshot_rx: None,
         }
     }
 
@@ -63,6 +72,17 @@ impl InputManager {
     pub fn add_source(&mut self, source: Box<dyn InputSource>) {
         info!(source = source.name(), "Registered input source");
         self.sources.push(source);
+    }
+
+    /// Attach a background system-sensor poller to this input graph.
+    pub fn set_sensor_poller(&mut self, poller: SensorPoller) {
+        self.set_sensor_snapshot_receiver(poller.receiver());
+        self.sensor_poller = Some(poller);
+    }
+
+    /// Attach a latest-value sensor stream to this input graph.
+    pub fn set_sensor_snapshot_receiver(&mut self, receiver: watch::Receiver<Arc<SystemSnapshot>>) {
+        self.sensor_snapshot_rx = Some(receiver);
     }
 
     /// Number of registered input sources.
@@ -94,7 +114,8 @@ impl InputManager {
     /// audio pipeline uses this to keep analysis state aligned with real frame
     /// timing when the render loop shifts tiers or misses budget.
     pub fn sample_all_with_delta_secs(&mut self, delta_secs: f32) -> Vec<InputData> {
-        self.sources
+        let mut samples = self
+            .sources
             .iter_mut()
             .map(|source| {
                 source
@@ -104,7 +125,13 @@ impl InputManager {
                         InputData::None
                     })
             })
-            .collect()
+            .collect::<Vec<_>>();
+
+        if let Some(snapshot) = self.latest_sensor_snapshot() {
+            samples.push(InputData::Sensors(snapshot));
+        }
+
+        samples
     }
 
     /// Drain discrete input events from every registered source.
@@ -125,9 +152,16 @@ impl InputManager {
     ///
     /// Returns the first error encountered during startup.
     pub fn start_all(&mut self) -> anyhow::Result<()> {
+        if let Some(sensor_poller) = self.sensor_poller.as_mut() {
+            sensor_poller.start()?;
+        }
+
         for (idx, source) in self.sources.iter_mut().enumerate() {
             if let Err(err) = source.start() {
                 error!(source = source.name(), %err, "Failed to start input source");
+                if let Some(sensor_poller) = self.sensor_poller.as_mut() {
+                    sensor_poller.stop();
+                }
                 // Roll back: stop everything we already started.
                 for prev in &mut self.sources[..idx] {
                     prev.stop();
@@ -144,6 +178,9 @@ impl InputManager {
         for source in &mut self.sources {
             info!(source = source.name(), "Stopping input source");
             source.stop();
+        }
+        if let Some(sensor_poller) = self.sensor_poller.as_mut() {
+            sensor_poller.stop();
         }
     }
 
@@ -247,6 +284,14 @@ impl InputManager {
         }
 
         Ok(())
+    }
+
+    /// Return the latest system sensor snapshot, if one is configured.
+    #[must_use]
+    pub fn latest_sensor_snapshot(&self) -> Option<Arc<SystemSnapshot>> {
+        self.sensor_snapshot_rx
+            .as_ref()
+            .map(|receiver| Arc::clone(&receiver.borrow()))
     }
 }
 

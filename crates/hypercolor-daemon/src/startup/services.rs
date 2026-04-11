@@ -32,7 +32,7 @@ use hypercolor_core::input::audio::AudioInput;
 use hypercolor_core::input::screen::WaylandScreenCaptureInput;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::{CaptureConfig as ScreenCaptureConfig, MonitorSelect};
-use hypercolor_core::input::{InputManager, InteractionInput};
+use hypercolor_core::input::{InputManager, InteractionInput, SensorPoller};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
@@ -463,6 +463,7 @@ impl DaemonState {
 
 pub(crate) fn build_input_manager(config: &HypercolorConfig) -> InputManager {
     let mut input_manager = InputManager::new();
+    input_manager.set_sensor_poller(SensorPoller::new());
     input_manager.add_source(Box::new(InteractionInput::new()));
     #[cfg(target_os = "linux")]
     input_manager.add_source(Box::new(EvdevKeyboardInput::new()));

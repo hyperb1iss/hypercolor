@@ -8,6 +8,8 @@ use std::fmt::Write as _;
 
 use hypercolor_types::audio::{AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
 use hypercolor_types::effect::ControlValue;
+use hypercolor_types::sensor::{SensorReading, SensorUnit, SystemSnapshot};
+use serde_json::{Map, Value, json};
 
 use crate::input::InteractionData;
 
@@ -353,6 +355,7 @@ impl LightscriptRuntime {
         &mut self,
         scripts: &mut Vec<String>,
         audio: &AudioData,
+        sensors: &SystemSnapshot,
         controls: &HashMap<String, ControlValue>,
         include_audio: bool,
     ) {
@@ -360,6 +363,7 @@ impl LightscriptRuntime {
             scripts.push(Self::audio_update_script(audio));
         }
 
+        scripts.push(Self::sensor_update_script(sensors));
         self.push_control_update_scripts(scripts, controls);
     }
 
@@ -557,6 +561,40 @@ impl LightscriptRuntime {
             &chroma_csv,
         );
         script.push_str("  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }\n");
+        script.push_str("})();");
+        script
+    }
+
+    fn sensor_update_script(snapshot: &SystemSnapshot) -> String {
+        let readings = snapshot.readings();
+        let sensor_list = serde_json::to_string(
+            &readings
+                .iter()
+                .map(|reading| reading.label.clone())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".to_owned());
+        let sensors_json =
+            serde_json::to_string(&sensor_payload(&readings)).unwrap_or_else(|_| "{}".to_owned());
+
+        let mut script = String::with_capacity(
+            256_usize
+                .saturating_add(sensor_list.len())
+                .saturating_add(sensors_json.len()),
+        );
+        script.push_str("(function(){\n");
+        script.push_str(
+            "  if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }\n",
+        );
+        script.push_str("  window.engine.sensors = ");
+        script.push_str(&sensors_json);
+        script.push_str(";\n");
+        script.push_str("  window.engine.sensorList = ");
+        script.push_str(&sensor_list);
+        script.push_str(";\n");
+        script.push_str(
+            "  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }\n",
+        );
         script.push_str("})();");
         script
     }
@@ -842,6 +880,34 @@ const fn js_bool(value: bool) -> &'static str {
     if value { "true" } else { "false" }
 }
 
+fn sensor_payload(readings: &[SensorReading]) -> Value {
+    let mut sensors = Map::with_capacity(readings.len());
+    for reading in readings {
+        let (default_min, default_max) = default_sensor_range(reading);
+        sensors.insert(
+            reading.label.clone(),
+            json!({
+                "value": reading.value,
+                "min": reading.min.unwrap_or(default_min),
+                "max": reading.max.or(reading.critical).unwrap_or(default_max),
+                "unit": reading.unit.symbol(),
+            }),
+        );
+    }
+    Value::Object(sensors)
+}
+
+fn default_sensor_range(reading: &SensorReading) -> (f32, f32) {
+    match reading.unit {
+        SensorUnit::Celsius => (0.0, reading.critical.unwrap_or(100.0)),
+        SensorUnit::Percent => (0.0, 100.0),
+        SensorUnit::Megabytes => (0.0, reading.max.unwrap_or(reading.value.max(1.0))),
+        SensorUnit::Rpm => (0.0, reading.max.unwrap_or(5000.0)),
+        SensorUnit::Watts => (0.0, reading.max.unwrap_or(500.0)),
+        SensorUnit::Mhz => (0.0, reading.max.unwrap_or(5000.0)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -889,12 +955,13 @@ mod tests {
     fn push_frame_scripts_emit_control_deltas_only() {
         let mut runtime = LightscriptRuntime::new(320, 200);
         let audio = AudioData::silence();
+        let sensors = SystemSnapshot::empty();
         let mut scripts = Vec::new();
 
         let mut controls = HashMap::new();
         controls.insert("speed".to_owned(), ControlValue::Float(0.5));
 
-        runtime.push_frame_scripts(&mut scripts, &audio, &controls, true);
+        runtime.push_frame_scripts(&mut scripts, &audio, &sensors, &controls, true);
         assert_eq!(
             scripts
                 .iter()
@@ -909,7 +976,7 @@ mod tests {
         );
 
         scripts.clear();
-        runtime.push_frame_scripts(&mut scripts, &audio, &controls, true);
+        runtime.push_frame_scripts(&mut scripts, &audio, &sensors, &controls, true);
         assert!(
             scripts
                 .iter()
@@ -918,7 +985,7 @@ mod tests {
 
         controls.insert("speed".to_owned(), ControlValue::Float(0.8));
         scripts.clear();
-        runtime.push_frame_scripts(&mut scripts, &audio, &controls, true);
+        runtime.push_frame_scripts(&mut scripts, &audio, &sensors, &controls, true);
         assert_eq!(
             scripts
                 .iter()
@@ -932,9 +999,10 @@ mod tests {
     fn push_frame_scripts_can_skip_audio_update() {
         let mut runtime = LightscriptRuntime::new(320, 200);
         let audio = AudioData::silence();
+        let sensors = SystemSnapshot::empty();
         let mut scripts = Vec::new();
 
-        runtime.push_frame_scripts(&mut scripts, &audio, &HashMap::new(), false);
+        runtime.push_frame_scripts(&mut scripts, &audio, &sensors, &HashMap::new(), false);
         assert!(
             scripts
                 .iter()

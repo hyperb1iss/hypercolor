@@ -137,6 +137,7 @@ impl ComposeContext<'_> {
                     &self.inputs.audio,
                     &self.inputs.interaction,
                     self.inputs.screen_data.as_ref(),
+                    self.inputs.sensors.as_ref(),
                 )
                 .await
             }
@@ -150,6 +151,7 @@ impl ComposeContext<'_> {
                 &self.inputs.audio,
                 &self.inputs.interaction,
                 self.inputs.screen_data.as_ref(),
+                self.inputs.sensors.as_ref(),
             )
             .await
         };
@@ -218,6 +220,7 @@ impl ComposeContext<'_> {
                             &self.inputs.audio,
                             &self.inputs.interaction,
                             self.inputs.screen_data.as_ref(),
+                            self.inputs.sensors.as_ref(),
                             &mut self.render.recycled_frame.zones,
                         )
                     };
@@ -248,6 +251,7 @@ impl ComposeContext<'_> {
                         &self.inputs.audio,
                         &self.inputs.interaction,
                         self.inputs.screen_data.as_ref(),
+                        self.inputs.sensors.as_ref(),
                         &mut self.render.recycled_frame.zones,
                     )
                 };
@@ -431,6 +435,7 @@ async fn render_effect_frame(
     audio: &AudioData,
     interaction: &InteractionData,
     screen_data: Option<&ScreenData>,
+    sensors: &hypercolor_types::sensor::SystemSnapshot,
 ) -> ProducedFrame {
     let render_start = Instant::now();
     let lease = if let lease @ Some(_) = render.render_surface_pool.dequeue() {
@@ -463,6 +468,7 @@ async fn render_effect_frame(
                 audio,
                 interaction,
                 screen_data,
+                sensors,
                 target,
             )
             .await;
@@ -499,6 +505,7 @@ async fn render_effect_frame(
         audio,
         interaction,
         screen_data,
+        sensors,
         &mut rendered,
     )
     .await;

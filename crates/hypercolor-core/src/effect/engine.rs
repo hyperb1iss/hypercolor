@@ -4,16 +4,20 @@
 //! renderer, manages lifecycle transitions, and produces frames on demand.
 
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use tracing::{debug, error, info, warn};
 
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::effect::{ControlValidationError, ControlValue, EffectMetadata, EffectState};
+use hypercolor_types::sensor::SystemSnapshot;
 
 use super::factory::create_renderer_for_metadata;
 use super::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 use crate::input::{InteractionData, ScreenData};
+
+static EMPTY_SYSTEM_SNAPSHOT: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
 
 // ── EffectEngine ─────────────────────────────────────────────────────────────
 
@@ -353,11 +357,12 @@ impl EffectEngine {
     /// Returns an error if the renderer's `tick` call fails.
     pub fn tick(&mut self, delta_secs: f32, audio: &AudioData) -> anyhow::Result<Canvas> {
         let mut canvas = Canvas::new(self.canvas_width, self.canvas_height);
-        self.tick_with_inputs_into(
+        self.tick_with_inputs_and_sensors_into(
             delta_secs,
             audio,
             &InteractionData::default(),
             None,
+            &EMPTY_SYSTEM_SNAPSHOT,
             &mut canvas,
         )?;
         Ok(canvas)
@@ -374,7 +379,14 @@ impl EffectEngine {
         audio: &AudioData,
         target: &mut Canvas,
     ) -> anyhow::Result<()> {
-        self.tick_with_inputs_into(delta_secs, audio, &InteractionData::default(), None, target)
+        self.tick_with_inputs_and_sensors_into(
+            delta_secs,
+            audio,
+            &InteractionData::default(),
+            None,
+            &EMPTY_SYSTEM_SNAPSHOT,
+            target,
+        )
     }
 
     /// Produce a single frame with host interaction state.
@@ -392,7 +404,14 @@ impl EffectEngine {
         interaction: &InteractionData,
     ) -> anyhow::Result<Canvas> {
         let mut canvas = Canvas::new(self.canvas_width, self.canvas_height);
-        self.tick_with_inputs_into(delta_secs, audio, interaction, None, &mut canvas)?;
+        self.tick_with_inputs_and_sensors_into(
+            delta_secs,
+            audio,
+            interaction,
+            None,
+            &EMPTY_SYSTEM_SNAPSHOT,
+            &mut canvas,
+        )?;
         Ok(canvas)
     }
 
@@ -408,7 +427,14 @@ impl EffectEngine {
         interaction: &InteractionData,
         target: &mut Canvas,
     ) -> anyhow::Result<()> {
-        self.tick_with_inputs_into(delta_secs, audio, interaction, None, target)
+        self.tick_with_inputs_and_sensors_into(
+            delta_secs,
+            audio,
+            interaction,
+            None,
+            &EMPTY_SYSTEM_SNAPSHOT,
+            target,
+        )
     }
 
     /// Produce a single frame with host interaction state and optional screen input.
@@ -428,7 +454,14 @@ impl EffectEngine {
         screen: Option<&ScreenData>,
     ) -> anyhow::Result<Canvas> {
         let mut canvas = Canvas::new(self.canvas_width, self.canvas_height);
-        self.tick_with_inputs_into(delta_secs, audio, interaction, screen, &mut canvas)?;
+        self.tick_with_inputs_and_sensors_into(
+            delta_secs,
+            audio,
+            interaction,
+            screen,
+            &EMPTY_SYSTEM_SNAPSHOT,
+            &mut canvas,
+        )?;
         Ok(canvas)
     }
 
@@ -443,6 +476,30 @@ impl EffectEngine {
         audio: &AudioData,
         interaction: &InteractionData,
         screen: Option<&ScreenData>,
+        target: &mut Canvas,
+    ) -> anyhow::Result<()> {
+        self.tick_with_inputs_and_sensors_into(
+            delta_secs,
+            audio,
+            interaction,
+            screen,
+            &EMPTY_SYSTEM_SNAPSHOT,
+            target,
+        )
+    }
+
+    /// Produce a single frame with optional screen input and a live sensor snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the renderer's render call fails.
+    pub fn tick_with_inputs_and_sensors_into(
+        &mut self,
+        delta_secs: f32,
+        audio: &AudioData,
+        interaction: &InteractionData,
+        screen: Option<&ScreenData>,
+        sensors: &SystemSnapshot,
         target: &mut Canvas,
     ) -> anyhow::Result<()> {
         // If not running, return a blank canvas
@@ -467,6 +524,7 @@ impl EffectEngine {
             audio,
             interaction,
             screen,
+            sensors,
             canvas_width: self.canvas_width,
             canvas_height: self.canvas_height,
         };

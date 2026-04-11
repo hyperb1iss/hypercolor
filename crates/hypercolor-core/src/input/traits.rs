@@ -7,6 +7,8 @@
 use crate::types::audio::{AudioData, AudioPipelineConfig};
 use crate::types::canvas::PublishedSurface;
 use crate::types::event::{InputEvent, ZoneColors};
+use hypercolor_types::sensor::SystemSnapshot;
+use std::sync::Arc;
 
 // ── InputData ──────────────────────────────────────────────────────────────
 
@@ -22,6 +24,8 @@ pub enum InputData {
     Interaction(InteractionData),
     /// Screen capture zone colors — grabbed from display regions.
     Screen(ScreenData),
+    /// System telemetry snapshot — CPU/GPU/memory/components.
+    Sensors(Arc<SystemSnapshot>),
     /// No data available this frame (source idle or warming up).
     None,
 }

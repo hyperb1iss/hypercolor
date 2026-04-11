@@ -7,6 +7,7 @@
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
+use hypercolor_types::sensor::SystemSnapshot;
 
 use crate::input::{InteractionData, ScreenData};
 
@@ -37,6 +38,9 @@ pub struct FrameInput<'a> {
 
     /// Latest screen-capture snapshot for screen-reactive effects.
     pub screen: Option<&'a ScreenData>,
+
+    /// Latest system telemetry snapshot shared across all renderers.
+    pub sensors: &'a SystemSnapshot,
 
     /// Target canvas width in pixels.
     pub canvas_width: u32,

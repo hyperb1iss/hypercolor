@@ -4,6 +4,8 @@
 //! effect renderer work correctly together — from discovery through frame
 //! rendering and LED color output — without any real hardware.
 
+use std::sync::LazyLock;
+
 use hypercolor_core::device::mock::{
     MockCall, MockDeviceBackend, MockDeviceConfig, MockEffectRenderer, MockTransportScanner,
 };
@@ -14,9 +16,12 @@ use hypercolor_core::spatial::{SpatialEngine, generate_positions};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Rgba;
 use hypercolor_types::device::{DeviceId, DeviceState};
+use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
     DeviceZone, LedTopology, NormalizedPosition, SpatialLayout, StripDirection,
 };
+
+static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -484,6 +489,7 @@ fn effect_renderer_lifecycle_tracking() {
         audio: &audio,
         interaction: &interaction,
         screen: None,
+        sensors: &EMPTY_SENSORS,
         canvas_width: 10,
         canvas_height: 10,
     };

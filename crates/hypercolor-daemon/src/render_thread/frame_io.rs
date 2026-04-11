@@ -5,6 +5,8 @@ use hypercolor_core::input::{InputData, InteractionData, ScreenData};
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
+use hypercolor_types::sensor::SystemSnapshot;
+use std::sync::Arc;
 
 use super::pipeline_runtime::FrameInputs;
 use super::{RenderThreadState, micros_u32, usize_to_u32};
@@ -44,11 +46,13 @@ pub(crate) async fn sample_inputs(state: &RenderThreadState, delta_secs: f32) ->
     let mut audio = AudioData::silence();
     let mut interaction = InteractionData::default();
     let mut screen_data: Option<ScreenData> = None;
+    let mut sensors = Arc::new(SystemSnapshot::empty());
     for sample in samples {
         match sample {
             InputData::Audio(snapshot) => audio = snapshot,
             InputData::Interaction(snapshot) => interaction = snapshot,
             InputData::Screen(snapshot) => screen_data = Some(snapshot),
+            InputData::Sensors(snapshot) => sensors = snapshot,
             InputData::None => {}
         }
     }
@@ -57,6 +61,7 @@ pub(crate) async fn sample_inputs(state: &RenderThreadState, delta_secs: f32) ->
         audio,
         interaction,
         screen_data,
+        sensors,
         screen_canvas: None,
         screen_sector_grid: Vec::new(),
     }

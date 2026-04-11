@@ -27,6 +27,7 @@ use hypercolor_types::effect::{
 };
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::{RenderGroup, RenderGroupId};
+use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
     Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
@@ -41,6 +42,7 @@ const SAMPLE_RATE_HZ: u32 = 48_000;
 
 static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
 static DEFAULT_INTERACTION: LazyLock<InteractionData> = LazyLock::new(InteractionData::default);
+static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
 
 struct NullBenchBackend;
 
@@ -106,6 +108,7 @@ fn frame_input(time_secs: f32, frame_number: u64, audio: &AudioData) -> FrameInp
         audio,
         interaction: &DEFAULT_INTERACTION,
         screen: None,
+        sensors: &EMPTY_SENSORS,
         canvas_width: CANVAS_WIDTH,
         canvas_height: CANVAS_HEIGHT,
     }
@@ -564,6 +567,7 @@ fn bench_render_groups(c: &mut Criterion) {
                         black_box(&SILENCE),
                         black_box(&DEFAULT_INTERACTION),
                         None,
+                        black_box(&EMPTY_SENSORS),
                         black_box(&mut canvases[index]),
                     )
                     .expect("render group should render");

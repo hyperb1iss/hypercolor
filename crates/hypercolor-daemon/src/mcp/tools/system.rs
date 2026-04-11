@@ -1,10 +1,12 @@
-//! System-level MCP tools: `get_status`, `get_audio_state`, `get_layout`, `diagnose`.
+//! System-level MCP tools: `get_status`, `get_audio_state`, `get_layout`, `get_sensor_data`, `diagnose`.
 
 use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, brightness_percent, capped_fps, default_output_schema};
 use crate::api::AppState;
 use crate::session::current_global_brightness;
+use hypercolor_types::sensor::SystemSnapshot;
+use std::sync::Arc;
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
 
@@ -75,6 +77,27 @@ pub(super) fn build_diagnose() -> ToolDefinition {
                     "default": ["all"]
                 }
             }
+        }),
+        output_schema: default_output_schema(),
+        read_only: true,
+        idempotent: true,
+    }
+}
+
+pub(super) fn build_get_sensor_data() -> ToolDefinition {
+    ToolDefinition {
+        name: "get_sensor_data".into(),
+        title: "Get Sensor Data".into(),
+        description: "Get the latest system telemetry snapshot, or one named sensor reading, including CPU, GPU, memory, and raw component temperatures.".into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "Optional sensor label like cpu_temp, gpu_load, ram_used, or a normalized raw component label."
+                }
+            },
+            "additionalProperties": false
         }),
         output_schema: default_output_schema(),
         read_only: true,
@@ -172,6 +195,17 @@ pub(super) fn handle_diagnose(params: &Value) -> Result<Value, ToolError> {
     }))
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "state-less handler is a placeholder until live daemon state is injected"
+)]
+pub(super) fn handle_get_sensor_data(_params: &Value) -> Result<Value, ToolError> {
+    Ok(json!({
+        "snapshot": SystemSnapshot::empty(),
+        "reading": null,
+    }))
+}
+
 // ── Stateful Handlers ─────────────────────────────────────────────────────
 
 pub(super) async fn handle_get_status_with_state(state: &AppState) -> Result<Value, ToolError> {
@@ -248,6 +282,20 @@ pub(super) async fn handle_get_status_with_state(state: &AppState) -> Result<Val
     }))
 }
 
+pub(super) async fn handle_get_sensor_data_with_state(
+    params: &Value,
+    state: &AppState,
+) -> Result<Value, ToolError> {
+    let label = params.get("label").and_then(Value::as_str);
+    let snapshot = latest_sensor_snapshot(state).await;
+    let reading = label.and_then(|value| snapshot.reading(value));
+
+    Ok(json!({
+        "snapshot": snapshot.as_ref(),
+        "reading": reading,
+    }))
+}
+
 pub(super) fn handle_get_audio_state_with_state(state: &AppState) -> Value {
     let spectrum = state.event_bus.spectrum_receiver().borrow().clone();
     let enabled = state
@@ -270,6 +318,13 @@ pub(super) fn handle_get_audio_state_with_state(state: &AppState) -> Value {
         },
         "spectrum_bins": spectrum.bins.len()
     })
+}
+
+async fn latest_sensor_snapshot(state: &AppState) -> Arc<SystemSnapshot> {
+    let input_manager = state.input_manager.lock().await;
+    input_manager
+        .latest_sensor_snapshot()
+        .unwrap_or_else(|| Arc::new(SystemSnapshot::empty()))
 }
 
 pub(super) async fn handle_get_layout_with_state(state: &AppState) -> Result<Value, ToolError> {

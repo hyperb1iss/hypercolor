@@ -1,4 +1,4 @@
-//! MCP tool definitions — the 14 tools exposed to AI assistants.
+//! MCP tool definitions — the 15 tools exposed to AI assistants.
 //!
 //! Each tool is a `ToolDefinition` with a JSON Schema input spec. Tool execution
 //! is handled by `execute_tool`, which dispatches to the appropriate handler in
@@ -34,7 +34,7 @@ pub struct ToolDefinition {
     pub idempotent: bool,
 }
 
-/// Build all 14 MCP tool definitions.
+/// Build all MCP tool definitions.
 pub fn build_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         effects::build_set_effect(),
@@ -48,6 +48,7 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
         scenes::build_list_scenes(),
         scenes::build_create_scene(),
         system::build_get_audio_state(),
+        system::build_get_sensor_data(),
         library::build_set_profile(),
         system::build_get_layout(),
         system::build_diagnose(),
@@ -75,6 +76,7 @@ pub fn execute_tool(name: &str, params: &Value) -> Result<Value, ToolError> {
         "list_scenes" => scenes::handle_list_scenes(params),
         "create_scene" => scenes::handle_create_scene(params),
         "get_audio_state" => system::handle_get_audio_state(params),
+        "get_sensor_data" => system::handle_get_sensor_data(params),
         "set_profile" => library::handle_set_profile(params),
         "get_layout" => system::handle_get_layout(params),
         "diagnose" => system::handle_diagnose(params),
@@ -100,6 +102,7 @@ pub async fn execute_tool_with_state(
         "list_scenes" => scenes::handle_list_scenes_with_state(params, state).await,
         "create_scene" => scenes::handle_create_scene_with_state(params, state).await,
         "get_audio_state" => Ok(system::handle_get_audio_state_with_state(state)),
+        "get_sensor_data" => system::handle_get_sensor_data_with_state(params, state).await,
         "set_profile" => library::handle_set_profile_with_state(params, state).await,
         "get_layout" => system::handle_get_layout_with_state(state).await,
         "diagnose" => system::handle_diagnose_with_state(params, state).await,

@@ -15,6 +15,7 @@ use std::sync::mpsc::{self, TryRecvError};
 use anyhow::{Result, bail};
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
 use hypercolor_types::effect::{ControlValue, EffectMetadata, EffectSource};
+use hypercolor_types::sensor::SystemSnapshot;
 use tracing::{debug, info, warn};
 
 use super::worker::{
@@ -95,6 +96,7 @@ impl ServoRenderer {
         self.runtime.push_frame_scripts(
             &mut self.pending_scripts,
             &input.audio,
+            input.sensors,
             &self.controls,
             self.include_audio_updates,
         );
@@ -443,6 +445,7 @@ struct QueuedFrameInput {
     audio: hypercolor_types::audio::AudioData,
     interaction: crate::input::InteractionData,
     screen: Option<crate::input::ScreenData>,
+    sensors: SystemSnapshot,
     canvas_width: u32,
     canvas_height: u32,
 }
@@ -456,6 +459,7 @@ impl QueuedFrameInput {
             audio: input.audio.clone(),
             interaction: input.interaction.clone(),
             screen: input.screen.cloned(),
+            sensors: input.sensors.clone(),
             canvas_width: input.canvas_width,
             canvas_height: input.canvas_height,
         }
@@ -473,6 +477,7 @@ impl QueuedFrameInput {
             (slot, Some(next)) => *slot = Some(next.clone()),
             (slot, None) => *slot = None,
         }
+        self.sensors.clone_from(input.sensors);
         merge_unique_strings(
             &mut self.interaction.keyboard.recent_keys,
             prior_recent_keys.into_iter(),
@@ -489,6 +494,7 @@ impl QueuedFrameInput {
             audio: &self.audio,
             interaction: &self.interaction,
             screen: self.screen.as_ref(),
+            sensors: &self.sensors,
             canvas_width: self.canvas_width,
             canvas_height: self.canvas_height,
         }
@@ -535,6 +541,7 @@ mod tests {
     };
     use hypercolor_types::audio::AudioData;
     use hypercolor_types::effect::{EffectCategory, EffectId, EffectSource};
+    use hypercolor_types::sensor::SystemSnapshot;
     use std::sync::LazyLock;
     use std::sync::atomic::Ordering;
     use std::thread;
@@ -544,6 +551,7 @@ mod tests {
     static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
     static DEFAULT_INTERACTION: LazyLock<crate::input::InteractionData> =
         LazyLock::new(crate::input::InteractionData::default);
+    static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
 
     fn frame_input(delta_secs: f32) -> FrameInput<'static> {
         FrameInput {
@@ -553,6 +561,7 @@ mod tests {
             audio: &SILENCE,
             interaction: &DEFAULT_INTERACTION,
             screen: None,
+            sensors: &EMPTY_SENSORS,
             canvas_width: DEFAULT_CANVAS_WIDTH,
             canvas_height: DEFAULT_CANVAS_HEIGHT,
         }
@@ -592,6 +601,7 @@ mod tests {
             audio,
             interaction,
             screen: None,
+            sensors: &EMPTY_SENSORS,
             canvas_width,
             canvas_height,
         }

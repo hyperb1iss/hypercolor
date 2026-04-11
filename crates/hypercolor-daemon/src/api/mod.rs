@@ -762,6 +762,11 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route("/server", axum::routing::get(system::get_server))
         .route("/status", axum::routing::get(system::get_status))
         .route("/state", axum::routing::get(system::get_status))
+        .route("/system/sensors", axum::routing::get(system::get_sensors))
+        .route(
+            "/system/sensors/{label}",
+            axum::routing::get(system::get_sensor),
+        )
         .route("/audio/devices", axum::routing::get(settings::list_audio_devices))
         .route(
             "/settings/brightness",

@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::SystemTime;
 
 use hypercolor_core::effect::{
@@ -14,7 +15,10 @@ use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
     EffectMetadata, EffectSource, EffectState,
 };
+use hypercolor_types::sensor::SystemSnapshot;
 use uuid::Uuid;
+
+static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
 
 // ── Mock Renderer ────────────────────────────────────────────────────────────
 
@@ -195,6 +199,7 @@ fn frame_input_construction() {
         audio: &audio,
         interaction: &interaction,
         screen: None,
+        sensors: &EMPTY_SENSORS,
         canvas_width: DEFAULT_CANVAS_WIDTH,
         canvas_height: DEFAULT_CANVAS_HEIGHT,
     };
@@ -217,6 +222,7 @@ fn frame_input_clone() {
         audio: &audio,
         interaction: &interaction,
         screen: None,
+        sensors: &EMPTY_SENSORS,
         canvas_width: 320,
         canvas_height: 200,
     };

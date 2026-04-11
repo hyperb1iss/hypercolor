@@ -6,13 +6,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use hypercolor_core::engine::RenderLoopState;
+use hypercolor_types::sensor::SystemSnapshot;
 use serde::Serialize;
 
 use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope::{ApiError, ApiResponse};
 use crate::api::security;
 use crate::api::settings;
 use crate::performance::LatestFrameMetrics;
@@ -183,6 +184,21 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     })
 }
 
+/// `GET /api/v1/system/sensors` — Latest system sensor snapshot.
+pub async fn get_sensors(State(state): State<Arc<AppState>>) -> Response {
+    ApiResponse::ok(latest_sensor_snapshot(&state).await.as_ref().clone())
+}
+
+/// `GET /api/v1/system/sensors/{label}` — Resolve one named sensor.
+pub async fn get_sensor(State(state): State<Arc<AppState>>, Path(label): Path<String>) -> Response {
+    let snapshot = latest_sensor_snapshot(&state).await;
+    if let Some(reading) = snapshot.reading(&label) {
+        return ApiResponse::ok(reading);
+    }
+
+    ApiError::not_found(format!("sensor '{label}' was not found"))
+}
+
 /// `GET /api/v1/server` — Lightweight server identity for discovery probes.
 pub async fn get_server(State(state): State<Arc<AppState>>) -> Response {
     let device_count = state.device_registry.len().await;
@@ -234,6 +250,13 @@ fn config_path(state: &AppState) -> PathBuf {
         || ConfigManager::config_dir().join(DEFAULT_CONFIG_FILE_NAME),
         |manager| manager.path().to_path_buf(),
     )
+}
+
+async fn latest_sensor_snapshot(state: &AppState) -> Arc<SystemSnapshot> {
+    let input_manager = state.input_manager.lock().await;
+    input_manager
+        .latest_sensor_snapshot()
+        .unwrap_or_else(|| Arc::new(SystemSnapshot::empty()))
 }
 
 #[allow(
@@ -367,15 +390,17 @@ fn round_2(value: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::get_status;
+    use super::{get_sensor, get_sensors, get_status};
     use crate::api::AppState;
     use crate::performance::{CompositorBackendKind, FrameTimeline, LatestFrameMetrics};
     use axum::body::to_bytes;
-    use axum::extract::State;
+    use axum::extract::{Path, State};
     use hypercolor_core::bus::CanvasFrame;
     use hypercolor_types::canvas::Canvas;
+    use hypercolor_types::sensor::{SensorReading, SensorUnit, SystemSnapshot};
     use serde_json::Value;
     use std::sync::Arc;
+    use tokio::sync::watch;
 
     #[expect(
         clippy::too_many_lines,
@@ -497,5 +522,88 @@ mod tests {
             json["data"]["preview_runtime"]["latest_screen_canvas_frame_number"],
             45
         );
+    }
+
+    #[tokio::test]
+    async fn sensors_endpoint_returns_latest_snapshot() {
+        let state = Arc::new(AppState::new());
+        let snapshot = Arc::new(SystemSnapshot {
+            cpu_load_percent: 51.0,
+            cpu_loads: vec![48.0, 54.0],
+            cpu_temp_celsius: Some(72.5),
+            gpu_temp_celsius: None,
+            gpu_load_percent: None,
+            gpu_vram_used_mb: None,
+            ram_used_percent: 44.0,
+            ram_used_mb: 8192.0,
+            ram_total_mb: 16384.0,
+            components: vec![SensorReading::new(
+                "Package id 0",
+                72.5,
+                SensorUnit::Celsius,
+                None,
+                Some(100.0),
+                None,
+            )],
+            polled_at_ms: 1234,
+        });
+        let (_tx, rx) = watch::channel(snapshot);
+        state
+            .input_manager
+            .lock()
+            .await
+            .set_sensor_snapshot_receiver(rx);
+
+        let response = get_sensors(State(state)).await;
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("sensor body should read");
+        let json: Value = serde_json::from_slice(&body).expect("sensor response should serialize");
+
+        assert_eq!(json["data"]["cpu_load_percent"], 51.0);
+        assert_eq!(json["data"]["cpu_temp_celsius"], 72.5);
+        assert_eq!(json["data"]["polled_at_ms"], 1234);
+    }
+
+    #[tokio::test]
+    async fn single_sensor_endpoint_resolves_normalized_labels() {
+        let state = Arc::new(AppState::new());
+        let snapshot = Arc::new(SystemSnapshot {
+            cpu_load_percent: 40.0,
+            cpu_loads: vec![40.0],
+            cpu_temp_celsius: Some(68.0),
+            gpu_temp_celsius: None,
+            gpu_load_percent: None,
+            gpu_vram_used_mb: None,
+            ram_used_percent: 30.0,
+            ram_used_mb: 2048.0,
+            ram_total_mb: 8192.0,
+            components: vec![SensorReading::new(
+                "Package id 0",
+                68.0,
+                SensorUnit::Celsius,
+                None,
+                Some(95.0),
+                None,
+            )],
+            polled_at_ms: 77,
+        });
+        let (_tx, rx) = watch::channel(snapshot);
+        state
+            .input_manager
+            .lock()
+            .await
+            .set_sensor_snapshot_receiver(rx);
+
+        let response = get_sensor(State(state), Path("package-id-0".to_owned())).await;
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("single sensor body should read");
+        let json: Value =
+            serde_json::from_slice(&body).expect("single sensor response should serialize");
+
+        assert_eq!(json["data"]["label"], "Package id 0");
+        assert_eq!(json["data"]["value"], 68.0);
+        assert_eq!(json["data"]["unit"], "celsius");
     }
 }

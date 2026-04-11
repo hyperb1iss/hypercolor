@@ -9,6 +9,8 @@ use hypercolor_core::types::canvas::{
 };
 use hypercolor_core::types::event::FrameData;
 use hypercolor_types::config::RenderAccelerationMode;
+use hypercolor_types::sensor::SystemSnapshot;
+use std::sync::Arc;
 
 use super::RenderThreadState;
 use super::composition_planner::CompositionPlanner;
@@ -25,6 +27,7 @@ pub(crate) struct FrameInputs {
     pub(crate) audio: AudioData,
     pub(crate) interaction: hypercolor_core::input::InteractionData,
     pub(crate) screen_data: Option<hypercolor_core::input::ScreenData>,
+    pub(crate) sensors: Arc<SystemSnapshot>,
     pub(crate) screen_canvas: Option<Canvas>,
     pub(crate) screen_sector_grid: Vec<[u8; 3]>,
 }
@@ -35,6 +38,7 @@ impl FrameInputs {
             audio: AudioData::silence(),
             interaction: hypercolor_core::input::InteractionData::default(),
             screen_data: None,
+            sensors: Arc::new(SystemSnapshot::empty()),
             screen_canvas: None,
             screen_sector_grid: Vec::new(),
         }

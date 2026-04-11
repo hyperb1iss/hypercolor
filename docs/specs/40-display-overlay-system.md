@@ -481,8 +481,8 @@ pub struct SystemSnapshot {
     pub ram_total_mb: f64,
     /// All raw component readings from sysinfo.
     pub components: Vec<SensorReading>,
-    /// Timestamp of this snapshot.
-    pub polled_at: Instant,
+    /// Unix timestamp in milliseconds for serde-safe transport.
+    pub polled_at_ms: u64,
 }
 
 pub struct SensorReading {

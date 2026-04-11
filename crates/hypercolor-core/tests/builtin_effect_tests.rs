@@ -18,6 +18,7 @@ use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
+use hypercolor_types::sensor::SystemSnapshot;
 use uuid::Uuid;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -26,6 +27,7 @@ const W: u32 = 32;
 const H: u32 = 16;
 static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
 static DEFAULT_INTERACTION: LazyLock<InteractionData> = LazyLock::new(InteractionData::default);
+static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
 
 fn make_metadata(name: &str) -> EffectMetadata {
     EffectMetadata {
@@ -55,6 +57,7 @@ fn frame(time_secs: f32, frame_number: u64) -> FrameInput<'static> {
         audio: &SILENCE,
         interaction: &DEFAULT_INTERACTION,
         screen: None,
+        sensors: &EMPTY_SENSORS,
         canvas_width: W,
         canvas_height: H,
     }
@@ -68,6 +71,7 @@ fn frame_with_audio(time_secs: f32, audio: &AudioData) -> FrameInput<'_> {
         audio,
         interaction: &DEFAULT_INTERACTION,
         screen: None,
+        sensors: &EMPTY_SENSORS,
         canvas_width: W,
         canvas_height: H,
     }
@@ -81,6 +85,7 @@ fn frame_with_screen(time_secs: f32, screen: &ScreenData) -> FrameInput<'_> {
         audio: &SILENCE,
         interaction: &DEFAULT_INTERACTION,
         screen: Some(screen),
+        sensors: &EMPTY_SENSORS,
         canvas_width: W,
         canvas_height: H,
     }
@@ -715,6 +720,7 @@ fn audio_pulse_full_lifecycle() {
             audio: &audio,
             interaction: &DEFAULT_INTERACTION,
             screen: None,
+            sensors: &EMPTY_SENSORS,
             canvas_width: W,
             canvas_height: H,
         };

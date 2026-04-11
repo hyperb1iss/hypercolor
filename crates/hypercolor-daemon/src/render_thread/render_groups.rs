@@ -11,6 +11,7 @@ use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, RenderSurfacePool, SurfaceDescriptor};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::{RenderGroup, RenderGroupId};
+use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
 use super::micros_u32;
@@ -90,6 +91,7 @@ impl RenderGroupRuntime {
         audio: &AudioData,
         interaction: &InteractionData,
         screen: Option<&ScreenData>,
+        sensors: &SystemSnapshot,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<RenderGroupResult> {
         self.reconcile(groups, groups_revision, registry)?;
@@ -100,6 +102,7 @@ impl RenderGroupRuntime {
             audio,
             interaction,
             screen,
+            sensors,
             zones,
         )? {
             self.retain_frame(groups_revision, &result);
@@ -116,6 +119,7 @@ impl RenderGroupRuntime {
                 audio,
                 interaction,
                 screen,
+                sensors,
                 target,
             )?;
         }
@@ -222,6 +226,7 @@ impl RenderGroupRuntime {
         audio: &AudioData,
         interaction: &InteractionData,
         screen: Option<&ScreenData>,
+        sensors: &SystemSnapshot,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<Option<RenderGroupResult>> {
         let Some(group) = self.single_full_preview_group(groups) else {
@@ -240,6 +245,7 @@ impl RenderGroupRuntime {
             audio,
             interaction,
             screen,
+            sensors,
             lease.canvas_mut(),
         ) {
             lease.release();
@@ -597,6 +603,7 @@ mod tests {
                 &AudioData::silence(),
                 &InteractionData::default(),
                 None,
+                &SystemSnapshot::empty(),
                 &mut zones,
             )
             .expect("single group should render");
