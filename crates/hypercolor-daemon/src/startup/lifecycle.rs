@@ -22,6 +22,7 @@ use crate::render_thread::{CanvasDims, RenderThread, RenderThreadState};
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
 use crate::scene_transactions::apply_layout_update;
 use crate::session::{SessionController, current_global_brightness, set_global_brightness};
+use crate::simulators::activate_simulated_displays;
 
 use super::DaemonState;
 use super::discovery_worker::DiscoveryWorkerContext;
@@ -65,6 +66,10 @@ impl DaemonState {
             Arc::clone(&self.driver_host),
             Arc::clone(&self.driver_registry),
         ));
+
+        activate_simulated_displays(&self.discovery_runtime(), &self.simulated_displays)
+            .await
+            .context("failed to activate virtual display simulators")?;
 
         // Start the render loop.
         {

@@ -12,7 +12,7 @@ use super::DiscoveryRuntime;
 use crate::device_settings::StoredDeviceSettings;
 use crate::logical_devices;
 
-pub(super) async fn apply_persisted_device_settings(
+pub(crate) async fn apply_persisted_device_settings(
     runtime: &DiscoveryRuntime,
     device_id: DeviceId,
 ) -> DeviceUserSettings {
@@ -437,7 +437,7 @@ const fn topology_hint_name(topology: &DeviceTopologyHint) -> &'static str {
     }
 }
 
-pub(super) async fn sync_registry_state(runtime: &DiscoveryRuntime, device_id: DeviceId) {
+pub(crate) async fn sync_registry_state(runtime: &DiscoveryRuntime, device_id: DeviceId) {
     let state = {
         let lifecycle = runtime.lifecycle_manager.lock().await;
         lifecycle.state(device_id)

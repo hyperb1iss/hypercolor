@@ -72,6 +72,7 @@ use crate::profile_store::ProfileStore;
 use crate::runtime_state;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::{OutputPowerState, current_global_brightness};
+use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayStore};
 
 // ── AppState ─────────────────────────────────────────────────────────────
 
@@ -149,6 +150,9 @@ pub struct AppState {
 
     /// Persistent per-device user settings store.
     pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
+
+    /// Persisted virtual display simulator definitions.
+    pub simulated_displays: Arc<RwLock<SimulatedDisplayStore>>,
 
     /// Live per-display overlay configs shared with the display-output workers.
     pub display_overlays: Arc<DisplayOverlayRegistry>,
@@ -291,6 +295,16 @@ impl AppState {
                 );
                 DeviceSettingsStore::new(device_settings_path)
             });
+        let simulated_displays_path = ConfigManager::data_dir().join("simulated-displays.json");
+        let simulated_displays = SimulatedDisplayStore::load(&simulated_displays_path)
+            .unwrap_or_else(|error| {
+                warn!(
+                    path = %simulated_displays_path.display(),
+                    %error,
+                    "Failed to load simulated displays; starting with empty store"
+                );
+                SimulatedDisplayStore::new(simulated_displays_path)
+            });
         let initial_global_brightness = device_settings.global_brightness();
         let (power_state, _) = watch::channel(OutputPowerState {
             global_brightness: initial_global_brightness,
@@ -319,6 +333,7 @@ impl AppState {
         let attachment_registry = Arc::new(RwLock::new(attachment_registry));
         let attachment_profiles = Arc::new(RwLock::new(attachment_profiles));
         let device_settings = Arc::new(RwLock::new(device_settings));
+        let simulated_displays = Arc::new(RwLock::new(simulated_displays));
         let display_overlays = Arc::new(DisplayOverlayRegistry::new());
         let display_overlay_runtime = Arc::new(DisplayOverlayRuntimeRegistry::new());
         let layouts = Arc::new(RwLock::new(HashMap::new()));
@@ -358,6 +373,14 @@ impl AppState {
             )
             .expect("default app state should build network driver registry"),
         );
+        {
+            let mut manager = backend_manager.try_lock().expect(
+                "default app state should register the simulator backend without contention",
+            );
+            manager.register_backend(Box::new(SimulatedDisplayBackend::new(Arc::clone(
+                &simulated_displays,
+            ))));
+        }
 
         Self {
             device_registry,
@@ -380,6 +403,7 @@ impl AppState {
             attachment_registry,
             attachment_profiles,
             device_settings,
+            simulated_displays,
             display_overlays,
             display_overlay_runtime,
             credential_store,
@@ -461,6 +485,7 @@ impl AppState {
             attachment_registry: Arc::clone(&daemon.attachment_registry),
             attachment_profiles: Arc::clone(&daemon.attachment_profiles),
             device_settings: Arc::clone(&daemon.device_settings),
+            simulated_displays: Arc::clone(&daemon.simulated_displays),
             display_overlays: Arc::clone(&daemon.display_overlays),
             display_overlay_runtime: Arc::clone(&daemon.display_overlay_runtime),
             credential_store: Arc::clone(&daemon.credential_store),

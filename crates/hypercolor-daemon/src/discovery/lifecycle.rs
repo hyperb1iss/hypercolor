@@ -304,7 +304,7 @@ pub async fn shutdown_renderable_devices(runtime: &DiscoveryRuntime) -> usize {
 }
 
 #[allow(clippy::too_many_lines)]
-pub(super) async fn execute_lifecycle_actions(
+pub(crate) async fn execute_lifecycle_actions(
     runtime: DiscoveryRuntime,
     actions: Vec<LifecycleAction>,
 ) {

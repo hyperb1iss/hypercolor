@@ -21,4 +21,5 @@ pub mod render_thread;
 pub mod runtime_state;
 pub mod scene_transactions;
 pub mod session;
+pub mod simulators;
 pub mod startup;

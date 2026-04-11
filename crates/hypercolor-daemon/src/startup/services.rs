@@ -49,6 +49,7 @@ use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::{OutputPowerState, set_global_brightness};
+use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayStore};
 
 use super::DaemonState;
 use super::config::resolve_server_identity;
@@ -275,6 +276,20 @@ impl DaemonState {
         set_global_brightness(&power_state, initial_global_brightness);
         info!("Device settings store ready");
 
+        // ── Simulator Store ─────────────────────────────────────────
+        let simulated_displays_path = ConfigManager::data_dir().join("simulated-displays.json");
+        let simulated_displays_inner = SimulatedDisplayStore::load(&simulated_displays_path)
+            .unwrap_or_else(|error| {
+                warn!(
+                    path = %simulated_displays_path.display(),
+                    %error,
+                    "Failed to load simulated displays; starting with empty store"
+                );
+                SimulatedDisplayStore::new(simulated_displays_path)
+            });
+        let simulated_displays = Arc::new(RwLock::new(simulated_displays_inner));
+        info!("Simulated display store ready");
+
         // ── Effect/Layout Association Store ──────────────────────────
         let effect_layout_links_path = ConfigManager::data_dir().join("effect-layouts.json");
         let persisted_links = match effect_layouts::load(&effect_layout_links_path) {
@@ -391,6 +406,9 @@ impl DaemonState {
                     "backend manager lock unexpectedly contended during daemon initialization"
                 )
             })?;
+            backend_manager_inner.register_backend(Box::new(SimulatedDisplayBackend::new(
+                Arc::clone(&simulated_displays),
+            )));
             backend_manager_inner.register_backend(Box::new(MockDeviceBackend::new()));
             network::register_enabled_backends(
                 &mut backend_manager_inner,
@@ -441,6 +459,7 @@ impl DaemonState {
             attachment_registry,
             attachment_profiles,
             device_settings,
+            simulated_displays,
             display_overlays: Arc::new(DisplayOverlayRegistry::new()),
             display_overlay_runtime: Arc::new(DisplayOverlayRuntimeRegistry::new()),
             effect_layout_links,

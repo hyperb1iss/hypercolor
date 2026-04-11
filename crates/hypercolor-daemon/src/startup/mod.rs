@@ -47,6 +47,7 @@ use crate::preview_runtime::PreviewRuntime;
 use crate::render_thread::RenderThread;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::{OutputPowerState, SessionController};
+use crate::simulators::SimulatedDisplayStore;
 
 mod acceleration;
 pub mod banner;
@@ -141,6 +142,9 @@ pub struct DaemonState {
 
     /// Persisted global and per-device output settings.
     pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
+
+    /// Persisted virtual display simulator definitions.
+    pub simulated_displays: Arc<RwLock<SimulatedDisplayStore>>,
 
     /// Live per-display overlay configs shared with display workers and the API.
     pub display_overlays: Arc<DisplayOverlayRegistry>,

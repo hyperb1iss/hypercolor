@@ -5,7 +5,7 @@
 > inspected visually in browser and TUI without requiring physical LCD
 > hardware.
 
-**Status:** Draft
+**Status:** In Progress
 **Author:** Nova
 **Date:** 2026-04-11
 **Crates:** `hypercolor-types`, `hypercolor-daemon`, `hypercolor-tui`
@@ -342,6 +342,10 @@ not a blocker for daemon usefulness.
 
 **Exit criteria:** A simulator appears as a display device and can be targeted
 by layouts and overlays.
+
+Startup-backed simulator persistence, daemon-local backend registration, and
+device/display listing support landed on 2026-04-11. CRUD and visual
+inspection remain follow-on work.
 
 ### Wave 2 — Runtime Frame Capture and REST Inspection
 
