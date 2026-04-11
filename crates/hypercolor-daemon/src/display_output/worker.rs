@@ -78,10 +78,12 @@ impl DisplayFrameInputState {
     fn matches(&self, source: &Arc<CanvasFrame>, target: &DisplayTarget) -> bool {
         let source_identity = display_source_identity(source.as_ref());
         let source_matches = self.source_identity == source_identity
-            || self
-                .source_snapshot
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.rgba_bytes() == source.rgba_bytes());
+            || self.source_snapshot.as_ref().is_some_and(|snapshot| {
+                Arc::ptr_eq(snapshot, source)
+                    || (snapshot.width == source.width
+                        && snapshot.height == source.height
+                        && snapshot.rgba_bytes() == source.rgba_bytes())
+            });
 
         source_matches
             && self.brightness_factor == display_brightness_factor(target.brightness)

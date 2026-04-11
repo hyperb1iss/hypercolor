@@ -221,8 +221,11 @@ fn prepare_black_frame(geometry: &DisplayGeometry, rgb_buffer: &mut Vec<u8>) {
         return;
     };
 
-    rgb_buffer.clear();
-    rgb_buffer.resize(render_len, 0);
+    if rgb_buffer.len() != render_len {
+        rgb_buffer.resize(render_len, 0);
+    } else {
+        rgb_buffer.fill(0);
+    }
 }
 
 fn identity_brightness_lut() -> [u8; 256] {
