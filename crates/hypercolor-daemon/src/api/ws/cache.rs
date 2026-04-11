@@ -412,20 +412,22 @@ pub(super) fn encode_spectrum_binary(
     let bin_count_u8 = u8::try_from(encoded_bin_count).unwrap_or(u8::MAX);
     let bin_count = usize::from(bin_count_u8);
 
-    let mut out = Vec::with_capacity(27_usize.saturating_add(bin_count.saturating_mul(4)));
-    out.push(0x02);
-    out.extend_from_slice(&spectrum.timestamp_ms.to_le_bytes());
-    out.push(bin_count_u8);
-    out.extend_from_slice(&sanitize_f32(spectrum.level).to_le_bytes());
-    out.extend_from_slice(&sanitize_f32(spectrum.bass).to_le_bytes());
-    out.extend_from_slice(&sanitize_f32(spectrum.mid).to_le_bytes());
-    out.extend_from_slice(&sanitize_f32(spectrum.treble).to_le_bytes());
-    out.push(u8::from(spectrum.beat));
-    out.extend_from_slice(&sanitize_f32(spectrum.beat_confidence).to_le_bytes());
+    let mut out = vec![0; 27_usize.saturating_add(bin_count.saturating_mul(4))];
+    out[0] = 0x02;
+    out[1..5].copy_from_slice(&spectrum.timestamp_ms.to_le_bytes());
+    out[5] = bin_count_u8;
+    out[6..10].copy_from_slice(&sanitize_f32(spectrum.level).to_le_bytes());
+    out[10..14].copy_from_slice(&sanitize_f32(spectrum.bass).to_le_bytes());
+    out[14..18].copy_from_slice(&sanitize_f32(spectrum.mid).to_le_bytes());
+    out[18..22].copy_from_slice(&sanitize_f32(spectrum.treble).to_le_bytes());
+    out[22] = u8::from(spectrum.beat);
+    out[23..27].copy_from_slice(&sanitize_f32(spectrum.beat_confidence).to_le_bytes());
+    let mut offset = 27;
 
     if requested_bins >= source_bins.len() {
         for value in source_bins.iter().take(bin_count) {
-            out.extend_from_slice(&sanitize_f32(*value).to_le_bytes());
+            out[offset..offset + 4].copy_from_slice(&sanitize_f32(*value).to_le_bytes());
+            offset += 4;
         }
     } else {
         for index in 0..bin_count {
@@ -434,7 +436,8 @@ pub(super) fn encode_spectrum_binary(
             let slice = &source_bins[start..end];
             #[expect(clippy::cast_precision_loss, clippy::as_conversions)]
             let avg = slice.iter().sum::<f32>() / slice.len() as f32;
-            out.extend_from_slice(&sanitize_f32(avg).to_le_bytes());
+            out[offset..offset + 4].copy_from_slice(&sanitize_f32(avg).to_le_bytes());
+            offset += 4;
         }
     }
 
