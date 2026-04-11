@@ -6,17 +6,22 @@ use axum::response::IntoResponse;
 use tokio::sync::watch;
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
-use hypercolor_types::canvas::{Canvas, Rgba, linear_to_srgb_u8, srgb_u8_to_linear};
+use hypercolor_types::canvas::{
+    Canvas, PublishedSurface, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
+};
 use hypercolor_types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData, ZoneColors};
 
 use super::cache::{
-    FrameRelayMessage, WS_CANVAS_BINARY_CACHE, WS_CANVAS_HEADER, WS_CANVAS_PAYLOAD_BUILD_COUNT,
-    WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT, WS_FRAME_PAYLOAD_BUILD_COUNT, WS_FRAME_PAYLOAD_CACHE,
+    FrameRelayMessage, WS_CANVAS_BINARY_CACHE, WS_CANVAS_HEADER, WS_CANVAS_JPEG_BODY_BUILD_COUNT,
+    WS_CANVAS_JPEG_BODY_CACHE_HIT_COUNT, WS_CANVAS_PAYLOAD_BUILD_COUNT,
+    WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT, WS_CANVAS_RAW_BODY_BUILD_COUNT,
+    WS_CANVAS_RAW_BODY_CACHE_HIT_COUNT, WS_FRAME_PAYLOAD_BUILD_COUNT, WS_FRAME_PAYLOAD_CACHE,
     WS_FRAME_PAYLOAD_CACHE_HIT_COUNT, WS_SCREEN_CANVAS_HEADER, WS_SPECTRUM_PAYLOAD_BUILD_COUNT,
     WS_SPECTRUM_PAYLOAD_CACHE, WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT, cached_frame_payload,
     cached_spectrum_payload, encode_cached_canvas_preview_binary, encode_canvas_binary_with_header,
     encode_canvas_preview_binary, encode_frame_binary, encode_frame_binary_selected,
-    encode_spectrum_binary,
+    encode_spectrum_binary, reset_canvas_jpeg_body_cache_for_tests,
+    reset_canvas_raw_body_cache_for_tests, reset_preview_jpeg_encoders_for_tests,
 };
 use super::command::{
     command_response_from_http, dispatch_command, normalize_command_path, parse_command_method,
@@ -51,6 +56,10 @@ fn reset_ws_payload_caches() {
     WS_FRAME_PAYLOAD_CACHE_HIT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
     WS_CANVAS_PAYLOAD_BUILD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
     WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+    WS_CANVAS_RAW_BODY_BUILD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+    WS_CANVAS_RAW_BODY_CACHE_HIT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+    WS_CANVAS_JPEG_BODY_BUILD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+    WS_CANVAS_JPEG_BODY_CACHE_HIT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
     WS_SPECTRUM_PAYLOAD_BUILD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
     WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
     for shard in WS_FRAME_PAYLOAD_CACHE.iter() {
@@ -62,6 +71,9 @@ fn reset_ws_payload_caches() {
     for shard in WS_SPECTRUM_PAYLOAD_CACHE.iter() {
         shard.lock().unwrap_or_else(PoisonError::into_inner).clear();
     }
+    reset_canvas_raw_body_cache_for_tests();
+    reset_canvas_jpeg_body_cache_for_tests();
+    reset_preview_jpeg_encoders_for_tests();
 }
 
 fn sample_frame() -> FrameData {
@@ -1062,6 +1074,119 @@ fn cached_canvas_preview_binary_reuses_bytes_for_matching_requests() {
 
     assert_eq!(first, second);
     assert_eq!(first.as_ptr(), second.as_ptr());
+}
+
+#[test]
+fn cached_canvas_preview_jpeg_reuses_bytes_for_matching_requests() {
+    let _guard = WS_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    reset_ws_payload_caches();
+
+    let mut canvas = Canvas::new(1, 1);
+    canvas.set_pixel(0, 0, Rgba::new(90, 80, 70, 255));
+    let frame = CanvasFrame::from_canvas(&canvas, 7004, 9904);
+
+    let first = encode_cached_canvas_preview_binary(&frame, CanvasFormat::Jpeg, 1.0);
+    let second = encode_cached_canvas_preview_binary(&frame, CanvasFormat::Jpeg, 1.0);
+
+    assert_eq!(first, second);
+    assert_eq!(first.as_ptr(), second.as_ptr());
+    assert!(
+        WS_CANVAS_PAYLOAD_BUILD_COUNT.load(std::sync::atomic::Ordering::Relaxed) >= 1,
+        "expected at least one cached JPEG build"
+    );
+    assert!(
+        WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT.load(std::sync::atomic::Ordering::Relaxed) >= 1,
+        "expected at least one cached JPEG hit"
+    );
+}
+
+#[test]
+fn cached_canvas_preview_jpeg_reuses_body_for_metadata_only_updates() {
+    let _guard = WS_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    reset_ws_payload_caches();
+
+    let mut canvas = Canvas::new(1, 1);
+    canvas.set_pixel(0, 0, Rgba::new(90, 80, 70, 255));
+    let surface = PublishedSurface::from_owned_canvas(canvas, 7005, 9905);
+    let first = CanvasFrame::from_surface(surface.with_frame_metadata(7005, 9905));
+    let second = CanvasFrame::from_surface(surface.with_frame_metadata(7006, 9906));
+
+    let first_payload = encode_cached_canvas_preview_binary(&first, CanvasFormat::Jpeg, 1.0);
+    let second_payload = encode_cached_canvas_preview_binary(&second, CanvasFormat::Jpeg, 1.0);
+
+    assert_ne!(&first_payload[..14], &second_payload[..14]);
+    assert_eq!(&first_payload[14..], &second_payload[14..]);
+    assert_eq!(
+        WS_CANVAS_JPEG_BODY_BUILD_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        WS_CANVAS_JPEG_BODY_CACHE_HIT_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+}
+
+#[test]
+fn cached_canvas_preview_rgb_reuses_body_for_metadata_only_updates() {
+    let _guard = WS_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    reset_ws_payload_caches();
+
+    let mut canvas = Canvas::new(1, 1);
+    canvas.set_pixel(0, 0, Rgba::new(12, 34, 56, 255));
+    let surface = PublishedSurface::from_owned_canvas(canvas, 7007, 9907);
+    let first = CanvasFrame::from_surface(surface.with_frame_metadata(7007, 9907));
+    let second = CanvasFrame::from_surface(surface.with_frame_metadata(7008, 9908));
+
+    let first_payload = encode_cached_canvas_preview_binary(&first, CanvasFormat::Rgb, 1.0);
+    let second_payload = encode_cached_canvas_preview_binary(&second, CanvasFormat::Rgb, 1.0);
+
+    assert_ne!(&first_payload[..14], &second_payload[..14]);
+    assert_eq!(&first_payload[14..], &second_payload[14..]);
+    assert!(
+        WS_CANVAS_RAW_BODY_BUILD_COUNT.load(std::sync::atomic::Ordering::Relaxed) >= 1,
+        "expected at least one raw body build"
+    );
+    assert!(
+        WS_CANVAS_RAW_BODY_CACHE_HIT_COUNT.load(std::sync::atomic::Ordering::Relaxed) >= 1,
+        "expected at least one raw body cache hit"
+    );
+}
+
+#[test]
+fn cached_canvas_preview_rgb_reuses_body_across_headers() {
+    let _guard = WS_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    reset_ws_payload_caches();
+
+    let mut canvas = Canvas::new(1, 1);
+    canvas.set_pixel(0, 0, Rgba::new(98, 76, 54, 255));
+    let frame = CanvasFrame::from_canvas(&canvas, 7009, 9909);
+
+    let preview_payload = encode_cached_canvas_preview_binary(&frame, CanvasFormat::Rgb, 1.0);
+    let screen_payload = super::cache::try_encode_cached_canvas_binary_with_header(
+        &frame,
+        CanvasFormat::Rgb,
+        WS_SCREEN_CANVAS_HEADER,
+    )
+    .expect("screen preview payload should encode");
+
+    assert_ne!(preview_payload[0], screen_payload[0]);
+    assert_eq!(&preview_payload[14..], &screen_payload[14..]);
+    assert!(
+        WS_CANVAS_RAW_BODY_BUILD_COUNT.load(std::sync::atomic::Ordering::Relaxed) >= 1,
+        "expected at least one raw body build"
+    );
+    assert!(
+        WS_CANVAS_RAW_BODY_CACHE_HIT_COUNT.load(std::sync::atomic::Ordering::Relaxed) >= 1,
+        "expected at least one raw body cache hit"
+    );
 }
 
 #[test]

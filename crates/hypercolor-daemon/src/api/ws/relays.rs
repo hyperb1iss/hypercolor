@@ -21,15 +21,14 @@ use super::cache::{
     FrameRelayMessage, WS_CANVAS_BYTES_PER_PIXEL_RGBA, WS_CANVAS_PAYLOAD_BUILD_COUNT,
     WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT, WS_CLIENT_COUNT, WS_FRAME_PAYLOAD_BUILD_COUNT,
     WS_FRAME_PAYLOAD_CACHE_HIT_COUNT, WS_SCREEN_CANVAS_HEADER, WS_TOTAL_BYTES_SENT,
-    cached_frame_payload, cached_spectrum_payload, encode_cached_canvas_binary_with_header,
-    encode_cached_canvas_preview_binary,
+    cached_frame_payload, cached_spectrum_payload, try_encode_cached_canvas_binary_with_header,
+    try_encode_cached_canvas_preview_binary,
 };
-use super::preview_encode::PreviewJpegEncoder;
 use super::protocol::{
-    ActiveFramesConfig, CanvasConfig, CanvasFormat, MetricsCopies, MetricsDevices, MetricsFps,
-    MetricsFrameTime, MetricsMemory, MetricsPacing, MetricsPayload, MetricsPreview,
-    MetricsRenderSurfaces, MetricsStages, MetricsTimeline, MetricsWebsocket, ServerMessage,
-    SpectrumConfig, SubscriptionState, WsChannel, event_message_parts, should_relay_event,
+    ActiveFramesConfig, CanvasConfig, MetricsCopies, MetricsDevices, MetricsFps, MetricsFrameTime,
+    MetricsMemory, MetricsPacing, MetricsPayload, MetricsPreview, MetricsRenderSurfaces,
+    MetricsStages, MetricsTimeline, MetricsWebsocket, ServerMessage, SpectrumConfig,
+    SubscriptionState, WsChannel, event_message_parts, should_relay_event,
 };
 use crate::api::AppState;
 use crate::performance::FrameTimeSummary as RenderFrameTimeSummary;
@@ -243,8 +242,6 @@ pub(super) async fn relay_canvas(
 ) {
     let mut canvas_rx = None::<crate::preview_runtime::PreviewFrameReceiver>;
     let mut active_canvas_config = None::<CanvasConfig>;
-    let mut jpeg_encoder = None::<PreviewJpegEncoder>;
-    let mut jpeg_encoder_failed = false;
     let mut receiver_initialized = false;
     let mut last_sent_surface = None::<PreviewSurfaceIdentity>;
     let mut last_sent_brightness_bits: Option<u32> = None;
@@ -337,27 +334,11 @@ pub(super) async fn relay_canvas(
                     continue;
                 }
 
-                let payload = match canvas_config.format {
-                    CanvasFormat::Rgb | CanvasFormat::Rgba => Some(encode_cached_canvas_preview_binary(
-                        &latest_canvas,
-                        canvas_config.format,
-                        brightness,
-                    )),
-                    CanvasFormat::Jpeg => {
-                        if jpeg_encoder.is_none() && !jpeg_encoder_failed {
-                            match PreviewJpegEncoder::new() {
-                                Ok(encoder) => jpeg_encoder = Some(encoder),
-                                Err(error) => {
-                                    warn!(?error, "preview JPEG encoder initialization failed");
-                                    jpeg_encoder_failed = true;
-                                }
-                            }
-                        }
-                        jpeg_encoder
-                            .as_mut()
-                            .and_then(|encoder| encoder.encode(&latest_canvas, super::cache::WS_CANVAS_HEADER, brightness).ok())
-                    }
-                };
+                let payload = try_encode_cached_canvas_preview_binary(
+                    &latest_canvas,
+                    canvas_config.format,
+                    brightness,
+                );
 
                 let Some(payload) = payload else {
                     pending_send = false;
@@ -388,8 +369,6 @@ pub(super) async fn relay_screen_canvas(
 ) {
     let mut canvas_rx = None::<crate::preview_runtime::PreviewFrameReceiver>;
     let mut active_canvas_config = None::<CanvasConfig>;
-    let mut jpeg_encoder = None::<PreviewJpegEncoder>;
-    let mut jpeg_encoder_failed = false;
     let mut receiver_initialized = false;
     let mut last_sent_surface = None::<PreviewSurfaceIdentity>;
     let mut pending_send = false;
@@ -459,27 +438,11 @@ pub(super) async fn relay_screen_canvas(
                     continue;
                 }
 
-                let payload = match canvas_config.format {
-                    CanvasFormat::Rgb | CanvasFormat::Rgba => Some(encode_cached_canvas_binary_with_header(
-                        &latest_canvas,
-                        canvas_config.format,
-                        WS_SCREEN_CANVAS_HEADER,
-                    )),
-                    CanvasFormat::Jpeg => {
-                        if jpeg_encoder.is_none() && !jpeg_encoder_failed {
-                            match PreviewJpegEncoder::new() {
-                                Ok(encoder) => jpeg_encoder = Some(encoder),
-                                Err(error) => {
-                                    warn!(?error, "screen preview JPEG encoder initialization failed");
-                                    jpeg_encoder_failed = true;
-                                }
-                            }
-                        }
-                        jpeg_encoder
-                            .as_mut()
-                            .and_then(|encoder| encoder.encode(&latest_canvas, WS_SCREEN_CANVAS_HEADER, 1.0).ok())
-                    }
-                };
+                let payload = try_encode_cached_canvas_binary_with_header(
+                    &latest_canvas,
+                    canvas_config.format,
+                    WS_SCREEN_CANVAS_HEADER,
+                );
 
                 let Some(payload) = payload else {
                     pending_send = false;
