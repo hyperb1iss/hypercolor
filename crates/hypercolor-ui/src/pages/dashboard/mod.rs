@@ -8,9 +8,11 @@
 
 use std::collections::VecDeque;
 
+use leptos::ev;
 use leptos::prelude::*;
-
 use leptos_icons::Icon;
+use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 
 use crate::api;
 use crate::app::WsContext;
@@ -24,11 +26,15 @@ use crate::ws::PerformanceMetrics;
 mod charts;
 mod gauges;
 mod header;
+mod layout;
+mod panel_frame;
 mod timeline;
 
 use charts::{DistributionPanel, FavoritesPanel, PipelinePanel, ThroughputPanel};
 use gauges::{HeroGauges, MemoryAndDevicesPanel, ReuseRatesPanel};
 use header::{StatusSkeleton, StatusStrip};
+use layout::{DashboardLayout, PanelId};
+use panel_frame::PanelFrame;
 use timeline::{BackpressureBanner, FrameTimelinePanel, LatestFramePanel, PacingPanel};
 
 // ── Layout tunables ──────────────────────────────────────────────────
@@ -204,9 +210,56 @@ pub fn DashboardPage() -> impl IntoView {
     let series_phase =
         Memo::new(move |_| history.read().iter().map(|s| s.phase).collect::<Vec<_>>());
 
+    // ── Layout state: panel order, widths, visibility ───────────────
+    //
+    // Loaded from localStorage on mount, written back on every
+    // mutation. The drag_source signal is shared by every panel frame
+    // so dragstart on one frame flows through to every frame's drop
+    // target highlighting.
+    let dash_layout = RwSignal::new(DashboardLayout::load());
+    let drag_source: RwSignal<Option<usize>> = RwSignal::new(None);
+    let (layout_menu_open, set_layout_menu_open) = signal(false);
+
+    let on_panel_drop = Callback::new(move |(from, to): (usize, usize)| {
+        dash_layout.update(|l| {
+            l.move_panel(from, to);
+            l.save();
+        });
+        drag_source.set(None);
+    });
+    let on_panel_cycle_width = Callback::new(move |id: PanelId| {
+        dash_layout.update(|l| {
+            l.cycle_width(id);
+            l.save();
+        });
+    });
+    let on_panel_hide = Callback::new(move |id: PanelId| {
+        dash_layout.update(|l| {
+            l.set_visible(id, false);
+            l.save();
+        });
+    });
+    let on_panel_show = Callback::new(move |id: PanelId| {
+        dash_layout.update(|l| {
+            l.set_visible(id, true);
+            l.save();
+        });
+    });
+    let on_layout_reset = Callback::new(move |()| {
+        dash_layout.set(DashboardLayout::default_layout());
+        dash_layout.with_untracked(|l| l.save());
+        set_layout_menu_open.set(false);
+    });
+
+    install_layout_menu_outside_handler(set_layout_menu_open);
+
     view! {
         <div class="flex h-full min-h-0 flex-col overflow-hidden animate-fade-in">
-            <header class="shrink-0 glass-subtle border-b border-edge-subtle/15">
+            // `relative z-30` lifts the header into its own stacking
+            // context above the scroll container below, so the layout
+            // gear menu can pop down past the header edge and float
+            // over the hero row instead of being clipped behind it.
+            <header class="relative z-30 shrink-0 glass-subtle border-b border-edge-subtle/15">
                 <div class="px-6 py-4 flex items-center gap-5 min-w-0">
                     // ── Title cluster: icon + "Dashboard" ──
                     <div class="flex items-center gap-2.5 shrink-0">
@@ -248,6 +301,38 @@ pub fn DashboardPage() -> impl IntoView {
                             }
                         })}
                     </Suspense>
+
+                    // Layout gear — opens the panel visibility / reset menu.
+                    // A small coral dot badges the icon when one or more
+                    // panels are currently hidden from the grid, so the
+                    // gear is the only way to get them back.
+                    <div class="layout-menu-anchor relative shrink-0">
+                        <button
+                            type="button"
+                            class="relative p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary \
+                                   hover:bg-surface-hover/40 transition-all"
+                            class=("text-electric-purple", move || layout_menu_open.get())
+                            title="Dashboard layout"
+                            on:click=move |_| set_layout_menu_open.update(|v| *v = !*v)
+                        >
+                            <Icon icon=LuLayoutDashboard width="15px" height="15px" />
+                            {move || dash_layout.read().has_hidden().then(|| view! {
+                                <span
+                                    class="absolute top-1 right-1 w-1.5 h-1.5 rounded-full"
+                                    style="background: var(--color-coral); \
+                                           box-shadow: 0 0 6px rgba(255, 106, 193, 0.9)"
+                                />
+                            })}
+                        </button>
+                        <Show when=move || layout_menu_open.get()>
+                            <LayoutMenu
+                                layout=dash_layout
+                                on_show=on_panel_show
+                                on_hide=on_panel_hide
+                                on_reset=on_layout_reset
+                            />
+                        </Show>
+                    </div>
                 </div>
             </header>
 
@@ -278,50 +363,95 @@ pub fn DashboardPage() -> impl IntoView {
                         </div>
                     </div>
 
-                    // ── Stats stack: full page width under the hero row. ──
-                    <section class="flex flex-col gap-4 min-w-0">
-                        <HeroGauges
-                            metrics=ws.metrics
-                            preview_fps=ws.preview_fps
-                            preview_target_fps=ws.preview_target_fps
-                            preview_present=preview_telemetry.presenter
-                            engine_fps_series=Signal::derive(move || series_engine_fps.get())
-                            frame_time_series=Signal::derive(move || series_frame_avg.get())
-                            preview_fps_series=Signal::derive(move || series_preview_fps.get())
-                        />
-
-                        <PipelinePanel metrics=ws.metrics />
-
-                        <FrameTimelinePanel
-                            metrics=ws.metrics
-                            phase_history=Signal::derive(move || series_phase.get())
-                        />
-
-                        <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                            <DistributionPanel metrics=ws.metrics />
-                            <PacingPanel
-                                metrics=ws.metrics
-                                jitter_series=Signal::derive(move || series_jitter.get())
-                                wake_series=Signal::derive(move || series_wake.get())
-                                frame_age_series=Signal::derive(move || series_frame_age.get())
-                                frame_p95_series=Signal::derive(move || series_frame_p95.get())
-                            />
+                    // ── Stats grid: layout-driven, drag-to-reorder, per-panel
+                    // width and visibility. Panels below `xl` always
+                    // collapse to full width; above `xl` each panel honors
+                    // its stored `PanelWidth`. ──
+                    <section class="min-w-0">
+                        <div class="grid grid-cols-6 gap-4 min-w-0">
+                            {move || {
+                                let panels: Vec<_> = dash_layout
+                                    .read()
+                                    .panels
+                                    .iter()
+                                    .cloned()
+                                    .enumerate()
+                                    .filter(|(_, p)| p.visible)
+                                    .collect();
+                                panels
+                                    .into_iter()
+                                    .map(|(idx, config)| {
+                                        let panel_view = match config.id {
+                                            PanelId::HeroGauges => view! {
+                                                <HeroGauges
+                                                    metrics=ws.metrics
+                                                    preview_fps=ws.preview_fps
+                                                    preview_target_fps=ws.preview_target_fps
+                                                    preview_present=preview_telemetry.presenter
+                                                    engine_fps_series=Signal::derive(move || series_engine_fps.get())
+                                                    frame_time_series=Signal::derive(move || series_frame_avg.get())
+                                                    preview_fps_series=Signal::derive(move || series_preview_fps.get())
+                                                />
+                                            }.into_any(),
+                                            PanelId::Pipeline => view! {
+                                                <PipelinePanel metrics=ws.metrics />
+                                            }.into_any(),
+                                            PanelId::FrameTimeline => view! {
+                                                <FrameTimelinePanel
+                                                    metrics=ws.metrics
+                                                    phase_history=Signal::derive(move || series_phase.get())
+                                                />
+                                            }.into_any(),
+                                            PanelId::Distribution => view! {
+                                                <DistributionPanel metrics=ws.metrics />
+                                            }.into_any(),
+                                            PanelId::Pacing => view! {
+                                                <PacingPanel
+                                                    metrics=ws.metrics
+                                                    jitter_series=Signal::derive(move || series_jitter.get())
+                                                    wake_series=Signal::derive(move || series_wake.get())
+                                                    frame_age_series=Signal::derive(move || series_frame_age.get())
+                                                    frame_p95_series=Signal::derive(move || series_frame_p95.get())
+                                                />
+                                            }.into_any(),
+                                            PanelId::ReuseRates => view! {
+                                                <ReuseRatesPanel metrics=ws.metrics />
+                                            }.into_any(),
+                                            PanelId::MemoryAndDevices => view! {
+                                                <MemoryAndDevicesPanel metrics=ws.metrics />
+                                            }.into_any(),
+                                            PanelId::Throughput => view! {
+                                                <ThroughputPanel
+                                                    metrics=ws.metrics
+                                                    ws_bytes_series=Signal::derive(move || series_ws_bytes.get())
+                                                />
+                                            }.into_any(),
+                                            PanelId::LatestFrame => view! {
+                                                <LatestFramePanel metrics=ws.metrics />
+                                            }.into_any(),
+                                        };
+                                        view! {
+                                            <PanelFrame
+                                                panel_id=config.id
+                                                width=config.width
+                                                index=idx
+                                                drag_source=drag_source
+                                                on_drop=on_panel_drop
+                                                on_cycle_width=on_panel_cycle_width
+                                                on_hide=on_panel_hide
+                                            >
+                                                {panel_view}
+                                            </PanelFrame>
+                                        }
+                                    })
+                                    .collect_view()
+                            }}
                         </div>
-
-                        <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                            <ReuseRatesPanel metrics=ws.metrics />
-                            <MemoryAndDevicesPanel metrics=ws.metrics />
-                        </div>
-
-                        <ThroughputPanel
-                            metrics=ws.metrics
-                            ws_bytes_series=Signal::derive(move || series_ws_bytes.get())
-                        />
-
-                        <LatestFramePanel metrics=ws.metrics />
 
                         {move || ws.backpressure_notice.get().map(|notice| view! {
-                            <BackpressureBanner notice=notice />
+                            <div class="mt-4">
+                                <BackpressureBanner notice=notice />
+                            </div>
                         })}
                     </section>
                 </div>
@@ -350,4 +480,131 @@ fn set_resizing_body(active: bool) {
     } else {
         let _ = body.class_list().remove_1("resizing");
     }
+}
+
+// ── Layout menu ──────────────────────────────────────────────────────
+
+/// Dashboard header popover — list of every panel with visibility
+/// toggles, plus a reset-to-default button. The only way to un-hide a
+/// panel once it's been dismissed from the floating control bar.
+#[component]
+fn LayoutMenu(
+    layout: RwSignal<DashboardLayout>,
+    on_show: Callback<PanelId>,
+    on_hide: Callback<PanelId>,
+    on_reset: Callback<()>,
+) -> impl IntoView {
+    view! {
+        <div
+            class="absolute right-0 top-full mt-2 w-64 rounded-xl glass-dense border \
+                   border-edge-default dropdown-glow animate-slide-down z-50 overflow-hidden"
+            style="background: linear-gradient(180deg, \
+                   rgba(18, 14, 28, 0.95) 0%, \
+                   rgba(10, 8, 20, 0.96) 100%)"
+            on:mousedown=|ev: ev::MouseEvent| ev.stop_propagation()
+        >
+            <div class="px-3 pt-3 pb-2 flex items-center gap-2">
+                <Icon
+                    icon=LuLayoutDashboard
+                    width="12px"
+                    height="12px"
+                    style="color: var(--color-electric-purple)"
+                />
+                <span class="text-[10px] font-mono uppercase tracking-[0.16em] font-semibold text-electric-purple">
+                    "Dashboard panels"
+                </span>
+            </div>
+
+            <div class="px-2 pb-2 flex flex-col gap-0.5">
+                {move || {
+                    layout
+                        .read()
+                        .panels
+                        .iter()
+                        .cloned()
+                        .map(|config| {
+                            let id = config.id;
+                            let visible = config.visible;
+                            view! {
+                                <button
+                                    type="button"
+                                    class="flex items-center gap-2.5 px-2 py-1.5 rounded-md text-left \
+                                           text-[11px] transition-colors hover:bg-surface-hover/40"
+                                    on:click=move |_| {
+                                        if visible {
+                                            on_hide.run(id);
+                                        } else {
+                                            on_show.run(id);
+                                        }
+                                    }
+                                >
+                                    <span
+                                        class="shrink-0 inline-flex items-center justify-center w-4 h-4 rounded \
+                                               transition-all"
+                                        class=("text-electric-purple", move || visible)
+                                        class=("text-fg-tertiary/40", move || !visible)
+                                        style=if visible {
+                                            "background: rgba(225, 53, 255, 0.12); \
+                                             border: 1px solid rgba(225, 53, 255, 0.35)"
+                                        } else {
+                                            "background: rgba(255, 255, 255, 0.02); \
+                                             border: 1px solid rgba(255, 255, 255, 0.08)"
+                                        }
+                                    >
+                                        {if visible {
+                                            view! { <Icon icon=LuEye width="9px" height="9px" /> }.into_any()
+                                        } else {
+                                            view! { <Icon icon=LuEyeOff width="9px" height="9px" /> }.into_any()
+                                        }}
+                                    </span>
+                                    <span
+                                        class="flex-1 min-w-0 truncate"
+                                        class=("text-fg-primary", move || visible)
+                                        class=("text-fg-tertiary", move || !visible)
+                                    >
+                                        {id.label()}
+                                    </span>
+                                    <span class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/50">
+                                        {config.width.label()}
+                                    </span>
+                                </button>
+                            }
+                        })
+                        .collect_view()
+                }}
+            </div>
+
+            <div class="h-px bg-edge-subtle/40" />
+
+            <button
+                type="button"
+                class="w-full px-3 py-2.5 flex items-center gap-2 text-[11px] text-fg-tertiary \
+                       hover:text-electric-purple hover:bg-electric-purple/5 transition-colors"
+                on:click=move |_| on_reset.run(())
+            >
+                <Icon icon=LuRotateCcw width="11px" height="11px" />
+                <span>"Reset to default layout"</span>
+            </button>
+        </div>
+    }
+}
+
+/// One-time document-level mousedown listener that closes the dashboard
+/// layout menu when the user clicks outside its anchor. Mirrors the
+/// pattern used in `preset_panel::install_dropdown_outside_handler`.
+fn install_layout_menu_outside_handler(set_open: WriteSignal<bool>) {
+    let handler = Closure::<dyn Fn(web_sys::Event)>::new(move |ev: web_sys::Event| {
+        let inside = ev
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+            .map(|el| el.closest(".layout-menu-anchor").ok().flatten().is_some())
+            .unwrap_or(false);
+        if !inside {
+            set_open.set(false);
+        }
+    });
+    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        let _ = doc.add_event_listener_with_callback("mousedown", handler.as_ref().unchecked_ref());
+    }
+    handler.forget();
 }
