@@ -63,10 +63,12 @@ pub(super) fn render_display_view(
         rendered_rgb.clear();
         return;
     };
-    rendered_rgb.clear();
-    rendered_rgb.resize(render_len, 0);
+    if rendered_rgb.len() != render_len {
+        rendered_rgb.resize(render_len, 0);
+    }
 
     if width == 0 || height == 0 || source.width == 0 || source.height == 0 {
+        rendered_rgb.fill(0);
         return;
     }
 
