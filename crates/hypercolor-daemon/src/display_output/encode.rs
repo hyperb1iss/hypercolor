@@ -55,6 +55,37 @@ pub(super) fn encode_canvas_frame(
     brightness: f32,
     encode_state: &mut DisplayEncodeState,
 ) -> Result<Vec<u8>> {
+    render_canvas_frame_rgb(source, viewport, geometry, encode_state);
+    encode_prepared_rgb_frame(geometry, brightness, encode_state)
+}
+
+pub(super) fn render_canvas_frame_rgb(
+    source: &CanvasFrame,
+    viewport: &DisplayViewport,
+    geometry: &DisplayGeometry,
+    encode_state: &mut DisplayEncodeState,
+) {
+    if geometry.width == 0 || geometry.height == 0 {
+        encode_state.rgb_buffer.clear();
+        return;
+    }
+
+    render_display_view(
+        source,
+        viewport,
+        geometry.width,
+        geometry.height,
+        &mut encode_state.rgb_buffer,
+        &mut encode_state.axis_plan,
+        None,
+    );
+}
+
+pub(super) fn encode_prepared_rgb_frame(
+    geometry: &DisplayGeometry,
+    brightness: f32,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<Vec<u8>> {
     let brightness_factor = display_brightness_factor(brightness);
     if brightness_factor == 0 {
         prepare_black_frame(geometry, &mut encode_state.rgb_buffer);
@@ -62,22 +93,10 @@ pub(super) fn encode_canvas_frame(
     }
 
     refresh_display_brightness_lut(encode_state, brightness_factor);
-    let brightness_lut = if brightness_factor >= u16::from(u8::MAX) {
-        None
-    } else {
-        Some(&encode_state.brightness_lut)
-    };
-    let rgb_buffer = &mut encode_state.rgb_buffer;
-    let axis_plan = &mut encode_state.axis_plan;
-
-    render_display_view(
-        source,
-        viewport,
-        geometry.width,
-        geometry.height,
-        rgb_buffer,
-        axis_plan,
-        brightness_lut,
+    apply_display_brightness(
+        &mut encode_state.rgb_buffer,
+        brightness_factor,
+        &encode_state.brightness_lut,
     );
     if geometry.circular {
         apply_circular_mask(
@@ -88,6 +107,19 @@ pub(super) fn encode_canvas_frame(
     }
 
     encode_rgb_to_jpeg(geometry, encode_state)
+}
+
+pub(super) fn apply_display_brightness(
+    rgb_buffer: &mut [u8],
+    brightness_factor: u16,
+    brightness_lut: &[u8; 256],
+) {
+    if brightness_factor >= u16::from(u8::MAX) {
+        return;
+    }
+    for channel in rgb_buffer {
+        *channel = brightness_lut[usize::from(*channel)];
+    }
 }
 
 fn encode_rgb_to_jpeg(

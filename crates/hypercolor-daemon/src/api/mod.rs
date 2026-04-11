@@ -58,6 +58,7 @@ use hypercolor_types::spatial::SpatialLayout;
 
 use crate::attachment_profiles::AttachmentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
+use crate::display_overlays::DisplayOverlayRegistry;
 use crate::layout_auto_exclusions;
 use crate::library::{InMemoryLibraryStore, JsonLibraryStore, LibraryStore};
 use crate::logical_devices::LogicalDevice;
@@ -146,6 +147,9 @@ pub struct AppState {
 
     /// Persistent per-device user settings store.
     pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
+
+    /// Live per-display overlay configs shared with the display-output workers.
+    pub display_overlays: Arc<DisplayOverlayRegistry>,
 
     /// Shared encrypted credential store for network-authenticated backends.
     pub credential_store: Arc<CredentialStore>,
@@ -310,6 +314,7 @@ impl AppState {
         let attachment_registry = Arc::new(RwLock::new(attachment_registry));
         let attachment_profiles = Arc::new(RwLock::new(attachment_profiles));
         let device_settings = Arc::new(RwLock::new(device_settings));
+        let display_overlays = Arc::new(DisplayOverlayRegistry::new());
         let layouts = Arc::new(RwLock::new(HashMap::new()));
         let layouts_path = ConfigManager::data_dir().join("layouts.json");
         let layout_auto_exclusions = Arc::new(RwLock::new(HashMap::new()));
@@ -369,6 +374,7 @@ impl AppState {
             attachment_registry,
             attachment_profiles,
             device_settings,
+            display_overlays,
             credential_store,
             driver_host,
             driver_registry,
@@ -448,6 +454,7 @@ impl AppState {
             attachment_registry: Arc::clone(&daemon.attachment_registry),
             attachment_profiles: Arc::clone(&daemon.attachment_profiles),
             device_settings: Arc::clone(&daemon.device_settings),
+            display_overlays: Arc::clone(&daemon.display_overlays),
             credential_store: Arc::clone(&daemon.credential_store),
             driver_host,
             driver_registry,

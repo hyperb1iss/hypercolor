@@ -85,6 +85,12 @@ impl InputManager {
         self.sensor_snapshot_rx = Some(receiver);
     }
 
+    /// Clone the configured latest-value sensor receiver, if one exists.
+    #[must_use]
+    pub fn sensor_snapshot_receiver(&self) -> Option<watch::Receiver<Arc<SystemSnapshot>>> {
+        self.sensor_snapshot_rx.as_ref().cloned()
+    }
+
     /// Number of registered input sources.
     #[must_use]
     pub fn source_count(&self) -> usize {

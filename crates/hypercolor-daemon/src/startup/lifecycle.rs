@@ -14,6 +14,7 @@ use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::effect::{EffectId, EffectMetadata};
 
 use crate::discovery::{self, DiscoveryBackend};
+use crate::display_output::overlay::DefaultOverlayRendererFactory;
 use crate::display_output::{
     DEFAULT_STATIC_HOLD_REFRESH_INTERVAL, DisplayOutputState, DisplayOutputThread,
 };
@@ -99,6 +100,12 @@ impl DaemonState {
             RenderThread::try_spawn(rt_state)
                 .context("failed to spawn render thread with resolved compositor mode")?,
         );
+        let sensor_snapshot_rx = self
+            .input_manager
+            .lock()
+            .await
+            .sensor_snapshot_receiver()
+            .expect("display output requires a configured sensor snapshot receiver");
         self.display_output_thread = Some(DisplayOutputThread::spawn(DisplayOutputState {
             backend_manager: Arc::clone(&self.backend_manager),
             device_registry: self.device_registry.clone(),
@@ -107,6 +114,9 @@ impl DaemonState {
             event_bus: Arc::clone(&self.event_bus),
             power_state: self.power_state.subscribe(),
             static_hold_refresh_interval: DEFAULT_STATIC_HOLD_REFRESH_INTERVAL,
+            display_overlays: Arc::clone(&self.display_overlays),
+            sensor_snapshot_rx,
+            overlay_factory: Arc::new(DefaultOverlayRendererFactory::new()),
         }));
 
         // Publish a startup event so subscribers know the daemon is alive.

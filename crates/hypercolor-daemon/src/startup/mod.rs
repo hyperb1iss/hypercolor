@@ -38,6 +38,7 @@ use crate::attachment_profiles::AttachmentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery;
 use crate::display_output::DisplayOutputThread;
+use crate::display_overlays::DisplayOverlayRegistry;
 use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
 use crate::network::DaemonDriverHost;
@@ -140,6 +141,9 @@ pub struct DaemonState {
 
     /// Persisted global and per-device output settings.
     pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
+
+    /// Live per-display overlay configs shared with display workers and the API.
+    pub display_overlays: Arc<DisplayOverlayRegistry>,
 
     /// Persisted effect -> layout association map.
     pub effect_layout_links: Arc<RwLock<HashMap<String, String>>>,

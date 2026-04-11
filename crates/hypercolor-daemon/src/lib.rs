@@ -4,6 +4,7 @@ pub mod attachment_profiles;
 pub mod device_settings;
 pub mod discovery;
 pub mod display_output;
+pub mod display_overlays;
 pub mod effect_layouts;
 pub mod layout_auto_exclusions;
 pub mod layout_store;

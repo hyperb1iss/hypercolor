@@ -4,6 +4,7 @@
 //! disturbing the existing LED frame routing path.
 
 mod encode;
+pub mod overlay;
 mod render;
 mod worker;
 
@@ -21,12 +22,15 @@ use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::device::{DeviceId, DeviceTopologyHint};
+use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
 
 use crate::discovery::backend_id_for_device;
+use crate::display_overlays::DisplayOverlayRegistry;
 use crate::logical_devices::{self, LogicalDevice};
 use crate::session::OutputPowerState;
 
+use self::overlay::OverlayRendererFactory;
 use self::render::display_viewport_signature;
 use worker::DisplayWorkerHandle;
 
@@ -60,6 +64,12 @@ pub struct DisplayOutputState {
     pub power_state: watch::Receiver<OutputPowerState>,
     /// How often unchanged display frames should be reasserted during static hold.
     pub static_hold_refresh_interval: Duration,
+    /// Per-device overlay configs distributed to display workers.
+    pub display_overlays: Arc<DisplayOverlayRegistry>,
+    /// Latest-value sensor stream shared with overlay renderers.
+    pub sensor_snapshot_rx: watch::Receiver<Arc<SystemSnapshot>>,
+    /// Overlay renderer factory for display workers.
+    pub overlay_factory: Arc<dyn OverlayRendererFactory>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -309,6 +319,9 @@ async fn reconcile_display_workers(
                         backend_io,
                         state.power_state.clone(),
                         state.static_hold_refresh_interval,
+                        state.display_overlays.receiver_for(target.device_id).await,
+                        state.sensor_snapshot_rx.clone(),
+                        Arc::clone(&state.overlay_factory),
                     ),
                 );
             }
