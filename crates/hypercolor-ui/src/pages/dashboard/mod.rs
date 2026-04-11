@@ -1,7 +1,8 @@
 //! Dashboard page — live preview, favorites, and a rich performance theatre.
 //!
-//! Layout: a resizable sidebar (preview + favorites) next to a data-heavy main
-//! column with hero gauges, pipeline visualisations, frame timeline, sparklines,
+//! Layout: a hero row at the top (preview on the left, favorites on the right,
+//! with a draggable divider between them) followed by a full-width stats stack
+//! below — hero gauges, pipeline visualisations, frame timeline, sparklines,
 //! and pacing/memory/throughput panels. Every chart is pure inline SVG driven
 //! by reactive Leptos signals fed from the WebSocket metrics stream.
 
@@ -9,9 +10,10 @@ use std::collections::VecDeque;
 
 use leptos::prelude::*;
 
+use leptos_icons::Icon;
+
 use crate::api;
 use crate::app::WsContext;
-use crate::components::page_header::PageHeader;
 use crate::components::perf_charts::PhaseFrame;
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
@@ -23,17 +25,18 @@ mod gauges;
 mod header;
 mod timeline;
 
-use charts::{DistributionPanel, FavoritesPanel, PipelinePanel, ResizeHint, ThroughputPanel};
+use charts::{DistributionPanel, FavoritesPanel, PipelinePanel, ThroughputPanel};
 use gauges::{HeroGauges, MemoryAndDevicesPanel, ReuseRatesPanel};
-use header::{PreviewCard, StatusSkeleton, StatusStrip};
+use header::{PresetDashboardStrip, PreviewCard, StatusSkeleton, StatusStrip};
 use timeline::{BackpressureBanner, FrameTimelinePanel, LatestFramePanel, PacingPanel};
 
 // ── Layout tunables ──────────────────────────────────────────────────
 
 const HISTORY_SIZE: usize = 60;
 const MIN_PREVIEW_WIDTH: f64 = 280.0;
-const MAX_PREVIEW_WIDTH: f64 = 720.0;
-const DEFAULT_PREVIEW_WIDTH: f64 = 420.0;
+const MAX_PREVIEW_WIDTH: f64 = 820.0;
+const DEFAULT_PREVIEW_WIDTH: f64 = 460.0;
+const HERO_ROW_HEIGHT_PX: f64 = 540.0;
 const PREVIEW_WIDTH_STORAGE_KEY: &str = "hc-dashboard-preview-width";
 const DASHBOARD_PREVIEW_FPS_CAP: u32 = 60;
 
@@ -203,58 +206,82 @@ pub fn DashboardPage() -> impl IntoView {
     view! {
         <div class="flex h-full min-h-0 flex-col overflow-hidden animate-fade-in">
             <header class="shrink-0 glass-subtle border-b border-edge-subtle/15">
-                <div class="px-6 pt-5 pb-4">
-                    <PageHeader
-                        icon=LuActivity
-                        title="Dashboard"
-                        subtitle="Live render preview, system health, and frame pipeline telemetry."
-                        accent_rgb="128, 255, 234"
-                        gradient="linear-gradient(105deg,#80ffea 0%,#d4eaff 50%,#50fa7b 100%)"
-                    />
-                </div>
+                <div class="px-6 py-4 flex items-center gap-5 min-w-0">
+                    // ── Title cluster: icon + "Dashboard" ──
+                    <div class="flex items-center gap-2.5 shrink-0">
+                        <span
+                            class="shrink-0 inline-flex items-center justify-center"
+                            style="color: rgb(128, 255, 234); \
+                                   filter: drop-shadow(0 0 10px rgba(128, 255, 234, 0.55))"
+                        >
+                            <Icon icon=LuActivity width="20px" height="20px" />
+                        </span>
+                        <h1
+                            class="leading-none logo-gradient-text whitespace-nowrap"
+                            style="font-family:'Orbitron',sans-serif; font-weight:900; \
+                                   font-size:22px; letter-spacing:-0.01em; \
+                                   background-image:linear-gradient(105deg,#80ffea 0%,#d4eaff 50%,#50fa7b 100%)"
+                        >
+                            "Dashboard"
+                        </h1>
+                    </div>
 
-                <Suspense fallback=move || view! { <StatusSkeleton /> }>
-                    {move || status_resource.get().map(|result| {
-                        match result {
-                            Ok(status) => view! { <StatusStrip status=status metrics=ws.metrics /> }.into_any(),
-                            Err(e) => view! {
-                                <div class="px-6 py-3 text-sm text-status-error border-t border-edge-subtle/10">
-                                    "Failed to connect: " {e}
-                                </div>
-                            }.into_any(),
-                        }
-                    })}
-                </Suspense>
+                    // Vertical divider between title and tagline.
+                    <div class="w-px h-6 bg-edge-subtle/30 shrink-0" />
+
+                    // ── Tagline (truncates before pills) ──
+                    <p class="text-[12px] text-fg-tertiary/75 truncate min-w-0 flex-1">
+                        "Live render preview, system health, and frame pipeline telemetry."
+                    </p>
+
+                    // ── Status pills (right-aligned, shrink-0) ──
+                    <Suspense fallback=move || view! { <StatusSkeleton /> }>
+                        {move || status_resource.get().map(|result| {
+                            match result {
+                                Ok(status) => view! { <StatusStrip status=status metrics=ws.metrics /> }.into_any(),
+                                Err(e) => view! {
+                                    <div class="text-[11px] text-status-error shrink-0">
+                                        "Failed to connect: " {e}
+                                    </div>
+                                }.into_any(),
+                            }
+                        })}
+                    </Suspense>
+                </div>
             </header>
 
             <div class="flex-1 min-h-0 overflow-y-auto">
-                <div class="p-6 pt-4 flex gap-0 items-stretch min-h-full">
-                    // ── Sticky sidebar column (preview + favorites + resize handle).
-                    // Wrapping both the aside and the handle keeps them pinned
-                    // together while the data column scrolls underneath. ──
+                <div class="p-6 pt-4 flex flex-col gap-4 min-h-full">
+                    // ── Hero row: preview on the left, favorites on the
+                    // right, draggable splitter between them. Fixed height
+                    // so the stats section below stays visible on load. ──
                     <div
-                        class="sticky top-0 self-start shrink-0 flex items-stretch"
-                        style="height: calc(100vh - 10rem)"
+                        class="flex items-stretch gap-0 shrink-0"
+                        style=move || format!("height: {HERO_ROW_HEIGHT_PX}px")
                     >
-                        <aside
-                            class="flex flex-col gap-4 min-h-0"
+                        <div
+                            class="shrink-0 h-full flex flex-col gap-2 min-h-0"
                             style=move || format!("width: {}px", preview_width.get())
                         >
-                            <PreviewCard />
-                            <FavoritesPanel />
-                            <ResizeHint />
-                        </aside>
+                            <div class="flex-1 min-h-0">
+                                <PreviewCard />
+                            </div>
+                            <PresetDashboardStrip />
+                        </div>
 
-                        // Resize handle — visible grip between sidebar and data.
                         <ResizeHandle
                             on_drag_start=on_drag_start
                             on_drag=on_drag
                             on_drag_end=on_drag_end
                         />
+
+                        <div class="flex-1 min-w-0 h-full flex flex-col min-h-0">
+                            <FavoritesPanel />
+                        </div>
                     </div>
 
-                    // ── Right column: all the juicy data ──
-                    <section class="flex-1 min-w-0 flex flex-col gap-4">
+                    // ── Stats stack: full page width under the hero row. ──
+                    <section class="flex flex-col gap-4 min-w-0">
                         <HeroGauges
                             metrics=ws.metrics
                             preview_fps=ws.preview_fps

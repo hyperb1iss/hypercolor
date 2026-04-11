@@ -14,37 +14,62 @@ use ratatui_image::{Resize, ResizeEncodeRender};
 
 use crate::state::CanvasFrame;
 
-#[allow(
-    dead_code,
-    reason = "Preview transport manager is staged for future TUI integration"
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PreviewTransport {
     Primary,
     Halfblocks,
 }
 
-#[allow(
-    dead_code,
-    reason = "Preview transport manager is staged for future TUI integration"
-)]
 #[derive(Debug, Clone, Copy)]
 struct PreviewPolicy {
     windowed: PreviewTransport,
     fullscreen: PreviewTransport,
+    max_primary_rgba_bytes: usize,
+    max_primary_scale_tenths: u16,
 }
 
-#[allow(
-    dead_code,
-    reason = "Preview transport manager is staged for future TUI integration"
-)]
 impl PreviewPolicy {
-    fn transport_for(self, fullscreen: bool) -> PreviewTransport {
-        if fullscreen {
+    fn transport_for(
+        self,
+        fullscreen: bool,
+        font_size: (u16, u16),
+        frame: Option<&CanvasFrame>,
+        area: Option<Rect>,
+    ) -> PreviewTransport {
+        let base = if fullscreen {
             self.fullscreen
         } else {
             self.windowed
+        };
+
+        if base != PreviewTransport::Primary {
+            return base;
         }
+
+        let (Some(frame), Some(area)) = (frame, area) else {
+            return base;
+        };
+
+        let char_width = usize::from(font_size.0.max(1));
+        let char_height = usize::from(font_size.1.max(1));
+        let target_rgba_bytes =
+            usize::from(area.width) * usize::from(area.height) * char_width * char_height * 4;
+
+        if target_rgba_bytes > self.max_primary_rgba_bytes {
+            return PreviewTransport::Halfblocks;
+        }
+
+        let desired_width = u32::from(frame.width).div_ceil(u32::from(font_size.0.max(1)));
+        let desired_height = u32::from(frame.height).div_ceil(u32::from(font_size.1.max(1)));
+
+        if u32::from(area.width) * 10 > desired_width * u32::from(self.max_primary_scale_tenths)
+            || u32::from(area.height) * 10
+                > desired_height * u32::from(self.max_primary_scale_tenths)
+        {
+            return PreviewTransport::Halfblocks;
+        }
+
+        base
     }
 }
 
@@ -53,14 +78,12 @@ impl Default for PreviewPolicy {
         Self {
             windowed: PreviewTransport::Primary,
             fullscreen: PreviewTransport::Halfblocks,
+            max_primary_rgba_bytes: 768 * 1024,
+            max_primary_scale_tenths: 15,
         }
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "Preview transport manager is staged for future TUI integration"
-)]
 pub(crate) struct PreviewManager {
     primary_picker: Picker,
     halfblocks_picker: Picker,
@@ -72,13 +95,10 @@ pub(crate) struct PreviewManager {
     pending: Option<ThreadProtocol>,
     preview_area: Option<Rect>,
     latest_frame: Option<Arc<CanvasFrame>>,
+    fullscreen: bool,
     selected_transport: PreviewTransport,
 }
 
-#[allow(
-    dead_code,
-    reason = "Preview transport manager is staged for future TUI integration"
-)]
 impl PreviewManager {
     pub(crate) fn new(primary_picker: Picker) -> Self {
         let (resize_tx, resize_requests) = std_mpsc::channel::<ResizeRequest>();
@@ -109,18 +129,21 @@ impl PreviewManager {
             pending: None,
             preview_area: None,
             latest_frame: None,
-            selected_transport: policy.transport_for(false),
+            fullscreen: false,
+            selected_transport: PreviewTransport::Primary,
         }
     }
 
     pub(crate) fn on_frame(&mut self, frame: Arc<CanvasFrame>, fullscreen: bool) {
-        self.selected_transport = self.policy.transport_for(fullscreen);
+        self.fullscreen = fullscreen;
+        self.selected_transport = self.transport_for(Some(frame.as_ref()), self.preview_area);
         self.queue_protocol(frame.as_ref());
         self.latest_frame = Some(frame);
     }
 
     pub(crate) fn set_fullscreen(&mut self, fullscreen: bool) {
-        let next_transport = self.policy.transport_for(fullscreen);
+        self.fullscreen = fullscreen;
+        let next_transport = self.transport_for(self.latest_frame.as_deref(), self.preview_area);
         self.selected_transport = next_transport;
         self.reset_protocols();
 
@@ -182,6 +205,15 @@ impl PreviewManager {
             return;
         };
 
+        if let Some(frame) = self.latest_frame.clone() {
+            let next_transport = self.transport_for(Some(frame.as_ref()), Some(area));
+            if next_transport != self.selected_transport {
+                self.selected_transport = next_transport;
+                self.reset_protocols();
+                self.queue_protocol(frame.as_ref());
+            }
+        }
+
         self.preview_area = Some(area);
         let resize_area = Self::resize_area(area);
 
@@ -230,6 +262,15 @@ impl PreviewManager {
         }
     }
 
+    fn transport_for(&self, frame: Option<&CanvasFrame>, area: Option<Rect>) -> PreviewTransport {
+        self.policy.transport_for(
+            self.fullscreen,
+            self.primary_picker.font_size(),
+            frame,
+            area,
+        )
+    }
+
     fn reset_protocols(&mut self) {
         self.current = None;
         self.pending = None;
@@ -244,12 +285,62 @@ impl PreviewManager {
 #[cfg(test)]
 mod tests {
     use super::{PreviewPolicy, PreviewTransport};
+    use crate::state::CanvasFrame;
+    use ratatui::layout::Rect;
 
     #[test]
     fn default_policy_uses_primary_windowed_and_halfblocks_fullscreen() {
         let policy = PreviewPolicy::default();
 
-        assert_eq!(policy.transport_for(false), PreviewTransport::Primary);
-        assert_eq!(policy.transport_for(true), PreviewTransport::Halfblocks);
+        let frame = CanvasFrame {
+            frame_number: 1,
+            timestamp_ms: 0,
+            width: 320,
+            height: 200,
+            pixels: vec![0; 320 * 200 * 3],
+        };
+
+        assert_eq!(
+            policy.transport_for(false, (9, 18), Some(&frame), Some(Rect::new(0, 0, 30, 12))),
+            PreviewTransport::Primary
+        );
+        assert_eq!(
+            policy.transport_for(true, (9, 18), Some(&frame), Some(Rect::new(0, 0, 30, 12))),
+            PreviewTransport::Halfblocks
+        );
+    }
+
+    #[test]
+    fn large_windowed_preview_falls_back_to_halfblocks() {
+        let policy = PreviewPolicy::default();
+        let frame = CanvasFrame {
+            frame_number: 1,
+            timestamp_ms: 0,
+            width: 320,
+            height: 200,
+            pixels: vec![0; 320 * 200 * 3],
+        };
+
+        assert_eq!(
+            policy.transport_for(false, (9, 18), Some(&frame), Some(Rect::new(0, 0, 52, 24))),
+            PreviewTransport::Halfblocks
+        );
+    }
+
+    #[test]
+    fn aggressive_upscale_falls_back_even_below_byte_budget() {
+        let policy = PreviewPolicy::default();
+        let frame = CanvasFrame {
+            frame_number: 1,
+            timestamp_ms: 0,
+            width: 320,
+            height: 200,
+            pixels: vec![0; 320 * 200 * 3],
+        };
+
+        assert_eq!(
+            policy.transport_for(false, (9, 18), Some(&frame), Some(Rect::new(0, 0, 55, 16))),
+            PreviewTransport::Halfblocks
+        );
     }
 }

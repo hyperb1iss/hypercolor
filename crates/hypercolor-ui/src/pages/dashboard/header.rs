@@ -1,5 +1,9 @@
-//! Dashboard header widgets — status strip, preview card, loading skeleton.
+//! Dashboard header widgets — status strip, preview card, preset strip,
+//! loading skeleton.
 
+use std::collections::HashMap;
+
+use hypercolor_types::effect::ControlValue;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
@@ -7,6 +11,7 @@ use crate::api::SystemStatus;
 use crate::app::{EffectsContext, WsContext};
 use crate::color;
 use crate::components::canvas_preview::CanvasPreview;
+use crate::components::preset_panel::PresetToolbar;
 use crate::icons::*;
 use crate::style_utils::category_accent_rgb;
 use crate::ws::PerformanceMetrics;
@@ -154,6 +159,8 @@ pub(super) fn PreviewCard() -> impl IntoView {
 
 // ── Status strip ─────────────────────────────────────────────────────
 
+/// Inline status pills — no outer padding or border, so it can sit on the
+/// same row as the page title in the dashboard header.
 #[component]
 pub(super) fn StatusStrip(
     status: SystemStatus,
@@ -167,35 +174,35 @@ pub(super) fn StatusStrip(
     let ws_clients = Memo::new(move |_| metrics.get().map_or(0, |m| m.websocket.client_count));
 
     view! {
-        <div class="px-6 py-3 flex flex-wrap items-center gap-5 animate-fade-in-up border-t border-edge-subtle/10">
+        <div class="flex items-center gap-4 shrink-0 animate-fade-in">
             <StatusPill
                 label="Status"
                 value=if running { "Running" } else { "Stopped" }
                 color=if running { "var(--color-success-green)" } else { "var(--color-error-red)" }
                 pulsing=running
             />
-            <div class="w-px h-6 bg-edge-subtle/30" />
+            <div class="w-px h-5 bg-edge-subtle/30" />
             <StatusPill
                 label="Uptime"
                 value=uptime.as_str()
                 color="var(--color-neon-cyan)"
                 pulsing=false
             />
-            <div class="w-px h-6 bg-edge-subtle/30" />
+            <div class="w-px h-5 bg-edge-subtle/30" />
             <StatusPill
                 label="Devices"
                 value=format!("{device_count}")
                 color="var(--color-coral)"
                 pulsing=false
             />
-            <div class="w-px h-6 bg-edge-subtle/30" />
+            <div class="w-px h-5 bg-edge-subtle/30" />
             <StatusPill
                 label="Effects"
                 value=format!("{effect_count}")
                 color="var(--color-electric-purple)"
                 pulsing=false
             />
-            <div class="w-px h-6 bg-edge-subtle/30" />
+            <div class="w-px h-5 bg-edge-subtle/30" />
             <StatusPillDynamic
                 label="WS Clients"
                 value=Signal::derive(move || ws_clients.get().to_string())
@@ -262,18 +269,16 @@ fn StatusPillDynamic(
 #[component]
 pub(super) fn StatusSkeleton() -> impl IntoView {
     view! {
-        <div class="px-6 py-3 border-t border-edge-subtle/10 animate-pulse">
-            <div class="flex gap-5">
-                {(0..5).map(|_| view! {
-                    <div class="flex items-center gap-2.5">
-                        <div class="w-2 h-2 rounded-full bg-surface-overlay/60" />
-                        <div>
-                            <div class="h-2 w-10 bg-surface-overlay/50 rounded mb-1" />
-                            <div class="h-3 w-14 bg-surface-overlay/50 rounded" />
-                        </div>
+        <div class="flex items-center gap-4 shrink-0 animate-pulse">
+            {(0..5).map(|_| view! {
+                <div class="flex items-center gap-2.5">
+                    <div class="w-2 h-2 rounded-full bg-surface-overlay/60" />
+                    <div>
+                        <div class="h-2 w-10 bg-surface-overlay/50 rounded mb-1" />
+                        <div class="h-3 w-14 bg-surface-overlay/50 rounded" />
                     </div>
-                }).collect_view()}
-            </div>
+                </div>
+            }).collect_view()}
         </div>
     }
 }
@@ -285,5 +290,115 @@ fn format_uptime(seconds: u64) -> String {
         format!("{}m", seconds / 60)
     } else {
         format!("{}h {}m", seconds / 3600, (seconds % 3600) / 60)
+    }
+}
+
+// ── Preset strip ─────────────────────────────────────────────────────
+
+/// Cinematic preset toolbar that lives under the `PreviewCard` in the
+/// dashboard hero row. Wraps the shared `PresetToolbar` in a glass chrome
+/// tinted with the current effect's category accent so it visually reads
+/// as an extension of the preview.
+#[component]
+pub(super) fn PresetDashboardStrip() -> impl IntoView {
+    let fx = expect_context::<EffectsContext>();
+
+    let accent_rgb =
+        Signal::derive(move || category_accent_rgb(&fx.active_effect_category.get()).to_string());
+    let label_tint = Memo::new(move |_| color::accent_text_tint(&accent_rgb.get(), 0.84, 0.7));
+    let control_values: Signal<HashMap<String, ControlValue>> = fx.active_control_values.into();
+    let effect_id = Signal::derive(move || fx.active_effect_id.get());
+    let active_preset_id_signal = Signal::derive(move || fx.active_preset_id.get());
+    let has_effect = Memo::new(move |_| fx.active_effect_id.get().is_some());
+
+    view! {
+        <div
+            class="relative rounded-xl glass-subtle shrink-0 z-50"
+            style=move || {
+                let rgb = accent_rgb.get();
+                format!(
+                    "background: \
+                       linear-gradient(180deg, \
+                         rgba({rgb}, 0.06) 0%, \
+                         rgba({rgb}, 0.02) 100%), \
+                       var(--glass-bg); \
+                     border: 1px solid rgba({rgb}, 0.18); \
+                     box-shadow: 0 0 24px rgba({rgb}, 0.07), \
+                                 inset 0 1px 0 rgba(255, 255, 255, 0.04); \
+                     --glow-rgb: {rgb}"
+                )
+            }
+        >
+            // Top edge accent wash matching the PreviewCard treatment.
+            <div
+                class="absolute top-0 left-0 right-0 h-px pointer-events-none"
+                style=move || {
+                    let rgb = accent_rgb.get();
+                    format!(
+                        "background: linear-gradient(90deg, \
+                           transparent 0%, \
+                           rgba({rgb}, 0.85) 50%, \
+                           transparent 100%); \
+                         filter: drop-shadow(0 0 5px rgba({rgb}, 0.55))"
+                    )
+                }
+            />
+
+            <div class="flex items-center gap-3 px-3 py-2 relative">
+                // Palette-tinted label with a lightning sparkle.
+                <div class="flex items-center gap-1.5 shrink-0">
+                    <span
+                        class="inline-flex items-center justify-center"
+                        style=move || {
+                            let rgb = accent_rgb.get();
+                            format!(
+                                "color: rgb({rgb}); \
+                                 filter: drop-shadow(0 0 6px rgba({rgb}, 0.75))"
+                            )
+                        }
+                    >
+                        <Icon icon=LuZap width="12px" height="12px" />
+                    </span>
+                    <span
+                        class="text-[9px] font-mono uppercase tracking-[0.18em] font-semibold"
+                        style=move || format!("color: rgb({})", label_tint.get())
+                    >
+                        "Preset"
+                    </span>
+                </div>
+
+                // Divider line keyed to the accent.
+                <div
+                    class="w-px h-4 shrink-0"
+                    style=move || format!(
+                        "background: linear-gradient(180deg, \
+                           transparent 0%, \
+                           rgba({rgb}, 0.35) 50%, \
+                           transparent 100%)",
+                        rgb = accent_rgb.get()
+                    )
+                />
+
+                <div class="flex-1 min-w-0">
+                    {move || if has_effect.get() {
+                        view! {
+                            <PresetToolbar
+                                effect_id=effect_id
+                                control_values=control_values
+                                accent_rgb=accent_rgb
+                                on_preset_applied=Callback::new(move |()| fx.refresh_active_effect())
+                                active_preset_id_signal=active_preset_id_signal
+                            />
+                        }.into_any()
+                    } else {
+                        view! {
+                            <div class="flex items-center h-[30px] text-[10px] font-mono uppercase tracking-[0.14em] text-fg-tertiary/60">
+                                "Pick an effect to load presets"
+                            </div>
+                        }.into_any()
+                    }}
+                </div>
+            </div>
+        </div>
     }
 }

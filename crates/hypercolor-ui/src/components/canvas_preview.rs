@@ -240,11 +240,7 @@ pub fn CanvasPreview(
                                         if elapsed_ms > 0.0 {
                                             let max_present_fps = {
                                                 let target = fps_target.get_untracked();
-                                                if target > 0 {
-                                                    f64::from(target)
-                                                } else {
-                                                    120.0
-                                                }
+                                                if target > 0 { f64::from(target) } else { 120.0 }
                                             };
                                             let instant_fps =
                                                 (1000.0 / elapsed_ms).clamp(0.0, max_present_fps);
