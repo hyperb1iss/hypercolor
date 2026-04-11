@@ -18,7 +18,7 @@ use hypercolor_types::session::OffOutputBehavior;
 
 use super::encode::{
     DisplayEncodeState, display_brightness_factor, encode_canvas_frame, encode_prepared_rgb_frame,
-    render_canvas_frame_rgb,
+    render_canvas_frame_rgb_into,
 };
 use super::overlay::{OverlayComposer, OverlayRendererFactory};
 use super::render::display_viewport_signature;
@@ -66,6 +66,14 @@ struct DisplayFrameInputState {
     viewport: DisplayViewportSignature,
 }
 
+#[derive(Clone, Debug)]
+struct DisplayOverlayBaseState {
+    source_identity: DisplaySourceIdentity,
+    source_snapshot: Option<Arc<CanvasFrame>>,
+    geometry: DisplayGeometry,
+    viewport: DisplayViewportSignature,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DisplaySourceIdentity {
     generation: u64,
@@ -97,6 +105,32 @@ impl DisplayFrameInputState {
             source_identity,
             source_snapshot: Some(Arc::clone(source)),
             brightness_factor: display_brightness_factor(target.brightness),
+            geometry: target.geometry.clone(),
+            viewport: display_viewport_signature(&target.viewport),
+        }
+    }
+}
+
+impl DisplayOverlayBaseState {
+    fn matches(&self, source: &Arc<CanvasFrame>, target: &DisplayTarget) -> bool {
+        let source_identity = display_source_identity(source.as_ref());
+        let source_matches = self.source_identity == source_identity
+            || self.source_snapshot.as_ref().is_some_and(|snapshot| {
+                Arc::ptr_eq(snapshot, source)
+                    || (snapshot.width == source.width
+                        && snapshot.height == source.height
+                        && snapshot.rgba_bytes() == source.rgba_bytes())
+            });
+
+        source_matches
+            && self.geometry == target.geometry
+            && self.viewport == display_viewport_signature(&target.viewport)
+    }
+
+    fn capture(source: &Arc<CanvasFrame>, target: &DisplayTarget) -> Self {
+        Self {
+            source_identity: display_source_identity(source.as_ref()),
+            source_snapshot: Some(Arc::clone(source)),
             geometry: target.geometry.clone(),
             viewport: display_viewport_signature(&target.viewport),
         }
@@ -180,6 +214,7 @@ async fn run_display_worker(
     let mut next_send_at = Instant::now();
     let mut last_warned_at = None::<Instant>;
     let mut last_delivered_input = None::<DisplayFrameInputState>;
+    let mut last_overlay_base = None::<DisplayOverlayBaseState>;
     let mut last_delivered_source = None::<Arc<CanvasFrame>>;
     let mut next_hold_refresh_at = None::<Instant>;
     let mut encode_state = match DisplayEncodeState::new() {
@@ -383,14 +418,21 @@ async fn run_display_worker(
         }
         let sensor_snapshot = Arc::clone(&sensor_snapshot_rx.borrow());
         let encode_result = if overlay_composer.has_active_slots() {
-            render_canvas_frame_rgb(
-                source.as_ref(),
-                &target.viewport,
-                &target.geometry,
-                &mut encode_state,
-            );
+            if !last_overlay_base
+                .as_ref()
+                .is_some_and(|previous| previous.matches(&source, &target))
+            {
+                render_canvas_frame_rgb_into(
+                    source.as_ref(),
+                    &target.viewport,
+                    &target.geometry,
+                    &mut encode_state.overlay_base_rgb_buffer,
+                    &mut encode_state.axis_plan,
+                );
+                last_overlay_base = Some(DisplayOverlayBaseState::capture(&source, &target));
+            }
             if let Some(staging) = overlay_composer.compose_rgb_frame(
-                &encode_state.rgb_buffer,
+                &encode_state.overlay_base_rgb_buffer,
                 sensor_snapshot.as_ref(),
                 delivered_frame_number,
                 SystemTime::now(),
@@ -445,6 +487,7 @@ async fn run_display_worker(
                 match DisplayEncodeState::new() {
                     Ok(state) => {
                         encode_state = state;
+                        last_overlay_base = None;
                     }
                     Err(init_error) => {
                         warn!(
