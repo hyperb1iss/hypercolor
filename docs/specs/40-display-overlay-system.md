@@ -1615,7 +1615,7 @@ on real hardware.
 | 2.7 | Implement `TextRenderer` (cosmic-text layout, horizontal scroll, `{sensor:label}` interpolation from `OverlayInput::sensors`) | core | Text layout tests, scroll animation test, interpolation tests |
 | 2.8 | Ship default SVG templates (2 clock faces, 2 gauge styles, 1 frame border) under `assets/overlay-templates/` | assets | Templates render correctly via resvg, visual regression snapshots |
 | 2.9 | Wire renderer factory: `OverlaySource` → `Box<dyn OverlayRenderer>` | core | Factory dispatches correctly for all types |
-| 2.10 | End-to-end hardware test: clock + sensor gauge on Corsair LCD alongside a running effect | daemon | Manual visual verification |
+| 2.10 | End-to-end hardware test: clock + sensor gauge on Corsair LCD alongside a running effect | daemon | Manual visual verification (`just overlay-demo <display-id-or-name>`) |
 | 2.11 | Benchmarks: per-renderer render cost at 480×480 and 120×120, plus cached 2-overlay compose-only and compose+writeback deltas vs 0 overlays | daemon | Clock ≤500 µs, sensor gauge ≤500 µs, compose-only ≤200 µs, compose+writeback ≤1.5 ms extra at 2 overlays |
 
 **Exit criteria:** A user can configure a clock and CPU temperature gauge
@@ -1717,7 +1717,7 @@ overlay layers.
 - `just verify` (fmt + lint + test) after every wave
 - Targeted crate tests for all new types and traits
 - Integration tests for API endpoints
-- Manual hardware verification on Corsair LCD for visual correctness
+- Manual hardware verification on Corsair LCD for visual correctness (`just overlay-demo <display-id-or-name>` seeds the reference clock + sensor layout)
 
 ### 16.2 Performance Benchmarks
 

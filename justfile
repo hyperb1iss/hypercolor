@@ -146,6 +146,10 @@ tray *args='':
 daemon-release *args='':
     ./scripts/cargo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --release -- {{ args }}
 
+# Apply or refresh the Spec 40 clock+sensor overlay demo on a display-capable device
+overlay-demo *args='':
+    ./scripts/manual-verify-display-overlays.sh {{ args }}
+
 # Run Servo daemon (dev profile) with cache wrapper
 daemon-servo *args='':
     ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features servo -- --log-level debug --bind 127.0.0.1:9420 {{ args }}
