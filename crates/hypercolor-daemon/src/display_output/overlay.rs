@@ -98,7 +98,8 @@ fn sensor_render_interval() -> Duration {
     Duration::from_secs(2)
 }
 
-pub(crate) struct OverlayComposer {
+#[doc(hidden)]
+pub struct OverlayComposer {
     instances: Vec<OverlayInstance>,
     staging: PremulStaging,
     display_width: u32,
@@ -126,7 +127,8 @@ impl OverlayComposer {
         }
     }
 
-    pub(crate) fn reconcile(&mut self, config: &DisplayOverlayConfig) {
+    #[doc(hidden)]
+    pub fn reconcile(&mut self, config: &DisplayOverlayConfig) {
         self.destroy_instances();
         self.instances = config
             .overlays
