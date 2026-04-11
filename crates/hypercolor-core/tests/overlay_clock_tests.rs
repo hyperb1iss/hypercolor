@@ -184,3 +184,31 @@ fn clock_renderer_renders_svg_template_background() {
         "svg template should contribute visible pixels"
     );
 }
+
+#[test]
+fn clock_renderer_resolves_bundled_svg_template() {
+    let mut renderer = ClockRenderer::new(ClockConfig {
+        style: ClockStyle::Digital,
+        hour_format: HourFormat::TwentyFour,
+        show_seconds: false,
+        show_date: false,
+        date_format: None,
+        font_family: None,
+        color: "#00000000".to_owned(),
+        secondary_color: Some("#00000000".to_owned()),
+        template: Some("clocks/digital-default.svg".to_owned()),
+    })
+    .expect("renderer should resolve bundled template");
+    let size = OverlaySize::new(240, 120);
+    renderer.init(size).expect("renderer should init");
+    let mut buffer = OverlayBuffer::new(size);
+
+    renderer
+        .render_into(&overlay_input(UNIX_EPOCH), &mut buffer)
+        .expect("render should succeed");
+
+    assert!(
+        alpha_sum(&buffer) > 0,
+        "bundled svg template should contribute visible pixels"
+    );
+}

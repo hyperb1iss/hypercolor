@@ -190,3 +190,35 @@ fn sensor_renderer_renders_svg_template_background() {
         "svg template should contribute visible pixels"
     );
 }
+
+#[test]
+fn sensor_renderer_resolves_bundled_svg_template() {
+    let mut renderer = SensorRenderer::new(SensorOverlayConfig {
+        sensor: "cpu_temp".to_owned(),
+        style: SensorDisplayStyle::Minimal,
+        unit_label: None,
+        range_min: 0.0,
+        range_max: 100.0,
+        color_min: "#00000000".to_owned(),
+        color_max: "#00000000".to_owned(),
+        font_family: None,
+        template: Some("gauges/radial-default.svg".to_owned()),
+    })
+    .expect("renderer should resolve bundled template");
+    let size = OverlaySize::new(160, 160);
+    renderer.init(size).expect("renderer should init");
+    let sensors = SystemSnapshot {
+        cpu_temp_celsius: Some(72.0),
+        ..SystemSnapshot::empty()
+    };
+    let mut buffer = OverlayBuffer::new(size);
+
+    renderer
+        .render_into(&overlay_input(&sensors), &mut buffer)
+        .expect("render should succeed");
+
+    assert!(
+        alpha_sum(&buffer) > 0,
+        "bundled gauge template should contribute visible pixels"
+    );
+}

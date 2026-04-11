@@ -7,6 +7,7 @@ use resvg::{tiny_skia, usvg};
 use tiny_skia::{Paint, Pixmap, PremultipliedColorU8, Transform};
 
 use super::{OverlayBuffer, OverlaySize};
+use crate::config::paths::{config_dir, data_dir};
 
 const LINE_HEIGHT_SCALE: f32 = 1.2;
 
@@ -192,6 +193,19 @@ pub(crate) fn render_svg_template(
     Ok(buffer)
 }
 
+pub(crate) fn bundled_overlay_templates_root() -> PathBuf {
+    let installed = data_dir().join("overlay-templates");
+    if installed.is_dir() {
+        return installed;
+    }
+
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/overlay-templates")
+}
+
+pub(crate) fn user_overlay_templates_dir() -> PathBuf {
+    config_dir().join("templates")
+}
+
 pub(crate) fn resolve_template_path(path: &Path, context: &str) -> Result<PathBuf> {
     if path.is_absolute() {
         if path.exists() {
@@ -200,7 +214,10 @@ pub(crate) fn resolve_template_path(path: &Path, context: &str) -> Result<PathBu
         bail!("absolute {context} path does not exist: {}", path.display());
     }
 
-    let mut candidates = Vec::new();
+    let mut candidates = vec![
+        bundled_overlay_templates_root().join(path),
+        user_overlay_templates_dir().join(path),
+    ];
     if let Ok(current_dir) = std::env::current_dir() {
         candidates.push(current_dir.join(path));
     }
@@ -213,7 +230,7 @@ pub(crate) fn resolve_template_path(path: &Path, context: &str) -> Result<PathBu
     }
 
     bail!(
-        "could not resolve {context} '{}'; searched current and raw relative paths",
+        "could not resolve {context} '{}'; searched bundled, user, current, and raw relative paths",
         path.display()
     );
 }
@@ -351,4 +368,46 @@ fn expanded_nibble(byte: u8) -> Result<u8> {
         _ => bail!("invalid overlay color nibble"),
     };
     Ok((nibble << 4) | nibble)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use tempfile::tempdir;
+
+    use super::{bundled_overlay_templates_root, resolve_template_path};
+
+    #[test]
+    fn bundled_overlay_templates_root_ends_with_overlay_templates() {
+        let root = bundled_overlay_templates_root();
+        assert_eq!(
+            root.file_name().and_then(|value| value.to_str()),
+            Some("overlay-templates")
+        );
+        assert!(root.exists(), "bundled overlay template root should exist");
+    }
+
+    #[test]
+    fn resolve_template_path_accepts_existing_absolute() {
+        let dir = tempdir().expect("tempdir should create");
+        let template_path = dir.path().join("template.svg");
+        std::fs::write(&template_path, "<svg/>").expect("write should work");
+
+        let resolved = resolve_template_path(&template_path, "overlay template")
+            .expect("absolute path should resolve");
+        assert_eq!(resolved, template_path);
+    }
+
+    #[test]
+    fn resolve_template_path_rejects_missing_file() {
+        let missing = Path::new("this/path/does/not/exist.svg");
+        let error = resolve_template_path(missing, "overlay template")
+            .expect_err("missing path should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("could not resolve overlay template")
+        );
+    }
 }
