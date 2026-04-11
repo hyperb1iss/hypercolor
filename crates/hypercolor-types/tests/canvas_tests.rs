@@ -402,6 +402,24 @@ fn render_surface_pool_rebinds_published_slots_under_retention_pressure() {
 }
 
 #[test]
+fn published_surface_storage_identity_survives_metadata_updates() {
+    let mut canvas = Canvas::new(2, 1);
+    canvas.set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
+    let surface = PublishedSurface::from_owned_canvas(canvas, 1, 10);
+    let updated = surface.with_frame_metadata(2, 20);
+
+    assert_eq!(surface.storage_identity(), updated.storage_identity());
+}
+
+#[test]
+fn published_surface_storage_identity_distinguishes_new_owned_surfaces() {
+    let first = PublishedSurface::from_owned_canvas(Canvas::new(2, 1), 1, 10);
+    let second = PublishedSurface::from_owned_canvas(Canvas::new(2, 1), 2, 20);
+
+    assert_ne!(first.storage_identity(), second.storage_identity());
+}
+
+#[test]
 fn render_surface_pool_slot_counts_match_visible_states() {
     let descriptor = SurfaceDescriptor::rgba8888(2, 2);
     let mut pool = RenderSurfacePool::with_slot_count(descriptor, 3);

@@ -5,6 +5,7 @@
 //! and Oklab/Oklch perceptual color spaces for smooth interpolation.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +19,12 @@ pub const DEFAULT_CANVAS_HEIGHT: u32 = 480;
 
 /// Bytes per pixel in the RGBA format.
 pub const BYTES_PER_PIXEL: usize = 4;
+
+static NEXT_PUBLISHED_SURFACE_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_published_surface_storage_id() -> u64 {
+    NEXT_PUBLISHED_SURFACE_STORAGE_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 // ── Rgba ───────────────────────────────────────────────────────────────────
 
@@ -420,6 +427,8 @@ pub struct Canvas {
     /// Row-major RGBA pixel data.
     /// Length is always `width * height * 4`.
     pixels: Arc<Vec<u8>>,
+
+    storage_id: u64,
 }
 
 impl Canvas {
@@ -439,6 +448,7 @@ impl Canvas {
             width,
             height,
             pixels: Arc::new(pixels),
+            storage_id: next_published_surface_storage_id(),
         }
     }
 
@@ -464,6 +474,7 @@ impl Canvas {
             width,
             height,
             pixels: Arc::new(data.to_vec()),
+            storage_id: next_published_surface_storage_id(),
         }
     }
 
@@ -489,6 +500,7 @@ impl Canvas {
             width,
             height,
             pixels: Arc::new(data),
+            storage_id: next_published_surface_storage_id(),
         }
     }
 
@@ -499,6 +511,7 @@ impl Canvas {
             width: surface.width(),
             height: surface.height(),
             pixels: Arc::clone(surface.storage.cpu_rgba()),
+            storage_id: surface.storage.id(),
         }
     }
 
@@ -534,7 +547,7 @@ impl Canvas {
 
     /// Mutable pixel slice for renderers writing directly into the buffer.
     pub fn as_rgba_bytes_mut(&mut self) -> &mut [u8] {
-        Arc::make_mut(&mut self.pixels).as_mut_slice()
+        self.pixels_mut().as_mut_slice()
     }
 
     /// Consume the canvas and return the owned RGBA byte buffer.
@@ -589,7 +602,7 @@ impl Canvas {
             return;
         }
         let idx = (y as usize * self.width as usize + x as usize) * BYTES_PER_PIXEL;
-        let pixels = Arc::make_mut(&mut self.pixels);
+        let pixels = self.pixels_mut();
         pixels[idx] = color.r;
         pixels[idx + 1] = color.g;
         pixels[idx + 2] = color.b;
@@ -598,7 +611,7 @@ impl Canvas {
 
     /// Fill the entire canvas with a single color.
     pub fn fill(&mut self, color: Rgba) {
-        for chunk in Arc::make_mut(&mut self.pixels).chunks_exact_mut(BYTES_PER_PIXEL) {
+        for chunk in self.pixels_mut().chunks_exact_mut(BYTES_PER_PIXEL) {
             chunk[0] = color.r;
             chunk[1] = color.g;
             chunk[2] = color.b;
@@ -609,6 +622,13 @@ impl Canvas {
     /// Reset to opaque black. Reuses the existing allocation.
     pub fn clear(&mut self) {
         self.fill(Rgba::BLACK);
+    }
+
+    fn pixels_mut(&mut self) -> &mut Vec<u8> {
+        if Arc::strong_count(&self.pixels) > 1 {
+            self.storage_id = next_published_surface_storage_id();
+        }
+        Arc::make_mut(&mut self.pixels)
     }
 
     /// Sample the canvas at normalized coordinates (0.0..=1.0).
@@ -797,26 +817,30 @@ pub struct PublishedSurface {
 
 #[derive(Clone, Debug)]
 enum PublishedSurfaceStorage {
-    CpuRgba(Arc<Vec<u8>>),
+    CpuRgba { id: u64, rgba: Arc<Vec<u8>> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PublishedSurfaceStorageIdentity {
-    CpuRgba { ptr: usize },
+    CpuRgba { id: u64 },
 }
 
 impl PublishedSurfaceStorage {
     fn cpu_rgba(&self) -> &Arc<Vec<u8>> {
         match self {
-            Self::CpuRgba(rgba) => rgba,
+            Self::CpuRgba { rgba, .. } => rgba,
         }
     }
 
     fn identity(&self) -> PublishedSurfaceStorageIdentity {
         match self {
-            Self::CpuRgba(rgba) => PublishedSurfaceStorageIdentity::CpuRgba {
-                ptr: rgba.as_ptr() as usize,
-            },
+            Self::CpuRgba { id, .. } => PublishedSurfaceStorageIdentity::CpuRgba { id: *id },
+        }
+    }
+
+    fn id(&self) -> u64 {
+        match self {
+            Self::CpuRgba { id, .. } => *id,
         }
     }
 }
@@ -830,7 +854,10 @@ impl PublishedSurface {
             generation: 0,
             frame_number: 0,
             timestamp_ms: 0,
-            storage: PublishedSurfaceStorage::CpuRgba(Arc::new(Vec::new())),
+            storage: PublishedSurfaceStorage::CpuRgba {
+                id: next_published_surface_storage_id(),
+                rgba: Arc::new(Vec::new()),
+            },
         }
     }
 
@@ -842,7 +869,10 @@ impl PublishedSurface {
             generation: 0,
             frame_number,
             timestamp_ms,
-            storage: PublishedSurfaceStorage::CpuRgba(Arc::new(canvas.as_rgba_bytes().to_vec())),
+            storage: PublishedSurfaceStorage::CpuRgba {
+                id: next_published_surface_storage_id(),
+                rgba: Arc::new(canvas.as_rgba_bytes().to_vec()),
+            },
         }
     }
 
@@ -875,7 +905,10 @@ impl PublishedSurface {
             generation: 0,
             frame_number,
             timestamp_ms,
-            storage: PublishedSurfaceStorage::CpuRgba(Arc::new(rgba)),
+            storage: PublishedSurfaceStorage::CpuRgba {
+                id: next_published_surface_storage_id(),
+                rgba: Arc::new(rgba),
+            },
         }
     }
 
@@ -896,6 +929,7 @@ impl PublishedSurface {
             width,
             height,
             pixels,
+            storage_id,
         } = canvas;
         let descriptor = SurfaceDescriptor::rgba8888(width, height);
         (
@@ -904,7 +938,10 @@ impl PublishedSurface {
                 generation: 0,
                 frame_number,
                 timestamp_ms,
-                storage: PublishedSurfaceStorage::CpuRgba(pixels),
+                storage: PublishedSurfaceStorage::CpuRgba {
+                    id: storage_id,
+                    rgba: pixels,
+                },
             },
             false,
         )
@@ -1210,7 +1247,10 @@ impl SurfaceLease<'_> {
             generation: self.slot.generation,
             frame_number,
             timestamp_ms,
-            storage: PublishedSurfaceStorage::CpuRgba(Arc::clone(&self.slot.canvas.pixels)),
+            storage: PublishedSurfaceStorage::CpuRgba {
+                id: self.slot.canvas.storage_id,
+                rgba: Arc::clone(&self.slot.canvas.pixels),
+            },
         }
     }
 
