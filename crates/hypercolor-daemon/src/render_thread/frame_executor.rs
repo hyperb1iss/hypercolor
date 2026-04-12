@@ -14,7 +14,7 @@ use super::frame_state::{
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
 use super::pipeline_runtime::PipelineRuntime;
 use super::sparkleflinger::ComposedFrameSet;
-use super::{RenderThreadState, micros_u32, u64_to_u32};
+use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
 use crate::performance::{FrameTimeline, LatestFrameMetrics};
 
@@ -119,8 +119,9 @@ pub(crate) async fn execute_frame(
         }
         SkipDecision::ReuseInputs | SkipDecision::ReuseCanvas => &mut frame_loop.cached_inputs,
     };
-    let input_us = micros_u32(input_start.elapsed());
-    let input_done_us = micros_u32(frame_start.elapsed());
+    let input_done_at = Instant::now();
+    let input_us = micros_between(input_start, input_done_at);
+    let input_done_us = micros_between(frame_start, input_done_at);
 
     let mut render_stage = compose_frame(ComposeRequest {
         state,
@@ -168,7 +169,8 @@ pub(crate) async fn execute_frame(
                 &mut render.recycled_frame.zones,
             );
         }
-        render_stage.sampled_us = micros_u32(sample_start.elapsed());
+        let sample_done_at = Instant::now();
+        render_stage.sampled_us = micros_between(sample_start, sample_done_at);
         scene_snapshot.spatial_engine.layout()
     };
     let retained_frame = render_stage
@@ -180,7 +182,8 @@ pub(crate) async fn execute_frame(
             frame.zones.as_slice()
         });
     let sample_us = render_stage.sampled_us;
-    let sample_done_us = micros_u32(frame_start.elapsed());
+    let sample_done_at = Instant::now();
+    let sample_done_us = micros_between(frame_start, sample_done_at);
 
     let push_start = Instant::now();
     let (write_stats, async_failures) = {
@@ -196,8 +199,9 @@ pub(crate) async fn execute_frame(
         let async_failures = manager.async_write_failures();
         (write_stats, async_failures)
     };
-    let push_us = micros_u32(push_start.elapsed());
-    let output_done_us = micros_u32(frame_start.elapsed());
+    let output_done_at = Instant::now();
+    let push_us = micros_between(push_start, output_done_at);
+    let output_done_us = micros_between(frame_start, output_done_at);
 
     if let Some(runtime) = &state.discovery_runtime {
         handle_async_write_failures(runtime, async_failures).await;
@@ -266,13 +270,14 @@ pub(crate) async fn execute_frame(
         },
     );
     let publish_us = publish_stats.elapsed_us;
-    let publish_done_us = micros_u32(frame_start.elapsed());
+    let publish_done_at = Instant::now();
+    let publish_done_us = micros_between(frame_start, publish_done_at);
     full_frame_copy_count =
         full_frame_copy_count.saturating_add(publish_stats.full_frame_copy_count);
     full_frame_copy_bytes =
         full_frame_copy_bytes.saturating_add(publish_stats.full_frame_copy_bytes);
     let render_surfaces = render.render_surface_snapshot(state.preview_canvas_receiver_count());
-    let total_us = micros_u32(frame_start.elapsed());
+    let total_us = publish_done_us;
     let known_stage_us = input_us
         .saturating_add(render_us)
         .saturating_add(sample_us)

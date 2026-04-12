@@ -37,7 +37,7 @@ use std::any::Any;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use tokio::sync::{Mutex, RwLock, watch};
@@ -251,6 +251,11 @@ impl RenderThread {
 /// actually saturates in practice. But clippy pedantic demands it.
 fn micros_u32(d: Duration) -> u32 {
     u32::try_from(d.as_micros()).unwrap_or(u32::MAX)
+}
+
+/// Saturating conversion between two monotonic instants expressed in microseconds.
+fn micros_between(start: Instant, end: Instant) -> u32 {
+    micros_u32(end.saturating_duration_since(start))
 }
 
 /// Saturating conversion from `Duration` milliseconds to `u32`.

@@ -12,7 +12,7 @@ use super::frame_pacing::{FrameExecution, NextWake, SkipDecision};
 use super::frame_scheduler::FrameSceneSnapshot;
 use super::frame_sources::static_surface;
 use super::pipeline_runtime::{CachedStaticSurface, RenderSurfaceSnapshot};
-use super::{RenderThreadState, micros_u32, u64_to_u32};
+use super::{RenderThreadState, micros_between, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
 use crate::performance::{CompositorBackendKind, FrameTimeline, LatestFrameMetrics};
 
@@ -143,8 +143,9 @@ pub(crate) async fn maybe_sleep_throttle(
         .sample_into(&canvas, &mut recycled_frame.zones);
     let zone_colors = &recycled_frame.zones;
     let layout = scene_snapshot.spatial_engine.layout();
-    let sample_us = micros_u32(sample_start.elapsed());
-    let sample_done_us = micros_u32(frame_start.elapsed());
+    let sample_done_at = Instant::now();
+    let sample_us = micros_between(sample_start, sample_done_at);
+    let sample_done_us = micros_between(frame_start, sample_done_at);
 
     let push_start = Instant::now();
     let (write_stats, async_failures) = {
@@ -153,8 +154,9 @@ pub(crate) async fn maybe_sleep_throttle(
         let async_failures = manager.async_write_failures();
         (write_stats, async_failures)
     };
-    let push_us = micros_u32(push_start.elapsed());
-    let output_done_us = micros_u32(frame_start.elapsed());
+    let output_done_at = Instant::now();
+    let push_us = micros_between(push_start, output_done_at);
+    let output_done_us = micros_between(frame_start, output_done_at);
 
     if let Some(runtime) = &state.discovery_runtime {
         handle_async_write_failures(runtime, async_failures).await;
@@ -185,8 +187,9 @@ pub(crate) async fn maybe_sleep_throttle(
         },
     );
     let publish_us = publish_stats.elapsed_us;
-    let publish_done_us = micros_u32(frame_start.elapsed());
-    let total_us = micros_u32(frame_start.elapsed());
+    let publish_done_at = Instant::now();
+    let publish_done_us = micros_between(frame_start, publish_done_at);
+    let total_us = publish_done_us;
     let overhead_us =
         total_us.saturating_sub(sample_us.saturating_add(push_us).saturating_add(publish_us));
 

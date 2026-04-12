@@ -18,7 +18,8 @@ use super::producer_queue::{ProducerFrame, ProducerFrameState};
 use super::render_groups::RenderGroupResult;
 use super::sparkleflinger::ComposedFrameSet;
 use super::{
-    MAX_RENDER_SURFACE_SLOTS, RenderThreadState, desired_render_surface_slots, micros_u32,
+    MAX_RENDER_SURFACE_SLOTS, RenderThreadState, desired_render_surface_slots, micros_between,
+    micros_u32,
 };
 
 #[allow(
@@ -155,8 +156,9 @@ impl ComposeContext<'_> {
             )
             .await
         };
-        let producer_done_us = micros_u32(stage_start.elapsed());
-        let composition_start = Instant::now();
+        let producer_done_at = Instant::now();
+        let producer_done_us = micros_between(stage_start, producer_done_at);
+        let composition_start = producer_done_at;
         let compiled_plan = self.render.composition_planner.compile_primary_frame(
             self.state.canvas_dims.width(),
             self.state.canvas_dims.height(),
@@ -168,8 +170,9 @@ impl ComposeContext<'_> {
             self.requires_cpu_sampling_canvas(),
             self.requires_preview_surface(),
         );
-        let composition_us = micros_u32(composition_start.elapsed());
-        let composition_done_us = micros_u32(stage_start.elapsed());
+        let composition_done_at = Instant::now();
+        let composition_us = micros_between(composition_start, composition_done_at);
+        let composition_done_us = micros_between(stage_start, composition_done_at);
         RenderStageStats {
             composition_bypassed: composed.bypassed,
             composed_frame: composed,
@@ -181,7 +184,7 @@ impl ComposeContext<'_> {
             producer_done_us,
             composition_us,
             composition_done_us,
-            total_us: micros_u32(stage_start.elapsed()),
+            total_us: composition_done_us,
             logical_layer_count: compiled_plan.metadata.logical_layer_count,
             render_group_count: compiled_plan.metadata.render_group_count,
             scene_active: compiled_plan.metadata.scene_active,
@@ -224,8 +227,9 @@ impl ComposeContext<'_> {
                             &mut self.render.recycled_frame.zones,
                         )
                     };
-                    let producer_us = micros_u32(producer_start.elapsed());
-                    let producer_done_us = micros_u32(stage_start.elapsed());
+                    let producer_done_at = Instant::now();
+                    let producer_us = micros_between(producer_start, producer_done_at);
+                    let producer_done_us = micros_between(stage_start, producer_done_at);
                     return self.finish_render_group_frame_set(
                         result,
                         producer_us,
@@ -255,8 +259,9 @@ impl ComposeContext<'_> {
                         &mut self.render.recycled_frame.zones,
                     )
                 };
-                let producer_us = micros_u32(producer_start.elapsed());
-                let producer_done_us = micros_u32(stage_start.elapsed());
+                let producer_done_at = Instant::now();
+                let producer_us = micros_between(producer_start, producer_done_at);
+                let producer_done_us = micros_between(stage_start, producer_done_at);
                 return self.finish_render_group_frame_set(
                     result,
                     producer_us,
@@ -300,8 +305,9 @@ impl ComposeContext<'_> {
                     self.requires_preview_surface(),
                 );
                 let composition_bypassed = composed.bypassed;
-                let composition_us = micros_u32(composition_start.elapsed());
-                let composition_done_us = micros_u32(stage_start.elapsed());
+                let composition_done_at = Instant::now();
+                let composition_us = micros_between(composition_start, composition_done_at);
+                let composition_done_us = micros_between(stage_start, composition_done_at);
 
                 RenderStageStats {
                     composed_frame: composed,
@@ -313,7 +319,7 @@ impl ComposeContext<'_> {
                     producer_done_us,
                     composition_us,
                     composition_done_us,
-                    total_us: micros_u32(stage_start.elapsed()),
+                    total_us: composition_done_us,
                     logical_layer_count: effective_render_group_layer_count(
                         compiled_plan.metadata.logical_layer_count,
                         render_group_result.logical_layer_count,
@@ -347,8 +353,9 @@ impl ComposeContext<'_> {
                     self.requires_preview_surface(),
                 );
                 let composition_bypassed = composed.bypassed;
-                let composition_us = micros_u32(composition_start.elapsed());
-                let composition_done_us = micros_u32(stage_start.elapsed());
+                let composition_done_at = Instant::now();
+                let composition_us = micros_between(composition_start, composition_done_at);
+                let composition_done_us = micros_between(stage_start, composition_done_at);
 
                 RenderStageStats {
                     composed_frame: composed,
@@ -360,7 +367,7 @@ impl ComposeContext<'_> {
                     producer_done_us,
                     composition_us,
                     composition_done_us,
-                    total_us: micros_u32(stage_start.elapsed()),
+                    total_us: composition_done_us,
                     logical_layer_count: compiled_plan.metadata.logical_layer_count,
                     render_group_count: compiled_plan.metadata.render_group_count,
                     scene_active: compiled_plan.metadata.scene_active,
