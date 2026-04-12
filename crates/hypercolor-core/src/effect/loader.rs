@@ -134,7 +134,7 @@ pub fn register_html_effects(
             let effect_name = if parsed.title == "Unnamed Effect" {
                 fallback_effect_name(&file)
             } else {
-                parsed.title
+                parsed.title.clone()
             };
 
             let modified = file

@@ -268,3 +268,49 @@ fn parse_html_effect_metadata_respects_explicit_renderer_meta() {
     assert!(!parsed.tags.contains(&"webgl".to_owned()));
     assert!(parsed.tags.contains(&"canvas2d".to_owned()));
 }
+
+#[test]
+fn parse_html_effect_metadata_reads_builtin_and_screen_reactive_meta() {
+    let html = r#"
+<head>
+  <title>Screen Cast</title>
+  <meta builtin-id="screen_cast" />
+  <meta screen-reactive="true" />
+</head>
+"#;
+
+    let parsed = parse_html_effect_metadata(html);
+
+    assert_eq!(parsed.builtin_id.as_deref(), Some("screen_cast"));
+    assert!(parsed.screen_reactive);
+    assert_eq!(parsed.category, EffectCategory::Utility);
+    assert!(parsed.tags.contains(&"screen".to_owned()));
+    assert!(parsed.tags.contains(&"screen-reactive".to_owned()));
+}
+
+#[test]
+fn register_html_effects_skips_builtin_html_ports_without_servo() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let root = temp.path().join("effects");
+
+    write_html(
+        &root.join("hypercolor/screen-cast.html"),
+        r#"
+<head>
+  <title>Screen Cast</title>
+  <meta description="HTML builtin port" />
+  <meta publisher="Hypercolor" />
+  <meta builtin-id="screen_cast" />
+  <meta screen-reactive="true" />
+</head>
+"#,
+    );
+
+    let mut registry = EffectRegistry::new(vec![root.clone()]);
+    let report = register_html_effects(&mut registry, &[root]);
+
+    assert_eq!(report.scanned_files, 1);
+    assert_eq!(report.loaded_effects, 0);
+    assert_eq!(report.skipped_files, 1);
+    assert_eq!(registry.len(), 0);
+}
