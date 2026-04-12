@@ -267,6 +267,10 @@ struct OverlayInstance {
     render_interval: Duration,
     consecutive_failures: u32,
     backoff_until: Option<Instant>,
+    /// Wall-clock projection of `backoff_until`, recorded at the same
+    /// moment the monotonic deadline is set so it can flow through the
+    /// runtime snapshot and the REST API without incurring clock drift.
+    backoff_until_wall: Option<SystemTime>,
     last_error: Option<OverlayError>,
     disabled: bool,
 }
@@ -285,6 +289,7 @@ impl OverlayInstance {
             render_interval: binding.render_interval.max(Duration::from_millis(16)),
             consecutive_failures: 0,
             backoff_until: None,
+            backoff_until_wall: None,
             last_error: None,
             disabled: false,
         };
@@ -305,6 +310,7 @@ impl OverlayInstance {
             render_interval: Duration::from_secs(1),
             consecutive_failures: 0,
             backoff_until: None,
+            backoff_until_wall: None,
             last_error: Some(error),
             disabled: true,
         }
@@ -328,6 +334,7 @@ impl OverlayInstance {
             consecutive_failures: self.consecutive_failures,
             last_error: self.last_error.as_ref().map(ToString::to_string),
             status,
+            backoff_until: self.backoff_until_wall,
         }
     }
 
@@ -378,6 +385,7 @@ impl OverlayInstance {
                 self.last_rendered_at_wall = Some(copied_system_time(&input.now));
                 self.consecutive_failures = 0;
                 self.backoff_until = None;
+                self.backoff_until_wall = None;
                 self.last_error = None;
                 true
             }
@@ -394,6 +402,7 @@ impl OverlayInstance {
                 self.has_valid_render = false;
                 self.disabled = true;
                 self.backoff_until = None;
+                self.backoff_until_wall = None;
                 self.last_error = Some(OverlayError::Asset(error));
                 self.destroy();
             }
@@ -401,14 +410,18 @@ impl OverlayInstance {
                 self.has_valid_render = false;
                 self.disabled = true;
                 self.backoff_until = None;
+                self.backoff_until_wall = None;
                 self.last_error = Some(OverlayError::Fatal(error));
                 self.destroy();
             }
             OverlayError::Transient(error) => {
                 self.consecutive_failures = self.consecutive_failures.saturating_add(1);
-                self.backoff_until = now.checked_add(backoff_duration(self.consecutive_failures));
+                let backoff = backoff_duration(self.consecutive_failures);
+                self.backoff_until = now.checked_add(backoff);
+                self.backoff_until_wall = SystemTime::now().checked_add(backoff);
                 if self.consecutive_failures >= 5 {
                     self.backoff_until = None;
+                    self.backoff_until_wall = None;
                     self.disabled = true;
                     self.last_error = Some(OverlayError::Asset(anyhow!(
                         "disabled after {} consecutive transient failures: {error}",

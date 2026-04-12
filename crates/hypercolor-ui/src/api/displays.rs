@@ -36,6 +36,8 @@ pub struct OverlayRuntimeResponse {
     pub consecutive_failures: u32,
     pub last_error: Option<String>,
     pub status: OverlaySlotStatus,
+    #[serde(default)]
+    pub backoff_until: Option<String>,
 }
 
 /// Runtime status of a single overlay slot, mirroring the daemon enum.

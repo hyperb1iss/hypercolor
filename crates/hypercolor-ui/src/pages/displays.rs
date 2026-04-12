@@ -1531,6 +1531,14 @@ fn render_runtime_diagnostics(runtime: Option<api::OverlayRuntimeResponse>) -> i
         .clone()
         .unwrap_or_else(|| "never".to_string());
     let failures = runtime.consecutive_failures;
+    let backoff_row = runtime.backoff_until.clone().map(|deadline| {
+        view! {
+            <div class="rounded-sm bg-amber-500/10 px-2 py-1 text-[10px] text-amber-300">
+                "Cooling down · retry at "
+                <span class="font-mono">{deadline}</span>
+            </div>
+        }
+    });
     let error_row = runtime.last_error.clone().map(|error| {
         view! {
             <div class="rounded-sm border border-status-error/30 bg-status-error/10 p-2 text-[11px] leading-relaxed text-status-error">
@@ -1558,6 +1566,7 @@ fn render_runtime_diagnostics(runtime: Option<api::OverlayRuntimeResponse>) -> i
                 "Last rendered "
                 <span class="font-mono text-fg-secondary">{last_rendered}</span>
             </div>
+            {backoff_row}
             {error_row}
         </div>
     }

@@ -86,6 +86,12 @@ pub struct OverlayRuntimeResponse {
     pub consecutive_failures: u32,
     pub last_error: Option<String>,
     pub status: crate::display_overlays::OverlaySlotStatus,
+    /// ISO 8601 wall-clock retry deadline for slots currently cooling
+    /// down after transient failures. `None` means either the slot is
+    /// healthy, permanently disabled, or waiting on its normal render
+    /// cadence. UIs can subtract from "now" to render "retry in Xs".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backoff_until: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -822,6 +828,7 @@ impl From<OverlaySlotRuntime> for OverlayRuntimeResponse {
             consecutive_failures: runtime.consecutive_failures,
             last_error: runtime.last_error,
             status: runtime.status,
+            backoff_until: runtime.backoff_until.map(format_system_time),
         }
     }
 }

@@ -88,6 +88,11 @@ pub struct OverlaySlotRuntime {
     pub consecutive_failures: u32,
     pub last_error: Option<String>,
     pub status: OverlaySlotStatus,
+    /// Wall-clock deadline at which the composer will retry a slot that
+    /// is currently cooling down after transient failures. Exposed on the
+    /// REST runtime response so the UI can render honest "retry in Xs"
+    /// copy instead of showing a static failure.
+    pub backoff_until: Option<SystemTime>,
 }
 
 impl OverlaySlotRuntime {
@@ -102,6 +107,7 @@ impl OverlaySlotRuntime {
             } else {
                 OverlaySlotStatus::Disabled
             },
+            backoff_until: None,
         }
     }
 }

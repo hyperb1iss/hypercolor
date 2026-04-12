@@ -4252,6 +4252,7 @@ async fn auto_disable_html_overlays_for_html_effect_persists_and_reports_html_ga
                         consecutive_failures: 3,
                         last_error: Some("stale failure".to_owned()),
                         status: OverlaySlotStatus::Failed,
+                        backoff_until: None,
                     },
                 )]),
             },
