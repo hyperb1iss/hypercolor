@@ -33,13 +33,50 @@ interface HypercolorZone {
 }
 
 /**
+ * A single sensor reading from the system monitor pipeline.
+ */
+interface HypercolorSensorReading {
+    /** Current value (e.g., 65.5 for temperature, 42 for load %). */
+    value: number
+    /** Expected minimum value. */
+    min: number
+    /** Expected maximum value. */
+    max: number
+    /** Unit symbol (e.g., "°C", "%", "MB", "RPM", "W", "MHz"). */
+    unit: string
+}
+
+/**
  * Hypercolor engine — central access point for all runtime data.
+ *
+ * The daemon injects audio, zone, and sensor data every frame via the
+ * LightScript runtime. Effects and faces access it through this global.
  */
 interface HypercolorEngine {
     /** Audio analysis data */
     audio: HypercolorAudio
     /** Screen zone color data */
     zone: HypercolorZone
+
+    // ── Sensor / Meter API ─────────────────────────────────────────
+    // Injected by LightscriptRuntime::sensor_update_script() every frame.
+
+    /** All sensor readings keyed by label (e.g., "cpu_temp", "gpu_load"). */
+    sensors: Record<string, HypercolorSensorReading>
+    /** Ordered list of available sensor labels. */
+    sensorList: string[]
+    /** Fetch a sensor reading by label. Returns null if unavailable. */
+    getSensorValue(name: string): HypercolorSensorReading | null
+    /** Programmatically set a sensor value (for testing/custom meters). */
+    setSensorValue(name: string, value: number, min: number, max: number, unit: string): void
+
+    // ── Canvas dimensions ──────────────────────────────────────────
+    // Set by the daemon to match the render canvas or display resolution.
+
+    /** Canvas width in pixels. */
+    width: number
+    /** Canvas height in pixels. */
+    height: number
 }
 
 /**

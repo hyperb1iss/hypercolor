@@ -22,6 +22,7 @@ function parseArgs() {
     const args = process.argv.slice(2)
     let outDir = DEFAULT_OUT
     let buildAll = false
+    let buildFaces = false
     const entries: string[] = []
 
     for (let i = 0; i < args.length; i++) {
@@ -29,25 +30,43 @@ function parseArgs() {
             outDir = resolve(args[++i])
         } else if (args[i] === '--all') {
             buildAll = true
+        } else if (args[i] === '--faces') {
+            buildFaces = true
         } else {
             entries.push(resolve(args[i]))
         }
     }
 
-    if (buildAll) {
-        const effectsDir = resolve(SDK_ROOT, 'src', 'effects')
-        if (existsSync(effectsDir)) {
-            for (const dir of readdirSync(effectsDir, { withFileTypes: true })) {
-                if (dir.isDirectory()) {
-                    const mainFile = join(effectsDir, dir.name, 'main.ts')
-                    if (existsSync(mainFile)) entries.push(mainFile)
+    if (buildAll || buildFaces) {
+        // Scan effects
+        if (buildAll) {
+            const effectsDir = resolve(SDK_ROOT, 'src', 'effects')
+            if (existsSync(effectsDir)) {
+                for (const dir of readdirSync(effectsDir, { withFileTypes: true })) {
+                    if (dir.isDirectory()) {
+                        const mainFile = join(effectsDir, dir.name, 'main.ts')
+                        if (existsSync(mainFile)) entries.push(mainFile)
+                    }
+                }
+            }
+        }
+
+        // Scan faces
+        if (buildAll || buildFaces) {
+            const facesDir = resolve(SDK_ROOT, 'src', 'faces')
+            if (existsSync(facesDir)) {
+                for (const dir of readdirSync(facesDir, { withFileTypes: true })) {
+                    if (dir.isDirectory()) {
+                        const mainFile = join(facesDir, dir.name, 'main.ts')
+                        if (existsSync(mainFile)) entries.push(mainFile)
+                    }
                 }
             }
         }
     }
 
     if (entries.length === 0) {
-        console.error('Usage: bun scripts/build-effect.ts [--all | <entry.ts>...]')
+        console.error('Usage: bun scripts/build-effect.ts [--all | --faces | <entry.ts>...]')
         process.exit(1)
     }
 
@@ -63,7 +82,7 @@ interface PresetDef {
 }
 
 interface NewApiDef {
-    type?: 'canvas' | 'webgl'
+    type?: 'canvas' | 'webgl' | 'face'
     name: string
     shader?: string
     description?: string
@@ -182,7 +201,8 @@ async function extractMetadata(entryPath: string) {
                     description: def.description ?? '',
                     name: def.name,
                     presets: def.presets ?? [],
-                    renderer: def.type === 'canvas' ? 'canvas2d' : 'webgl',
+                    renderer: def.type === 'canvas' ? 'canvas2d' : def.type === 'face' ? undefined : 'webgl',
+                    type: def.type,
                 },
             }
         }
@@ -245,7 +265,41 @@ function escapeAttr(s: string): string {
     return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
 }
 
-// ── HTML Template ──────────────────────────────────────────────────────
+// ── Face HTML Template ─────────────────────────────────────────────────
+
+function generateFaceHTML(
+    faceName: string,
+    description: string,
+    author: string,
+    controlMetas: string[],
+    presetMetas: string[],
+    jsBundle: string,
+): string {
+    const presetBlock = presetMetas.length > 0 ? `\n${presetMetas.join('\n')}` : ''
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeAttr(faceName)}</title>
+  <meta description="${escapeAttr(description)}"/>
+  <meta publisher="${escapeAttr(author)}"/>
+  <meta category="display"/>
+${controlMetas.join('\n')}${presetBlock}
+</head>
+<body style="margin:0;overflow:hidden;background:#0a0a12;-webkit-user-select:none;user-select:none">
+  <div id="faceContainer" style="position:relative;overflow:hidden;width:100vw;height:100vh">
+    <canvas id="faceCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none"></canvas>
+  </div>
+  <script>
+${jsBundle}
+  </script>
+</body>
+</html>
+`
+}
+
+// ── Effect HTML Template ──────────────────────────────────────────────
 
 function generateHTML(
     effectName: string,
@@ -314,16 +368,28 @@ async function bundleEffect(entryPath: string): Promise<string> {
 async function buildEffect(entryPath: string, outDir: string) {
     const effectDir = dirname(entryPath)
     const effectId = basename(effectDir)
+    const isFaceSource = entryPath.includes(`${join('src', 'faces')}`)
 
-    console.log(`\x1b[38;2;128;255;234m  Building\x1b[0m ${effectId}`)
+    const label = isFaceSource ? 'face' : 'effect'
+    console.log(`\x1b[38;2;128;255;234m  Building ${label}\x1b[0m ${effectId}`)
 
     // 1. Extract metadata
     const { effect, controls } = await extractMetadata(entryPath)
     const effectName = effect?.name ?? effectId
     const description = effect?.description ?? ''
     const author = effect?.author ?? 'Hypercolor'
-    const audioReactive = effect?.audioReactive ?? false
-    const renderer = effect?.renderer
+
+    // Detect face type from metadata (face() stores type: 'face')
+    const metadataType = (effect as any)?.type as string | undefined
+    const isFace = isFaceSource || metadataType === 'face'
+
+    // Cross-directory validation — catch misplaced sources early
+    if (isFaceSource && metadataType && metadataType !== 'face') {
+        throw new Error(`${effectId}: effect() found in src/faces/ — move to src/effects/`)
+    }
+    if (!isFaceSource && metadataType === 'face') {
+        console.warn(`  \x1b[38;2;241;250;140mWarning:\x1b[0m ${effectId} uses face() but lives outside src/faces/ — building as face anyway`)
+    }
 
     // 2. Generate control meta tags
     const controlMetas = (controls as ControlDef[]).map(controlToMeta)
@@ -334,25 +400,28 @@ async function buildEffect(entryPath: string, outDir: string) {
     // 4. Bundle JS
     const jsBundle = await bundleEffect(entryPath)
 
-    // 5. Generate HTML
-    const html = generateHTML(
-        effectName,
-        description,
-        author,
-        audioReactive,
-        renderer,
-        controlMetas,
-        presetMetas,
-        jsBundle,
-    )
+    // 5. Generate HTML — face or effect template
+    const html = isFace
+        ? generateFaceHTML(effectName, description, author, controlMetas, presetMetas, jsBundle)
+        : generateHTML(
+              effectName,
+              description,
+              author,
+              (effect as any)?.audioReactive ?? false,
+              (effect as any)?.renderer,
+              controlMetas,
+              presetMetas,
+              jsBundle,
+          )
 
-    // 5. Write output
+    // 6. Write output
     mkdirSync(outDir, { recursive: true })
     const outPath = join(outDir, `${effectId}.html`)
     await Bun.write(outPath, html)
 
     const sizeKB = (new TextEncoder().encode(html).length / 1024).toFixed(1)
-    console.log(`\x1b[38;2;80;250;123m  ✓\x1b[0m ${outPath} (${sizeKB} KB)`)
+    const icon = isFace ? '💎' : '✓'
+    console.log(`\x1b[38;2;80;250;123m  ${icon}\x1b[0m ${outPath} (${sizeKB} KB)`)
 }
 
 async function main() {
@@ -365,7 +434,12 @@ async function main() {
         await buildEffect(entry, outDir)
     }
 
-    console.log(`\n\x1b[38;2;80;250;123m  ✓ ${entries.length} effect(s) built\x1b[0m`)
+    const faceCount = entries.filter((e) => e.includes(join('src', 'faces'))).length
+    const effectCount = entries.length - faceCount
+    const parts = []
+    if (effectCount > 0) parts.push(`${effectCount} effect(s)`)
+    if (faceCount > 0) parts.push(`${faceCount} face(s)`)
+    console.log(`\n\x1b[38;2;80;250;123m  ✓ ${parts.join(' + ')} built\x1b[0m`)
 }
 
 main().catch((err) => {

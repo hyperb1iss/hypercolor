@@ -13,7 +13,8 @@
         "typecheck": "bun run --filter '*' typecheck && tsc --noEmit -p tsconfig.json",
         "clean": "rm -rf packages/*/dist",
         "build:effects": "bun scripts/build-effect.ts --all",
-        "build:effect": "bun scripts/build-effect.ts"
+        "build:effect": "bun scripts/build-effect.ts",
+        "build:faces": "bun scripts/build-effect.ts --faces"
     },
     "devDependencies": {
         "@biomejs/biome": "2.4.6",

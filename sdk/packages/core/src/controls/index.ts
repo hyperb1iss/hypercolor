@@ -22,6 +22,6 @@ export {
 export type { ControlMap, ControlMapValue, ControlShorthand } from './infer'
 export { inferControl } from './infer'
 export { deriveLabel, deriveUniformName } from './names'
-export type { ControlSpec, ControlTypeName, NormalizeHint } from './specs'
+export type { ControlSpec, ControlTypeName, FontOptions, NormalizeHint, SensorOptions } from './specs'
 // ── Declarative control API ──────────────────────────────────────────
-export { color, combo, hue, isControlSpec, num, text, toggle } from './specs'
+export { color, combo, font, hue, isControlSpec, num, sensor, text, toggle } from './specs'

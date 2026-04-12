@@ -326,6 +326,14 @@ effects-build:
 effect-build name:
     cd sdk && bun scripts/build-effect.ts src/effects/{{ name }}/main.ts
 
+# Build all SDK faces → effects/hypercolor/*.html
+faces-build:
+    cd sdk && bun run build:faces
+
+# Build a single SDK face (e.g., just face-build silkcircuit-hud)
+face-build name:
+    cd sdk && bun scripts/build-effect.ts src/faces/{{ name }}/main.ts
+
 # ─── Site ─────────────────────────────────────────────────
 
 # Start marketing site dev server (:9440)

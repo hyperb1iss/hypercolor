@@ -6,7 +6,7 @@
  */
 
 /** Discriminated union tag for control types. */
-export type ControlTypeName = 'number' | 'combobox' | 'boolean' | 'color' | 'hue' | 'textfield'
+export type ControlTypeName = 'number' | 'combobox' | 'boolean' | 'color' | 'hue' | 'textfield' | 'sensor'
 
 /** Normalization hint applied to control values before use. */
 export type NormalizeHint = 'speed' | 'percentage' | 'none'
@@ -156,4 +156,54 @@ export interface TextOptions {
 /** Text field control. */
 export function text(label: string, defaultValue: string, opts?: TextOptions): ControlSpec<'textfield'> {
     return spec('textfield', label, defaultValue, {}, opts)
+}
+
+export interface SensorOptions {
+    tooltip?: string
+    group?: string
+}
+
+/** Sensor picker — user selects from available system sensors.
+ *
+ *  The runtime value is a sensor label string (e.g., "cpu_temp", "gpu_load").
+ *  Pass it to `engine.getSensorValue(label)` to get the live reading.
+ *
+ *  @example
+ *  ```typescript
+ *  import { face, sensor } from '@hypercolor/sdk'
+ *  export default face('Temp', {
+ *      target: sensor('Sensor', 'cpu_temp'),
+ *  }, ...)
+ *  ```
+ */
+export function sensor(label: string, defaultValue: string, opts?: SensorOptions): ControlSpec<'sensor'> {
+    return spec('sensor', label, defaultValue, {}, opts)
+}
+
+export interface FontOptions {
+    tooltip?: string
+    group?: string
+    /** Available font families. Defaults to a curated set if omitted. */
+    families?: string[]
+}
+
+const DEFAULT_FONT_FAMILIES = [
+    'JetBrains Mono',
+    'Inter',
+    'Orbitron',
+    'Roboto Condensed',
+    'Space Grotesk',
+]
+
+/** Font family picker — combobox with font family names.
+ *
+ *  Syntactic sugar over `combo()` — produces a combobox control whose values
+ *  are font family names. The face runtime loads the selected font before
+ *  first render.
+ */
+export function font(label: string, defaultFamily: string, opts?: FontOptions): ControlSpec<'combobox'> {
+    const families = opts?.families ?? DEFAULT_FONT_FAMILIES
+    // Auto-prepend the default family if it's not already in the list
+    const values = families.includes(defaultFamily) ? [...families] : [defaultFamily, ...families]
+    return spec('combobox', label, defaultFamily, { values }, opts)
 }

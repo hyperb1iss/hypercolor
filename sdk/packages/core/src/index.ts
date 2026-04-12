@@ -24,8 +24,8 @@ import './runtime'
 // Audio (pull model for canvas effects)
 export { getAudioData as audio } from './audio'
 export type { ControlMap, ControlShorthand, ControlSpec } from './controls'
-// Control factories
-export { color, combo, hue, num, text, toggle } from './controls'
+// Control factories (effects + faces)
+export { color, combo, font, hue, num, sensor, text, toggle } from './controls'
 export type { CanvasFnOptions, DrawFn, EffectFnOptions, FactoryFn, ShaderContext } from './effects'
 // Effect functions
 export { canvas, effect } from './effects'
@@ -43,8 +43,10 @@ export type {
     ControlDefinition,
     ControlDefinitionType,
     ControlValues,
+    FontOptions,
     HueControlDefinition,
     NumberControlDefinition,
+    SensorOptions,
     TextFieldControlDefinition,
 } from './controls'
 
@@ -116,6 +118,31 @@ export {
     smoothstep,
     step,
 } from './math'
+
+// ── Faces ───────────────────────────────────────────────────────────────
+
+export { face } from './faces'
+export type { FaceContext, FaceOptions, FaceUpdateFn, SensorAccessor, SensorReading } from './faces'
+export {
+    colorByValue,
+    lerpColor,
+    palette,
+    parseHex,
+    radius,
+    sensorColors,
+    spacing,
+    withGlow,
+} from './faces/tokens'
+
+// ── Gauges ──────────────────────────────────────────────────────────────
+
+export type {
+    ArcGaugeOptions,
+    BarGaugeOptions,
+    RingGaugeOptions,
+    SparklineOptions,
+} from './gauges'
+export { ValueHistory, arcGauge, barGauge, ringGauge, sparkline } from './gauges'
 
 // ── Initialization ──────────────────────────────────────────────────────
 
