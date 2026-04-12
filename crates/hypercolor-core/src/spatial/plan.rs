@@ -19,6 +19,17 @@ pub enum PreparedZoneSamples {
     Area(Vec<PreparedAreaSample>),
 }
 
+impl PreparedZoneSamples {
+    #[must_use]
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::Nearest(samples) => samples.len(),
+            Self::Bilinear(samples) => samples.len(),
+            Self::Area(samples) => samples.len(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedNearestSample {
     pub offset: usize,

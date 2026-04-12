@@ -105,23 +105,29 @@ impl SpatialEngine {
         let next_index = start_index.saturating_add(self.prepared_zones.len());
         zones.reserve(next_index.saturating_sub(zones.len()));
 
-        for (offset, prepared_zone) in self.prepared_zones.iter().enumerate() {
-            let index = start_index + offset;
-            if index == zones.len() {
-                let mut colors = Vec::new();
-                sampler::sample_prepared_zone_into(canvas, prepared_zone, &mut colors);
-                zones.push(ZoneColors {
-                    zone_id: prepared_zone.zone_id.clone(),
-                    colors,
-                });
-                continue;
-            }
+        let reusable_count = zones
+            .len()
+            .saturating_sub(start_index)
+            .min(self.prepared_zones.len());
+        let append_start = start_index + reusable_count;
 
-            let zone = &mut zones[index];
+        for (zone, prepared_zone) in zones[start_index..append_start]
+            .iter_mut()
+            .zip(&self.prepared_zones[..reusable_count])
+        {
             if zone.zone_id != prepared_zone.zone_id {
                 zone.zone_id.clone_from(&prepared_zone.zone_id);
             }
             sampler::sample_prepared_zone_into(canvas, prepared_zone, &mut zone.colors);
+        }
+
+        for prepared_zone in &self.prepared_zones[reusable_count..] {
+            let mut colors = Vec::with_capacity(prepared_zone.prepared_samples.len());
+            sampler::sample_prepared_zone_into(canvas, prepared_zone, &mut colors);
+            zones.push(ZoneColors {
+                zone_id: prepared_zone.zone_id.clone(),
+                colors,
+            });
         }
 
         next_index
