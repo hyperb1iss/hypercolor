@@ -12,6 +12,7 @@ mod layout_utils;
 mod pages;
 mod preferences;
 mod preview_telemetry;
+mod render_presets;
 mod storage;
 mod style_utils;
 mod thumbnails;

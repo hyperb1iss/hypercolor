@@ -10,6 +10,9 @@ use crate::api;
 use crate::app::WsContext;
 use crate::components::settings_controls::*;
 use crate::icons::*;
+use crate::render_presets::{
+    CANVAS_PRESETS, MAX_CUSTOM_CANVAS_HEIGHT, MAX_CUSTOM_CANVAS_WIDTH, canvas_preset_key,
+};
 
 fn read_config<T>(
     config: Signal<Option<HypercolorConfig>>,
@@ -573,27 +576,6 @@ pub fn DiscoverySection(
 
 // ── Rendering ──────────────────────────────────────────────────────────────
 
-/// Canvas resolution presets. A matching entry in the preset dropdown selects
-/// the exact WxH; "custom" reveals free-form width/height inputs.
-const CANVAS_PRESETS: &[(&str, u32, u32)] = &[
-    ("320x200", 320, 200),
-    ("480x320", 480, 320),
-    ("640x400", 640, 400),
-    ("640x480", 640, 480),
-    ("800x600", 800, 600),
-    ("1024x768", 1024, 768),
-    ("1280x800", 1280, 800),
-];
-
-fn canvas_preset_key(width: u32, height: u32) -> String {
-    for (label, w, h) in CANVAS_PRESETS {
-        if *w == width && *h == height {
-            return (*label).to_string();
-        }
-    }
-    "custom".to_string()
-}
-
 #[component]
 pub fn RenderingSection(
     #[prop(into)] config: Signal<Option<HypercolorConfig>>,
@@ -693,7 +675,7 @@ pub fn RenderingSection(
                     key="daemon.canvas_width"
                     value=canvas_width
                     on_change=on_change
-                    min=32.0 max=1920.0 step=16.0
+                    min=32.0 max=MAX_CUSTOM_CANVAS_WIDTH step=16.0
                 />
                 <SettingNumberInput
                     label="Canvas Height"
@@ -701,7 +683,7 @@ pub fn RenderingSection(
                     key="daemon.canvas_height"
                     value=canvas_height
                     on_change=on_change
-                    min=32.0 max=1080.0 step=16.0
+                    min=32.0 max=MAX_CUSTOM_CANVAS_HEIGHT step=16.0
                 />
             </Show>
             <SettingDropdown

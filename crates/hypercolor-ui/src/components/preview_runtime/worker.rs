@@ -106,10 +106,20 @@ function scheduleFlush() {
   self.setTimeout(flushFrame, 0);
 }
 
-function flushFrame() {
+async function flushFrame() {
   framePending = false;
   const frame = latestFrame;
   if (!frame) {
+    return;
+  }
+
+  if (frame.format === 2) {
+    const bitmap = await createJpegBitmap(frame);
+    if (!bitmap) {
+      return;
+    }
+
+    self.postMessage(bitmap, [bitmap]);
     return;
   }
 
@@ -125,6 +135,19 @@ function flushFrame() {
   ctx.putImageData(imageData, 0, 0);
   const bitmap = canvas.transferToImageBitmap();
   self.postMessage(bitmap, [bitmap]);
+}
+
+async function createJpegBitmap(frame) {
+  if (typeof createImageBitmap !== "function") {
+    return null;
+  }
+
+  try {
+    const blob = new Blob([frame.pixels], { type: "image/jpeg" });
+    return await createImageBitmap(blob);
+  } catch {
+    return null;
+  }
 }
 
 function ensureCanvas(width, height) {
@@ -330,6 +353,7 @@ fn pixel_format_code(format: CanvasPixelFormat) -> u8 {
     match format {
         CanvasPixelFormat::Rgb => 0,
         CanvasPixelFormat::Rgba => 1,
+        CanvasPixelFormat::Jpeg => 2,
     }
 }
 

@@ -78,11 +78,7 @@ pub fn WiringPanel(
                         let slot_id = z.zone_name.as_ref()?;
                         // Strip the "DeviceName · " prefix that seeded layouts add,
                         // leaving just the user's channel display name.
-                        let name = z
-                            .name
-                            .strip_prefix(&prefix)
-                            .unwrap_or(&z.name)
-                            .to_string();
+                        let name = z.name.strip_prefix(&prefix).unwrap_or(&z.name).to_string();
                         Some((slot_id.clone(), name))
                     })
                     .collect(),

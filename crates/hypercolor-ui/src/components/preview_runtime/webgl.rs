@@ -176,6 +176,7 @@ impl WebGlPreviewRuntime {
         let gl_format = match frame_format {
             CanvasPixelFormat::Rgb => Gl::RGB,
             CanvasPixelFormat::Rgba => Gl::RGBA,
+            CanvasPixelFormat::Jpeg => return PreviewRenderOutcome::Reinitialize,
         };
 
         let shape = TextureShape {

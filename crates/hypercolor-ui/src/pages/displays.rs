@@ -1056,8 +1056,10 @@ fn OverlayStackPanel(selected_id: ReadSignal<Option<String>>) -> impl IntoView {
     let (overlay_config, set_overlay_config) = signal(None::<Result<DisplayOverlayConfig, String>>);
     let (catalog_open, set_catalog_open) = signal(false);
     let (selected_slot_id, set_selected_slot_id) = signal(None::<OverlaySlotId>);
-    let (runtime_map, set_runtime_map) =
-        signal(std::collections::HashMap::<OverlaySlotId, api::OverlayRuntimeResponse>::new());
+    let (runtime_map, set_runtime_map) = signal(std::collections::HashMap::<
+        OverlaySlotId,
+        api::OverlayRuntimeResponse,
+    >::new());
 
     // Reload the overlay stack whenever the selected display changes. We
     // keep the last-good config in place until the new one arrives so the
@@ -1155,9 +1157,7 @@ fn OverlayStackPanel(selected_id: ReadSignal<Option<String>>) -> impl IntoView {
                 // Drop the response if the display selection flipped while
                 // the request was in flight. Otherwise we'd paint the old
                 // display's stack onto the new one.
-                if selected_id.get_untracked().as_deref()
-                    != Some(requested_id.as_str())
-                {
+                if selected_id.get_untracked().as_deref() != Some(requested_id.as_str()) {
                     return;
                 }
                 set_overlay_config.set(Some(result));
@@ -1372,9 +1372,7 @@ fn render_slot_row(
             ("Disabled", "bg-fg-tertiary/15 text-fg-tertiary")
         }
         Some(api::OverlaySlotStatus::Failed) => ("Failed", "bg-status-error/20 text-status-error"),
-        Some(api::OverlaySlotStatus::HtmlGated) => {
-            ("HTML gated", "bg-amber-500/20 text-amber-300")
-        }
+        Some(api::OverlaySlotStatus::HtmlGated) => ("HTML gated", "bg-amber-500/20 text-amber-300"),
         None if slot.enabled => ("Active", "bg-emerald-500/15 text-emerald-300"),
         None => ("Disabled", "bg-fg-tertiary/15 text-fg-tertiary"),
     };
@@ -1817,7 +1815,11 @@ fn mutate_position(
 const ANCHOR_GRID: [[Anchor; 3]; 3] = [
     [Anchor::TopLeft, Anchor::TopCenter, Anchor::TopRight],
     [Anchor::CenterLeft, Anchor::Center, Anchor::CenterRight],
-    [Anchor::BottomLeft, Anchor::BottomCenter, Anchor::BottomRight],
+    [
+        Anchor::BottomLeft,
+        Anchor::BottomCenter,
+        Anchor::BottomRight,
+    ],
 ];
 
 fn anchor_short_label(anchor: Anchor) -> &'static str {
@@ -2183,8 +2185,7 @@ where
         } else {
             HourFormat::TwentyFour
         };
-        if let Some(source) =
-            mutate_clock_source(slot_state, |config| config.hour_format = format)
+        if let Some(source) = mutate_clock_source(slot_state, |config| config.hour_format = format)
         {
             patch_format(api::UpdateOverlaySlotRequest {
                 source: Some(source),
@@ -2195,9 +2196,9 @@ where
 
     let patch_seconds = patch.clone();
     let on_seconds = move |_| {
-        if let Some(source) =
-            mutate_clock_source(slot_state, |config| config.show_seconds = !config.show_seconds)
-        {
+        if let Some(source) = mutate_clock_source(slot_state, |config| {
+            config.show_seconds = !config.show_seconds
+        }) {
             patch_seconds(api::UpdateOverlaySlotRequest {
                 source: Some(source),
                 ..Default::default()
@@ -2706,9 +2707,15 @@ fn anchor_origin_ui(
             (display_width - slot_width) / 2,
             (display_height - slot_height) / 2,
         ),
-        Anchor::CenterRight => (display_width - slot_width, (display_height - slot_height) / 2),
+        Anchor::CenterRight => (
+            display_width - slot_width,
+            (display_height - slot_height) / 2,
+        ),
         Anchor::BottomLeft => (0, display_height - slot_height),
-        Anchor::BottomCenter => ((display_width - slot_width) / 2, display_height - slot_height),
+        Anchor::BottomCenter => (
+            (display_width - slot_width) / 2,
+            display_height - slot_height,
+        ),
         Anchor::BottomRight => (display_width - slot_width, display_height - slot_height),
     }
 }
@@ -2728,7 +2735,10 @@ fn resolve_slot_css_pct(
             width,
             height,
         } => {
-            #[expect(clippy::as_conversions, reason = "coordinate math on bounded display pixel values")]
+            #[expect(
+                clippy::as_conversions,
+                reason = "coordinate math on bounded display pixel values"
+            )]
             let (dw, dh, sw, sh) = (
                 display_width as i32,
                 display_height as i32,
@@ -2823,8 +2833,7 @@ fn render_slot_outline(
     };
 
     let style = Signal::derive(move || {
-        let is_dragging = drag_state
-            .with(|d| d.as_ref().is_some_and(|d| d.slot_id == slot_id));
+        let is_dragging = drag_state.with(|d| d.as_ref().is_some_and(|d| d.slot_id == slot_id));
         if is_dragging {
             let container_width = container_ref
                 .get()

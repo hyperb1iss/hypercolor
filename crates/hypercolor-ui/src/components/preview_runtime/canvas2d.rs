@@ -61,6 +61,7 @@ impl Canvas2dPreviewRuntime {
                 frame.pixels_js().copy_to(&mut self.scratch_source);
                 expand_rgb_to_rgba_bytes(&self.scratch_source, &mut self.scratch_rgba);
             }
+            CanvasPixelFormat::Jpeg => {}
         }
     }
 
@@ -69,6 +70,10 @@ impl Canvas2dPreviewRuntime {
         canvas: &HtmlCanvasElement,
         frame: &CanvasFrame,
     ) -> PreviewRenderOutcome {
+        if frame.pixel_format() == CanvasPixelFormat::Jpeg {
+            return PreviewRenderOutcome::Reinitialize;
+        }
+
         self.ensure_canvas_size(canvas, frame.width, frame.height);
         self.copy_frame_into_rgba(frame);
 

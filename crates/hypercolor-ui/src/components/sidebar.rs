@@ -543,7 +543,6 @@ pub fn Sidebar() -> impl IntoView {
                                             fps=preview_fps
                                             fps_target=preview_target_fps
                                             max_width="100%".to_string()
-                                            aspect_ratio="320 / 200".to_string()
                                         />
                                     </div>
                                 </div>

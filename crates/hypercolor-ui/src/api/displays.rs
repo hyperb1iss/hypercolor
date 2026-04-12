@@ -146,9 +146,7 @@ pub async fn fetch_overlay_slot(
 
 /// `GET /api/v1/displays/{id}/overlays/runtime` — fetch every slot's
 /// runtime state in one call.
-pub async fn fetch_overlay_runtimes(
-    display_id: &str,
-) -> Result<Vec<OverlayRuntimeEntry>, String> {
+pub async fn fetch_overlay_runtimes(display_id: &str) -> Result<Vec<OverlayRuntimeEntry>, String> {
     let url = format!("/api/v1/displays/{display_id}/overlays/runtime");
     client::fetch_json::<Vec<OverlayRuntimeEntry>>(&url)
         .await
