@@ -282,6 +282,14 @@ impl SparkleFlinger {
             SparkleFlingerBackend::Gpu { gpu, .. } => gpu.can_sample_zone_plan(_prepared_zones),
         }
     }
+
+    pub fn resolve_preview_surface(&mut self) -> Result<Option<PublishedSurface>> {
+        match &mut self.backend {
+            SparkleFlingerBackend::Cpu(_) => Ok(None),
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.resolve_preview_surface(),
+        }
+    }
 }
 
 #[cfg(feature = "wgpu")]

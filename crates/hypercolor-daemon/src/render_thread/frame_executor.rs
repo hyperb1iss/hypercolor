@@ -232,6 +232,22 @@ pub(crate) async fn execute_frame(
         render_stage.composed_frame.backend,
         crate::performance::CompositorBackendKind::Gpu
     ) && render_stage.composed_frame.sampling_canvas.is_none();
+    if render_stage.composed_frame.preview_surface.is_none()
+        && matches!(
+            render_stage.composed_frame.backend,
+            crate::performance::CompositorBackendKind::Gpu
+        )
+    {
+        match render.sparkleflinger.resolve_preview_surface() {
+            Ok(Some(preview_surface)) => {
+                render_stage.composed_frame.preview_surface = Some(preview_surface);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                warn!(%error, "GPU preview finalize failed; continuing without a preview surface");
+            }
+        }
+    }
 
     let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
     let timing_total_us = micros_u32(frame_start.elapsed());

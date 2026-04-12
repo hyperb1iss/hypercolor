@@ -46,6 +46,8 @@ pub(crate) struct GpuSparkleFlinger {
     cached_readback_surface: Option<CachedReadbackSurface>,
     cached_preview_surface: Option<CachedPreviewSurface>,
     pending_output_submission: Option<wgpu::CommandEncoder>,
+    pending_preview_readback: Option<PendingPreviewReadback>,
+    ready_preview_surface: Option<PublishedSurface>,
     output_generation: u64,
     cached_sample_result: Option<CachedSampleResult>,
 }
@@ -131,6 +133,19 @@ struct CachedReadbackSurface {
 struct CachedPreviewSurface {
     key: CachedPreviewSurfaceKey,
     surface: PublishedSurface,
+}
+
+#[derive(Debug, Clone)]
+enum PendingPreviewReadback {
+    FullSize {
+        width: u32,
+        height: u32,
+        readback_key: Option<CachedReadbackKey>,
+    },
+    Scaled {
+        request: PreviewSurfaceRequest,
+        readback_key: Option<CachedReadbackKey>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,6 +238,8 @@ impl GpuSparkleFlinger {
             cached_readback_surface: None,
             cached_preview_surface: None,
             pending_output_submission: None,
+            pending_preview_readback: None,
+            ready_preview_surface: None,
             output_generation: 0,
             cached_sample_result: None,
         })
@@ -254,6 +271,8 @@ impl GpuSparkleFlinger {
             && preview_request_matches_plan(preview_surface_request, plan.width, plan.height)
         {
             self.pending_output_submission = None;
+            self.pending_preview_readback = None;
+            self.ready_preview_surface = None;
             return Ok(self.compose_bypass_layer(
                 plan,
                 readback_key,
@@ -305,6 +324,8 @@ impl GpuSparkleFlinger {
             );
         }
         self.pending_output_submission = None;
+        self.pending_preview_readback = None;
+        self.ready_preview_surface = None;
 
         let surfaces = self
             .surfaces
@@ -423,7 +444,7 @@ impl GpuSparkleFlinger {
             GpuCompositorOutputSurface::Front => &surfaces.front.view,
             GpuCompositorOutputSurface::Back => &surfaces.back.view,
         };
-        let sampled = self.spatial_sampler.sample_texture_into(
+        let (sampled, submission_index) = self.spatial_sampler.sample_texture_into(
             &self.device,
             &self.queue,
             source_view,
@@ -433,6 +454,9 @@ impl GpuSparkleFlinger {
             zones,
             pending_output_submission,
         )?;
+        if let Some(submission_index) = submission_index {
+            self.resolve_pending_preview_surface_for_submission(submission_index)?;
+        }
         if sampled && let Some(sampling_plan) = sampling_plan {
             self.cached_sample_result = Some(CachedSampleResult {
                 key: CachedSampleResultKey {
@@ -443,6 +467,25 @@ impl GpuSparkleFlinger {
             });
         }
         Ok(sampled)
+    }
+
+    pub(crate) fn resolve_preview_surface(&mut self) -> Result<Option<PublishedSurface>> {
+        if let Some(surface) = self.ready_preview_surface.take() {
+            return Ok(Some(surface));
+        }
+
+        let Some(pending_preview_readback) = self.pending_preview_readback.take() else {
+            return Ok(None);
+        };
+        let encoder = self.pending_output_submission.take().unwrap_or_else(|| {
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("SparkleFlinger GPU preview finalize"),
+                })
+        });
+        let submission_index = self.queue.submit(Some(encoder.finish()));
+        self.finish_pending_preview_readback(pending_preview_readback, submission_index)
+            .map(Some)
     }
 
     pub(crate) fn ensure_surface_size(&mut self, width: u32, height: u32) {
@@ -468,6 +511,8 @@ impl GpuSparkleFlinger {
         self.cached_readback_surface = None;
         self.cached_preview_surface = None;
         self.pending_output_submission = None;
+        self.pending_preview_readback = None;
+        self.ready_preview_surface = None;
         self.cached_sample_result = None;
     }
 
@@ -590,7 +635,7 @@ impl GpuSparkleFlinger {
             && let Some(request) = preview_surface_request
             && !preview_request_matches_plan(Some(request), width, height)
         {
-            return self.read_back_scaled_preview_surface(
+            return self.stage_scaled_preview_surface_readback(
                 current_output,
                 width,
                 height,
@@ -630,6 +675,16 @@ impl GpuSparkleFlinger {
             },
             texture_extent(width, height),
         );
+        if !requires_cpu_sampling_canvas {
+            self.pending_output_submission = Some(encoder);
+            self.pending_preview_readback = Some(PendingPreviewReadback::FullSize {
+                width,
+                height,
+                readback_key,
+            });
+            self.ready_preview_surface = None;
+            return Ok(gpu_composed_without_surfaces());
+        }
 
         let readback_buffer = &surfaces.readback;
         let readback_surfaces = &mut surfaces.readback_surfaces;
@@ -670,7 +725,7 @@ impl GpuSparkleFlinger {
         self.cached_preview_surface = None;
     }
 
-    fn read_back_scaled_preview_surface(
+    fn stage_scaled_preview_surface_readback(
         &mut self,
         current_output: GpuCompositorOutputSurface,
         source_width: u32,
@@ -758,25 +813,89 @@ impl GpuSparkleFlinger {
             },
             texture_extent(request.width, request.height),
         );
-        let preview_surface = read_back_texture_into_surface(
-            &self.device,
-            &preview_surfaces.readback,
-            request.width,
-            request.height,
-            preview_surfaces.padded_bytes_per_row,
-            self.queue.submit(Some(encoder.finish())),
-            &mut preview_surfaces.readback_surfaces,
-        )?;
-        if let Some(key) = readback_key {
-            self.cached_preview_surface = Some(CachedPreviewSurface {
-                key: CachedPreviewSurfaceKey {
-                    composition: key,
-                    request,
-                },
-                surface: preview_surface.clone(),
-            });
+        self.pending_output_submission = Some(encoder);
+        self.pending_preview_readback = Some(PendingPreviewReadback::Scaled {
+            request,
+            readback_key,
+        });
+        self.ready_preview_surface = None;
+        Ok(gpu_composed_without_surfaces())
+    }
+
+    fn resolve_pending_preview_surface_for_submission(
+        &mut self,
+        submission_index: wgpu::SubmissionIndex,
+    ) -> Result<()> {
+        let Some(pending_preview_readback) = self.pending_preview_readback.take() else {
+            return Ok(());
+        };
+        let surface =
+            self.finish_pending_preview_readback(pending_preview_readback, submission_index)?;
+        self.ready_preview_surface = Some(surface);
+        Ok(())
+    }
+
+    fn finish_pending_preview_readback(
+        &mut self,
+        pending_preview_readback: PendingPreviewReadback,
+        submission_index: wgpu::SubmissionIndex,
+    ) -> Result<PublishedSurface> {
+        match pending_preview_readback {
+            PendingPreviewReadback::FullSize {
+                width,
+                height,
+                readback_key,
+            } => {
+                let surfaces = self
+                    .surfaces
+                    .as_mut()
+                    .context("GPU preview finalize requested before compositor surfaces existed")?;
+                let preview_surface = read_back_texture_into_surface(
+                    &self.device,
+                    &surfaces.readback,
+                    width,
+                    height,
+                    surfaces.padded_bytes_per_row,
+                    submission_index,
+                    &mut surfaces.readback_surfaces,
+                )?;
+                if let Some(key) = readback_key {
+                    self.cached_readback_surface = Some(CachedReadbackSurface {
+                        key: Some(key),
+                        surface: preview_surface.clone(),
+                    });
+                }
+                Ok(preview_surface)
+            }
+            PendingPreviewReadback::Scaled {
+                request,
+                readback_key,
+            } => {
+                let preview_surfaces = self
+                    .preview_surfaces
+                    .as_mut()
+                    .context("GPU scaled preview finalize requested before preview surfaces existed")?;
+                let preview_surface = read_back_texture_into_surface(
+                    &self.device,
+                    &preview_surfaces.readback,
+                    request.width,
+                    request.height,
+                    preview_surfaces.padded_bytes_per_row,
+                    submission_index,
+                    &mut preview_surfaces.readback_surfaces,
+                )?;
+                if let Some(key) = readback_key {
+                    self.cached_preview_surface = Some(CachedPreviewSurface {
+                        key: CachedPreviewSurfaceKey {
+                            composition: key,
+                            request,
+                        },
+                        surface: preview_surface.clone(),
+                    });
+                }
+                Ok(preview_surface)
+            }
         }
-        Ok(gpu_composed_with_preview_surface(preview_surface))
     }
 }
 
@@ -1948,9 +2067,57 @@ mod tests {
 
         assert!(composed.sampling_canvas.is_none());
         assert!(composed.sampling_surface.is_none());
-        let preview_surface = composed
-            .preview_surface
-            .expect("scaled preview requests should publish a preview surface");
+        assert!(composed.preview_surface.is_none());
+        let preview_surface = compositor
+            .resolve_preview_surface()
+            .expect("GPU preview finalize should succeed")
+            .expect("scaled preview requests should resolve a preview surface");
+        assert_eq!(preview_surface.width(), 2);
+        assert_eq!(preview_surface.height(), 2);
+    }
+
+    #[test]
+    fn gpu_sampler_resolves_pending_preview_surface_after_sampling() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(patterned_canvas(96)),
+                    0.35,
+                ),
+            ],
+        );
+
+        let composed = compositor
+            .compose(
+                &plan,
+                false,
+                Some(PreviewSurfaceRequest {
+                    width: 2,
+                    height: 2,
+                }),
+            )
+            .expect("GPU composition should stage a scaled preview surface");
+        assert!(composed.preview_surface.is_none());
+
+        let mut sampled = Vec::new();
+        assert!(
+            compositor
+                .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
+                .expect("GPU zone sampling should succeed")
+        );
+
+        let preview_surface = compositor
+            .resolve_preview_surface()
+            .expect("GPU preview finalize should succeed")
+            .expect("sampling should resolve the staged preview surface");
         assert_eq!(preview_surface.width(), 2);
         assert_eq!(preview_surface.height(), 2);
     }

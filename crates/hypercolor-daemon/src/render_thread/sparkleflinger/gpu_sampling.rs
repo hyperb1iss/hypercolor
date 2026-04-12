@@ -282,9 +282,9 @@ impl GpuSpatialSampler {
         prepared_zones: &[PreparedZonePlan],
         zones: &mut Vec<ZoneColors>,
         encoder: Option<wgpu::CommandEncoder>,
-    ) -> Result<bool> {
+    ) -> Result<(bool, Option<wgpu::SubmissionIndex>)> {
         if !self.ensure_plan(prepared_zones) {
-            return Ok(false);
+            return Ok((false, None));
         }
 
         let sample_count = self
@@ -294,15 +294,15 @@ impl GpuSpatialSampler {
         self.ensure_capacity(device, sample_count);
         let Some(points_buffer) = self.points_buffer.clone() else {
             zones.clear();
-            return Ok(true);
+            return Ok((true, None));
         };
         let Some(output_buffer) = self.output_buffer.clone() else {
             zones.clear();
-            return Ok(true);
+            return Ok((true, None));
         };
         let Some(readback_buffer) = self.readback_buffer.clone() else {
             zones.clear();
-            return Ok(true);
+            return Ok((true, None));
         };
 
         self.ensure_points_uploaded(queue, &points_buffer);
@@ -340,16 +340,17 @@ impl GpuSpatialSampler {
         }
         encoder.copy_buffer_to_buffer(&output_buffer, 0, &readback_buffer, 0, output_buffer.size());
 
+        let submission_index = queue.submit(Some(encoder.finish()));
         readback_zone_colors_into(
             device,
             &readback_buffer,
             self.cached_plan
                 .as_ref()
                 .expect("GPU sampling plan should remain cached after sampling"),
-            queue.submit(Some(encoder.finish())),
+            submission_index.clone(),
             zones,
         )?;
-        Ok(true)
+        Ok((true, Some(submission_index)))
     }
 
     fn ensure_capacity(&mut self, device: &wgpu::Device, sample_count: usize) {
