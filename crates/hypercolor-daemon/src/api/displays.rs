@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use axum::body::Bytes;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -41,6 +42,14 @@ pub(crate) struct DisplaySurfaceInfo {
     pub width: u32,
     pub height: u32,
     pub circular: bool,
+}
+
+struct OwnedDisplayJpeg(Arc<Vec<u8>>);
+
+impl AsRef<[u8]> for OwnedDisplayJpeg {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_slice()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -171,10 +180,11 @@ fn display_preview_response(
     last_modified: &str,
     frame: &DisplayFrameSnapshot,
 ) -> Response {
+    let jpeg_body = Bytes::from_owner(OwnedDisplayJpeg(Arc::clone(&frame.jpeg_data)));
     let mut response = (
         StatusCode::OK,
         [(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"))],
-        frame.jpeg_data.as_ref().clone(),
+        jpeg_body,
     )
         .into_response();
     let headers = response.headers_mut();
