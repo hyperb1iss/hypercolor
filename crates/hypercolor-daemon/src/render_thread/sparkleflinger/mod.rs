@@ -505,4 +505,49 @@ mod tests {
         );
         assert!(!second.bypassed);
     }
+
+    #[test]
+    fn sparkleflinger_does_not_reuse_cached_composition_after_canvas_mutation() {
+        let mut base = solid_canvas(Rgba::new(255, 32, 0, 255));
+        let overlay = solid_canvas(Rgba::new(32, 64, 255, 255));
+        let mut sparkleflinger = SparkleFlinger::cpu();
+
+        let first = sparkleflinger.compose(CompositionPlan::with_layers(
+            2,
+            2,
+            vec![
+                CompositionLayer::replace_canvas(base.clone()),
+                CompositionLayer::alpha_canvas(overlay.clone(), 0.35),
+            ],
+        ));
+        base.set_pixel(0, 0, Rgba::new(0, 255, 0, 255));
+        let second = sparkleflinger.compose(CompositionPlan::with_layers(
+            2,
+            2,
+            vec![
+                CompositionLayer::replace_canvas(base),
+                CompositionLayer::alpha_canvas(overlay, 0.35),
+            ],
+        ));
+
+        let first_surface = first
+            .sampling_surface
+            .expect("initial composition should publish a sampling surface");
+        let second_surface = second
+            .sampling_surface
+            .expect("mutated composition should publish a sampling surface");
+        assert_ne!(first_surface.storage_identity(), second_surface.storage_identity());
+        assert_ne!(
+            first
+                .sampling_canvas
+                .as_ref()
+                .expect("initial composition should materialize a canvas")
+                .get_pixel(0, 0),
+            second
+                .sampling_canvas
+                .as_ref()
+                .expect("mutated composition should materialize a canvas")
+                .get_pixel(0, 0)
+        );
+    }
 }

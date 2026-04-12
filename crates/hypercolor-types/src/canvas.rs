@@ -634,9 +634,7 @@ impl Canvas {
     }
 
     fn pixels_mut(&mut self) -> &mut Vec<u8> {
-        if Arc::strong_count(&self.pixels) > 1 {
-            self.storage_id = next_published_surface_storage_id();
-        }
+        self.storage_id = next_published_surface_storage_id();
         Arc::make_mut(&mut self.pixels)
     }
 

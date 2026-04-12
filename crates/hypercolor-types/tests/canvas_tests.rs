@@ -470,6 +470,16 @@ fn canvas_storage_identity_changes_when_shared_canvas_is_mutated() {
 }
 
 #[test]
+fn canvas_storage_identity_changes_when_unique_canvas_is_mutated() {
+    let mut canvas = Canvas::new(2, 1);
+    let original_identity = canvas.storage_identity();
+
+    canvas.set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
+
+    assert_ne!(original_identity, canvas.storage_identity());
+}
+
+#[test]
 fn render_surface_pool_slot_counts_match_visible_states() {
     let descriptor = SurfaceDescriptor::rgba8888(2, 2);
     let mut pool = RenderSurfacePool::with_slot_count(descriptor, 3);
