@@ -8,12 +8,16 @@
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use leptos_use::use_interval_fn;
 
 use crate::api;
 use crate::components::page_header::PageHeader;
 use crate::icons::*;
 
 type DisplaysResource = LocalResource<Result<Vec<api::DisplaySummary>, String>>;
+
+/// Polling cadence for the live preview JPEG, in milliseconds.
+const PREVIEW_POLL_INTERVAL_MS: u64 = 500;
 
 #[component]
 pub fn DisplaysPage() -> impl IntoView {
@@ -31,6 +35,13 @@ pub fn DisplaysPage() -> impl IntoView {
         {
             set_selected_id.set(Some(first.id.clone()));
         }
+    });
+
+    let selected_display = Memo::new(move |_| {
+        let id = selected_id.get()?;
+        let snapshot = displays.get();
+        let items = snapshot.as_ref()?.as_ref().ok()?;
+        items.iter().find(|display| display.id == id).cloned()
     });
 
     view! {
@@ -52,7 +63,7 @@ pub fn DisplaysPage() -> impl IntoView {
                     selected_id=selected_id
                     set_selected_id=set_selected_id
                 />
-                <DisplayWorkspace selected_id=selected_id />
+                <DisplayWorkspace selected_display=selected_display />
                 <OverlayStackPanel selected_id=selected_id />
             </div>
         </div>
@@ -186,16 +197,83 @@ fn PickerPlaceholder(#[prop(into)] message: String) -> impl IntoView {
 }
 
 #[component]
-fn DisplayWorkspace(selected_id: ReadSignal<Option<String>>) -> impl IntoView {
+fn DisplayWorkspace(selected_display: Memo<Option<api::DisplaySummary>>) -> impl IntoView {
+    let (poll_counter, set_poll_counter) = signal(0_u64);
+
+    // Steady-state polling of the preview JPEG. Tick the counter on every
+    // cycle so the <img> src cache-busts; the daemon returns cheap 304s when
+    // the frame hasn't advanced. The interval is paused automatically when
+    // no display is selected so idle pages stop generating traffic.
+    let interval = use_interval_fn(
+        move || {
+            set_poll_counter.update(|value| *value = value.wrapping_add(1));
+        },
+        PREVIEW_POLL_INTERVAL_MS,
+    );
+    let pause = interval.pause.clone();
+    let resume = interval.resume.clone();
+    Effect::new(move |_| {
+        if selected_display.with(Option::is_some) {
+            resume();
+        } else {
+            pause();
+        }
+    });
+
+    let subtitle = Signal::derive(move || {
+        selected_display.with(|display| {
+            display.as_ref().map(|summary| {
+                let shape = if summary.circular {
+                    "round"
+                } else if summary.width > summary.height * 2 {
+                    "wide"
+                } else {
+                    "rect"
+                };
+                format!("{} · {}x{} · {}", summary.vendor, summary.width, summary.height, shape)
+            })
+        })
+    });
+
     view! {
         <section class="flex min-h-0 flex-col overflow-hidden rounded-lg border border-edge-subtle bg-surface-raised">
-            <header class="border-b border-edge-subtle px-3 py-2 text-xs uppercase tracking-wider text-fg-tertiary">
-                "Live preview"
+            <header class="flex items-center justify-between border-b border-edge-subtle px-3 py-2">
+                <div class="text-xs uppercase tracking-wider text-fg-tertiary">
+                    "Live preview"
+                </div>
+                <div class="text-[11px] text-fg-tertiary">
+                    {move || subtitle.get().unwrap_or_default()}
+                </div>
             </header>
-            <div class="grid min-h-0 flex-1 place-items-center p-4 text-xs text-fg-tertiary">
-                {move || match selected_id.get() {
-                    Some(id) => format!("Preview wiring arrives in the next task. Selected: {id}"),
-                    None => "Select a display to begin.".to_string(),
+            <div class="flex min-h-0 flex-1 items-center justify-center p-4">
+                {move || {
+                    let Some(display) = selected_display.get() else {
+                        return view! {
+                            <p class="text-xs text-fg-tertiary">"Select a display to begin."</p>
+                        }.into_any();
+                    };
+                    let ts = poll_counter.get();
+                    let src = api::display_preview_url(&display.id, Some(ts));
+                    let aspect = format!("{} / {}", display.width, display.height);
+                    let rounded_class = if display.circular {
+                        "rounded-full"
+                    } else {
+                        "rounded-md"
+                    };
+                    let alt_text = format!("Live preview of {}", display.name);
+                    let img_class = format!(
+                        "max-h-full max-w-full object-contain border border-edge-subtle bg-black shadow-lg {rounded_class}"
+                    );
+                    view! {
+                        <img
+                            class=img_class
+                            src=src
+                            alt=alt_text
+                            style=move || format!("aspect-ratio: {aspect};")
+                            loading="eager"
+                            decoding="async"
+                        />
+                    }.into_any()
                 }}
             </div>
         </section>
