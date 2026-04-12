@@ -6,7 +6,11 @@
 //! shell plus the display picker; later tasks fill in the preview canvas,
 //! catalog modal, and per-type inspector forms.
 
-use hypercolor_types::overlay::{DisplayOverlayConfig, OverlaySlot, OverlaySource};
+use hypercolor_types::overlay::{
+    Anchor, ClockConfig, ClockStyle, DisplayOverlayConfig, HourFormat, ImageFit,
+    ImageOverlayConfig, OverlayBlendMode, OverlayPosition, OverlaySlot, OverlaySource,
+    SensorDisplayStyle, SensorOverlayConfig, TextAlign, TextOverlayConfig,
+};
 use icondata_core::Icon as IconData;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -287,6 +291,7 @@ fn DisplayWorkspace(selected_display: Memo<Option<api::DisplaySummary>>) -> impl
 fn OverlayStackPanel(selected_id: ReadSignal<Option<String>>) -> impl IntoView {
     let (overlay_config, set_overlay_config) =
         signal(None::<Result<DisplayOverlayConfig, String>>);
+    let (catalog_open, set_catalog_open) = signal(false);
 
     // Reload the overlay stack whenever the selected display changes. We
     // keep the last-good config in place until the new one arrives so the
@@ -314,17 +319,34 @@ fn OverlayStackPanel(selected_id: ReadSignal<Option<String>>) -> impl IntoView {
         });
     };
 
+    let add_disabled = Signal::derive(move || selected_id.with(Option::is_none));
+    let refresh_for_catalog = refresh.clone();
+    let on_catalog_select = move |kind: OverlayKind| {
+        let Some(display_id) = selected_id.get_untracked() else {
+            return;
+        };
+        let refresh = refresh_for_catalog.clone();
+        spawn_local(async move {
+            let body = kind.default_create_request();
+            if api::create_overlay_slot(&display_id, &body).await.is_ok() {
+                refresh();
+            }
+            set_catalog_open.set(false);
+        });
+    };
+
     view! {
-        <aside class="flex min-h-0 flex-col overflow-hidden rounded-lg border border-edge-subtle bg-surface-raised">
+        <aside class="relative flex min-h-0 flex-col overflow-hidden rounded-lg border border-edge-subtle bg-surface-raised">
             <header class="flex items-center justify-between border-b border-edge-subtle px-3 py-2">
                 <div class="text-xs uppercase tracking-wider text-fg-tertiary">
                     "Overlay stack"
                 </div>
                 <button
                     type="button"
-                    class="flex items-center gap-1 rounded-sm px-2 py-0.5 text-[11px] uppercase tracking-wider text-fg-tertiary transition hover:text-accent-primary"
-                    title="Catalog modal arrives in the next task"
-                    disabled=true
+                    class="flex items-center gap-1 rounded-sm px-2 py-0.5 text-[11px] uppercase tracking-wider transition hover:text-accent-primary disabled:cursor-not-allowed disabled:opacity-40"
+                    title="Add a new overlay to this display"
+                    disabled=move || add_disabled.get()
+                    on:click=move |_| set_catalog_open.set(true)
                 >
                     <Icon icon=LuPlus width="12" height="12" />
                     "Add"
@@ -366,7 +388,81 @@ fn OverlayStackPanel(selected_id: ReadSignal<Option<String>>) -> impl IntoView {
                     }
                 }}
             </div>
+            <Show when=move || catalog_open.get() fallback=|| ()>
+                <OverlayCatalogModal
+                    on_select=on_catalog_select.clone()
+                    on_close=move || set_catalog_open.set(false)
+                />
+            </Show>
         </aside>
+    }
+}
+
+#[component]
+fn OverlayCatalogModal<F, C>(on_select: F, on_close: C) -> impl IntoView
+where
+    F: Fn(OverlayKind) + Clone + 'static,
+    C: Fn() + Clone + 'static,
+{
+    let close_backdrop = on_close.clone();
+    let close_button = on_close.clone();
+    let options = [
+        OverlayKind::Clock,
+        OverlayKind::Sensor,
+        OverlayKind::Image,
+        OverlayKind::Text,
+    ];
+
+    let tiles = options
+        .into_iter()
+        .map(|kind| {
+            let pick = on_select.clone();
+            let descriptor = kind.descriptor();
+            view! {
+                <button
+                    type="button"
+                    class="flex flex-col items-start gap-1 rounded-md border border-edge-subtle bg-surface-raised p-3 text-left transition hover:border-accent-primary hover:bg-surface-overlay"
+                    on:click=move |_| pick(kind)
+                >
+                    <span class="flex items-center gap-2 text-sm font-medium text-fg-primary">
+                        <Icon icon=descriptor.icon width="14" height="14" />
+                        {descriptor.label}
+                    </span>
+                    <span class="text-[11px] leading-relaxed text-fg-tertiary">
+                        {descriptor.blurb}
+                    </span>
+                </button>
+            }
+        })
+        .collect_view();
+
+    view! {
+        <div
+            class="absolute inset-0 z-10 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+            on:click=move |_| close_backdrop()
+        >
+            <div
+                class="w-[290px] rounded-lg border border-edge-subtle bg-surface-raised p-4 shadow-2xl"
+                on:click=|event| event.stop_propagation()
+            >
+                <div class="mb-3 flex items-center justify-between">
+                    <h2 class="text-sm font-semibold text-fg-primary">"Add overlay"</h2>
+                    <button
+                        type="button"
+                        class="rounded-sm p-1 text-fg-tertiary transition hover:text-accent-primary"
+                        title="Close"
+                        on:click=move |_| close_button()
+                    >
+                        <Icon icon=LuX width="14" height="14" />
+                    </button>
+                </div>
+                <div class="grid grid-cols-2 gap-2">{tiles}</div>
+                <div class="mt-3 rounded-md border border-edge-subtle bg-surface-overlay/50 p-2 text-[11px] leading-relaxed text-fg-tertiary">
+                    <Icon icon=LuCode width="12" height="12" />
+                    " HTML overlays are gated until Servo supports multi-session rendering."
+                </div>
+            </div>
+        </div>
     }
 }
 
@@ -481,5 +577,114 @@ fn overlay_source_descriptor(source: &OverlaySource) -> (&'static str, IconData)
         OverlaySource::Image(_) => ("Image", LuLayers),
         OverlaySource::Text(_) => ("Text", LuType),
         OverlaySource::Html(_) => ("HTML", LuCode),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum OverlayKind {
+    Clock,
+    Sensor,
+    Image,
+    Text,
+}
+
+struct OverlayKindDescriptor {
+    label: &'static str,
+    blurb: &'static str,
+    icon: IconData,
+}
+
+impl OverlayKind {
+    fn descriptor(self) -> OverlayKindDescriptor {
+        match self {
+            Self::Clock => OverlayKindDescriptor {
+                label: "Clock",
+                blurb: "Digital or analog time",
+                icon: LuTimer,
+            },
+            Self::Sensor => OverlayKindDescriptor {
+                label: "Sensor",
+                blurb: "Live system metrics",
+                icon: LuGauge,
+            },
+            Self::Image => OverlayKindDescriptor {
+                label: "Image",
+                blurb: "Static art or GIFs",
+                icon: LuLayers,
+            },
+            Self::Text => OverlayKindDescriptor {
+                label: "Text",
+                blurb: "Styled static or scrolling text",
+                icon: LuType,
+            },
+        }
+    }
+
+    fn default_create_request(self) -> api::CreateOverlaySlotRequest {
+        let (name, source) = match self {
+            Self::Clock => (
+                "Clock".to_string(),
+                OverlaySource::Clock(ClockConfig {
+                    style: ClockStyle::Digital,
+                    hour_format: HourFormat::TwentyFour,
+                    show_seconds: true,
+                    show_date: false,
+                    date_format: None,
+                    font_family: None,
+                    color: "#ffffff".to_string(),
+                    secondary_color: None,
+                    template: None,
+                }),
+            ),
+            Self::Sensor => (
+                "CPU temp".to_string(),
+                OverlaySource::Sensor(SensorOverlayConfig {
+                    sensor: "cpu_temp".to_string(),
+                    style: SensorDisplayStyle::Numeric,
+                    unit_label: Some("°C".to_string()),
+                    range_min: 20.0,
+                    range_max: 95.0,
+                    color_min: "#80ffea".to_string(),
+                    color_max: "#ff6ac1".to_string(),
+                    font_family: None,
+                    template: None,
+                }),
+            ),
+            Self::Image => (
+                "Image".to_string(),
+                OverlaySource::Image(ImageOverlayConfig {
+                    path: String::new(),
+                    speed: 1.0,
+                    fit: ImageFit::Contain,
+                }),
+            ),
+            Self::Text => (
+                "Label".to_string(),
+                OverlaySource::Text(TextOverlayConfig {
+                    text: "Hypercolor".to_string(),
+                    font_family: None,
+                    font_size: 24.0,
+                    color: "#ffffff".to_string(),
+                    align: TextAlign::Center,
+                    scroll: false,
+                    scroll_speed: 30.0,
+                }),
+            ),
+        };
+
+        api::CreateOverlaySlotRequest {
+            name,
+            source,
+            position: OverlayPosition::Anchored {
+                anchor: Anchor::Center,
+                offset_x: 0,
+                offset_y: 0,
+                width: 200,
+                height: 60,
+            },
+            blend_mode: OverlayBlendMode::Normal,
+            opacity: 1.0,
+            enabled: true,
+        }
     }
 }
