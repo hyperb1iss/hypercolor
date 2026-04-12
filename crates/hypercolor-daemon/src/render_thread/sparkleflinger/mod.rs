@@ -29,67 +29,78 @@ pub struct CompositionLayer {
     frame: ProducerFrame,
     mode: CompositionMode,
     opacity: f32,
+    opaque_hint: bool,
 }
 
 impl CompositionLayer {
     pub fn replace_canvas(canvas: Canvas) -> Self {
-        Self::replace(ProducerFrame::Canvas(canvas))
+        Self::replace_opaque(ProducerFrame::Canvas(canvas))
     }
 
     pub fn replace_surface(surface: PublishedSurface) -> Self {
-        Self::replace(ProducerFrame::Surface(surface))
+        Self::replace_opaque(ProducerFrame::Surface(surface))
     }
 
     pub fn alpha_canvas(canvas: Canvas, opacity: f32) -> Self {
-        Self::alpha(ProducerFrame::Canvas(canvas), opacity)
+        Self::alpha_opaque(ProducerFrame::Canvas(canvas), opacity)
     }
 
     pub fn add_canvas(canvas: Canvas, opacity: f32) -> Self {
-        Self::add(ProducerFrame::Canvas(canvas), opacity)
+        Self::add_opaque(ProducerFrame::Canvas(canvas), opacity)
     }
 
     pub fn screen_canvas(canvas: Canvas, opacity: f32) -> Self {
-        Self::screen(ProducerFrame::Canvas(canvas), opacity)
+        Self::screen_opaque(ProducerFrame::Canvas(canvas), opacity)
     }
 
+    #[allow(dead_code, reason = "used by tests and the optional wgpu compositor lane")]
     pub(crate) fn replace(frame: ProducerFrame) -> Self {
-        Self {
-            frame,
-            mode: CompositionMode::Replace,
-            opacity: 1.0,
-        }
+        Self::from_parts(frame, CompositionMode::Replace, 1.0, false)
     }
 
-    pub(crate) fn from_parts(frame: ProducerFrame, mode: CompositionMode, opacity: f32) -> Self {
+    pub(crate) fn replace_opaque(frame: ProducerFrame) -> Self {
+        Self::from_parts(frame, CompositionMode::Replace, 1.0, true)
+    }
+
+    pub(crate) fn from_parts(
+        frame: ProducerFrame,
+        mode: CompositionMode,
+        opacity: f32,
+        opaque_hint: bool,
+    ) -> Self {
         Self {
             frame,
             mode,
             opacity,
+            opaque_hint,
         }
     }
 
+    #[allow(dead_code, reason = "used by tests and the optional wgpu compositor lane")]
     pub(crate) fn alpha(frame: ProducerFrame, opacity: f32) -> Self {
-        Self {
-            frame,
-            mode: CompositionMode::Alpha,
-            opacity,
-        }
+        Self::from_parts(frame, CompositionMode::Alpha, opacity, false)
     }
 
+    pub(crate) fn alpha_opaque(frame: ProducerFrame, opacity: f32) -> Self {
+        Self::from_parts(frame, CompositionMode::Alpha, opacity, true)
+    }
+
+    #[allow(dead_code, reason = "used by tests and the optional wgpu compositor lane")]
     pub(crate) fn add(frame: ProducerFrame, opacity: f32) -> Self {
-        Self {
-            frame,
-            mode: CompositionMode::Add,
-            opacity,
-        }
+        Self::from_parts(frame, CompositionMode::Add, opacity, false)
     }
 
+    pub(crate) fn add_opaque(frame: ProducerFrame, opacity: f32) -> Self {
+        Self::from_parts(frame, CompositionMode::Add, opacity, true)
+    }
+
+    #[allow(dead_code, reason = "used by tests and the optional wgpu compositor lane")]
     pub(crate) fn screen(frame: ProducerFrame, opacity: f32) -> Self {
-        Self {
-            frame,
-            mode: CompositionMode::Screen,
-            opacity,
-        }
+        Self::from_parts(frame, CompositionMode::Screen, opacity, false)
+    }
+
+    pub(crate) fn screen_opaque(frame: ProducerFrame, opacity: f32) -> Self {
+        Self::from_parts(frame, CompositionMode::Screen, opacity, true)
     }
 
     fn is_bypass_candidate(&self) -> bool {

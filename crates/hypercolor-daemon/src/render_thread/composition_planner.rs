@@ -9,22 +9,25 @@ pub(crate) struct PlannedSceneLayer {
     frame: ProducerFrame,
     mode: CompositionMode,
     opacity: f32,
+    opaque_hint: bool,
 }
 
 impl PlannedSceneLayer {
-    pub(crate) fn replace(frame: ProducerFrame) -> Self {
+    pub(crate) fn replace(frame: ProducerFrame, opaque_hint: bool) -> Self {
         Self {
             frame,
             mode: CompositionMode::Replace,
             opacity: 1.0,
+            opaque_hint,
         }
     }
 
-    pub(crate) fn alpha(frame: ProducerFrame, opacity: f32) -> Self {
+    pub(crate) fn alpha(frame: ProducerFrame, opacity: f32, opaque_hint: bool) -> Self {
         Self {
             frame,
             mode: CompositionMode::Alpha,
             opacity,
+            opaque_hint,
         }
     }
 }
@@ -52,7 +55,9 @@ struct SceneTransitionKey {
 pub(crate) struct CompositionPlanner {
     active_transition: Option<SceneTransitionKey>,
     transition_base_frame: Option<ProducerFrame>,
+    transition_base_opaque: bool,
     last_stable_frame: Option<ProducerFrame>,
+    last_stable_opaque: bool,
 }
 
 impl CompositionPlanner {
@@ -60,7 +65,9 @@ impl CompositionPlanner {
         Self {
             active_transition: None,
             transition_base_frame: None,
+            transition_base_opaque: false,
             last_stable_frame: None,
+            last_stable_opaque: false,
         }
     }
 
@@ -73,7 +80,14 @@ impl CompositionPlanner {
         let metadata = composition_metadata(scene_runtime, layers.len());
         let composition_layers = layers
             .into_iter()
-            .map(|layer| CompositionLayer::from_parts(layer.frame, layer.mode, layer.opacity))
+            .map(|layer| {
+                CompositionLayer::from_parts(
+                    layer.frame,
+                    layer.mode,
+                    layer.opacity,
+                    layer.opaque_hint,
+                )
+            })
             .collect::<Vec<_>>();
         let plan = if composition_layers.len() == 1 {
             let layer = composition_layers
@@ -94,25 +108,34 @@ impl CompositionPlanner {
         height: u32,
         scene_runtime: &SceneRuntimeSnapshot,
         current_frame: ProducerFrame,
+        current_frame_opaque: bool,
     ) -> CompiledCompositionPlan {
         if transition_key(scene_runtime).is_none() {
             self.active_transition = None;
             self.transition_base_frame = None;
+            self.transition_base_opaque = false;
             self.last_stable_frame = Some(current_frame.clone());
+            self.last_stable_opaque = current_frame_opaque;
             return CompiledCompositionPlan {
                 plan: CompositionPlan::single(
                     width,
                     height,
-                    CompositionLayer::replace(current_frame),
+                    CompositionLayer::from_parts(
+                        current_frame,
+                        CompositionMode::Replace,
+                        1.0,
+                        current_frame_opaque,
+                    ),
                 ),
                 metadata: composition_metadata(scene_runtime, 1),
             };
         }
 
-        let layers = self.transition_layers(scene_runtime, &current_frame);
+        let layers = self.transition_layers(scene_runtime, &current_frame, current_frame_opaque);
         let compiled = Self::compile(width, height, scene_runtime, layers);
         if self.active_transition.is_none() {
             self.last_stable_frame = Some(current_frame);
+            self.last_stable_opaque = current_frame_opaque;
         }
         compiled
     }
@@ -121,6 +144,7 @@ impl CompositionPlanner {
         &mut self,
         scene_runtime: &SceneRuntimeSnapshot,
         current_frame: &ProducerFrame,
+        current_frame_opaque: bool,
     ) -> Vec<PlannedSceneLayer> {
         let transition = scene_runtime.active_transition.as_ref();
         let transition_key = transition_key(scene_runtime);
@@ -132,24 +156,35 @@ impl CompositionPlanner {
                     .last_stable_frame
                     .clone()
                     .or_else(|| Some(current_frame.clone()));
+                self.transition_base_opaque = self.last_stable_frame.is_some()
+                    && self.last_stable_opaque
+                    || self.last_stable_frame.is_none() && current_frame_opaque;
             }
 
             let opacity =
                 transition.map_or(1.0, |transition| transition.eased_progress.clamp(0.0, 1.0));
             let mut layers = Vec::with_capacity(2);
             if let Some(base_frame) = self.transition_base_frame.clone() {
-                layers.push(PlannedSceneLayer::replace(base_frame));
+                layers.push(PlannedSceneLayer::replace(base_frame, self.transition_base_opaque));
             }
             if opacity < 1.0 {
-                layers.push(PlannedSceneLayer::alpha(current_frame.clone(), opacity));
+                layers.push(PlannedSceneLayer::alpha(
+                    current_frame.clone(),
+                    opacity,
+                    current_frame_opaque,
+                ));
             } else {
-                layers.push(PlannedSceneLayer::replace(current_frame.clone()));
+                layers.push(PlannedSceneLayer::replace(
+                    current_frame.clone(),
+                    current_frame_opaque,
+                ));
             }
             layers
         } else {
             self.active_transition = None;
             self.transition_base_frame = None;
-            vec![PlannedSceneLayer::replace(current_frame.clone())]
+            self.transition_base_opaque = false;
+            vec![PlannedSceneLayer::replace(current_frame.clone(), current_frame_opaque)]
         }
     }
 }
@@ -274,9 +309,10 @@ mod tests {
                 active_render_groups_revision: 1,
                 active_render_group_count: 1,
             },
-            vec![PlannedSceneLayer::replace(ProducerFrame::Canvas(
-                solid_canvas(Rgba::new(12, 34, 56, 255)),
-            ))],
+            vec![PlannedSceneLayer::replace(
+                ProducerFrame::Canvas(solid_canvas(Rgba::new(12, 34, 56, 255))),
+                true,
+            )],
         );
 
         assert_eq!(compiled.metadata.logical_layer_count, 1);
@@ -294,10 +330,11 @@ mod tests {
             vec![
                 PlannedSceneLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
                     255, 0, 0, 255,
-                )))),
+                ))), true),
                 PlannedSceneLayer::alpha(
                     ProducerFrame::Canvas(solid_canvas(Rgba::new(0, 0, 255, 255))),
                     0.5,
+                    true,
                 ),
             ],
         );
@@ -321,7 +358,7 @@ mod tests {
         let stable = ProducerFrame::Canvas(solid_canvas(Rgba::new(255, 0, 0, 255)));
         let entering = ProducerFrame::Canvas(solid_canvas(Rgba::new(0, 0, 255, 255)));
         let stable_runtime = SceneRuntimeSnapshot::default();
-        let _ = planner.compile_primary_frame(2, 2, &stable_runtime, stable);
+        let _ = planner.compile_primary_frame(2, 2, &stable_runtime, stable, true);
 
         let transition_runtime = SceneRuntimeSnapshot {
             active_scene_id: Some(hypercolor_types::scene::SceneId::new()),
@@ -335,7 +372,7 @@ mod tests {
             active_render_groups_revision: 0,
             active_render_group_count: 0,
         };
-        let compiled = planner.compile_primary_frame(2, 2, &transition_runtime, entering);
+        let compiled = planner.compile_primary_frame(2, 2, &transition_runtime, entering, true);
         let mut sparkleflinger = SparkleFlinger::cpu();
         let composed = sparkleflinger.compose(compiled.plan);
 

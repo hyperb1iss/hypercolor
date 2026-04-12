@@ -57,6 +57,7 @@ pub(crate) struct ComposeRequest<'a> {
 
 struct ProducedFrame {
     frame: ProducerFrame,
+    opaque_hint: bool,
     producer_us: u32,
     state: Option<ProducerFrameState>,
 }
@@ -100,6 +101,7 @@ impl ComposeContext<'_> {
 
         let ProducedFrame {
             frame: source_frame,
+            opaque_hint: source_frame_opaque,
             producer_us,
             state: producer_state,
         } = if !self.scene_snapshot.effect_demand.effect_running {
@@ -114,6 +116,7 @@ impl ComposeContext<'_> {
                         self.state.canvas_dims.height(),
                         [0, 0, 0],
                     )),
+                    opaque_hint: true,
                     producer_us: 0,
                     state: None,
                 }
@@ -126,6 +129,7 @@ impl ComposeContext<'_> {
             {
                 ProducedFrame {
                     frame: frame.frame,
+                    opaque_hint: true,
                     producer_us: 0,
                     state: Some(frame.state),
                 }
@@ -164,6 +168,7 @@ impl ComposeContext<'_> {
             self.state.canvas_dims.height(),
             &self.scene_snapshot.scene_runtime,
             source_frame,
+            source_frame_opaque,
         );
         let composed = self.render.sparkleflinger.compose_for_outputs(
             compiled_plan.plan,
@@ -298,6 +303,7 @@ impl ComposeContext<'_> {
                     self.state.canvas_dims.height(),
                     &self.scene_snapshot.scene_runtime,
                     render_group_result.preview_frame,
+                    true,
                 );
                 let composed = self.render.sparkleflinger.compose_for_outputs(
                     compiled_plan.plan,
@@ -346,6 +352,7 @@ impl ComposeContext<'_> {
                     self.state.canvas_dims.height(),
                     &self.scene_snapshot.scene_runtime,
                     source_frame,
+                    true,
                 );
                 let composed = self.render.sparkleflinger.compose_for_outputs(
                     compiled_plan.plan,
@@ -408,6 +415,7 @@ impl ComposeContext<'_> {
             .latch_latest()
             .map(|frame| ProducedFrame {
                 frame: frame.frame,
+                opaque_hint: false,
                 producer_us: 0,
                 state: Some(frame.state),
             })
@@ -487,6 +495,7 @@ async fn render_effect_frame(
             .submit_for_generation(frame.clone(), effect_generation);
         return ProducedFrame {
             frame,
+            opaque_hint: true,
             producer_us: micros_u32(render_start.elapsed()),
             state: Some(ProducerFrameState::Fresh),
         };
@@ -532,6 +541,7 @@ async fn render_effect_frame(
     });
     ProducedFrame {
         frame,
+        opaque_hint: true,
         producer_us: micros_u32(render_start.elapsed()),
         state: Some(ProducerFrameState::Fresh),
     }

@@ -139,6 +139,46 @@ pub fn blend_rgba_pixels_in_place(
     }
 }
 
+pub fn blend_opaque_normal_rgba_pixels_in_place(
+    target_pixels: &mut [u8],
+    source_pixels: &[u8],
+    opacity: f32,
+) {
+    let opacity = opacity.clamp(0.0, 1.0);
+    if opacity <= 0.0 {
+        return;
+    }
+    if opacity >= 1.0 {
+        blend_rgba_pixels_in_place(target_pixels, source_pixels, OverlayBlendMode::Normal, 1.0);
+        return;
+    }
+
+    let inverse_alpha = 1.0 - opacity;
+    let len = target_pixels.len().min(source_pixels.len());
+    let mut offset = 0;
+    while offset + 3 < len {
+        target_pixels[offset] = encode_srgb_channel(
+            decode_srgb_channel(target_pixels[offset]).mul_add(
+                inverse_alpha,
+                decode_srgb_channel(source_pixels[offset]) * opacity,
+            ),
+        );
+        target_pixels[offset + 1] = encode_srgb_channel(
+            decode_srgb_channel(target_pixels[offset + 1]).mul_add(
+                inverse_alpha,
+                decode_srgb_channel(source_pixels[offset + 1]) * opacity,
+            ),
+        );
+        target_pixels[offset + 2] = encode_srgb_channel(
+            decode_srgb_channel(target_pixels[offset + 2]).mul_add(
+                inverse_alpha,
+                decode_srgb_channel(source_pixels[offset + 2]) * opacity,
+            ),
+        );
+        offset += 4;
+    }
+}
+
 #[must_use]
 pub fn blend_rgba_pixel(
     dst: [u8; 4],
