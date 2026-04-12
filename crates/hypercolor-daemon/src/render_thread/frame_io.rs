@@ -132,6 +132,9 @@ pub(crate) fn publish_frame_updates(
         last_audio_level_update_ms,
         publish_audio_level,
     );
+    state
+        .preview_runtime
+        .note_canvas_frame(frame_number, elapsed_ms);
     let canvas_receivers = state.preview_canvas_receiver_count();
     if canvas_receivers > 0 {
         let canvas_frame = if let Some(surface) = preview_surface.or(frame_surface) {
@@ -148,7 +151,6 @@ pub(crate) fn publish_frame_updates(
         } else {
             CanvasFrame::empty()
         };
-        state.preview_runtime.note_canvas_frame(frame_number, elapsed_ms);
         let publish_canvas = {
             let current = state.event_bus.canvas_sender().borrow();
             should_publish_canvas_frame(&current, &canvas_frame)
@@ -160,6 +162,9 @@ pub(crate) fn publish_frame_updates(
             let _ = state.event_bus.canvas_sender().send(canvas_frame);
         }
     }
+    state
+        .preview_runtime
+        .note_screen_canvas_frame(frame_number, elapsed_ms);
     let screen_canvas_receivers = state.event_bus.screen_canvas_receiver_count();
     if screen_canvas_receivers > 0 {
         let screen_frame = if let Some(surface) = screen_preview_surface {
@@ -167,9 +172,6 @@ pub(crate) fn publish_frame_updates(
         } else {
             CanvasFrame::empty()
         };
-        state
-            .preview_runtime
-            .note_screen_canvas_frame(frame_number, elapsed_ms);
         let publish_screen = {
             let current = state.event_bus.screen_canvas_sender().borrow();
             should_publish_canvas_frame(&current, &screen_frame)
