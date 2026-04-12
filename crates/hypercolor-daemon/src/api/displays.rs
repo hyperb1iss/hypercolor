@@ -811,17 +811,13 @@ pub(crate) async fn validate_overlay_config(
     if has_duplicate_overlay_ids(config) {
         return Err("overlay ids must be unique".to_owned());
     }
-    if contains_enabled_html_overlay(config) {
-        let effect_engine = state.effect_engine.lock().await;
-        if effect_engine.is_running()
-            && let Some(metadata) = effect_engine.active_metadata()
-            && effect_source_is_html(&metadata.source)
-        {
-            return Err(format!(
-                "HTML overlays cannot be enabled while HTML effect '{}' is active; Servo multi-session rendering is still pending",
-                metadata.name
-            ));
-        }
+    if contains_enabled_html_overlay(config)
+        && let Some(effect_name) = active_html_effect_name(state).await
+    {
+        return Err(format!(
+            "HTML overlays cannot be enabled while HTML effect '{}' is active; Servo multi-session rendering is still pending",
+            effect_name
+        ));
     }
     Ok(())
 }
@@ -1035,14 +1031,42 @@ async fn apply_html_gate_runtime_status(
         return runtime;
     }
 
-    let effect_engine = state.effect_engine.lock().await;
-    if effect_engine.is_running()
-        && let Some(metadata) = effect_engine.active_metadata()
-        && effect_source_is_html(&metadata.source)
-    {
+    if active_html_effect_name(state).await.is_some() {
         runtime.status = OverlaySlotStatus::HtmlGated;
     }
     runtime
+}
+
+async fn active_html_effect_name(state: &AppState) -> Option<String> {
+    {
+        let effect_engine = state.effect_engine.lock().await;
+        if effect_engine.is_running()
+            && let Some(metadata) = effect_engine.active_metadata()
+            && effect_source_is_html(&metadata.source)
+        {
+            return Some(metadata.name.clone());
+        }
+    }
+
+    let active_effect_ids = {
+        let scene_manager = state.scene_manager.read().await;
+        scene_manager
+            .active_render_groups()
+            .iter()
+            .filter(|group| group.enabled)
+            .filter_map(|group| group.effect_id)
+            .collect::<Vec<_>>()
+    };
+    if active_effect_ids.is_empty() {
+        return None;
+    }
+
+    let registry = state.effect_registry.read().await;
+    active_effect_ids.into_iter().find_map(|effect_id| {
+        registry.get(&effect_id).and_then(|entry| {
+            effect_source_is_html(&entry.metadata.source).then(|| entry.metadata.name.clone())
+        })
+    })
 }
 
 fn overlay_warning(

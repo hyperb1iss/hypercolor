@@ -11,8 +11,8 @@ use tracing::{info, warn};
 
 use hypercolor_core::effect::{EffectRegistry, create_renderer_for_metadata_with_mode};
 use hypercolor_types::effect::{
-    ControlBinding, ControlDefinition, ControlValue, EffectId, EffectMetadata, EffectSource,
-    PresetTemplate,
+    ControlBinding, ControlDefinition, ControlValue, EffectCategory, EffectId, EffectMetadata,
+    EffectSource, PresetTemplate,
 };
 use hypercolor_types::event::{ChangeTrigger, EffectRef, EffectStopReason, HypercolorEvent};
 use hypercolor_types::spatial::SpatialLayout;
@@ -350,6 +350,12 @@ pub async fn apply_effect(
         source = source_kind(&metadata.source),
         "Applying effect via API"
     );
+    if metadata.category == EffectCategory::Display {
+        return ApiError::validation(format!(
+            "Effect '{}' is a display face and must be assigned to a display device, not applied to the LED pipeline",
+            metadata.name
+        ));
+    }
     let applied_transition = match validate_transition_request(body.as_ref()) {
         Ok(transition) => transition,
         Err(error) => return ApiError::bad_request(error),

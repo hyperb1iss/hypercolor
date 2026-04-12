@@ -43,8 +43,8 @@ use hypercolor_types::effect::{
 };
 use hypercolor_types::event::{ChangeTrigger, EffectStopReason, HypercolorEvent};
 use hypercolor_types::scene::{
-    ColorInterpolation, EasingFunction, Scene, SceneId, ScenePriority, SceneScope, TransitionSpec,
-    UnassignedBehavior,
+    ColorInterpolation, DisplayFaceTarget, EasingFunction, RenderGroup, Scene, SceneId,
+    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
 };
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -1015,6 +1015,63 @@ async fn activate_empty_test_scene(state: &Arc<AppState>, name: &str) -> SceneId
     manager
         .activate(&scene.id, None)
         .expect("test scene should activate");
+    scene.id
+}
+
+async fn activate_display_face_test_scene(
+    state: &Arc<AppState>,
+    name: &str,
+    effect_id: EffectId,
+    device_id: DeviceId,
+) -> SceneId {
+    let scene = Scene {
+        id: SceneId::new(),
+        name: name.to_owned(),
+        description: None,
+        scope: SceneScope::Full,
+        zone_assignments: Vec::new(),
+        groups: vec![RenderGroup {
+            id: hypercolor_types::scene::RenderGroupId::new(),
+            name: "Display Face".to_owned(),
+            description: None,
+            effect_id: Some(effect_id),
+            controls: HashMap::new(),
+            preset_id: None,
+            layout: SpatialLayout {
+                id: "display-face-layout".to_owned(),
+                name: "Display Face Layout".to_owned(),
+                description: None,
+                canvas_width: 320,
+                canvas_height: 320,
+                zones: Vec::new(),
+                default_sampling_mode: SamplingMode::Bilinear,
+                default_edge_behavior: EdgeBehavior::Clamp,
+                spaces: None,
+                version: 1,
+            },
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+            display_target: Some(DisplayFaceTarget { device_id }),
+        }],
+        transition: TransitionSpec {
+            duration_ms: 0,
+            easing: EasingFunction::Linear,
+            color_interpolation: ColorInterpolation::Oklab,
+        },
+        priority: ScenePriority::USER,
+        enabled: true,
+        metadata: HashMap::new(),
+        unassigned_behavior: UnassignedBehavior::Off,
+    };
+
+    let mut manager = state.scene_manager.write().await;
+    manager
+        .create(scene.clone())
+        .expect("display face scene should be created");
+    manager
+        .activate(&scene.id, None)
+        .expect("display face scene should activate");
     scene.id
 }
 
@@ -3737,6 +3794,28 @@ async fn apply_effect_rejects_unimplemented_transition_requests() {
     );
 }
 
+#[tokio::test]
+async fn apply_effect_rejects_display_face_effects() {
+    let state = Arc::new(isolated_state());
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/effects/{}/apply", face.id))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+}
+
 // ── Error Envelope Format ────────────────────────────────────────────────
 
 #[tokio::test]
@@ -4518,6 +4597,43 @@ async fn display_overlay_endpoints_reject_enabled_html_overlay_while_html_effect
 }
 
 #[tokio::test]
+async fn display_overlay_endpoints_reject_enabled_html_overlay_while_html_face_scene_active() {
+    let (state, _tmp) = test_state_with_temp_output_store();
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    activate_display_face_test_scene(&state, "Desk Scene", face.id, display_id).await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/displays/{display_id}/overlays"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r##"{
+                        "name":"HTML Face",
+                        "source":{"type":"html","path":"/tmp/face.html","properties":{"label":"cpu"},"render_interval_ms":1000},
+                        "position":"full_screen"
+                    }"##,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "conflict");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("message should be a string")
+            .contains(face.name.as_str())
+    );
+}
+
+#[tokio::test]
 async fn auto_disable_html_overlays_for_html_effect_persists_and_reports_html_gated() {
     let (state, tmp) = test_state_with_temp_output_store();
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
@@ -4621,6 +4737,77 @@ async fn auto_disable_html_overlays_for_html_effect_persists_and_reports_html_ga
         persisted_json["devices"][display_id.to_string()]["display_overlays"]["overlays"][0]["enabled"],
         false
     );
+}
+
+#[tokio::test]
+async fn disabled_html_overlay_reports_html_gated_runtime_for_active_face_scene() {
+    let (state, _tmp) = test_state_with_temp_output_store();
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    activate_display_face_test_scene(&state, "Desk Scene", face.id, display_id).await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/displays/{display_id}/overlays"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r##"{
+                        "name":"HTML Face",
+                        "source":{"type":"html","path":"/tmp/face.html","properties":{"label":"cpu"},"render_interval_ms":1000},
+                        "position":"full_screen",
+                        "enabled":false
+                    }"##,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let create_json = body_json(create_response).await;
+    let slot_id = create_json["data"]["id"]
+        .as_str()
+        .expect("slot id should be present")
+        .to_owned();
+
+    let parsed_slot_id = slot_id
+        .parse()
+        .expect("slot id should parse as an overlay slot id");
+    state
+        .display_overlay_runtime
+        .set(
+            display_id,
+            DisplayOverlayRuntime {
+                slots: std::collections::HashMap::from([(
+                    parsed_slot_id,
+                    OverlaySlotRuntime {
+                        last_rendered_at: None,
+                        consecutive_failures: 1,
+                        last_error: Some("stale failure".to_owned()),
+                        status: OverlaySlotStatus::Failed,
+                        backoff_until: None,
+                    },
+                )]),
+            },
+        )
+        .await;
+
+    let slot_response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{display_id}/overlays/{slot_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(slot_response.status(), StatusCode::OK);
+    let slot_json = body_json(slot_response).await;
+    assert_eq!(slot_json["data"]["slot"]["enabled"], false);
+    assert_eq!(slot_json["data"]["runtime"]["status"], "html_gated");
 }
 
 #[tokio::test]

@@ -9,7 +9,7 @@ use super::{
 };
 use crate::api::AppState;
 use hypercolor_core::effect::create_renderer_for_metadata_with_mode;
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::effect::{ControlValue, EffectCategory};
 use hypercolor_types::event::{ChangeTrigger, EffectRef, EffectStopReason, HypercolorEvent};
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
@@ -300,6 +300,15 @@ pub(super) async fn handle_set_effect_with_state(
             "message": format!("No effects matching '{query}' found. Use list_effects to browse available effects.")
         }));
     };
+    if best_match.effect.category == EffectCategory::Display {
+        return Err(ToolError::InvalidParam {
+            param: "query".into(),
+            reason: format!(
+                "effect '{}' is a display face and must be assigned to a display device, not applied to the LED pipeline",
+                best_match.effect.name
+            ),
+        });
+    }
 
     let previous_effect = {
         let requested_mode =

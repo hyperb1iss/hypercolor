@@ -680,6 +680,25 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
 }
 
 #[tokio::test]
+async fn stateful_set_effect_rejects_display_faces() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+
+    let error = execute_tool_with_state(
+        "set_effect",
+        &json!({
+            "query": face.name,
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect_err("display faces should not be applied as LED effects");
+
+    assert!(format!("{error}").contains("display face"));
+}
+
+#[tokio::test]
 async fn list_display_overlays_reports_html_gated_runtime() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
