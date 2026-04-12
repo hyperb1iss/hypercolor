@@ -1632,6 +1632,40 @@ mod tests {
         }
     }
 
+    fn fade_sampling_layout(mode: SamplingMode) -> SpatialLayout {
+        SpatialLayout {
+            id: "gpu-sampling-fade".into(),
+            name: "GPU Sampling Fade".into(),
+            description: None,
+            canvas_width: 4,
+            canvas_height: 4,
+            zones: vec![DeviceZone {
+                id: "zone".into(),
+                name: "zone".into(),
+                device_id: "device:zone".into(),
+                zone_name: None,
+                position: NormalizedPosition::new(1.25, 0.5),
+                size: NormalizedPosition::new(1.0, 1.0),
+                rotation: 0.0,
+                scale: 1.0,
+                orientation: None,
+                topology: LedTopology::Point,
+                led_positions: Vec::new(),
+                led_mapping: None,
+                sampling_mode: Some(mode),
+                edge_behavior: Some(EdgeBehavior::FadeToBlack { falloff: 8.0 }),
+                shape: None,
+                shape_preset: None,
+                display_order: 0,
+                attachment: None,
+            }],
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        }
+    }
+
     #[test]
     fn gpu_compositor_probe_reports_a_texture_format() {
         let probe = match GpuSparkleFlinger::new() {
@@ -2175,6 +2209,47 @@ mod tests {
             compositor
                 .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
                 .expect("GPU spatial sampling should succeed")
+        );
+
+        assert_eq!(sampled, expected_zones);
+    }
+
+    #[test]
+    fn gpu_sampler_matches_cpu_spatial_sampling_with_fade_edges() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(fade_sampling_layout(SamplingMode::Bilinear));
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                    255, 32, 0, 255,
+                )))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(solid_canvas(Rgba::new(32, 64, 255, 255))),
+                    0.35,
+                ),
+            ],
+        );
+        let expected = CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+        let expected_zones = engine.sample(
+            expected
+                .sampling_canvas
+                .as_ref()
+                .expect("CPU compose should materialize a canvas"),
+        );
+
+        compositor
+            .compose(&plan, false, None)
+            .expect("GPU composition should succeed before GPU fade sampling");
+        let mut sampled = Vec::new();
+        assert!(
+            compositor
+                .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
+                .expect("GPU spatial sampling should support prepared attenuation")
         );
 
         assert_eq!(sampled, expected_zones);

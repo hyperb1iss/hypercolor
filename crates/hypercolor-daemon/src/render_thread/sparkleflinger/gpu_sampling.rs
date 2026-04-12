@@ -1,7 +1,7 @@
 use std::sync::mpsc;
 
 use anyhow::{Context, Result};
-use hypercolor_core::spatial::PreparedZonePlan;
+use hypercolor_core::spatial::{PreparedZonePlan, PreparedZoneSamples};
 use hypercolor_types::canvas::SamplingMethod;
 use hypercolor_types::event::ZoneColors;
 
@@ -20,6 +20,7 @@ pub(super) struct GpuSamplePoint {
     pub(super) x: f32,
     pub(super) y: f32,
     pub(super) method: GpuSampleMethod,
+    pub(super) attenuation: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -86,17 +87,35 @@ impl GpuSamplingPlan {
         let mut zones = Vec::with_capacity(prepared_zones.len());
 
         for zone in prepared_zones {
-            let method = match zone.sampling_method {
-                SamplingMethod::Nearest => GpuSampleMethod::Nearest,
-                SamplingMethod::Bilinear => GpuSampleMethod::Bilinear,
-                SamplingMethod::Area { .. } => return None,
-            };
             let start = points.len();
-            points.extend(zone.sample_positions.iter().map(|position| GpuSamplePoint {
-                x: position.x,
-                y: position.y,
-                method,
-            }));
+            match (&zone.sampling_method, &zone.prepared_samples) {
+                (SamplingMethod::Nearest, PreparedZoneSamples::Nearest(samples)) => {
+                    points.extend(
+                        zone.sample_positions
+                            .iter()
+                            .zip(samples)
+                            .map(|(position, sample)| gpu_sample_point(
+                                position,
+                                GpuSampleMethod::Nearest,
+                                sample.attenuation,
+                            )),
+                    );
+                }
+                (SamplingMethod::Bilinear, PreparedZoneSamples::Bilinear(samples)) => {
+                    points.extend(
+                        zone.sample_positions
+                            .iter()
+                            .zip(samples)
+                            .map(|(position, sample)| gpu_sample_point(
+                                position,
+                                GpuSampleMethod::Bilinear,
+                                sample.attenuation,
+                            )),
+                    );
+                }
+                (SamplingMethod::Area { .. }, PreparedZoneSamples::Area(_)) => return None,
+                _ => return None,
+            }
             zones.push(GpuZoneRange {
                 zone_id: zone.zone_id.clone(),
                 start,
@@ -427,9 +446,22 @@ fn encode_points(plan: &GpuSamplingPlan) -> Vec<u8> {
         bytes.extend_from_slice(&point.x.to_le_bytes());
         bytes.extend_from_slice(&point.y.to_le_bytes());
         bytes.extend_from_slice(&(point.method as u32).to_le_bytes());
-        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&u32::from(point.attenuation).to_le_bytes());
     }
     bytes
+}
+
+fn gpu_sample_point(
+    position: &hypercolor_types::spatial::NormalizedPosition,
+    method: GpuSampleMethod,
+    attenuation: u16,
+) -> GpuSamplePoint {
+    GpuSamplePoint {
+        x: position.x,
+        y: position.y,
+        method,
+        attenuation,
+    }
 }
 
 fn encode_sample_params(width: u32, height: u32, sample_count: usize) -> [u8; SAMPLE_PARAM_BYTES] {
@@ -568,6 +600,7 @@ mod tests {
         assert_eq!(plan.points.len(), 8);
         assert_eq!(plan.points[0].method, GpuSampleMethod::Nearest);
         assert_eq!(plan.points[4].method, GpuSampleMethod::Bilinear);
+        assert_eq!(plan.points[0].attenuation, 256);
     }
 
     #[test]

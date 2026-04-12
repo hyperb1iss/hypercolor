@@ -2,7 +2,7 @@ struct SamplePoint {
   x: f32,
   y: f32,
   method: u32,
-  _pad: u32,
+  attenuation: u32,
 }
 
 struct SampleParams {
@@ -31,7 +31,7 @@ fn linear_to_srgb(channel: f32) -> f32 {
   return 1.055 * pow(channel, 1.0 / 2.4) - 0.055;
 }
 
-fn encode_rgb(rgb: vec3<f32>) -> u32 {
+fn encode_srgb(rgb: vec3<f32>) -> u32 {
   let clamped = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
   let r = u32(round(clamped.x * 255.0));
   let g = u32(round(clamped.y * 255.0));
@@ -39,7 +39,15 @@ fn encode_rgb(rgb: vec3<f32>) -> u32 {
   return r | (g << 8u) | (b << 16u) | (255u << 24u);
 }
 
-fn sample_nearest(position: vec2<f32>) -> vec3<f32> {
+fn encode_linear_rgb(rgb: vec3<f32>) -> u32 {
+  return encode_srgb(vec3<f32>(
+    linear_to_srgb(rgb.x),
+    linear_to_srgb(rgb.y),
+    linear_to_srgb(rgb.z),
+  ));
+}
+
+fn sample_nearest_linear(position: vec2<f32>) -> vec3<f32> {
   let max_x = max(params.width - 1u, 0u);
   let max_y = max(params.height - 1u, 0u);
   let fx = round(position.x * f32(max_x));
@@ -52,10 +60,14 @@ fn sample_nearest(position: vec2<f32>) -> vec3<f32> {
     ),
     0
   );
-  return sample.rgb;
+  return vec3<f32>(
+    srgb_to_linear(sample.r),
+    srgb_to_linear(sample.g),
+    srgb_to_linear(sample.b),
+  );
 }
 
-fn sample_bilinear(position: vec2<f32>) -> vec3<f32> {
+fn sample_bilinear_linear(position: vec2<f32>) -> vec3<f32> {
   let max_x = max(params.width - 1u, 0u);
   let max_y = max(params.height - 1u, 0u);
   let fx = position.x * f32(max_x);
@@ -98,12 +110,7 @@ fn sample_bilinear(position: vec2<f32>) -> vec3<f32> {
     ),
     tx,
   );
-  let linear_rgb = mix(linear_top, linear_bottom, ty);
-  return vec3<f32>(
-    linear_to_srgb(linear_rgb.x),
-    linear_to_srgb(linear_rgb.y),
-    linear_to_srgb(linear_rgb.z),
-  );
+  return mix(linear_top, linear_bottom, ty);
 }
 
 @compute @workgroup_size(64)
@@ -119,11 +126,14 @@ fn sample_pixels(@builtin(global_invocation_id) gid: vec3<u32>) {
     clamp(point.y, 0.0, 1.0),
   );
 
-  var rgb: vec3<f32>;
+  var linear_rgb: vec3<f32>;
   if (point.method == 0u) {
-    rgb = sample_nearest(position);
+    linear_rgb = sample_nearest_linear(position);
   } else {
-    rgb = sample_bilinear(position);
+    linear_rgb = sample_bilinear_linear(position);
   }
-  output_rgb[index] = encode_rgb(rgb);
+  if (point.attenuation < 256u) {
+    linear_rgb *= f32(point.attenuation) / 256.0;
+  }
+  output_rgb[index] = encode_linear_rgb(linear_rgb);
 }
