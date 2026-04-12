@@ -225,7 +225,7 @@ pub(crate) async fn execute_frame(
         handle_async_write_failures(runtime, async_failures).await;
     }
 
-    let postprocess_us = 0;
+    let postprocess_start = Instant::now();
     let mut full_frame_copy_count = 0_u32;
     let mut full_frame_copy_bytes = 0_u32;
     let cpu_readback_skipped = matches!(
@@ -248,6 +248,7 @@ pub(crate) async fn execute_frame(
             }
         }
     }
+    let postprocess_us = micros_between(postprocess_start, Instant::now());
 
     let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
     let timing_total_us = micros_u32(frame_start.elapsed());
