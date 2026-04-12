@@ -1214,8 +1214,7 @@ async fn automatic_display_output_updates_direct_faces_without_global_canvas_tic
         ));
     let writes = wait_for_display_write_count(&display_writes, 2).await;
     let second_image = decode_jpeg(&writes[1]);
-    let second_pixel =
-        second_image.get_pixel(second_image.width() / 2, second_image.height() / 2);
+    let second_pixel = second_image.get_pixel(second_image.width() / 2, second_image.height() / 2);
 
     assert!(
         second_pixel[1] > 200,

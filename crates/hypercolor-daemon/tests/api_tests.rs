@@ -1449,7 +1449,10 @@ async fn debug_device_routing_returns_empty_snapshot() {
     let json = body_json(response).await;
     assert_eq!(json["data"]["mapping_count"], 0);
     assert_eq!(json["data"]["queue_count"], 0);
-    assert_eq!(json["data"]["backend_ids"], serde_json::json!(["simulator"]));
+    assert_eq!(
+        json["data"]["backend_ids"],
+        serde_json::json!(["simulator"])
+    );
 }
 
 #[tokio::test]

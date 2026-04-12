@@ -1275,7 +1275,9 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
         brightness: 1.0,
         enabled: true,
         color: None,
-        display_target: Some(DisplayFaceTarget { device_id: display_id }),
+        display_target: Some(DisplayFaceTarget {
+            device_id: display_id,
+        }),
     }];
     first_scene.unassigned_behavior = UnassignedBehavior::Off;
 
@@ -1291,7 +1293,9 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
         brightness: 1.0,
         enabled: true,
         color: None,
-        display_target: Some(DisplayFaceTarget { device_id: display_id }),
+        display_target: Some(DisplayFaceTarget {
+            device_id: display_id,
+        }),
     }];
     second_scene.unassigned_behavior = UnassignedBehavior::Off;
 

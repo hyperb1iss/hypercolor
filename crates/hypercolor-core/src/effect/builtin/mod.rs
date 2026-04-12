@@ -21,9 +21,11 @@
 //! | `color_wave`    | Ambient        | Traveling wavefront bands with fade trails       |
 //! | `color_zones`   | Ambient        | Multi-zone color grid with per-zone control      |
 //! | `screen_cast`   | Utility        | Live screen crop with aspect-fit controls        |
+//! | `calibration`   | Utility        | High-contrast layout calibration patterns        |
 
 mod audio_pulse;
 mod breathing;
+mod calibration;
 mod color_wave;
 mod color_zones;
 mod common;
@@ -38,6 +40,7 @@ use hypercolor_types::effect::{EffectMetadata, EffectState};
 
 pub use self::audio_pulse::AudioPulseRenderer;
 pub use self::breathing::BreathingRenderer;
+pub use self::calibration::CalibrationRenderer;
 pub use self::color_wave::ColorWaveRenderer;
 pub use self::color_zones::ColorZonesRenderer;
 pub use self::gradient::GradientRenderer;
@@ -58,6 +61,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
         color_wave::metadata(),
         color_zones::metadata(),
         screen_cast::metadata(),
+        calibration::metadata(),
     ]
 }
 
@@ -94,6 +98,7 @@ pub fn create_builtin_renderer(name: &str) -> Option<Box<dyn EffectRenderer>> {
         "color_wave" => Some(Box::new(ColorWaveRenderer::new())),
         "color_zones" => Some(Box::new(ColorZonesRenderer::new())),
         "screen_cast" => Some(Box::new(ScreenCastRenderer::new())),
+        "calibration" => Some(Box::new(CalibrationRenderer::new())),
         _ => None,
     }
 }

@@ -7,9 +7,9 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use hypercolor_core::effect::builtin::{
-    AudioPulseRenderer, BreathingRenderer, ColorWaveRenderer, ColorZonesRenderer, GradientRenderer,
-    RainbowRenderer, ScreenCastRenderer, SolidColorRenderer, create_builtin_renderer,
-    register_builtin_effects,
+    AudioPulseRenderer, BreathingRenderer, CalibrationRenderer, ColorWaveRenderer,
+    ColorZonesRenderer, GradientRenderer, RainbowRenderer, ScreenCastRenderer, SolidColorRenderer,
+    create_builtin_renderer, register_builtin_effects,
 };
 use hypercolor_core::effect::{EffectRegistry, EffectRenderer, FrameInput};
 use hypercolor_core::input::{InteractionData, ScreenData};
@@ -186,6 +186,13 @@ fn color_wave_initializes() {
         .expect("init should succeed");
 }
 
+#[test]
+fn calibration_initializes() {
+    let mut r = CalibrationRenderer::new();
+    r.init(&make_metadata("calibration"))
+        .expect("init should succeed");
+}
+
 // ── Non-Black Canvas Tests ──────────────────────────────────────────────────
 
 #[test]
@@ -262,6 +269,14 @@ fn color_wave_produces_non_black() {
         has_non_black_pixels(&canvas),
         "color wave should produce non-black pixels"
     );
+}
+
+#[test]
+fn calibration_produces_non_black() {
+    let mut r = CalibrationRenderer::new();
+    r.init(&make_metadata("calibration")).expect("init");
+    let canvas = r.tick(&frame(0.5, 30)).expect("tick");
+    assert!(has_non_black_pixels(&canvas));
 }
 
 // ── Control Value Tests ─────────────────────────────────────────────────────
@@ -872,6 +887,7 @@ fn factory_creates_all_builtins() {
         "color_wave",
         "color_zones",
         "screen_cast",
+        "calibration",
     ];
 
     for name in &names {
@@ -896,7 +912,7 @@ fn register_builtin_effects_populates_registry() {
     let mut registry = EffectRegistry::default();
     register_builtin_effects(&mut registry);
 
-    assert_eq!(registry.len(), 8, "should register all 8 built-in effects");
+    assert_eq!(registry.len(), 9, "should register all 9 built-in effects");
 
     // Verify category filtering works
     let ambient = registry.by_category(EffectCategory::Ambient);
@@ -906,7 +922,7 @@ fn register_builtin_effects_populates_registry() {
     assert_eq!(audio.len(), 1, "1 audio effect expected");
 
     let utility = registry.by_category(EffectCategory::Utility);
-    assert_eq!(utility.len(), 1, "1 utility effect expected");
+    assert_eq!(utility.len(), 2, "2 utility effects expected");
 }
 
 #[test]
@@ -923,6 +939,7 @@ fn registered_builtins_use_human_readable_names_and_stable_native_keys() {
         ("Color Wave", "color_wave"),
         ("Color Zones", "color_zones"),
         ("Screen Cast", "screen_cast"),
+        ("Calibration", "calibration"),
     ];
 
     for (display_name, source_key) in expected {
@@ -1037,6 +1054,96 @@ fn registered_effects_searchable_by_tag() {
     let results = registry.search("reactive");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].metadata.name, "Audio Pulse");
+}
+
+#[test]
+fn calibration_sweep_direction_moves_the_band_origin() {
+    let mut r = CalibrationRenderer::new();
+    r.init(&make_metadata("calibration")).expect("init");
+    r.set_control("pattern", &ControlValue::Enum("Sweep".to_owned()));
+    r.set_control("speed", &ControlValue::Float(0.0));
+    r.set_control("size", &ControlValue::Float(18.0));
+    r.set_control("softness", &ControlValue::Float(0.0));
+    r.set_control(
+        "background_color",
+        &ControlValue::Color([0.0, 0.0, 0.0, 1.0]),
+    );
+
+    r.set_control("direction", &ControlValue::Enum("Left to Right".to_owned()));
+    let left_origin = r.tick(&frame(0.0, 0)).expect("left sweep");
+    let left_edge = left_origin.get_pixel(0, H / 2);
+    let right_edge = left_origin.get_pixel(W - 1, H / 2);
+    assert_ne!(
+        left_edge, right_edge,
+        "left-origin sweep should bias left edge"
+    );
+
+    r.set_control("direction", &ControlValue::Enum("Right to Left".to_owned()));
+    let right_origin = r.tick(&frame(0.0, 1)).expect("right sweep");
+    let left_edge_reversed = right_origin.get_pixel(0, H / 2);
+    let right_edge_reversed = right_origin.get_pixel(W - 1, H / 2);
+    assert_ne!(
+        left_edge_reversed, right_edge_reversed,
+        "right-origin sweep should bias right edge"
+    );
+    assert_ne!(
+        left_edge, left_edge_reversed,
+        "reversing direction should move the hot band"
+    );
+}
+
+#[test]
+fn calibration_quadrant_cycle_uses_distinct_orientation_colors() {
+    let mut r = CalibrationRenderer::new();
+    r.init(&make_metadata("calibration")).expect("init");
+    r.set_control("pattern", &ControlValue::Enum("Quadrant Cycle".to_owned()));
+    r.set_control("speed", &ControlValue::Float(0.0));
+
+    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let top_left = canvas.get_pixel(0, 0);
+    let top_right = canvas.get_pixel(W - 1, 0);
+    let bottom_left = canvas.get_pixel(0, H - 1);
+
+    assert_ne!(top_left, top_right, "top quadrants should differ");
+    assert_ne!(top_left, bottom_left, "left quadrants should differ");
+}
+
+#[test]
+fn calibration_corner_cycle_uses_distinct_corner_colors() {
+    let mut r = CalibrationRenderer::new();
+    r.init(&make_metadata("calibration")).expect("init");
+    r.set_control("pattern", &ControlValue::Enum("Corner Cycle".to_owned()));
+    r.set_control("speed", &ControlValue::Float(0.0));
+
+    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let top_left = canvas.get_pixel(0, 0);
+    let top_right = canvas.get_pixel(W - 1, 0);
+    let bottom_left = canvas.get_pixel(0, H - 1);
+
+    assert_ne!(top_left, top_right, "top corners should differ");
+    assert_ne!(top_left, bottom_left, "left corners should differ");
+}
+
+#[test]
+fn calibration_grid_overlay_changes_output() {
+    let mut r = CalibrationRenderer::new();
+    r.init(&make_metadata("calibration")).expect("init");
+    r.set_control("pattern", &ControlValue::Enum("Sweep".to_owned()));
+    r.set_control("speed", &ControlValue::Float(0.0));
+    r.set_control("direction", &ControlValue::Enum("Left to Right".to_owned()));
+
+    r.set_control("show_grid", &ControlValue::Boolean(false));
+    let without_grid = r.tick(&frame(0.0, 0)).expect("without grid");
+
+    r.set_control("show_grid", &ControlValue::Boolean(true));
+    r.set_control("grid_scale", &ControlValue::Float(4.0));
+    let with_grid = r.tick(&frame(0.0, 1)).expect("with grid");
+
+    assert_ne!(
+        without_grid.as_rgba_bytes(),
+        with_grid.as_rgba_bytes(),
+        "grid overlay should alter the rendered frame"
+    );
 }
 
 // ── Color Zones Tests ───────────────────────────────────────────────────────
@@ -1362,4 +1469,30 @@ fn screen_cast_metadata_exposes_frame_controls() {
     assert!(ids.contains(&"frame_width"), "should expose frame_width");
     assert!(ids.contains(&"frame_height"), "should expose frame_height");
     assert!(ids.contains(&"fit_mode"), "should expose fit_mode");
+}
+
+#[test]
+fn calibration_metadata_exposes_layout_setup_controls() {
+    let mut registry = EffectRegistry::default();
+    register_builtin_effects(&mut registry);
+
+    let (_, entry) = registry
+        .iter()
+        .find(|(_, entry)| entry.metadata.source.source_stem() == Some("calibration"))
+        .expect("Calibration should be registered");
+    let ids: Vec<&str> = entry
+        .metadata
+        .controls
+        .iter()
+        .map(hypercolor_types::effect::ControlDefinition::control_id)
+        .collect();
+
+    assert_eq!(entry.metadata.category, EffectCategory::Utility);
+    assert!(ids.contains(&"pattern"), "should expose pattern control");
+    assert!(
+        ids.contains(&"direction"),
+        "should expose direction control"
+    );
+    assert!(ids.contains(&"size"), "should expose size control");
+    assert!(ids.contains(&"show_grid"), "should expose grid toggle");
 }

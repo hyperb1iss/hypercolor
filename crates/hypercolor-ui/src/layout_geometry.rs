@@ -1561,3 +1561,138 @@ pub(crate) fn translate_zones(
     }
     changed
 }
+
+// ── Group transforms ─────────────────────────────────────────────────────
+
+/// Centroid (average position) of all zones in `zone_ids`.
+pub(crate) fn group_centroid(
+    layout: &SpatialLayout,
+    zone_ids: &std::collections::HashSet<String>,
+) -> Option<NormalizedPosition> {
+    let (sum_x, sum_y, count) = layout
+        .zones
+        .iter()
+        .filter(|z| zone_ids.contains(&z.id))
+        .fold((0.0f32, 0.0f32, 0u32), |(sx, sy, n), z| {
+            (sx + z.position.x, sy + z.position.y, n + 1)
+        });
+    (count > 0).then(|| NormalizedPosition::new(sum_x / count as f32, sum_y / count as f32))
+}
+
+/// Translate a group so its centroid lands at `target`, preserving relative positions.
+pub(crate) fn translate_group(
+    layout: &mut SpatialLayout,
+    zone_ids: &std::collections::HashSet<String>,
+    target: NormalizedPosition,
+) -> bool {
+    let Some(centroid) = group_centroid(layout, zone_ids) else {
+        return false;
+    };
+    let delta = NormalizedPosition::new(target.x - centroid.x, target.y - centroid.y);
+    if delta.x.abs() < GRID_EPSILON && delta.y.abs() < GRID_EPSILON {
+        return false;
+    }
+    let mut changed = false;
+    for zone in &mut layout.zones {
+        if !zone_ids.contains(&zone.id) {
+            continue;
+        }
+        let desired = NormalizedPosition::new(
+            (zone.position.x + delta.x).clamp(0.0, 1.0),
+            (zone.position.y + delta.y).clamp(0.0, 1.0),
+        );
+        let clamped = clamp_zone_center(desired, zone.size);
+        if zone.position != clamped {
+            zone.position = clamped;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Rotate all zones in `zone_ids` by `delta_radians` around their group centroid.
+///
+/// Each zone's position orbits the centroid and its individual rotation is offset
+/// by the same delta — so fans on a ring stay oriented correctly.
+pub(crate) fn rotate_group(
+    layout: &mut SpatialLayout,
+    zone_ids: &std::collections::HashSet<String>,
+    delta_radians: f32,
+) -> bool {
+    if delta_radians.abs() < GRID_EPSILON {
+        return false;
+    }
+    let Some(centroid) = group_centroid(layout, zone_ids) else {
+        return false;
+    };
+    let (sin_d, cos_d) = delta_radians.sin_cos();
+    let mut changed = false;
+    for zone in &mut layout.zones {
+        if !zone_ids.contains(&zone.id) {
+            continue;
+        }
+        // Orbit position around centroid
+        let dx = zone.position.x - centroid.x;
+        let dy = zone.position.y - centroid.y;
+        let rx = dx.mul_add(cos_d, -(dy * sin_d));
+        let ry = dx.mul_add(sin_d, dy * cos_d);
+        let desired = NormalizedPosition::new(
+            (centroid.x + rx).clamp(0.0, 1.0),
+            (centroid.y + ry).clamp(0.0, 1.0),
+        );
+        let clamped = clamp_zone_center(desired, zone.size);
+        if zone.position != clamped {
+            zone.position = clamped;
+            changed = true;
+        }
+        // Rotate the zone itself
+        let new_rotation = normalize_rotation(zone.rotation + delta_radians);
+        if (new_rotation - zone.rotation).abs() > GRID_EPSILON {
+            zone.rotation = new_rotation;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Scale all zones in `zone_ids` by `scale_ratio` around their group centroid.
+///
+/// Each zone's distance from the centroid is multiplied by `scale_ratio`, and
+/// the zone's individual `scale` field is multiplied by the same factor.
+pub(crate) fn scale_group(
+    layout: &mut SpatialLayout,
+    zone_ids: &std::collections::HashSet<String>,
+    scale_ratio: f32,
+) -> bool {
+    if (scale_ratio - 1.0).abs() < GRID_EPSILON || scale_ratio <= 0.0 {
+        return false;
+    }
+    let Some(centroid) = group_centroid(layout, zone_ids) else {
+        return false;
+    };
+    let mut changed = false;
+    for zone in &mut layout.zones {
+        if !zone_ids.contains(&zone.id) {
+            continue;
+        }
+        // Scale distance from centroid
+        let dx = zone.position.x - centroid.x;
+        let dy = zone.position.y - centroid.y;
+        let desired = NormalizedPosition::new(
+            (centroid.x + dx * scale_ratio).clamp(0.0, 1.0),
+            (centroid.y + dy * scale_ratio).clamp(0.0, 1.0),
+        );
+        let clamped = clamp_zone_center(desired, zone.size);
+        if zone.position != clamped {
+            zone.position = clamped;
+            changed = true;
+        }
+        // Scale the zone itself
+        let new_scale = (zone.scale * scale_ratio).clamp(0.1, 5.0);
+        if (new_scale - zone.scale).abs() > GRID_EPSILON {
+            zone.scale = new_scale;
+            changed = true;
+        }
+    }
+    changed
+}

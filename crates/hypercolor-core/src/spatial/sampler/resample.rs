@@ -403,10 +403,8 @@ fn bilinear_channel(
     y_lower_weight: u64,
     y_upper_weight: u64,
 ) -> u16 {
-    let top =
-        u32::from(top_left) * x_lower_weight + u32::from(top_right) * x_upper_weight;
-    let bottom =
-        u32::from(bottom_left) * x_lower_weight + u32::from(bottom_right) * x_upper_weight;
+    let top = u32::from(top_left) * x_lower_weight + u32::from(top_right) * x_upper_weight;
+    let bottom = u32::from(bottom_left) * x_lower_weight + u32::from(bottom_right) * x_upper_weight;
     ((u64::from(top) * y_lower_weight + u64::from(bottom) * y_upper_weight) >> BILINEAR_SHIFT)
         as u16
 }

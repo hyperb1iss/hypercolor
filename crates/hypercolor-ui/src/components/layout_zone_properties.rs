@@ -18,6 +18,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
     let set_keep_aspect_ratio = editor.set_keep_aspect_ratio;
     let set_selected_zone_ids = editor.set_selected_zone_ids;
     let set_is_dirty = editor.set_is_dirty;
+    let compound_depth = editor.compound_depth;
     // Canvas pixel dimensions for display conversion
     let canvas_dims = Signal::derive(move || {
         layout.with(|current| {
@@ -27,6 +28,13 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                 .unwrap_or((320.0, 200.0))
         })
     });
+
+    // ── Group transform state (accumulated deltas, reset on selection change) ──
+    let (group_rot_offset, set_group_rot_offset) = signal(0.0f32);
+    let (group_scale_factor, set_group_scale_factor) = signal(1.0f32);
+    // Track the previous selection set to detect changes
+    let (prev_selection, set_prev_selection) =
+        signal(std::collections::HashSet::<String>::new());
 
     // Derive selected zone snapshot for display (single-selection only for Phase 1)
     let zone_snapshot = Signal::derive(move || {
@@ -96,15 +104,263 @@ pub fn LayoutZoneProperties() -> impl IntoView {
             {move || {
                 let ids = selected_zone_ids.get();
                 if ids.len() > 1 {
+                    // Reset accumulated deltas when selection set changes
+                    let prev = prev_selection.get_untracked();
+                    if prev != ids {
+                        set_prev_selection.set(ids.clone());
+                        set_group_rot_offset.set(0.0);
+                        set_group_scale_factor.set(1.0);
+                    }
+
                     let count = ids.len();
+                    let (cw, ch) = canvas_dims.get_untracked();
+
+                    // Centroid position for display
+                    let centroid = layout.with_untracked(|l| {
+                        l.as_ref().and_then(|l| layout_geometry::group_centroid(l, &ids))
+                    }).unwrap_or(hypercolor_types::spatial::NormalizedPosition::new(0.5, 0.5));
+                    let cx_px = centroid.x * cw;
+                    let cy_px = centroid.y * ch;
+
+                    let rot_offset = group_rot_offset.get_untracked();
+                    let scale_factor = group_scale_factor.get_untracked();
+
+                    // Compound depth label for context
+                    let depth_label = {
+                        let depth = compound_depth.get_untracked();
+                        match depth {
+                            crate::compound_selection::CompoundDepth::Root => "Device".to_string(),
+                            crate::compound_selection::CompoundDepth::Device { .. } => "Slot".to_string(),
+                            crate::compound_selection::CompoundDepth::Slot { ref slot_id, .. } => {
+                                slot_id.clone()
+                            }
+                        }
+                    };
+
+                    let ids_pos_x = ids.clone();
+                    let ids_pos_y = ids.clone();
+                    let ids_center_h = ids.clone();
+                    let ids_center_v = ids.clone();
+                    let ids_rot_slider = ids.clone();
+                    let ids_rot_input = ids.clone();
+                    let ids_scale_slider = ids.clone();
+                    let ids_scale_input = ids.clone();
+
                     return view! {
-                        <div class="h-full flex flex-col items-center justify-center gap-2.5">
-                            <span class="text-xs text-fg-tertiary/50 font-mono">
-                                {format!("{count} zones selected")}
-                            </span>
-                            <span class="text-[10px] text-fg-tertiary/30">
-                                "Double-click canvas to enter compound"
-                            </span>
+                        <div class="space-y-2">
+                            // ── Row 1: Group identity ──
+                            <div class="flex items-center gap-3 min-w-0">
+                                <div class="flex items-center gap-1.5 min-w-0">
+                                    <span
+                                        class="shrink-0 px-2 py-0.5 rounded-md text-[10px] font-mono tabular-nums"
+                                        style="color: rgba(225, 53, 255, 0.8); background: rgba(225, 53, 255, 0.08)"
+                                    >
+                                        {format!("{count} zones")}
+                                    </span>
+                                    <span class="text-[10px] text-fg-tertiary/40 font-mono">{depth_label}</span>
+                                </div>
+                                <div class="flex-1" />
+                                <span class="text-[9px] text-fg-tertiary/30">
+                                    "Transforms apply around group center"
+                                </span>
+                            </div>
+
+                            // ── Row 2: Group transform controls ──
+                            <div class="flex items-center gap-1.5">
+                                // Group position (centroid)
+                                <div class="flex items-center gap-1.5 shrink-0 rounded-lg px-2 py-1"
+                                     style="background: rgba(255, 255, 255, 0.02)">
+                                    <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0 w-5">"Pos"</span>
+                                    {zone_pixel_input("X", cx_px, "1", 0, cw, {
+                                        let ids = ids_pos_x;
+                                        move |px: f32| {
+                                            let (cw, _) = canvas_dims.get_untracked();
+                                            let norm_x = (px / cw).clamp(0.0, 1.0);
+                                            let centroid = layout.with_untracked(|l| {
+                                                l.as_ref().and_then(|l| layout_geometry::group_centroid(l, &ids))
+                                            });
+                                            if let Some(c) = centroid {
+                                                let target = hypercolor_types::spatial::NormalizedPosition::new(norm_x, c.y);
+                                                set_layout.update(|l| {
+                                                    if let Some(layout) = l {
+                                                        layout_geometry::translate_group(layout, &ids, target);
+                                                    }
+                                                });
+                                                set_is_dirty.set(true);
+                                            }
+                                        }
+                                    })}
+                                    {zone_pixel_input("Y", cy_px, "1", 0, ch, {
+                                        let ids = ids_pos_y;
+                                        move |px: f32| {
+                                            let (_, ch) = canvas_dims.get_untracked();
+                                            let norm_y = (px / ch).clamp(0.0, 1.0);
+                                            let centroid = layout.with_untracked(|l| {
+                                                l.as_ref().and_then(|l| layout_geometry::group_centroid(l, &ids))
+                                            });
+                                            if let Some(c) = centroid {
+                                                let target = hypercolor_types::spatial::NormalizedPosition::new(c.x, norm_y);
+                                                set_layout.update(|l| {
+                                                    if let Some(layout) = l {
+                                                        layout_geometry::translate_group(layout, &ids, target);
+                                                    }
+                                                });
+                                                set_is_dirty.set(true);
+                                            }
+                                        }
+                                    })}
+                                    <button
+                                        class="shrink-0 p-0.5 rounded text-fg-tertiary/30 hover:text-accent transition-colors btn-press"
+                                        title="Center group horizontally"
+                                        on:click=move |_| {
+                                            let centroid = layout.with_untracked(|l| {
+                                                l.as_ref().and_then(|l| layout_geometry::group_centroid(l, &ids_center_h))
+                                            });
+                                            if let Some(c) = centroid {
+                                                let target = hypercolor_types::spatial::NormalizedPosition::new(0.5, c.y);
+                                                set_layout.update(|l| {
+                                                    if let Some(layout) = l {
+                                                        layout_geometry::translate_group(layout, &ids_center_h, target);
+                                                    }
+                                                });
+                                                set_is_dirty.set(true);
+                                            }
+                                        }
+                                    >
+                                        <Icon icon=LuAlignCenterHorizontal width="11px" height="11px" />
+                                    </button>
+                                    <button
+                                        class="shrink-0 p-0.5 rounded text-fg-tertiary/30 hover:text-accent transition-colors btn-press"
+                                        title="Center group vertically"
+                                        on:click=move |_| {
+                                            let centroid = layout.with_untracked(|l| {
+                                                l.as_ref().and_then(|l| layout_geometry::group_centroid(l, &ids_center_v))
+                                            });
+                                            if let Some(c) = centroid {
+                                                let target = hypercolor_types::spatial::NormalizedPosition::new(c.x, 0.5);
+                                                set_layout.update(|l| {
+                                                    if let Some(layout) = l {
+                                                        layout_geometry::translate_group(layout, &ids_center_v, target);
+                                                    }
+                                                });
+                                                set_is_dirty.set(true);
+                                            }
+                                        }
+                                    >
+                                        <Icon icon=LuAlignCenterVertical width="11px" height="11px" />
+                                    </button>
+                                </div>
+
+                                // Group rotation (delta from selection start)
+                                <div class="flex items-center gap-1.5 flex-1 min-w-28 rounded-lg px-2 py-1"
+                                     style="background: rgba(255, 255, 255, 0.02)">
+                                    <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0">"Rot"</span>
+                                    <input
+                                        type="range"
+                                        min="-180" max="180" step="1"
+                                        class="min-w-0 flex-1"
+                                        prop:value=format!("{rot_offset:.0}")
+                                        on:input=move |ev| {
+                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                            if let Some(el) = target
+                                                && let Ok(new_deg) = el.value().parse::<f32>() {
+                                                    let old_deg = group_rot_offset.get_untracked();
+                                                    let delta_rad = (new_deg - old_deg).to_radians();
+                                                    set_group_rot_offset.set(new_deg);
+                                                    set_layout.update(|l| {
+                                                        if let Some(layout) = l {
+                                                            layout_geometry::rotate_group(layout, &ids_rot_slider, delta_rad);
+                                                        }
+                                                    });
+                                                    set_is_dirty.set(true);
+                                                }
+                                        }
+                                    />
+                                    <div class="flex items-center gap-0.5 shrink-0">
+                                        <input
+                                            type="number"
+                                            min="-360" max="360" step="1"
+                                            class="w-12 bg-surface-sunken border border-edge-subtle rounded px-1.5 py-0.5
+                                                   text-[11px] text-fg-primary font-mono tabular-nums text-right
+                                                   focus:outline-none focus:border-accent-muted glow-ring transition-colors"
+                                            prop:value=format!("{rot_offset:.0}")
+                                            on:change=move |ev| {
+                                                let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                                if let Some(el) = target
+                                                    && let Ok(new_deg) = el.value().parse::<f32>() {
+                                                        let old_deg = group_rot_offset.get_untracked();
+                                                        let delta_rad = (new_deg - old_deg).to_radians();
+                                                        set_group_rot_offset.set(new_deg);
+                                                        set_layout.update(|l| {
+                                                            if let Some(layout) = l {
+                                                                layout_geometry::rotate_group(layout, &ids_rot_input, delta_rad);
+                                                            }
+                                                        });
+                                                        set_is_dirty.set(true);
+                                                    }
+                                            }
+                                        />
+                                        <span class="text-[11px] font-mono text-fg-tertiary/30">{"\u{00b0}"}</span>
+                                    </div>
+                                </div>
+
+                                // Group scale (relative factor from selection start)
+                                <div class="flex items-center gap-1.5 flex-1 min-w-28 rounded-lg px-2 py-1"
+                                     style="background: rgba(255, 255, 255, 0.02)">
+                                    <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0">"Scale"</span>
+                                    <input
+                                        type="range"
+                                        min="0.2" max="3.0" step="0.05"
+                                        class="min-w-0 flex-1"
+                                        prop:value=format!("{scale_factor:.2}")
+                                        on:input=move |ev| {
+                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                            if let Some(el) = target
+                                                && let Ok(new_factor) = el.value().parse::<f32>() {
+                                                    let old_factor = group_scale_factor.get_untracked();
+                                                    if old_factor.abs() > 0.001 {
+                                                        let ratio = new_factor / old_factor;
+                                                        set_group_scale_factor.set(new_factor);
+                                                        set_layout.update(|l| {
+                                                            if let Some(layout) = l {
+                                                                layout_geometry::scale_group(layout, &ids_scale_slider, ratio);
+                                                            }
+                                                        });
+                                                        set_is_dirty.set(true);
+                                                    }
+                                                }
+                                        }
+                                    />
+                                    <div class="flex items-center gap-0.5 shrink-0">
+                                        <input
+                                            type="number"
+                                            min="0.2" max="3.0" step="0.05"
+                                            class="w-12 bg-surface-sunken border border-edge-subtle rounded px-1.5 py-0.5
+                                                   text-[11px] text-fg-primary font-mono tabular-nums text-right
+                                                   focus:outline-none focus:border-accent-muted glow-ring transition-colors"
+                                            prop:value=format!("{scale_factor:.2}")
+                                            on:change=move |ev| {
+                                                let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                                if let Some(el) = target
+                                                    && let Ok(new_factor) = el.value().parse::<f32>() {
+                                                        let old_factor = group_scale_factor.get_untracked();
+                                                        if old_factor.abs() > 0.001 {
+                                                            let ratio = new_factor / old_factor;
+                                                            set_group_scale_factor.set(new_factor);
+                                                            set_layout.update(|l| {
+                                                                if let Some(layout) = l {
+                                                                    layout_geometry::scale_group(layout, &ids_scale_input, ratio);
+                                                                }
+                                                            });
+                                                            set_is_dirty.set(true);
+                                                        }
+                                                    }
+                                            }
+                                        />
+                                        <span class="text-[11px] font-mono text-fg-tertiary/30">"x"</span>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     }.into_any();
                 }
