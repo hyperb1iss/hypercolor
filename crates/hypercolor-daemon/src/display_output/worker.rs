@@ -404,9 +404,22 @@ async fn run_display_worker(
             continue;
         };
 
+        let has_active_overlays = overlay_composer.has_active_slots();
+        let zero_brightness_output =
+            display_brightness_factor(target.brightness) == 0 && !has_active_overlays;
         let input_matches = last_delivered_input
             .as_ref()
             .is_some_and(|previous| previous.matches(&source, &target));
+        if zero_brightness_output && !force_send && last_delivered_jpeg.is_some() {
+            trace!(
+                device = %target.name,
+                backend_id = %backend_key,
+                device_id = %device_id,
+                target_fps,
+                "skipping zero-brightness display frame"
+            );
+            continue;
+        }
         if input_matches && !force_send {
             trace!(
                 device = %target.name,
@@ -418,8 +431,8 @@ async fn run_display_worker(
             continue;
         }
         if force_send
-            && input_matches
-            && !overlay_composer.has_active_slots()
+            && !has_active_overlays
+            && (input_matches || zero_brightness_output)
             && let Some(jpeg) = last_delivered_jpeg.as_ref()
         {
             preview_frame_number = preview_frame_number.saturating_add(1);
@@ -447,7 +460,7 @@ async fn run_display_worker(
             delivered_frame_number = delivered_frame_number.saturating_add(1);
             continue;
         }
-        let encode_result = if overlay_composer.has_active_slots() {
+        let encode_result = if has_active_overlays {
             let sensor_snapshot = Arc::clone(&sensor_snapshot_rx.borrow());
             render_canvas_frame_rgb(
                 source.as_ref(),
@@ -549,8 +562,8 @@ async fn run_display_worker(
         let write_result = backend_io
             .write_display_frame_owned(device_id, Arc::clone(&jpeg))
             .await;
-        let keep_cached_jpeg =
-            should_refresh_static_hold(&power_state) && !overlay_composer.has_active_slots();
+        let keep_cached_jpeg = zero_brightness_output
+            || (should_refresh_static_hold(&power_state) && !has_active_overlays);
         if keep_cached_jpeg {
             last_delivered_jpeg = Some(Arc::clone(&jpeg));
         } else {

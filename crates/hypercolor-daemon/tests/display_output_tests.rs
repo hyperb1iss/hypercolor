@@ -2225,6 +2225,85 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
 }
 
 #[tokio::test]
+async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![display_zone(
+            &format!("device:{device_id}"),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 320, 200, false))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        device_settings: default_device_settings(),
+        event_bus: Arc::clone(&event_bus),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        display_overlays: default_display_overlays(),
+        display_overlay_runtime: default_display_overlay_runtime(),
+        sensor_snapshot_rx: default_sensor_snapshot_rx(),
+        overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
+    });
+
+    let red = solid_canvas(Rgba::new(255, 0, 0, 255));
+    let blue = solid_canvas(Rgba::new(0, 0, 255, 255));
+
+    let _ = device_registry
+        .update_user_settings(&device_id, None, None, Some(0.0))
+        .await;
+    let _ = event_bus
+        .canvas_sender()
+        .send(CanvasFrame::from_canvas(&red, 1, 16));
+    let writes = wait_for_display_write_count(&display_writes, 1).await;
+    assert_eq!(writes.len(), 1);
+
+    let _ = event_bus
+        .canvas_sender()
+        .send(CanvasFrame::from_canvas(&blue, 2, 32));
+    tokio::time::sleep(Duration::from_millis(140)).await;
+    assert_eq!(
+        display_writes.lock().await.len(),
+        1,
+        "zero-brightness output should reuse the cached black frame",
+    );
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
 async fn automatic_display_output_refreshes_cached_targets_when_layout_changes() {
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
