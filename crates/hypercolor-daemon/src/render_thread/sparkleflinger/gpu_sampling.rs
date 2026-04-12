@@ -2,6 +2,7 @@ use std::sync::mpsc;
 
 use anyhow::{Context, Result};
 use hypercolor_core::spatial::{PreparedZonePlan, PreparedZoneSamples};
+use hypercolor_core::types::canvas::{BYTES_PER_PIXEL, PublishedSurface, RenderSurfacePool};
 use hypercolor_types::canvas::SamplingMethod;
 use hypercolor_types::event::ZoneColors;
 
@@ -83,6 +84,15 @@ struct CachedGpuSamplingBindGroup {
     source_view_ptr: usize,
     buffer_generation: u64,
     bind_group: wgpu::BindGroup,
+}
+
+pub(super) struct GpuSurfaceReadback<'a> {
+    pub(super) buffer: &'a wgpu::Buffer,
+    pub(super) used_bytes: u64,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) padded_bytes_per_row: u32,
+    pub(super) surfaces: &'a mut RenderSurfacePool,
 }
 
 impl GpuSamplingPlan {
@@ -292,9 +302,10 @@ impl GpuSpatialSampler {
         prepared_zones: &[PreparedZonePlan],
         zones: &mut Vec<ZoneColors>,
         encoder: Option<wgpu::CommandEncoder>,
-    ) -> Result<(bool, Option<wgpu::SubmissionIndex>)> {
+        extra_surface_readback: Option<GpuSurfaceReadback<'_>>,
+    ) -> Result<(bool, Option<wgpu::SubmissionIndex>, Option<PublishedSurface>)> {
         if !self.ensure_plan(prepared_zones) {
-            return Ok((false, None));
+            return Ok((false, None, None));
         }
 
         let sample_count = self
@@ -304,15 +315,15 @@ impl GpuSpatialSampler {
         self.ensure_capacity(device, sample_count);
         let Some(points_buffer) = self.points_buffer.clone() else {
             zones.clear();
-            return Ok((true, None));
+            return Ok((true, None, None));
         };
         let Some(output_buffer) = self.output_buffer.clone() else {
             zones.clear();
-            return Ok((true, None));
+            return Ok((true, None, None));
         };
         let Some(readback_buffer) = self.readback_buffer.clone() else {
             zones.clear();
-            return Ok((true, None));
+            return Ok((true, None, None));
         };
 
         self.ensure_points_uploaded(queue, &points_buffer);
@@ -364,9 +375,18 @@ impl GpuSpatialSampler {
         let submission_index = queue.submit(Some(encoder.finish()));
         if output_bytes == 0 {
             zones.clear();
-            return Ok((true, Some(submission_index)));
+            let preview_surface = if let Some(surface_readback) = extra_surface_readback {
+                Some(read_back_surface_into(
+                    device,
+                    surface_readback,
+                    submission_index.clone(),
+                )?)
+            } else {
+                None
+            };
+            return Ok((true, Some(submission_index), preview_surface));
         }
-        readback_zone_colors_into(
+        let preview_surface = readback_zone_colors_into(
             device,
             &readback_buffer,
             output_bytes,
@@ -375,8 +395,9 @@ impl GpuSpatialSampler {
                 .expect("GPU sampling plan should remain cached after sampling"),
             submission_index.clone(),
             zones,
+            extra_surface_readback,
         )?;
-        Ok((true, Some(submission_index)))
+        Ok((true, Some(submission_index), preview_surface))
     }
 
     fn ensure_capacity(&mut self, device: &wgpu::Device, sample_count: usize) {
@@ -560,12 +581,27 @@ fn readback_zone_colors_into(
     cached_plan: &CachedGpuSamplingPlan,
     submission_index: wgpu::SubmissionIndex,
     zones: &mut Vec<ZoneColors>,
-) -> Result<()> {
+    extra_surface_readback: Option<GpuSurfaceReadback<'_>>,
+) -> Result<Option<PublishedSurface>> {
     let slice = buffer.slice(..used_bytes);
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) =
+        mpsc::channel::<std::result::Result<(), wgpu::BufferAsyncError>>();
     slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = sender.send(result);
     });
+    let preview_slice = extra_surface_readback
+        .as_ref()
+        .map(|surface_readback| surface_readback.buffer.slice(..surface_readback.used_bytes));
+    let preview_receiver = if let Some(preview_slice) = preview_slice.as_ref() {
+        let (sender, receiver) =
+            mpsc::channel::<std::result::Result<(), wgpu::BufferAsyncError>>();
+        preview_slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        Some(receiver)
+    } else {
+        None
+    };
     device
         .poll(wgpu::PollType::Wait {
             submission_index: Some(submission_index),
@@ -576,12 +612,104 @@ fn readback_zone_colors_into(
         .recv()
         .context("GPU sample channel closed before map completion")?
         .context("GPU sample buffer mapping failed")?;
+    if let Some(preview_receiver) = preview_receiver {
+        preview_receiver
+            .recv()
+            .context("GPU preview channel closed before map completion")?
+            .context("GPU preview buffer mapping failed")?;
+    }
 
     let mapped = slice.get_mapped_range();
     rebuild_zone_colors_from_mapped_bytes(&cached_plan.plan, &mapped, zones);
     drop(mapped);
     buffer.unmap();
-    Ok(())
+    let preview_surface = if let (Some(preview_slice), Some(surface_readback)) =
+        (preview_slice, extra_surface_readback)
+    {
+        let mapped = preview_slice.get_mapped_range();
+        let surface = copy_mapped_surface_into_pool(
+            &mapped,
+            surface_readback.width,
+            surface_readback.height,
+            surface_readback.padded_bytes_per_row,
+            surface_readback.surfaces,
+        )?;
+        drop(mapped);
+        surface_readback.buffer.unmap();
+        Some(surface)
+    } else {
+        None
+    };
+    Ok(preview_surface)
+}
+
+fn read_back_surface_into(
+    device: &wgpu::Device,
+    surface_readback: GpuSurfaceReadback<'_>,
+    submission_index: wgpu::SubmissionIndex,
+) -> Result<PublishedSurface> {
+    let slice = surface_readback.buffer.slice(..surface_readback.used_bytes);
+    let (sender, receiver) =
+        mpsc::channel::<std::result::Result<(), wgpu::BufferAsyncError>>();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = sender.send(result);
+    });
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: Some(submission_index),
+            timeout: None,
+        })
+        .context("GPU preview poll failed")?;
+    receiver
+        .recv()
+        .context("GPU preview channel closed before map completion")?
+        .context("GPU preview buffer mapping failed")?;
+
+    let mapped = slice.get_mapped_range();
+    let surface = copy_mapped_surface_into_pool(
+        &mapped,
+        surface_readback.width,
+        surface_readback.height,
+        surface_readback.padded_bytes_per_row,
+        surface_readback.surfaces,
+    )?;
+    drop(mapped);
+    surface_readback.buffer.unmap();
+    Ok(surface)
+}
+
+fn copy_mapped_surface_into_pool(
+    mapped: &[u8],
+    width: u32,
+    height: u32,
+    padded_bytes_per_row: u32,
+    surfaces: &mut RenderSurfacePool,
+) -> Result<PublishedSurface> {
+    let unpadded_bytes_per_row = width * BYTES_PER_PIXEL as u32;
+    let mut lease = surfaces
+        .dequeue()
+        .context("GPU readback surface pool should provide a reusable slot")?;
+    let target = lease.canvas_mut().as_rgba_bytes_mut();
+    if padded_bytes_per_row == unpadded_bytes_per_row {
+        target.copy_from_slice(
+            &mapped[..usize::try_from(unpadded_bytes_per_row)
+                .expect("row width should fit in usize")
+                .saturating_mul(height as usize)],
+        );
+    } else {
+        let row_width = usize::try_from(unpadded_bytes_per_row).expect("row width should fit");
+        for (target_row, row) in target
+            .chunks_exact_mut(row_width)
+            .zip(mapped.chunks(usize::try_from(padded_bytes_per_row).expect(
+                "row pitch should fit in usize",
+            )))
+            .take(height as usize)
+        {
+            target_row.copy_from_slice(&row[..row_width]);
+        }
+    }
+
+    Ok(lease.submit(0, 0))
 }
 
 fn rebuild_zone_colors_from_mapped_bytes(

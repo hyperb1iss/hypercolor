@@ -13,7 +13,7 @@ use super::{ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan
 use crate::performance::CompositorBackendKind;
 use crate::render_thread::producer_queue::ProducerFrame;
 use crate::render_thread::sparkleflinger::gpu_sampling::{
-    GpuSamplingPlan, GpuSamplingPlanKey, GpuSpatialSampler,
+    GpuSamplingPlan, GpuSamplingPlanKey, GpuSpatialSampler, GpuSurfaceReadback,
 };
 
 const COMPOSITOR_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -451,25 +451,92 @@ impl GpuSparkleFlinger {
         let Some(output) = self.current_output else {
             return Ok(false);
         };
-        let Some(surfaces) = self.surfaces.as_ref() else {
-            return Ok(false);
+        let (source_view, output_width, output_height) = {
+            let Some(surfaces) = self.surfaces.as_ref() else {
+                return Ok(false);
+            };
+            let source_view = match output {
+                GpuCompositorOutputSurface::Front => surfaces.front.view.clone(),
+                GpuCompositorOutputSurface::Back => surfaces.back.view.clone(),
+            };
+            (source_view, surfaces.width, surfaces.height)
         };
-        let source_view = match output {
-            GpuCompositorOutputSurface::Front => &surfaces.front.view,
-            GpuCompositorOutputSurface::Back => &surfaces.back.view,
+        let pending_preview_readback = self.pending_preview_readback.take();
+        let extra_surface_readback = match pending_preview_readback.as_ref() {
+            Some(PendingPreviewReadback::FullSize { width, height, .. }) => {
+                let surfaces = self
+                    .surfaces
+                    .as_mut()
+                    .context("GPU preview finalize requested before compositor surfaces existed")?;
+                Some(GpuSurfaceReadback {
+                    buffer: &surfaces.readback,
+                    used_bytes: u64::from(surfaces.padded_bytes_per_row) * u64::from(*height),
+                    width: *width,
+                    height: *height,
+                    padded_bytes_per_row: surfaces.padded_bytes_per_row,
+                    surfaces: &mut surfaces.readback_surfaces,
+                })
+            }
+            Some(PendingPreviewReadback::Scaled { request, .. }) => {
+                let preview_surfaces = self
+                    .preview_surfaces
+                    .as_mut()
+                    .context("GPU scaled preview finalize requested before preview surfaces existed")?;
+                Some(GpuSurfaceReadback {
+                    buffer: &preview_surfaces.readback,
+                    used_bytes: u64::from(preview_surfaces.padded_bytes_per_row)
+                        * u64::from(request.height),
+                    width: request.width,
+                    height: request.height,
+                    padded_bytes_per_row: preview_surfaces.padded_bytes_per_row,
+                    surfaces: &mut preview_surfaces.readback_surfaces,
+                })
+            }
+            None => None,
         };
-        let (sampled, submission_index) = self.spatial_sampler.sample_texture_into(
+        let (sampled, submission_index, preview_surface) = self.spatial_sampler.sample_texture_into(
             &self.device,
             &self.queue,
-            source_view,
-            surfaces.width,
-            surfaces.height,
+            &source_view,
+            output_width,
+            output_height,
             prepared_zones,
             zones,
             pending_output_submission,
+            extra_surface_readback,
         )?;
-        if let Some(submission_index) = submission_index {
-            self.resolve_pending_preview_surface_for_submission(submission_index)?;
+        if let Some(preview_surface) = preview_surface {
+            match pending_preview_readback {
+                Some(PendingPreviewReadback::FullSize { readback_key, .. }) => {
+                    if let Some(key) = readback_key {
+                        self.cached_readback_surface = Some(CachedReadbackSurface {
+                            key: Some(key),
+                            surface: preview_surface.clone(),
+                        });
+                    }
+                }
+                Some(PendingPreviewReadback::Scaled {
+                    request,
+                    readback_key,
+                }) => {
+                    if let Some(key) = readback_key {
+                        self.cached_preview_surface = Some(CachedPreviewSurface {
+                            key: CachedPreviewSurfaceKey {
+                                composition: key,
+                                request,
+                            },
+                            surface: preview_surface.clone(),
+                        });
+                    }
+                }
+                None => {}
+            }
+            self.ready_preview_surface = Some(preview_surface);
+        } else if let Some(submission_index) = submission_index {
+            self.pending_preview_readback = pending_preview_readback;
+            if self.pending_preview_readback.is_some() {
+                self.resolve_pending_preview_surface_for_submission(submission_index)?;
+            }
         }
         if sampled && let Some(sampling_plan) = sampling_plan {
             self.cached_sample_result = Some(CachedSampleResult {
