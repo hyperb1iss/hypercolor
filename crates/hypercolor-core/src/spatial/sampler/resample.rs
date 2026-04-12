@@ -115,14 +115,19 @@ pub(super) fn prepare_area_sample_for_position(
 pub(super) fn sample_prepared_canvas_pixels(
     canvas: &Canvas,
     samples: &PreparedZoneSamples,
+    has_attenuation: bool,
 ) -> Vec<[u8; 3]> {
     let bytes = canvas.as_rgba_bytes();
     let row_stride = canvas.width() as usize * BYTES_PER_PIXEL;
     match samples {
-        PreparedZoneSamples::Nearest(samples) => sample_prepared_nearest_pixels(bytes, samples),
-        PreparedZoneSamples::Bilinear(samples) => sample_prepared_bilinear_pixels(bytes, samples),
+        PreparedZoneSamples::Nearest(samples) => {
+            sample_prepared_nearest_pixels(bytes, samples, has_attenuation)
+        }
+        PreparedZoneSamples::Bilinear(samples) => {
+            sample_prepared_bilinear_pixels(bytes, samples, has_attenuation)
+        }
         PreparedZoneSamples::Area(samples) => {
-            sample_prepared_area_pixels(bytes, row_stride, samples)
+            sample_prepared_area_pixels(bytes, row_stride, samples, has_attenuation)
         }
     }
 }
@@ -135,18 +140,25 @@ pub(super) fn sample_prepared_canvas_pixels_into(
     canvas: &Canvas,
     samples: &PreparedZoneSamples,
     colors: &mut Vec<[u8; 3]>,
+    has_attenuation: bool,
 ) {
     let bytes = canvas.as_rgba_bytes();
     let row_stride = canvas.width() as usize * BYTES_PER_PIXEL;
     match samples {
         PreparedZoneSamples::Nearest(samples) => {
-            sample_prepared_nearest_pixels_into(bytes, samples, colors);
+            sample_prepared_nearest_pixels_into(bytes, samples, colors, has_attenuation);
         }
         PreparedZoneSamples::Bilinear(samples) => {
-            sample_prepared_bilinear_pixels_into(bytes, samples, colors);
+            sample_prepared_bilinear_pixels_into(bytes, samples, colors, has_attenuation);
         }
         PreparedZoneSamples::Area(samples) => {
-            sample_prepared_area_pixels_into(bytes, row_stride, samples, colors);
+            sample_prepared_area_pixels_into(
+                bytes,
+                row_stride,
+                samples,
+                colors,
+                has_attenuation,
+            );
         }
     }
 }
@@ -452,9 +464,13 @@ fn encode_linear_rgb(color: [u16; 3]) -> [u8; 3] {
 }
 
 #[must_use]
-fn sample_prepared_nearest_pixels(bytes: &[u8], samples: &[PreparedNearestSample]) -> Vec<[u8; 3]> {
+fn sample_prepared_nearest_pixels(
+    bytes: &[u8],
+    samples: &[PreparedNearestSample],
+    has_attenuation: bool,
+) -> Vec<[u8; 3]> {
     let mut colors = Vec::new();
-    sample_prepared_nearest_pixels_into(bytes, samples, &mut colors);
+    sample_prepared_nearest_pixels_into(bytes, samples, &mut colors, has_attenuation);
     colors
 }
 
@@ -462,13 +478,20 @@ fn sample_prepared_nearest_pixels_into(
     bytes: &[u8],
     samples: &[PreparedNearestSample],
     colors: &mut Vec<[u8; 3]>,
+    has_attenuation: bool,
 ) {
     colors.resize(samples.len(), [0, 0, 0]);
-    for (color, sample) in colors.iter_mut().zip(samples) {
-        *color = encode_linear_rgb(attenuate_rgb(
-            read_linear_rgb_at(bytes, sample.offset),
-            sample.attenuation,
-        ));
+    if has_attenuation {
+        for (color, sample) in colors.iter_mut().zip(samples) {
+            *color = encode_linear_rgb(attenuate_rgb(
+                read_linear_rgb_at(bytes, sample.offset),
+                sample.attenuation,
+            ));
+        }
+    } else {
+        for (color, sample) in colors.iter_mut().zip(samples) {
+            *color = encode_linear_rgb(read_linear_rgb_at(bytes, sample.offset));
+        }
     }
 }
 
@@ -476,9 +499,10 @@ fn sample_prepared_nearest_pixels_into(
 fn sample_prepared_bilinear_pixels(
     bytes: &[u8],
     samples: &[PreparedBilinearSample],
+    has_attenuation: bool,
 ) -> Vec<[u8; 3]> {
     let mut colors = Vec::new();
-    sample_prepared_bilinear_pixels_into(bytes, samples, &mut colors);
+    sample_prepared_bilinear_pixels_into(bytes, samples, &mut colors, has_attenuation);
     colors
 }
 
@@ -486,10 +510,17 @@ fn sample_prepared_bilinear_pixels_into(
     bytes: &[u8],
     samples: &[PreparedBilinearSample],
     colors: &mut Vec<[u8; 3]>,
+    has_attenuation: bool,
 ) {
     colors.resize(samples.len(), [0, 0, 0]);
-    for (color, sample) in colors.iter_mut().zip(samples) {
-        *color = sample_prepared_bilinear_srgb_rgb(bytes, sample);
+    if has_attenuation {
+        for (color, sample) in colors.iter_mut().zip(samples) {
+            *color = sample_prepared_bilinear_srgb_rgb(bytes, sample);
+        }
+    } else {
+        for (color, sample) in colors.iter_mut().zip(samples) {
+            *color = encode_linear_rgb(sample_bilinear_linear_rgb(bytes, sample));
+        }
     }
 }
 
@@ -498,9 +529,10 @@ fn sample_prepared_area_pixels(
     bytes: &[u8],
     row_stride: usize,
     samples: &[PreparedAreaSample],
+    has_attenuation: bool,
 ) -> Vec<[u8; 3]> {
     let mut colors = Vec::new();
-    sample_prepared_area_pixels_into(bytes, row_stride, samples, &mut colors);
+    sample_prepared_area_pixels_into(bytes, row_stride, samples, &mut colors, has_attenuation);
     colors
 }
 
@@ -509,13 +541,20 @@ fn sample_prepared_area_pixels_into(
     row_stride: usize,
     samples: &[PreparedAreaSample],
     colors: &mut Vec<[u8; 3]>,
+    has_attenuation: bool,
 ) {
     colors.resize(samples.len(), [0, 0, 0]);
-    for (color, sample) in colors.iter_mut().zip(samples) {
-        *color = encode_linear_rgb(attenuate_rgb(
-            sample_area_linear_rgb(bytes, row_stride, sample),
-            sample.attenuation,
-        ));
+    if has_attenuation {
+        for (color, sample) in colors.iter_mut().zip(samples) {
+            *color = encode_linear_rgb(attenuate_rgb(
+                sample_area_linear_rgb(bytes, row_stride, sample),
+                sample.attenuation,
+            ));
+        }
+    } else {
+        for (color, sample) in colors.iter_mut().zip(samples) {
+            *color = encode_linear_rgb(sample_area_linear_rgb(bytes, row_stride, sample));
+        }
     }
 }
 

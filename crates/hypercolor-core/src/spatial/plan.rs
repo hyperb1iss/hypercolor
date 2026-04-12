@@ -7,6 +7,7 @@ pub struct PreparedZonePlan {
     pub sampling_method: SamplingMethod,
     pub edge_behavior: EdgeBehavior,
     pub sample_positions: Vec<NormalizedPosition>,
+    pub has_attenuation: bool,
     pub prepared_canvas_width: u32,
     pub prepared_canvas_height: u32,
     pub prepared_samples: PreparedZoneSamples,

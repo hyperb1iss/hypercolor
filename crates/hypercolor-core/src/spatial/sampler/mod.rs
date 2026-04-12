@@ -122,9 +122,9 @@ pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> Prepare
         .iter()
         .map(|&pos| zone_local_to_canvas(pos, zone, edge))
         .collect::<Vec<_>>();
-    let prepared_samples = match sampling_method {
-        SamplingMethod::Nearest => PreparedZoneSamples::Nearest(
-            sample_positions
+    let (prepared_samples, has_attenuation) = match sampling_method {
+        SamplingMethod::Nearest => {
+            let samples = sample_positions
                 .iter()
                 .copied()
                 .map(|position| {
@@ -135,10 +135,12 @@ pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> Prepare
                         layout.canvas_height,
                     )
                 })
-                .collect(),
-        ),
-        SamplingMethod::Bilinear => PreparedZoneSamples::Bilinear(
-            sample_positions
+                .collect::<Vec<_>>();
+            let has_attenuation = samples.iter().any(|sample| sample.attenuation < lut::ATTENUATION_ONE);
+            (PreparedZoneSamples::Nearest(samples), has_attenuation)
+        }
+        SamplingMethod::Bilinear => {
+            let samples = sample_positions
                 .iter()
                 .copied()
                 .map(|position| {
@@ -149,10 +151,12 @@ pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> Prepare
                         layout.canvas_height,
                     )
                 })
-                .collect(),
-        ),
-        SamplingMethod::Area { radius } => PreparedZoneSamples::Area(
-            sample_positions
+                .collect::<Vec<_>>();
+            let has_attenuation = samples.iter().any(|sample| sample.attenuation < lut::ATTENUATION_ONE);
+            (PreparedZoneSamples::Bilinear(samples), has_attenuation)
+        }
+        SamplingMethod::Area { radius } => {
+            let samples = sample_positions
                 .iter()
                 .copied()
                 .map(|position| {
@@ -164,8 +168,10 @@ pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> Prepare
                         layout.canvas_height,
                     )
                 })
-                .collect(),
-        ),
+                .collect::<Vec<_>>();
+            let has_attenuation = samples.iter().any(|sample| sample.attenuation < lut::ATTENUATION_ONE);
+            (PreparedZoneSamples::Area(samples), has_attenuation)
+        }
     };
 
     PreparedZonePlan {
@@ -173,6 +179,7 @@ pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> Prepare
         sampling_method,
         edge_behavior: edge,
         sample_positions,
+        has_attenuation,
         prepared_canvas_width: layout.canvas_width,
         prepared_canvas_height: layout.canvas_height,
         prepared_samples,
@@ -187,7 +194,7 @@ pub(crate) fn sample_prepared_zone(canvas: &Canvas, zone: &PreparedZonePlan) -> 
     if canvas.width() == zone.prepared_canvas_width
         && canvas.height() == zone.prepared_canvas_height
     {
-        return sample_prepared_canvas_pixels(canvas, &zone.prepared_samples);
+        return sample_prepared_canvas_pixels(canvas, &zone.prepared_samples, zone.has_attenuation);
     }
 
     sample_positions(
@@ -206,7 +213,12 @@ pub(crate) fn sample_prepared_zone_into(
     if canvas.width() == zone.prepared_canvas_width
         && canvas.height() == zone.prepared_canvas_height
     {
-        sample_prepared_canvas_pixels_into(canvas, &zone.prepared_samples, colors);
+        sample_prepared_canvas_pixels_into(
+            canvas,
+            &zone.prepared_samples,
+            colors,
+            zone.has_attenuation,
+        );
         return;
     }
 
