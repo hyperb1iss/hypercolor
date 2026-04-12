@@ -305,7 +305,9 @@ The initial frame route can return PNG for simplicity. WebSocket streaming can
 arrive in a later wave if needed.
 
 `GET /api/v1/simulators/displays/{id}/frame` landed on 2026-04-11 with an
-initial JPEG response backed by the daemon-local simulator runtime.
+initial JPEG response backed by the daemon-local simulator runtime. It now
+also falls back to the shared display-preview frame cache when the display
+worker encoded a frame but the simulator backend did not retain it.
 
 ### 7.3 Preview Page
 
@@ -405,7 +407,10 @@ physical LCD hardware.
 wave. It creates or updates a simulator, applies an effect, and prints a
 browser preview URL. The helper now also supports `--wait-frame` and
 `--frame-out <path>` so CI or local smoke checks can block until the simulator
-frame endpoint returns image bytes and optionally save the rendered frame.
+frame endpoint returns image bytes and optionally save the rendered frame. It
+also preserves any existing simulator layout zone while still reapplying the
+active layout so reused simulators rebind cleanly without clobbering layout
+tuning.
 
 ---
 
@@ -424,6 +429,8 @@ frame endpoint returns image bytes and optionally save the rendered frame.
 - overlay composition is visible in simulator output
 - brightness affects simulator frames exactly as it affects hardware frames
 - stable-frame skipping still prevents redundant simulator updates
+- preview-frame capture remains available even if the backend display write
+  fails after encoding
 
 ### 9.3 Visual Inspection
 
