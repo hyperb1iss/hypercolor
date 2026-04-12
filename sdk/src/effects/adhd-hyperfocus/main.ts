@@ -25,7 +25,7 @@ export default effect(
                 tooltip: 'Color palette — each named for a neurotransmitter or mental state',
             },
         ),
-        energy: num('Energy', [10, 200], 145, {
+        energy: num('Energy', [10, 200], 140, {
             group: 'Color',
             tooltip: 'Brightness/energy of the effect',
         }),
@@ -33,7 +33,7 @@ export default effect(
             group: 'Focus',
             tooltip: 'Radius of the sharp center region',
         }),
-        focusStrength: num('Focus Strength', [0, 200], 145, {
+        focusStrength: num('Focus Strength', [0, 200], 130, {
             group: 'Focus',
             tooltip: 'Center boost/magnification',
         }),
@@ -41,7 +41,7 @@ export default effect(
             group: 'Motion',
             tooltip: 'Film/noise amount, stronger in periphery',
         }),
-        paralysis: num('Paralysis', [0, 100], 25, {
+        paralysis: num('Paralysis', [0, 100], 15, {
             group: 'Motion',
             tooltip: 'Executive dysfunction; reduces motion and spark speed',
         }),
@@ -57,7 +57,7 @@ export default effect(
             group: 'Motion',
             tooltip: 'Amount of dopamine sparks',
         }),
-        tunnelSpeed: num('Tunnel Speed', [0, 200], 95, {
+        tunnelSpeed: num('Tunnel Speed', [0, 200], 85, {
             group: 'Motion',
             tooltip: 'Motion speed of the tunnel rings',
         }),
@@ -89,11 +89,11 @@ export default effect(
                     energy: 45,
                     focusRadius: 65,
                     focusStrength: 40,
-                    noise: 160,
+                    noise: 130,
                     paralysis: 95,
                     peripheralBlur: 30,
                     saturation: 60,
-                    sparkDensity: 20,
+                    sparkDensity: 15,
                     tunnelSpeed: 15,
                 },
                 description:
@@ -104,14 +104,14 @@ export default effect(
                 controls: {
                     colorMode: 'Hyperfocus',
                     energy: 160,
-                    focusRadius: 8,
+                    focusRadius: 6,
                     focusStrength: 200,
-                    noise: 5,
+                    noise: 3,
                     paralysis: 10,
                     peripheralBlur: 200,
                     saturation: 150,
                     sparkDensity: 120,
-                    tunnelSpeed: 72,
+                    tunnelSpeed: 60,
                 },
                 description:
                     'Six hours vanished — the center is absolute, peripheral reality no longer exists, time has no meaning',
@@ -137,14 +137,14 @@ export default effect(
             {
                 controls: {
                     colorMode: 'Dopamine',
-                    energy: 130,
+                    energy: 138,
                     focusRadius: 45,
                     focusStrength: 130,
                     noise: 30,
                     paralysis: 15,
                     peripheralBlur: 90,
-                    saturation: 120,
-                    sparkDensity: 90,
+                    saturation: 125,
+                    sparkDensity: 100,
                     tunnelSpeed: 108,
                 },
                 description:
@@ -162,7 +162,7 @@ export default effect(
                     peripheralBlur: 50,
                     saturation: 140,
                     sparkDensity: 40,
-                    tunnelSpeed: 48,
+                    tunnelSpeed: 40,
                 },
                 description:
                     'Soft warmth after the storm — the tunnel opens wide, colors cool to seafoam and teal, everything gentles',
@@ -189,14 +189,14 @@ export default effect(
                 controls: {
                     colorMode: 'Melatonin',
                     energy: 55,
-                    focusRadius: 50,
+                    focusRadius: 42,
                     focusStrength: 60,
                     noise: 80,
                     paralysis: 60,
                     peripheralBlur: 120,
                     saturation: 80,
                     sparkDensity: 30,
-                    tunnelSpeed: 25,
+                    tunnelSpeed: 18,
                 },
                 description:
                     'Should have slept hours ago — melatonin whispers but the tunnel holds, deep indigo and midnight blue pulse slowly',
@@ -208,12 +208,12 @@ export default effect(
                     energy: 170,
                     focusRadius: 30,
                     focusStrength: 150,
-                    noise: 120,
+                    noise: 135,
                     paralysis: 20,
                     peripheralBlur: 140,
                     saturation: 180,
                     sparkDensity: 180,
-                    tunnelSpeed: 160,
+                    tunnelSpeed: 148,
                 },
                 description:
                     'The same thought circling — acid green and warning amber, everything too fast and too bright, cannot look away',
@@ -222,14 +222,14 @@ export default effect(
             {
                 controls: {
                     colorMode: 'Void',
-                    energy: 35,
+                    energy: 28,
                     focusRadius: 70,
                     focusStrength: 30,
                     noise: 50,
                     paralysis: 85,
                     peripheralBlur: 180,
                     saturation: 40,
-                    sparkDensity: 10,
+                    sparkDensity: 5,
                     tunnelSpeed: 10,
                 },
                 description:

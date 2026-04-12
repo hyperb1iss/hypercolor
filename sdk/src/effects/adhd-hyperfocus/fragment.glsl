@@ -72,74 +72,84 @@ vec3 mix4(float t, vec3 a, vec3 b, vec3 c, vec3 d) {
 
 vec3 palette(float t, int mode) {
     if (mode == 1) {
-        // Serotonin — calm teal/seafoam/sky/lavender
+        // Serotonin — oceanic warmth: deep teal → bright seafoam → periwinkle → soft violet
         return mix4(t,
-            vec3(0.2, 0.8, 0.7),
-            vec3(0.4, 0.9, 0.75),
-            vec3(0.5, 0.7, 1.0),
-            vec3(0.65, 0.5, 0.85)
+            vec3(0.15, 0.75, 0.7),
+            vec3(0.35, 0.95, 0.8),
+            vec3(0.45, 0.55, 1.0),
+            vec3(0.7, 0.4, 0.85)
         );
     } else if (mode == 2) {
-        // Norepinephrine — fight-or-flight hot red/orange/white-hot
+        // Norepinephrine — fight-or-flight: blood red → hot orange → searing gold → dark crimson
         return mix4(t,
-            vec3(1.0, 0.15, 0.1),
-            vec3(1.0, 0.5, 0.1),
-            vec3(1.0, 0.9, 0.7),
-            vec3(0.8, 0.1, 0.2)
+            vec3(1.0, 0.08, 0.05),
+            vec3(1.0, 0.45, 0.0),
+            vec3(1.0, 0.82, 0.35),
+            vec3(0.75, 0.05, 0.2)
         );
     } else if (mode == 3) {
-        // Melatonin — sleepy indigo/midnight/soft purple/dark teal
+        // Melatonin — sleepy: deep indigo → midnight blue → twilight purple → deep teal
         return mix4(t,
-            vec3(0.2, 0.1, 0.5),
-            vec3(0.1, 0.12, 0.35),
-            vec3(0.4, 0.2, 0.55),
-            vec3(0.1, 0.25, 0.35)
+            vec3(0.22, 0.08, 0.52),
+            vec3(0.08, 0.12, 0.35),
+            vec3(0.45, 0.18, 0.62),
+            vec3(0.08, 0.25, 0.35)
         );
     } else if (mode == 4) {
-        // Cortisol — anxious acid green/yellow/amber/sickly
+        // Cortisol — anxious: acid green → warning yellow → danger amber → sickly green
         return mix4(t,
-            vec3(0.6, 0.9, 0.1),
-            vec3(0.95, 0.9, 0.2),
-            vec3(0.9, 0.6, 0.1),
-            vec3(0.4, 0.7, 0.2)
+            vec3(0.5, 0.95, 0.05),
+            vec3(1.0, 0.9, 0.1),
+            vec3(0.95, 0.5, 0.0),
+            vec3(0.3, 0.75, 0.15)
         );
     } else if (mode == 5) {
-        // Hyperfocus — laser deep blue/cyan/white/blue
+        // Hyperfocus — laser: deep electric blue → pure cyan → ice blue → royal blue
         return mix4(t,
-            vec3(0.05, 0.1, 0.6),
-            vec3(0.0, 0.8, 1.0),
-            vec3(0.85, 0.9, 1.0),
-            vec3(0.1, 0.2, 0.7)
+            vec3(0.05, 0.12, 0.6),
+            vec3(0.0, 0.75, 1.0),
+            vec3(0.55, 0.82, 1.0),
+            vec3(0.1, 0.18, 0.72)
         );
     } else if (mode == 6) {
-        // Bubblegum — playful pink/magenta/lavender/peach
+        // Bubblegum — playful: hot pink → deep magenta → electric lavender → warm peach
         return mix4(t,
-            vec3(1.0, 0.4, 0.6),
-            vec3(0.85, 0.2, 0.7),
-            vec3(0.75, 0.55, 0.9),
-            vec3(1.0, 0.7, 0.6)
+            vec3(1.0, 0.3, 0.55),
+            vec3(0.9, 0.15, 0.75),
+            vec3(0.7, 0.45, 0.95),
+            vec3(1.0, 0.6, 0.5)
         );
     } else if (mode == 7) {
-        // Neon — vivid cosine rainbow
-        return 0.5 + 0.5 * cos(6.28318 * (t + vec3(0.0, 0.33, 0.67)));
-    } else if (mode == 8) {
-        // Void — near-black with subtle violet pulses
+        // Neon — curated electric: neon pink → neon green → electric blue → neon yellow
         return mix4(t,
-            vec3(0.05, 0.02, 0.08),
-            vec3(0.2, 0.05, 0.25),
-            vec3(0.12, 0.1, 0.12),
-            vec3(0.05, 0.05, 0.2)
+            vec3(1.0, 0.0, 0.4),
+            vec3(0.0, 1.0, 0.6),
+            vec3(0.0, 0.4, 1.0),
+            vec3(1.0, 0.9, 0.0)
+        );
+    } else if (mode == 8) {
+        // Void — abyss with presence: muted violet → deep violet pulse → twilight haze → deep indigo
+        return mix4(t,
+            vec3(0.06, 0.02, 0.1),
+            vec3(0.25, 0.06, 0.32),
+            vec3(0.1, 0.08, 0.14),
+            vec3(0.05, 0.04, 0.22)
         );
     } else if (mode == 9) {
-        // Mono — grayscale
-        return vec3(fract(t));
-    } else {
-        // Dopamine (0) — warm amber/coral/gold with violet punctuation
+        // Mono — cool silver gradient with depth
         return mix4(t,
-            vec3(1.0, 0.72, 0.22),
-            vec3(1.0, 0.42, 0.38),
-            vec3(1.0, 0.85, 0.35),
-            vec3(0.45, 0.28, 0.85)
+            vec3(0.9, 0.92, 0.95),
+            vec3(0.2, 0.21, 0.25),
+            vec3(0.55, 0.58, 0.65),
+            vec3(0.08, 0.08, 0.12)
+        );
+    } else {
+        // Dopamine (0) — reward circuit: rich gold → hot coral → electric violet → warm amber
+        return mix4(t,
+            vec3(1.0, 0.78, 0.2),
+            vec3(1.0, 0.35, 0.3),
+            vec3(0.7, 0.25, 0.9),
+            vec3(1.0, 0.55, 0.15)
         );
     }
 }
@@ -223,10 +233,12 @@ void mainImage(out vec4 color, vec2 fragCoord) {
     float ringPulse = sin(9.2 * warpedR - 2.6 * t + angularPetals * 1.15 - angularFlow * 0.55);
     float rings = rings1 + rings2 + rings3 + rings4 + ringPulse * 0.18;
 
-    // Base color
+    // Base color with luminance-aware boost for dark palettes
     float hueT = fract(0.62 + 0.12 * t + 0.15 * rings + n1 * 0.06);
     vec3 base = palette(hueT, iColorMode);
-    base *= energy * 0.7;
+    float baseLum = dot(base, vec3(0.299, 0.587, 0.114));
+    base *= mix(1.5, 1.0, smoothstep(0.15, 0.5, baseLum));
+    base *= energy * 0.82;
 
     // Focus factor — use raw r for stable focus region
     float focus = smoothstep(focusR, 0.0, r);
@@ -254,6 +266,21 @@ void mainImage(out vec4 color, vec2 fragCoord) {
     float orbitSpark = pow(max(0.0, 0.5 + 0.5 * sin(2.0 * warpedA + 10.0 * warpedR - 2.2 * t)), 4.0);
     base += palette(hueT + 0.42, iColorMode) * orbitBand * orbitSpark * energy * 0.11 * dynamism;
 
+    // Nebula cloud layer — slow color fog fills dark peripheral regions
+    float nebulaMask = smoothstep(0.35, 0.65, n3 + 0.5) * smoothstep(0.3, 0.7, n1 + 0.5);
+    vec3 nebulaColor = palette(hueT + 0.25 + n2 * 0.12, iColorMode);
+    base += nebulaColor * nebulaMask * energy * 0.15 * (0.3 + 0.7 * (1.0 - focus));
+
+    // Specular highlights on ring crests — palette-independent brightness
+    float specHighlight = pow(max(0.0, rings1), 5.0) * 0.06
+                        + pow(max(0.0, rings4 * 2.0), 4.0) * 0.03;
+    base += vec3(specHighlight) * energy * (0.3 + 0.7 * focus);
+
+    // Chromatic edge accent at focus boundary
+    float edgeBand = exp(-pow((r - focusR) / 0.06, 2.0));
+    vec3 edgeColor = palette(hueT + 0.5, iColorMode);
+    base += edgeColor * edgeBand * energy * 0.12;
+
     // Peripheral desaturation + darkening
     float periph = smoothstep(focusR * 0.8, 0.75, r);
     float periphStrength = clamp(perBlur, 0.0, 2.0);
@@ -263,7 +290,7 @@ void mainImage(out vec4 color, vec2 fragCoord) {
     float l = dot(base, vec3(0.299, 0.587, 0.114));
     base = mix(vec3(l), base, clamp(satMix, 0.0, 2.0));
 
-    float peripheralDim = mix(1.0, 0.15, periphFactor);
+    float peripheralDim = mix(1.0, 0.22, periphFactor);
     base *= peripheralDim;
 
     // Film grain noise

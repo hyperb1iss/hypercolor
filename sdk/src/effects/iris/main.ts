@@ -106,6 +106,10 @@ const COLOR_SCHEMES = [
     'Solar Storm',
     'Synesthesia',
     'Vaporwave',
+    'Abyss Bloom',
+    'Circuit Jade',
+    'Orchid Signal',
+    'Ruby Current',
 ] as const
 
 const controls = {
@@ -115,58 +119,58 @@ const controls = {
         tooltip: 'Color scheme (Harmonic uses Circle of Fifths)',
         group: 'Color',
     }),
-    glowIntensity: num('Glow', [0, 100], 70, {
-        tooltip: 'Core bloom and radiance',
+    glowIntensity: num('Halo', [0, 100], 28, {
+        tooltip: 'Outer halo brightness and spread',
         group: 'Color',
     }),
-    colorAccent: num('Accent', [0, 100], 65, {
-        tooltip: 'Saturation and tonal punch',
+    colorAccent: num('Color Split', [0, 100], 88, {
+        tooltip: 'Separates hues and keeps highlights colored instead of white',
         group: 'Color',
     }),
 
     // Motion
-    timeSpeed: num('Time Warp', [0, 100], 50, {
+    timeSpeed: num('Time Warp', [0, 100], 52, {
         tooltip: 'Base animation speed and temporal warp',
         group: 'Motion',
     }),
-    flowDrive: num('Flow', [0, 100], 50, {
+    flowDrive: num('Flow', [0, 100], 58, {
         tooltip: 'Forward rush and radial twisting',
         group: 'Motion',
     }),
-    rotationSpeed: num('Rotation', [0, 100], 0, {
+    rotationSpeed: num('Rotation', [0, 100], 14, {
         tooltip: 'Spin and orbital motion',
         group: 'Motion',
     }),
 
     // Audio
-    beatFlash: num('Beat Flash', [0, 100], 45, {
+    beatFlash: num('Beat Flash', [0, 100], 28, {
         tooltip: 'How violently beats flare, pulse, and explode',
         group: 'Audio',
     }),
-    wanderSpeed: num('Drift', [0, 100], 35, {
+    wanderSpeed: num('Drift', [0, 100], 24, {
         tooltip: 'Audio-driven camera drift and pull',
         group: 'Audio',
     }),
 
     // Pattern
-    scale: num('Scale', [20, 200], 80, {
-        tooltip: 'Macro zoom and spatial density',
+    scale: num('Zoom', [20, 200], 74, {
+        tooltip: 'Zoom the tunnel in and out',
         group: 'Pattern',
     }),
-    irisStrength: num('Iris', [0, 100], 65, {
-        tooltip: 'Ripple count and iris aggression',
+    irisStrength: num('Ripple Density', [0, 100], 62, {
+        tooltip: 'How many concentric iris bands appear',
         group: 'Pattern',
     }),
-    corePulse: num('Core', [0, 100], 60, {
-        tooltip: 'Center beam width and vascular energy',
+    corePulse: num('Center Beam', [0, 100], 46, {
+        tooltip: 'Thickness and pulse of the bright center spine',
         group: 'Pattern',
     }),
-    bandSharpness: num('Geometry', [0, 100], 50, {
-        tooltip: 'From soft folds to razor bands',
+    bandSharpness: num('Band Sharpness', [0, 100], 58, {
+        tooltip: 'Soft folds at low values, crisp contour bands at high values',
         group: 'Pattern',
     }),
-    particleDensity: num('Texture', [0, 100], 55, {
-        tooltip: 'Particle fabric and glitch texture strength',
+    particleDensity: num('Particle Fabric', [0, 100], 44, {
+        tooltip: 'Amount of particle grain woven through the geometry',
         group: 'Pattern',
     }),
 }
@@ -203,16 +207,16 @@ export default effect('Iris', shader, controls, {
 
         // Map normalized factors to shader-domain values
         const c = {
-            bandSharpness: lerp(0.25, 3.4, bandFactor ** 0.85),
+            bandSharpness: lerp(0.18, 4.2, bandFactor ** 0.78),
             beatFlash: beatFlashFactor,
-            colorAccent: lerp(0.45, 2.15, accentFactor ** 0.8),
-            corePulse: lerp(0.15, 4.2, coreFactor ** 0.9),
+            colorAccent: lerp(0.25, 2.5, accentFactor ** 0.9),
+            corePulse: lerp(0.15, 4.6, coreFactor ** 0.92),
             flowDrive: lerp(0.0, 4.0, flowFactor ** 0.85),
-            glowIntensity: lerp(0.04, 1.35, glowFactor ** 0.9),
-            irisStrength: lerp(0.2, 5.4, irisFactor ** 0.85),
+            glowIntensity: lerp(0.0, 1.15, glowFactor ** 1.25),
+            irisStrength: lerp(0.18, 4.8, irisFactor ** 0.9),
             rotationSpeed: lerp(0.0, 3.6, rotationFactor ** 1.1),
-            scale: lerp(1.25, 8.5, scaleFactor ** 0.85),
-            texture: lerp(0.0, 1.0, textureFactor ** 0.9),
+            scale: lerp(1.0, 9.4, scaleFactor ** 0.9),
+            texture: lerp(0.0, 1.2, textureFactor ** 0.85),
             timeSpeed: lerp(0.18, 3.4, timeSpeedFactor ** 0.95),
             wanderSpeed: lerp(0.0, 3.2, wanderFactor ** 0.85),
         }
@@ -261,8 +265,8 @@ export default effect('Iris', shader, controls, {
         state.boostBand = smoothAsymmetric(state.boostBand, targetBoostBand, 7, 2.3, dt)
 
         const flowBeatMod = state.boostFlow * (0.6 + onset * 0.8 * bf)
-        const colorAudioAccent = 0.85 + lvl * 0.25 + Math.abs(audio.chordMood) * 0.25 + state.smoothBrightness * 0.2
-        const textureAudioDensity = 0.65 + onset * 0.9 * bf + fluxTreble * 0.55 + state.smoothBrightness * 0.25
+        const colorAudioAccent = 0.72 + lvl * 0.12 + Math.abs(audio.chordMood) * 0.1 + state.smoothBrightness * 0.08
+        const textureAudioDensity = 0.45 + onset * 0.55 * bf + fluxTreble * 0.35 + state.smoothBrightness * 0.12
 
         // ── Time warp — smooth, momentum-driven with gentle beat swell ─
         const targetTimeWarp = 0.55 + lvl * 0.6 + mom * 0.5 + onset * 0.55 * bf + swell * 0.35
@@ -292,7 +296,7 @@ export default effect('Iris', shader, controls, {
 
         // ── Energy envelopes — different rates per band ─────────────
         // Glow: brightness-driven, slow and warm (onset scaled by beat flash)
-        const targetGlow = 0.55 + lvl * 0.45 + onset * 0.55 * bf + state.smoothBrightness * 0.35
+        const targetGlow = 0.28 + lvl * 0.28 + onset * 0.3 * bf + state.smoothBrightness * 0.18
         // Core: bass-driven, slow heave
         const targetCore = 0.65 + bass * 0.75 + swell * 0.3 + fluxBass * 0.3 + onset * 0.25 * bf
         // Iris: mid-driven, medium pace
@@ -374,150 +378,194 @@ export default effect('Iris', shader, controls, {
     presets: [
         {
             controls: {
-                bandSharpness: 35,
-                beatFlash: 18,
-                colorAccent: 80,
+                bandSharpness: 28,
+                beatFlash: 12,
+                colorAccent: 78,
                 colorScheme: 'Lava',
-                corePulse: 90,
-                flowDrive: 80,
-                glowIntensity: 90,
-                irisStrength: 85,
-                particleDensity: 40,
-                rotationSpeed: 8,
-
-                scale: 120,
-                timeSpeed: 25,
+                corePulse: 68,
+                flowDrive: 36,
+                glowIntensity: 34,
+                irisStrength: 46,
+                particleDensity: 18,
+                rotationSpeed: 4,
+                scale: 126,
+                timeSpeed: 28,
+                wanderSpeed: 12,
+            },
+            description: 'Broad ember folds and a slow cathedral spine for low-end ritual tracks.',
+            name: 'Cathedral Ember',
+        },
+        {
+            controls: {
+                bandSharpness: 62,
+                beatFlash: 24,
+                colorAccent: 94,
+                colorScheme: 'Harmonic',
+                corePulse: 44,
+                flowDrive: 42,
+                glowIntensity: 24,
+                irisStrength: 64,
+                particleDensity: 34,
+                rotationSpeed: 18,
+                scale: 78,
+                timeSpeed: 46,
+                wanderSpeed: 28,
+            },
+            description:
+                'The musical mode preset: stained-glass fifths with clear color separation and restrained bloom.',
+            name: 'Fifths In Glass',
+        },
+        {
+            controls: {
+                bandSharpness: 74,
+                beatFlash: 48,
+                colorAccent: 86,
+                colorScheme: 'Orchid Signal',
+                corePulse: 34,
+                flowDrive: 58,
+                glowIntensity: 38,
+                irisStrength: 70,
+                particleDensity: 78,
+                rotationSpeed: 36,
+                scale: 68,
+                timeSpeed: 62,
+                wanderSpeed: 42,
+            },
+            description: 'Orchid, fuchsia, and ice-cyan bands for glossy synths and faster treble detail.',
+            name: 'Orchid Relay',
+        },
+        {
+            controls: {
+                bandSharpness: 20,
+                beatFlash: 4,
+                colorAccent: 58,
+                colorScheme: 'Phosphor',
+                corePulse: 28,
+                flowDrive: 22,
+                glowIntensity: 48,
+                irisStrength: 38,
+                particleDensity: 24,
+                rotationSpeed: 2,
+                scale: 154,
+                timeSpeed: 18,
                 wanderSpeed: 18,
             },
-            description:
-                'Drone metal in a candlelit crypt — massive bass displacement warps concentric rings while lava glow bleeds from the core',
-            name: 'Hypnagogic Temple',
+            description: 'Soft phosphor scanlines and breathing rings for the calmest side of Iris.',
+            name: 'Phosphor Dream',
         },
         {
             controls: {
-                bandSharpness: 65,
-                beatFlash: 42,
+                bandSharpness: 48,
+                beatFlash: 18,
+                colorAccent: 84,
+                colorScheme: 'Abyss Bloom',
+                corePulse: 36,
+                flowDrive: 64,
+                glowIntensity: 30,
+                irisStrength: 56,
+                particleDensity: 42,
+                rotationSpeed: 12,
+                scale: 96,
+                timeSpeed: 38,
+                wanderSpeed: 34,
+            },
+            description: 'Deep indigo water, electric azure edges, and a soft jade drift through the tunnel.',
+            name: 'Pelagic Bloom',
+        },
+        {
+            controls: {
+                bandSharpness: 82,
+                beatFlash: 88,
                 colorAccent: 90,
-                colorScheme: 'Harmonic',
-                corePulse: 50,
-                flowDrive: 40,
-                glowIntensity: 60,
-                irisStrength: 70,
-                particleDensity: 50,
-                rotationSpeed: 30,
-
-                scale: 70,
-                timeSpeed: 45,
-                wanderSpeed: 52,
-            },
-            description:
-                'Every note has a color — Circle of Fifths mapping transforms a string quartet into spinning harmonic stained glass',
-            name: 'Chromatic Fugue',
-        },
-        {
-            controls: {
-                bandSharpness: 85,
-                beatFlash: 72,
-                colorAccent: 75,
-                colorScheme: 'Cyberpunk',
-                corePulse: 70,
-                flowDrive: 65,
-                glowIntensity: 55,
-                irisStrength: 80,
-                particleDensity: 90,
-                rotationSpeed: 55,
-
-                scale: 55,
-                timeSpeed: 75,
-                wanderSpeed: 74,
-            },
-            description:
-                'IDM at 3am in a server room — cyberpunk iris geometry spasms with glitch texture as fractured beats rearrange the grid',
-            name: 'Midnight Mainframe',
-        },
-        {
-            controls: {
-                bandSharpness: 25,
-                beatFlash: 6,
-                colorAccent: 50,
-                colorScheme: 'Phosphor',
-                corePulse: 35,
-                flowDrive: 30,
-                glowIntensity: 85,
-                irisStrength: 45,
-                particleDensity: 30,
-                rotationSpeed: 5,
-
-                scale: 150,
-                timeSpeed: 20,
-                wanderSpeed: 22,
-            },
-            description:
-                'Ambient pads dissolve into bioluminescent geometry — soft green phosphor rings expand like breath, zero flash, pure presence',
-            name: 'Phosphor Meditation',
-        },
-        {
-            controls: {
-                bandSharpness: 75,
-                beatFlash: 95,
-                colorAccent: 95,
                 colorScheme: 'Solar Storm',
-                corePulse: 85,
-                flowDrive: 90,
-                glowIntensity: 95,
-                irisStrength: 95,
-                particleDensity: 80,
-                rotationSpeed: 70,
-
-                scale: 45,
-                timeSpeed: 85,
-                wanderSpeed: 82,
+                corePulse: 72,
+                flowDrive: 86,
+                glowIntensity: 44,
+                irisStrength: 86,
+                particleDensity: 74,
+                rotationSpeed: 58,
+                scale: 52,
+                timeSpeed: 82,
+                wanderSpeed: 62,
             },
-            description:
-                'Stadium EDM climax — iris geometry detonates on every drop, golden plasma jets compete with ice-blue shockwaves at maximum warp',
-            name: 'Solar Storm Apex',
+            description: 'The festival preset: brass heat, blue counter-light, and hard pulses on every drop.',
+            name: 'Solar Choir',
         },
         {
             controls: {
-                bandSharpness: 15,
+                bandSharpness: 18,
                 beatFlash: 0,
-                colorAccent: 40,
+                colorAccent: 66,
                 colorScheme: 'Ice',
-                corePulse: 20,
-                flowDrive: 15,
-                glowIntensity: 100,
-                irisStrength: 30,
+                corePulse: 22,
+                flowDrive: 14,
+                glowIntensity: 56,
+                irisStrength: 34,
                 particleDensity: 10,
                 rotationSpeed: 0,
-
-                scale: 200,
-                timeSpeed: 10,
-                wanderSpeed: 8,
+                scale: 168,
+                timeSpeed: 16,
+                wanderSpeed: 10,
             },
-            description:
-                'Frozen cathedral at the edge of the world — a single ice mandala breathes in glacial silence, all glow, no violence',
-            name: 'Permafrost Halo',
+            description: 'Glacial, sparse, and nearly still, with a cold halo and minimal rhythmic intrusion.',
+            name: 'Glacier Hymnal',
         },
         {
             controls: {
-                bandSharpness: 100,
-                beatFlash: 60,
-                colorAccent: 70,
-                colorScheme: 'Neon Flux',
-                corePulse: 45,
-                flowDrive: 55,
-                glowIntensity: 40,
-                irisStrength: 100,
-                particleDensity: 100,
-                rotationSpeed: 100,
-
-                scale: 20,
-                timeSpeed: 100,
-                wanderSpeed: 100,
+                bandSharpness: 86,
+                beatFlash: 32,
+                colorAccent: 86,
+                colorScheme: 'Circuit Jade',
+                corePulse: 32,
+                flowDrive: 52,
+                glowIntensity: 22,
+                irisStrength: 66,
+                particleDensity: 64,
+                rotationSpeed: 24,
+                scale: 72,
+                timeSpeed: 58,
+                wanderSpeed: 26,
             },
-            description:
-                'Feed a drum machine into a particle accelerator — neon iris blades spin at impossible speed while glitch fabric tears reality apart',
-            name: 'Centrifuge Protocol',
+            description: 'Sharper contour bands and emerald-cyan circuitry for precise, technical rhythms.',
+            name: 'Jade Lattice',
+        },
+        {
+            controls: {
+                bandSharpness: 68,
+                beatFlash: 36,
+                colorAccent: 92,
+                colorScheme: 'Ruby Current',
+                corePulse: 52,
+                flowDrive: 44,
+                glowIntensity: 26,
+                irisStrength: 58,
+                particleDensity: 30,
+                rotationSpeed: 20,
+                scale: 84,
+                timeSpeed: 54,
+                wanderSpeed: 18,
+            },
+            description: 'Ruby pressure with cobalt relief: warm, dramatic, and still clearly split into color bands.',
+            name: 'Ruby Meridian',
+        },
+        {
+            controls: {
+                bandSharpness: 92,
+                beatFlash: 62,
+                colorAccent: 82,
+                colorScheme: 'Neon Flux',
+                corePulse: 38,
+                flowDrive: 68,
+                glowIntensity: 18,
+                irisStrength: 94,
+                particleDensity: 96,
+                rotationSpeed: 88,
+                scale: 28,
+                timeSpeed: 96,
+                wanderSpeed: 78,
+            },
+            description: 'The maximal preset: fast spin, dense particle fabric, and razor neon edges.',
+            name: 'Collider Bloom',
         },
     ],
 
