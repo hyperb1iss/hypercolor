@@ -41,18 +41,27 @@ pub async fn apply_layout_update(
     scene_transactions: &SceneTransactionQueue,
     layout: SpatialLayout,
 ) {
+    let canvas_width = layout.canvas_width;
+    let canvas_height = layout.canvas_height;
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout.clone());
     }
     scene_transactions.push(SceneTransaction::ReplaceLayout(layout));
+    scene_transactions.push(SceneTransaction::ResizeCanvas {
+        width: canvas_width,
+        height: canvas_height,
+    });
 }
 
 #[cfg(test)]
 mod tests {
+    use tokio::sync::RwLock;
+
+    use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
-    use super::{SceneTransaction, SceneTransactionQueue};
+    use super::{SceneTransaction, SceneTransactionQueue, apply_layout_update};
 
     fn test_layout(id: &str) -> SpatialLayout {
         SpatialLayout {
@@ -86,5 +95,37 @@ mod tests {
             Some(SceneTransaction::ReplaceLayout(layout)) if layout.id == "updated"
         ));
         assert!(queue.drain().is_empty());
+    }
+
+    #[tokio::test]
+    async fn apply_layout_update_queues_resize_for_layout_canvas() {
+        let queue = SceneTransactionQueue::default();
+        let spatial_engine = RwLock::new(SpatialEngine::new(test_layout("initial")));
+        let layout = SpatialLayout {
+            canvas_width: 640,
+            canvas_height: 360,
+            ..test_layout("updated")
+        };
+
+        apply_layout_update(&spatial_engine, &queue, layout.clone()).await;
+
+        let updated = spatial_engine.read().await.layout().as_ref().clone();
+        assert_eq!(updated.id, layout.id);
+        assert_eq!(updated.canvas_width, layout.canvas_width);
+        assert_eq!(updated.canvas_height, layout.canvas_height);
+
+        let transactions = queue.drain();
+        assert_eq!(transactions.len(), 2);
+        assert!(matches!(
+            transactions.first(),
+            Some(SceneTransaction::ReplaceLayout(queued)) if queued.id == layout.id
+                && queued.canvas_width == layout.canvas_width
+                && queued.canvas_height == layout.canvas_height
+        ));
+        assert!(matches!(
+            transactions.get(1),
+            Some(SceneTransaction::ResizeCanvas { width, height })
+                if *width == layout.canvas_width && *height == layout.canvas_height
+        ));
     }
 }

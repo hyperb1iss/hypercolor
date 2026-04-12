@@ -148,8 +148,13 @@ pub async fn create_layout(
         Ok(name) => name,
         Err(error) => return ApiError::validation(error),
     };
-    let canvas_width = body.canvas_width.unwrap_or(320);
-    let canvas_height = body.canvas_height.unwrap_or(200);
+    let (default_canvas_width, default_canvas_height) = {
+        let spatial = state.spatial_engine.read().await;
+        let layout = spatial.layout();
+        (layout.canvas_width, layout.canvas_height)
+    };
+    let canvas_width = body.canvas_width.unwrap_or(default_canvas_width);
+    let canvas_height = body.canvas_height.unwrap_or(default_canvas_height);
     if let Err(error) = validate_canvas_dimensions(canvas_width, canvas_height) {
         return ApiError::validation(error);
     }

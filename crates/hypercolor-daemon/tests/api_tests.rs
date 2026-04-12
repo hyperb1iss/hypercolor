@@ -28,6 +28,7 @@ use hypercolor_daemon::display_overlays::{
 };
 use hypercolor_daemon::profile_store::Profile;
 use hypercolor_daemon::runtime_state;
+use hypercolor_daemon::scene_transactions::SceneTransaction;
 use hypercolor_daemon::session::{current_global_brightness, set_global_brightness};
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::config::HypercolorConfig;
@@ -3097,6 +3098,34 @@ async fn layout_crud_lifecycle() {
 }
 
 #[tokio::test]
+async fn layout_create_defaults_canvas_to_active_layout_dimensions() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let active_layout = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().as_ref().clone()
+    };
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/layouts")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"Canvas Follower"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["canvas_width"], active_layout.canvas_width);
+    assert_eq!(json["data"]["canvas_height"], active_layout.canvas_height);
+}
+
+#[tokio::test]
 async fn layout_apply_updates_active_layout() {
     let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
     let app = test_app_with_state(Arc::clone(&state));
@@ -3152,6 +3181,20 @@ async fn layout_apply_updates_active_layout() {
     let active_json = body_json(active_response).await;
     assert_eq!(active_json["data"]["id"], layout_id);
     assert_eq!(active_json["data"]["name"], "Studio Layout");
+
+    let transactions = state.scene_transactions.drain();
+    assert!(matches!(
+        transactions.first(),
+        Some(SceneTransaction::ReplaceLayout(layout))
+            if layout.id == layout_id && layout.canvas_width == 640 && layout.canvas_height == 360
+    ));
+    assert!(transactions.iter().any(|transaction| {
+        matches!(
+            transaction,
+            SceneTransaction::ResizeCanvas { width, height }
+                if *width == 640 && *height == 360
+        )
+    }));
 
     let list_response = app
         .oneshot(
