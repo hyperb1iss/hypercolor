@@ -7,12 +7,14 @@ use hypercolor_types::event::ZoneColors;
 
 const SAMPLE_WORKGROUP_SIZE: u32 = 64;
 const SAMPLE_PARAM_BYTES: usize = 16;
+const SAMPLE_POINT_BYTES: u64 = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub(super) enum GpuSampleMethod {
     Nearest = 0,
     Bilinear = 1,
+    Area = 2,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -21,6 +23,7 @@ pub(super) struct GpuSamplePoint {
     pub(super) y: f32,
     pub(super) method: GpuSampleMethod,
     pub(super) attenuation: u16,
+    pub(super) radius: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -73,7 +76,7 @@ impl GpuSamplingPlan {
         prepared_zones.iter().all(|zone| {
             matches!(
                 zone.sampling_method,
-                SamplingMethod::Nearest | SamplingMethod::Bilinear
+                SamplingMethod::Nearest | SamplingMethod::Bilinear | SamplingMethod::Area { .. }
             )
         })
     }
@@ -98,6 +101,7 @@ impl GpuSamplingPlan {
                                 position,
                                 GpuSampleMethod::Nearest,
                                 sample.attenuation,
+                                0,
                             )),
                     );
                 }
@@ -110,10 +114,23 @@ impl GpuSamplingPlan {
                                 position,
                                 GpuSampleMethod::Bilinear,
                                 sample.attenuation,
+                                0,
                             )),
                     );
                 }
-                (SamplingMethod::Area { .. }, PreparedZoneSamples::Area(_)) => return None,
+                (SamplingMethod::Area { .. }, PreparedZoneSamples::Area(samples)) => {
+                    points.extend(
+                        zone.sample_positions
+                            .iter()
+                            .zip(samples)
+                            .map(|(position, sample)| gpu_sample_point(
+                                position,
+                                GpuSampleMethod::Area,
+                                sample.attenuation,
+                                u32::try_from(sample.radius.max(0)).unwrap_or_default(),
+                            )),
+                    );
+                }
                 _ => return None,
             }
             zones.push(GpuZoneRange {
@@ -320,7 +337,7 @@ impl GpuSpatialSampler {
         }
 
         let sample_count = sample_count.max(1);
-        let point_stride = 16_u64;
+        let point_stride = SAMPLE_POINT_BYTES;
         let output_stride = 4_u64;
         self.points_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("SparkleFlinger GPU sample points"),
@@ -441,12 +458,14 @@ impl GpuSpatialSampler {
 }
 
 fn encode_points(plan: &GpuSamplingPlan) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(plan.points.len().saturating_mul(16));
+    let mut bytes = Vec::with_capacity(plan.points.len().saturating_mul(24));
     for point in &plan.points {
         bytes.extend_from_slice(&point.x.to_le_bytes());
         bytes.extend_from_slice(&point.y.to_le_bytes());
         bytes.extend_from_slice(&(point.method as u32).to_le_bytes());
         bytes.extend_from_slice(&u32::from(point.attenuation).to_le_bytes());
+        bytes.extend_from_slice(&point.radius.to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
     }
     bytes
 }
@@ -455,12 +474,14 @@ fn gpu_sample_point(
     position: &hypercolor_types::spatial::NormalizedPosition,
     method: GpuSampleMethod,
     attenuation: u16,
+    radius: u32,
 ) -> GpuSamplePoint {
     GpuSamplePoint {
         x: position.x,
         y: position.y,
         method,
         attenuation,
+        radius,
     }
 }
 
@@ -591,24 +612,33 @@ mod tests {
     fn gpu_sampling_plan_flattens_supported_modes() {
         let nearest = SpatialEngine::new(test_layout(SamplingMode::Nearest));
         let bilinear = SpatialEngine::new(test_layout(SamplingMode::Bilinear));
-        let mut plans = nearest.sampling_plan().as_ref().to_vec();
-        plans.extend(bilinear.sampling_plan().iter().cloned());
-
-        let plan = GpuSamplingPlan::from_prepared_zones(&plans)
-            .expect("nearest and bilinear plans should be supported");
-        assert_eq!(plan.zones.len(), 2);
-        assert_eq!(plan.points.len(), 8);
-        assert_eq!(plan.points[0].method, GpuSampleMethod::Nearest);
-        assert_eq!(plan.points[4].method, GpuSampleMethod::Bilinear);
-        assert_eq!(plan.points[0].attenuation, 256);
-    }
-
-    #[test]
-    fn gpu_sampling_plan_rejects_area_sampling() {
         let area = SpatialEngine::new(test_layout(SamplingMode::AreaAverage {
             radius_x: 2.0,
             radius_y: 2.0,
         }));
-        assert!(GpuSamplingPlan::from_prepared_zones(area.sampling_plan().as_ref()).is_none());
+        let mut plans = nearest.sampling_plan().as_ref().to_vec();
+        plans.extend(bilinear.sampling_plan().iter().cloned());
+        plans.extend(area.sampling_plan().iter().cloned());
+
+        let plan = GpuSamplingPlan::from_prepared_zones(&plans)
+            .expect("nearest, bilinear, and area plans should be supported");
+        assert_eq!(plan.zones.len(), 3);
+        assert_eq!(plan.points.len(), 12);
+        assert_eq!(plan.points[0].method, GpuSampleMethod::Nearest);
+        assert_eq!(plan.points[4].method, GpuSampleMethod::Bilinear);
+        assert_eq!(plan.points[8].method, GpuSampleMethod::Area);
+        assert_eq!(plan.points[0].attenuation, 256);
+        assert_eq!(plan.points[8].radius, 2);
+    }
+
+    #[test]
+    fn gpu_sampling_plan_keeps_area_sample_radius() {
+        let area = SpatialEngine::new(test_layout(SamplingMode::AreaAverage {
+            radius_x: 3.0,
+            radius_y: 1.0,
+        }));
+        let plan = GpuSamplingPlan::from_prepared_zones(area.sampling_plan().as_ref())
+            .expect("area plans should stay GPU-sampleable");
+        assert_eq!(plan.points[0].radius, 3);
     }
 }

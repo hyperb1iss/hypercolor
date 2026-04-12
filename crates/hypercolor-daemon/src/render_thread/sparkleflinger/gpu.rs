@@ -1581,6 +1581,26 @@ mod tests {
         canvas
     }
 
+    fn patterned_canvas(seed: u8) -> Canvas {
+        let mut canvas = Canvas::new(4, 4);
+        for y in 0..4 {
+            for x in 0..4 {
+                let base = seed.wrapping_add(u8::try_from(x * 31 + y * 17).unwrap_or_default());
+                canvas.set_pixel(
+                    x,
+                    y,
+                    Rgba::new(
+                        base,
+                        base.wrapping_add(53),
+                        base.wrapping_add(101),
+                        255,
+                    ),
+                );
+            }
+        }
+        canvas
+    }
+
     fn slot_surface(color: Rgba) -> PublishedSurface {
         let mut pool = RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(4, 4), 1);
         let mut lease = pool.dequeue().expect("surface slot should be available");
@@ -2350,7 +2370,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_sampler_returns_none_for_area_sampling() {
+    fn gpu_sampler_matches_cpu_spatial_sampling_for_area_plans() {
         let mut compositor = match GpuSparkleFlinger::new() {
             Ok(compositor) => compositor,
             Err(_) => return,
@@ -2363,23 +2383,29 @@ mod tests {
             4,
             4,
             vec![
-                CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
-                    12, 120, 48, 255,
-                )))),
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
                 CompositionLayer::screen(
-                    ProducerFrame::Canvas(solid_canvas(Rgba::new(200, 32, 64, 255))),
+                    ProducerFrame::Canvas(patterned_canvas(96)),
                     0.6,
                 ),
             ],
         );
+        let expected = CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+        let expected_zones = engine.sample(
+            expected
+                .sampling_canvas
+                .as_ref()
+                .expect("CPU compose should materialize a canvas"),
+        );
         compositor
             .compose(&plan, false, None)
-            .expect("GPU composition should succeed before checking area fallback");
+            .expect("GPU composition should succeed before GPU area sampling");
         let mut sampled = Vec::new();
         assert!(
-            !compositor
+            compositor
                 .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
-                .expect("GPU sampler should handle unsupported plans cleanly")
+                .expect("GPU sampler should support area plans")
         );
+        assert_eq!(sampled, expected_zones);
     }
 }

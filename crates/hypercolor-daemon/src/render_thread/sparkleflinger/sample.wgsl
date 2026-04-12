@@ -3,6 +3,8 @@ struct SamplePoint {
   y: f32,
   method: u32,
   attenuation: u32,
+  radius: u32,
+  _pad: u32,
 }
 
 struct SampleParams {
@@ -113,6 +115,41 @@ fn sample_bilinear_linear(position: vec2<f32>) -> vec3<f32> {
   return mix(linear_top, linear_bottom, ty);
 }
 
+fn sample_area_linear(position: vec2<f32>, radius: u32) -> vec3<f32> {
+  let max_x = max(params.width - 1u, 0u);
+  let max_y = max(params.height - 1u, 0u);
+  let center_x = i32(floor(position.x * f32(max_x)));
+  let center_y = i32(floor(position.y * f32(max_y)));
+  let radius_i = i32(radius);
+
+  var sum = vec3<f32>(0.0, 0.0, 0.0);
+  var count = 0.0;
+  var dy = -radius_i;
+  loop {
+    if (dy > radius_i) {
+      break;
+    }
+    let y = clamp(center_y + dy, 0, i32(max_y));
+    var dx = -radius_i;
+    loop {
+      if (dx > radius_i) {
+        break;
+      }
+      let x = clamp(center_x + dx, 0, i32(max_x));
+      let sample = textureLoad(source_tex, vec2<i32>(x, y), 0).rgb;
+      sum += vec3<f32>(
+        srgb_to_linear(sample.r),
+        srgb_to_linear(sample.g),
+        srgb_to_linear(sample.b),
+      );
+      count += 1.0;
+      dx += 1;
+    }
+    dy += 1;
+  }
+  return sum / max(count, 1.0);
+}
+
 @compute @workgroup_size(64)
 fn sample_pixels(@builtin(global_invocation_id) gid: vec3<u32>) {
   let index = gid.x;
@@ -129,8 +166,10 @@ fn sample_pixels(@builtin(global_invocation_id) gid: vec3<u32>) {
   var linear_rgb: vec3<f32>;
   if (point.method == 0u) {
     linear_rgb = sample_nearest_linear(position);
-  } else {
+  } else if (point.method == 1u) {
     linear_rgb = sample_bilinear_linear(position);
+  } else {
+    linear_rgb = sample_area_linear(position, point.radius);
   }
   if (point.attenuation < 256u) {
     linear_rgb *= f32(point.attenuation) / 256.0;
