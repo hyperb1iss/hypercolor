@@ -182,6 +182,8 @@ pub(super) struct GpuSpatialSampler {
     sample_dispatch_count: usize,
     #[cfg(test)]
     sample_param_write_count: usize,
+    #[cfg(test)]
+    last_readback_copy_bytes: u64,
 }
 
 impl GpuSpatialSampler {
@@ -275,6 +277,8 @@ impl GpuSpatialSampler {
             sample_dispatch_count: 0,
             #[cfg(test)]
             sample_param_write_count: 0,
+            #[cfg(test)]
+            last_readback_copy_bytes: 0,
         }
     }
 
@@ -348,12 +352,24 @@ impl GpuSpatialSampler {
         {
             self.sample_dispatch_count = self.sample_dispatch_count.saturating_add(1);
         }
-        encoder.copy_buffer_to_buffer(&output_buffer, 0, &readback_buffer, 0, output_buffer.size());
+        let output_bytes = sample_output_bytes(sample_count);
+        #[cfg(test)]
+        {
+            self.last_readback_copy_bytes = output_bytes;
+        }
+        if output_bytes > 0 {
+            encoder.copy_buffer_to_buffer(&output_buffer, 0, &readback_buffer, 0, output_bytes);
+        }
 
         let submission_index = queue.submit(Some(encoder.finish()));
+        if output_bytes == 0 {
+            zones.clear();
+            return Ok((true, Some(submission_index)));
+        }
         readback_zone_colors_into(
             device,
             &readback_buffer,
+            output_bytes,
             self.cached_plan
                 .as_ref()
                 .expect("GPU sampling plan should remain cached after sampling"),
@@ -492,6 +508,11 @@ impl GpuSpatialSampler {
     pub(super) fn sample_param_write_count(&self) -> usize {
         self.sample_param_write_count
     }
+
+    #[cfg(test)]
+    pub(super) fn last_readback_copy_bytes(&self) -> u64 {
+        self.last_readback_copy_bytes
+    }
 }
 
 fn encode_points(plan: &GpuSamplingPlan) -> Vec<u8> {
@@ -526,14 +547,21 @@ fn encode_sample_params(width: u32, height: u32, sample_count: usize) -> [u8; SA
     bytes
 }
 
+fn sample_output_bytes(sample_count: usize) -> u64 {
+    u64::try_from(sample_count)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(4)
+}
+
 fn readback_zone_colors_into(
     device: &wgpu::Device,
     buffer: &wgpu::Buffer,
+    used_bytes: u64,
     cached_plan: &CachedGpuSamplingPlan,
     submission_index: wgpu::SubmissionIndex,
     zones: &mut Vec<ZoneColors>,
 ) -> Result<()> {
-    let slice = buffer.slice(..);
+    let slice = buffer.slice(..used_bytes);
     let (sender, receiver) = mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = sender.send(result);

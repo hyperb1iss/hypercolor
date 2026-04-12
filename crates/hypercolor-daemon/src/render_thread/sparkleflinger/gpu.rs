@@ -1805,6 +1805,10 @@ mod tests {
     }
 
     fn sampling_layout(mode: SamplingMode) -> SpatialLayout {
+        sampling_layout_with_led_count(mode, 4)
+    }
+
+    fn sampling_layout_with_led_count(mode: SamplingMode, led_count: u32) -> SpatialLayout {
         SpatialLayout {
             id: "gpu-sampling".into(),
             name: "GPU Sampling".into(),
@@ -1822,7 +1826,7 @@ mod tests {
                 scale: 1.0,
                 orientation: None,
                 topology: LedTopology::Strip {
-                    count: 4,
+                    count: led_count,
                     direction: StripDirection::LeftToRight,
                 },
                 led_positions: Vec::new(),
@@ -2777,6 +2781,63 @@ mod tests {
         );
 
         assert_eq!(compositor.spatial_sampler.sample_param_write_count(), 1);
+    }
+
+    #[test]
+    fn gpu_sampler_copies_only_live_sample_bytes_after_capacity_growth() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let large_engine = SpatialEngine::new(sampling_layout_with_led_count(
+            SamplingMode::Bilinear,
+            16,
+        ));
+        let small_engine = SpatialEngine::new(sampling_layout_with_led_count(
+            SamplingMode::Bilinear,
+            4,
+        ));
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(patterned_canvas(96)),
+                    0.35,
+                ),
+            ],
+        );
+        let expected = CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+
+        compositor
+            .compose(&plan, false, None)
+            .expect("GPU composition should succeed before readback sizing tests");
+
+        let mut large_sample = Vec::new();
+        assert!(
+            compositor
+                .sample_zone_plan_into(large_engine.sampling_plan().as_ref(), &mut large_sample)
+                .expect("large GPU sample should succeed")
+        );
+        assert_eq!(compositor.spatial_sampler.last_readback_copy_bytes(), 64);
+
+        let mut small_sample = Vec::new();
+        assert!(
+            compositor
+                .sample_zone_plan_into(small_engine.sampling_plan().as_ref(), &mut small_sample)
+                .expect("smaller GPU sample should succeed after capacity growth")
+        );
+        assert_eq!(compositor.spatial_sampler.last_readback_copy_bytes(), 16);
+        assert_eq!(
+            small_sample,
+            small_engine.sample(
+                expected
+                    .sampling_canvas
+                    .as_ref()
+                    .expect("CPU compose should materialize a canvas"),
+            )
+        );
     }
 
     #[test]
