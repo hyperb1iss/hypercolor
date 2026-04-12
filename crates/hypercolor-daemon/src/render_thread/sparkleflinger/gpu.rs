@@ -51,6 +51,8 @@ pub(crate) struct GpuSparkleFlinger {
     ready_preview_surface: Option<PublishedSurface>,
     output_generation: u64,
     cached_sample_result: Option<CachedSampleResult>,
+    #[cfg(test)]
+    preview_surface_allocation_count: usize,
 }
 
 struct GpuCompositorPipeline {
@@ -89,6 +91,8 @@ struct GpuCompositorSurfaceSet {
 struct GpuPreviewSurfaceSet {
     width: u32,
     height: u32,
+    capacity_width: u32,
+    capacity_height: u32,
     padded_bytes_per_row: u32,
     output_buffer: wgpu::Buffer,
     bind_groups: GpuPreviewScaleBindGroups,
@@ -259,6 +263,8 @@ impl GpuSparkleFlinger {
             ready_preview_surface: None,
             output_generation: 0,
             cached_sample_result: None,
+            #[cfg(test)]
+            preview_surface_allocation_count: 0,
         })
     }
 
@@ -821,15 +827,14 @@ impl GpuSparkleFlinger {
     }
 
     fn ensure_preview_surface_size(&mut self, width: u32, height: u32) -> Result<()> {
-        if matches!(
-            self.preview_surfaces,
-            Some(GpuPreviewSurfaceSet {
-                width: current_width,
-                height: current_height,
-                ..
-            }) if current_width == width && current_height == height
-        ) {
-            return Ok(());
+        if let Some(preview_surfaces) = self.preview_surfaces.as_mut() {
+            if preview_surfaces.width == width && preview_surfaces.height == height {
+                return Ok(());
+            }
+            if preview_surfaces.fits_request(width, height) {
+                preview_surfaces.reconfigure(width, height);
+                return Ok(());
+            }
         }
 
         let (front_view, back_view) = {
@@ -848,7 +853,11 @@ impl GpuSparkleFlinger {
             width,
             height,
         ));
-        self.cached_preview_surface = None;
+        #[cfg(test)]
+        {
+            self.preview_surface_allocation_count =
+                self.preview_surface_allocation_count.saturating_add(1);
+        }
         Ok(())
     }
 
@@ -1245,6 +1254,8 @@ impl GpuPreviewSurfaceSet {
         Self {
             width,
             height,
+            capacity_width: width,
+            capacity_height: height,
             padded_bytes_per_row,
             bind_groups: GpuPreviewScaleBindGroups::new(
                 device,
@@ -1262,6 +1273,20 @@ impl GpuPreviewSurfaceSet {
             #[cfg(test)]
             preview_bind_group_count: 2,
         }
+    }
+
+    fn fits_request(&self, width: u32, height: u32) -> bool {
+        width <= self.capacity_width && height <= self.capacity_height
+    }
+
+    fn reconfigure(&mut self, width: u32, height: u32) {
+        if self.width == width && self.height == height {
+            return;
+        }
+        self.width = width;
+        self.height = height;
+        self.padded_bytes_per_row = width * BYTES_PER_PIXEL as u32;
+        self.readback_surfaces = RenderSurfacePool::new(SurfaceDescriptor::rgba8888(width, height));
     }
 }
 
@@ -2358,6 +2383,70 @@ mod tests {
             .expect("preview surfaces should stay allocated across same-size requests");
         assert_eq!(preview_surfaces.scale_param_write_count, 1);
         assert_eq!(preview_surfaces.preview_bind_group_count, 2);
+    }
+
+    #[test]
+    fn gpu_scaled_preview_reuses_buffers_across_smaller_requests() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(patterned_canvas(96)),
+                    0.35,
+                ),
+            ],
+        );
+        let large_request = PreviewSurfaceRequest {
+            width: 3,
+            height: 3,
+        };
+        let small_request = PreviewSurfaceRequest {
+            width: 2,
+            height: 2,
+        };
+
+        compositor
+            .compose(&plan, false, Some(large_request))
+            .expect("large scaled preview compose should succeed");
+        compositor
+            .resolve_preview_surface()
+            .expect("large scaled preview finalize should succeed")
+            .expect("large scaled preview should publish a preview surface");
+        assert_eq!(compositor.preview_surface_allocation_count, 1);
+
+        compositor
+            .compose(&plan, false, Some(small_request))
+            .expect("small scaled preview compose should succeed");
+        compositor
+            .resolve_preview_surface()
+            .expect("small scaled preview finalize should succeed")
+            .expect("small scaled preview should publish a preview surface");
+
+        let preview_surfaces = compositor
+            .preview_surfaces
+            .as_ref()
+            .expect("scaled preview should keep preview surfaces allocated");
+        assert_eq!(preview_surfaces.width, 2);
+        assert_eq!(preview_surfaces.height, 2);
+        assert_eq!(preview_surfaces.capacity_width, 3);
+        assert_eq!(preview_surfaces.capacity_height, 3);
+        assert_eq!(preview_surfaces.preview_bind_group_count, 2);
+        assert_eq!(compositor.preview_surface_allocation_count, 1);
+
+        compositor
+            .compose(&plan, false, Some(large_request))
+            .expect("restored scaled preview compose should succeed");
+        compositor
+            .resolve_preview_surface()
+            .expect("restored scaled preview finalize should succeed")
+            .expect("restored scaled preview should publish a preview surface");
+        assert_eq!(compositor.preview_surface_allocation_count, 1);
     }
 
     #[test]
