@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 use std::sync::LazyLock;
+use std::time::Instant;
 
 use hypercolor_core::effect::builtin::{
     AudioPulseRenderer, BreathingRenderer, CalibrationRenderer, ColorWaveRenderer,
@@ -60,6 +61,25 @@ fn frame(time_secs: f32, frame_number: u64) -> FrameInput<'static> {
         sensors: &EMPTY_SENSORS,
         canvas_width: W,
         canvas_height: H,
+    }
+}
+
+fn frame_with_size(
+    time_secs: f32,
+    frame_number: u64,
+    width: u32,
+    height: u32,
+) -> FrameInput<'static> {
+    FrameInput {
+        time_secs,
+        delta_secs: 1.0 / 60.0,
+        frame_number,
+        audio: &SILENCE,
+        interaction: &DEFAULT_INTERACTION,
+        screen: None,
+        sensors: &EMPTY_SENSORS,
+        canvas_width: width,
+        canvas_height: height,
     }
 }
 
@@ -1143,6 +1163,55 @@ fn calibration_grid_overlay_changes_output() {
         without_grid.as_rgba_bytes(),
         with_grid.as_rgba_bytes(),
         "grid overlay should alter the rendered frame"
+    );
+}
+
+#[test]
+#[ignore = "profiling helper for calibration producer cost"]
+fn calibration_perf_profile() {
+    let width = 640;
+    let height = 480;
+    let frames = 120_u64;
+
+    let mut calibration = CalibrationRenderer::new();
+    calibration
+        .init(&make_metadata("calibration"))
+        .expect("init");
+    calibration.set_control("pattern", &ControlValue::Enum("Sweep".to_owned()));
+    calibration.set_control("direction", &ControlValue::Enum("Left to Right".to_owned()));
+    calibration.set_control("show_grid", &ControlValue::Boolean(false));
+    calibration.set_control("softness", &ControlValue::Float(0.0));
+
+    let mut calibration_canvas = Canvas::new(width, height);
+    let calibration_start = Instant::now();
+    for i in 0..frames {
+        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+        let t = i as f32 / 60.0;
+        calibration
+            .render_into(
+                &frame_with_size(t, i, width, height),
+                &mut calibration_canvas,
+            )
+            .expect("calibration render");
+    }
+    let calibration_avg_ms = calibration_start.elapsed().as_secs_f64() * 1000.0 / frames as f64;
+
+    let mut rainbow = RainbowRenderer::new();
+    rainbow.init(&make_metadata("rainbow")).expect("init");
+    let mut rainbow_canvas = Canvas::new(width, height);
+    let rainbow_start = Instant::now();
+    for i in 0..frames {
+        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+        let t = i as f32 / 60.0;
+        rainbow
+            .render_into(&frame_with_size(t, i, width, height), &mut rainbow_canvas)
+            .expect("rainbow render");
+    }
+    let rainbow_avg_ms = rainbow_start.elapsed().as_secs_f64() * 1000.0 / frames as f64;
+
+    eprintln!(
+        "calibration avg: {:.2} ms/frame | rainbow avg: {:.2} ms/frame",
+        calibration_avg_ms, rainbow_avg_ms
     );
 }
 
