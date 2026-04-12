@@ -2661,6 +2661,60 @@ mod tests {
     }
 
     #[test]
+    fn gpu_sampler_reuses_sample_params_for_same_output_shape() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
+        let first_plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(patterned_canvas(96)),
+                    0.35,
+                ),
+            ],
+        );
+        let second_plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(44))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(patterned_canvas(180)),
+                    0.35,
+                ),
+            ],
+        );
+
+        compositor
+            .compose(&first_plan, false, None)
+            .expect("first GPU composition should succeed");
+        let mut first_sample = Vec::new();
+        assert!(
+            compositor
+                .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut first_sample)
+                .expect("first GPU sample should succeed")
+        );
+        assert_eq!(compositor.spatial_sampler.sample_param_write_count(), 1);
+
+        compositor
+            .compose(&second_plan, false, None)
+            .expect("second GPU composition should succeed");
+        let mut second_sample = Vec::new();
+        assert!(
+            compositor
+                .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut second_sample)
+                .expect("second GPU sample should succeed")
+        );
+
+        assert_eq!(compositor.spatial_sampler.sample_param_write_count(), 1);
+    }
+
+    #[test]
     fn gpu_sampler_matches_cpu_spatial_sampling_for_area_plans() {
         let mut compositor = match GpuSparkleFlinger::new() {
             Ok(compositor) => compositor,

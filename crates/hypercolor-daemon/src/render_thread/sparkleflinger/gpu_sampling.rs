@@ -169,6 +169,7 @@ pub(super) struct GpuSpatialSampler {
     bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
     params_buffer: wgpu::Buffer,
+    cached_params: Option<[u8; SAMPLE_PARAM_BYTES]>,
     points_buffer: Option<wgpu::Buffer>,
     output_buffer: Option<wgpu::Buffer>,
     readback_buffer: Option<wgpu::Buffer>,
@@ -179,6 +180,8 @@ pub(super) struct GpuSpatialSampler {
     cached_bind_groups: Vec<CachedGpuSamplingBindGroup>,
     #[cfg(test)]
     sample_dispatch_count: usize,
+    #[cfg(test)]
+    sample_param_write_count: usize,
 }
 
 impl GpuSpatialSampler {
@@ -259,6 +262,7 @@ impl GpuSpatialSampler {
             bind_group_layout,
             pipeline,
             params_buffer,
+            cached_params: None,
             points_buffer: None,
             output_buffer: None,
             readback_buffer: None,
@@ -269,6 +273,8 @@ impl GpuSpatialSampler {
             cached_bind_groups: Vec::with_capacity(2),
             #[cfg(test)]
             sample_dispatch_count: 0,
+            #[cfg(test)]
+            sample_param_write_count: 0,
         }
     }
 
@@ -306,11 +312,15 @@ impl GpuSpatialSampler {
         };
 
         self.ensure_points_uploaded(queue, &points_buffer);
-        queue.write_buffer(
-            &self.params_buffer,
-            0,
-            &encode_sample_params(width, height, sample_count),
-        );
+        let params = encode_sample_params(width, height, sample_count);
+        if self.cached_params != Some(params) {
+            queue.write_buffer(&self.params_buffer, 0, &params);
+            self.cached_params = Some(params);
+            #[cfg(test)]
+            {
+                self.sample_param_write_count = self.sample_param_write_count.saturating_add(1);
+            }
+        }
 
         let bind_group = self.bind_group_for(device, source_view, &points_buffer, &output_buffer);
 
@@ -476,6 +486,11 @@ impl GpuSpatialSampler {
     #[cfg(test)]
     pub(super) fn sample_dispatch_count(&self) -> usize {
         self.sample_dispatch_count
+    }
+
+    #[cfg(test)]
+    pub(super) fn sample_param_write_count(&self) -> usize {
+        self.sample_param_write_count
     }
 }
 
