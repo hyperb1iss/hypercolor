@@ -56,8 +56,6 @@ pub(super) fn prepare_bilinear_sample_for_position(
     let y1 = (y0 + 1).min(canvas_height - 1);
     let frac_x = (fx.fract() * BILINEAR_ONE as f32).clamp(0.0, BILINEAR_ONE as f32) as u32;
     let frac_y = (fy.fract() * BILINEAR_ONE as f32).clamp(0.0, BILINEAR_ONE as f32) as u32;
-    let inv_frac_x = BILINEAR_ONE - frac_x;
-    let inv_frac_y = BILINEAR_ONE - frac_y;
 
     PreparedBilinearSample {
         offsets: [
@@ -66,10 +64,8 @@ pub(super) fn prepare_bilinear_sample_for_position(
             pixel_offset(canvas_width, x0, y1),
             pixel_offset(canvas_width, x1, y1),
         ],
-        x_lower_weight: u16::try_from(inv_frac_x).expect("bilinear x lower weight must fit in u16"),
-        x_upper_weight: u16::try_from(frac_x).expect("bilinear x upper weight must fit in u16"),
-        y_lower_weight: u16::try_from(inv_frac_y).expect("bilinear y lower weight must fit in u16"),
-        y_upper_weight: u16::try_from(frac_y).expect("bilinear y upper weight must fit in u16"),
+        x_upper_weight: u8::try_from(frac_x).expect("bilinear x upper weight must fit in u8"),
+        y_upper_weight: u8::try_from(frac_y).expect("bilinear y upper weight must fit in u8"),
         attenuation,
     }
 }
@@ -226,7 +222,10 @@ pub(super) fn sample_srgb_rgb(
         SamplingMethod::Nearest => {
             let sample =
                 prepare_nearest_sample(position, edge_behavior, canvas.width(), canvas.height());
-            attenuate_rgb(read_linear_rgb_at(bytes, sample.offset), sample.attenuation)
+            attenuate_rgb(
+                read_linear_rgb_at(bytes, prepared_offset(sample.offset)),
+                sample.attenuation,
+            )
         }
         SamplingMethod::Bilinear => {
             let sample = prepare_bilinear_sample_for_position(
@@ -306,7 +305,7 @@ fn nearest_pixel_offset(
     position: NormalizedPosition,
     canvas_width: u32,
     canvas_height: u32,
-) -> usize {
+) -> u32 {
     let x = (position.x * (canvas_width - 1) as f32).round() as u32;
     let y = (position.y * (canvas_height - 1) as f32).round() as u32;
     pixel_offset(
@@ -317,9 +316,13 @@ fn nearest_pixel_offset(
 }
 
 #[must_use]
-#[allow(clippy::as_conversions)]
-fn pixel_offset(canvas_width: u32, x: u32, y: u32) -> usize {
-    ((y as usize * canvas_width as usize) + x as usize) * BYTES_PER_PIXEL
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    reason = "prepared canvas byte offsets are bounded by in-memory image sizes"
+)]
+fn pixel_offset(canvas_width: u32, x: u32, y: u32) -> u32 {
+    ((y as usize * canvas_width as usize) + x as usize) as u32 * BYTES_PER_PIXEL as u32
 }
 
 #[must_use]
@@ -333,12 +336,22 @@ fn read_linear_rgb_at(bytes: &[u8], offset: usize) -> [u16; 3] {
 }
 
 #[must_use]
+#[inline]
+#[allow(
+    clippy::as_conversions,
+    reason = "prepared sample offsets are constrained to the in-memory canvas byte range"
+)]
+fn prepared_offset(offset: u32) -> usize {
+    offset as usize
+}
+
+#[must_use]
 fn sample_bilinear_linear_rgb(bytes: &[u8], sample: &PreparedBilinearSample) -> [u16; 3] {
-    let [top_left, top_right, bottom_left, bottom_right] = sample.offsets;
-    let x_lower_weight = u32::from(sample.x_lower_weight);
+    let [top_left, top_right, bottom_left, bottom_right] = sample.offsets.map(prepared_offset);
     let x_upper_weight = u32::from(sample.x_upper_weight);
-    let y_lower_weight = u64::from(sample.y_lower_weight);
+    let x_lower_weight = BILINEAR_ONE - x_upper_weight;
     let y_upper_weight = u64::from(sample.y_upper_weight);
+    let y_lower_weight = u64::from(BILINEAR_ONE) - y_upper_weight;
 
     [
         bilinear_channel(
@@ -484,13 +497,13 @@ fn sample_prepared_nearest_pixels_into(
     if has_attenuation {
         for (color, sample) in colors.iter_mut().zip(samples) {
             *color = encode_linear_rgb(attenuate_rgb(
-                read_linear_rgb_at(bytes, sample.offset),
+                read_linear_rgb_at(bytes, prepared_offset(sample.offset)),
                 sample.attenuation,
             ));
         }
     } else {
         for (color, sample) in colors.iter_mut().zip(samples) {
-            *color = encode_linear_rgb(read_linear_rgb_at(bytes, sample.offset));
+            *color = encode_linear_rgb(read_linear_rgb_at(bytes, prepared_offset(sample.offset)));
         }
     }
 }

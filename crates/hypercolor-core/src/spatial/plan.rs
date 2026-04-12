@@ -33,17 +33,15 @@ impl PreparedZoneSamples {
 
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedNearestSample {
-    pub offset: usize,
+    pub offset: u32,
     pub attenuation: u16,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedBilinearSample {
-    pub offsets: [usize; 4],
-    pub x_lower_weight: u16,
-    pub x_upper_weight: u16,
-    pub y_lower_weight: u16,
-    pub y_upper_weight: u16,
+    pub offsets: [u32; 4],
+    pub x_upper_weight: u8,
+    pub y_upper_weight: u8,
     pub attenuation: u16,
 }
 
