@@ -21,6 +21,8 @@ use super::meta_parser::{
 };
 use super::paths::bundled_effects_root;
 use super::{EffectEntry, EffectRegistry};
+#[cfg(feature = "servo")]
+use crate::effect::builtin::builtin_effect_stable_id;
 
 const HTML_EXTENSION: &str = "html";
 
@@ -123,6 +125,11 @@ pub fn register_html_effects(
             };
 
             let parsed = parse_html_effect_metadata(&raw_html);
+            #[cfg(not(feature = "servo"))]
+            if parsed.builtin_id.is_some() {
+                report.skipped_files += 1;
+                continue;
+            }
             let source_path = normalize_path(&file);
             let effect_name = if parsed.title == "Unnamed Effect" {
                 fallback_effect_name(&file)
@@ -148,7 +155,7 @@ pub fn register_html_effects(
             presets.sort_by(|a, b| a.name.cmp(&b.name));
 
             let metadata = EffectMetadata {
-                id: deterministic_html_effect_id(&source_path),
+                id: html_effect_id(&source_path, &parsed),
                 name: effect_name,
                 author: parsed.publisher,
                 version: "0.1.0".to_owned(),
@@ -158,7 +165,7 @@ pub fn register_html_effects(
                 controls,
                 presets,
                 audio_reactive: parsed.audio_reactive,
-                screen_reactive: false,
+                screen_reactive: parsed.screen_reactive,
                 source: EffectSource::Html {
                     path: source_path.clone(),
                 },
@@ -244,6 +251,26 @@ fn deterministic_html_effect_id(source_path: &Path) -> EffectId {
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
 
     EffectId::new(Uuid::from_bytes(bytes))
+}
+
+#[cfg(feature = "servo")]
+fn html_effect_id(
+    source_path: &Path,
+    parsed: &super::meta_parser::ParsedHtmlEffectMetadata,
+) -> EffectId {
+    parsed
+        .builtin_id
+        .as_deref()
+        .map(builtin_effect_stable_id)
+        .unwrap_or_else(|| deterministic_html_effect_id(source_path))
+}
+
+#[cfg(not(feature = "servo"))]
+fn html_effect_id(
+    source_path: &Path,
+    _parsed: &super::meta_parser::ParsedHtmlEffectMetadata,
+) -> EffectId {
+    deterministic_html_effect_id(source_path)
 }
 
 fn normalize_path(path: &Path) -> PathBuf {

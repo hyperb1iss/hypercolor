@@ -110,3 +110,8 @@ pub fn create_builtin_renderer(name: &str) -> Option<Box<dyn EffectRenderer>> {
         _ => None,
     }
 }
+
+#[must_use]
+pub(crate) fn builtin_effect_stable_id(name: &str) -> hypercolor_types::effect::EffectId {
+    common::builtin_effect_id(name)
+}

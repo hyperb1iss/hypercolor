@@ -80,7 +80,9 @@ pub struct ParsedHtmlEffectMetadata {
     pub controls: Vec<HtmlControlMetadata>,
     pub presets: Vec<HtmlPresetMetadata>,
     pub category: EffectCategory,
+    pub builtin_id: Option<String>,
     pub audio_reactive: bool,
+    pub screen_reactive: bool,
     pub uses_canvas2d: bool,
     pub uses_webgl: bool,
     pub uses_three_js: bool,
@@ -175,7 +177,9 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
 
     let audio_reactive = detect_audio_meta_tag(&sanitized)
         .unwrap_or_else(|| detect_audio_reactivity_heuristic(&lower));
+    let screen_reactive = detect_screen_meta_tag(&sanitized).unwrap_or(false);
     let renderer_hint = detect_renderer_meta_tag(&sanitized);
+    let builtin_id = detect_builtin_id_meta_tag(&sanitized);
     let uses_three_js = detect_three_js(&lower);
     let detected_webgl = uses_three_js || detect_webgl(&lower);
     let detected_canvas2d = detect_canvas2d(&lower);
@@ -190,12 +194,13 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
             (uses_canvas2d, uses_webgl)
         }
     };
-    let category =
-        explicit_category.unwrap_or_else(|| infer_category(&lower, &controls, audio_reactive));
+    let category = explicit_category
+        .unwrap_or_else(|| infer_category(&lower, &controls, audio_reactive, screen_reactive));
     let tags = build_tags(
         &controls,
         category,
         audio_reactive,
+        screen_reactive,
         uses_canvas2d,
         uses_webgl,
         uses_three_js,
@@ -208,7 +213,9 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
         controls,
         presets,
         category,
+        builtin_id,
         audio_reactive,
+        screen_reactive,
         uses_canvas2d,
         uses_webgl,
         uses_three_js,
@@ -479,10 +486,32 @@ fn parse_preview_source_attr(
 /// Check for an explicit `<meta audio-reactive="true"/>` tag (emitted by the SDK build script).
 /// Returns `Some(true/false)` if found, `None` if absent (fall back to heuristic).
 fn detect_audio_meta_tag(html: &str) -> Option<bool> {
+    detect_boolean_meta_tag(html, "audio-reactive")
+}
+
+fn detect_screen_meta_tag(html: &str) -> Option<bool> {
+    detect_boolean_meta_tag(html, "screen-reactive")
+}
+
+fn detect_boolean_meta_tag(html: &str, attribute: &str) -> Option<bool> {
     for meta_tag in extract_start_tags(html, "meta") {
         let attrs = parse_tag_attributes(&meta_tag);
-        if let Some(value) = attr_value(&attrs, "audio-reactive") {
+        if let Some(value) = attr_value(&attrs, attribute) {
             return Some(value.eq_ignore_ascii_case("true") || value == "1");
+        }
+    }
+    None
+}
+
+fn detect_builtin_id_meta_tag(html: &str) -> Option<String> {
+    for meta_tag in extract_start_tags(html, "meta") {
+        let attrs = parse_tag_attributes(&meta_tag);
+        let Some(value) = attr_value(&attrs, "builtin-id") else {
+            continue;
+        };
+        let normalized = normalize_whitespace(value);
+        if !normalized.is_empty() {
+            return Some(normalized);
         }
     }
     None
@@ -550,9 +579,14 @@ fn infer_category(
     lower: &str,
     _controls: &[HtmlControlMetadata],
     audio_reactive: bool,
+    screen_reactive: bool,
 ) -> EffectCategory {
     if audio_reactive {
         return EffectCategory::Audio;
+    }
+
+    if screen_reactive {
+        return EffectCategory::Utility;
     }
 
     if contains_any(
@@ -635,6 +669,7 @@ fn build_tags(
     controls: &[HtmlControlMetadata],
     category: EffectCategory,
     audio_reactive: bool,
+    screen_reactive: bool,
     uses_canvas2d: bool,
     uses_webgl: bool,
     uses_three_js: bool,
@@ -654,6 +689,10 @@ fn build_tags(
     }
     if audio_reactive {
         tags.insert("audio-reactive".to_owned());
+    }
+    if screen_reactive {
+        tags.insert("screen".to_owned());
+        tags.insert("screen-reactive".to_owned());
     }
 
     if controls

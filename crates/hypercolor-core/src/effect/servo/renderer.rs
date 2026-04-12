@@ -45,6 +45,7 @@ pub struct ServoRenderer {
     warned_fallback_frame: bool,
     warned_stalled_frame: bool,
     include_audio_updates: bool,
+    include_screen_updates: bool,
     last_animation_fps_cap: Option<u32>,
 }
 
@@ -66,6 +67,7 @@ impl ServoRenderer {
             warned_fallback_frame: false,
             warned_stalled_frame: false,
             include_audio_updates: true,
+            include_screen_updates: false,
             last_animation_fps_cap: None,
         }
     }
@@ -92,9 +94,11 @@ impl ServoRenderer {
         self.runtime.push_frame_scripts(
             &mut self.pending_scripts,
             &input.audio,
+            input.screen,
             input.sensors,
             &self.controls,
             self.include_audio_updates,
+            self.include_screen_updates,
         );
         if let Some(script) = self
             .runtime
@@ -170,6 +174,7 @@ impl ServoRenderer {
         self.warned_fallback_frame = false;
         self.warned_stalled_frame = false;
         self.include_audio_updates = effect_is_audio_reactive(metadata);
+        self.include_screen_updates = metadata.screen_reactive;
         self.last_animation_fps_cap = None;
         self.queued_frame = None;
         self.last_canvas = None;
@@ -418,6 +423,7 @@ impl EffectRenderer for ServoRenderer {
         self.warned_fallback_frame = false;
         self.warned_stalled_frame = false;
         self.include_audio_updates = true;
+        self.include_screen_updates = false;
         self.last_animation_fps_cap = None;
     }
 }

@@ -11,7 +11,7 @@ use hypercolor_types::effect::ControlValue;
 use hypercolor_types::sensor::{SensorReading, SensorUnit, SystemSnapshot};
 use serde_json::{Map, Value, json};
 
-use crate::input::InteractionData;
+use crate::input::{InteractionData, ScreenData};
 
 const LEVEL_FLOOR_DB: f32 = -100.0;
 const DEFAULT_ZONE_WIDTH: usize = 28;
@@ -355,14 +355,19 @@ impl LightscriptRuntime {
         &mut self,
         scripts: &mut Vec<String>,
         audio: &AudioData,
+        screen: Option<&ScreenData>,
         sensors: &SystemSnapshot,
         controls: &HashMap<String, ControlValue>,
         include_audio: bool,
+        include_screen: bool,
     ) {
         if include_audio {
             scripts.push(Self::audio_update_script(audio));
         }
 
+        if include_screen {
+            scripts.push(Self::screen_update_script(screen));
+        }
         scripts.push(Self::sensor_update_script(sensors));
         self.push_control_update_scripts(scripts, controls);
     }
@@ -599,6 +604,40 @@ impl LightscriptRuntime {
         script
     }
 
+    fn screen_update_script(screen: Option<&ScreenData>) -> String {
+        let (grid_width, grid_height, hue_csv, saturation_csv, lightness_csv) =
+            screen_payload(screen);
+        let mut script = String::with_capacity(
+            320_usize
+                .saturating_add(hue_csv.len())
+                .saturating_add(saturation_csv.len())
+                .saturating_add(lightness_csv.len()),
+        );
+        script.push_str("(function(){\n");
+        script.push_str(
+            "  if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }\n",
+        );
+        script.push_str(
+            "  if (typeof window.engine.zone !== 'object' || window.engine.zone === null) { window.engine.zone = {}; }\n",
+        );
+        let _ = writeln!(script, "  window.engine.zone.width = {grid_width};");
+        let _ = writeln!(script, "  window.engine.zone.height = {grid_height};");
+        let _ = writeln!(script, "  window.engine.zone.hue = new Int16Array([{hue_csv}]);");
+        let _ = writeln!(
+            script,
+            "  window.engine.zone.saturation = new Int8Array([{saturation_csv}]);"
+        );
+        let _ = writeln!(
+            script,
+            "  window.engine.zone.lightness = new Int8Array([{lightness_csv}]);"
+        );
+        script.push_str(
+            "  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }\n",
+        );
+        script.push_str("})();");
+        script
+    }
+
     fn push_control_update_scripts(
         &mut self,
         scripts: &mut Vec<String>,
@@ -726,6 +765,103 @@ fn join_padded_f32_csv(values: &[f32], expected_len: usize) -> String {
         }
     }
     csv
+}
+
+fn join_i16_csv(values: &[i16]) -> String {
+    let mut csv = String::with_capacity(values.len().saturating_mul(5));
+    for (index, value) in values.iter().copied().enumerate() {
+        if index > 0 {
+            csv.push(',');
+        }
+        let _ = write!(&mut csv, "{value}");
+    }
+    csv
+}
+
+fn join_i8_csv(values: &[i8]) -> String {
+    let mut csv = String::with_capacity(values.len().saturating_mul(4));
+    for (index, value) in values.iter().copied().enumerate() {
+        if index > 0 {
+            csv.push(',');
+        }
+        let _ = write!(&mut csv, "{value}");
+    }
+    csv
+}
+
+fn screen_payload(screen: Option<&ScreenData>) -> (u32, u32, String, String, String) {
+    let Some(screen) = screen else {
+        let sample_count = DEFAULT_ZONE_SAMPLES;
+        let zero_hues = vec![0_i16; sample_count];
+        let zero_channels = vec![0_i8; sample_count];
+        return (
+            DEFAULT_ZONE_WIDTH as u32,
+            DEFAULT_ZONE_HEIGHT as u32,
+            join_i16_csv(&zero_hues),
+            join_i8_csv(&zero_channels),
+            join_i8_csv(&zero_channels),
+        );
+    };
+
+    let grid_width = screen.grid_width.max(1);
+    let grid_height = screen.grid_height.max(1);
+    let sample_count = usize::try_from(grid_width.saturating_mul(grid_height)).unwrap_or(0);
+    let mut hue = Vec::with_capacity(sample_count);
+    let mut saturation = Vec::with_capacity(sample_count);
+    let mut lightness = Vec::with_capacity(sample_count);
+
+    for index in 0..sample_count {
+        let rgb = screen
+            .zone_colors
+            .get(index)
+            .and_then(|zone| zone.colors.first().copied())
+            .unwrap_or([0, 0, 0]);
+        let (h, s, l) = rgb_to_hsl(rgb[0], rgb[1], rgb[2]);
+        hue.push(h);
+        saturation.push(s);
+        lightness.push(l);
+    }
+
+    (
+        grid_width,
+        grid_height,
+        join_i16_csv(&hue),
+        join_i8_csv(&saturation),
+        join_i8_csv(&lightness),
+    )
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::as_conversions)]
+fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (i16, i8, i8) {
+    let rf = f32::from(r) / 255.0;
+    let gf = f32::from(g) / 255.0;
+    let bf = f32::from(b) / 255.0;
+    let max = rf.max(gf).max(bf);
+    let min = rf.min(gf).min(bf);
+    let delta = max - min;
+    let lightness = (max + min) * 0.5;
+
+    let saturation = if delta <= f32::EPSILON {
+        0.0
+    } else {
+        delta / (1.0 - (2.0 * lightness - 1.0).abs())
+    };
+
+    let hue = if delta <= f32::EPSILON {
+        0.0
+    } else if (max - rf).abs() <= f32::EPSILON {
+        60.0 * ((gf - bf) / delta).rem_euclid(6.0)
+    } else if (max - gf).abs() <= f32::EPSILON {
+        60.0 * (((bf - rf) / delta) + 2.0)
+    } else {
+        60.0 * (((rf - gf) / delta) + 4.0)
+    };
+
+    (
+        hue.round() as i16,
+        (saturation.clamp(0.0, 1.0) * 100.0).round() as i8,
+        (lightness.clamp(0.0, 1.0) * 100.0).round() as i8,
+    )
 }
 
 fn join_padded_normalized_i8_csv(values: &[f32], expected_len: usize) -> String {
