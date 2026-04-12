@@ -74,6 +74,13 @@ pub async fn fetch_effects() -> Result<Vec<EffectSummary>, String> {
     Ok(list.items)
 }
 
+/// Fetch effects filtered to a single category.
+pub async fn fetch_effects_by_category(category: &str) -> Result<Vec<EffectSummary>, String> {
+    let url = format!("/api/v1/effects?category={category}");
+    let list: EffectListResponse = client::fetch_json(&url).await?;
+    Ok(list.items)
+}
+
 /// Fetch the currently active effect, if any.
 pub async fn fetch_active_effect() -> Result<Option<ActiveEffectResponse>, String> {
     client::fetch_json_optional("/api/v1/effects/active")

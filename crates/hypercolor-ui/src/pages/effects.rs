@@ -7,12 +7,14 @@ use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::app::{EffectsContext, WsContext};
+use crate::components::calibration_guide::CalibrationGuide;
 use crate::components::control_panel::ControlPanel;
 use crate::components::effect_card::EffectCard;
 use crate::components::page_header::PageHeader;
 use crate::components::preview_cabinet::PreviewCabinet;
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
+use crate::toasts;
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
 
 use crate::style_utils::{category_accent_rgb, filter_chips};
@@ -27,6 +29,7 @@ const MAX_CONTROLS_WIDTH: f64 = 800.0;
 const CATEGORY_CHIPS: &[(&str, &str)] = &[
     ("all", "225, 53, 255"),
     ("ambient", "128, 255, 234"),
+    ("display", "255, 106, 193"),
     ("gaming", "225, 53, 255"),
     ("reactive", "241, 250, 140"),
     ("generative", "80, 250, 123"),
@@ -153,6 +156,28 @@ pub fn EffectsPage() -> impl IntoView {
         fx.active_control_values.into();
     let accent_rgb =
         Signal::derive(move || category_accent_rgb(&fx.active_effect_category.get()).to_string());
+    let active_effect_id_signal = Signal::derive(move || fx.active_effect_id.get());
+
+    let active_effect_summary = Memo::new(move |_| {
+        let Some(active_id) = fx.active_effect_id.get() else {
+            return None;
+        };
+        fx.effects_index.with(|effects| {
+            effects
+                .iter()
+                .find(|entry| entry.effect.id == active_id)
+                .map(|entry| entry.effect.clone())
+        })
+    });
+    let show_calibration_guide = Memo::new(move |_| {
+        active_effect_summary.get().is_some_and(|effect| {
+            effect.name.eq_ignore_ascii_case("Calibration")
+                || effect
+                    .tags
+                    .iter()
+                    .any(|tag| tag.eq_ignore_ascii_case("calibration"))
+        })
+    });
 
     let has_active = Memo::new(move |_| fx.active_effect_id.get().is_some());
 
@@ -192,6 +217,16 @@ pub fn EffectsPage() -> impl IntoView {
 
     // Apply effect handler — delegates to shared context
     let on_apply = Callback::new(move |id: String| {
+        let is_display_face = fx.effects_index.with(|effects| {
+            effects
+                .iter()
+                .find(|entry| entry.effect.id == id)
+                .is_some_and(|entry| entry.effect.category == "display")
+        });
+        if is_display_face {
+            toasts::toast_info("Display faces are assigned from the Displays page.");
+            return;
+        }
         fx.apply_effect(id);
     });
 
@@ -604,66 +639,14 @@ pub fn EffectsPage() -> impl IntoView {
                                                 class="flex-1 min-h-0 overflow-y-auto"
                                                 style="overscroll-behavior: contain"
                                             >
-                                                <div
-                                                    class="rounded-xl bg-surface-raised/80 border border-edge-subtle p-3 edge-glow"
-                                                    style:border-top=move || format!("2px solid rgba({}, 0.2)", accent_rgb.get())
-                                                >
-                                                    <div class="flex items-center gap-2 mb-3 pb-2 border-b border-edge-subtle/50">
-                                                        <div
-                                                            class="w-6 h-6 rounded-md flex items-center justify-center"
-                                                            style=move || format!(
-                                                                "background: rgba({0}, 0.1); box-shadow: 0 0 8px rgba({0}, 0.08)",
-                                                                accent_rgb.get()
-                                                            )
-                                                        >
-                                                            <span style=move || format!("color: rgba({}, 0.7)", accent_rgb.get())>
-                                                                <Icon icon=LuSettings2 width="13px" height="13px" />
-                                                            </span>
-                                                        </div>
-                                                        <h3 class="text-[11px] font-semibold tracking-wide text-fg-secondary uppercase">
-                                                            "Controls"
-                                                        </h3>
-                                                        <div class="flex-1" />
-                                                        <button
-                                                            class="p-1 rounded-md hover:bg-surface-hover/40 text-fg-tertiary/50 hover:text-fg-secondary transition-all duration-150"
-                                                            title="Float controls into separate panel"
-                                                            on:click=move |_| {
-                                                                set_controls_detached.set(true);
-                                                                persist_to_storage("hc-fx-controls-detached", "true");
-                                                            }
-                                                        >
-                                                            <Icon icon=LuUnlink width="11px" height="11px" />
-                                                        </button>
-                                                    </div>
-                                                    <ControlPanel
-                                                        controls=controls
-                                                        control_values=control_values
-                                                        accent_rgb=accent_rgb
-                                                        on_change=on_control_change
-                                                    />
-                                                </div>
-                                            </div>
-                                        }
-                                    })}
-                                </aside>
-
-                                // Controls (detached mode — own column with resize handle)
-                                {move || controls_detached.get().then(|| {
-                                    view! {
-                                        <div style="display: contents">
-                                            <ResizeHandle
-                                                on_drag_start=on_controls_drag_start
-                                                on_drag=on_controls_drag
-                                                on_drag_end=on_controls_drag_end
-                                            />
-                                            <aside
-                                                class="shrink-0 flex flex-col min-h-0 animate-slide-in-right"
-                                                style=move || format!("width: {}px", controls_width.get())
-                                            >
-                                                <div
-                                                    class="flex-1 min-h-0 overflow-y-auto"
-                                                    style="overscroll-behavior: contain"
-                                                >
+                                                <div class="space-y-3">
+                                                    {move || show_calibration_guide.get().then(|| view! {
+                                                        <CalibrationGuide
+                                                            effect_id=active_effect_id_signal
+                                                            control_values=control_values
+                                                            accent_rgb=accent_rgb
+                                                        />
+                                                    })}
                                                     <div
                                                         class="rounded-xl bg-surface-raised/80 border border-edge-subtle p-3 edge-glow"
                                                         style:border-top=move || format!("2px solid rgba({}, 0.2)", accent_rgb.get())
@@ -686,13 +669,13 @@ pub fn EffectsPage() -> impl IntoView {
                                                             <div class="flex-1" />
                                                             <button
                                                                 class="p-1 rounded-md hover:bg-surface-hover/40 text-fg-tertiary/50 hover:text-fg-secondary transition-all duration-150"
-                                                                title="Dock controls back"
+                                                                title="Float controls into separate panel"
                                                                 on:click=move |_| {
-                                                                    set_controls_detached.set(false);
-                                                                    persist_to_storage("hc-fx-controls-detached", "false");
+                                                                    set_controls_detached.set(true);
+                                                                    persist_to_storage("hc-fx-controls-detached", "true");
                                                                 }
                                                             >
-                                                                <Icon icon=LuLink width="11px" height="11px" />
+                                                                <Icon icon=LuUnlink width="11px" height="11px" />
                                                             </button>
                                                         </div>
                                                         <ControlPanel
@@ -701,6 +684,77 @@ pub fn EffectsPage() -> impl IntoView {
                                                             accent_rgb=accent_rgb
                                                             on_change=on_control_change
                                                         />
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        }
+                                    })}
+
+                                </aside>
+
+                                // Controls (detached mode — own column with resize handle)
+                                {move || controls_detached.get().then(|| {
+                                    view! {
+                                        <div style="display: contents">
+                                            <ResizeHandle
+                                                on_drag_start=on_controls_drag_start
+                                                on_drag=on_controls_drag
+                                                on_drag_end=on_controls_drag_end
+                                            />
+                                            <aside
+                                                class="shrink-0 flex flex-col min-h-0 animate-slide-in-right"
+                                                style=move || format!("width: {}px", controls_width.get())
+                                            >
+                                                <div
+                                                    class="flex-1 min-h-0 overflow-y-auto"
+                                                    style="overscroll-behavior: contain"
+                                                >
+                                                    <div class="space-y-3">
+                                                        {move || show_calibration_guide.get().then(|| view! {
+                                                            <CalibrationGuide
+                                                                effect_id=active_effect_id_signal
+                                                                control_values=control_values
+                                                                accent_rgb=accent_rgb
+                                                            />
+                                                        })}
+                                                        <div
+                                                            class="rounded-xl bg-surface-raised/80 border border-edge-subtle p-3 edge-glow"
+                                                            style:border-top=move || format!("2px solid rgba({}, 0.2)", accent_rgb.get())
+                                                        >
+                                                            <div class="flex items-center gap-2 mb-3 pb-2 border-b border-edge-subtle/50">
+                                                                <div
+                                                                    class="w-6 h-6 rounded-md flex items-center justify-center"
+                                                                    style=move || format!(
+                                                                        "background: rgba({0}, 0.1); box-shadow: 0 0 8px rgba({0}, 0.08)",
+                                                                        accent_rgb.get()
+                                                                    )
+                                                                >
+                                                                    <span style=move || format!("color: rgba({}, 0.7)", accent_rgb.get())>
+                                                                        <Icon icon=LuSettings2 width="13px" height="13px" />
+                                                                    </span>
+                                                                </div>
+                                                                <h3 class="text-[11px] font-semibold tracking-wide text-fg-secondary uppercase">
+                                                                    "Controls"
+                                                                </h3>
+                                                                <div class="flex-1" />
+                                                                <button
+                                                                    class="p-1 rounded-md hover:bg-surface-hover/40 text-fg-tertiary/50 hover:text-fg-secondary transition-all duration-150"
+                                                                    title="Dock controls back"
+                                                                    on:click=move |_| {
+                                                                        set_controls_detached.set(false);
+                                                                        persist_to_storage("hc-fx-controls-detached", "false");
+                                                                    }
+                                                                >
+                                                                    <Icon icon=LuLink width="11px" height="11px" />
+                                                                </button>
+                                                            </div>
+                                                            <ControlPanel
+                                                                controls=controls
+                                                                control_values=control_values
+                                                                accent_rgb=accent_rgb
+                                                                on_change=on_control_change
+                                                            />
+                                                        </div>
                                                     </div>
                                                 </div>
                                             </aside>

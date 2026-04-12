@@ -384,6 +384,7 @@ fn render_multizone_header_actions(
                         title=if all_hidden { "Show all zones" } else { "Hide all zones" }
                         on:click=move |ev: web_sys::MouseEvent| {
                             ev.stop_propagation();
+                            state.set_master_hidden_snapshot.set(None);
                             let zone_ids: Vec<String> = layout.with_untracked(|current| {
                                 current.as_ref().map(|l| {
                                     l.zones.iter()
@@ -550,6 +551,7 @@ fn render_singlezone_header_actions(
                         title=if is_hidden { "Show device" } else { "Hide device" }
                         on:click=move |ev: web_sys::MouseEvent| {
                             ev.stop_propagation();
+                            state.set_master_hidden_snapshot.set(None);
                             let zone_ids: Vec<String> = layout.with_untracked(|current| {
                                 current.as_ref().map(|l| {
                                     l.zones.iter()
@@ -902,6 +904,7 @@ fn render_zone_rows(
                                         title=if is_zone_hidden { "Show zone" } else { "Hide zone" }
                                         on:click=move |ev: web_sys::MouseEvent| {
                                             ev.stop_propagation();
+                                            state.set_master_hidden_snapshot.set(None);
                                             let zid = zid_toggle.clone();
                                             set_hidden_zones.update(|set| {
                                                 if !set.remove(&zid) {

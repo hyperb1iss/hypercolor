@@ -1,5 +1,6 @@
 pub mod attachment_editor;
 pub mod attachment_panel;
+pub mod calibration_guide;
 pub mod canvas_preview;
 pub mod channel_editor;
 pub mod color_wheel;

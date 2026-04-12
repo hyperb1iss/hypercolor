@@ -8,6 +8,7 @@ pub fn category_style(category: &str) -> (&'static str, &'static str) {
     match category {
         "ambient" => ("bg-neon-cyan/10 text-neon-cyan", "128, 255, 234"),
         "audio" => ("bg-coral/10 text-coral", "255, 106, 193"),
+        "display" => ("bg-coral/10 text-coral", "255, 106, 193"),
         "gaming" => ("bg-electric-purple/10 text-electric-purple", "225, 53, 255"),
         "reactive" => (
             "bg-electric-yellow/10 text-electric-yellow",

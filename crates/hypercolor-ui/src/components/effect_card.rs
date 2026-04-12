@@ -44,6 +44,11 @@ pub fn EffectCard(
     let runnable = effect.runnable;
     let audio_reactive = effect.audio_reactive;
     let source = effect.source.clone();
+    let is_calibration = effect.name.eq_ignore_ascii_case("Calibration")
+        || effect
+            .tags
+            .iter()
+            .any(|tag| tag.eq_ignore_ascii_case("calibration"));
 
     let (_, fallback_rgb) = category_style(&category);
     let fallback_rgb = fallback_rgb.to_string();
@@ -246,6 +251,15 @@ pub fn EffectCard(
 
                     // Right-side icon cluster: source + audio-reactive
                     <div class="flex items-center gap-1.5 shrink-0">
+                        {is_calibration.then(|| view! {
+                            <span
+                                class="inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-neon-cyan/14 text-neon-cyan backdrop-blur-sm"
+                                title="Layout setup and calibration tool"
+                            >
+                                <Icon icon=LuRadar width="11px" height="11px" />
+                                <span>"Setup"</span>
+                            </span>
+                        })}
                         {show_source_icon.then(|| {
                             let icon_view = if is_html {
                                 view! { <Icon icon=LuGlobe width="11px" height="11px" /> }.into_any()

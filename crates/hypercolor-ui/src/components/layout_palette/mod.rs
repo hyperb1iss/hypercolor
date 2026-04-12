@@ -41,6 +41,9 @@ pub(super) struct PaletteState {
         WriteSignal<std::collections::HashMap<String, Vec<api::AttachmentBindingSummary>>>,
     pub import_in_flight: ReadSignal<bool>,
     pub set_import_in_flight: WriteSignal<bool>,
+    /// Write-side of the master "hide all" snapshot. Individual device/zone
+    /// toggles clear this so manual changes invalidate the saved state.
+    pub set_master_hidden_snapshot: WriteSignal<Option<std::collections::HashSet<String>>>,
 }
 
 /// Device palette for adding zones to the layout.
@@ -65,6 +68,8 @@ pub fn LayoutPalette() -> impl IntoView {
         Vec<api::AttachmentBindingSummary>,
     >::new());
     let (import_in_flight, set_import_in_flight) = signal(false);
+    let (master_hidden_snapshot, set_master_hidden_snapshot) =
+        signal(None::<std::collections::HashSet<String>>);
 
     let state = PaletteState {
         devices_ctx,
@@ -86,6 +91,7 @@ pub fn LayoutPalette() -> impl IntoView {
         set_attachment_cache,
         import_in_flight,
         set_import_in_flight,
+        set_master_hidden_snapshot,
     };
 
     // Auto-fetch attachments for multi-zone devices (they start expanded).
@@ -99,14 +105,76 @@ pub fn LayoutPalette() -> impl IntoView {
         }
     });
 
+    // Are there any zones in the layout at all?
+    let any_zones_in_layout = Signal::derive(move || {
+        state
+            .layout
+            .with(|l| l.as_ref().is_some_and(|l| !l.zones.is_empty()))
+    });
+
+    // Are ALL layout zones currently hidden?
+    let all_zones_hidden = Signal::derive(move || {
+        let hidden = state.hidden_zones.get();
+        state.layout.with(|l| {
+            l.as_ref().is_some_and(|l| {
+                !l.zones.is_empty() && l.zones.iter().all(|z| hidden.contains(&z.id))
+            })
+        })
+    });
+
     view! {
         <div class="p-3 space-y-4">
             // Devices section
             <div class="space-y-2">
-                <h3 class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary flex items-center gap-1.5">
-                    <Icon icon=LuCpu width="12px" height="12px" />
-                    "Devices"
-                </h3>
+                <div class="flex items-center justify-between">
+                    <h3 class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary flex items-center gap-1.5">
+                        <Icon icon=LuCpu width="12px" height="12px" />
+                        "Devices"
+                    </h3>
+                    // Master visibility toggle — hide/show all zones at once
+                    {move || {
+                        if !any_zones_in_layout.get() { return None; }
+                        let all_hidden = all_zones_hidden.get();
+                        Some(view! {
+                            <button
+                                class="w-5 h-5 flex items-center justify-center rounded transition-all btn-press"
+                                style=if all_hidden {
+                                    "color: var(--color-text-tertiary); opacity: 0.3"
+                                } else {
+                                    "color: var(--color-text-tertiary); opacity: 0.5"
+                                }
+                                title=if all_hidden { "Show all devices" } else { "Hide all devices" }
+                                on:click=move |_| {
+                                    if all_hidden {
+                                        // Restore: use snapshot if available, otherwise show all
+                                        let snapshot = master_hidden_snapshot.get_untracked();
+                                        set_master_hidden_snapshot.set(None);
+                                        state.set_hidden_zones.set(
+                                            snapshot.unwrap_or_default()
+                                        );
+                                    } else {
+                                        // Hide all: snapshot current state, then hide everything
+                                        let current = state.hidden_zones.get_untracked();
+                                        set_master_hidden_snapshot.set(Some(current));
+                                        let all_ids: std::collections::HashSet<String> =
+                                            state.layout.with_untracked(|l| {
+                                                l.as_ref()
+                                                    .map(|l| l.zones.iter().map(|z| z.id.clone()).collect())
+                                                    .unwrap_or_default()
+                                            });
+                                        state.set_hidden_zones.set(all_ids);
+                                    }
+                                }
+                            >
+                                {if all_hidden {
+                                    view! { <Icon icon=LuEyeOff width="11px" height="11px" /> }.into_any()
+                                } else {
+                                    view! { <Icon icon=LuEye width="11px" height="11px" /> }.into_any()
+                                }}
+                            </button>
+                        })
+                    }}
+                </div>
                 {move || render_online_devices_section(state)}
             </div>
 

@@ -119,6 +119,7 @@ pub(super) fn render_offline_devices_section(state: PaletteState) -> Option<AnyV
                                                 title=if all_hidden { "Show device" } else { "Hide device" }
                                                 on:click=move |ev: web_sys::MouseEvent| {
                                                     ev.stop_propagation();
+                                                    state.set_master_hidden_snapshot.set(None);
                                                     let zone_ids: Vec<String> = layout.with_untracked(|current| {
                                                         current.as_ref().map(|l| {
                                                             l.zones.iter().filter(|z| z.device_id == did)

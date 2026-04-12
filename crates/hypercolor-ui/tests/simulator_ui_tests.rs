@@ -13,11 +13,15 @@ mod api;
 mod displays;
 #[path = "../src/icons.rs"]
 mod icons;
+#[path = "../src/style_utils.rs"]
+mod style_utils;
 #[path = "../src/toasts.rs"]
 mod toasts;
 
-use api::{DisplaySummary, UpdateSimulatedDisplayRequest};
+use api::{DisplaySummary, SetDisplayFaceRequest, UpdateSimulatedDisplayRequest};
 use displays::{display_preview_shell_url, is_simulator_display, parse_simulator_dimension};
+use hypercolor_types::effect::ControlValue;
+use style_utils::category_style;
 
 fn display_summary(family: &str) -> DisplaySummary {
     DisplaySummary {
@@ -97,5 +101,44 @@ fn display_preview_shell_url_targets_selected_display() {
     assert_eq!(
         display_preview_shell_url("display-123"),
         "/preview?display=display-123"
+    );
+}
+
+#[test]
+fn set_display_face_request_skips_empty_controls() {
+    let payload = serde_json::to_value(SetDisplayFaceRequest {
+        effect_id: "face-1".to_owned(),
+        controls: std::collections::HashMap::new(),
+    })
+    .expect("display-face request should serialize");
+
+    assert_eq!(payload, serde_json::json!({ "effect_id": "face-1" }));
+}
+
+#[test]
+fn set_display_face_request_serializes_present_controls() {
+    let payload = serde_json::to_value(SetDisplayFaceRequest {
+        effect_id: "face-2".to_owned(),
+        controls: std::collections::HashMap::from([(
+            "accent".to_owned(),
+            ControlValue::Float(0.75),
+        )]),
+    })
+    .expect("display-face request should serialize");
+
+    assert_eq!(
+        payload,
+        serde_json::json!({
+            "effect_id": "face-2",
+            "controls": { "accent": 0.75 }
+        })
+    );
+}
+
+#[test]
+fn display_category_uses_coral_accent() {
+    assert_eq!(
+        category_style("display"),
+        ("bg-coral/10 text-coral", "255, 106, 193")
     );
 }

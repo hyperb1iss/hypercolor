@@ -5,11 +5,13 @@
 //! shared `hypercolor_types` crate so request/response bodies stay in lockstep
 //! with the daemon.
 
+use hypercolor_types::effect::ControlValue;
 use hypercolor_types::overlay::{
     DisplayOverlayConfig, OverlayBlendMode, OverlayPosition, OverlaySlot, OverlaySlotId,
     OverlaySource,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use super::client::{self, ApiError};
 
@@ -27,6 +29,23 @@ pub struct DisplaySummary {
     pub circular: bool,
     pub overlay_count: usize,
     pub enabled_overlay_count: usize,
+}
+
+/// Lightweight effect summary embedded in display-face assignment payloads.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DisplayFaceEffectSummary {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub author: String,
+}
+
+/// Response from `GET /api/v1/displays/{id}/face`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct DisplayFaceResponse {
+    pub device_id: String,
+    pub scene_id: String,
+    pub effect: DisplayFaceEffectSummary,
 }
 
 /// Runtime diagnostic envelope returned by the single-slot GET endpoint.
@@ -116,6 +135,14 @@ pub struct ReorderOverlaySlotsRequest {
     pub slot_ids: Vec<OverlaySlotId>,
 }
 
+/// Request body for `PUT /api/v1/displays/{id}/face`.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SetDisplayFaceRequest {
+    pub effect_id: String,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub controls: HashMap<String, ControlValue>,
+}
+
 // ── Client functions ────────────────────────────────────────────────────────
 
 /// `GET /api/v1/displays` — list displays with overlay capability.
@@ -123,6 +150,35 @@ pub async fn fetch_displays() -> Result<Vec<DisplaySummary>, String> {
     client::fetch_json::<Vec<DisplaySummary>>("/api/v1/displays")
         .await
         .map_err(Into::into)
+}
+
+/// `GET /api/v1/displays/{id}/face` — fetch the current face assignment.
+pub async fn fetch_display_face(display_id: &str) -> Result<Option<DisplayFaceResponse>, String> {
+    let url = format!("/api/v1/displays/{display_id}/face");
+    client::fetch_json_optional::<DisplayFaceResponse>(&url)
+        .await
+        .map_err(Into::into)
+}
+
+/// `PUT /api/v1/displays/{id}/face` — assign a display face in the active scene.
+pub async fn set_display_face(
+    display_id: &str,
+    effect_id: &str,
+) -> Result<DisplayFaceResponse, String> {
+    let url = format!("/api/v1/displays/{display_id}/face");
+    let body = SetDisplayFaceRequest {
+        effect_id: effect_id.to_owned(),
+        controls: HashMap::new(),
+    };
+    client::put_json::<SetDisplayFaceRequest, DisplayFaceResponse>(&url, &body)
+        .await
+        .map_err(Into::into)
+}
+
+/// `DELETE /api/v1/displays/{id}/face` — clear the face assignment.
+pub async fn delete_display_face(display_id: &str) -> Result<(), String> {
+    let url = format!("/api/v1/displays/{display_id}/face");
+    client::delete_empty(&url).await.map_err(Into::into)
 }
 
 /// `GET /api/v1/displays/{id}/overlays` — fetch the full overlay stack.

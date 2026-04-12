@@ -161,6 +161,10 @@ pub fn PreviewCabinet(
                             let author = meta.as_ref().map(|m| m.author.clone()).unwrap_or_default();
                             let audio_reactive = meta.as_ref().is_some_and(|m| m.audio_reactive);
                             let source = meta.as_ref().map(|m| m.source.clone()).unwrap_or_default();
+                            let is_calibration = meta.as_ref().is_some_and(|m| {
+                                m.name.eq_ignore_ascii_case("Calibration")
+                                    || m.tags.iter().any(|tag| tag.eq_ignore_ascii_case("calibration"))
+                            });
                             let is_html = source == "html";
                             let show_source = source != "native";
 
@@ -210,6 +214,15 @@ pub fn PreviewCabinet(
                                         </span>
                                     </div>
                                     <div class="flex items-center gap-1.5 shrink-0">
+                                        {is_calibration.then(|| view! {
+                                            <span
+                                                class="inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-neon-cyan/14 text-neon-cyan backdrop-blur-sm"
+                                                title="Layout setup and calibration tool"
+                                            >
+                                                <Icon icon=LuRadar width="11px" height="11px" />
+                                                <span>"Setup"</span>
+                                            </span>
+                                        })}
                                         {show_source.then(|| {
                                             let icon = if is_html { LuGlobe } else { LuCode };
                                             view! {

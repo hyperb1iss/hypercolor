@@ -695,6 +695,7 @@ fn PresetSelectorRow(
                                             <DropdownItem
                                                 value=val
                                                 label=p.name
+                                                description=p.description.unwrap_or_default()
                                                 swatch_rgb=swatch
                                                 is_selected=Signal::derive(move || selected_id.get().as_deref() == Some(option_value.as_str()))
                                                 on_click=Callback::new(move |val: String| {
@@ -763,6 +764,7 @@ fn PresetSelectorRow(
                                             <DropdownItem
                                                 value=id
                                                 label=p.name
+                                                description=p.description.unwrap_or_default()
                                                 swatch_rgb=swatch
                                                 is_selected=Signal::derive(move || selected_id.get().as_deref() == Some(option_value.as_str()))
                                                 on_click=Callback::new(move |val: String| {
@@ -797,12 +799,14 @@ fn PresetSelectorRow(
 fn DropdownItem(
     #[prop(into)] value: String,
     #[prop(into)] label: String,
+    #[prop(optional, into)] description: String,
     #[prop(into)] swatch_rgb: String,
     #[prop(into)] is_selected: Signal<bool>,
     on_click: Callback<String>,
 ) -> impl IntoView {
     let val = value.clone();
     let swatch_for_dot = swatch_rgb.clone();
+    let has_description = !description.trim().is_empty();
     view! {
         <button
             type="button"
@@ -813,7 +817,14 @@ fn DropdownItem(
             style=format!("--item-rgb: {swatch_rgb}")
             on:click=move |_| on_click.run(val.clone())
         >
-            <span class="flex-1 min-w-0 truncate">{label}</span>
+            <span class="flex-1 min-w-0">
+                <span class="block truncate">{label}</span>
+                {has_description.then(|| view! {
+                    <span class="block text-[10px] leading-relaxed text-fg-tertiary/70 mt-0.5 whitespace-normal">
+                        {description.clone()}
+                    </span>
+                })}
+            </span>
 
             // Right-side "● Now" dot when selected — pulses in the item's
             // own colour, so the active row's accent bleeds all the way

@@ -1,10 +1,8 @@
-//! `/displays` — LCD-equipped devices and their overlay stacks.
+//! `/displays` — LCD-equipped devices, HTML faces, and overlay stacks.
 //!
 //! Three-pane workspace (picker, live preview, overlay stack + inspector)
-//! for composing clock/sensor/image/text widgets on top of effect frames
-//! before they reach pixel-addressable displays. Wave A delivers the page
-//! shell plus the display picker; later tasks fill in the preview canvas,
-//! catalog modal, and per-type inspector forms.
+//! for assigning full-screen faces to LCD devices and layering optional
+//! clock/sensor/image/text widgets on top before frames reach the panel.
 
 use hypercolor_types::overlay::{
     Anchor, ClockConfig, ClockStyle, DisplayOverlayConfig, HourFormat, ImageFit,
@@ -155,7 +153,7 @@ pub fn DisplaysPage() -> impl IntoView {
                     <PageHeader
                         icon=LuMonitor
                         title="Displays"
-                        subtitle="Compose clocks, sensors, and widgets on top of your LCD-equipped devices."
+                        subtitle="Assign HTML faces to LCD devices and layer optional overlays on top."
                         accent_rgb="225, 53, 255"
                         gradient="linear-gradient(105deg,#e135ff 0%,#e8f4ff 55%,#80ffea 100%)"
                     />
@@ -828,6 +826,11 @@ fn EditSimulatorModal(
 #[component]
 fn DisplayWorkspace(selected_display: Memo<Option<api::DisplaySummary>>) -> impl IntoView {
     let (poll_counter, set_poll_counter) = signal(0_u64);
+    let (display_face, set_display_face) =
+        signal(None::<Result<Option<api::DisplayFaceResponse>, String>>);
+    let (face_catalog, set_face_catalog) = signal(None::<Result<Vec<api::EffectSummary>, String>>);
+    let (face_picker_open, set_face_picker_open) = signal(false);
+    let (face_assignment_pending, set_face_assignment_pending) = signal(false);
 
     // Independent overlay config fetch so we can paint slot outlines on the
     // preview image without coupling to OverlayStackPanel's internal state.
@@ -838,12 +841,26 @@ fn DisplayWorkspace(selected_display: Memo<Option<api::DisplaySummary>>) -> impl
     Effect::new(move |_| {
         let Some(display) = selected_display.get() else {
             set_workspace_overlay_config.set(None);
+            set_display_face.set(None);
+            set_face_picker_open.set(false);
+            set_face_assignment_pending.set(false);
             return;
         };
         let display_id = display.id.clone();
+        let requested_id = display_id.clone();
         spawn_local(async move {
             if let Ok(config) = api::fetch_display_overlays(&display_id).await {
                 set_workspace_overlay_config.set(Some(config));
+            }
+        });
+        spawn_local(async move {
+            let result = api::fetch_display_face(&requested_id).await;
+            if selected_display
+                .get_untracked()
+                .as_ref()
+                .is_some_and(|current| current.id == requested_id)
+            {
+                set_display_face.set(Some(result));
             }
         });
     });
@@ -859,6 +876,15 @@ fn DisplayWorkspace(selected_display: Memo<Option<api::DisplaySummary>>) -> impl
             if let Ok(config) = api::fetch_display_overlays(&display_id).await {
                 set_workspace_overlay_config.set(Some(config));
             }
+        });
+    });
+    Effect::new(move |_| {
+        if !face_picker_open.get() || face_catalog.with(Option::is_some) {
+            return;
+        }
+        spawn_local(async move {
+            let result = api::fetch_effects_by_category("display").await;
+            set_face_catalog.set(Some(result));
         });
     });
 
@@ -899,18 +925,116 @@ fn DisplayWorkspace(selected_display: Memo<Option<api::DisplaySummary>>) -> impl
             })
         })
     });
+    let current_face_name = Signal::derive(move || match display_face.get() {
+        None => "Loading face...".to_owned(),
+        Some(Ok(Some(face))) => face.effect.name,
+        Some(Ok(None)) => "No face assigned".to_owned(),
+        Some(Err(_)) => "Face unavailable".to_owned(),
+    });
+    let current_face_description = Signal::derive(move || match display_face.get() {
+        Some(Ok(Some(face))) => face.effect.description,
+        Some(Err(error)) => error,
+        _ => "Display faces run as dedicated HTML effects at the panel's native resolution."
+            .to_owned(),
+    });
+    let current_face_id = Signal::derive(move || {
+        display_face
+            .get()
+            .and_then(Result::ok)
+            .flatten()
+            .map(|face| face.effect.id)
+    });
+    let assign_face = Callback::new(move |effect_id: String| {
+        let Some(display) = selected_display.get_untracked() else {
+            return;
+        };
+        let display_id = display.id.clone();
+        let display_name = display.name.clone();
+        set_face_assignment_pending.set(true);
+        spawn_local(async move {
+            match api::set_display_face(&display_id, &effect_id).await {
+                Ok(face) => {
+                    let assigned_name = face.effect.name.clone();
+                    set_display_face.set(Some(Ok(Some(face))));
+                    set_face_picker_open.set(false);
+                    set_face_assignment_pending.set(false);
+                    set_poll_counter.update(|value| *value = value.wrapping_add(1));
+                    toasts::toast_success(&format!("Assigned {assigned_name} to {display_name}"));
+                }
+                Err(error) => {
+                    set_face_assignment_pending.set(false);
+                    toasts::toast_error(&format!("Face assignment failed: {error}"));
+                }
+            }
+        });
+    });
+    let clear_face = Callback::new(move |_| {
+        let Some(display) = selected_display.get_untracked() else {
+            return;
+        };
+        let display_id = display.id.clone();
+        let display_name = display.name.clone();
+        set_face_assignment_pending.set(true);
+        spawn_local(async move {
+            match api::delete_display_face(&display_id).await {
+                Ok(()) => {
+                    set_display_face.set(Some(Ok(None)));
+                    set_face_assignment_pending.set(false);
+                    set_poll_counter.update(|value| *value = value.wrapping_add(1));
+                    toasts::toast_success(&format!("Cleared face from {display_name}"));
+                }
+                Err(error) => {
+                    set_face_assignment_pending.set(false);
+                    toasts::toast_error(&format!("Could not clear display face: {error}"));
+                }
+            }
+        });
+    });
 
     view! {
         <section class="flex min-h-0 flex-col overflow-hidden rounded-lg border border-edge-subtle bg-surface-raised">
-            <header class="flex items-center justify-between border-b border-edge-subtle px-3 py-2">
-                <div class="text-xs uppercase tracking-wider text-fg-tertiary">
-                    "Live preview"
-                </div>
-                <div class="flex items-center gap-3">
-                    <div class="text-[11px] text-fg-tertiary">
-                        {move || subtitle.get().unwrap_or_default()}
+            <header class="flex flex-wrap items-start justify-between gap-3 border-b border-edge-subtle px-3 py-3">
+                <div class="flex min-w-0 flex-1 flex-col gap-2">
+                    <div class="text-xs uppercase tracking-wider text-fg-tertiary">
+                        "Live preview"
                     </div>
                     <Show when=move || selected_display.with(Option::is_some) fallback=|| ()>
+                        <div class="flex min-w-0 flex-wrap items-center gap-2">
+                            <div class="rounded-full border border-edge-subtle bg-surface-overlay/60 px-2.5 py-1 text-[11px] text-fg-secondary">
+                                {move || subtitle.get().unwrap_or_default()}
+                            </div>
+                            <div class="inline-flex min-w-0 items-center gap-2 rounded-full border border-coral/20 bg-coral/10 px-2.5 py-1 text-[11px] text-coral">
+                                <Icon icon=LuLayers width="11" height="11" />
+                                <span class="truncate">{move || current_face_name.get()}</span>
+                            </div>
+                        </div>
+                        <p class="text-[11px] leading-relaxed text-fg-tertiary">
+                            {move || current_face_description.get()}
+                        </p>
+                    </Show>
+                </div>
+                <div class="flex items-center gap-2">
+                    <Show when=move || selected_display.with(Option::is_some) fallback=|| ()>
+                        <button
+                            type="button"
+                            class="inline-flex items-center gap-1.5 rounded-md border border-accent-primary/35 bg-accent-primary/10 px-3 py-1.5 text-[11px] uppercase tracking-wider text-accent-primary transition hover:bg-accent-primary/15 disabled:cursor-not-allowed disabled:opacity-50"
+                            disabled=move || face_assignment_pending.get()
+                            on:click=move |_| set_face_picker_open.set(true)
+                        >
+                            <Icon icon=LuLayers width="12" height="12" />
+                            "Choose face"
+                        </button>
+                        <button
+                            type="button"
+                            class="inline-flex items-center gap-1.5 rounded-md border border-edge-subtle bg-surface-overlay px-3 py-1.5 text-[11px] uppercase tracking-wider text-fg-tertiary transition hover:border-accent-primary/35 hover:text-accent-primary disabled:cursor-not-allowed disabled:opacity-40"
+                            disabled=move || {
+                                face_assignment_pending.get() || current_face_id.get().is_none()
+                            }
+                            on:click=move |_| clear_face.run(())
+                        >
+                            <Icon icon=LuX width="12" height="12" />
+                            "Clear"
+                        </button>
                         {move || {
                             selected_display.get().map(|display| {
                                 let href = display_preview_shell_url(&display.id);
@@ -1047,7 +1171,174 @@ fn DisplayWorkspace(selected_display: Memo<Option<api::DisplaySummary>>) -> impl
                     }.into_any()
                 }}
             </div>
+            <Show when=move || face_picker_open.get() fallback=|| ()>
+                {move || {
+                    selected_display.get().map(|display| {
+                        view! {
+                            <DisplayFacePickerModal
+                                display_name=display.name
+                                faces=face_catalog
+                                current_face_id=current_face_id
+                                assigning=face_assignment_pending
+                                on_select=assign_face
+                                on_close=move || set_face_picker_open.set(false)
+                            />
+                        }
+                    })
+                }}
+            </Show>
         </section>
+    }
+}
+
+#[component]
+fn DisplayFacePickerModal(
+    display_name: String,
+    faces: ReadSignal<Option<Result<Vec<api::EffectSummary>, String>>>,
+    current_face_id: Signal<Option<String>>,
+    assigning: ReadSignal<bool>,
+    #[prop(into)] on_select: Callback<String>,
+    #[prop(into)] on_close: Callback<()>,
+) -> impl IntoView {
+    let (search, set_search) = signal(String::new());
+    let close_backdrop = on_close.clone();
+    let close_button = on_close.clone();
+
+    view! {
+        <div
+            class="absolute inset-0 z-20 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+            on:click=move |_| close_backdrop.run(())
+        >
+            <div
+                class="flex w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-edge-subtle bg-surface-raised shadow-2xl"
+                on:click=|event| event.stop_propagation()
+            >
+                <div class="flex items-start justify-between gap-3 border-b border-edge-subtle px-4 py-4">
+                    <div>
+                        <h2 class="text-sm font-semibold text-fg-primary">"Choose display face"</h2>
+                        <p class="mt-1 text-[11px] leading-relaxed text-fg-tertiary">
+                            {format!(
+                                "Assign a full-screen HTML face to {display_name}. Overlays stay available for optional gauges and labels on top."
+                            )}
+                        </p>
+                    </div>
+                    <button
+                        type="button"
+                        class="rounded-sm p-1 text-fg-tertiary transition hover:text-accent-primary"
+                        title="Close"
+                        on:click=move |_| close_button.run(())
+                    >
+                        <Icon icon=LuX width="14" height="14" />
+                    </button>
+                </div>
+                <div class="border-b border-edge-subtle px-4 py-3">
+                    <input
+                        type="search"
+                        class="w-full rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-sm text-fg-primary outline-none transition focus:border-accent-primary"
+                        placeholder="Search faces by name, author, or description"
+                        prop:value=move || search.get()
+                        on:input=move |event| set_search.set(event_target_value(&event))
+                    />
+                </div>
+                <div class="min-h-0 max-h-[60vh] overflow-y-auto p-4">
+                    {move || {
+                        let query = search.get().trim().to_lowercase();
+                        match faces.get() {
+                            None => view! {
+                                <div class="py-8 text-center text-sm text-fg-tertiary">
+                                    "Loading display faces..."
+                                </div>
+                            }
+                            .into_any(),
+                            Some(Err(error)) => view! {
+                                <div class="rounded-md border border-status-error/35 bg-status-error/10 px-3 py-3 text-sm text-status-error">
+                                    {error}
+                                </div>
+                            }
+                            .into_any(),
+                            Some(Ok(items)) => {
+                                let filtered = items
+                                    .into_iter()
+                                    .filter(|effect| {
+                                        if query.is_empty() {
+                                            return true;
+                                        }
+                                        effect.name.to_lowercase().contains(&query)
+                                            || effect.author.to_lowercase().contains(&query)
+                                            || effect.description.to_lowercase().contains(&query)
+                                    })
+                                    .collect::<Vec<_>>();
+                                if filtered.is_empty() {
+                                    return view! {
+                                        <div class="py-8 text-center text-sm text-fg-tertiary">
+                                            "No display faces match that search."
+                                        </div>
+                                    }
+                                    .into_any();
+                                }
+
+                                filtered
+                                    .into_iter()
+                                    .map(|effect| {
+                                        let effect_id = effect.id.clone();
+                                        let is_current = Signal::derive({
+                                            let effect_id = effect_id.clone();
+                                            move || {
+                                                current_face_id.get().as_deref()
+                                                    == Some(effect_id.as_str())
+                                            }
+                                        });
+                                        let card_class = move || {
+                                            if is_current.get() {
+                                                "flex w-full flex-col gap-2 rounded-lg border border-coral/40 bg-coral/10 px-4 py-3 text-left transition"
+                                            } else {
+                                                "flex w-full flex-col gap-2 rounded-lg border border-edge-subtle bg-surface-overlay/40 px-4 py-3 text-left transition hover:border-accent-primary/35 hover:bg-surface-overlay"
+                                            }
+                                        };
+                                        let name = effect.name;
+                                        let author = effect.author;
+                                        let description = effect.description;
+                                        view! {
+                                            <button
+                                                type="button"
+                                                class=card_class
+                                                disabled=move || assigning.get()
+                                                on:click=move |_| on_select.run(effect_id.clone())
+                                            >
+                                                <div class="flex items-start justify-between gap-3">
+                                                    <div class="min-w-0">
+                                                        <div class="flex flex-wrap items-center gap-2">
+                                                            <span class="text-sm font-medium text-fg-primary">
+                                                                {name}
+                                                            </span>
+                                                            <Show when=move || is_current.get() fallback=|| ()>
+                                                                <span class="rounded-full border border-coral/30 bg-coral/15 px-2 py-0.5 text-[10px] uppercase tracking-wider text-coral">
+                                                                    "Assigned"
+                                                                </span>
+                                                            </Show>
+                                                        </div>
+                                                        <div class="mt-1 text-[11px] uppercase tracking-wider text-fg-tertiary">
+                                                            {author}
+                                                        </div>
+                                                    </div>
+                                                    <span class="rounded-full border border-edge-subtle bg-surface-raised px-2 py-0.5 text-[10px] uppercase tracking-wider text-fg-tertiary">
+                                                        "Display"
+                                                    </span>
+                                                </div>
+                                                <p class="text-sm leading-relaxed text-fg-secondary">
+                                                    {description}
+                                                </p>
+                                            </button>
+                                        }
+                                    })
+                                    .collect_view()
+                                    .into_any()
+                            }
+                        }
+                    }}
+                </div>
+            </div>
+        </div>
     }
 }
 
@@ -1331,7 +1622,7 @@ where
                 <div class="grid grid-cols-2 gap-2">{tiles}</div>
                 <div class="mt-3 rounded-md border border-edge-subtle bg-surface-overlay/50 p-2 text-[11px] leading-relaxed text-fg-tertiary">
                     <Icon icon=LuCode width="12" height="12" />
-                    " HTML overlays are gated until Servo supports multi-session rendering."
+                    " Rich HTML visuals now live in display faces. Use overlays here for clocks, gauges, labels, and images layered on top."
                 </div>
             </div>
         </div>
