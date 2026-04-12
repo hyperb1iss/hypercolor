@@ -15,6 +15,7 @@ pub mod effects;
 pub mod layouts;
 pub mod library;
 pub mod overlays;
+pub mod simulators;
 pub mod system;
 
 // ── Shared Envelope ─────────────────────────────────────────────────────────
@@ -36,4 +37,5 @@ pub use layouts::*;
 pub use library::*;
 #[allow(unused_imports)] // surfaced once the catalog modal lands
 pub use overlays::*;
+pub use simulators::*;
 pub use system::*;

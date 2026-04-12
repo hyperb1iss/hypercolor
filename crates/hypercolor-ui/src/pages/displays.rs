@@ -20,6 +20,7 @@ use leptos_use::{use_debounce_fn_with_arg, use_interval_fn};
 use crate::api;
 use crate::components::page_header::PageHeader;
 use crate::icons::*;
+use crate::toasts;
 
 type DisplaysResource = LocalResource<Result<Vec<api::DisplaySummary>, String>>;
 
@@ -30,6 +31,7 @@ const PREVIEW_POLL_INTERVAL_MS: u64 = 500;
 pub fn DisplaysPage() -> impl IntoView {
     let displays: DisplaysResource = LocalResource::new(api::fetch_displays);
     let (selected_id, set_selected_id) = signal(None::<String>);
+    let (simulator_modal_open, set_simulator_modal_open) = signal(false);
 
     // Auto-select the first display once the list loads so the workspace
     // isn't empty on first render.
@@ -50,6 +52,13 @@ pub fn DisplaysPage() -> impl IntoView {
         let items = snapshot.as_ref()?.as_ref().ok()?;
         items.iter().find(|display| display.id == id).cloned()
     });
+    let open_simulator_modal = Callback::new(move |_| set_simulator_modal_open.set(true));
+    let close_simulator_modal = Callback::new(move |_| set_simulator_modal_open.set(false));
+    let on_simulator_created = Callback::new(move |summary: api::SimulatedDisplaySummary| {
+        displays.refetch();
+        set_selected_id.set(Some(summary.id));
+        set_simulator_modal_open.set(false);
+    });
 
     view! {
         <div class="flex h-full flex-col overflow-hidden animate-fade-in">
@@ -69,10 +78,17 @@ pub fn DisplaysPage() -> impl IntoView {
                     displays=displays
                     selected_id=selected_id
                     set_selected_id=set_selected_id
+                    on_create_simulator=open_simulator_modal
                 />
                 <DisplayWorkspace selected_display=selected_display />
                 <OverlayStackPanel selected_id=selected_id />
             </div>
+            <Show when=move || simulator_modal_open.get() fallback=|| ()>
+                <CreateSimulatorModal
+                    on_created=on_simulator_created
+                    on_close=close_simulator_modal
+                />
+            </Show>
         </div>
     }
 }
@@ -82,6 +98,7 @@ fn DisplayPicker(
     displays: DisplaysResource,
     selected_id: ReadSignal<Option<String>>,
     set_selected_id: WriteSignal<Option<String>>,
+    on_create_simulator: Callback<()>,
 ) -> impl IntoView {
     view! {
         <aside class="flex min-h-0 flex-col overflow-hidden rounded-lg border border-edge-subtle bg-surface-raised">
@@ -90,14 +107,25 @@ fn DisplayPicker(
                     <Icon icon=LuMonitor width="14" height="14" />
                     "Displays"
                 </div>
-                <button
-                    type="button"
-                    class="rounded-sm p-1 text-fg-tertiary transition hover:text-accent-primary"
-                    title="Refresh displays"
-                    on:click=move |_| displays.refetch()
-                >
-                    <Icon icon=LuRefreshCw width="14" height="14" />
-                </button>
+                <div class="flex items-center gap-1">
+                    <button
+                        type="button"
+                        class="flex items-center gap-1 rounded-sm px-2 py-1 text-[10px] uppercase tracking-wider text-fg-tertiary transition hover:text-accent-primary"
+                        title="Add a virtual display simulator"
+                        on:click=move |_| on_create_simulator.run(())
+                    >
+                        <Icon icon=LuPlus width="12" height="12" />
+                        "Simulator"
+                    </button>
+                    <button
+                        type="button"
+                        class="rounded-sm p-1 text-fg-tertiary transition hover:text-accent-primary"
+                        title="Refresh displays"
+                        on:click=move |_| displays.refetch()
+                    >
+                        <Icon icon=LuRefreshCw width="14" height="14" />
+                    </button>
+                </div>
             </header>
             <div class="min-h-0 flex-1 overflow-y-auto">
                 <Suspense fallback=move || view! { <PickerPlaceholder message="Loading displays...".to_string() /> }>
@@ -115,9 +143,19 @@ fn DisplayPicker(
                             }
                             .into_any(),
                             Ok(items) if items.is_empty() => view! {
-                                <PickerPlaceholder
-                                    message="No LCD devices connected. Connect a Corsair iCUE LINK pump, an Ableton Push 2, or add a virtual display simulator.".to_string()
-                                />
+                                <div class="flex flex-col gap-3">
+                                    <PickerPlaceholder
+                                        message="No LCD devices connected. Connect a Corsair iCUE LINK pump, an Ableton Push 2, or add a virtual display simulator.".to_string()
+                                    />
+                                    <button
+                                        type="button"
+                                        class="inline-flex items-center gap-2 self-start rounded-md border border-accent-primary/35 bg-accent-primary/10 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-accent-primary transition hover:bg-accent-primary/15"
+                                        on:click=move |_| on_create_simulator.run(())
+                                    >
+                                        <Icon icon=LuPlus width="12" height="12" />
+                                        "Create simulator"
+                                    </button>
+                                </div>
                             }
                             .into_any(),
                             Ok(items) => {
@@ -200,6 +238,205 @@ fn render_picker_row(
 fn PickerPlaceholder(#[prop(into)] message: String) -> impl IntoView {
     view! {
         <div class="px-3 py-6 text-xs leading-relaxed text-fg-tertiary">{message}</div>
+    }
+}
+
+#[component]
+fn CreateSimulatorModal(
+    #[prop(into)] on_created: Callback<api::SimulatedDisplaySummary>,
+    #[prop(into)] on_close: Callback<()>,
+) -> impl IntoView {
+    let (name, set_name) = signal("Preview Simulator".to_string());
+    let (width, set_width) = signal("480".to_string());
+    let (height, set_height) = signal("480".to_string());
+    let (circular, set_circular) = signal(true);
+    let (submitting, set_submitting) = signal(false);
+    let (error, set_error) = signal(None::<String>);
+
+    let submit = {
+        let on_created = on_created.clone();
+        move |event: leptos::ev::SubmitEvent| {
+            event.prevent_default();
+            if submitting.get_untracked() {
+                return;
+            }
+
+            let Some(width) = width
+                .get_untracked()
+                .trim()
+                .parse::<u32>()
+                .ok()
+                .filter(|value| *value > 0)
+            else {
+                set_error.set(Some("Width must be a positive number.".to_string()));
+                return;
+            };
+            let Some(height) = height
+                .get_untracked()
+                .trim()
+                .parse::<u32>()
+                .ok()
+                .filter(|value| *value > 0)
+            else {
+                set_error.set(Some("Height must be a positive number.".to_string()));
+                return;
+            };
+
+            set_submitting.set(true);
+            set_error.set(None);
+            let request = api::CreateSimulatedDisplayRequest {
+                name: name.get_untracked(),
+                width,
+                height,
+                circular: circular.get_untracked(),
+                enabled: true,
+            };
+
+            spawn_local(async move {
+                match api::create_simulated_display(&request).await {
+                    Ok(summary) => on_created.run(summary),
+                    Err(message) => {
+                        set_error.set(Some(message));
+                        set_submitting.set(false);
+                    }
+                }
+            });
+        }
+    };
+
+    let close_backdrop = on_close.clone();
+    let close_button = on_close.clone();
+
+    view! {
+        <div
+            class="absolute inset-0 z-20 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+            on:click=move |_| close_backdrop.run(())
+        >
+            <div
+                class="w-full max-w-md rounded-xl border border-edge-subtle bg-surface-raised p-4 shadow-2xl"
+                on:click=|event| event.stop_propagation()
+            >
+                <div class="mb-4 flex items-start justify-between gap-3">
+                    <div>
+                        <h2 class="text-sm font-semibold text-fg-primary">"Create simulator"</h2>
+                        <p class="mt-1 text-[11px] leading-relaxed text-fg-tertiary">
+                            "Spin up a software LCD that appears in the display list and preview pipeline."
+                        </p>
+                    </div>
+                    <button
+                        type="button"
+                        class="rounded-sm p-1 text-fg-tertiary transition hover:text-accent-primary"
+                        title="Close"
+                        on:click=move |_| close_button.run(())
+                    >
+                        <Icon icon=LuX width="14" height="14" />
+                    </button>
+                </div>
+
+                <form class="flex flex-col gap-3" on:submit=submit>
+                    <label class="flex flex-col gap-1">
+                        <span class="text-[11px] uppercase tracking-wider text-fg-tertiary">
+                            "Name"
+                        </span>
+                        <input
+                            type="text"
+                            class="rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-sm text-fg-primary outline-none transition focus:border-accent-primary"
+                            prop:value=move || name.get()
+                            on:input=move |event| set_name.set(event_target_value(&event))
+                        />
+                    </label>
+
+                    <div class="grid grid-cols-2 gap-3">
+                        <label class="flex flex-col gap-1">
+                            <span class="text-[11px] uppercase tracking-wider text-fg-tertiary">
+                                "Width"
+                            </span>
+                            <input
+                                type="number"
+                                min="1"
+                                max="4096"
+                                class="rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-sm text-fg-primary outline-none transition focus:border-accent-primary"
+                                prop:value=move || width.get()
+                                on:input=move |event| set_width.set(event_target_value(&event))
+                            />
+                        </label>
+                        <label class="flex flex-col gap-1">
+                            <span class="text-[11px] uppercase tracking-wider text-fg-tertiary">
+                                "Height"
+                            </span>
+                            <input
+                                type="number"
+                                min="1"
+                                max="4096"
+                                class="rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-sm text-fg-primary outline-none transition focus:border-accent-primary"
+                                prop:value=move || height.get()
+                                on:input=move |event| set_height.set(event_target_value(&event))
+                            />
+                        </label>
+                    </div>
+
+                    <div class="flex flex-col gap-1">
+                        <span class="text-[11px] uppercase tracking-wider text-fg-tertiary">
+                            "Shape"
+                        </span>
+                        <div class="grid grid-cols-2 gap-2">
+                            <button
+                                type="button"
+                                class=move || {
+                                    if circular.get() {
+                                        "flex items-center justify-center gap-2 rounded-md border border-accent-primary bg-accent-primary/10 px-3 py-2 text-sm text-accent-primary transition"
+                                    } else {
+                                        "flex items-center justify-center gap-2 rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-sm text-fg-tertiary transition hover:border-accent-primary/35"
+                                    }
+                                }
+                                on:click=move |_| set_circular.set(true)
+                            >
+                                <Icon icon=LuCircle width="13" height="13" />
+                                "Round"
+                            </button>
+                            <button
+                                type="button"
+                                class=move || {
+                                    if circular.get() {
+                                        "flex items-center justify-center gap-2 rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-sm text-fg-tertiary transition hover:border-accent-primary/35"
+                                    } else {
+                                        "flex items-center justify-center gap-2 rounded-md border border-accent-primary bg-accent-primary/10 px-3 py-2 text-sm text-accent-primary transition"
+                                    }
+                                }
+                                on:click=move |_| set_circular.set(false)
+                            >
+                                <Icon icon=LuSquare width="13" height="13" />
+                                "Square"
+                            </button>
+                        </div>
+                    </div>
+
+                    <Show when=move || error.with(Option::is_some) fallback=|| ()>
+                        <div class="rounded-md border border-status-error/35 bg-status-error/10 px-3 py-2 text-xs text-status-error">
+                            {move || error.get().unwrap_or_default()}
+                        </div>
+                    </Show>
+
+                    <div class="mt-1 flex items-center justify-end gap-2">
+                        <button
+                            type="button"
+                            class="rounded-md px-3 py-2 text-xs uppercase tracking-wider text-fg-tertiary transition hover:text-fg-primary"
+                            on:click=move |_| on_close.run(())
+                        >
+                            "Cancel"
+                        </button>
+                        <button
+                            type="submit"
+                            class="inline-flex items-center gap-2 rounded-md border border-accent-primary/40 bg-accent-primary/12 px-3 py-2 text-xs font-medium uppercase tracking-wider text-accent-primary transition hover:bg-accent-primary/18 disabled:cursor-not-allowed disabled:opacity-50"
+                            disabled=move || submitting.get()
+                        >
+                            <Icon icon=LuPlus width="12" height="12" />
+                            {move || if submitting.get() { "Creating..." } else { "Create simulator" }}
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
     }
 }
 
@@ -640,18 +877,44 @@ where
     let (source_label, source_icon) = overlay_source_descriptor(&overlay_slot.source);
     let source_label_owned = source_label.to_string();
 
+    // Runtime telemetry polled every 2s for the currently-selected slot.
+    let (runtime_state, set_runtime_state) = signal(None::<api::OverlayRuntimeResponse>);
+
+    let fetch_runtime = move || {
+        let Some(display_id) = selected_id.get_untracked() else {
+            return;
+        };
+        let set_runtime_state = set_runtime_state;
+        spawn_local(async move {
+            if let Ok(response) = api::fetch_overlay_slot(&display_id, slot_id).await {
+                set_runtime_state.set(Some(response.runtime));
+            }
+        });
+    };
+
+    // Fire once immediately so the diagnostics section is not empty on open.
+    fetch_runtime();
+
+    let fetch_runtime_interval = fetch_runtime.clone();
+    let _runtime_interval = use_interval_fn(move || fetch_runtime_interval(), 2000_u64);
+
     let refresh_immediate = refresh.clone();
+    let fetch_runtime_after_patch = fetch_runtime.clone();
     let patch = move |body: api::UpdateOverlaySlotRequest| {
         let Some(display_id) = selected_id.get_untracked() else {
             return;
         };
         let refresh = refresh_immediate.clone();
+        let fetch_runtime_after_patch = fetch_runtime_after_patch.clone();
         spawn_local(async move {
-            if api::patch_overlay_slot(&display_id, slot_id, &body)
-                .await
-                .is_ok()
-            {
-                refresh();
+            match api::patch_overlay_slot(&display_id, slot_id, &body).await {
+                Ok(_) => {
+                    refresh();
+                    fetch_runtime_after_patch();
+                }
+                Err(error) => {
+                    toasts::toast_error(&format!("Overlay update failed: {error}"));
+                }
             }
         });
     };
