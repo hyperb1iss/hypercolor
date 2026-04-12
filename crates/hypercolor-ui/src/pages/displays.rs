@@ -1436,6 +1436,13 @@ where
 
             <div class="flex flex-col gap-2 border-t border-edge-subtle pt-2">
                 <div class="text-[10px] uppercase tracking-wider text-fg-tertiary">
+                    "Position"
+                </div>
+                {position_fields(overlay_slot.position.clone(), slot_state, patch.clone(), patch_debounced.clone())}
+            </div>
+
+            <div class="flex flex-col gap-2 border-t border-edge-subtle pt-2">
+                <div class="text-[10px] uppercase tracking-wider text-fg-tertiary">
                     {format!("{source_label} settings")}
                 </div>
                 {source_editor}
@@ -1511,6 +1518,289 @@ fn InspectorField(#[prop(into)] label: String, children: Children) -> impl IntoV
             <span class="text-[10px] uppercase tracking-wider text-fg-tertiary">{label}</span>
             {children()}
         </label>
+    }
+}
+
+/// Apply a mutation to the live `OverlayPosition` stored in `slot_state`
+/// and return the updated position. Mirrors the `mutate_*_source` helpers
+/// so position edits compound the same way source edits do.
+fn mutate_position(
+    slot_state: StoredValue<OverlaySlot>,
+    mutation: impl FnOnce(&mut OverlayPosition),
+) -> OverlayPosition {
+    slot_state.update_value(|slot| {
+        mutation(&mut slot.position);
+    });
+    slot_state.with_value(|slot| slot.position.clone())
+}
+
+const ANCHOR_GRID: [[Anchor; 3]; 3] = [
+    [Anchor::TopLeft, Anchor::TopCenter, Anchor::TopRight],
+    [Anchor::CenterLeft, Anchor::Center, Anchor::CenterRight],
+    [Anchor::BottomLeft, Anchor::BottomCenter, Anchor::BottomRight],
+];
+
+fn anchor_short_label(anchor: Anchor) -> &'static str {
+    match anchor {
+        Anchor::TopLeft => "TL",
+        Anchor::TopCenter => "TC",
+        Anchor::TopRight => "TR",
+        Anchor::CenterLeft => "CL",
+        Anchor::Center => "C",
+        Anchor::CenterRight => "CR",
+        Anchor::BottomLeft => "BL",
+        Anchor::BottomCenter => "BC",
+        Anchor::BottomRight => "BR",
+    }
+}
+
+/// Default Anchored configuration used when toggling out of FullScreen.
+/// Mirrors the catalog modal's default size/anchor so new slots feel
+/// consistent no matter how the user reached the Anchored branch.
+const DEFAULT_ANCHORED: OverlayPosition = OverlayPosition::Anchored {
+    anchor: Anchor::Center,
+    offset_x: 0,
+    offset_y: 0,
+    width: 200,
+    height: 60,
+};
+
+fn position_fields<F, D>(
+    position: OverlayPosition,
+    slot_state: StoredValue<OverlaySlot>,
+    patch: F,
+    patch_debounced: D,
+) -> impl IntoView
+where
+    F: Fn(api::UpdateOverlaySlotRequest) + Clone + Send + Sync + 'static,
+    D: Fn(api::UpdateOverlaySlotRequest) + Clone + Send + Sync + 'static,
+{
+    let is_full_screen = matches!(position, OverlayPosition::FullScreen);
+
+    let patch_full_screen = patch.clone();
+    let on_toggle_full_screen = move |_| {
+        let current = slot_state.with_value(|slot| slot.position.clone());
+        let next = match current {
+            OverlayPosition::FullScreen => DEFAULT_ANCHORED,
+            OverlayPosition::Anchored { .. } => OverlayPosition::FullScreen,
+        };
+        let updated = mutate_position(slot_state, |value| *value = next);
+        patch_full_screen(api::UpdateOverlaySlotRequest {
+            position: Some(updated),
+            ..Default::default()
+        });
+    };
+
+    // Pull the current anchored fields. When in FullScreen mode we still
+    // want the inputs disabled but the labels to show the defaults that
+    // would apply on toggle-back.
+    let (current_anchor, offset_x_value, offset_y_value, width_value, height_value) =
+        match position.clone() {
+            OverlayPosition::FullScreen => (
+                Anchor::Center,
+                0_i32.to_string(),
+                0_i32.to_string(),
+                200_u32.to_string(),
+                60_u32.to_string(),
+            ),
+            OverlayPosition::Anchored {
+                anchor,
+                offset_x,
+                offset_y,
+                width,
+                height,
+            } => (
+                anchor,
+                offset_x.to_string(),
+                offset_y.to_string(),
+                width.to_string(),
+                height.to_string(),
+            ),
+        };
+
+    let anchor_rows = ANCHOR_GRID
+        .into_iter()
+        .enumerate()
+        .map(|(row_idx, row)| {
+            let cells = row
+                .into_iter()
+                .enumerate()
+                .map(|(col_idx, anchor)| {
+                    let patch_anchor = patch.clone();
+                    let label = anchor_short_label(anchor);
+                    let selected = anchor == current_anchor;
+                    let on_click = move |_| {
+                        let updated = mutate_position(slot_state, |value| match value {
+                            OverlayPosition::Anchored {
+                                anchor: current, ..
+                            } => {
+                                *current = anchor;
+                            }
+                            other @ OverlayPosition::FullScreen => {
+                                *other = OverlayPosition::Anchored {
+                                    anchor,
+                                    offset_x: 0,
+                                    offset_y: 0,
+                                    width: 200,
+                                    height: 60,
+                                };
+                            }
+                        });
+                        patch_anchor(api::UpdateOverlaySlotRequest {
+                            position: Some(updated),
+                            ..Default::default()
+                        });
+                    };
+                    let cell_key = row_idx * 3 + col_idx;
+                    let class_name = if selected {
+                        "flex aspect-square items-center justify-center rounded-sm border border-accent-primary bg-accent-primary/20 text-[10px] font-semibold text-accent-primary"
+                    } else {
+                        "flex aspect-square items-center justify-center rounded-sm border border-edge-subtle bg-surface-overlay/60 text-[10px] text-fg-tertiary transition hover:border-accent-primary/60 hover:text-fg-secondary"
+                    };
+                    view! {
+                        <button
+                            type="button"
+                            class=class_name
+                            data-cell=cell_key
+                            disabled=is_full_screen
+                            on:click=on_click
+                        >
+                            {label}
+                        </button>
+                    }
+                })
+                .collect_view();
+            view! { <>{cells}</> }
+        })
+        .collect_view();
+
+    let patch_offset_x = patch_debounced.clone();
+    let on_offset_x = move |event: leptos::ev::Event| {
+        let Ok(value) = event_target_value(&event).parse::<i32>() else {
+            return;
+        };
+        let updated = mutate_position(slot_state, |position| {
+            if let OverlayPosition::Anchored { offset_x, .. } = position {
+                *offset_x = value;
+            }
+        });
+        patch_offset_x(api::UpdateOverlaySlotRequest {
+            position: Some(updated),
+            ..Default::default()
+        });
+    };
+
+    let patch_offset_y = patch_debounced.clone();
+    let on_offset_y = move |event: leptos::ev::Event| {
+        let Ok(value) = event_target_value(&event).parse::<i32>() else {
+            return;
+        };
+        let updated = mutate_position(slot_state, |position| {
+            if let OverlayPosition::Anchored { offset_y, .. } = position {
+                *offset_y = value;
+            }
+        });
+        patch_offset_y(api::UpdateOverlaySlotRequest {
+            position: Some(updated),
+            ..Default::default()
+        });
+    };
+
+    let patch_width = patch_debounced.clone();
+    let on_width = move |event: leptos::ev::Event| {
+        let Ok(value) = event_target_value(&event).parse::<u32>() else {
+            return;
+        };
+        let updated = mutate_position(slot_state, |position| {
+            if let OverlayPosition::Anchored { width, .. } = position {
+                *width = value.max(1);
+            }
+        });
+        patch_width(api::UpdateOverlaySlotRequest {
+            position: Some(updated),
+            ..Default::default()
+        });
+    };
+
+    let patch_height = patch_debounced.clone();
+    let on_height = move |event: leptos::ev::Event| {
+        let Ok(value) = event_target_value(&event).parse::<u32>() else {
+            return;
+        };
+        let updated = mutate_position(slot_state, |position| {
+            if let OverlayPosition::Anchored { height, .. } = position {
+                *height = value.max(1);
+            }
+        });
+        patch_height(api::UpdateOverlaySlotRequest {
+            position: Some(updated),
+            ..Default::default()
+        });
+    };
+
+    view! {
+        <div class="flex flex-col gap-2">
+            <InspectorField label="Full screen">
+                <button
+                    type="button"
+                    class=move || {
+                        if is_full_screen {
+                            "self-start rounded-sm bg-accent-primary/20 px-2 py-1 text-xs text-accent-primary transition hover:bg-accent-primary/30"
+                        } else {
+                            "self-start rounded-sm bg-surface-overlay/60 px-2 py-1 text-xs text-fg-tertiary transition hover:bg-surface-overlay"
+                        }
+                    }
+                    on:click=on_toggle_full_screen
+                >
+                    {if is_full_screen { "On" } else { "Off" }}
+                </button>
+            </InspectorField>
+
+            <InspectorField label="Anchor">
+                <div class="grid grid-cols-3 gap-1">{anchor_rows}</div>
+            </InspectorField>
+
+            <div class="grid grid-cols-2 gap-2">
+                <InspectorField label="Offset X">
+                    <input
+                        type="number"
+                        class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none disabled:opacity-50"
+                        prop:value=offset_x_value
+                        disabled=is_full_screen
+                        on:input=on_offset_x
+                    />
+                </InspectorField>
+                <InspectorField label="Offset Y">
+                    <input
+                        type="number"
+                        class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none disabled:opacity-50"
+                        prop:value=offset_y_value
+                        disabled=is_full_screen
+                        on:input=on_offset_y
+                    />
+                </InspectorField>
+                <InspectorField label="Width">
+                    <input
+                        type="number"
+                        min="1"
+                        class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none disabled:opacity-50"
+                        prop:value=width_value
+                        disabled=is_full_screen
+                        on:input=on_width
+                    />
+                </InspectorField>
+                <InspectorField label="Height">
+                    <input
+                        type="number"
+                        min="1"
+                        class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none disabled:opacity-50"
+                        prop:value=height_value
+                        disabled=is_full_screen
+                        on:input=on_height
+                    />
+                </InspectorField>
+            </div>
+        </div>
     }
 }
 
