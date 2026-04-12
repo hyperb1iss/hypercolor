@@ -28,6 +28,10 @@ impl std::fmt::Display for ConnectionState {
 
 pub const CANVAS_FRAME_HEADER: u8 = 0x03;
 pub const SCREEN_CANVAS_FRAME_HEADER: u8 = 0x05;
+/// Per-display JPEG preview frames. The body format matches the canvas
+/// header (14-byte preamble) and always carries JPEG pixel data so the
+/// UI can decode via `createImageBitmap` and paint to a `<canvas>`.
+pub const DISPLAY_PREVIEW_FRAME_HEADER: u8 = 0x07;
 
 pub const EFFECT_STARTED_EVENTS: &[&str] =
     &["effect_started", "effect_activated", "effect_changed"];
@@ -276,6 +280,7 @@ pub struct AudioLevel {
 pub(super) enum PreviewFrameChannel {
     Canvas,
     ScreenCanvas,
+    DisplayPreview,
 }
 
 /// Decode a binary preview frame.
@@ -292,6 +297,7 @@ pub(super) fn decode_preview_frame(
     let channel = match data.get_index(0) {
         CANVAS_FRAME_HEADER => PreviewFrameChannel::Canvas,
         SCREEN_CANVAS_FRAME_HEADER => PreviewFrameChannel::ScreenCanvas,
+        DISPLAY_PREVIEW_FRAME_HEADER => PreviewFrameChannel::DisplayPreview,
         _ => return None,
     };
 

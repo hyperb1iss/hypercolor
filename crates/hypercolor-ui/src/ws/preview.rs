@@ -160,6 +160,50 @@ pub(super) fn send_screen_canvas_unsubscribe(ws: &web_sys::WebSocket) {
     let _ = ws.send_with_str(&unsubscribe_msg.to_string());
 }
 
+/// Subscribe the `display_preview` channel to a specific device at the
+/// requested fps. Sending a fresh subscribe for a different `device_id`
+/// retargets the server-side relay without an explicit unsubscribe, so
+/// the UI can switch displays with a single message.
+pub(super) fn send_display_preview_subscribe(
+    ws: &web_sys::WebSocket,
+    device_id: &str,
+    fps: u32,
+) {
+    let subscribe_msg = serde_json::json!({
+        "type": "subscribe",
+        "channels": ["display_preview"],
+        "config": {
+            "display_preview": {
+                "device_id": device_id,
+                "fps": fps
+            }
+        }
+    });
+    let _ = ws.send_with_str(&subscribe_msg.to_string());
+}
+
+/// Unsubscribe from the `display_preview` channel and clear the target
+/// device on the server. The extra `device_id: null` tells the relay to
+/// release its watch receiver immediately rather than waiting for the
+/// unsubscribe to propagate.
+pub(super) fn send_display_preview_unsubscribe(ws: &web_sys::WebSocket) {
+    let clear_msg = serde_json::json!({
+        "type": "subscribe",
+        "channels": ["display_preview"],
+        "config": {
+            "display_preview": {
+                "device_id": null
+            }
+        }
+    });
+    let _ = ws.send_with_str(&clear_msg.to_string());
+    let unsubscribe_msg = serde_json::json!({
+        "type": "unsubscribe",
+        "channels": ["display_preview"]
+    });
+    let _ = ws.send_with_str(&unsubscribe_msg.to_string());
+}
+
 fn preview_hostname() -> String {
     web_sys::window()
         .map(|window| window.location())

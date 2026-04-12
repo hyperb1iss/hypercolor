@@ -30,6 +30,11 @@ const RECONNECT_MAX_MS: i32 = 15_000;
 pub struct WsManager {
     pub canvas_frame: ReadSignal<Option<CanvasFrame>>,
     pub screen_canvas_frame: ReadSignal<Option<CanvasFrame>>,
+    /// Latest JPEG frame from the per-display `display_preview` WS
+    /// channel. `None` until the UI selects a display and the first
+    /// frame arrives; reset to `None` when the target changes or the
+    /// connection drops.
+    pub display_preview_frame: ReadSignal<Option<CanvasFrame>>,
     pub connection_state: ReadSignal<ConnectionState>,
     pub preview_fps: ReadSignal<f32>,
     pub metrics: ReadSignal<Option<PerformanceMetrics>>,
@@ -41,12 +46,18 @@ pub struct WsManager {
     pub set_preview_cap: WriteSignal<u32>,
     pub set_preview_consumers: WriteSignal<u32>,
     pub set_screen_preview_consumers: WriteSignal<u32>,
+    /// Set to `Some(device_id)` to subscribe the `display_preview`
+    /// channel to that device, or `None` to unsubscribe. The subscription
+    /// effect inside `WsManager` sends the actual WS messages.
+    pub set_display_preview_device: WriteSignal<Option<String>>,
 }
 
 impl WsManager {
     pub fn new() -> Self {
         let (canvas_frame, set_canvas_frame) = signal(None::<CanvasFrame>);
         let (screen_canvas_frame, set_screen_canvas_frame) = signal(None::<CanvasFrame>);
+        let (display_preview_frame, set_display_preview_frame) = signal(None::<CanvasFrame>);
+        let (display_preview_device, set_display_preview_device) = signal(None::<String>);
         let (connection_state, set_connection_state) = signal(ConnectionState::Disconnected);
         let (preview_fps, set_preview_fps) = signal(0.0_f32);
         let (metrics, set_metrics) = signal(None::<PerformanceMetrics>);
@@ -144,6 +155,7 @@ impl WsManager {
                     requested_screen_preview_fps,
                     &set_screen_canvas_frame,
                 );
+                set_display_preview_frame.set(None);
                 schedule_reconnect(reconnect_attempts, reconnect_timeout_id, connect);
             });
             ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
@@ -205,6 +217,9 @@ impl WsManager {
                             }
                             PreviewFrameChannel::ScreenCanvas => {
                                 set_screen_canvas_frame.set(Some(frame));
+                            }
+                            PreviewFrameChannel::DisplayPreview => {
+                                set_display_preview_frame.set(Some(frame));
                             }
                         }
                     }
@@ -296,6 +311,29 @@ impl WsManager {
             set_preview_transport_cap.set(preview_page_cap.get());
         });
 
+        // Display-preview subscription effect.
+        //
+        // Watches `display_preview_device` — whenever the UI changes the
+        // selected display, re-subscribe the `display_preview` channel
+        // with the new device_id; setting `None` unsubscribes and clears
+        // the cached frame so the UI doesn't flash a stale image for the
+        // old device.
+        Effect::new(move |_| {
+            let device = display_preview_device.get();
+            let Some(ws) = ws_handle.get_value() else {
+                return;
+            };
+            match device {
+                Some(device_id) if !device_id.is_empty() => {
+                    super::preview::send_display_preview_subscribe(&ws, &device_id, 15);
+                }
+                _ => {
+                    super::preview::send_display_preview_unsubscribe(&ws);
+                    set_display_preview_frame.set(None);
+                }
+            }
+        });
+
         // Visibility change listener
         if let Some(document) = web_sys::window().and_then(|window| window.document()) {
             let visibility_document = document.clone();
@@ -314,6 +352,7 @@ impl WsManager {
         Self {
             canvas_frame,
             screen_canvas_frame,
+            display_preview_frame,
             connection_state,
             preview_fps,
             metrics,
@@ -325,6 +364,7 @@ impl WsManager {
             set_preview_cap,
             set_preview_consumers,
             set_screen_preview_consumers,
+            set_display_preview_device,
         }
     }
 }

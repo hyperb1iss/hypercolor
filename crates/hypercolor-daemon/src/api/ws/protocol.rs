@@ -22,16 +22,18 @@ pub(super) enum WsChannel {
     Canvas,
     ScreenCanvas,
     Metrics,
+    DisplayPreview,
 }
 
 impl WsChannel {
-    pub(super) const SUPPORTED: [Self; 6] = [
+    pub(super) const SUPPORTED: [Self; 7] = [
         Self::Frames,
         Self::Spectrum,
         Self::Events,
         Self::Canvas,
         Self::ScreenCanvas,
         Self::Metrics,
+        Self::DisplayPreview,
     ];
 
     pub(super) const fn as_str(self) -> &'static str {
@@ -42,6 +44,7 @@ impl WsChannel {
             Self::Canvas => "canvas",
             Self::ScreenCanvas => "screen_canvas",
             Self::Metrics => "metrics",
+            Self::DisplayPreview => "display_preview",
         }
     }
 
@@ -53,6 +56,7 @@ impl WsChannel {
             "canvas" => Some(Self::Canvas),
             "screen_canvas" => Some(Self::ScreenCanvas),
             "metrics" => Some(Self::Metrics),
+            "display_preview" => Some(Self::DisplayPreview),
             _ => None,
         }
     }
@@ -69,6 +73,7 @@ impl WsChannel {
             Self::Canvas => 1 << 3,
             Self::ScreenCanvas => 1 << 4,
             Self::Metrics => 1 << 5,
+            Self::DisplayPreview => 1 << 6,
         }
     }
 }
@@ -128,6 +133,7 @@ pub(super) struct ChannelConfig {
     pub(super) canvas: CanvasConfig,
     pub(super) screen_canvas: CanvasConfig,
     pub(super) metrics: MetricsConfig,
+    pub(super) display_preview: DisplayPreviewConfig,
 }
 
 impl ChannelConfig {
@@ -228,6 +234,38 @@ impl ChannelConfig {
             self.metrics.interval_ms = interval_ms;
         }
 
+        if let Some(display_preview) = patch.display_preview {
+            // Double-Option: outer `Some` means the client sent the key;
+            // inner `None` explicitly clears the target (disabling the
+            // relay). Trim non-empty strings so accidental whitespace
+            // doesn't sneak a subscription through with no real device.
+            if let Some(device_id) = display_preview.device_id {
+                match device_id {
+                    Some(id) => {
+                        let trimmed = id.trim();
+                        if trimmed.is_empty() {
+                            return Err(WsProtocolError::invalid_config(
+                                "config.display_preview.device_id",
+                                "must be non-empty when provided",
+                            ));
+                        }
+                        self.display_preview.device_id = Some(trimmed.to_owned());
+                    }
+                    None => self.display_preview.device_id = None,
+                }
+            }
+            if let Some(fps) = display_preview.fps {
+                validate_range(
+                    fps,
+                    1,
+                    30,
+                    "config.display_preview.fps",
+                    "expected 1..=30",
+                )?;
+                self.display_preview.fps = fps;
+            }
+        }
+
         Ok(())
     }
 
@@ -241,6 +279,7 @@ impl ChannelConfig {
                 WsChannel::Canvas => serde_json::to_value(&self.canvas),
                 WsChannel::ScreenCanvas => serde_json::to_value(&self.screen_canvas),
                 WsChannel::Metrics => serde_json::to_value(&self.metrics),
+                WsChannel::DisplayPreview => serde_json::to_value(&self.display_preview),
                 WsChannel::Events => continue,
             };
 
@@ -368,6 +407,26 @@ impl Default for MetricsConfig {
     }
 }
 
+/// Configuration for the per-display preview channel. `device_id` is
+/// `None` until the client sends its first subscribe with a target —
+/// once set, the relay task follows that device's JPEG frame watch and
+/// streams every new frame out as a binary `0x07` payload.
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct DisplayPreviewConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) device_id: Option<String>,
+    pub(super) fps: u32,
+}
+
+impl Default for DisplayPreviewConfig {
+    fn default() -> Self {
+        Self {
+            device_id: None,
+            fps: 15,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum FrameFormat {
@@ -417,6 +476,8 @@ pub(super) struct ChannelConfigPatch {
     pub(super) screen_canvas: Option<CanvasConfigPatch>,
     #[serde(default)]
     pub(super) metrics: Option<MetricsConfigPatch>,
+    #[serde(default)]
+    pub(super) display_preview: Option<DisplayPreviewConfigPatch>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -453,6 +514,18 @@ pub(super) struct CanvasConfigPatch {
 pub(super) struct MetricsConfigPatch {
     #[serde(default)]
     pub(super) interval_ms: Option<u32>,
+}
+
+/// Patch for `DisplayPreviewConfig`. `device_id` uses a double-Option so
+/// clients can distinguish "leave as-is" (`device_id: undefined`) from
+/// "clear the target" (`device_id: null`). Setting to `None` detaches
+/// the relay and stops emitting frames.
+#[derive(Debug, Deserialize)]
+pub(super) struct DisplayPreviewConfigPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) device_id: Option<Option<String>>,
+    #[serde(default)]
+    pub(super) fps: Option<u32>,
 }
 
 /// Server-to-client acknowledgment messages.

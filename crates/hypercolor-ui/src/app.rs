@@ -86,6 +86,15 @@ fn effect_name_aliases(name: &str) -> Vec<String> {
 pub struct WsContext {
     pub canvas_frame: ReadSignal<Option<CanvasFrame>>,
     pub screen_canvas_frame: ReadSignal<Option<CanvasFrame>>,
+    /// Latest per-display JPEG frame from the `display_preview` WS
+    /// channel. Cleared when the selected display changes (handled by
+    /// `set_display_preview_device`).
+    pub display_preview_frame: ReadSignal<Option<CanvasFrame>>,
+    /// Set to `Some(device_id)` to subscribe the live preview stream to
+    /// that display, or `None` to unsubscribe. Setting the same id twice
+    /// is safe — subsequent subscribes retarget without dropping the
+    /// existing relay task on the server.
+    pub set_display_preview_device: WriteSignal<Option<String>>,
     pub connection_state: ReadSignal<ConnectionState>,
     pub preview_fps: ReadSignal<f32>,
     pub preview_target_fps: ReadSignal<u32>,
@@ -449,6 +458,8 @@ pub fn App() -> impl IntoView {
     let ws_ctx = WsContext {
         canvas_frame: ws.canvas_frame,
         screen_canvas_frame: ws.screen_canvas_frame,
+        display_preview_frame: ws.display_preview_frame,
+        set_display_preview_device: ws.set_display_preview_device,
         connection_state: ws.connection_state,
         preview_fps: ws.preview_fps,
         preview_target_fps: ws.preview_target_fps,

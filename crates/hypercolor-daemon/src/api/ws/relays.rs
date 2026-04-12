@@ -244,7 +244,6 @@ pub(super) async fn relay_canvas(
     let mut active_canvas_config = None::<CanvasConfig>;
     let mut receiver_initialized = false;
     let mut last_sent_surface = None::<PreviewSurfaceIdentity>;
-    let mut last_sent_brightness_bits: Option<u32> = None;
     let mut pending_send = false;
     let mut active_fps = 15_u32;
     let mut last_sent_at = preview_initial_last_sent();
@@ -266,7 +265,6 @@ pub(super) async fn relay_canvas(
 
         let Some(canvas_config) = active_canvas_config.as_ref() else {
             last_sent_surface = None;
-            last_sent_brightness_bits = None;
             receiver_initialized = false;
             pending_send = false;
             last_sent_at = preview_initial_last_sent();
@@ -324,20 +322,18 @@ pub(super) async fn relay_canvas(
             }
             _ = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
                 let latest_canvas = canvas_rx.borrow();
-                let brightness = power_state_rx.borrow().effective_brightness();
-                let brightness_bits = brightness.to_bits();
                 let surface_identity = preview_surface_identity(&latest_canvas);
-                if last_sent_surface == Some(surface_identity)
-                    && last_sent_brightness_bits == Some(brightness_bits)
-                {
+                if last_sent_surface == Some(surface_identity) {
                     pending_send = false;
                     continue;
                 }
 
+                // Preview always renders at full brightness — the brightness
+                // slider affects device output, not the UI canvas preview.
                 let payload = try_encode_cached_canvas_preview_binary(
                     &latest_canvas,
                     canvas_config.format,
-                    brightness,
+                    1.0,
                     canvas_config.width,
                     canvas_config.height,
                 );
@@ -355,7 +351,6 @@ pub(super) async fn relay_canvas(
 
                 last_sent_at = Instant::now();
                 last_sent_surface = Some(surface_identity);
-                last_sent_brightness_bits = Some(brightness_bits);
                 pending_send = false;
             }
         }
@@ -479,6 +474,184 @@ pub(super) fn sync_preview_receiver(
     } else {
         let _ = receiver.take();
     }
+}
+
+/// Relay composited display-preview JPEG frames for a client's selected
+/// display. Unlike the canvas/screen-canvas relays, this one is
+/// parameterized by `device_id` — switching the config's `device_id`
+/// detaches the old watch subscriber and attaches a fresh one for the
+/// new display.
+pub(super) async fn relay_display_preview(
+    display_frames: Arc<tokio::sync::RwLock<crate::display_frames::DisplayFrameRuntime>>,
+    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
+    binary_tx: tokio::sync::mpsc::Sender<Bytes>,
+    mut subscriptions: watch::Receiver<SubscriptionState>,
+) {
+    use crate::display_frames::DisplayFrameSnapshot;
+    use hypercolor_types::device::DeviceId;
+    use std::str::FromStr;
+
+    /// Target the relay is currently following: which device, at what
+    /// fps, with a live watch receiver. Rebuilt whenever the client's
+    /// device_id changes or the channel goes idle.
+    struct ActiveTarget {
+        device_id: DeviceId,
+        fps: u32,
+        rx: watch::Receiver<Option<Arc<DisplayFrameSnapshot>>>,
+        last_frame_number: Option<u64>,
+        last_sent_at: Instant,
+    }
+
+    let mut active: Option<ActiveTarget> = None;
+
+    loop {
+        // Re-derive the desired target from the current subscription
+        // state. Dropping `active` here lets us pick up device_id or fps
+        // changes without leaking the previous watch receiver.
+        let desired = {
+            let subs = subscriptions.borrow();
+            if !subs.channels.contains(WsChannel::DisplayPreview) {
+                None
+            } else {
+                subs.config
+                    .display_preview
+                    .device_id
+                    .as_ref()
+                    .and_then(|raw| DeviceId::from_str(raw).ok())
+                    .map(|id| (id, subs.config.display_preview.fps.max(1)))
+            }
+        };
+
+        match (&active, desired) {
+            (None, None) => {}
+            (Some(current), Some((want_id, want_fps))) if current.device_id == want_id => {
+                // Same device, maybe new fps — rebuild only if needed.
+                if current.fps != want_fps {
+                    if let Some(target) = active.as_mut() {
+                        target.fps = want_fps;
+                    }
+                }
+            }
+            (_, None) => {
+                active = None;
+            }
+            (_, Some((want_id, want_fps))) => {
+                let rx = display_frames.write().await.subscribe(want_id);
+                active = Some(ActiveTarget {
+                    device_id: want_id,
+                    fps: want_fps,
+                    rx,
+                    last_frame_number: None,
+                    last_sent_at: preview_initial_last_sent(),
+                });
+            }
+        }
+
+        let Some(target) = active.as_mut() else {
+            if subscriptions.changed().await.is_err() {
+                break;
+            }
+            let _ = subscriptions.borrow_and_update();
+            continue;
+        };
+
+        tokio::select! {
+            changed = target.rx.changed() => {
+                if changed.is_err() {
+                    // Sender dropped — device gone. Clear so we re-evaluate
+                    // against the subscription state on the next iteration.
+                    active = None;
+                    continue;
+                }
+            }
+            changed = subscriptions.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let _ = subscriptions.borrow_and_update();
+                // Don't clear `active` here — the top of the loop decides
+                // whether to retarget based on the new subscription.
+                continue;
+            }
+            _ = tokio::time::sleep(preview_send_delay(target.last_sent_at, target.fps, Instant::now())) => {
+                // Fps-pacing tick — we may have a frame to resend after a
+                // pause or just re-check the latest value.
+            }
+        }
+
+        let Some(snapshot) = target.rx.borrow().as_ref().map(Arc::clone) else {
+            // `None` means the sender signaled device removal. Drop the
+            // target and loop to reconsider the subscription state.
+            active = None;
+            continue;
+        };
+
+        if target.last_frame_number == Some(snapshot.frame_number) {
+            continue;
+        }
+
+        // Pace against the requested fps so slow renderers don't
+        // saturate the socket. We already consumed any new value above;
+        // drop this iteration's send until enough time has passed.
+        let now = Instant::now();
+        if preview_send_delay(target.last_sent_at, target.fps, now) > Duration::ZERO {
+            continue;
+        }
+
+        let payload = encode_display_preview_frame(&snapshot);
+        if binary_tx.try_send(payload).is_err() {
+            enqueue_backpressure_notice(&json_tx, "display_preview", target.fps);
+            debug!("Dropping binary display_preview update for slow WebSocket consumer");
+            continue;
+        }
+
+        target.last_frame_number = Some(snapshot.frame_number);
+        target.last_sent_at = now;
+    }
+}
+
+/// Serialize a display-preview snapshot into its WebSocket binary payload.
+///
+/// Layout (little-endian where noted):
+/// `[0x07: u8][frame_number: u32][timestamp_ms: u32][width: u16][height: u16][format: u8 = 2 (JPEG)][jpeg_payload...]`
+fn encode_display_preview_frame(snapshot: &crate::display_frames::DisplayFrameSnapshot) -> Bytes {
+    const JPEG_FORMAT: u8 = 2;
+    const HEADER_LEN: usize = 1 + 4 + 4 + 2 + 2 + 1;
+
+    let jpeg = snapshot.jpeg_data.as_ref().as_slice();
+    let mut buf = Vec::with_capacity(HEADER_LEN + jpeg.len());
+    buf.push(super::cache::WS_DISPLAY_PREVIEW_HEADER);
+
+    // Frame number truncates cleanly for the common case (< 2^32 frames);
+    // on overflow it wraps, which is fine since consumers only use it for
+    // change detection, not absolute positioning.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "u64 → u32 truncation is intentional; frame number wraps for change detection only"
+    )]
+    let frame_u32 = snapshot.frame_number as u32;
+    buf.extend_from_slice(&frame_u32.to_le_bytes());
+
+    let timestamp_ms = snapshot
+        .captured_at
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "timestamp truncates to u32 millis; consumers use it as a monotonic hint, not wall clock"
+    )]
+    let timestamp_u32 = timestamp_ms as u32;
+    buf.extend_from_slice(&timestamp_u32.to_le_bytes());
+
+    let width_u16 = u16::try_from(snapshot.width).unwrap_or(u16::MAX);
+    let height_u16 = u16::try_from(snapshot.height).unwrap_or(u16::MAX);
+    buf.extend_from_slice(&width_u16.to_le_bytes());
+    buf.extend_from_slice(&height_u16.to_le_bytes());
+    buf.push(JPEG_FORMAT);
+    buf.extend_from_slice(jpeg);
+
+    Bytes::from(buf)
 }
 
 /// Relay periodic metrics snapshots to the WebSocket client.

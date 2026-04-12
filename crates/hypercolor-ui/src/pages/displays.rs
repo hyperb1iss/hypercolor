@@ -25,9 +25,6 @@ use crate::toasts;
 
 type DisplaysResource = LocalResource<Result<Vec<api::DisplaySummary>, String>>;
 
-/// Polling cadence for the live preview JPEG, in milliseconds.
-const PREVIEW_POLL_INTERVAL_MS: u64 = 500;
-
 /// Resizable right-side control column — bounds and localStorage key.
 const MIN_RIGHT_WIDTH: f64 = 280.0;
 const MAX_RIGHT_WIDTH: f64 = 600.0;
@@ -1065,14 +1062,27 @@ fn DisplayWorkspace(
     display_face: ReadSignal<Option<Result<Option<api::DisplayFaceResponse>, String>>>,
     face_refresh_tick: ReadSignal<u64>,
 ) -> impl IntoView {
-    let (poll_counter, set_poll_counter) = signal(0_u64);
+    let ws = use_context::<crate::app::WsContext>();
 
-    // Independent overlay config fetch so we can paint slot outlines on the
-    // preview image without coupling to OverlayStackPanel's internal state.
+    // Overlay outlines still come from the REST endpoint — they're structural
+    // data, not frame data, and changes are rare enough that polling on a low
+    // cadence is fine. This tick also drives a refresh right after a face
+    // mutation so new overlay slots show up within one beat.
+    let (overlay_tick, set_overlay_tick) = signal(0_u64);
     let (workspace_overlay_config, set_workspace_overlay_config) =
         signal(None::<DisplayOverlayConfig>);
     let (drag_state, set_drag_state) = signal(None::<DragState>);
     let container_ref = NodeRef::<leptos::html::Div>::new();
+
+    // Subscribe the `display_preview` WS channel to whichever display is
+    // currently selected. The WsManager handles actual subscribe/unsubscribe
+    // messages and clears `display_preview_frame` on deselect.
+    Effect::new(move |_| {
+        let Some(ctx) = ws else { return };
+        let device_id = selected_display.with(|d| d.as_ref().map(|s| s.id.clone()));
+        ctx.set_display_preview_device.set(device_id);
+    });
+
     Effect::new(move |_| {
         let Some(display) = selected_display.get() else {
             set_workspace_overlay_config.set(None);
@@ -1085,10 +1095,10 @@ fn DisplayWorkspace(
             }
         });
     });
-    // Refetch overlays alongside each preview poll so newly-added slots
-    // appear on the canvas within one poll cycle.
+    // Refetch overlays whenever the face tick moves so a new face's overlays
+    // (if any) show up without waiting for the periodic tick.
     Effect::new(move |_| {
-        let _ts = poll_counter.get();
+        let _tick = overlay_tick.get();
         let Some(display) = selected_display.get_untracked() else {
             return;
         };
@@ -1100,15 +1110,14 @@ fn DisplayWorkspace(
         });
     });
 
-    // Steady-state polling of the preview JPEG. Tick the counter on every
-    // cycle so the <img> src cache-busts; the daemon returns cheap 304s when
-    // the frame hasn't advanced. The interval is paused automatically when
-    // no display is selected so idle pages stop generating traffic.
+    // Low-cadence overlay refresh (every 2s) — WS handles frame updates, but
+    // the overlay stack still changes via REST and we want draggable outlines
+    // to stay in sync without a page reload.
     let interval = use_interval_fn(
         move || {
-            set_poll_counter.update(|value| *value = value.wrapping_add(1));
+            set_overlay_tick.update(|value| *value = value.wrapping_add(1));
         },
-        PREVIEW_POLL_INTERVAL_MS,
+        2000_u64,
     );
     let pause = interval.pause.clone();
     let resume = interval.resume.clone();
@@ -1120,17 +1129,63 @@ fn DisplayWorkspace(
         }
     });
 
-    // Bump the poll counter immediately after a face mutation so the JPEG
-    // refreshes within the next frame instead of waiting out the 500ms tick.
+    // Face mutations immediately invalidate the overlay snapshot so a newly
+    // chosen face's overlay defaults surface without waiting for the 2s tick.
     Effect::new(move |previous: Option<u64>| {
         let current = face_refresh_tick.get();
         if previous.is_some_and(|prev| prev == current) {
             return current;
         }
         if previous.is_some() {
-            set_poll_counter.update(|value| *value = value.wrapping_add(1));
+            set_overlay_tick.update(|value| *value = value.wrapping_add(1));
         }
         current
+    });
+
+    // Blob URL lifecycle for the WS display preview frame. Every incoming
+    // JPEG frame gets a fresh object URL; the previous URL is revoked on
+    // the next tick so we don't leak blob memory. When no frame is
+    // available, the signal is None and the <img> falls back to the
+    // REST preview endpoint (cached JPEG, useful while the WS warms up
+    // or when the daemon isn't yet pushing frames).
+    let (preview_blob_url, set_preview_blob_url) = signal(None::<String>);
+    Effect::new(move |previous: Option<Option<String>>| {
+        if let Some(Some(old_url)) = previous.as_ref() {
+            let _ = web_sys::Url::revoke_object_url(old_url);
+        }
+        let Some(ctx) = ws else { return None };
+        let Some(frame) = ctx.display_preview_frame.get() else {
+            set_preview_blob_url.set(None);
+            return None;
+        };
+        if !matches!(
+            frame.pixel_format(),
+            crate::ws::messages::CanvasPixelFormat::Jpeg
+        ) {
+            set_preview_blob_url.set(None);
+            return None;
+        }
+
+        let parts = js_sys::Array::new();
+        parts.push(frame.pixels_js());
+        let options = web_sys::BlobPropertyBag::new();
+        options.set_type("image/jpeg");
+        let blob = match web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options) {
+            Ok(blob) => blob,
+            Err(_) => {
+                set_preview_blob_url.set(None);
+                return None;
+            }
+        };
+        let url = match web_sys::Url::create_object_url_with_blob(&blob) {
+            Ok(url) => url,
+            Err(_) => {
+                set_preview_blob_url.set(None);
+                return None;
+            }
+        };
+        set_preview_blob_url.set(Some(url.clone()));
+        Some(url)
     });
 
     let subtitle = Signal::derive(move || {
@@ -1227,9 +1282,14 @@ fn DisplayWorkspace(
                             </div>
                         }.into_any();
                     };
-                    let ts = poll_counter.get();
                     let display_id = display.id.clone();
-                    let src = api::display_preview_url(&display.id, Some(ts));
+                    // Prefer the live WS blob URL when a frame has arrived;
+                    // fall back to the REST preview endpoint while the WS
+                    // channel is warming up or disconnected so the user
+                    // never sees a black rectangle mid-connection.
+                    let src = preview_blob_url
+                        .get()
+                        .unwrap_or_else(|| api::display_preview_url(&display.id, None));
                     let aspect = format!("{} / {}", display.width, display.height);
                     let rounded_class = if display.circular {
                         "rounded-full"
