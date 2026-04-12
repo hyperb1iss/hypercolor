@@ -40,7 +40,7 @@ use hypercolor_daemon::display_output::{DisplayOutputState, DisplayOutputThread}
 use hypercolor_daemon::display_overlays::{
     DisplayOverlayRegistry, DisplayOverlayRuntimeRegistry, OverlaySlotRuntime, OverlaySlotStatus,
 };
-use hypercolor_daemon::logical_devices::LogicalDevice;
+use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_daemon::session::OutputPowerState;
 
 struct RecordingDisplayBackend {
@@ -817,6 +817,98 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
     assert!(
         pixel[2] < 80,
         "expected viewport to exclude blue half, got {pixel:?}"
+    );
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
+async fn automatic_display_output_uses_logical_device_viewport_alias() {
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+    let logical_id = "desk-left-display".to_owned();
+
+    {
+        let mut store = logical_devices.write().await;
+        store.insert(
+            logical_id.clone(),
+            LogicalDevice {
+                id: logical_id.clone(),
+                physical_device_id: device_id,
+                name: "Desk Left Display".to_owned(),
+                led_start: 0,
+                led_count: 0,
+                enabled: true,
+                kind: LogicalDeviceKind::Default,
+            },
+        );
+    }
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.25, 0.5),
+            NormalizedPosition::new(0.5, 1.0),
+        )]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 320, 200, false))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        device_settings: default_device_settings(),
+        event_bus: Arc::clone(&event_bus),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        display_overlays: default_display_overlays(),
+        display_overlay_runtime: default_display_overlay_runtime(),
+        sensor_snapshot_rx: default_sensor_snapshot_rx(),
+        overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
+    });
+
+    let canvas = split_color_canvas();
+    let _ = event_bus
+        .canvas_sender()
+        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
+
+    let writes = wait_for_display_writes(&display_writes).await;
+    let image = decode_jpeg(&writes[0]);
+    let pixel = image.get_pixel(image.width() / 2, image.height() / 2);
+
+    assert!(
+        pixel[0] > 200,
+        "expected logical-device viewport to keep the red half, got {pixel:?}"
+    );
+    assert!(
+        pixel[2] < 80,
+        "expected logical-device viewport to exclude the blue half, got {pixel:?}"
     );
 
     thread.shutdown().await.expect("display thread should stop");

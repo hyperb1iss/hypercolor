@@ -30,7 +30,7 @@ use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::backend_id_for_device;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_overlays::{DisplayOverlayRegistry, DisplayOverlayRuntimeRegistry};
-use crate::logical_devices::{self, LogicalDevice};
+use crate::logical_devices::LogicalDevice;
 use crate::session::OutputPowerState;
 
 use self::overlay::OverlayRendererFactory;
@@ -528,34 +528,45 @@ fn display_viewport_for_device(
     physical_device_id: DeviceId,
     has_non_display_led_zones: bool,
 ) -> Option<DisplayViewport> {
-    let aliases = layout_device_aliases(logical_store, physical_device_id);
-    let matching_zones = layout
-        .zones
-        .iter()
-        .filter(|zone| aliases.iter().any(|candidate| candidate == &zone.device_id))
-        .collect::<Vec<_>>();
-    if matching_zones.is_empty() {
-        return None;
-    }
+    let physical_alias = physical_device_id.to_string();
+    let legacy_alias = format!("device:{physical_device_id}");
+    let mut first_matching_zone = None;
+    let mut explicit_display_zone = None;
+    let mut generic_display_zone = None;
 
-    let explicit_display_zone = matching_zones
-        .iter()
-        .copied()
-        .find(|zone| zone.zone_name.as_deref() == Some("Display"));
-    let generic_display_zone = matching_zones
-        .iter()
-        .copied()
-        .find(|zone| zone.zone_name.is_none());
+    for zone in &layout.zones {
+        if !display_zone_targets_physical_device(
+            zone.device_id.as_str(),
+            logical_store,
+            physical_device_id,
+            physical_alias.as_str(),
+            legacy_alias.as_str(),
+        ) {
+            continue;
+        }
+
+        first_matching_zone.get_or_insert(zone);
+        if zone.zone_name.as_deref() == Some("Display") {
+            explicit_display_zone = Some(zone);
+            break;
+        }
+        if generic_display_zone.is_none() && zone.zone_name.is_none() {
+            generic_display_zone = Some(zone);
+        }
+    }
 
     explicit_display_zone.or(generic_display_zone).map_or_else(
         || {
+            let first_matching_zone = first_matching_zone?;
             if !has_non_display_led_zones {
-                return matching_zones.first().map(|zone| DisplayViewport {
-                    position: zone.position,
-                    size: zone.size,
-                    rotation: zone.rotation,
-                    scale: zone.scale,
-                    edge_behavior: zone.edge_behavior.unwrap_or(layout.default_edge_behavior),
+                return Some(DisplayViewport {
+                    position: first_matching_zone.position,
+                    size: first_matching_zone.size,
+                    rotation: first_matching_zone.rotation,
+                    scale: first_matching_zone.scale,
+                    edge_behavior: first_matching_zone
+                        .edge_behavior
+                        .unwrap_or(layout.default_edge_behavior),
                 });
             }
 
@@ -579,26 +590,18 @@ fn display_viewport_for_device(
     )
 }
 
-fn layout_device_aliases(
+fn display_zone_targets_physical_device(
+    zone_device_id: &str,
     logical_store: &HashMap<String, LogicalDevice>,
     physical_device_id: DeviceId,
-) -> Vec<String> {
-    let mut aliases = logical_devices::list_for_physical(logical_store, physical_device_id)
-        .into_iter()
-        .map(|entry| entry.id)
-        .collect::<Vec<_>>();
-
-    let physical_alias = physical_device_id.to_string();
-    if !aliases.iter().any(|candidate| candidate == &physical_alias) {
-        aliases.push(physical_alias);
-    }
-
-    let legacy_alias = format!("device:{physical_device_id}");
-    if !aliases.iter().any(|candidate| candidate == &legacy_alias) {
-        aliases.push(legacy_alias);
-    }
-
-    aliases
+    physical_alias: &str,
+    legacy_alias: &str,
+) -> bool {
+    zone_device_id == physical_alias
+        || zone_device_id == legacy_alias
+        || logical_store
+            .get(zone_device_id)
+            .is_some_and(|entry| entry.physical_device_id == physical_device_id)
 }
 
 fn capped_display_target_fps(device_max_fps: u32) -> u32 {
