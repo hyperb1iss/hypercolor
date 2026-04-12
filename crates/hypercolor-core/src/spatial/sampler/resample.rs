@@ -327,37 +327,33 @@ fn sample_bilinear_linear_rgb(bytes: &[u8], sample: &PreparedBilinearSample) -> 
     let x_upper_weight = u32::from(sample.x_upper_weight);
     let y_lower_weight = u64::from(sample.y_lower_weight);
     let y_upper_weight = u64::from(sample.y_upper_weight);
-    let top_left_rgb = read_linear_rgb_at(bytes, top_left);
-    let top_right_rgb = read_linear_rgb_at(bytes, top_right);
-    let bottom_left_rgb = read_linear_rgb_at(bytes, bottom_left);
-    let bottom_right_rgb = read_linear_rgb_at(bytes, bottom_right);
 
     [
         bilinear_channel(
-            top_left_rgb[0],
-            top_right_rgb[0],
-            bottom_left_rgb[0],
-            bottom_right_rgb[0],
+            decode_srgb_byte(bytes[top_left]),
+            decode_srgb_byte(bytes[top_right]),
+            decode_srgb_byte(bytes[bottom_left]),
+            decode_srgb_byte(bytes[bottom_right]),
             x_lower_weight,
             x_upper_weight,
             y_lower_weight,
             y_upper_weight,
         ),
         bilinear_channel(
-            top_left_rgb[1],
-            top_right_rgb[1],
-            bottom_left_rgb[1],
-            bottom_right_rgb[1],
+            decode_srgb_byte(bytes[top_left + 1]),
+            decode_srgb_byte(bytes[top_right + 1]),
+            decode_srgb_byte(bytes[bottom_left + 1]),
+            decode_srgb_byte(bytes[bottom_right + 1]),
             x_lower_weight,
             x_upper_weight,
             y_lower_weight,
             y_upper_weight,
         ),
         bilinear_channel(
-            top_left_rgb[2],
-            top_right_rgb[2],
-            bottom_left_rgb[2],
-            bottom_right_rgb[2],
+            decode_srgb_byte(bytes[top_left + 2]),
+            decode_srgb_byte(bytes[top_right + 2]),
+            decode_srgb_byte(bytes[bottom_left + 2]),
+            decode_srgb_byte(bytes[bottom_right + 2]),
             x_lower_weight,
             x_upper_weight,
             y_lower_weight,
