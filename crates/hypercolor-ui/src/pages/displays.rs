@@ -1587,6 +1587,14 @@ fn FaceControlsSection(
     });
     let has_controls = Signal::derive(move || !face_controls.get().is_empty());
     let control_count = Signal::derive(move || face_controls.get().len());
+    // Bundled presets shipped by the face author (e.g. SilkCircuit Dark,
+    // Forge, Arctic for the SilkCircuit HUD). User-saved presets are a
+    // future enhancement — the Face SDK currently only exposes bundled.
+    let face_presets = Signal::derive(move || match display_face.get() {
+        Some(Ok(Some(face))) => face.effect.presets,
+        _ => Vec::new(),
+    });
+    let has_presets = Signal::derive(move || !face_presets.get().is_empty());
 
     // Local optimistic copy of control values. ControlPanel needs a
     // `HashMap<String, ControlValue>` signal and would thrash if we fed it
@@ -1663,6 +1671,48 @@ fn FaceControlsSection(
         flush_updates();
     });
 
+    // Preset application — lightweight path that PATCHes the entire
+    // preset control map in one round-trip. Cancels any in-flight debounced
+    // updates so a slider-drag-then-preset-click doesn't race.
+    let apply_preset = Callback::new(
+        move |preset_controls: std::collections::HashMap<
+            String,
+            hypercolor_types::effect::ControlValue,
+        >| {
+            let Some(display) = selected_display.get_untracked() else {
+                return;
+            };
+            // Drop any queued per-key PATCH so it doesn't overwrite the
+            // preset values we're about to send.
+            let _ = pending_updates.try_update_value(std::mem::take);
+
+            // Optimistic local update so preset pills highlight
+            // immediately without waiting for the round-trip.
+            set_face_control_values.update(|map| {
+                for (key, value) in &preset_controls {
+                    map.insert(key.clone(), value.clone());
+                }
+            });
+
+            let controls_json = crate::components::preset_matching::bundled_preset_to_json(
+                &preset_controls,
+            );
+            let display_id = display.id;
+            spawn_local(async move {
+                match api::update_display_face_controls(&display_id, &controls_json).await {
+                    Ok(face) => {
+                        set_display_face.set(Some(Ok(Some(face))));
+                        set_face_refresh_tick
+                            .update(|value| *value = value.wrapping_add(1));
+                    }
+                    Err(error) => {
+                        toasts::toast_error(&format!("Preset apply failed: {error}"));
+                    }
+                }
+            });
+        },
+    );
+
     view! {
         <Show when=move || has_controls.get() fallback=|| ()>
             <div
@@ -1689,6 +1739,13 @@ fn FaceControlsSection(
                         {move || format!("· {}", control_count.get())}
                     </span>
                 </div>
+                <Show when=move || has_presets.get() fallback=|| ()>
+                    <FacePresetBar
+                        presets=face_presets
+                        control_values=Signal::from(face_control_values)
+                        on_apply=apply_preset
+                    />
+                </Show>
                 <ControlPanel
                     controls=face_controls
                     control_values=Signal::from(face_control_values)
@@ -1983,6 +2040,65 @@ fn render_face_gallery_card(
                 </div>
             </div>
         </button>
+    }
+}
+
+/// Horizontal row of clickable preset pills rendered above the face
+/// controls. Applies the preset's control map in one round-trip via
+/// `api::update_display_face_controls` and highlights whichever preset
+/// (if any) the current control values currently match.
+#[component]
+fn FacePresetBar(
+    presets: Signal<Vec<hypercolor_types::effect::PresetTemplate>>,
+    control_values: Signal<
+        std::collections::HashMap<String, hypercolor_types::effect::ControlValue>,
+    >,
+    on_apply: Callback<std::collections::HashMap<String, hypercolor_types::effect::ControlValue>>,
+) -> impl IntoView {
+    view! {
+        <div class="mb-3 flex flex-wrap items-center gap-1.5">
+            <span class="text-[10px] uppercase tracking-wider text-fg-tertiary">
+                "Presets"
+            </span>
+            {move || {
+                let current = control_values.get();
+                presets
+                    .get()
+                    .into_iter()
+                    .map(|preset| {
+                        let is_active =
+                            crate::components::preset_matching::bundled_preset_matches_controls(
+                                &current,
+                                &preset.controls,
+                            );
+                        let preset_controls = preset.controls.clone();
+                        let name = preset.name;
+                        let pill_class = if is_active {
+                            "inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-medium transition"
+                        } else {
+                            "inline-flex items-center rounded-full border border-edge-subtle bg-surface-overlay/50 px-2.5 py-1 text-[10px] text-fg-secondary transition hover:border-accent-primary/40 hover:text-fg-primary"
+                        };
+                        let active_style = if is_active {
+                            format!(
+                                "border-color: rgba({DISPLAY_ACCENT_RGB}, 0.5); background: rgba({DISPLAY_ACCENT_RGB}, 0.14); color: rgba({DISPLAY_ACCENT_RGB}, 1.0);"
+                            )
+                        } else {
+                            String::new()
+                        };
+                        view! {
+                            <button
+                                type="button"
+                                class=pill_class
+                                style=active_style
+                                on:click=move |_| on_apply.run(preset_controls.clone())
+                            >
+                                {name}
+                            </button>
+                        }
+                    })
+                    .collect_view()
+            }}
+        </div>
     }
 }
 
