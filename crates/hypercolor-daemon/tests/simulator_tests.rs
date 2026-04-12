@@ -1,9 +1,11 @@
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::SystemTime;
 
 use axum::body::Body;
-use http::{Method, Request};
+use http::{Method, Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::display_frames::DisplayFrameSnapshot;
 use hypercolor_daemon::simulators::{
     SimulatedDisplayConfig, SimulatedDisplayStore, activate_simulated_displays,
     default_layout_device_id, logical_device_ids_for_simulator,
@@ -36,6 +38,24 @@ async fn body_bytes(response: axum::response::Response) -> axum::body::Bytes {
     axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("failed to read response body")
+}
+
+async fn publish_display_frame(
+    state: &Arc<AppState>,
+    config: &SimulatedDisplayConfig,
+    jpeg: Vec<u8>,
+) {
+    state.display_frames.write().await.set_frame(
+        config.id,
+        DisplayFrameSnapshot {
+            jpeg_data: Arc::new(jpeg),
+            width: config.width,
+            height: config.height,
+            circular: config.circular,
+            frame_number: 1,
+            captured_at: SystemTime::now(),
+        },
+    );
 }
 
 fn isolated_state() -> (Arc<AppState>, tempfile::TempDir) {
@@ -193,6 +213,31 @@ async fn simulated_display_crud_routes_update_runtime_state() {
         .expect("created simulator should include an id")
         .parse()
         .expect("created simulator id should parse");
+    let preview_config = SimulatedDisplayConfig {
+        id: device_id,
+        name: created["data"]["name"]
+            .as_str()
+            .expect("created simulator should include a name")
+            .to_owned(),
+        width: u32::try_from(
+            created["data"]["width"]
+                .as_u64()
+                .expect("created simulator should include a width"),
+        )
+        .expect("created simulator width should fit in u32"),
+        height: u32::try_from(
+            created["data"]["height"]
+                .as_u64()
+                .expect("created simulator should include a height"),
+        )
+        .expect("created simulator height should fit in u32"),
+        circular: created["data"]["circular"]
+            .as_bool()
+            .expect("created simulator should include circular state"),
+        enabled: created["data"]["enabled"]
+            .as_bool()
+            .expect("created simulator should include enabled state"),
+    };
 
     let tracked = state
         .device_registry
@@ -207,6 +252,7 @@ async fn simulated_display_crud_routes_update_runtime_state() {
             .await
             .expect("simulated backend should capture frame bytes");
     }
+    publish_display_frame(&state, &preview_config, vec![7, 8, 9]).await;
     let frame = body_bytes(
         app.clone()
             .oneshot(
@@ -277,4 +323,68 @@ async fn simulated_display_crud_routes_update_runtime_state() {
             .get(device_id)
             .is_none()
     );
+    assert!(state.display_frames.read().await.frame(device_id).is_none());
+}
+
+#[tokio::test]
+async fn simulated_display_frame_route_falls_back_to_display_preview_cache() {
+    let (state, _tempdir) = isolated_state();
+    let config = simulator_config(true).normalized();
+    state
+        .simulated_displays
+        .write()
+        .await
+        .upsert(config.clone());
+
+    activate_simulated_displays(
+        &state.driver_host.discovery_runtime(),
+        &state.simulated_displays,
+    )
+    .await
+    .expect("simulated displays should activate");
+
+    let jpeg = vec![0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, b'J', b'F', b'I', b'F'];
+    publish_display_frame(&state, &config, jpeg.clone()).await;
+
+    let app = api::build_router(Arc::clone(&state), None);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/simulators/displays/{}/frame", config.id))
+                .body(Body::empty())
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("image/jpeg")
+    );
+    let body = body_bytes(response).await;
+    assert_eq!(body.as_ref(), jpeg.as_slice());
+}
+
+#[tokio::test]
+async fn simulated_display_frame_route_rejects_non_simulator_display_cache_entries() {
+    let (state, _tempdir) = isolated_state();
+    let config = simulator_config(true).normalized();
+    publish_display_frame(&state, &config, vec![1, 2, 3, 4]).await;
+
+    let app = api::build_router(Arc::clone(&state), None);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/simulators/displays/{}/frame", config.id))
+                .body(Body::empty())
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }

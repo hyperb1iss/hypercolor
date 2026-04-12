@@ -168,6 +168,90 @@ wait_for_frame() {
   return 1
 }
 
+ensure_active_layout_target() {
+  local simulator_id="$1"
+  local simulator_name="$2"
+  local active_layout_json
+  local existing_zone
+  local layout_id
+  local layout_device_id
+  local zone_id
+  local display_order
+  local updated_zones
+  local update_payload
+
+  active_layout_json="$(api_json GET "${BASE_URL}/api/v1/layouts/active")"
+  layout_id="$(jq -r '.data.id' <<<"$active_layout_json")"
+  [[ -n "$layout_id" && "$layout_id" != "null" ]] || die "active layout is missing an id"
+
+  layout_device_id="simulator:${simulator_id}"
+  existing_zone="$(
+    jq -c --arg device_id "$layout_device_id" '
+      first(.data.zones[]? | select(.device_id == $device_id)) // empty
+    ' <<<"$active_layout_json"
+  )"
+  if [[ -n "$existing_zone" ]]; then
+    log_info "Active layout already targets ${simulator_name}; preserving existing zone"
+    log_step "Re-applying active layout ${layout_id}"
+    api_json POST "${BASE_URL}/api/v1/layouts/${layout_id}/apply" >/dev/null
+    return 0
+  fi
+
+  zone_id="$(
+    jq -r --arg device_id "$layout_device_id" '
+      first(.data.zones[]? | select(.device_id == $device_id) | .id) // empty
+    ' <<<"$active_layout_json"
+  )"
+  if [[ -z "$zone_id" ]]; then
+    zone_id="zone_simulator_${simulator_id}"
+  fi
+
+  display_order="$(
+    jq -r --arg device_id "$layout_device_id" '
+      first(.data.zones[]? | select(.device_id == $device_id) | .display_order)
+      // (((.data.zones // []) | map(.display_order // 0) | max) // -1) + 1
+    ' <<<"$active_layout_json"
+  )"
+
+  updated_zones="$(
+    jq -c \
+      --arg device_id "$layout_device_id" \
+      --arg zone_id "$zone_id" \
+      --arg zone_name "${simulator_name} Display" \
+      --argjson display_order "$display_order" '
+      ((.data.zones // []) | map(select(.device_id != $device_id))) + [
+        {
+          id: $zone_id,
+          name: $zone_name,
+          device_id: $device_id,
+          zone_name: null,
+          position: { x: 0.5, y: 0.5 },
+          size: { x: 1.0, y: 1.0 },
+          rotation: 0.0,
+          scale: 1.0,
+          display_order: $display_order,
+          orientation: null,
+          topology: { type: "point" },
+          led_mapping: null,
+          sampling_mode: null,
+          edge_behavior: null,
+          shape: null,
+          shape_preset: null,
+          attachment: null
+        }
+      ]
+    ' <<<"$active_layout_json"
+  )"
+
+  update_payload="$(jq -cn --argjson zones "$updated_zones" '{ zones: $zones }')"
+
+  log_step "Updating active layout ${layout_id} with simulator display zone"
+  api_json PUT "${BASE_URL}/api/v1/layouts/${layout_id}" "$update_payload" >/dev/null
+
+  log_step "Re-applying active layout ${layout_id}"
+  api_json POST "${BASE_URL}/api/v1/layouts/${layout_id}/apply" >/dev/null
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --name)
@@ -268,6 +352,8 @@ simulator_name="$(jq -r '.data.name' <<<"$simulator_json")"
 simulator_width="$(jq -r '.data.width' <<<"$simulator_json")"
 simulator_height="$(jq -r '.data.height' <<<"$simulator_json")"
 simulator_circular="$(jq -r '.data.circular' <<<"$simulator_json")"
+
+ensure_active_layout_target "$simulator_id" "$simulator_name"
 
 if [[ -n "$EFFECT_ID" || "$WAIT_FRAME" == true ]]; then
   log_step "Loading effect inventory"

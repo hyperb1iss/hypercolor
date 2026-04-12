@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use axum::Json;
+use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
@@ -184,6 +185,7 @@ pub async fn delete_simulated_display(
         .write()
         .await
         .remove(device_id);
+    state.display_frames.write().await.remove(device_id);
     ApiResponse::ok(serde_json::json!({
         "id": device_id,
         "deleted": true,
@@ -199,17 +201,39 @@ pub async fn get_simulated_display_frame(
         Err(response) => return response,
     };
 
-    let runtime = state.simulated_display_runtime.read().await;
-    let Some(frame) = runtime.frame(device_id) else {
-        return ApiError::not_found(format!(
-            "Simulated display frame not available: {device_id}"
-        ));
-    };
+    if state
+        .simulated_displays
+        .read()
+        .await
+        .get(device_id)
+        .is_none()
+    {
+        return ApiError::not_found(format!("Simulated display not found: {device_id}"));
+    }
 
+    if let Some(frame) = state
+        .simulated_display_runtime
+        .read()
+        .await
+        .frame(device_id)
+    {
+        return jpeg_response(Bytes::from_owner(frame.jpeg_data));
+    }
+
+    if let Some(frame) = state.display_frames.read().await.frame(device_id) {
+        return jpeg_response(Bytes::copy_from_slice(frame.jpeg_data.as_slice()));
+    }
+
+    ApiError::not_found(format!(
+        "Simulated display frame not available: {device_id}"
+    ))
+}
+
+fn jpeg_response(body: Bytes) -> Response {
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"))],
-        frame.jpeg_data,
+        body,
     )
         .into_response()
 }
