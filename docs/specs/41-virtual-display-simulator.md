@@ -330,6 +330,10 @@ The browser preview mode switch landed on 2026-04-11. `/preview` can now poll
 simulator frames via the inspection API while keeping the original live canvas
 WebSocket mode intact.
 
+The `/displays` workspace now also deep-links into that shell with
+`/preview?display=<id>`, so a selected simulator can jump from the in-app
+display preview to the dedicated browser inspection surface in one click.
+
 ### 7.4 TUI
 
 TUI support should consume the same simulator runtime and render the selected
@@ -448,6 +452,8 @@ tuning.
 - browser preview renders simulator frames at correct aspect ratio
 - circular simulators are visibly masked as circular
 - multiple simulators can coexist without frame mix-ups
+- the `/displays` workspace can hand off the selected simulator to `/preview`
+  without losing target identity
 
 ### 9.4 Browser UI Coverage
 
