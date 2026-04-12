@@ -121,6 +121,74 @@ fn push2_frame_encoding_deduplicates_palette_and_tracks_diff() {
 }
 
 #[test]
+fn push2_frame_encoding_uses_spare_slot_when_splitting_a_shared_color() {
+    let protocol = Push2Protocol::new();
+    let mut first_frame = vec![[0_u8, 0_u8, 0_u8]; 160];
+    first_frame[0] = [255, 0, 0];
+    first_frame[1] = [255, 0, 0];
+    let _ = protocol.encode_frame(&first_frame);
+
+    let mut second_frame = vec![[0_u8, 0_u8, 0_u8]; 160];
+    second_frame[0] = [0, 255, 0];
+    second_frame[1] = [255, 0, 0];
+
+    let commands = protocol.encode_frame(&second_frame);
+    assert_eq!(commands.len(), 3);
+    assert_eq!(
+        commands[0].data,
+        vec![
+            0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x03, 0x02, 0x00, 0x00, 0x7F, 0x01, 0x00, 0x00,
+            0x36, 0x01, 0xF7
+        ]
+    );
+    assert_eq!(
+        commands[1].data,
+        vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x05, 0xF7]
+    );
+    assert_eq!(commands[2].data, vec![0x90, 36, 0x02]);
+}
+
+#[test]
+fn push2_frame_encoding_keeps_unique_leds_on_their_existing_slots() {
+    let protocol = Push2Protocol::new();
+    let mut first_frame = vec![[0_u8, 0_u8, 0_u8]; 160];
+    first_frame[0] = [255, 0, 0];
+    first_frame[1] = [0, 255, 0];
+    let _ = protocol.encode_frame(&first_frame);
+
+    let mut second_frame = vec![[0_u8, 0_u8, 0_u8]; 160];
+    second_frame[0] = [0, 255, 0];
+    second_frame[1] = [0, 0, 255];
+
+    let commands = protocol.encode_frame(&second_frame);
+    assert_eq!(commands.len(), 3);
+    assert_eq!(
+        commands[0].data,
+        vec![
+            0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x03, 0x01, 0x00, 0x00, 0x7F, 0x01, 0x00, 0x00,
+            0x36, 0x01, 0xF7
+        ]
+    );
+    assert_eq!(
+        commands[1].data,
+        vec![
+            0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x03, 0x02, 0x00, 0x00, 0x00, 0x00, 0x7F, 0x01,
+            0x12, 0x00, 0xF7
+        ]
+    );
+    assert_eq!(
+        commands[2].data,
+        vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x05, 0xF7]
+    );
+    assert!(
+        commands
+            .iter()
+            .all(|command| command.data.first() == Some(&0xF0)),
+        "slot-stable color changes should not require per-key remap messages"
+    );
+}
+
+#[test]
 fn push2_shutdown_restores_cached_factory_palette() {
     let protocol = Push2Protocol::new();
     protocol

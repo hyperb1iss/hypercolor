@@ -59,6 +59,7 @@ pub(super) fn encode_led_frame(
     let touch_strip_colors = &normalized[PUSH2_MIDI_LED_COUNT..];
     let mut color_slots = HashMap::with_capacity(PUSH2_RGB_LED_COUNT);
     let mut assigned_slots = [false; PUSH2_PALETTE_SIZE];
+    let live_rgb_slots = collect_live_rgb_slots(&state.prev_led_indices[..PUSH2_RGB_LED_COUNT]);
     let mut white_button_slots = [0_u8; PUSH2_WHITE_BUTTON_COUNT];
     assigned_slots[0] = true;
     assigned_slots[PUSH2_RGB_SLOT_LIMIT..].fill(true);
@@ -67,14 +68,44 @@ pub(super) fn encode_led_frame(
     let mut command_buffer = CommandBuffer::new(commands);
     let mut palette_dirty = false;
 
-    for color in rgb_colors {
+    for (index, color) in rgb_colors.iter().enumerate() {
         if color_slots.contains_key(color) {
             continue;
         }
 
         let entry = palette_entry(*color);
-        let slot = if let Some(existing) = find_existing_slot(state, entry, &assigned_slots) {
+        let slot = if let Some(preferred) =
+            preferred_rgb_slot(state, rgb_colors, index, entry, &assigned_slots)
+        {
+            if state.palette[usize::from(preferred)] != entry {
+                let message = set_palette_entry_message(preferred, entry);
+                command_buffer.push_slice(
+                    &message,
+                    false,
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    TransferType::Primary,
+                );
+                state.palette[usize::from(preferred)] = entry;
+                palette_dirty = true;
+            }
+            preferred
+        } else if let Some(existing) = find_existing_slot(state, entry, &assigned_slots) {
             existing
+        } else if let Some(free_slot) = next_free_inactive_slot(&assigned_slots, &live_rgb_slots) {
+            if state.palette[usize::from(free_slot)] != entry {
+                let message = set_palette_entry_message(free_slot, entry);
+                command_buffer.push_slice(
+                    &message,
+                    false,
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    TransferType::Primary,
+                );
+                state.palette[usize::from(free_slot)] = entry;
+                palette_dirty = true;
+            }
+            free_slot
         } else {
             let free_slot = next_free_slot(&assigned_slots)
                 .expect("Push 2 RGB zones use at most 92 unique colors");
@@ -275,6 +306,66 @@ fn next_free_slot(assigned_slots: &[bool; 128]) -> Option<u8> {
         .take(PUSH2_RGB_SLOT_LIMIT - 1)
         .find_map(|(index, assigned)| (!assigned).then(|| u8::try_from(index).ok()))
         .flatten()
+}
+
+fn collect_live_rgb_slots(prev_led_indices: &[u8]) -> [bool; 128] {
+    let mut live_slots = [false; 128];
+    for slot in prev_led_indices.iter().copied() {
+        if is_rgb_palette_slot(slot) {
+            live_slots[usize::from(slot)] = true;
+        }
+    }
+    live_slots
+}
+
+fn preferred_rgb_slot(
+    state: &Push2State,
+    rgb_colors: &[[u8; 3]],
+    led_index: usize,
+    entry: [u8; 4],
+    assigned_slots: &[bool; 128],
+) -> Option<u8> {
+    let slot = state.prev_led_indices[led_index];
+    if !is_rgb_palette_slot(slot) || assigned_slots[usize::from(slot)] {
+        return None;
+    }
+
+    rgb_slot_rewrite_is_safe(
+        &state.prev_led_indices[..PUSH2_RGB_LED_COUNT],
+        rgb_colors,
+        slot,
+        entry,
+    )
+    .then_some(slot)
+}
+
+fn rgb_slot_rewrite_is_safe(
+    prev_led_indices: &[u8],
+    rgb_colors: &[[u8; 3]],
+    slot: u8,
+    entry: [u8; 4],
+) -> bool {
+    prev_led_indices
+        .iter()
+        .zip(rgb_colors.iter())
+        .filter(|(current_slot, _)| **current_slot == slot)
+        .all(|(_, color)| palette_entry(*color) == entry)
+}
+
+fn next_free_inactive_slot(assigned_slots: &[bool; 128], live_slots: &[bool; 128]) -> Option<u8> {
+    assigned_slots
+        .iter()
+        .enumerate()
+        .skip(1)
+        .take(PUSH2_RGB_SLOT_LIMIT - 1)
+        .find_map(|(index, assigned)| {
+            (!assigned && !live_slots[index]).then(|| u8::try_from(index).ok())
+        })
+        .flatten()
+}
+
+fn is_rgb_palette_slot(slot: u8) -> bool {
+    usize::from(slot) < PUSH2_RGB_SLOT_LIMIT && slot != 0
 }
 
 fn white_button_palette_slot(rgb: [u8; 3]) -> (u8, [u8; 4]) {
