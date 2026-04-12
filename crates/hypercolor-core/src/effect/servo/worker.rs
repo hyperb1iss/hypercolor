@@ -1284,6 +1284,7 @@ pub(super) mod test_support {
                         width,
                         height,
                         response_tx,
+                        ..
                     } => {
                         let _ = render_tx.send(RecordedRenderCommand {
                             scripts,
@@ -1394,7 +1395,6 @@ pub(super) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
     use std::path::PathBuf;
     use std::sync::atomic::Ordering;
 

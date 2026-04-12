@@ -652,7 +652,10 @@ mod tests {
         }
     }
 
-    fn attach_renderer_session(renderer: &mut ServoRenderer, worker: &super::worker::ServoWorker) {
+    fn attach_renderer_session(
+        renderer: &mut ServoRenderer,
+        worker: &crate::effect::servo::worker::ServoWorker,
+    ) {
         let client = worker_client_from(worker);
         let session_id = client
             .create_and_load(

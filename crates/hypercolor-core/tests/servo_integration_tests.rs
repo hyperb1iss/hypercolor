@@ -39,6 +39,7 @@ fn html_metadata(path: PathBuf) -> EffectMetadata {
         controls: Vec::new(),
         presets: Vec::new(),
         audio_reactive: false,
+        screen_reactive: false,
         source: EffectSource::Html { path },
         license: None,
     }
