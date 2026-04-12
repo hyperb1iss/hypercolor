@@ -313,6 +313,10 @@ pub(crate) fn parse_simulator_dimension(raw: &str, label: &str) -> Result<u32, S
         .ok_or_else(|| format!("{label} must be a positive number."))
 }
 
+pub(crate) fn display_preview_shell_url(display_id: &str) -> String {
+    format!("/preview?display={display_id}")
+}
+
 #[component]
 fn PickerPlaceholder(#[prop(into)] message: String) -> impl IntoView {
     view! {
@@ -797,8 +801,28 @@ fn DisplayWorkspace(selected_display: Memo<Option<api::DisplaySummary>>) -> impl
                 <div class="text-xs uppercase tracking-wider text-fg-tertiary">
                     "Live preview"
                 </div>
-                <div class="text-[11px] text-fg-tertiary">
-                    {move || subtitle.get().unwrap_or_default()}
+                <div class="flex items-center gap-3">
+                    <div class="text-[11px] text-fg-tertiary">
+                        {move || subtitle.get().unwrap_or_default()}
+                    </div>
+                    <Show when=move || selected_display.with(Option::is_some) fallback=|| ()>
+                        {move || {
+                            selected_display.get().map(|display| {
+                                let href = display_preview_shell_url(&display.id);
+                                view! {
+                                    <a
+                                        href=href
+                                        target="_blank"
+                                        rel="noopener"
+                                        class="inline-flex items-center gap-1.5 text-[11px] text-fg-tertiary transition hover:text-accent-primary"
+                                    >
+                                        <Icon icon=LuExternalLink width="11" height="11" />
+                                        "Open preview"
+                                    </a>
+                                }
+                            })
+                        }}
+                    </Show>
                 </div>
             </header>
             <div class="flex min-h-0 flex-1 items-center justify-center p-4">

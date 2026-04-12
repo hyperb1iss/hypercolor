@@ -17,7 +17,7 @@ mod icons;
 mod toasts;
 
 use api::{DisplaySummary, UpdateSimulatedDisplayRequest};
-use displays::{is_simulator_display, parse_simulator_dimension};
+use displays::{display_preview_shell_url, is_simulator_display, parse_simulator_dimension};
 
 fn display_summary(family: &str) -> DisplaySummary {
     DisplaySummary {
@@ -89,5 +89,13 @@ fn update_simulated_display_request_serializes_only_present_fields() {
             "width": 600,
             "circular": false
         })
+    );
+}
+
+#[test]
+fn display_preview_shell_url_targets_selected_display() {
+    assert_eq!(
+        display_preview_shell_url("display-123"),
+        "/preview?display=display-123"
     );
 }
