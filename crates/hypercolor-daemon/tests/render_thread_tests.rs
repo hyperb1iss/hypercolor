@@ -2223,10 +2223,16 @@ async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
     let initial_screen = screen_canvas_rx.borrow().clone();
 
     let retained_frame = wait_for_next_frame(&mut frame_rx, initial_frame.frame_number).await;
-    let retained_canvas =
-        wait_for_next_canvas_frame(&mut canvas_rx, initial_canvas.frame_number).await;
-    let retained_screen =
-        wait_for_next_canvas_frame(&mut screen_canvas_rx, initial_screen.frame_number).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let canvas_changed = canvas_rx
+        .has_changed()
+        .expect("canvas watch should remain connected");
+    let screen_canvas_changed = screen_canvas_rx
+        .has_changed()
+        .expect("screen canvas watch should remain connected");
+    let retained_canvas = canvas_rx.borrow().clone();
+    let retained_screen = screen_canvas_rx.borrow().clone();
+    let preview_snapshot = state.preview_runtime.snapshot();
 
     {
         let mut rl = state.render_loop.write().await;
@@ -2264,6 +2270,14 @@ async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
     assert_eq!(initial_right, [0, 255, 0]);
     assert_eq!(retained_left, [255, 0, 0]);
     assert_eq!(retained_right, [0, 255, 0]);
+    assert!(
+        !canvas_changed,
+        "expected retained preview surfaces to stop republishing metadata-only canvas updates"
+    );
+    assert!(
+        !screen_canvas_changed,
+        "expected retained preview surfaces to stop republishing metadata-only screen preview updates"
+    );
     assert_eq!(initial_canvas.rgba_bytes().as_ptr(), source_ptr);
     assert_eq!(retained_canvas.rgba_bytes().as_ptr(), source_ptr);
     assert_eq!(initial_screen.rgba_bytes().as_ptr(), source_ptr);
@@ -2272,6 +2286,8 @@ async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
         retained_canvas.rgba_bytes().as_ptr(),
         retained_screen.rgba_bytes().as_ptr()
     );
+    assert!(preview_snapshot.latest_canvas_frame_number > initial_canvas.frame_number);
+    assert!(preview_snapshot.latest_screen_canvas_frame_number > initial_screen.frame_number);
 }
 
 #[tokio::test]

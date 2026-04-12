@@ -3,7 +3,7 @@ use std::time::Instant;
 use hypercolor_core::bus::CanvasFrame;
 use hypercolor_core::input::{InputData, InteractionData, ScreenData};
 use hypercolor_core::types::audio::AudioData;
-use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+use hypercolor_core::types::canvas::{Canvas, PublishedSurface, PublishedSurfaceStorageIdentity};
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
 use hypercolor_types::sensor::SystemSnapshot;
 use std::sync::Arc;
@@ -26,6 +26,14 @@ struct AudioSignalSnapshot {
     mid: f32,
     treble: f32,
     beat: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StableCanvasFrameIdentity {
+    generation: u64,
+    storage: PublishedSurfaceStorageIdentity,
+    width: u32,
+    height: u32,
 }
 
 pub(crate) async fn sample_inputs(state: &RenderThreadState, delta_secs: f32) -> FrameInputs {
@@ -124,9 +132,6 @@ pub(crate) fn publish_frame_updates(
         last_audio_level_update_ms,
         publish_audio_level,
     );
-    state
-        .preview_runtime
-        .note_canvas_frame(frame_number, elapsed_ms);
     let canvas_receivers = state.preview_canvas_receiver_count();
     if canvas_receivers > 0 {
         let canvas_frame = if let Some(surface) = preview_surface.or(frame_surface) {
@@ -143,10 +148,17 @@ pub(crate) fn publish_frame_updates(
         } else {
             CanvasFrame::empty()
         };
-        state
-            .preview_runtime
-            .record_canvas_publication(frame_number, elapsed_ms);
-        let _ = state.event_bus.canvas_sender().send(canvas_frame);
+        state.preview_runtime.note_canvas_frame(frame_number, elapsed_ms);
+        let publish_canvas = {
+            let current = state.event_bus.canvas_sender().borrow();
+            should_publish_canvas_frame(&current, &canvas_frame)
+        };
+        if publish_canvas {
+            state
+                .preview_runtime
+                .record_canvas_publication(frame_number, elapsed_ms);
+            let _ = state.event_bus.canvas_sender().send(canvas_frame);
+        }
     }
     let screen_canvas_receivers = state.event_bus.screen_canvas_receiver_count();
     if screen_canvas_receivers > 0 {
@@ -155,7 +167,14 @@ pub(crate) fn publish_frame_updates(
         } else {
             CanvasFrame::empty()
         };
-        if should_publish_screen_frame(state, &screen_frame) {
+        state
+            .preview_runtime
+            .note_screen_canvas_frame(frame_number, elapsed_ms);
+        let publish_screen = {
+            let current = state.event_bus.screen_canvas_sender().borrow();
+            should_publish_canvas_frame(&current, &screen_frame)
+        };
+        if publish_screen {
             state
                 .preview_runtime
                 .record_screen_canvas_publication(frame_number, elapsed_ms);
@@ -175,17 +194,17 @@ pub(crate) fn publish_frame_updates(
     }
 }
 
-fn should_publish_screen_frame(state: &RenderThreadState, next_frame: &CanvasFrame) -> bool {
-    if !canvas_frame_is_empty(next_frame) {
-        return true;
-    }
-
-    let current = state.event_bus.screen_canvas_sender().borrow();
-    !canvas_frame_is_empty(&current)
+fn should_publish_canvas_frame(current: &CanvasFrame, next: &CanvasFrame) -> bool {
+    stable_canvas_frame_identity(current) != stable_canvas_frame_identity(next)
 }
 
-fn canvas_frame_is_empty(frame: &CanvasFrame) -> bool {
-    frame.width == 0 || frame.height == 0
+fn stable_canvas_frame_identity(frame: &CanvasFrame) -> Option<StableCanvasFrameIdentity> {
+    (frame.width > 0 && frame.height > 0).then(|| StableCanvasFrameIdentity {
+        generation: frame.surface().generation(),
+        storage: frame.surface().storage_identity(),
+        width: frame.width,
+        height: frame.height,
+    })
 }
 
 fn maybe_publish_audio_level_event(
