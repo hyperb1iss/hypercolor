@@ -546,9 +546,10 @@ impl PreviewManager {
                 while let Ok(request) = build_requests.recv() {
                     let build_started = Instant::now();
 
-                    if request.transport == PreviewTransport::Halfblocks
-                        || build_use_fast_halfblocks
-                    {
+                    let use_fast_halfblocks = request.transport == PreviewTransport::Halfblocks
+                        || build_use_fast_halfblocks;
+
+                    if use_fast_halfblocks {
                         match halfblocks_fast::HalfblocksFrame::new(
                             request.frame.as_ref(),
                             request.area,
