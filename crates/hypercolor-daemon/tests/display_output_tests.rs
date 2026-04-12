@@ -32,7 +32,7 @@ use hypercolor_types::spatial::{
 };
 
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
-use hypercolor_daemon::display_frames::DisplayFrameRuntime;
+use hypercolor_daemon::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
 use hypercolor_daemon::display_output::overlay::{
     DefaultOverlayRendererFactory, OverlayRendererBinding, OverlayRendererFactory,
 };
@@ -63,6 +63,20 @@ impl RecordingDisplayBackend {
     fn with_write_delay(mut self, write_delay: Duration) -> Self {
         self.write_delay = write_delay;
         self
+    }
+}
+
+struct FailingDisplayBackend {
+    expected_device_id: DeviceId,
+    connected: bool,
+}
+
+impl FailingDisplayBackend {
+    fn new(expected_device_id: DeviceId) -> Self {
+        Self {
+            expected_device_id,
+            connected: false,
+        }
     }
 }
 
@@ -120,6 +134,58 @@ impl DeviceBackend for RecordingDisplayBackend {
 
         self.display_writes.lock().await.push(jpeg_data.to_vec());
         Ok(())
+    }
+}
+
+#[async_trait]
+impl DeviceBackend for FailingDisplayBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "usb".to_owned(),
+            name: "USB Failing".to_owned(),
+            description: "Test backend that rejects display writes".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        self.connected = true;
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        self.connected = false;
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        Ok(())
+    }
+
+    async fn write_display_frame(&mut self, id: &DeviceId, _jpeg_data: &[u8]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        if !self.connected {
+            bail!("display write while disconnected");
+        }
+
+        bail!("intentional display write failure")
     }
 }
 
@@ -397,6 +463,23 @@ async fn wait_for_display_write_count(
     })
     .await
     .expect("display output should reach expected write count within timeout")
+}
+
+async fn wait_for_display_frame_snapshot(
+    display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
+    device_id: DeviceId,
+) -> DisplayFrameSnapshot {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(frame) = display_frames.read().await.frame(device_id) {
+                return frame;
+            }
+
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("display preview frame should arrive within timeout")
 }
 
 async fn wait_for_overlay_runtime(
@@ -1455,6 +1538,75 @@ async fn automatic_display_output_renders_clock_overlay_with_default_factory() {
     assert_eq!(runtime.status, OverlaySlotStatus::Active);
     assert!(runtime.last_error.is_none());
     assert!(runtime.last_rendered_at.is_some());
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
+async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails() {
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
+    let device_id = DeviceId::new();
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![display_zone(
+            &format!("device:{device_id}"),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(FailingDisplayBackend::new(device_id)));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 320, 200, false))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        device_settings: default_device_settings(),
+        event_bus: Arc::clone(&event_bus),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        display_overlays: default_display_overlays(),
+        display_overlay_runtime: default_display_overlay_runtime(),
+        sensor_snapshot_rx: default_sensor_snapshot_rx(),
+        overlay_factory: default_overlay_factory(),
+        display_frames: Arc::clone(&display_frames),
+    });
+
+    let red = solid_canvas(Rgba::new(255, 0, 0, 255));
+    let _ = event_bus
+        .canvas_sender()
+        .send(CanvasFrame::from_canvas(&red, 1, 16));
+
+    let frame = wait_for_display_frame_snapshot(&display_frames, device_id).await;
+    let image = decode_jpeg(frame.jpeg_data.as_slice());
+    let pixel = image.get_pixel(image.width() / 2, image.height() / 2);
+    assert!(
+        pixel[0] > 200,
+        "expected preview frame to preserve the rendered red image, got {pixel:?}"
+    );
+    assert_eq!(frame.width, 320);
+    assert_eq!(frame.height, 200);
 
     thread.shutdown().await.expect("display thread should stop");
 }
