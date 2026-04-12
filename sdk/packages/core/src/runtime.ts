@@ -24,6 +24,10 @@ interface HypercolorAudio {
  * Screen zone color sampling from a 28x20 grid (560 points).
  */
 interface HypercolorZone {
+    /** Grid width in zones. */
+    width: number
+    /** Grid height in zones. */
+    height: number
     /** Hue values (0-360) for each sample point */
     hue: ArrayLike<number>
     /** Saturation values (0-100) for each sample point */

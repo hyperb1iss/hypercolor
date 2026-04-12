@@ -82,16 +82,20 @@ export function getScreenZoneData(): ScreenZoneData {
         }
     }
 
-    const hue = new Float32Array(engine.zone.hue)
-    const saturation = new Float32Array(560)
-    const lightness = new Float32Array(560)
+    const width = Number.isFinite(engine.zone.width) ? Math.max(1, Math.floor(engine.zone.width)) : 28
+    const height = Number.isFinite(engine.zone.height) ? Math.max(1, Math.floor(engine.zone.height)) : 20
+    const sampleCount = width * height
+    const hue = new Float32Array(sampleCount)
+    const saturation = new Float32Array(sampleCount)
+    const lightness = new Float32Array(sampleCount)
 
-    for (let i = 0; i < 560; i++) {
+    for (let i = 0; i < sampleCount; i++) {
+        hue[i] = engine.zone.hue[i] ?? 0
         saturation[i] = (engine.zone.saturation[i] ?? 0) / 100
         lightness[i] = (engine.zone.lightness[i] ?? 0) / 100
     }
 
-    return { height: 20, hue, lightness, saturation, width: 28 }
+    return { height, hue, lightness, saturation, width }
 }
 
 /** Normalize dB level (-100..0) to 0..1. */

@@ -88,6 +88,9 @@ interface NewApiDef {
     description?: string
     author?: string
     audio?: boolean
+    screen?: boolean
+    category?: string
+    builtinId?: string
     presets?: PresetDef[]
     controls: Record<string, unknown>
     resolvedControls: Array<{
@@ -198,10 +201,13 @@ async function extractMetadata(entryPath: string) {
                 effect: {
                     audioReactive: def.audio ?? false,
                     author: def.author ?? 'Hypercolor',
+                    builtinId: def.builtinId,
+                    category: def.category,
                     description: def.description ?? '',
                     name: def.name,
                     presets: def.presets ?? [],
                     renderer: def.type === 'canvas' ? 'canvas2d' : def.type === 'face' ? undefined : 'webgl',
+                    screenReactive: def.screen ?? false,
                     type: def.type,
                 },
             }
@@ -320,12 +326,18 @@ function generateHTML(
     description: string,
     author: string,
     audioReactive: boolean,
+    screenReactive: boolean,
+    category: string | undefined,
+    builtinId: string | undefined,
     renderer: string | undefined,
     controlMetas: string[],
     presetMetas: string[],
     jsBundle: string,
 ): string {
     const audioTag = `\n  <meta audio-reactive="${audioReactive}"/>`
+    const screenTag = `\n  <meta screen-reactive="${screenReactive}"/>`
+    const categoryTag = category ? `\n  <meta category="${escapeAttr(category)}"/>` : ''
+    const builtinTag = builtinId ? `\n  <meta builtin-id="${escapeAttr(builtinId)}"/>` : ''
     const rendererTag = renderer ? `\n  <meta renderer="${escapeAttr(renderer)}"/>` : ''
     const presetBlock = presetMetas.length > 0 ? `\n${presetMetas.join('\n')}` : ''
     return `<!DOCTYPE html>
@@ -335,7 +347,7 @@ function generateHTML(
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeAttr(effectName)}</title>
   <meta description="${escapeAttr(description)}"/>
-  <meta publisher="${escapeAttr(author)}"/>${audioTag}${rendererTag}
+  <meta publisher="${escapeAttr(author)}"/>${audioTag}${screenTag}${categoryTag}${builtinTag}${rendererTag}
 ${controlMetas.join('\n')}${presetBlock}
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
@@ -422,6 +434,9 @@ async function buildEffect(entryPath: string, outDir: string) {
               description,
               author,
               (effect as any)?.audioReactive ?? false,
+              (effect as any)?.screenReactive ?? false,
+              (effect as any)?.category,
+              (effect as any)?.builtinId,
               (effect as any)?.renderer,
               controlMetas,
               presetMetas,

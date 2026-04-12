@@ -54,6 +54,9 @@ export interface EffectFnOptions {
     description?: string
     author?: string
     audio?: boolean
+    screen?: boolean
+    category?: string
+    builtinId?: string
     /** Effect-defined presets — named control snapshots bundled with the effect. */
     presets?: PresetDef[]
     vertexShader?: string
@@ -269,6 +272,9 @@ interface EffectDef {
     description?: string
     author?: string
     audio?: boolean
+    screen?: boolean
+    category?: string
+    builtinId?: string
     presets?: PresetDef[]
 }
 
@@ -298,11 +304,14 @@ export function effect(name: string, shader: string, controls: ControlMap, optio
         storeMetadata({
             audio: opts.audio,
             author: opts.author,
+            builtinId: opts.builtinId,
+            category: opts.category,
             controls,
             description: opts.description,
             name,
             presets: opts.presets,
             resolvedControls: resolved,
+            screen: opts.screen,
             shader,
             type: 'webgl',
         })

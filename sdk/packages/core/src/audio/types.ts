@@ -97,6 +97,6 @@ export interface ScreenZoneData {
     hue: Float32Array
     saturation: Float32Array
     lightness: Float32Array
-    width: 28
-    height: 20
+    width: number
+    height: number
 }

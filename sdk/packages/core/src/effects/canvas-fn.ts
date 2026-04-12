@@ -57,6 +57,10 @@ export type FactoryFn = () => DrawFn
 export interface CanvasFnOptions {
     description?: string
     author?: string
+    audio?: boolean
+    screen?: boolean
+    category?: string
+    builtinId?: string
     /**
      * Coordinate system this effect is authored in. Pass to keep the effect
      * pixel-identical at its original design resolution while automatically
@@ -223,6 +227,10 @@ interface CanvasDef {
     name: string
     controls: ControlMap
     resolvedControls: ResolvedCanvasControl[]
+    audio?: boolean
+    screen?: boolean
+    category?: string
+    builtinId?: string
     description?: string
     author?: string
     designBasis?: DesignBasis
@@ -257,13 +265,17 @@ export function canvas(
 
     if (typeof globalThis !== 'undefined' && (globalThis as Record<string, unknown>).__HYPERCOLOR_METADATA_ONLY__) {
         storeCanvasMetadata({
+            audio: opts.audio,
             author: opts.author,
+            builtinId: opts.builtinId,
+            category: opts.category,
             controls,
             description: opts.description,
             designBasis: opts.designBasis,
             name,
             presets: opts.presets,
             resolvedControls: resolved,
+            screen: opts.screen,
             type: 'canvas',
         })
         return
@@ -285,13 +297,17 @@ canvas.stateful = function stateful(
 
     if (typeof globalThis !== 'undefined' && (globalThis as Record<string, unknown>).__HYPERCOLOR_METADATA_ONLY__) {
         storeCanvasMetadata({
+            audio: opts.audio,
             author: opts.author,
+            builtinId: opts.builtinId,
+            category: opts.category,
             controls,
             description: opts.description,
             designBasis: opts.designBasis,
             name,
             presets: opts.presets,
             resolvedControls: resolved,
+            screen: opts.screen,
             type: 'canvas',
         })
         return
