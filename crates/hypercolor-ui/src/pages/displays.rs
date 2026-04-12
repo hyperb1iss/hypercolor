@@ -896,14 +896,23 @@ fn OverlayStackPanel(selected_id: ReadSignal<Option<String>>) -> impl IntoView {
             return;
         };
         let set_runtime_map = set_runtime_map;
+        let requested_id = display_id.clone();
         spawn_local(async move {
-            if let Ok(entries) = api::fetch_overlay_runtimes(&display_id).await {
-                let map = entries
-                    .into_iter()
-                    .map(|entry| (entry.slot_id, entry.runtime))
-                    .collect();
-                set_runtime_map.set(map);
+            let Ok(entries) = api::fetch_overlay_runtimes(&display_id).await else {
+                return;
+            };
+            // Only apply the response if the user is still looking at the
+            // same display. Without this guard a late response from the
+            // previous display would paint its runtime on the current one
+            // until the next 2s tick, showing wrong status pills.
+            if selected_id.get_untracked().as_deref() != Some(requested_id.as_str()) {
+                return;
             }
+            let map = entries
+                .into_iter()
+                .map(|entry| (entry.slot_id, entry.runtime))
+                .collect();
+            set_runtime_map.set(map);
         });
     };
     // Seed immediately on display change.
@@ -942,15 +951,31 @@ fn OverlayStackPanel(selected_id: ReadSignal<Option<String>>) -> impl IntoView {
         config.overlays.into_iter().find(|slot| slot.id == slot_id)
     });
 
-    let refresh = move || {
-        let Some(display_id) = selected_id.get_untracked() else {
-            return;
-        };
-        let set_overlay_config = set_overlay_config;
-        spawn_local(async move {
-            let result = api::fetch_display_overlays(&display_id).await;
-            set_overlay_config.set(Some(result));
-        });
+    let refresh = {
+        let fetch_runtime_map = fetch_runtime_map.clone();
+        move || {
+            let Some(display_id) = selected_id.get_untracked() else {
+                return;
+            };
+            let set_overlay_config = set_overlay_config;
+            let requested_id = display_id.clone();
+            spawn_local(async move {
+                let result = api::fetch_display_overlays(&display_id).await;
+                // Drop the response if the display selection flipped while
+                // the request was in flight. Otherwise we'd paint the old
+                // display's stack onto the new one.
+                if selected_id.get_untracked().as_deref()
+                    != Some(requested_id.as_str())
+                {
+                    return;
+                }
+                set_overlay_config.set(Some(result));
+            });
+            // Also refetch runtime so row pills catch up to the mutation
+            // immediately rather than waiting up to two seconds for the
+            // next interval tick.
+            fetch_runtime_map();
+        }
     };
 
     let add_disabled = Signal::derive(move || selected_id.with(Option::is_none));
@@ -2079,30 +2104,36 @@ where
     let fetch_sensors_interval = fetch_sensors.clone();
     let _sensor_interval = use_interval_fn(move || fetch_sensors_interval(), 2000_u64);
 
-    let patch_sensor = patch.clone();
+    // Unify the text input and the pick buttons through a single reactive
+    // signal so a click on a picked sensor cannot race a blur-triggered
+    // `on:change` from the text input — both paths write the signal and a
+    // single debounced PATCH reconciles the latest value with the daemon.
+    let (sensor_label_signal, set_sensor_label_signal) = signal(config.sensor.clone());
+    Effect::new({
+        let patch_debounced = patch_debounced.clone();
+        move |previous: Option<String>| {
+            let current = sensor_label_signal.get();
+            // Skip the initial render so we don't PATCH the slot with its
+            // own seed value.
+            if previous.is_none() || previous.as_ref() == Some(&current) {
+                return current;
+            }
+            if let Some(source) = mutate_sensor_source(slot_state, |config| {
+                config.sensor = current.clone();
+            }) {
+                patch_debounced(api::UpdateOverlaySlotRequest {
+                    source: Some(source),
+                    ..Default::default()
+                });
+            }
+            current
+        }
+    });
     let on_sensor = move |event: leptos::ev::Event| {
-        let value = event_target_value(&event);
-        if let Some(source) =
-            mutate_sensor_source(slot_state, move |config| config.sensor = value.clone())
-        {
-            patch_sensor(api::UpdateOverlaySlotRequest {
-                source: Some(source),
-                ..Default::default()
-            });
-        }
+        set_sensor_label_signal.set(event_target_value(&event));
     };
-
-    let patch_pick = patch.clone();
     let on_pick_sensor = move |label: String| {
-        let chosen = label.clone();
-        if let Some(source) =
-            mutate_sensor_source(slot_state, move |config| config.sensor = chosen)
-        {
-            patch_pick(api::UpdateOverlaySlotRequest {
-                source: Some(source),
-                ..Default::default()
-            });
-        }
+        set_sensor_label_signal.set(label);
     };
 
     let patch_style = patch.clone();
@@ -2169,7 +2200,6 @@ where
         }
     };
 
-    let sensor = config.sensor.clone();
     let unit = config.unit_label.clone().unwrap_or_default();
     let range_min = config.range_min.to_string();
     let range_max = config.range_max.to_string();
@@ -2186,10 +2216,11 @@ where
         if readings.is_empty() {
             return None;
         }
-        let selected = slot_state.with_value(|slot| match &slot.source {
-            OverlaySource::Sensor(config) => config.sensor.clone(),
-            _ => String::new(),
-        });
+        // Highlight the active label from the signal so clicks feel
+        // responsive and stay in lockstep with the input field. Using
+        // slot_state here would make the row only re-highlight after
+        // the PATCH refetch lands.
+        let selected = sensor_label_signal.get();
         let rows = readings
             .into_iter()
             .map(|reading| {
@@ -2232,9 +2263,9 @@ where
             <input
                 type="text"
                 class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none"
-                prop:value=sensor
+                prop:value=move || sensor_label_signal.get()
                 placeholder="cpu_temp"
-                on:change=on_sensor
+                on:input=on_sensor
             />
         </InspectorField>
         {sensor_browser}
