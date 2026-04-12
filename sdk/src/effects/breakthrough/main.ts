@@ -12,56 +12,50 @@ const PALETTE_MODES = [
     'Toxic',
     'Vaporwave',
 ] as const
-const STYLE_MODES = ['Glitch', 'Grain', 'Holo', 'Standard'] as const
+const STYLE_MODES = ['Glitch', 'Grain', 'Holo', 'Standard', 'Fractal'] as const
 
 export default effect(
     'Breakthrough',
     shader,
     {
-        intensity: num('Intensity', [20, 220], 160, {
-            group: 'Color',
-            step: 1,
-            tooltip: 'Overall brightness and color energy.',
-            uniform: 'iColorIntensity',
-        }),
         palette: combo('Palette', PALETTE_MODES, {
             default: 'Neon',
             group: 'Color',
             tooltip: 'Core color palette.',
             uniform: 'iColorMode',
         }),
-        pulse: num('Pulse', [0, 100], 60, {
+        pulse: num('Pulse', [0, 100], 72, {
             group: 'Geometry',
             step: 1,
-            tooltip: 'Radial breathing and shimmer.',
+            tooltip: 'Radial breathing, outward surge, and shimmer.',
             uniform: 'iPulse',
         }),
-        segments: num('Segments', [3, 12], 8, {
+        segments: num('Segments', [3, 12], 9, {
             group: 'Geometry',
             step: 1,
             tooltip: 'Number of mirrored kaleidoscope slices.',
             uniform: 'iSegments',
         }),
-        speed: num('Speed', [1, 20], 7, {
+        speed: num('Speed', [1, 20], 8.5, {
             group: 'Motion',
             normalize: 'none',
             step: 0.5,
-            tooltip: 'Tunnel motion speed. Above 10 enters overdrive.',
+            tooltip: 'Outward tunnel flow speed. Above 10 enters overdrive.',
             uniform: 'iSpeed',
         }),
         style: combo('Style', STYLE_MODES, {
-            default: 'Standard',
+            default: 'Fractal',
             group: 'Color',
             tooltip: 'Post-processing treatment.',
             uniform: 'iStyle',
         }),
-        twist: num('Twist', [0, 100], 55, {
+        twist: num('Twist', [0, 100], 72, {
             group: 'Motion',
             step: 1,
             tooltip: 'Angular spiral through the tunnel depth.',
             uniform: 'iTwist',
         }),
-        warp: num('Warp', [0, 100], 45, {
+        warp: num('Warp', [0, 100], 64, {
             group: 'Geometry',
             step: 1,
             tooltip: 'Psychedelic distortion before the kaleidoscope fold.',
@@ -75,22 +69,20 @@ export default effect(
         presets: [
             {
                 controls: {
-                    intensity: 210,
                     palette: 'Neon',
-                    pulse: 85,
-                    segments: 12,
-                    speed: 14,
-                    style: 'Glitch',
-                    twist: 95,
-                    warp: 100,
+                    pulse: 78,
+                    segments: 10,
+                    speed: 12.5,
+                    style: 'Fractal',
+                    twist: 90,
+                    warp: 82,
                 },
                 description:
-                    'Fractal geometry shatters into infinite recursive symmetry — maximum segments, full warp, neon overload',
+                    'Recursive petals, tunneling mirrors, and neon chrysanthemum geometry pushed to the edge of coherence.',
                 name: 'DMT Breakthrough',
             },
             {
                 controls: {
-                    intensity: 160,
                     palette: 'Amethyst',
                     pulse: 30,
                     segments: 8,
@@ -105,7 +97,6 @@ export default effect(
             },
             {
                 controls: {
-                    intensity: 80,
                     palette: 'Toxic',
                     pulse: 70,
                     segments: 5,
@@ -120,14 +111,13 @@ export default effect(
             },
             {
                 controls: {
-                    intensity: 140,
                     palette: 'Sunset',
-                    pulse: 45,
-                    segments: 6,
-                    speed: 4,
-                    style: 'Standard',
+                    pulse: 58,
+                    segments: 7,
+                    speed: 4.5,
+                    style: 'Fractal',
                     twist: 60,
-                    warp: 35,
+                    warp: 42,
                 },
                 description:
                     'Golden hour refracting through a desert crystal — warm amber and deep purple fold into gentle geometry',
@@ -135,12 +125,11 @@ export default effect(
             },
             {
                 controls: {
-                    intensity: 190,
                     palette: 'Monochrome',
                     pulse: 15,
                     segments: 3,
                     speed: 8,
-                    style: 'Grain',
+                    style: 'Fractal',
                     twist: 80,
                     warp: 50,
                 },
@@ -150,7 +139,6 @@ export default effect(
             },
             {
                 controls: {
-                    intensity: 140,
                     palette: 'Deep Sea',
                     pulse: 90,
                     segments: 4,
@@ -165,12 +153,11 @@ export default effect(
             },
             {
                 controls: {
-                    intensity: 220,
                     palette: 'Electric',
-                    pulse: 60,
+                    pulse: 78,
                     segments: 10,
                     speed: 18,
-                    style: 'Glitch',
+                    style: 'Fractal',
                     twist: 100,
                     warp: 90,
                 },
