@@ -28,6 +28,21 @@ pub struct CreateSimulatedDisplayRequest {
     pub enabled: bool,
 }
 
+/// Request body for `PATCH /api/v1/simulators/displays/{id}`.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UpdateSimulatedDisplayRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub circular: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
 /// `GET /api/v1/simulators/displays` — list persisted virtual displays.
 pub async fn fetch_simulated_displays() -> Result<Vec<SimulatedDisplaySummary>, String> {
     client::fetch_json::<Vec<SimulatedDisplaySummary>>("/api/v1/simulators/displays")
@@ -45,4 +60,21 @@ pub async fn create_simulated_display(
     )
     .await
     .map_err(Into::into)
+}
+
+/// `PATCH /api/v1/simulators/displays/{id}` — update a virtual display.
+pub async fn patch_simulated_display(
+    id: &str,
+    body: &UpdateSimulatedDisplayRequest,
+) -> Result<SimulatedDisplaySummary, String> {
+    let url = format!("/api/v1/simulators/displays/{id}");
+    client::patch_json::<UpdateSimulatedDisplayRequest, SimulatedDisplaySummary>(&url, body)
+        .await
+        .map_err(Into::into)
+}
+
+/// `DELETE /api/v1/simulators/displays/{id}` — remove a virtual display.
+pub async fn delete_simulated_display(id: &str) -> Result<(), String> {
+    let url = format!("/api/v1/simulators/displays/{id}");
+    client::delete_empty(&url).await.map_err(Into::into)
 }

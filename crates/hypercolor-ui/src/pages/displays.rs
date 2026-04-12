@@ -32,6 +32,7 @@ pub fn DisplaysPage() -> impl IntoView {
     let displays: DisplaysResource = LocalResource::new(api::fetch_displays);
     let (selected_id, set_selected_id) = signal(None::<String>);
     let (simulator_modal_open, set_simulator_modal_open) = signal(false);
+    let (editing_simulator, set_editing_simulator) = signal(None::<api::DisplaySummary>);
 
     // Auto-select the first display once the list loads so the workspace
     // isn't empty on first render.
@@ -54,10 +55,25 @@ pub fn DisplaysPage() -> impl IntoView {
     });
     let open_simulator_modal = Callback::new(move |_| set_simulator_modal_open.set(true));
     let close_simulator_modal = Callback::new(move |_| set_simulator_modal_open.set(false));
+    let open_simulator_editor =
+        Callback::new(move |display: api::DisplaySummary| set_editing_simulator.set(Some(display)));
+    let close_simulator_editor = Callback::new(move |_| set_editing_simulator.set(None));
     let on_simulator_created = Callback::new(move |summary: api::SimulatedDisplaySummary| {
         displays.refetch();
         set_selected_id.set(Some(summary.id));
         set_simulator_modal_open.set(false);
+    });
+    let on_simulator_updated = Callback::new(move |summary: api::SimulatedDisplaySummary| {
+        displays.refetch();
+        set_selected_id.set(Some(summary.id));
+        set_editing_simulator.set(None);
+    });
+    let on_simulator_deleted = Callback::new(move |id: String| {
+        displays.refetch();
+        if selected_id.get_untracked().as_deref() == Some(id.as_str()) {
+            set_selected_id.set(None);
+        }
+        set_editing_simulator.set(None);
     });
 
     view! {
@@ -79,6 +95,7 @@ pub fn DisplaysPage() -> impl IntoView {
                     selected_id=selected_id
                     set_selected_id=set_selected_id
                     on_create_simulator=open_simulator_modal
+                    on_manage_simulator=open_simulator_editor
                 />
                 <DisplayWorkspace selected_display=selected_display />
                 <OverlayStackPanel selected_id=selected_id />
@@ -88,6 +105,20 @@ pub fn DisplaysPage() -> impl IntoView {
                     on_created=on_simulator_created
                     on_close=close_simulator_modal
                 />
+            </Show>
+            <Show when=move || editing_simulator.with(Option::is_some) fallback=|| ()>
+                {move || {
+                    editing_simulator.get().map(|display| {
+                        view! {
+                            <EditSimulatorModal
+                                display=display
+                                on_updated=on_simulator_updated
+                                on_deleted=on_simulator_deleted
+                                on_close=close_simulator_editor
+                            />
+                        }
+                    })
+                }}
             </Show>
         </div>
     }
@@ -99,6 +130,7 @@ fn DisplayPicker(
     selected_id: ReadSignal<Option<String>>,
     set_selected_id: WriteSignal<Option<String>>,
     on_create_simulator: Callback<()>,
+    on_manage_simulator: Callback<api::DisplaySummary>,
 ) -> impl IntoView {
     view! {
         <aside class="flex min-h-0 flex-col overflow-hidden rounded-lg border border-edge-subtle bg-surface-raised">
@@ -163,7 +195,12 @@ fn DisplayPicker(
                                     .clone()
                                     .into_iter()
                                     .map(|display| {
-                                        render_picker_row(display, selected_id, set_selected_id)
+                                        render_picker_row(
+                                            display,
+                                            selected_id,
+                                            set_selected_id,
+                                            on_manage_simulator,
+                                        )
                                     })
                                     .collect_view();
                                 view! { <ul class="divide-y divide-edge-subtle">{rows}</ul> }
@@ -181,6 +218,7 @@ fn render_picker_row(
     display: api::DisplaySummary,
     selected_id: ReadSignal<Option<String>>,
     set_selected_id: WriteSignal<Option<String>>,
+    on_manage_simulator: Callback<api::DisplaySummary>,
 ) -> impl IntoView {
     let id = display.id.clone();
     let id_for_click = id.clone();
@@ -188,6 +226,7 @@ fn render_picker_row(
     let is_active = Signal::derive(move || {
         selected_id.with(|current| current.as_deref() == Some(id_for_active.as_str()))
     });
+    let is_simulator = is_simulator_display(&display);
     let shape_label = if display.circular {
         "Round"
     } else if display.width > display.height * 2 {
@@ -204,21 +243,34 @@ fn render_picker_row(
             display.enabled_overlay_count, display.overlay_count
         )
     };
+    let display_for_manage = display.clone();
     let vendor = display.vendor;
     let name = display.name;
 
     view! {
-        <li>
+        <li class="flex items-stretch">
             <button
                 type="button"
-                class="flex w-full flex-col items-start gap-1 px-3 py-2 text-left transition hover:bg-surface-overlay"
+                class="flex min-w-0 flex-1 flex-col items-start gap-1 px-3 py-2 text-left transition hover:bg-surface-overlay"
                 class:bg-surface-overlay=move || is_active.get()
                 class:border-l-2=move || is_active.get()
                 class:border-accent-primary=move || is_active.get()
                 on:click=move |_| set_selected_id.set(Some(id_for_click.clone()))
             >
                 <span class="flex w-full items-center justify-between gap-2">
-                    <span class="truncate text-sm font-medium text-fg-primary">{name}</span>
+                    <span class="flex min-w-0 items-center gap-2">
+                        <span class="truncate text-sm font-medium text-fg-primary">{name}</span>
+                        {if is_simulator {
+                            view! {
+                                <span class="shrink-0 rounded-sm border border-accent-primary/25 bg-accent-primary/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-accent-primary">
+                                    "Simulator"
+                                </span>
+                            }
+                            .into_any()
+                        } else {
+                            ().into_any()
+                        }}
+                    </span>
                     <span class="shrink-0 rounded-sm bg-surface-overlay px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-fg-tertiary">
                         {shape_label}
                     </span>
@@ -230,8 +282,35 @@ fn render_picker_row(
                 </span>
                 <span class="text-[11px] text-fg-tertiary">{overlay_summary}</span>
             </button>
+            {if is_simulator {
+                view! {
+                    <button
+                        type="button"
+                        class="mx-2 my-2 shrink-0 self-start rounded-md border border-edge-subtle bg-surface-overlay/60 p-2 text-fg-tertiary transition hover:border-accent-primary/40 hover:text-accent-primary"
+                        title="Edit simulator"
+                        on:click=move |_| on_manage_simulator.run(display_for_manage.clone())
+                    >
+                        <Icon icon=LuSettings2 width="13" height="13" />
+                    </button>
+                }
+                .into_any()
+            } else {
+                ().into_any()
+            }}
         </li>
     }
+}
+
+fn is_simulator_display(display: &api::DisplaySummary) -> bool {
+    display.family.eq_ignore_ascii_case("simulator")
+}
+
+fn parse_simulator_dimension(raw: &str, label: &str) -> Result<u32, String> {
+    raw.trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("{label} must be a positive number."))
 }
 
 #[component]
@@ -261,24 +340,14 @@ fn CreateSimulatorModal(
                 return;
             }
 
-            let Some(width) = width
-                .get_untracked()
-                .trim()
-                .parse::<u32>()
-                .ok()
-                .filter(|value| *value > 0)
-            else {
-                set_error.set(Some("Width must be a positive number.".to_string()));
+            let width_raw = width.get_untracked();
+            let Ok(width) = parse_simulator_dimension(&width_raw, "Width") else {
+                set_error.set(parse_simulator_dimension(&width_raw, "Width").err());
                 return;
             };
-            let Some(height) = height
-                .get_untracked()
-                .trim()
-                .parse::<u32>()
-                .ok()
-                .filter(|value| *value > 0)
-            else {
-                set_error.set(Some("Height must be a positive number.".to_string()));
+            let height_raw = height.get_untracked();
+            let Ok(height) = parse_simulator_dimension(&height_raw, "Height") else {
+                set_error.set(parse_simulator_dimension(&height_raw, "Height").err());
                 return;
             };
 
@@ -294,7 +363,10 @@ fn CreateSimulatorModal(
 
             spawn_local(async move {
                 match api::create_simulated_display(&request).await {
-                    Ok(summary) => on_created.run(summary),
+                    Ok(summary) => {
+                        toasts::toast_success("Simulator created");
+                        on_created.run(summary);
+                    }
                     Err(message) => {
                         set_error.set(Some(message));
                         set_submitting.set(false);
@@ -433,6 +505,243 @@ fn CreateSimulatorModal(
                             <Icon icon=LuPlus width="12" height="12" />
                             {move || if submitting.get() { "Creating..." } else { "Create simulator" }}
                         </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    }
+}
+
+#[component]
+fn EditSimulatorModal(
+    display: api::DisplaySummary,
+    #[prop(into)] on_updated: Callback<api::SimulatedDisplaySummary>,
+    #[prop(into)] on_deleted: Callback<String>,
+    #[prop(into)] on_close: Callback<()>,
+) -> impl IntoView {
+    let display_id = display.id.clone();
+    let display_name = display.name.clone();
+    let (name, set_name) = signal(display.name.clone());
+    let (width, set_width) = signal(display.width.to_string());
+    let (height, set_height) = signal(display.height.to_string());
+    let (circular, set_circular) = signal(display.circular);
+    let (submitting, set_submitting) = signal(false);
+    let (error, set_error) = signal(None::<String>);
+
+    let submit = {
+        let on_updated = on_updated.clone();
+        let display_id = display_id.clone();
+        move |event: leptos::ev::SubmitEvent| {
+            event.prevent_default();
+            if submitting.get_untracked() {
+                return;
+            }
+
+            let width_raw = width.get_untracked();
+            let Ok(width) = parse_simulator_dimension(&width_raw, "Width") else {
+                set_error.set(parse_simulator_dimension(&width_raw, "Width").err());
+                return;
+            };
+            let height_raw = height.get_untracked();
+            let Ok(height) = parse_simulator_dimension(&height_raw, "Height") else {
+                set_error.set(parse_simulator_dimension(&height_raw, "Height").err());
+                return;
+            };
+
+            set_submitting.set(true);
+            set_error.set(None);
+            let request = api::UpdateSimulatedDisplayRequest {
+                name: Some(name.get_untracked()),
+                width: Some(width),
+                height: Some(height),
+                circular: Some(circular.get_untracked()),
+                enabled: None,
+            };
+
+            let display_id = display_id.clone();
+            let success_name = name.get_untracked();
+            spawn_local(async move {
+                match api::patch_simulated_display(&display_id, &request).await {
+                    Ok(summary) => {
+                        toasts::toast_success(&format!("Updated {success_name}"));
+                        on_updated.run(summary);
+                    }
+                    Err(message) => {
+                        set_error.set(Some(message));
+                        set_submitting.set(false);
+                    }
+                }
+            });
+        }
+    };
+
+    let delete_simulator = {
+        let on_deleted = on_deleted.clone();
+        let display_id = display_id.clone();
+        move |_| {
+            if submitting.get_untracked() {
+                return;
+            }
+
+            set_submitting.set(true);
+            set_error.set(None);
+            let deleted_id = display_id.clone();
+            let deleted_name = display_name.clone();
+            spawn_local(async move {
+                match api::delete_simulated_display(&deleted_id).await {
+                    Ok(()) => {
+                        toasts::toast_success(&format!("Deleted {deleted_name}"));
+                        on_deleted.run(deleted_id.clone());
+                    }
+                    Err(message) => {
+                        set_error.set(Some(message));
+                        set_submitting.set(false);
+                    }
+                }
+            });
+        }
+    };
+
+    let close_backdrop = on_close.clone();
+    let close_button = on_close.clone();
+
+    view! {
+        <div
+            class="absolute inset-0 z-20 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+            on:click=move |_| close_backdrop.run(())
+        >
+            <div
+                class="w-full max-w-md rounded-xl border border-edge-subtle bg-surface-raised p-4 shadow-2xl"
+                on:click=|event| event.stop_propagation()
+            >
+                <div class="mb-4 flex items-start justify-between gap-3">
+                    <div>
+                        <h2 class="text-sm font-semibold text-fg-primary">"Simulator settings"</h2>
+                        <p class="mt-1 text-[11px] leading-relaxed text-fg-tertiary">
+                            "Adjust this virtual LCD or remove it from the daemon."
+                        </p>
+                    </div>
+                    <button
+                        type="button"
+                        class="rounded-sm p-1 text-fg-tertiary transition hover:text-accent-primary"
+                        title="Close"
+                        on:click=move |_| close_button.run(())
+                    >
+                        <Icon icon=LuX width="14" height="14" />
+                    </button>
+                </div>
+
+                <form class="flex flex-col gap-3" on:submit=submit>
+                    <label class="flex flex-col gap-1">
+                        <span class="text-[11px] uppercase tracking-wider text-fg-tertiary">
+                            "Name"
+                        </span>
+                        <input
+                            type="text"
+                            class="rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-sm text-fg-primary outline-none transition focus:border-accent-primary"
+                            prop:value=move || name.get()
+                            on:input=move |event| set_name.set(event_target_value(&event))
+                        />
+                    </label>
+
+                    <div class="grid grid-cols-2 gap-3">
+                        <label class="flex flex-col gap-1">
+                            <span class="text-[11px] uppercase tracking-wider text-fg-tertiary">
+                                "Width"
+                            </span>
+                            <input
+                                type="number"
+                                min="1"
+                                max="4096"
+                                class="rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-sm text-fg-primary outline-none transition focus:border-accent-primary"
+                                prop:value=move || width.get()
+                                on:input=move |event| set_width.set(event_target_value(&event))
+                            />
+                        </label>
+                        <label class="flex flex-col gap-1">
+                            <span class="text-[11px] uppercase tracking-wider text-fg-tertiary">
+                                "Height"
+                            </span>
+                            <input
+                                type="number"
+                                min="1"
+                                max="4096"
+                                class="rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-sm text-fg-primary outline-none transition focus:border-accent-primary"
+                                prop:value=move || height.get()
+                                on:input=move |event| set_height.set(event_target_value(&event))
+                            />
+                        </label>
+                    </div>
+
+                    <div class="flex flex-col gap-1">
+                        <span class="text-[11px] uppercase tracking-wider text-fg-tertiary">
+                            "Shape"
+                        </span>
+                        <div class="grid grid-cols-2 gap-2">
+                            <button
+                                type="button"
+                                class=move || {
+                                    if circular.get() {
+                                        "flex items-center justify-center gap-2 rounded-md border border-accent-primary bg-accent-primary/10 px-3 py-2 text-sm text-accent-primary transition"
+                                    } else {
+                                        "flex items-center justify-center gap-2 rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-sm text-fg-tertiary transition hover:border-accent-primary/35"
+                                    }
+                                }
+                                on:click=move |_| set_circular.set(true)
+                            >
+                                <Icon icon=LuCircle width="13" height="13" />
+                                "Round"
+                            </button>
+                            <button
+                                type="button"
+                                class=move || {
+                                    if circular.get() {
+                                        "flex items-center justify-center gap-2 rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-sm text-fg-tertiary transition hover:border-accent-primary/35"
+                                    } else {
+                                        "flex items-center justify-center gap-2 rounded-md border border-accent-primary bg-accent-primary/10 px-3 py-2 text-sm text-accent-primary transition"
+                                    }
+                                }
+                                on:click=move |_| set_circular.set(false)
+                            >
+                                <Icon icon=LuSquare width="13" height="13" />
+                                "Square"
+                            </button>
+                        </div>
+                    </div>
+
+                    <Show when=move || error.with(Option::is_some) fallback=|| ()>
+                        <div class="rounded-md border border-status-error/35 bg-status-error/10 px-3 py-2 text-xs text-status-error">
+                            {move || error.get().unwrap_or_default()}
+                        </div>
+                    </Show>
+
+                    <div class="mt-1 flex items-center justify-between gap-2">
+                        <button
+                            type="button"
+                            class="inline-flex items-center gap-2 rounded-md border border-status-error/35 bg-status-error/10 px-3 py-2 text-xs font-medium uppercase tracking-wider text-status-error transition hover:bg-status-error/15 disabled:cursor-not-allowed disabled:opacity-50"
+                            disabled=move || submitting.get()
+                            on:click=delete_simulator
+                        >
+                            <Icon icon=LuTrash2 width="12" height="12" />
+                            "Delete simulator"
+                        </button>
+                        <div class="flex items-center gap-2">
+                            <button
+                                type="button"
+                                class="rounded-md px-3 py-2 text-xs uppercase tracking-wider text-fg-tertiary transition hover:text-fg-primary"
+                                on:click=move |_| on_close.run(())
+                            >
+                                "Cancel"
+                            </button>
+                            <button
+                                type="submit"
+                                class="inline-flex items-center gap-2 rounded-md border border-accent-primary/40 bg-accent-primary/12 px-3 py-2 text-xs font-medium uppercase tracking-wider text-accent-primary transition hover:bg-accent-primary/18 disabled:cursor-not-allowed disabled:opacity-50"
+                                disabled=move || submitting.get()
+                            >
+                                <Icon icon=LuSave width="12" height="12" />
+                                {move || if submitting.get() { "Saving..." } else { "Save simulator" }}
+                            </button>
+                        </div>
                     </div>
                 </form>
             </div>
@@ -1115,9 +1424,7 @@ fn render_runtime_diagnostics(runtime: Option<api::OverlayRuntimeResponse>) -> i
         api::OverlaySlotStatus::Active => ("Active", "bg-emerald-500/15 text-emerald-300"),
         api::OverlaySlotStatus::Disabled => ("Disabled", "bg-fg-tertiary/15 text-fg-tertiary"),
         api::OverlaySlotStatus::Failed => ("Failed", "bg-status-error/20 text-status-error"),
-        api::OverlaySlotStatus::HtmlGated => {
-            ("HTML gated", "bg-amber-500/20 text-amber-300")
-        }
+        api::OverlaySlotStatus::HtmlGated => ("HTML gated", "bg-amber-500/20 text-amber-300"),
     };
 
     let last_rendered = runtime
