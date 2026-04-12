@@ -150,6 +150,10 @@ pub(crate) struct PipelineRuntime {
 
 impl PipelineRuntime {
     pub(crate) async fn from_state(state: &RenderThreadState) -> Result<Self> {
+        {
+            let mut effect_engine = state.effect_engine.lock().await;
+            effect_engine.set_canvas_size(state.canvas_dims.width(), state.canvas_dims.height());
+        }
         let initial_spatial_engine = state.spatial_engine.read().await.clone();
         Self::new(
             state.canvas_dims.width(),
