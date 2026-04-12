@@ -6,6 +6,7 @@ mod color;
 mod components;
 mod compound_selection;
 mod control_geometry;
+mod display_utils;
 mod icons;
 mod layout_geometry;
 mod layout_utils;

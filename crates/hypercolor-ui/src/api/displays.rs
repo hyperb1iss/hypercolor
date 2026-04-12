@@ -5,7 +5,7 @@
 //! shared `hypercolor_types` crate so request/response bodies stay in lockstep
 //! with the daemon.
 
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::effect::{ControlDefinition, ControlValue, PresetTemplate};
 use hypercolor_types::overlay::{
     DisplayOverlayConfig, OverlayBlendMode, OverlayPosition, OverlaySlot, OverlaySlotId,
     OverlaySource,
@@ -31,21 +31,54 @@ pub struct DisplaySummary {
     pub enabled_overlay_count: usize,
 }
 
-/// Lightweight effect summary embedded in display-face assignment payloads.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DisplayFaceEffectSummary {
+/// Effect metadata carried inside a display-face assignment response.
+///
+/// The daemon serializes the full `EffectMetadata`, but the UI only needs
+/// a narrow slice — name/author/description for the card, and the control
+/// definitions + preset templates so the right-column controls panel can
+/// render live.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct DisplayFaceEffect {
     pub id: String,
     pub name: String,
+    #[serde(default)]
     pub description: String,
+    #[serde(default)]
     pub author: String,
+    #[serde(default)]
+    pub controls: Vec<ControlDefinition>,
+    #[serde(default)]
+    pub presets: Vec<PresetTemplate>,
+}
+
+/// Render-group details carried inside a display-face assignment response.
+///
+/// `controls` holds the live control values (overrides) for the face; the
+/// daemon's `RenderGroup` has more fields (layout, brightness, etc.) but
+/// the UI only needs the id for targeting patches and the current control
+/// values to seed the control panel.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct DisplayFaceGroup {
+    pub id: String,
+    #[serde(default)]
+    pub controls: HashMap<String, ControlValue>,
 }
 
 /// Response from `GET /api/v1/displays/{id}/face`.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct DisplayFaceResponse {
     pub device_id: String,
     pub scene_id: String,
-    pub effect: DisplayFaceEffectSummary,
+    pub effect: DisplayFaceEffect,
+    pub group: DisplayFaceGroup,
+}
+
+/// Request body for `PATCH /api/v1/displays/{id}/face/controls` — merges
+/// control overrides into the face's render group without replacing the
+/// assignment itself.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UpdateDisplayFaceControlsRequest {
+    pub controls: HashMap<String, ControlValue>,
 }
 
 /// Runtime diagnostic envelope returned by the single-slot GET endpoint.
@@ -179,6 +212,26 @@ pub async fn set_display_face(
 pub async fn delete_display_face(display_id: &str) -> Result<(), String> {
     let url = format!("/api/v1/displays/{display_id}/face");
     client::delete_empty(&url).await.map_err(Into::into)
+}
+
+/// `PATCH /api/v1/displays/{id}/face/controls` — merge control overrides
+/// into the face's render group without replacing the assignment. Returns
+/// the updated face response so callers can reconcile local optimistic
+/// state with the authoritative values the daemon persisted.
+///
+/// Accepts raw JSON (matching the effects-page control patch pattern) so
+/// callers don't have to convert `serde_json::Value` into `ControlValue`
+/// before sending. The daemon deserializes each entry into the proper
+/// `ControlValue` variant based on its JSON shape.
+pub async fn update_display_face_controls(
+    display_id: &str,
+    controls: &serde_json::Value,
+) -> Result<DisplayFaceResponse, String> {
+    let url = format!("/api/v1/displays/{display_id}/face/controls");
+    let body = serde_json::json!({ "controls": controls });
+    client::patch_json::<serde_json::Value, DisplayFaceResponse>(&url, &body)
+        .await
+        .map_err(Into::into)
 }
 
 /// `GET /api/v1/displays/{id}/overlays` — fetch the full overlay stack.

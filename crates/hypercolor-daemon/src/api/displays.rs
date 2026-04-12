@@ -54,6 +54,20 @@ pub struct SetDisplayFaceRequest {
     pub controls: std::collections::HashMap<String, ControlValue>,
 }
 
+/// Request body for `PATCH /api/v1/displays/{id}/face/controls`.
+///
+/// The payload carries only the overrides the caller wants to change;
+/// existing control values on the render group are preserved unless their
+/// key appears in this map. `controls` is typed as raw JSON (rather than
+/// `HashMap<String, ControlValue>`) so callers can send natural shapes
+/// like `{"accent": 0.5}` instead of `{"accent": {"float": 0.5}}`, which
+/// mirrors the effects controls patch endpoint.
+#[derive(Debug, Deserialize)]
+pub struct UpdateDisplayFaceControlsRequest {
+    #[serde(default)]
+    pub controls: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DisplayFaceResponse {
     pub device_id: String,
@@ -337,6 +351,119 @@ pub async fn delete_display_face(
         "scene_id": deleted.to_string(),
         "deleted": true,
     }))
+}
+
+/// `PATCH /api/v1/displays/{id}/face/controls` — merge control overrides
+/// into the render group without replacing the face assignment itself.
+///
+/// Returns the full `DisplayFaceResponse` so callers can reconcile their
+/// optimistic local state with the authoritative values the daemon
+/// persisted (defaults are resolved server-side, colors are normalized,
+/// etc.). Individual raw JSON values are converted via the shared
+/// `json_to_control_value` helper — unsupported shapes are reported in
+/// the `rejected` array instead of silently dropped.
+pub async fn patch_display_face_controls(
+    State(state): State<Arc<AppState>>,
+    Path(device): Path<String>,
+    Json(body): Json<UpdateDisplayFaceControlsRequest>,
+) -> Response {
+    let device_id = match resolve_display_device_id_or_response(&state, &device).await {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+
+    let controls_object = body
+        .controls
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+
+    if controls_object.is_empty() {
+        return ApiError::bad_request("controls payload must include at least one key");
+    }
+
+    let mut rejected: Vec<String> = Vec::new();
+    let (response, effect_name) = {
+        let mut scene_manager = state.scene_manager.write().await;
+        let Some(active_scene_id) = scene_manager.active_scene_id().copied() else {
+            return ApiError::conflict(
+                "No active scene to update display face controls for. Activate a scene first."
+                    .to_owned(),
+            );
+        };
+        let Some(mut active_scene) = scene_manager.get(&active_scene_id).cloned() else {
+            return ApiError::not_found(format!("Active scene not found: {active_scene_id}"));
+        };
+
+        // Locate the render group bound to this display.
+        let Some(group_index) = active_scene.groups.iter().position(|group| {
+            group
+                .display_target
+                .as_ref()
+                .is_some_and(|target| target.device_id == device_id)
+        }) else {
+            return ApiError::not_found(format!(
+                "No display face is assigned to device {device_id}"
+            ));
+        };
+
+        // Merge (don't replace) so clients can PATCH a single control
+        // without round-tripping the whole map. Raw JSON → ControlValue
+        // conversion uses the same helper as the effects patch path.
+        for (key, value) in &controls_object {
+            let Some(control_value) = super::control_values::json_to_control_value(value) else {
+                rejected.push(format!("{key} (unsupported JSON shape)"));
+                continue;
+            };
+            active_scene.groups[group_index]
+                .controls
+                .insert(key.clone(), control_value);
+        }
+        let group = active_scene.groups[group_index].clone();
+
+        let Some(effect_id) = group.effect_id else {
+            return ApiError::conflict(format!(
+                "Display face group {} has no assigned effect",
+                group.id
+            ));
+        };
+
+        if let Err(error) = scene_manager.update(active_scene) {
+            return ApiError::internal(format!("Failed to update active scene: {error}"));
+        }
+
+        let effect = {
+            let registry = state.effect_registry.read().await;
+            let Some(entry) = registry.get(&effect_id) else {
+                return ApiError::not_found(format!(
+                    "Assigned display face effect not found: {effect_id}"
+                ));
+            };
+            entry.metadata.clone()
+        };
+        let effect_name = effect.name.clone();
+
+        (
+            DisplayFaceResponse {
+                device_id: device_id.to_string(),
+                scene_id: active_scene_id.to_string(),
+                effect,
+                group,
+            },
+            effect_name,
+        )
+    };
+
+    if !rejected.is_empty() {
+        tracing::warn!(
+            face = %effect_name,
+            rejected_controls = ?rejected,
+            "Rejected one or more display face control updates"
+        );
+    }
+
+    ApiResponse::ok(response)
 }
 
 fn display_preview_response(

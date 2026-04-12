@@ -13,10 +13,11 @@ use icondata_core::Icon as IconData;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_icons::Icon;
-use leptos_use::{use_debounce_fn_with_arg, use_interval_fn};
+use leptos_use::{use_debounce_fn, use_debounce_fn_with_arg, use_interval_fn};
 use web_sys::PointerEvent;
 
 use crate::api;
+use crate::components::control_panel::ControlPanel;
 use crate::components::page_header::PageHeader;
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
@@ -335,7 +336,9 @@ pub fn DisplaysPage() -> impl IntoView {
                         <DisplayRightPanel
                             selected_display=selected_display
                             display_face=display_face
+                            set_display_face=set_display_face
                             face_assignment_pending=face_assignment_pending
+                            set_face_refresh_tick=set_face_refresh_tick
                             on_choose_face=open_face_picker
                             on_clear_face=clear_face
                             overlays_expanded=overlays_expanded
@@ -615,21 +618,10 @@ fn render_picker_row(
     }
 }
 
-pub(crate) fn is_simulator_display(display: &api::DisplaySummary) -> bool {
-    display.family.eq_ignore_ascii_case("simulator")
-}
-
-pub(crate) fn parse_simulator_dimension(raw: &str, label: &str) -> Result<u32, String> {
-    raw.trim()
-        .parse::<u32>()
-        .ok()
-        .filter(|value| *value > 0)
-        .ok_or_else(|| format!("{label} must be a positive number."))
-}
-
-pub(crate) fn display_preview_shell_url(display_id: &str) -> String {
-    format!("/preview?display={display_id}")
-}
+use crate::display_utils::{
+    display_preview_shell_url, is_simulator_display, json_to_face_control_value,
+    parse_simulator_dimension,
+};
 
 #[component]
 fn PickerPlaceholder(#[prop(into)] message: String) -> impl IntoView {
@@ -1355,15 +1347,17 @@ fn DisplayWorkspace(
 /// Right-side control column.
 ///
 /// Stacks three sections vertically: a compact face-assignment card (always
-/// visible when a display is selected), a placeholder for the face controls
-/// panel (fleshed out in Wave 3), and a collapsible overlay stack at the
-/// bottom. The whole column is wrapped in a scrollable container so long
-/// overlay lists or control panels can exceed the viewport.
+/// visible when a display is selected), a live `ControlPanel` bound to the
+/// assigned face's controls, and a collapsible overlay stack at the bottom.
+/// The whole column is wrapped in a scrollable container so long overlay
+/// lists or control panels can exceed the viewport.
 #[component]
 fn DisplayRightPanel(
     selected_display: Memo<Option<api::DisplaySummary>>,
     display_face: ReadSignal<Option<Result<Option<api::DisplayFaceResponse>, String>>>,
+    set_display_face: WriteSignal<Option<Result<Option<api::DisplayFaceResponse>, String>>>,
     face_assignment_pending: ReadSignal<bool>,
+    set_face_refresh_tick: WriteSignal<u64>,
     on_choose_face: Callback<()>,
     on_clear_face: Callback<()>,
     overlays_expanded: ReadSignal<bool>,
@@ -1379,7 +1373,12 @@ fn DisplayRightPanel(
                 on_choose_face=on_choose_face
                 on_clear_face=on_clear_face
             />
-            <FaceControlsPlaceholder display_face=display_face />
+            <FaceControlsSection
+                selected_display=selected_display
+                display_face=display_face
+                set_display_face=set_display_face
+                set_face_refresh_tick=set_face_refresh_tick
+            />
             <CollapsibleOverlayStack
                 selected_id=selected_id
                 expanded=overlays_expanded
@@ -1506,25 +1505,112 @@ fn FaceAssignmentCard(
     }
 }
 
-/// Placeholder for the face controls panel. Wave 3 replaces the body with
-/// a live `ControlPanel` + `PresetToolbar` wired to per-face control state.
+/// Live face controls panel.
+///
+/// Renders the assigned face's `ControlPanel` with an optimistic-update
+/// model: local control values tick immediately on input change, and
+/// PATCH requests are debounced (75ms) before hitting the daemon. The
+/// server response reconciles the optimistic state so normalized or
+/// rejected values surface in the UI.
 #[component]
-fn FaceControlsPlaceholder(
+fn FaceControlsSection(
+    selected_display: Memo<Option<api::DisplaySummary>>,
     display_face: ReadSignal<Option<Result<Option<api::DisplayFaceResponse>, String>>>,
+    set_display_face: WriteSignal<Option<Result<Option<api::DisplayFaceResponse>, String>>>,
+    set_face_refresh_tick: WriteSignal<u64>,
 ) -> impl IntoView {
-    let has_face = Signal::derive(move || {
-        matches!(display_face.get(), Some(Ok(Some(_))))
+    // Derived view of the face's control definitions for ControlPanel.
+    let face_controls = Signal::derive(move || match display_face.get() {
+        Some(Ok(Some(face))) => face.effect.controls,
+        _ => Vec::new(),
+    });
+    let has_controls = Signal::derive(move || !face_controls.get().is_empty());
+    let control_count = Signal::derive(move || face_controls.get().len());
+
+    // Local optimistic copy of control values. ControlPanel needs a
+    // `HashMap<String, ControlValue>` signal and would thrash if we fed it
+    // directly from the face response, because every PATCH would rebuild
+    // the whole map on the server round-trip. Instead we seed it from the
+    // server response and locally update on user input; the debounced
+    // PATCH reconciles via set_display_face → Effect below.
+    let (face_control_values, set_face_control_values) =
+        signal(std::collections::HashMap::<String, hypercolor_types::effect::ControlValue>::new());
+
+    // Keep the local signal in sync when the face changes. We compare the
+    // map before setting to avoid re-firing downstream effects on identical
+    // data (e.g. after our own PATCH round-trip returns the same values).
+    Effect::new(move |_| {
+        let next = match display_face.get() {
+            Some(Ok(Some(face))) => face.group.controls,
+            _ => std::collections::HashMap::new(),
+        };
+        set_face_control_values.update(|current| {
+            if *current != next {
+                *current = next;
+            }
+        });
+    });
+
+    // Pending-updates buffer keyed by control name. Each user input
+    // overwrites the prior pending value for that control, so a slider
+    // drag only sends the final position when the debounce fires.
+    let pending_updates: StoredValue<
+        std::collections::HashMap<String, serde_json::Value>,
+    > = StoredValue::new(std::collections::HashMap::new());
+
+    let flush_updates = use_debounce_fn(
+        move || {
+            let Some(display) = selected_display.get_untracked() else {
+                return;
+            };
+            let updates = pending_updates
+                .try_update_value(std::mem::take)
+                .unwrap_or_default();
+            if updates.is_empty() {
+                return;
+            }
+            let controls_json = serde_json::Value::Object(updates.into_iter().collect());
+            let display_id = display.id;
+            spawn_local(async move {
+                match api::update_display_face_controls(&display_id, &controls_json).await {
+                    Ok(face) => {
+                        set_display_face.set(Some(Ok(Some(face))));
+                        set_face_refresh_tick.update(|value| *value = value.wrapping_add(1));
+                    }
+                    Err(error) => {
+                        toasts::toast_error(&format!("Face control update failed: {error}"));
+                    }
+                }
+            });
+        },
+        75.0,
+    );
+
+    let on_control_change = Callback::new(move |(name, value): (String, serde_json::Value)| {
+        // Optimistic local update — mirrors what the ControlPanel expects
+        // so sliders/toggles/color pickers feel immediate even before the
+        // daemon acknowledges.
+        let controls_snapshot = face_controls.get();
+        if let Some(control_value) = json_to_face_control_value(&controls_snapshot, &name, &value) {
+            set_face_control_values.update(|map| {
+                map.insert(name.clone(), control_value);
+            });
+        }
+        pending_updates.update_value(|pending| {
+            pending.insert(name, value);
+        });
+        flush_updates();
     });
 
     view! {
-        <Show when=move || has_face.get() fallback=|| ()>
+        <Show when=move || has_controls.get() fallback=|| ()>
             <div
                 class="rounded-xl border border-edge-subtle bg-surface-raised/80 p-3 edge-glow"
                 style=format!(
                     "border-top: 2px solid rgba({DISPLAY_ACCENT_RGB}, 0.2); --glow-rgb: {DISPLAY_ACCENT_RGB};"
                 )
             >
-                <div class="flex items-center gap-2 border-b border-edge-subtle/50 pb-2">
+                <div class="mb-3 flex items-center gap-2 border-b border-edge-subtle/50 pb-2">
                     <div
                         class="flex h-6 w-6 items-center justify-center rounded-md"
                         style=format!(
@@ -1538,14 +1624,21 @@ fn FaceControlsPlaceholder(
                     <h3 class="text-[11px] font-semibold uppercase tracking-wide text-fg-secondary">
                         "Controls"
                     </h3>
+                    <span class="text-[10px] text-fg-tertiary">
+                        {move || format!("· {}", control_count.get())}
+                    </span>
                 </div>
-                <p class="pt-2 text-[11px] leading-relaxed text-fg-tertiary">
-                    "Face controls land in the next wave. Tune colors, sensors, and presets without leaving the preview."
-                </p>
+                <ControlPanel
+                    controls=face_controls
+                    control_values=Signal::from(face_control_values)
+                    accent_rgb=Signal::derive(|| DISPLAY_ACCENT_RGB.to_owned())
+                    on_change=on_control_change
+                />
             </div>
         </Show>
     }
 }
+
 
 /// Collapsible overlay stack section — wraps `OverlayStackPanel` in a header
 /// that toggles expansion. Collapsed state persists via localStorage so the

@@ -721,6 +721,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
                 .delete(displays::delete_display_face),
         )
         .route(
+            "/displays/{id}/face/controls",
+            axum::routing::patch(displays::patch_display_face_controls),
+        )
+        .route(
             "/displays/{id}/overlays",
             axum::routing::get(displays::list_overlays)
                 .put(displays::replace_overlays)
