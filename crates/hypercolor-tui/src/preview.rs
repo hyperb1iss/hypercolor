@@ -134,7 +134,7 @@ impl Default for PreviewPolicy {
             max_primary_scale_tenths: 15,
             medium_primary_rgba_bytes: 256 * 1024,
             large_primary_rgba_bytes: 512 * 1024,
-            default_frame_interval: Duration::from_millis(33),
+            default_frame_interval: Duration::from_millis(16),
             medium_primary_frame_interval: Duration::from_millis(167),
             large_primary_frame_interval: Duration::from_millis(250),
         }
@@ -1313,7 +1313,7 @@ mod tests {
                 (14, 34),
                 Some(Rect::new(0, 0, 37, 14)),
             ),
-            Duration::from_millis(33)
+            Duration::from_millis(16)
         );
     }
 

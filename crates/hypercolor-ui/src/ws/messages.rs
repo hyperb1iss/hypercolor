@@ -57,13 +57,15 @@ pub struct CanvasFrame {
 pub enum CanvasPixelFormat {
     Rgb,
     Rgba,
+    Jpeg,
 }
 
 impl CanvasPixelFormat {
-    pub(crate) fn bytes_per_pixel(self) -> usize {
+    pub(crate) fn bytes_per_pixel(self) -> Option<usize> {
         match self {
-            Self::Rgb => 3,
-            Self::Rgba => 4,
+            Self::Rgb => Some(3),
+            Self::Rgba => Some(4),
+            Self::Jpeg => None,
         }
     }
 }
@@ -78,10 +80,12 @@ impl CanvasFrame {
 
     /// Sample a pixel as RGBA without copying the full buffer.
     pub fn rgba_at(&self, pixel_index: usize) -> Option<[u8; 4]> {
-        let offset = u32::try_from(pixel_index.checked_mul(self.format.bytes_per_pixel())?).ok()?;
+        let bytes_per_pixel = self.format.bytes_per_pixel()?;
+        let offset = u32::try_from(pixel_index.checked_mul(bytes_per_pixel)?).ok()?;
         let last_component = offset.checked_add(match self.format {
             CanvasPixelFormat::Rgb => 2,
             CanvasPixelFormat::Rgba => 3,
+            CanvasPixelFormat::Jpeg => return None,
         })?;
         if last_component >= self.pixels.length() {
             return None;
@@ -100,6 +104,7 @@ impl CanvasFrame {
                 self.pixels.get_index(offset + 2),
                 self.pixels.get_index(offset + 3),
             ],
+            CanvasPixelFormat::Jpeg => return None,
         })
     }
 
@@ -275,7 +280,7 @@ pub(super) enum PreviewFrameChannel {
 
 /// Decode a binary preview frame.
 ///
-/// Format: `[header:u8][frame_number:u32LE][timestamp:u32LE][width:u16LE][height:u16LE][format:u8][pixels...]`
+/// Format: `[header:u8][frame_number:u32LE][timestamp:u32LE][width:u16LE][height:u16LE][format:u8][payload...]`
 pub(super) fn decode_preview_frame(
     buffer: js_sys::ArrayBuffer,
 ) -> Option<(PreviewFrameChannel, CanvasFrame)> {
@@ -307,14 +312,20 @@ pub(super) fn decode_preview_frame(
     let format = match data.get_index(13) {
         0 => CanvasPixelFormat::Rgb,
         1 => CanvasPixelFormat::Rgba,
+        2 => CanvasPixelFormat::Jpeg,
         _ => return None,
     };
-    let expected_size = usize::try_from(width)
-        .ok()?
-        .checked_mul(usize::try_from(height).ok()?)?;
     let pixel_offset = 14_u32;
-    let expected_len = u32::try_from(expected_size.checked_mul(format.bytes_per_pixel())?).ok()?;
-    let end = pixel_offset.checked_add(expected_len)?;
+    let end = match format.bytes_per_pixel() {
+        Some(bytes_per_pixel) => {
+            let expected_size = usize::try_from(width)
+                .ok()?
+                .checked_mul(usize::try_from(height).ok()?)?;
+            let expected_len = u32::try_from(expected_size.checked_mul(bytes_per_pixel)?).ok()?;
+            pixel_offset.checked_add(expected_len)?
+        }
+        None => data.length(),
+    };
     if data.length() < end {
         return None;
     }
