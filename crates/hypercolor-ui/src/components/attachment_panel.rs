@@ -57,6 +57,40 @@ pub fn WiringPanel(
             .unwrap_or_default()
     });
 
+    // Layout zone display-names — used as fallback when localStorage has no
+    // custom channel name.  This picks up renames the user made in the layout
+    // zone properties panel.
+    let layout_zone_names = LocalResource::new(move || {
+        let dev = device.get();
+        async move {
+            let Some(dev) = dev else {
+                return std::collections::HashMap::<String, String>::new();
+            };
+            let layout_did = dev.layout_device_id.clone();
+            let dev_name = dev.name.clone();
+            let prefix = format!("{dev_name} \u{00b7} "); // "Device · "
+            match api::fetch_active_layout().await {
+                Ok(layout) => layout
+                    .zones
+                    .iter()
+                    .filter(|z| z.device_id == layout_did)
+                    .filter_map(|z| {
+                        let slot_id = z.zone_name.as_ref()?;
+                        // Strip the "DeviceName · " prefix that seeded layouts add,
+                        // leaving just the user's channel display name.
+                        let name = z
+                            .name
+                            .strip_prefix(&prefix)
+                            .unwrap_or(&z.name)
+                            .to_string();
+                        Some((slot_id.clone(), name))
+                    })
+                    .collect(),
+                Err(_) => std::collections::HashMap::new(),
+            }
+        }
+    });
+
     view! {
         <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-visible edge-glow">
             <div class="flex items-center justify-between px-4 py-2.5 border-b border-edge-subtle">
@@ -73,6 +107,7 @@ pub fn WiringPanel(
                     {move || {
                         let all_templates = templates.get().map(|t| t.to_vec()).unwrap_or_default();
                         let device_zones = device.get().map(|d| d.zones.clone()).unwrap_or_default();
+                        let zone_names = layout_zone_names.get().unwrap_or_default();
                         let did = device_id.get();
 
                         attachments.get().map(|result| match result {
@@ -102,10 +137,12 @@ pub fn WiringPanel(
                                                 .unwrap_or_else(|| topology_shape_svg("strip"));
                                             let zone_id = zone_match.as_ref().map(|z| z.id.clone());
 
-                                            // Channel name (localStorage override)
+                                            // Channel name: localStorage → layout zone name → driver default
                                             let default_name = slot.name.clone();
-                                            let display_name =
-                                                channel_names::effective_channel_name(&did, &slot.id, &default_name);
+                                            let layout_name = zone_names.get(&slot.id).cloned();
+                                            let display_name = channel_names::load_channel_name(&did, &slot.id)
+                                                .or(layout_name)
+                                                .unwrap_or_else(|| default_name.clone());
                                             let (channel_name, set_channel_name) = signal(display_name);
                                             let (editing, set_editing) = signal(false);
                                             let (name_input, set_name_input) = signal(String::new());
@@ -151,10 +188,22 @@ pub fn WiringPanel(
                                             let accent = "128, 255, 234";
                                             let did_for_identify = did.clone();
 
+                                            // Expand channels with existing components, collapse empties.
+                                            let has_components = !initial_drafts.is_empty();
+                                            let (expanded, set_expanded) = signal(has_components);
+
                                             view! {
                                                 <div class="rounded-lg border border-edge-subtle bg-surface-overlay/10 overflow-visible">
                                                     // Channel header
-                                                    <div class="px-3 py-2 flex items-center gap-2 group/slot">
+                                                    <div class="px-3 py-2 flex items-center gap-2 group/slot cursor-pointer select-none"
+                                                         on:click=move |_| set_expanded.update(|v| *v = !*v)>
+                                                        // Expand/collapse chevron
+                                                        <div
+                                                            class="w-3 h-3 shrink-0 text-fg-tertiary/30 transition-transform duration-150"
+                                                            class=("rotate-90", move || expanded.get())
+                                                        >
+                                                            <Icon icon=LuChevronRight width="12px" height="12px" />
+                                                        </div>
                                                         // Topology icon
                                                         <div class="w-4 h-4 shrink-0" style=format!("color: rgba({accent}, 0.5)")
                                                              inner_html=format!(r#"<svg viewBox="0 0 16 16" width="16" height="16">{zone_svg}</svg>"#) />
@@ -168,6 +217,7 @@ pub fn WiringPanel(
                                                                         class="bg-surface-overlay border border-edge-subtle rounded px-1.5 py-0.5 text-[11px] text-fg-primary
                                                                                focus:outline-none focus:border-accent-muted w-full"
                                                                         prop:value=move || name_input.get()
+                                                                        on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()
                                                                         on:input=move |ev| {
                                                                             let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
                                                                             if let Some(el) = target { set_name_input.set(el.value()); }
@@ -189,7 +239,8 @@ pub fn WiringPanel(
                                                                 view! {
                                                                     <span
                                                                         class="text-[12px] font-medium text-fg-primary flex items-center gap-1 cursor-text"
-                                                                        on:click=move |_| {
+                                                                        on:click=move |ev: web_sys::MouseEvent| {
+                                                                            ev.stop_propagation();
                                                                             set_name_input.set(channel_name.get_untracked());
                                                                             set_editing.set(true);
                                                                         }
@@ -208,6 +259,19 @@ pub fn WiringPanel(
                                                             {slot.led_count} " LEDs"
                                                         </span>
 
+                                                        // Component count badge (collapsed only)
+                                                        {
+                                                            let component_count = initial_drafts.len();
+                                                            (component_count > 0).then(|| view! {
+                                                                <Show when=move || !expanded.get()>
+                                                                    <span class="text-[9px] font-mono tabular-nums px-1.5 py-0.5 rounded-full shrink-0"
+                                                                          style="color: rgba(128, 255, 234, 0.45); background: rgba(128, 255, 234, 0.06)">
+                                                                        {component_count}
+                                                                    </span>
+                                                                </Show>
+                                                            })
+                                                        }
+
                                                         // Identify
                                                         {zone_id.map(|zid| {
                                                             let did = did_for_identify.clone();
@@ -220,7 +284,8 @@ pub fn WiringPanel(
                                                                     on:click={
                                                                         let did = did.clone();
                                                                         let zid = zid.clone();
-                                                                        move |_| {
+                                                                        move |ev: web_sys::MouseEvent| {
+                                                                            ev.stop_propagation();
                                                                             let did = did.clone();
                                                                             let zid = zid.clone();
                                                                             spawn_identify(
@@ -380,7 +445,10 @@ pub fn WiringPanel(
                                                         };
 
                                                     view! {
-                                                    <div class="border-t border-edge-subtle/50 px-3 py-2.5 space-y-2">
+                                                    <div
+                                                        class="border-t border-edge-subtle/50 px-3 py-2.5 space-y-2"
+                                                        class=("hidden", move || !expanded.get())
+                                                    >
                                                         // Component rows — <For> keyed on row_id keeps existing row DOM
                                                         // (and input focus/scroll position) stable across drafts mutations.
                                                         // Handlers look rows up by row_id instead of draft index so
