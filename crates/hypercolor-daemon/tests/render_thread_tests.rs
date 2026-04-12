@@ -35,7 +35,7 @@ use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::event::{
     FrameData, HypercolorEvent, InputButtonState, InputEvent, ZoneColors,
 };
-use hypercolor_types::scene::{RenderGroup, RenderGroupId, UnassignedBehavior};
+use hypercolor_types::scene::{DisplayFaceTarget, RenderGroup, RenderGroupId, UnassignedBehavior};
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -1175,6 +1175,73 @@ async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
 
     assert_eq!(left_zone.colors.first().copied(), Some([255, 0, 0]));
     assert_eq!(right_zone.colors.first().copied(), Some([0, 0, 255]));
+}
+
+#[tokio::test]
+async fn late_group_canvas_subscribers_see_last_display_face_frame() {
+    let state = make_render_state(
+        EffectEngine::new(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    let mut frame_rx = state.event_bus.frame_receiver();
+
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+    let group_id = RenderGroupId::new();
+    let display_id = DeviceId::new();
+
+    let mut scene = make_scene("Display Face Scene");
+    scene.groups = vec![RenderGroup {
+        id: group_id,
+        name: "Pump Face".into(),
+        description: None,
+        effect_id: Some(solid_id),
+        controls: HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+        preset_id: None,
+        layout: test_layout(Vec::new()),
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: Some(DisplayFaceTarget { device_id: display_id }),
+    }];
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+
+    {
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .create(scene.clone())
+            .expect("create display face scene");
+        scene_manager
+            .activate(&scene.id, None)
+            .expect("activate display face scene");
+    }
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+    let first_frame = wait_for_next_frame(&mut frame_rx, 0).await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let group_rx = state.event_bus.group_canvas_receiver(group_id);
+    let frame = group_rx.borrow().clone();
+    assert!(
+        frame.frame_number >= first_frame.frame_number,
+        "late subscribers should see the latest retained face canvas"
+    );
+    assert_eq!(frame.width, 320);
+    assert_eq!(frame.height, 200);
+    assert_eq!(&frame.rgba_bytes()[0..4], [0, 0, 255, 255].as_slice());
 }
 
 #[tokio::test]

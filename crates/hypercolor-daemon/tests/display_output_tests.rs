@@ -21,10 +21,15 @@ use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
 };
+use hypercolor_types::effect::EffectId;
 use hypercolor_types::overlay::{
     Anchor, ClockConfig, ClockStyle, DisplayOverlayConfig, HourFormat, HtmlOverlayConfig, ImageFit,
     ImageOverlayConfig, OverlayBlendMode, OverlayPosition, OverlaySlot, OverlaySlotId,
     OverlaySource, SensorDisplayStyle, SensorOverlayConfig, TextAlign, TextOverlayConfig,
+};
+use hypercolor_types::scene::{
+    ColorInterpolation, DisplayFaceTarget, RenderGroup, RenderGroupId, Scene, SceneId,
+    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
 };
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::session::OffOutputBehavior;
@@ -385,6 +390,63 @@ fn solid_canvas(color: Rgba) -> Canvas {
     let mut canvas = Canvas::new(320, 200);
     canvas.fill(color);
     canvas
+}
+
+async fn activate_display_face_scene(
+    scene_manager: &Arc<RwLock<SceneManager>>,
+    device_id: DeviceId,
+    group_id: RenderGroupId,
+    width: u32,
+    height: u32,
+) {
+    let scene = Scene {
+        id: SceneId::new(),
+        name: "Display Face Scene".to_owned(),
+        description: None,
+        scope: SceneScope::Full,
+        zone_assignments: Vec::new(),
+        groups: vec![RenderGroup {
+            id: group_id,
+            name: "Pump Face".to_owned(),
+            description: None,
+            effect_id: Some(EffectId::from(Uuid::now_v7())),
+            controls: HashMap::new(),
+            preset_id: None,
+            layout: SpatialLayout {
+                id: "display-face-layout".to_owned(),
+                name: "Display Face Layout".to_owned(),
+                description: None,
+                canvas_width: width,
+                canvas_height: height,
+                zones: Vec::new(),
+                default_sampling_mode: SamplingMode::Bilinear,
+                default_edge_behavior: EdgeBehavior::Clamp,
+                spaces: None,
+                version: 1,
+            },
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+            display_target: Some(DisplayFaceTarget { device_id }),
+        }],
+        transition: TransitionSpec {
+            duration_ms: 0,
+            easing: hypercolor_types::scene::EasingFunction::Linear,
+            color_interpolation: ColorInterpolation::Oklab,
+        },
+        priority: ScenePriority::USER,
+        enabled: true,
+        metadata: HashMap::new(),
+        unassigned_behavior: UnassignedBehavior::Off,
+    };
+
+    let mut manager = scene_manager.write().await;
+    manager
+        .create(scene.clone())
+        .expect("display face test scene should be created");
+    manager
+        .activate(&scene.id, None)
+        .expect("display face test scene should activate");
 }
 
 struct SolidOverlayRenderer {
@@ -997,6 +1059,85 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
     assert!(
         right_pixel[2] > 200 && right_pixel[0] < 80,
         "expected right side to stay blue under full-canvas fallback, got {right_pixel:?}"
+    );
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
+async fn automatic_display_output_prefers_direct_face_canvas_over_global_preview() {
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let scene_manager = default_scene_manager();
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+    let group_id = RenderGroupId::new();
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 320, 320, true))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    activate_display_face_scene(&scene_manager, device_id, group_id, 320, 320).await;
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: Arc::clone(&scene_manager),
+        logical_devices: Arc::clone(&logical_devices),
+        device_settings: default_device_settings(),
+        event_bus: Arc::clone(&event_bus),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        display_overlays: default_display_overlays(),
+        display_overlay_runtime: default_display_overlay_runtime(),
+        sensor_snapshot_rx: default_sensor_snapshot_rx(),
+        overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
+    });
+
+    event_bus
+        .group_canvas_sender(group_id)
+        .send_replace(CanvasFrame::from_canvas(
+            &solid_canvas(Rgba::new(0, 0, 255, 255)),
+            1,
+            16,
+        ));
+    let _ = event_bus.canvas_sender().send(CanvasFrame::from_canvas(
+        &solid_canvas(Rgba::new(255, 0, 0, 255)),
+        1,
+        16,
+    ));
+
+    let writes = wait_for_display_writes(&display_writes).await;
+    let image = decode_jpeg(&writes[0]);
+    let pixel = image.get_pixel(image.width() / 2, image.height() / 2);
+
+    assert!(
+        pixel[2] > 200,
+        "expected direct display-face canvas to win over the red global preview, got {pixel:?}"
+    );
+    assert!(
+        pixel[0] < 80,
+        "expected direct display-face canvas to bypass the global preview path, got {pixel:?}"
     );
 
     thread.shutdown().await.expect("display thread should stop");

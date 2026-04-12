@@ -153,7 +153,9 @@ impl RenderGroupRuntime {
         let preview_frame = self.compose_preview(groups);
         let group_canvases = groups
             .iter()
-            .filter(|group| group.enabled && group.effect_id.is_some() && group.display_target.is_some())
+            .filter(|group| {
+                group.enabled && group.effect_id.is_some() && group.display_target.is_some()
+            })
             .filter_map(|group| {
                 self.target_canvases
                     .get(&group.id)

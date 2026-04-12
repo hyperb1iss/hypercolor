@@ -24,8 +24,8 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::device::{DeviceId, DeviceTopologyHint};
-use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::scene::RenderGroupId;
+use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
 
 use crate::device_settings::DeviceSettingsStore;
@@ -479,7 +479,10 @@ async fn display_targets(
                 .active_render_groups()
                 .iter()
                 .filter_map(|group| {
-                    group.display_target.as_ref().map(|target| (target.device_id, group.id))
+                    group
+                        .display_target
+                        .as_ref()
+                        .map(|target| (target.device_id, group.id))
                 })
                 .collect::<HashMap<_, _>>(),
         )
@@ -541,7 +544,11 @@ async fn display_targets(
             tracked.info.id,
             has_non_display_led_zones,
         )
-        .or_else(|| canvas_source.is_group_direct().then_some(default_display_viewport()));
+        .or_else(|| {
+            canvas_source
+                .is_group_direct()
+                .then_some(default_display_viewport())
+        });
         let Some(viewport) = viewport else {
             continue;
         };

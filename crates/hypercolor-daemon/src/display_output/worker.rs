@@ -17,9 +17,8 @@ use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::encode::{
-    DisplayEncodeState, display_brightness_factor, encode_canvas_frame,
-    encode_direct_canvas_frame, encode_prepared_rgb_frame, render_canvas_frame_rgb,
-    render_direct_canvas_frame_rgb,
+    DisplayEncodeState, display_brightness_factor, encode_canvas_frame, encode_direct_canvas_frame,
+    encode_prepared_rgb_frame, render_canvas_frame_rgb, render_direct_canvas_frame_rgb,
 };
 use super::overlay::{OverlayComposer, OverlayRendererFactory};
 use super::render::display_viewport_signature;

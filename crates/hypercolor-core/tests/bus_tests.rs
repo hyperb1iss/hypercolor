@@ -8,6 +8,7 @@ use hypercolor_core::types::event::{
     ChangeTrigger, DisconnectReason, EffectRef, EventCategory, EventPriority, FrameData,
     HypercolorEvent, Severity, SpectrumData, ZoneColors,
 };
+use hypercolor_types::scene::RenderGroupId;
 use tokio::sync::broadcast;
 use tokio::time::{Duration, timeout};
 
@@ -230,6 +231,49 @@ async fn screen_canvas_receiver_count_tracks_drops() {
 
     drop(rx2);
     assert_eq!(bus.screen_canvas_receiver_count(), 0);
+}
+
+#[tokio::test]
+async fn group_canvas_receiver_roundtrip() {
+    let bus = HypercolorBus::new();
+    let group_id = RenderGroupId::new();
+    let mut rx = bus.group_canvas_receiver(group_id);
+    let mut canvas = Canvas::new(2, 1);
+    canvas.set_pixel(0, 0, Rgba::new(255, 0, 0, 255));
+    canvas.set_pixel(1, 0, Rgba::new(0, 0, 255, 255));
+
+    let _ = bus
+        .group_canvas_sender(group_id)
+        .send(CanvasFrame::from_canvas(&canvas, 7, 123));
+
+    timeout(Duration::from_secs(1), rx.changed())
+        .await
+        .expect("group canvas change should arrive")
+        .expect("group canvas sender should stay connected");
+    let frame = rx.borrow().clone();
+    assert_eq!(frame.frame_number, 7);
+    assert_eq!(frame.timestamp_ms, 123);
+    assert_eq!(frame.width, 2);
+    assert_eq!(frame.height, 1);
+    assert_eq!(frame.rgba_bytes(), canvas.as_rgba_bytes());
+}
+
+#[tokio::test]
+async fn removing_group_canvas_resets_new_subscribers_to_empty() {
+    let bus = HypercolorBus::new();
+    let group_id = RenderGroupId::new();
+    let mut canvas = Canvas::new(1, 1);
+    canvas.fill(Rgba::new(12, 34, 56, 255));
+    let _ = bus
+        .group_canvas_sender(group_id)
+        .send(CanvasFrame::from_canvas(&canvas, 1, 1));
+
+    bus.remove_group_canvas(group_id);
+
+    let rx = bus.group_canvas_receiver(group_id);
+    let frame = rx.borrow().clone();
+    assert_eq!(frame.width, 0);
+    assert_eq!(frame.height, 0);
 }
 
 // ── No Subscribers ───────────────────────────────────────────────────────
