@@ -33,7 +33,8 @@ use tracing::{debug, trace, warn};
 use super::circuit_breaker::ServoCircuitBreaker;
 use super::delegate::{ConsoleMessage, HypercolorWebViewDelegate};
 use super::worker_client::{
-    ServoWorkerClient, UNLOAD_TIMEOUT, WORKER_READY_TIMEOUT, WorkerCommand,
+    ServoSessionId, ServoWorkerClient, ServoWorkerClientSharedState, UNLOAD_TIMEOUT,
+    WORKER_READY_TIMEOUT, WorkerCommand,
 };
 use crate::effect::servo_bootstrap::bootstrap_software_rendering_context;
 
@@ -52,7 +53,7 @@ static SERVO_WORKER: OnceLock<Mutex<SharedServoWorkerState>> = OnceLock::new();
 static SERVO_CIRCUIT_BREAKER: ServoCircuitBreaker = ServoCircuitBreaker::new();
 
 /// Acquire a client handle to the shared Servo worker, spawning it on first use.
-pub(super) fn acquire_servo_worker(width: u32, height: u32) -> Result<ServoWorkerClient> {
+pub(super) fn acquire_servo_worker() -> Result<ServoWorkerClient> {
     if !SERVO_CIRCUIT_BREAKER.can_attempt() {
         let cooldown = SERVO_CIRCUIT_BREAKER
             .cooldown_remaining()
@@ -85,7 +86,7 @@ pub(super) fn acquire_servo_worker(width: u32, height: u32) -> Result<ServoWorke
         SharedServoWorkerState::Vacant => {}
     }
 
-    match ServoWorker::spawn(width, height) {
+    match ServoWorker::spawn() {
         Ok(worker) => match worker.client() {
             Ok(client) => {
                 *guard = SharedServoWorkerState::Running(worker);
@@ -584,17 +585,19 @@ enum SharedServoWorkerState {
 pub(super) struct ServoWorker {
     pub(super) command_tx: Option<Sender<WorkerCommand>>,
     pub(super) thread_handle: Option<thread::JoinHandle<()>>,
+    pub(super) client_state: std::sync::Arc<ServoWorkerClientSharedState>,
 }
 
 impl ServoWorker {
-    fn spawn(width: u32, height: u32) -> Result<Self> {
+    fn spawn() -> Result<Self> {
         let (command_tx, command_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let client_state = std::sync::Arc::new(ServoWorkerClientSharedState::new());
 
         let thread_handle = thread::Builder::new()
             .name("hypercolor-servo-worker".to_owned())
             .spawn(move || {
-                let runtime = match ServoWorkerRuntime::new(width, height) {
+                let runtime = match ServoWorkerRuntime::new() {
                     Ok(runtime) => {
                         let _ = ready_tx.send(Ok(()));
                         runtime
@@ -625,11 +628,15 @@ impl ServoWorker {
         Ok(Self {
             command_tx: Some(command_tx),
             thread_handle: Some(thread_handle),
+            client_state,
         })
     }
 
     fn client(&self) -> Result<ServoWorkerClient> {
-        Ok(ServoWorkerClient::new(self.command_tx()?.clone()))
+        Ok(ServoWorkerClient::new(
+            self.command_tx()?.clone(),
+            std::sync::Arc::clone(&self.client_state),
+        ))
     }
 
     fn shutdown(&mut self) -> Result<()> {
@@ -682,71 +689,76 @@ impl Drop for ServoWorker {
     }
 }
 
-struct ServoWorkerRuntime {
+struct ServoSession {
     webview: Option<WebView>,
-    servo: Servo,
     rendering_context: Rc<dyn RenderingContext>,
     delegate: Rc<HypercolorWebViewDelegate>,
     loaded_html_path: Option<PathBuf>,
     script_buffer: String,
 }
 
-impl ServoWorkerRuntime {
-    fn new(width: u32, height: u32) -> Result<Self> {
-        install_rustls_provider();
+struct ServoWorkerRuntime {
+    sessions: HashMap<ServoSessionId, ServoSession>,
+    servo: Servo,
+}
 
-        let rendering_context: Rc<dyn RenderingContext> =
-            Rc::new(bootstrap_software_rendering_context(width, height)?);
-        rendering_context.make_current().map_err(|error| {
-            anyhow!("failed to make Servo rendering context current: {error:?}")
-        })?;
+impl ServoWorkerRuntime {
+    fn new() -> Result<Self> {
+        install_rustls_provider();
 
         let servo = ServoBuilder::default()
             .preferences(trimmed_servo_preferences())
             .build();
-        let delegate = Rc::new(HypercolorWebViewDelegate::new());
-        let url = Url::parse("about:blank").context("failed to parse about:blank URL")?;
-
-        let webview = WebViewBuilder::new(&servo, Rc::clone(&rendering_context))
-            .delegate(delegate.clone())
-            .url(url)
-            .build();
-
-        let runtime = Self {
-            webview: Some(webview),
+        Ok(Self {
+            sessions: HashMap::new(),
             servo,
-            rendering_context,
-            delegate,
-            loaded_html_path: None,
-            script_buffer: String::new(),
-        };
-        runtime.wait_for_load_completion(LOAD_TIMEOUT, None)?;
-        Ok(runtime)
+        })
     }
 
     fn run(mut self, command_rx: Receiver<WorkerCommand>) {
         for command in command_rx {
             match command {
+                WorkerCommand::CreateSession {
+                    session_id,
+                    width,
+                    height,
+                    response_tx,
+                } => {
+                    let result = self.create_session(session_id, width, height);
+                    let _ = response_tx.send(result);
+                }
                 WorkerCommand::Load {
+                    session_id,
                     html_path,
                     width,
                     height,
                     response_tx,
                 } => {
-                    let result = self.load_effect(&html_path, width, height);
+                    let result = self.load_effect(session_id, &html_path, width, height);
                     let _ = response_tx.send(result);
                 }
-                WorkerCommand::Unload { response_tx } => {
-                    let result = self.unload_effect();
+                WorkerCommand::Unload {
+                    session_id,
+                    response_tx,
+                } => {
+                    let result = self.unload_effect(session_id);
                     let _ = response_tx.send(result);
                 }
                 WorkerCommand::Render {
+                    session_id,
                     scripts,
                     width,
                     height,
                     response_tx,
                 } => {
-                    let result = self.render_frame(&scripts, width, height);
+                    let result = self.render_frame(session_id, &scripts, width, height);
+                    let _ = response_tx.send(result);
+                }
+                WorkerCommand::DestroySession {
+                    session_id,
+                    response_tx,
+                } => {
+                    let result = self.destroy_session(session_id);
                     let _ = response_tx.send(result);
                 }
                 WorkerCommand::Shutdown { response_tx } => {
@@ -756,42 +768,98 @@ impl ServoWorkerRuntime {
             }
         }
 
-        let Self {
-            webview,
-            servo,
-            rendering_context,
-            delegate,
-            loaded_html_path,
-            ..
-        } = self;
-        drop(loaded_html_path);
-        drop(delegate);
-        drop(webview);
-        drop(rendering_context);
+        let Self { sessions, servo } = self;
+        drop(sessions);
         drop(servo);
     }
 
-    fn active_webview(&self) -> Result<&WebView> {
-        self.webview
-            .as_ref()
-            .ok_or_else(|| anyhow!("Servo webview is not initialized"))
+    fn create_session(
+        &mut self,
+        session_id: ServoSessionId,
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        if self.sessions.contains_key(&session_id) {
+            bail!("Servo session {session_id:?} already exists");
+        }
+
+        let rendering_context = Self::create_rendering_context(width, height)?;
+        rendering_context.make_current().map_err(|error| {
+            anyhow!("failed to make Servo rendering context current: {error:?}")
+        })?;
+        let delegate = Rc::new(HypercolorWebViewDelegate::new());
+        let url = Url::parse("about:blank").context("failed to parse about:blank URL")?;
+        let webview = Self::build_webview(
+            &self.servo,
+            Rc::clone(&rendering_context),
+            delegate.clone(),
+            url,
+        );
+
+        self.sessions.insert(
+            session_id,
+            ServoSession {
+                webview: Some(webview),
+                rendering_context,
+                delegate,
+                loaded_html_path: None,
+                script_buffer: String::new(),
+            },
+        );
+
+        if let Err(error) = self.wait_for_load_completion(session_id, WORKER_READY_TIMEOUT, None) {
+            self.sessions.remove(&session_id);
+            return Err(error);
+        }
+
+        Ok(())
     }
 
-    fn build_webview(&self, url: Url) -> WebView {
-        let webview = WebViewBuilder::new(&self.servo, Rc::clone(&self.rendering_context))
-            .delegate(self.delegate.clone())
+    fn create_rendering_context(width: u32, height: u32) -> Result<Rc<dyn RenderingContext>> {
+        Ok(Rc::new(bootstrap_software_rendering_context(
+            width, height,
+        )?))
+    }
+
+    fn build_webview(
+        servo: &Servo,
+        rendering_context: Rc<dyn RenderingContext>,
+        delegate: Rc<HypercolorWebViewDelegate>,
+        url: Url,
+    ) -> WebView {
+        let webview = WebViewBuilder::new(servo, rendering_context)
+            .delegate(delegate)
             .url(url)
             .build();
         webview.set_throttled(true);
         webview
     }
 
-    fn close_webview(&mut self) -> Result<()> {
+    fn session(&self, session_id: ServoSessionId) -> Result<&ServoSession> {
+        self.sessions
+            .get(&session_id)
+            .ok_or_else(|| anyhow!("Servo session {session_id:?} is not initialized"))
+    }
+
+    fn session_mut(&mut self, session_id: ServoSessionId) -> Result<&mut ServoSession> {
+        self.sessions
+            .get_mut(&session_id)
+            .ok_or_else(|| anyhow!("Servo session {session_id:?} is not initialized"))
+    }
+
+    fn active_webview(&self, session_id: ServoSessionId) -> Result<&WebView> {
+        self.session(session_id)?
+            .webview
+            .as_ref()
+            .ok_or_else(|| anyhow!("Servo webview is not initialized"))
+    }
+
+    fn close_webview(&mut self, session_id: ServoSessionId) -> Result<()> {
         // Dropping the last WebView handle synchronously issues Servo's
         // `CloseWebView` message. `notify_closed` is only documented for
         // `window.close()`, so waiting on it here just turns every effect
         // switch into a timeout path.
-        let Some(webview) = self.webview.take() else {
+        let Some(webview) = self.session_mut(session_id)?.webview.take() else {
             return Ok(());
         };
         drop(webview);
@@ -799,37 +867,65 @@ impl ServoWorkerRuntime {
         Ok(())
     }
 
-    fn replace_webview(&mut self, url: Url, timeout: Duration) -> Result<()> {
+    fn replace_webview(
+        &mut self,
+        session_id: ServoSessionId,
+        url: Url,
+        timeout: Duration,
+    ) -> Result<()> {
         // Dropping the last handle closes the old webview and lets Servo tear
         // down page-scoped resources before we build the next one.
-        self.close_webview()
+        self.close_webview(session_id)
             .context("failed to close previous Servo webview")?;
-        self.delegate.reset_navigation_state();
-        self.webview = Some(self.build_webview(url.clone()));
-        self.wait_for_load_completion(timeout, Some(url.as_str()))
+        {
+            let session = self.session_mut(session_id)?;
+            session.delegate.reset_navigation_state();
+        }
+        let (rendering_context, delegate) = {
+            let session = self.session(session_id)?;
+            (
+                Rc::clone(&session.rendering_context),
+                session.delegate.clone(),
+            )
+        };
+        let webview = Self::build_webview(&self.servo, rendering_context, delegate, url.clone());
+        self.session_mut(session_id)?.webview = Some(webview);
+        self.wait_for_load_completion(session_id, timeout, Some(url.as_str()))
     }
 
-    fn load_effect(&mut self, html_path: &Path, width: u32, height: u32) -> Result<()> {
-        let had_loaded_effect = self.loaded_html_path.is_some();
-        self.resize_if_needed(width, height)?;
+    fn load_effect(
+        &mut self,
+        session_id: ServoSessionId,
+        html_path: &Path,
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        let had_loaded_effect = self.session(session_id)?.loaded_html_path.is_some();
+        self.resize_if_needed(session_id, width, height)?;
         let url = file_url_for_path(html_path)?;
-        self.loaded_html_path = Some(html_path.to_path_buf());
+        self.session_mut(session_id)?.loaded_html_path = Some(html_path.to_path_buf());
         debug!(url = %url, "Loading Servo effect page");
         if had_loaded_effect {
-            self.replace_webview(url.clone(), LOAD_TIMEOUT).context(
-                "failed to replace previous Servo effect page before loading new effect",
-            )?;
+            self.replace_webview(session_id, url.clone(), LOAD_TIMEOUT)
+                .context(
+                    "failed to replace previous Servo effect page before loading new effect",
+                )?;
         } else {
-            self.delegate.reset_navigation_state();
-            let webview = self.active_webview()?;
-            webview.load(url.clone());
-            self.wait_for_load_completion(LOAD_TIMEOUT, Some(url.as_str()))?;
+            self.session(session_id)?.delegate.reset_navigation_state();
+            {
+                let webview = self.active_webview(session_id)?;
+                webview.load(url.clone());
+            }
+            self.wait_for_load_completion(session_id, LOAD_TIMEOUT, Some(url.as_str()))?;
         }
         let recent_console_entries = self
+            .session(session_id)?
             .delegate
             .recent_console_messages(RECENT_CONSOLE_SAMPLE_SIZE);
-        let recent_console =
-            summarize_console_messages(&recent_console_entries, self.loaded_html_path.as_deref());
+        let recent_console = summarize_console_messages(
+            &recent_console_entries,
+            self.session(session_id)?.loaded_html_path.as_deref(),
+        );
         if !recent_console.is_empty() {
             debug!(
                 url = %url,
@@ -838,45 +934,65 @@ impl ServoWorkerRuntime {
             );
         }
         if let Some(message) = find_initialization_failure_message(&recent_console_entries) {
+            let loaded_html_path = self.session(session_id)?.loaded_html_path.clone();
             bail!(
                 "effect initialization failed: {}",
-                format_console_message(message, self.loaded_html_path.as_deref())
+                format_console_message(message, loaded_html_path.as_deref())
             );
         }
         Ok(())
     }
 
-    fn unload_effect(&mut self) -> Result<()> {
-        if self.loaded_html_path.is_none() {
+    fn unload_effect(&mut self, session_id: ServoSessionId) -> Result<()> {
+        if self.session(session_id)?.loaded_html_path.is_none() {
             return Ok(());
         }
 
         let url = Url::parse("about:blank").context("failed to parse about:blank URL")?;
         debug!("Unloading Servo effect page");
-        self.replace_webview(url.clone(), UNLOAD_TIMEOUT)?;
-        self.loaded_html_path = None;
+        self.replace_webview(session_id, url.clone(), UNLOAD_TIMEOUT)?;
+        self.session_mut(session_id)?.loaded_html_path = None;
         Ok(())
     }
 
-    fn render_frame(&mut self, scripts: &[String], width: u32, height: u32) -> Result<Canvas> {
+    fn destroy_session(&mut self, session_id: ServoSessionId) -> Result<()> {
+        let Some(mut session) = self.sessions.remove(&session_id) else {
+            return Ok(());
+        };
+
+        if let Some(webview) = session.webview.take() {
+            drop(webview);
+            self.servo.spin_event_loop();
+        }
+
+        drop(session);
+        Ok(())
+    }
+
+    fn render_frame(
+        &mut self,
+        session_id: ServoSessionId,
+        scripts: &[String],
+        width: u32,
+        height: u32,
+    ) -> Result<Canvas> {
         let result = (|| {
-            self.resize_if_needed(width, height)?;
+            self.resize_if_needed(session_id, width, height)?;
 
-            self.evaluate_scripts(scripts)?;
+            self.evaluate_scripts(session_id, scripts)?;
 
-            let webview = self.active_webview()?;
             // Let timers/RAF advance for one daemon-driven frame after scripts
             // have injected controls/audio for this tick. Leaving the webview
             // unthrottled between ticks lets effect-side RAF/timer loops free-run.
-            webview.set_throttled(false);
+            self.active_webview(session_id)?.set_throttled(false);
             self.servo.spin_event_loop();
-            let frame_ready = self.delegate.take_frame_ready();
+            let frame_ready = self.session(session_id)?.delegate.take_frame_ready();
             if frame_ready {
                 trace!("Servo delegate signaled new frame");
             }
-            webview.paint();
+            self.active_webview(session_id)?.paint();
 
-            let size = self.rendering_context.size();
+            let size = self.session(session_id)?.rendering_context.size();
             let width_i32 =
                 i32::try_from(size.width).context("canvas width overflow for Servo readback")?;
             let height_i32 =
@@ -887,6 +1003,7 @@ impl ServoWorkerRuntime {
             );
 
             let image = self
+                .session(session_id)?
                 .rendering_context
                 .read_to_image(rect)
                 .ok_or_else(|| anyhow!("Servo returned no pixels for readback rectangle"))?;
@@ -900,46 +1017,56 @@ impl ServoWorkerRuntime {
             ))
         })();
 
-        if let Some(webview) = self.webview.as_ref() {
+        if let Some(webview) = self
+            .sessions
+            .get(&session_id)
+            .and_then(|session| session.webview.as_ref())
+        {
             webview.set_throttled(true);
         }
         result
     }
 
-    fn evaluate_scripts(&mut self, scripts: &[String]) -> Result<()> {
+    fn evaluate_scripts(&mut self, session_id: ServoSessionId, scripts: &[String]) -> Result<()> {
         if scripts.is_empty() {
             return Ok(());
         }
 
-        let mut script_buffer = std::mem::take(&mut self.script_buffer);
+        let mut script_buffer = {
+            let session = self.session_mut(session_id)?;
+            std::mem::take(&mut session.script_buffer)
+        };
         combined_script(&mut script_buffer, scripts);
-        let result = self.evaluate_script(&script_buffer).with_context(|| {
-            format!(
-                "failed to evaluate script batch: {}",
-                batched_script_preview(scripts)
-            )
-        });
-        self.script_buffer = script_buffer;
+        let result = self
+            .evaluate_script(session_id, &script_buffer)
+            .with_context(|| {
+                format!(
+                    "failed to evaluate script batch: {}",
+                    batched_script_preview(scripts)
+                )
+            });
+        self.session_mut(session_id)?.script_buffer = script_buffer;
         result
     }
 
-    fn resize_if_needed(&self, width: u32, height: u32) -> Result<()> {
+    fn resize_if_needed(&self, session_id: ServoSessionId, width: u32, height: u32) -> Result<()> {
         let new_size = PhysicalSize::new(width, height);
-        if self.rendering_context.size() == new_size {
+        let session = self.session(session_id)?;
+        if session.rendering_context.size() == new_size {
             return Ok(());
         }
 
-        self.rendering_context.resize(new_size);
-        self.active_webview()?.resize(new_size);
+        session.rendering_context.resize(new_size);
+        self.active_webview(session_id)?.resize(new_size);
         Ok(())
     }
 
-    fn evaluate_script(&mut self, script: &str) -> Result<()> {
+    fn evaluate_script(&mut self, session_id: ServoSessionId, script: &str) -> Result<()> {
         let result_slot: Rc<RefCell<Option<Result<JSValue, JavaScriptEvaluationError>>>> =
             Rc::new(RefCell::new(None));
         let callback_slot = Rc::clone(&result_slot);
 
-        self.active_webview()?
+        self.active_webview(session_id)?
             .evaluate_javascript(script, move |result| {
                 *callback_slot.borrow_mut() = Some(result);
             });
@@ -958,12 +1085,15 @@ impl ServoWorkerRuntime {
             .take()
             .ok_or_else(|| anyhow!("missing JavaScript callback result"))?;
         result.map(|_| ()).map_err(|error| {
-            let recent_console = summarize_console_messages(
-                &self
-                    .delegate
-                    .recent_console_messages(RECENT_CONSOLE_SAMPLE_SIZE),
-                self.loaded_html_path.as_deref(),
-            );
+            let session = self.session(session_id).ok();
+            let recent_console = session.map_or_else(Vec::new, |session| {
+                summarize_console_messages(
+                    &session
+                        .delegate
+                        .recent_console_messages(RECENT_CONSOLE_SAMPLE_SIZE),
+                    session.loaded_html_path.as_deref(),
+                )
+            });
             let mut message = format!("javascript evaluation failed: {error:?}");
             if !recent_console.is_empty() {
                 let _ = write!(message, "; recent console: {}", recent_console.join(" | "));
@@ -973,7 +1103,8 @@ impl ServoWorkerRuntime {
     }
 
     fn wait_for_load_completion(
-        &self,
+        &mut self,
+        session_id: ServoSessionId,
         timeout: Duration,
         expected_url: Option<&str>,
     ) -> Result<()> {
@@ -981,26 +1112,23 @@ impl ServoWorkerRuntime {
 
         loop {
             self.servo.spin_event_loop();
-            let loaded = self.delegate.is_page_loaded();
-            let url_matches =
-                expected_url.is_none_or(|url| self.delegate.last_url().as_deref() == Some(url));
+            let delegate = self.session(session_id)?.delegate.clone();
+            let loaded = delegate.is_page_loaded();
+            let last_url = delegate.last_url();
+            let url_matches = expected_url.is_none_or(|url| last_url.as_deref() == Some(url));
             if loaded && url_matches {
-                self.delegate.take_page_loaded();
+                delegate.take_page_loaded();
                 debug!("Servo page load completed");
                 return Ok(());
             }
 
             if Instant::now() >= deadline {
+                let loaded_html_path = self.session(session_id)?.loaded_html_path.clone();
                 let recent_console = summarize_console_messages(
-                    &self
-                        .delegate
-                        .recent_console_messages(RECENT_CONSOLE_SAMPLE_SIZE),
-                    self.loaded_html_path.as_deref(),
+                    &delegate.recent_console_messages(RECENT_CONSOLE_SAMPLE_SIZE),
+                    loaded_html_path.as_deref(),
                 );
-                let current_url = self
-                    .delegate
-                    .last_url()
-                    .unwrap_or_else(|| "<unknown>".to_owned());
+                let current_url = last_url.unwrap_or_else(|| "<unknown>".to_owned());
                 let mut message = format!(
                     "timed out waiting for Servo page load completion (expected_url={expected_url:?}, current_url={current_url})"
                 );
@@ -1067,7 +1195,9 @@ pub(super) mod test_support {
 
     use hypercolor_types::canvas::Canvas;
 
-    use super::super::worker_client::{ServoWorkerClient, WorkerCommand};
+    use super::super::worker_client::{
+        ServoWorkerClient, ServoWorkerClientSharedState, WorkerCommand,
+    };
     use super::ServoWorker;
 
     pub static SHARED_WORKER_STATE_TEST_LOCK: LazyLock<StdMutex<()>> =
@@ -1093,21 +1223,22 @@ pub(super) mod test_support {
 
     pub fn spawn_test_worker() -> (ServoWorker, Arc<AtomicBool>) {
         let (command_tx, command_rx) = mpsc::channel();
+        let client_state = Arc::new(ServoWorkerClientSharedState::new());
         let stopped = Arc::new(AtomicBool::new(false));
         let stopped_clone = Arc::clone(&stopped);
         let thread_handle = thread::spawn(move || {
             while let Ok(command) = command_rx.recv() {
                 match command {
-                    WorkerCommand::Unload { response_tx } => {
+                    WorkerCommand::CreateSession { response_tx, .. }
+                    | WorkerCommand::Unload { response_tx, .. }
+                    | WorkerCommand::Load { response_tx, .. }
+                    | WorkerCommand::DestroySession { response_tx, .. } => {
                         let _ = response_tx.send(Ok(()));
                     }
                     WorkerCommand::Shutdown { response_tx } => {
                         stopped_clone.store(true, Ordering::SeqCst);
                         let _ = response_tx.send(());
                         break;
-                    }
-                    WorkerCommand::Load { response_tx, .. } => {
-                        let _ = response_tx.send(Ok(()));
                     }
                     WorkerCommand::Render { response_tx, .. } => {
                         let _ = response_tx.send(Ok(solid_canvas(12, 34, 56)));
@@ -1120,6 +1251,7 @@ pub(super) mod test_support {
             ServoWorker {
                 command_tx: Some(command_tx),
                 thread_handle: Some(thread_handle),
+                client_state,
             },
             stopped,
         )
@@ -1134,6 +1266,7 @@ pub(super) mod test_support {
         Arc<AtomicBool>,
     ) {
         let (command_tx, command_rx) = mpsc::channel();
+        let client_state = Arc::new(ServoWorkerClientSharedState::new());
         let (render_tx, render_rx) = mpsc::channel();
         let (result_tx, result_rx) = mpsc::channel();
         let (delivered_tx, delivered_rx) = mpsc::channel();
@@ -1143,6 +1276,9 @@ pub(super) mod test_support {
         let thread_handle = thread::spawn(move || {
             while let Ok(command) = command_rx.recv() {
                 match command {
+                    WorkerCommand::CreateSession { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
                     WorkerCommand::Render {
                         scripts,
                         width,
@@ -1160,7 +1296,11 @@ pub(super) mod test_support {
                         let _ = response_tx.send(result);
                         let _ = delivered_tx.send(());
                     }
-                    WorkerCommand::Unload { response_tx } => {
+                    WorkerCommand::Unload { response_tx, .. } => {
+                        let _ = unload_tx.send(());
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    WorkerCommand::DestroySession { response_tx, .. } => {
                         let _ = unload_tx.send(());
                         let _ = response_tx.send(Ok(()));
                     }
@@ -1180,6 +1320,7 @@ pub(super) mod test_support {
             ServoWorker {
                 command_tx: Some(command_tx),
                 thread_handle: Some(thread_handle),
+                client_state,
             },
             render_rx,
             result_tx,
@@ -1196,6 +1337,7 @@ pub(super) mod test_support {
         Arc<AtomicBool>,
     ) {
         let (command_tx, command_rx) = mpsc::channel();
+        let client_state = Arc::new(ServoWorkerClientSharedState::new());
         let (load_tx, load_rx) = mpsc::channel();
         let (unload_tx, unload_rx) = mpsc::channel();
         let stopped = Arc::new(AtomicBool::new(false));
@@ -1203,7 +1345,7 @@ pub(super) mod test_support {
         let thread_handle = thread::spawn(move || {
             while let Ok(command) = command_rx.recv() {
                 match command {
-                    WorkerCommand::Load {
+                    WorkerCommand::CreateSession {
                         width,
                         height,
                         response_tx,
@@ -1212,7 +1354,11 @@ pub(super) mod test_support {
                         let _ = load_tx.send(RecordedLoadCommand { width, height });
                         let _ = response_tx.send(Ok(()));
                     }
-                    WorkerCommand::Unload { response_tx } => {
+                    WorkerCommand::Load { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    WorkerCommand::Unload { response_tx, .. }
+                    | WorkerCommand::DestroySession { response_tx, .. } => {
                         let _ = unload_tx.send(());
                         let _ = response_tx.send(Ok(()));
                     }
@@ -1232,6 +1378,7 @@ pub(super) mod test_support {
             ServoWorker {
                 command_tx: Some(command_tx),
                 thread_handle: Some(thread_handle),
+                client_state,
             },
             load_rx,
             unload_rx,
@@ -1432,7 +1579,7 @@ mod tests {
 
         install_poisoned_shared_worker("test failure");
 
-        let result = acquire_servo_worker(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
+        let result = acquire_servo_worker();
         assert!(result.is_err(), "poisoned worker should fail closed");
         let error = result.err().expect("poisoned worker should fail closed");
         assert!(

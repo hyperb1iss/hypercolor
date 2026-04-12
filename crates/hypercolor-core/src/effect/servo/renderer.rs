@@ -23,7 +23,7 @@ use super::worker::{
     poison_shared_servo_worker, poison_shared_servo_worker_if_fatal, prepare_runtime_html_source,
     servo_worker_is_fatal_error,
 };
-use super::worker_client::{PendingServoFrame, ServoWorkerClient};
+use super::worker_client::{PendingServoFrame, ServoSessionId, ServoWorkerClient};
 use crate::effect::lightscript::LightscriptRuntime;
 use crate::effect::paths::resolve_html_source_path;
 use crate::effect::traits::{EffectRenderer, FrameInput};
@@ -42,6 +42,7 @@ pub struct ServoRenderer {
     initialized: bool,
     pending_scripts: Vec<String>,
     worker: Option<ServoWorkerClient>,
+    session_id: Option<ServoSessionId>,
     queued_frame: Option<QueuedFrameInput>,
     in_flight_render: Option<PendingServoFrame>,
     last_canvas: Option<Canvas>,
@@ -64,6 +65,7 @@ impl ServoRenderer {
             initialized: false,
             pending_scripts: Vec::new(),
             worker: None,
+            session_id: None,
             queued_frame: None,
             in_flight_render: None,
             last_canvas: None,
@@ -165,8 +167,10 @@ impl ServoRenderer {
             )
         })?;
 
+        self.destroy();
         self.cleanup_runtime_html();
         self.worker = None;
+        self.session_id = None;
         self.controls.clear();
         self.runtime = LightscriptRuntime::new(canvas_width, canvas_height);
         self.pending_scripts.clear();
@@ -204,12 +208,17 @@ impl ServoRenderer {
                 )
             })?;
 
-        let worker = acquire_servo_worker(canvas_width, canvas_height)?;
-        if let Err(error) = worker.load_effect(&runtime_source, canvas_width, canvas_height) {
-            poison_shared_servo_worker_if_fatal("Servo effect page load failed", &error);
-            return Err(error);
-        }
+        let worker = acquire_servo_worker()?;
+        let session_id = match worker.create_and_load(&runtime_source, canvas_width, canvas_height)
+        {
+            Ok(session_id) => session_id,
+            Err(error) => {
+                poison_shared_servo_worker_if_fatal("Servo effect page load failed", &error);
+                return Err(error);
+            }
+        };
         self.worker = Some(worker);
+        self.session_id = Some(session_id);
         self.html_source = Some(path.clone());
         self.html_resolved_path = Some(runtime_source.clone());
         self.runtime_html_path = runtime_html_path;
@@ -256,6 +265,7 @@ impl ServoRenderer {
                         poison_shared_servo_worker_if_fatal("Servo frame render failed", &error);
                         if servo_worker_is_fatal_error(&error) {
                             self.worker = None;
+                            self.session_id = None;
                         }
                         warn!(%error, "Servo frame render failed");
                         if !self.warned_fallback_frame {
@@ -279,6 +289,7 @@ impl ServoRenderer {
             Err(TryRecvError::Disconnected) => {
                 self.in_flight_render = None;
                 self.worker = None;
+                self.session_id = None;
                 poison_shared_servo_worker(
                     "Servo worker disconnected before sending frame response",
                 );
@@ -299,6 +310,9 @@ impl ServoRenderer {
         if self.worker.is_none() {
             return;
         }
+        let Some(session_id) = self.session_id else {
+            return;
+        };
         let Some(frame) = self.queued_frame.take() else {
             return;
         };
@@ -310,13 +324,14 @@ impl ServoRenderer {
             .worker
             .as_ref()
             .expect("worker presence should be stable while queuing one render");
-        match worker.submit_render(scripts, frame.canvas_width, frame.canvas_height) {
+        match worker.submit_render(session_id, scripts, frame.canvas_width, frame.canvas_height) {
             Ok(render) => {
                 self.in_flight_render = Some(render);
                 self.warned_stalled_frame = false;
             }
             Err(error) => {
                 self.worker = None;
+                self.session_id = None;
                 poison_shared_servo_worker_if_fatal("Failed to queue Servo frame render", &error);
                 warn!(%error, "Failed to queue Servo frame render");
                 if !self.warned_fallback_frame {
@@ -345,6 +360,7 @@ impl ServoRenderer {
                 );
                 if servo_worker_is_fatal_error(&error) {
                     self.worker = None;
+                    self.session_id = None;
                 }
                 warn!(%error, "Servo frame render failed while draining effect teardown");
             }
@@ -363,6 +379,7 @@ impl ServoRenderer {
                 );
                 warn!("Servo worker disconnected while draining effect teardown");
                 self.worker = None;
+                self.session_id = None;
             }
         }
     }
@@ -408,16 +425,17 @@ impl EffectRenderer for ServoRenderer {
 
     fn destroy(&mut self) {
         self.drain_in_flight_render();
-        if let Some(worker) = self.worker.as_ref() {
-            if let Err(error) = worker.unload_effect() {
+        if let (Some(worker), Some(session_id)) = (self.worker.as_ref(), self.session_id) {
+            if let Err(error) = worker.destroy_session(session_id) {
                 poison_shared_servo_worker_if_fatal(
-                    "Failed to unload Servo effect page during destroy",
+                    "Failed to destroy Servo effect session during destroy",
                     &error,
                 );
-                warn!(%error, "Failed to unload Servo effect page during destroy");
+                warn!(%error, "Failed to destroy Servo effect session during destroy");
             }
         }
         self.worker = None;
+        self.session_id = None;
         self.pending_scripts.clear();
         self.queued_frame = None;
         self.in_flight_render = None;
@@ -634,12 +652,25 @@ mod tests {
         }
     }
 
+    fn attach_renderer_session(renderer: &mut ServoRenderer, worker: &super::worker::ServoWorker) {
+        let client = worker_client_from(worker);
+        let session_id = client
+            .create_and_load(
+                std::path::Path::new("test.html"),
+                DEFAULT_CANVAS_WIDTH,
+                DEFAULT_CANVAS_HEIGHT,
+            )
+            .expect("test session should initialize");
+        renderer.worker = Some(client);
+        renderer.session_id = Some(session_id);
+    }
+
     #[test]
     fn destroy_clears_renderer_state_without_shutting_down_shared_worker() {
         let (worker, stopped) = spawn_test_worker();
 
         let mut renderer = ServoRenderer::new();
-        renderer.worker = Some(worker_client_from(&worker));
+        attach_renderer_session(&mut renderer, &worker);
         renderer.initialized = true;
         renderer.pending_scripts.push("tick()".to_owned());
         renderer
@@ -878,7 +909,7 @@ mod tests {
             spawn_render_test_worker();
 
         let mut renderer = ServoRenderer::new();
-        renderer.worker = Some(worker_client_from(&worker));
+        attach_renderer_session(&mut renderer, &worker);
         renderer.initialized = true;
         renderer.enqueue_bootstrap_scripts();
         renderer.set_control("speed", &ControlValue::Float(0.25));
@@ -977,7 +1008,7 @@ mod tests {
             spawn_render_test_worker();
 
         let mut renderer = ServoRenderer::new();
-        renderer.worker = Some(worker_client_from(&worker));
+        attach_renderer_session(&mut renderer, &worker);
         renderer.initialized = true;
         renderer.enqueue_bootstrap_scripts();
 
@@ -1024,7 +1055,7 @@ mod tests {
             spawn_render_test_worker();
 
         let mut renderer = ServoRenderer::new();
-        renderer.worker = Some(worker_client_from(&worker));
+        attach_renderer_session(&mut renderer, &worker);
         renderer.initialized = true;
         renderer.enqueue_bootstrap_scripts();
 
