@@ -75,10 +75,19 @@ pub async fn fetch_effects() -> Result<Vec<EffectSummary>, String> {
 }
 
 /// Fetch effects filtered to a single category.
+///
+/// The daemon's `/api/v1/effects` endpoint doesn't currently honor a
+/// `category` query parameter, so we filter client-side after fetching
+/// the full catalog. Kept as a separate function so callers have a
+/// single clear entry point and we can move filtering server-side later
+/// without touching call sites.
 pub async fn fetch_effects_by_category(category: &str) -> Result<Vec<EffectSummary>, String> {
-    let url = format!("/api/v1/effects?category={category}");
-    let list: EffectListResponse = client::fetch_json(&url).await?;
-    Ok(list.items)
+    let list: EffectListResponse = client::fetch_json("/api/v1/effects").await?;
+    Ok(list
+        .items
+        .into_iter()
+        .filter(|effect| effect.category.eq_ignore_ascii_case(category))
+        .collect())
 }
 
 /// Fetch the currently active effect, if any.

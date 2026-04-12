@@ -34,9 +34,12 @@ const LS_KEY_RIGHT_WIDTH: &str = "hc-disp-right-width";
 /// Whether the overlay stack section in the right column is expanded.
 const LS_KEY_OVERLAYS_EXPANDED: &str = "hc-disp-overlays-expanded";
 
-/// Accent color (coral) for the displays page — used for face-assignment
-/// chrome, edge glows, and preset toolbar theming.
-const DISPLAY_ACCENT_RGB: &str = "255, 106, 193";
+// Accent tokens are design-system concerns — see the SilkCircuit palette
+// in `tokens/primitives.css` (`--color-coral`, `--color-cyan`, etc.) and
+// the `.accent-coral`/`.accent-cyan` classes in `input.css` that set
+// `--glow-rgb` for edge glows. All color styling on this page reaches
+// for those tokens (via `bg-coral/10`, `text-coral`, `border-coral/40`,
+// `edge-glow-accent accent-coral`, etc.) rather than hardcoded RGB.
 
 /// Live drag state for a slot being repositioned on the preview canvas.
 #[derive(Clone)]
@@ -436,43 +439,25 @@ fn DisplayPicker(
     on_manage_simulator: Callback<api::DisplaySummary>,
 ) -> impl IntoView {
     view! {
-        <div
-            class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-edge-subtle bg-surface-raised/80 edge-glow"
-            style=format!("--glow-rgb: {DISPLAY_ACCENT_RGB};")
-        >
+        // Display picker reads as neutral chrome — the sidebar is a
+        // navigation list, not the primary accented region. Just the
+        // subtle edge-glow is enough.
+        <div class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-edge-subtle bg-surface-raised/80 edge-glow">
             <header class="flex items-center justify-between border-b border-edge-subtle/50 px-3 py-2">
                 <div class="flex items-center gap-2 text-[11px] uppercase tracking-wider text-fg-secondary">
-                    <div
-                        class="flex h-5 w-5 items-center justify-center rounded-md"
-                        style=format!(
-                            "background: rgba({DISPLAY_ACCENT_RGB}, 0.1); box-shadow: 0 0 8px rgba({DISPLAY_ACCENT_RGB}, 0.08);"
-                        )
-                    >
-                        <span style=format!("color: rgba({DISPLAY_ACCENT_RGB}, 0.8);")>
-                            <Icon icon=LuMonitor width="11" height="11" />
-                        </span>
+                    <div class="flex h-5 w-5 items-center justify-center rounded-md bg-surface-overlay text-fg-secondary">
+                        <Icon icon=LuMonitor width="11" height="11" />
                     </div>
                     <span class="font-semibold">"Displays"</span>
                 </div>
-                <div class="flex items-center gap-1">
-                    <button
-                        type="button"
-                        class="flex items-center gap-1 rounded-sm px-2 py-1 text-[10px] uppercase tracking-wider text-fg-tertiary transition hover:text-accent-primary"
-                        title="Add a virtual display simulator"
-                        on:click=move |_| on_create_simulator.run(())
-                    >
-                        <Icon icon=LuPlus width="12" height="12" />
-                        "Simulator"
-                    </button>
-                    <button
-                        type="button"
-                        class="rounded-sm p-1 text-fg-tertiary transition hover:text-accent-primary"
-                        title="Refresh displays"
-                        on:click=move |_| displays.refetch()
-                    >
-                        <Icon icon=LuRefreshCw width="14" height="14" />
-                    </button>
-                </div>
+                <button
+                    type="button"
+                    class="rounded-sm p-1 text-fg-tertiary transition hover:text-accent-primary"
+                    title="Refresh displays"
+                    on:click=move |_| displays.refetch()
+                >
+                    <Icon icon=LuRefreshCw width="12" height="12" />
+                </button>
             </header>
             <div class="min-h-0 flex-1 overflow-y-auto">
                 <Suspense fallback=move || view! { <PickerPlaceholder message="Loading displays...".to_string() /> }>
@@ -1217,18 +1202,11 @@ fn DisplayWorkspace(
     });
 
     view! {
-        <section
-            class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-edge-subtle bg-surface-raised/80 edge-glow-accent"
-            style=format!("--glow-rgb: {DISPLAY_ACCENT_RGB};")
-        >
+        <section class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-edge-subtle bg-surface-raised/80 edge-glow-accent accent-coral">
             <header class="flex flex-wrap items-center justify-between gap-3 border-b border-edge-subtle px-4 py-3">
                 <div class="flex min-w-0 flex-1 items-center gap-2">
-                    <div class="flex h-6 w-6 items-center justify-center rounded-md"
-                        style=format!("background: rgba({DISPLAY_ACCENT_RGB}, 0.1); box-shadow: 0 0 8px rgba({DISPLAY_ACCENT_RGB}, 0.08);")
-                    >
-                        <span style=format!("color: rgba({DISPLAY_ACCENT_RGB}, 0.8);")>
-                            <Icon icon=LuMonitor width="13" height="13" />
-                        </span>
+                    <div class="flex h-6 w-6 items-center justify-center rounded-md bg-coral/10 text-coral/80">
+                        <Icon icon=LuMonitor width="13" height="13" />
                     </div>
                     <h2 class="text-[11px] font-semibold uppercase tracking-wide text-fg-secondary">
                         "Live preview"
@@ -1237,18 +1215,11 @@ fn DisplayWorkspace(
                         <span class="rounded-full border border-edge-subtle bg-surface-overlay/60 px-2 py-0.5 text-[10px] text-fg-tertiary">
                             {move || subtitle.get().unwrap_or_default()}
                         </span>
-                        <span
-                            class="inline-flex min-w-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px]"
-                            style=move || {
-                                if has_face.get() {
-                                    format!(
-                                        "border-color: rgba({DISPLAY_ACCENT_RGB}, 0.35); background: rgba({DISPLAY_ACCENT_RGB}, 0.1); color: rgba({DISPLAY_ACCENT_RGB}, 0.95);"
-                                    )
-                                } else {
-                                    String::from("border-color: var(--border-subtle); color: var(--text-tertiary);")
-                                }
-                            }
-                        >
+                        <span class=move || if has_face.get() {
+                            "inline-flex min-w-0 items-center gap-1.5 rounded-full border border-coral/35 bg-coral/10 px-2 py-0.5 text-[10px] text-coral"
+                        } else {
+                            "inline-flex min-w-0 items-center gap-1.5 rounded-full border border-edge-subtle px-2 py-0.5 text-[10px] text-fg-tertiary"
+                        }>
                             <Icon icon=LuLayers width="10" height="10" />
                             <span class="truncate">{move || current_face_name.get()}</span>
                         </span>
@@ -1381,7 +1352,7 @@ fn DisplayWorkspace(
                             node_ref=container_ref
                             class=container_class
                             style=move || format!(
-                                "aspect-ratio: {aspect}; cursor: {}; box-shadow: 0 20px 60px -20px rgba({DISPLAY_ACCENT_RGB}, 0.35), 0 0 0 1px rgba({DISPLAY_ACCENT_RGB}, 0.12);",
+                                "aspect-ratio: {aspect}; cursor: {};",
                                 if drag_state.with(Option::is_some) { "grabbing" } else { "default" }
                             )
                             on:pointermove=on_pointermove
@@ -1483,22 +1454,10 @@ fn FaceAssignmentCard(
     });
 
     view! {
-        <div
-            class="rounded-xl border border-edge-subtle bg-surface-raised/80 p-3 edge-glow"
-            style=format!(
-                "border-top: 2px solid rgba({DISPLAY_ACCENT_RGB}, 0.25); --glow-rgb: {DISPLAY_ACCENT_RGB};"
-            )
-        >
+        <div class="rounded-xl border border-t-2 border-edge-subtle border-t-coral/25 bg-surface-raised/80 p-3 edge-glow">
             <div class="flex items-center gap-2 border-b border-edge-subtle/50 pb-2">
-                <div
-                    class="flex h-6 w-6 items-center justify-center rounded-md"
-                    style=format!(
-                        "background: rgba({DISPLAY_ACCENT_RGB}, 0.1); box-shadow: 0 0 8px rgba({DISPLAY_ACCENT_RGB}, 0.08);"
-                    )
-                >
-                    <span style=format!("color: rgba({DISPLAY_ACCENT_RGB}, 0.8);")>
-                        <Icon icon=LuLayers width="13" height="13" />
-                    </span>
+                <div class="flex h-6 w-6 items-center justify-center rounded-md bg-coral/10 text-coral/80">
+                    <Icon icon=LuLayers width="13" height="13" />
                 </div>
                 <h3 class="text-[11px] font-semibold uppercase tracking-wide text-fg-secondary">
                     "Face"
@@ -1512,7 +1471,7 @@ fn FaceAssignmentCard(
                                 href=href
                                 target="_blank"
                                 rel="noopener"
-                                class="rounded-md p-1 text-fg-tertiary transition hover:text-accent-primary"
+                                class="rounded-md p-1 text-fg-tertiary transition hover:text-coral"
                                 title="Open full-screen preview"
                             >
                                 <Icon icon=LuExternalLink width="11" height="11" />
@@ -1540,10 +1499,7 @@ fn FaceAssignmentCard(
                 <div class="mt-1 flex items-center gap-2">
                     <button
                         type="button"
-                        class="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider transition disabled:cursor-not-allowed disabled:opacity-50"
-                        style=format!(
-                            "border: 1px solid rgba({DISPLAY_ACCENT_RGB}, 0.4); background: rgba({DISPLAY_ACCENT_RGB}, 0.12); color: rgba({DISPLAY_ACCENT_RGB}, 1.0);"
-                        )
+                        class="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-coral/40 bg-coral/12 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-coral transition hover:bg-coral/20 disabled:cursor-not-allowed disabled:opacity-50"
                         disabled=move || face_assignment_pending.get()
                         on:click=move |_| on_choose_face.run(())
                     >
@@ -1724,22 +1680,10 @@ fn FaceControlsSection(
 
     view! {
         <Show when=move || has_controls.get() fallback=|| ()>
-            <div
-                class="rounded-xl border border-edge-subtle bg-surface-raised/80 p-3 edge-glow"
-                style=format!(
-                    "border-top: 2px solid rgba({DISPLAY_ACCENT_RGB}, 0.2); --glow-rgb: {DISPLAY_ACCENT_RGB};"
-                )
-            >
+            <div class="rounded-xl border border-t-2 border-edge-subtle border-t-coral/20 bg-surface-raised/80 p-3 edge-glow">
                 <div class="mb-3 flex items-center gap-2 border-b border-edge-subtle/50 pb-2">
-                    <div
-                        class="flex h-6 w-6 items-center justify-center rounded-md"
-                        style=format!(
-                            "background: rgba({DISPLAY_ACCENT_RGB}, 0.1); box-shadow: 0 0 8px rgba({DISPLAY_ACCENT_RGB}, 0.08);"
-                        )
-                    >
-                        <span style=format!("color: rgba({DISPLAY_ACCENT_RGB}, 0.7);")>
-                            <Icon icon=LuSettings2 width="13" height="13" />
-                        </span>
+                    <div class="flex h-6 w-6 items-center justify-center rounded-md bg-coral/10 text-coral/70">
+                        <Icon icon=LuSettings2 width="13" height="13" />
                     </div>
                     <h3 class="text-[11px] font-semibold uppercase tracking-wide text-fg-secondary">
                         "Controls"
@@ -1758,7 +1702,7 @@ fn FaceControlsSection(
                 <ControlPanel
                     controls=face_controls
                     control_values=Signal::from(face_control_values)
-                    accent_rgb=Signal::derive(|| DISPLAY_ACCENT_RGB.to_owned())
+                    accent_rgb=Signal::derive(|| "255, 106, 193".to_owned())
                     on_change=on_control_change
                 />
             </div>
@@ -1777,7 +1721,7 @@ fn CollapsibleOverlayStack(
     set_expanded: WriteSignal<bool>,
 ) -> impl IntoView {
     view! {
-        <div class="flex min-h-0 flex-col rounded-xl border border-edge-subtle bg-surface-raised/80 edge-glow">
+        <div class="flex min-h-0 flex-col rounded-xl border border-t-2 border-edge-subtle border-t-cyan/25 bg-surface-raised/80 edge-glow">
             <button
                 type="button"
                 class="flex w-full items-center gap-2 border-b border-edge-subtle/50 px-3 py-2 text-left transition hover:bg-surface-overlay/40"
@@ -1790,7 +1734,7 @@ fn CollapsibleOverlayStack(
                 >
                     <Icon icon=LuChevronRight width="12" height="12" />
                 </span>
-                <div class="flex h-5 w-5 items-center justify-center rounded-md bg-surface-overlay/60">
+                <div class="flex h-5 w-5 items-center justify-center rounded-md bg-cyan/10 text-cyan/90">
                     <Icon icon=LuLayers width="11" height="11" />
                 </div>
                 <h3 class="text-[11px] font-semibold uppercase tracking-wide text-fg-secondary">
@@ -1831,22 +1775,14 @@ fn DisplayFacePickerModal(
             on:click=move |_| close_backdrop.run(())
         >
             <div
-                class="flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-edge-subtle bg-surface-raised shadow-2xl edge-glow-accent"
-                style=format!("--glow-rgb: {DISPLAY_ACCENT_RGB};")
+                class="flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-edge-subtle bg-surface-raised shadow-2xl edge-glow-accent accent-coral"
                 on:click=|event| event.stop_propagation()
             >
                 // ── Header ────────────────────────────────────────────
                 <div class="flex items-start justify-between gap-3 border-b border-edge-subtle px-4 py-3">
                     <div class="flex min-w-0 items-center gap-2">
-                        <div
-                            class="flex h-7 w-7 items-center justify-center rounded-md"
-                            style=format!(
-                                "background: rgba({DISPLAY_ACCENT_RGB}, 0.12); box-shadow: 0 0 12px rgba({DISPLAY_ACCENT_RGB}, 0.1);"
-                            )
-                        >
-                            <span style=format!("color: rgba({DISPLAY_ACCENT_RGB}, 0.85);")>
-                                <Icon icon=LuLayers width="14" height="14" />
-                            </span>
+                        <div class="flex h-7 w-7 items-center justify-center rounded-md bg-coral/12 text-coral/85">
+                            <Icon icon=LuLayers width="14" height="14" />
                         </div>
                         <div class="min-w-0">
                             <h2 class="text-sm font-semibold text-fg-primary">
@@ -2031,12 +1967,7 @@ fn render_face_gallery_card(
                 }
             >
                 <Show when=move || is_current.get() fallback=|| ()>
-                    <span
-                        class="absolute right-1.5 top-1.5 rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider"
-                        style=format!(
-                            "border-color: rgba({DISPLAY_ACCENT_RGB}, 0.6); background: rgba({DISPLAY_ACCENT_RGB}, 0.25); color: #ffffff; backdrop-filter: blur(4px);"
-                        )
-                    >
+                    <span class="absolute right-1.5 top-1.5 rounded-full border border-coral/60 bg-coral/25 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-white backdrop-blur-sm">
                         "Assigned"
                     </span>
                 </Show>
@@ -2083,22 +2014,14 @@ fn FacePresetBar(
                         let preset_controls = preset.controls.clone();
                         let name = preset.name;
                         let pill_class = if is_active {
-                            "inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-medium transition"
+                            "inline-flex items-center rounded-full border border-coral/50 bg-coral/15 px-2.5 py-1 text-[10px] font-medium text-coral transition"
                         } else {
-                            "inline-flex items-center rounded-full border border-edge-subtle bg-surface-overlay/50 px-2.5 py-1 text-[10px] text-fg-secondary transition hover:border-accent-primary/40 hover:text-fg-primary"
-                        };
-                        let active_style = if is_active {
-                            format!(
-                                "border-color: rgba({DISPLAY_ACCENT_RGB}, 0.5); background: rgba({DISPLAY_ACCENT_RGB}, 0.14); color: rgba({DISPLAY_ACCENT_RGB}, 1.0);"
-                            )
-                        } else {
-                            String::new()
+                            "inline-flex items-center rounded-full border border-edge-subtle bg-surface-overlay/50 px-2.5 py-1 text-[10px] text-fg-secondary transition hover:border-coral/40 hover:text-fg-primary"
                         };
                         view! {
                             <button
                                 type="button"
                                 class=pill_class
-                                style=active_style
                                 aria-pressed=if is_active { "true" } else { "false" }
                                 on:click=move |_| on_apply.run(preset_controls.clone())
                             >
@@ -2399,12 +2322,18 @@ where
         .collect_view();
 
     view! {
+        // `fixed inset-0` positions relative to the viewport, not an
+        // ancestor with `position: relative`. The overlay catalog used
+        // to render inside OverlayStackPanel's scrollable container and
+        // got clipped — fixed positioning takes the stacking context
+        // out of that container entirely so the backdrop covers the
+        // whole page like the other modals.
         <div
-            class="absolute inset-0 z-10 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+            class="fixed inset-0 z-30 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm animate-fade-in"
             on:click=move |_| close_backdrop()
         >
             <div
-                class="w-[290px] rounded-lg border border-edge-subtle bg-surface-raised p-4 shadow-2xl"
+                class="w-full max-w-sm rounded-xl border border-edge-subtle bg-surface-raised p-4 shadow-2xl edge-glow-accent accent-cyan"
                 on:click=|event| event.stop_propagation()
             >
                 <div class="mb-3 flex items-center justify-between">

@@ -765,12 +765,27 @@ input[type="range"].slider-silk::-moz-range-track {
     contain-intrinsic-size: 300px 225px;
 }
 
-/* Accent edge glow — for active/important panels */
+/* Accent edge glow — for active/important panels. Pairs with one of
+   the `.accent-*` classes below, which set `--glow-rgb` to the right
+   SilkCircuit palette value. Without an accent class the default is
+   electric purple (brand). */
 .edge-glow-accent {
     box-shadow: 0 0 8px rgba(var(--glow-rgb, 225, 53, 255), 0.18),
                 0 0 24px rgba(var(--glow-rgb, 225, 53, 255), 0.06),
                 inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
+
+/* Named accent tokens — set `--glow-rgb` for `.edge-glow-accent`,
+   `.card-hover`, and `.btn-press` without spraying raw RGB triples
+   across component source. RGB triples mirror the OKLCH `--color-*`
+   tokens in `tokens/primitives.css` for classes that expect numeric
+   components (CSS doesn't let us extract RGB from oklch() directly). */
+.accent-purple { --glow-rgb: 225, 53, 255; }  /* brand / page headers */
+.accent-cyan   { --glow-rgb: 128, 255, 234; } /* live state / widgets */
+.accent-coral  { --glow-rgb: 255, 106, 193; } /* display-face chrome */
+.accent-yellow { --glow-rgb: 241, 250, 140; } /* warnings / timestamps */
+.accent-green  { --glow-rgb: 80, 250, 123; }  /* success states */
+.accent-red    { --glow-rgb: 255, 99, 99; }   /* errors */
 
 /* Preview panel glow — ambient-reactive edge glow around the live canvas */
 .preview-glow {

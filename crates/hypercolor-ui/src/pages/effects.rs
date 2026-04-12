@@ -26,10 +26,15 @@ const MIN_CONTROLS_WIDTH: f64 = 220.0;
 const MAX_CONTROLS_WIDTH: f64 = 800.0;
 
 /// Category filter chips — (label, accent RGB).
+///
+/// `display` is deliberately absent here. Display faces are authored with
+/// the Face SDK and rendered on LCD devices; they live on the `/displays`
+/// page and never belong in the LED effects browser. The `filtered_effects`
+/// memo below also strips any stray `display`-category effect so a
+/// misclassified face can't leak into the gallery.
 const CATEGORY_CHIPS: &[(&str, &str)] = &[
     ("all", "225, 53, 255"),
     ("ambient", "128, 255, 234"),
-    ("display", "255, 106, 193"),
     ("gaming", "225, 53, 255"),
     ("reactive", "241, 250, 140"),
     ("generative", "80, 250, 123"),
@@ -135,11 +140,16 @@ pub fn EffectsPage() -> impl IntoView {
         crate::storage::set("hc-fx-authors", &authors_str);
     });
 
-    // Derive unique sorted author list from loaded effects
+    // Derive unique sorted author list from loaded effects.
+    // Skip display-face authors — they're only relevant on `/displays`
+    // and would pollute the effects-page author chip list.
     let authors = Memo::new(move |_| {
         let mut seen = std::collections::BTreeSet::new();
         fx.effects_index.with(|effects| {
             for entry in effects {
+                if entry.effect.category.eq_ignore_ascii_case("display") {
+                    continue;
+                }
                 if !entry.effect.author.is_empty() {
                     seen.insert(entry.effect.author.clone());
                 }
@@ -195,6 +205,14 @@ pub fn EffectsPage() -> impl IntoView {
                 .iter()
                 .filter(|entry| {
                     let effect = &entry.effect;
+                    // Display faces are authored with the Face SDK and
+                    // assigned on the `/displays` page. They never
+                    // belong in the LED effects gallery, regardless of
+                    // whether the user flipped some URL-state or old
+                    // persisted filter to `display`.
+                    if effect.category.eq_ignore_ascii_case("display") {
+                        return false;
+                    }
                     if cat != "all" && effect.category != cat {
                         return false;
                     }
@@ -213,7 +231,14 @@ pub fn EffectsPage() -> impl IntoView {
                 .collect::<Vec<_>>()
         })
     });
-    let total_effects = Memo::new(move |_| fx.effects_index.get().len());
+    let total_effects = Memo::new(move |_| {
+        fx.effects_index.with(|effects| {
+            effects
+                .iter()
+                .filter(|entry| !entry.effect.category.eq_ignore_ascii_case("display"))
+                .count()
+        })
+    });
 
     // Apply effect handler — delegates to shared context
     let on_apply = Callback::new(move |id: String| {
