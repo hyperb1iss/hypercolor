@@ -1,5 +1,6 @@
 //! Virtual display simulator management endpoints — `/api/v1/simulators/*`.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::Json;
@@ -16,7 +17,10 @@ use hypercolor_types::event::DisconnectReason;
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::logical_devices;
-use crate::simulators::{SimulatedDisplayConfig, activate_simulated_displays};
+use crate::scene_transactions::apply_layout_update;
+use crate::simulators::{
+    SimulatedDisplayConfig, activate_simulated_displays, logical_device_ids_for_simulator,
+};
 
 struct OwnedDisplayJpeg(Arc<Vec<u8>>);
 
@@ -167,6 +171,8 @@ pub async fn delete_simulated_display(
     }
     crate::api::persist_simulated_displays(&state).await;
 
+    prune_simulator_layout_targets(&state, device_id).await;
+
     let runtime = state.driver_host.discovery_runtime();
     if let Err(error) = crate::discovery::disconnect_tracked_device(
         &runtime,
@@ -264,4 +270,44 @@ fn validate_simulator_config(config: &SimulatedDisplayConfig) -> Result<(), Stri
         return Err("Simulator width and height must be 4096 or less".to_owned());
     }
     Ok(())
+}
+
+async fn prune_simulator_layout_targets(state: &Arc<AppState>, device_id: DeviceId) {
+    let physical_id = device_id.to_string();
+    let mut target_ids: HashSet<String> =
+        logical_device_ids_for_simulator(&state.logical_devices, device_id)
+            .await
+            .into_iter()
+            .collect();
+    target_ids.insert(physical_id.clone());
+    target_ids.insert(format!("device:{physical_id}"));
+    target_ids.insert(format!("simulator:{physical_id}"));
+
+    let active_layout_id = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().id.clone()
+    };
+
+    let active_layout = {
+        let mut layouts = state.layouts.write().await;
+        let mut updated_active = None;
+
+        for layout in layouts.values_mut() {
+            let zone_count = layout.zones.len();
+            layout
+                .zones
+                .retain(|zone| !target_ids.contains(zone.device_id.as_str()));
+            if layout.zones.len() != zone_count && layout.id == active_layout_id {
+                updated_active = Some(layout.clone());
+            }
+        }
+
+        updated_active
+    };
+
+    if let Some(layout) = active_layout {
+        apply_layout_update(&state.spatial_engine, &state.scene_transactions, layout).await;
+    }
+
+    crate::api::persist_layouts(state).await;
 }

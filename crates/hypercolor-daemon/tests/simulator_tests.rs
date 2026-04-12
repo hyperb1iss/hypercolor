@@ -6,11 +6,13 @@ use http::{Method, Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::display_frames::DisplayFrameSnapshot;
+use hypercolor_daemon::scene_transactions::apply_layout_update;
 use hypercolor_daemon::simulators::{
     SimulatedDisplayConfig, SimulatedDisplayStore, activate_simulated_displays,
     default_layout_device_id, logical_device_ids_for_simulator,
 };
 use hypercolor_types::device::{DeviceId, DeviceState};
+use hypercolor_types::spatial::{DeviceZone, LedTopology, NormalizedPosition};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -320,6 +322,48 @@ async fn simulated_display_crud_routes_update_runtime_state() {
         .await
         .expect("created simulator should be tracked");
     assert!(tracked.state.is_renderable());
+
+    let active_layout = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().as_ref().clone()
+    };
+    let layout_device_id = default_layout_device_id(&preview_config);
+    let zone_id = format!("zone_simulator_{device_id}");
+    let mut active_layout_with_simulator = active_layout.clone();
+    active_layout_with_simulator.zones.push(DeviceZone {
+        id: zone_id.clone(),
+        name: "Desk Preview Display".to_owned(),
+        device_id: layout_device_id.clone(),
+        zone_name: None,
+        position: NormalizedPosition::new(0.5, 0.5),
+        size: NormalizedPosition::new(1.0, 1.0),
+        rotation: 0.0,
+        scale: 1.0,
+        orientation: None,
+        topology: LedTopology::Point,
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        display_order: 0,
+        shape: None,
+        shape_preset: None,
+        attachment: None,
+    });
+    {
+        let mut layouts = state.layouts.write().await;
+        layouts.insert(
+            active_layout_with_simulator.id.clone(),
+            active_layout_with_simulator.clone(),
+        );
+    }
+    apply_layout_update(
+        &state.spatial_engine,
+        &state.scene_transactions,
+        active_layout_with_simulator.clone(),
+    )
+    .await;
+
     {
         let mut manager = state.backend_manager.lock().await;
         manager
@@ -399,6 +443,27 @@ async fn simulated_display_crud_routes_update_runtime_state() {
             .is_none()
     );
     assert!(state.display_frames.read().await.frame(device_id).is_none());
+    assert!(
+        state
+            .layouts
+            .read()
+            .await
+            .get(&active_layout_with_simulator.id)
+            .expect("active layout should remain present")
+            .zones
+            .iter()
+            .all(|zone| zone.device_id != layout_device_id)
+    );
+    assert!(
+        state
+            .spatial_engine
+            .read()
+            .await
+            .layout()
+            .zones
+            .iter()
+            .all(|zone| zone.id != zone_id)
+    );
 }
 
 #[tokio::test]

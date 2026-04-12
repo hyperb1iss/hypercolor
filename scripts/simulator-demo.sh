@@ -20,23 +20,29 @@ EFFECT_ID=""
 WAIT_FRAME=false
 FRAME_OUT=""
 TIMEOUT_SECONDS=10
+EPHEMERAL=false
+cleanup_layout_id=""
+cleanup_zone_id=""
+simulator_id=""
+simulator_name=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/simulator-demo.sh [--name NAME] [--width PX] [--height PX] [--square|--circle] [--effect ID_OR_NAME] [--wait-frame] [--frame-out PATH] [--timeout SECONDS]
+Usage: scripts/simulator-demo.sh [--name NAME] [--width PX] [--height PX] [--square|--circle] [--effect ID_OR_NAME] [--wait-frame] [--frame-out PATH] [--timeout SECONDS] [--ephemeral]
 
 Creates or updates a virtual display simulator through the local daemon API,
 optionally applies an effect, and prints a ready-to-open browser preview URL.
 When requested, it can also wait for the frame endpoint to produce image bytes
 and save that frame for CI or visual inspection. If `--effect` is omitted, the
 helper auto-selects the first native effect, falling back to the first listed
-effect.
+effect. `--ephemeral` creates a disposable simulator and removes it on exit.
 
 Examples:
   scripts/simulator-demo.sh
   scripts/simulator-demo.sh --name "Square Preview" --square
   scripts/simulator-demo.sh --name "Wide Preview" --width 640 --height 240 --effect rainbow
   scripts/simulator-demo.sh --wait-frame --frame-out /tmp/simulator.jpg
+  scripts/simulator-demo.sh --ephemeral --wait-frame
 EOF
 }
 
@@ -68,6 +74,44 @@ die() {
   printf '%serror:%s %s\n' "$RED" "$RESET" "$1" >&2
   exit 1
 }
+
+cleanup_ephemeral() {
+  local exit_code="$1"
+  local layout_json
+  local zones_json
+  local payload
+
+  if [[ "$EPHEMERAL" != true || -z "$simulator_id" ]]; then
+    return "$exit_code"
+  fi
+
+  set +e
+
+  if [[ -n "$cleanup_layout_id" && -n "$cleanup_zone_id" ]]; then
+    layout_json="$(api_json_try GET "${BASE_URL}/api/v1/layouts/${cleanup_layout_id}")"
+    if [[ -n "$layout_json" ]]; then
+      zones_json="$(
+        jq -c --arg zone_id "$cleanup_zone_id" '
+          (.data.zones // []) | map(select(.id != $zone_id))
+        ' <<<"$layout_json"
+      )"
+      payload="$(jq -cn --argjson zones "$zones_json" '{ zones: $zones }')"
+      if api_json_try PUT "${BASE_URL}/api/v1/layouts/${cleanup_layout_id}" "$payload" >/dev/null; then
+        api_json_try POST "${BASE_URL}/api/v1/layouts/${cleanup_layout_id}/apply" >/dev/null \
+          || log_warn "failed to re-apply layout ${cleanup_layout_id} after ephemeral cleanup"
+      else
+        log_warn "failed to remove ephemeral simulator zone from layout ${cleanup_layout_id}"
+      fi
+    fi
+  fi
+
+  api_json_try DELETE "${BASE_URL}/api/v1/simulators/displays/${simulator_id}" >/dev/null \
+    || log_warn "failed to delete ephemeral simulator ${simulator_name:-$simulator_id}"
+
+  return "$exit_code"
+}
+
+trap 'cleanup_ephemeral $?' EXIT
 
 urlencode() {
   jq -nr --arg value "$1" '$value|@uri'
@@ -105,6 +149,42 @@ api_json() {
     cat "$tmp" >&2
     rm -f "$tmp"
     exit 1
+  fi
+
+  cat "$tmp"
+  rm -f "$tmp"
+}
+
+api_json_try() {
+  local method="$1"
+  local url="$2"
+  local body="${3-}"
+  local tmp
+  local status
+  tmp="$(mktemp)"
+  if [[ -n "$body" ]]; then
+    status="$(
+      curl --silent --show-error \
+        --output "$tmp" \
+        --write-out '%{http_code}' \
+        --request "$method" \
+        --header 'content-type: application/json' \
+        --data "$body" \
+        "$url"
+    )"
+  else
+    status="$(
+      curl --silent --show-error \
+        --output "$tmp" \
+        --write-out '%{http_code}' \
+        --request "$method" \
+        "$url"
+    )"
+  fi
+
+  if [[ "${status}" != 2* ]]; then
+    rm -f "$tmp"
+    return 1
   fi
 
   cat "$tmp"
@@ -247,6 +327,8 @@ ensure_active_layout_target() {
 
   log_step "Updating active layout ${layout_id} with simulator display zone"
   api_json PUT "${BASE_URL}/api/v1/layouts/${layout_id}" "$update_payload" >/dev/null
+  cleanup_layout_id="$layout_id"
+  cleanup_zone_id="$zone_id"
 
   log_step "Re-applying active layout ${layout_id}"
   api_json POST "${BASE_URL}/api/v1/layouts/${layout_id}/apply" >/dev/null
@@ -291,6 +373,10 @@ while [[ $# -gt 0 ]]; do
       TIMEOUT_SECONDS="${2-}"
       shift 2
       ;;
+    --ephemeral)
+      EPHEMERAL=true
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -316,13 +402,19 @@ curl --silent --show-error --fail "${BASE_URL}/health" >/dev/null \
 
 log_step "Loading simulator inventory"
 simulators_json="$(api_json GET "${BASE_URL}/api/v1/simulators/displays")"
-existing_id="$(
-  jq -r --arg name "$NAME" '
-    .data[]
-    | select(.name == $name)
-    | .id
-  ' <<<"$simulators_json" | head -n1
-)"
+
+if [[ "$EPHEMERAL" == true ]]; then
+  NAME="${NAME} $(date +%s)-$$"
+  existing_id=""
+else
+  existing_id="$(
+    jq -r --arg name "$NAME" '
+      .data[]
+      | select(.name == $name)
+      | .id
+    ' <<<"$simulators_json" | head -n1
+  )"
+fi
 
 payload="$(
   jq -cn \
