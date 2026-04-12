@@ -290,6 +290,14 @@ impl SparkleFlinger {
             SparkleFlingerBackend::Gpu { gpu, .. } => gpu.resolve_preview_surface(),
         }
     }
+
+    pub fn submit_pending_preview_work(&mut self) -> Result<()> {
+        match &mut self.backend {
+            SparkleFlingerBackend::Cpu(_) => Ok(()),
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.submit_pending_preview_work(),
+        }
+    }
 }
 
 #[cfg(feature = "wgpu")]

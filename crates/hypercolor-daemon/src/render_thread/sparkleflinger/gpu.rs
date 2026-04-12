@@ -47,6 +47,7 @@ pub(crate) struct GpuSparkleFlinger {
     cached_preview_surface: Option<CachedPreviewSurface>,
     pending_output_submission: Option<wgpu::CommandEncoder>,
     pending_preview_readback: Option<PendingPreviewReadback>,
+    pending_preview_submission: Option<wgpu::SubmissionIndex>,
     ready_preview_surface: Option<PublishedSurface>,
     output_generation: u64,
     cached_sample_result: Option<CachedSampleResult>,
@@ -253,6 +254,7 @@ impl GpuSparkleFlinger {
             cached_preview_surface: None,
             pending_output_submission: None,
             pending_preview_readback: None,
+            pending_preview_submission: None,
             ready_preview_surface: None,
             output_generation: 0,
             cached_sample_result: None,
@@ -286,6 +288,7 @@ impl GpuSparkleFlinger {
         {
             self.pending_output_submission = None;
             self.pending_preview_readback = None;
+            self.pending_preview_submission = None;
             self.ready_preview_surface = None;
             return Ok(self.compose_bypass_layer(
                 plan,
@@ -339,6 +342,7 @@ impl GpuSparkleFlinger {
         }
         self.pending_output_submission = None;
         self.pending_preview_readback = None;
+        self.pending_preview_submission = None;
         self.ready_preview_surface = None;
 
         let surfaces = self
@@ -535,7 +539,7 @@ impl GpuSparkleFlinger {
         } else if let Some(submission_index) = submission_index {
             self.pending_preview_readback = pending_preview_readback;
             if self.pending_preview_readback.is_some() {
-                self.resolve_pending_preview_surface_for_submission(submission_index)?;
+                self.pending_preview_submission = Some(submission_index);
             }
         }
         if sampled && let Some(sampling_plan) = sampling_plan {
@@ -555,18 +559,27 @@ impl GpuSparkleFlinger {
             return Ok(Some(surface));
         }
 
+        self.submit_pending_preview_work()?;
+
+        let Some(submission_index) = self.pending_preview_submission.take() else {
+            return Ok(None);
+        };
         let Some(pending_preview_readback) = self.pending_preview_readback.take() else {
             return Ok(None);
         };
-        let encoder = self.pending_output_submission.take().unwrap_or_else(|| {
-            self.device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("SparkleFlinger GPU preview finalize"),
-                })
-        });
-        let submission_index = self.queue.submit(Some(encoder.finish()));
         self.finish_pending_preview_readback(pending_preview_readback, submission_index)
             .map(Some)
+    }
+
+    pub(crate) fn submit_pending_preview_work(&mut self) -> Result<()> {
+        if self.pending_preview_submission.is_some() || self.pending_preview_readback.is_none() {
+            return Ok(());
+        }
+        let Some(encoder) = self.pending_output_submission.take() else {
+            return Ok(());
+        };
+        self.pending_preview_submission = Some(self.queue.submit(Some(encoder.finish())));
+        Ok(())
     }
 
     pub(crate) fn ensure_surface_size(&mut self, width: u32, height: u32) {
@@ -594,6 +607,7 @@ impl GpuSparkleFlinger {
         self.cached_preview_surface = None;
         self.pending_output_submission = None;
         self.pending_preview_readback = None;
+        self.pending_preview_submission = None;
         self.ready_preview_surface = None;
         self.cached_sample_result = None;
     }
@@ -764,6 +778,7 @@ impl GpuSparkleFlinger {
                 height,
                 readback_key,
             });
+            self.pending_preview_submission = None;
             self.ready_preview_surface = None;
             return Ok(gpu_composed_without_surfaces());
         }
@@ -905,21 +920,9 @@ impl GpuSparkleFlinger {
             request,
             readback_key,
         });
+        self.pending_preview_submission = None;
         self.ready_preview_surface = None;
         Ok(gpu_composed_without_surfaces())
-    }
-
-    fn resolve_pending_preview_surface_for_submission(
-        &mut self,
-        submission_index: wgpu::SubmissionIndex,
-    ) -> Result<()> {
-        let Some(pending_preview_readback) = self.pending_preview_readback.take() else {
-            return Ok(());
-        };
-        let surface =
-            self.finish_pending_preview_readback(pending_preview_readback, submission_index)?;
-        self.ready_preview_surface = Some(surface);
-        Ok(())
     }
 
     fn finish_pending_preview_readback(
@@ -2280,6 +2283,52 @@ mod tests {
             .expect("preview surfaces should stay allocated across same-size requests");
         assert_eq!(preview_surfaces.scale_param_write_count, 1);
         assert_eq!(preview_surfaces.preview_bind_group_count, 2);
+    }
+
+    #[test]
+    fn gpu_preview_work_can_submit_before_finalize() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(patterned_canvas(96)),
+                    0.35,
+                ),
+            ],
+        );
+
+        let composed = compositor
+            .compose(
+                &plan,
+                false,
+                Some(PreviewSurfaceRequest {
+                    width: 2,
+                    height: 2,
+                }),
+            )
+            .expect("GPU composition should stage a scaled preview surface");
+        assert!(composed.preview_surface.is_none());
+        assert!(compositor.pending_preview_submission.is_none());
+
+        compositor
+            .submit_pending_preview_work()
+            .expect("GPU preview submit should succeed");
+        assert!(compositor.pending_preview_submission.is_some());
+        assert!(compositor.pending_output_submission.is_none());
+
+        let preview_surface = compositor
+            .resolve_preview_surface()
+            .expect("GPU preview finalize should succeed")
+            .expect("submitted preview work should finalize into a surface");
+        assert_eq!(preview_surface.width(), 2);
+        assert_eq!(preview_surface.height(), 2);
+        assert!(compositor.pending_preview_submission.is_none());
     }
 
     #[test]

@@ -203,6 +203,16 @@ pub(crate) async fn execute_frame(
     let sample_done_at = Instant::now();
     let sample_done_us = micros_between(frame_start, sample_done_at);
 
+    if render_stage.composed_frame.preview_surface.is_none()
+        && matches!(
+            render_stage.composed_frame.backend,
+            crate::performance::CompositorBackendKind::Gpu
+        )
+        && let Err(error) = render.sparkleflinger.submit_pending_preview_work()
+    {
+        warn!(%error, "GPU preview submit failed; continuing without an overlapped preview finalize");
+    }
+
     let push_start = Instant::now();
     let (write_stats, async_failures) = {
         let mut manager = state.backend_manager.lock().await;
