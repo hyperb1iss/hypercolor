@@ -45,7 +45,7 @@ use hypercolor_types::spatial::{
 use hypercolor_daemon::discovery::DiscoveryRuntime;
 use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::performance::PerformanceTracker;
-use hypercolor_daemon::preview_runtime::PreviewRuntime;
+use hypercolor_daemon::preview_runtime::{PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand};
 use hypercolor_daemon::render_thread::{CanvasDims, RenderThread, RenderThreadState};
 use hypercolor_daemon::scene_transactions::{SceneTransaction, SceneTransactionQueue};
 use hypercolor_daemon::session::OutputPowerState;
@@ -2827,6 +2827,63 @@ async fn idle_pipeline_skips_canvas_publication_without_receivers() {
     assert_eq!(published_canvas.height, 0);
     assert_eq!(preview_snapshot.canvas_frames_published, 0);
     assert!(preview_snapshot.latest_canvas_frame_number > 0);
+}
+
+#[tokio::test]
+async fn pipeline_throttles_canvas_preview_publication_to_tracked_receiver_fps() {
+    let mut effect_engine = EffectEngine::new();
+    effect_engine
+        .activate(
+            Box::new(MockEffectRenderer::rainbow()),
+            MockEffectRenderer::sample_metadata("canvas-preview-throttle"),
+        )
+        .expect("activate");
+    let state = make_render_state(
+        effect_engine,
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+
+    let mut preview_rx = state.preview_runtime.canvas_receiver();
+    preview_rx.update_demand(PreviewStreamDemand {
+        fps: 5,
+        format: PreviewPixelFormat::Jpeg,
+        width: 640,
+        height: 360,
+    });
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(1), preview_rx.changed())
+        .await
+        .expect("expected initial preview publication within 1 second")
+        .expect("preview sender should remain connected");
+    let _ = preview_rx.borrow_and_update();
+
+    tokio::time::sleep(Duration::from_millis(450)).await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let preview_snapshot = state.preview_runtime.snapshot();
+    assert!(
+        preview_snapshot.canvas_frames_published <= 3,
+        "expected low-fps preview demand to gate source publication, got {} canvas publications",
+        preview_snapshot.canvas_frames_published
+    );
+    assert!(
+        preview_snapshot.latest_canvas_frame_number
+            > preview_snapshot.canvas_frames_published as u32,
+        "expected preview telemetry to keep advancing even when source publication is throttled"
+    );
 }
 
 #[test]

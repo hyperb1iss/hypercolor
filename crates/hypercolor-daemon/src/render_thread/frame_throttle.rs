@@ -68,6 +68,8 @@ pub(crate) async fn maybe_sleep_throttle(
     recycled_frame: &mut FrameData,
     sleep_black_pushed: &mut bool,
     last_audio_level_update_ms: &mut Option<u32>,
+    last_canvas_preview_publish_ms: &mut Option<u32>,
+    last_screen_canvas_preview_publish_ms: &mut Option<u32>,
 ) -> Option<FrameExecution> {
     let power_state = scene_snapshot.output_power;
     if *sleep_black_pushed {
@@ -104,6 +106,8 @@ pub(crate) async fn maybe_sleep_throttle(
             frame_num_u32,
             scene_snapshot.elapsed_ms,
             last_audio_level_update_ms,
+            last_canvas_preview_publish_ms,
+            last_screen_canvas_preview_publish_ms,
             false,
             FrameTiming {
                 producer_us: 0,
@@ -179,6 +183,8 @@ pub(crate) async fn maybe_sleep_throttle(
         frame_num_u32,
         scene_snapshot.elapsed_ms,
         last_audio_level_update_ms,
+        last_canvas_preview_publish_ms,
+        last_screen_canvas_preview_publish_ms,
         false,
         FrameTiming {
             producer_us: 0,
