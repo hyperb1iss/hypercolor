@@ -87,8 +87,14 @@ struct GpuPreviewSurfaceSet {
     height: u32,
     padded_bytes_per_row: u32,
     texture: GpuCompositorTexture,
+    bind_groups: GpuPreviewScaleBindGroups,
     readback: wgpu::Buffer,
     readback_surfaces: RenderSurfacePool,
+    cached_scale_params: Option<[u8; PREVIEW_SCALE_PARAM_BYTES]>,
+    #[cfg(test)]
+    scale_param_write_count: usize,
+    #[cfg(test)]
+    preview_bind_group_count: usize,
 }
 
 struct GpuCompositorTexture {
@@ -99,6 +105,11 @@ struct GpuCompositorTexture {
 struct GpuCompositorBindGroups {
     front_to_back: wgpu::BindGroup,
     back_to_front: wgpu::BindGroup,
+}
+
+struct GpuPreviewScaleBindGroups {
+    front_to_preview: wgpu::BindGroup,
+    back_to_preview: wgpu::BindGroup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -506,6 +517,7 @@ impl GpuSparkleFlinger {
             width,
             height,
         ));
+        self.preview_surfaces = None;
         self.current_output = None;
         self.cached_composition_key = None;
         self.cached_readback_surface = None;
@@ -709,7 +721,7 @@ impl GpuSparkleFlinger {
         ))
     }
 
-    fn ensure_preview_surface_size(&mut self, width: u32, height: u32) {
+    fn ensure_preview_surface_size(&mut self, width: u32, height: u32) -> Result<()> {
         if matches!(
             self.preview_surfaces,
             Some(GpuPreviewSurfaceSet {
@@ -718,11 +730,27 @@ impl GpuSparkleFlinger {
                 ..
             }) if current_width == width && current_height == height
         ) {
-            return;
+            return Ok(());
         }
 
-        self.preview_surfaces = Some(GpuPreviewSurfaceSet::new(&self.device, width, height));
+        let (front_view, back_view) = {
+            let surfaces = self
+                .surfaces
+                .as_ref()
+                .context("GPU preview surfaces requested before compositor surfaces were allocated")?;
+            (surfaces.front.view.clone(), surfaces.back.view.clone())
+        };
+
+        self.preview_surfaces = Some(GpuPreviewSurfaceSet::new(
+            &self.device,
+            &self.pipeline,
+            &front_view,
+            &back_view,
+            width,
+            height,
+        ));
         self.cached_preview_surface = None;
+        Ok(())
     }
 
     fn stage_scaled_preview_surface_readback(
@@ -746,38 +774,27 @@ impl GpuSparkleFlinger {
             return Ok(gpu_composed_with_preview_surface(cached.surface.clone()));
         }
 
-        let source_view = {
-            let surfaces = self
-                .surfaces
-                .as_ref()
-                .context("GPU preview scale requested before compositor surfaces were allocated")?;
-            match current_output {
-                GpuCompositorOutputSurface::Front => surfaces.front.view.clone(),
-                GpuCompositorOutputSurface::Back => surfaces.back.view.clone(),
-            }
-        };
-        self.ensure_preview_surface_size(request.width, request.height);
+        self.ensure_preview_surface_size(request.width, request.height)?;
         let preview_surfaces = self
             .preview_surfaces
             .as_mut()
             .expect("preview surfaces should exist after allocation");
-        let bind_group = create_preview_scale_bind_group(
-            &self.device,
-            &self.pipeline,
-            &source_view,
-            &preview_surfaces.texture.view,
-            "SparkleFlinger GPU preview scale bind group",
-        );
-        self.queue.write_buffer(
-            &self.pipeline.preview_scale_params_buffer,
-            0,
-            &encode_preview_scale_params(
-                source_width,
-                source_height,
-                request.width,
-                request.height,
-            ),
-        );
+        let bind_group = match current_output {
+            GpuCompositorOutputSurface::Front => &preview_surfaces.bind_groups.front_to_preview,
+            GpuCompositorOutputSurface::Back => &preview_surfaces.bind_groups.back_to_preview,
+        };
+        let params =
+            encode_preview_scale_params(source_width, source_height, request.width, request.height);
+        if preview_surfaces.cached_scale_params != Some(params) {
+            self.queue
+                .write_buffer(&self.pipeline.preview_scale_params_buffer, 0, &params);
+            preview_surfaces.cached_scale_params = Some(params);
+            #[cfg(test)]
+            {
+                preview_surfaces.scale_param_write_count =
+                    preview_surfaces.scale_param_write_count.saturating_add(1);
+            }
+        }
         let mut encoder = encoder.unwrap_or_else(|| {
             self.device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -789,7 +806,7 @@ impl GpuSparkleFlinger {
             timestamp_writes: None,
         });
         pass.set_pipeline(&self.pipeline.preview_scale_pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_bind_group(0, bind_group, &[]);
         pass.dispatch_workgroups(
             request.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
             request.height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
@@ -1109,7 +1126,14 @@ impl GpuCompositorSurfaceSet {
 }
 
 impl GpuPreviewSurfaceSet {
-    fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+    fn new(
+        device: &wgpu::Device,
+        pipeline: &GpuCompositorPipeline,
+        front_view: &wgpu::TextureView,
+        back_view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+    ) -> Self {
         let padded_bytes_per_row = padded_bytes_per_row(width);
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("SparkleFlinger GPU preview readback"),
@@ -1117,18 +1141,26 @@ impl GpuPreviewSurfaceSet {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
+        let texture = GpuCompositorTexture::new(device, width, height, "SparkleFlinger Preview");
         Self {
             width,
             height,
             padded_bytes_per_row,
-            texture: GpuCompositorTexture::new(
+            bind_groups: GpuPreviewScaleBindGroups::new(
                 device,
-                width,
-                height,
-                "SparkleFlinger Preview",
+                pipeline,
+                front_view,
+                back_view,
+                &texture.view,
             ),
+            texture,
             readback,
             readback_surfaces: RenderSurfacePool::new(SurfaceDescriptor::rgba8888(width, height)),
+            cached_scale_params: None,
+            #[cfg(test)]
+            scale_param_write_count: 0,
+            #[cfg(test)]
+            preview_bind_group_count: 2,
         }
     }
 }
@@ -1177,6 +1209,33 @@ impl GpuCompositorBindGroups {
                 &source.view,
                 &front.view,
                 "SparkleFlinger GPU bind group back->front",
+            ),
+        }
+    }
+}
+
+impl GpuPreviewScaleBindGroups {
+    fn new(
+        device: &wgpu::Device,
+        pipeline: &GpuCompositorPipeline,
+        front_view: &wgpu::TextureView,
+        back_view: &wgpu::TextureView,
+        preview_view: &wgpu::TextureView,
+    ) -> Self {
+        Self {
+            front_to_preview: create_preview_scale_bind_group(
+                device,
+                pipeline,
+                front_view,
+                preview_view,
+                "SparkleFlinger GPU preview scale bind group front->preview",
+            ),
+            back_to_preview: create_preview_scale_bind_group(
+                device,
+                pipeline,
+                back_view,
+                preview_view,
+                "SparkleFlinger GPU preview scale bind group back->preview",
             ),
         }
     }
@@ -2074,6 +2133,71 @@ mod tests {
             .expect("scaled preview requests should resolve a preview surface");
         assert_eq!(preview_surface.width(), 2);
         assert_eq!(preview_surface.height(), 2);
+    }
+
+    #[test]
+    fn gpu_scaled_preview_reuses_bind_groups_and_scale_params() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let request = PreviewSurfaceRequest {
+            width: 2,
+            height: 2,
+        };
+        let first_plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(patterned_canvas(96)),
+                    0.35,
+                ),
+            ],
+        );
+        let second_plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(33))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(patterned_canvas(144)),
+                    0.35,
+                ),
+            ],
+        );
+
+        compositor
+            .compose(&first_plan, false, Some(request))
+            .expect("first scaled preview compose should succeed");
+        compositor
+            .resolve_preview_surface()
+            .expect("first preview finalize should succeed")
+            .expect("first compose should publish a preview surface");
+        {
+            let preview_surfaces = compositor
+                .preview_surfaces
+                .as_ref()
+                .expect("scaled preview should allocate preview surfaces");
+            assert_eq!(preview_surfaces.scale_param_write_count, 1);
+            assert_eq!(preview_surfaces.preview_bind_group_count, 2);
+        }
+
+        compositor
+            .compose(&second_plan, false, Some(request))
+            .expect("second scaled preview compose should succeed");
+        compositor
+            .resolve_preview_surface()
+            .expect("second preview finalize should succeed")
+            .expect("second compose should publish a preview surface");
+
+        let preview_surfaces = compositor
+            .preview_surfaces
+            .as_ref()
+            .expect("preview surfaces should stay allocated across same-size requests");
+        assert_eq!(preview_surfaces.scale_param_write_count, 1);
+        assert_eq!(preview_surfaces.preview_bind_group_count, 2);
     }
 
     #[test]
