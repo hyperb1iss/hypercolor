@@ -18,6 +18,14 @@ use crate::api::envelope::{ApiError, ApiResponse};
 use crate::logical_devices;
 use crate::simulators::{SimulatedDisplayConfig, activate_simulated_displays};
 
+struct OwnedDisplayJpeg(Arc<Vec<u8>>);
+
+impl AsRef<[u8]> for OwnedDisplayJpeg {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref().as_slice()
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateSimulatedDisplayRequest {
     pub name: String,
@@ -221,7 +229,9 @@ pub async fn get_simulated_display_frame(
     }
 
     if let Some(frame) = state.display_frames.read().await.frame(device_id) {
-        return jpeg_response(Bytes::copy_from_slice(frame.jpeg_data.as_slice()));
+        return jpeg_response(Bytes::from_owner(OwnedDisplayJpeg(Arc::clone(
+            &frame.jpeg_data,
+        ))));
     }
 
     ApiError::not_found(format!(
