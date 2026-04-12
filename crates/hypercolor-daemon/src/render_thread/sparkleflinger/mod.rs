@@ -460,4 +460,49 @@ mod tests {
             base_ptr
         );
     }
+
+    #[test]
+    fn sparkleflinger_reuses_cached_shared_multilayer_compositions() {
+        let base_surface =
+            PublishedSurface::from_owned_canvas(solid_canvas(Rgba::new(255, 32, 0, 255)), 1, 1);
+        let overlay_surface =
+            PublishedSurface::from_owned_canvas(solid_canvas(Rgba::new(32, 64, 255, 255)), 1, 1);
+        let mut sparkleflinger = SparkleFlinger::cpu();
+
+        let first = sparkleflinger.compose(CompositionPlan::with_layers(
+            2,
+            2,
+            vec![
+                CompositionLayer::replace_canvas(Canvas::from_published_surface(&base_surface)),
+                CompositionLayer::alpha_canvas(
+                    Canvas::from_published_surface(&overlay_surface),
+                    0.35,
+                ),
+            ],
+        ));
+        let second = sparkleflinger.compose(CompositionPlan::with_layers(
+            2,
+            2,
+            vec![
+                CompositionLayer::replace_canvas(Canvas::from_published_surface(&base_surface)),
+                CompositionLayer::alpha_canvas(
+                    Canvas::from_published_surface(&overlay_surface),
+                    0.35,
+                ),
+            ],
+        ));
+
+        let first_surface = first
+            .sampling_surface
+            .expect("initial shared composition should publish a sampling surface");
+        let second_surface = second
+            .sampling_surface
+            .expect("cached shared composition should publish a sampling surface");
+        assert_eq!(first_surface.storage_identity(), second_surface.storage_identity());
+        assert_eq!(
+            first_surface.rgba_bytes().as_ptr(),
+            second_surface.rgba_bytes().as_ptr()
+        );
+        assert!(!second.bypassed);
+    }
 }
