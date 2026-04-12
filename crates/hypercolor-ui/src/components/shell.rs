@@ -9,6 +9,7 @@ use wasm_bindgen::JsCast;
 use crate::app::EffectsContext;
 use crate::components::sidebar::Sidebar;
 use crate::icons::*;
+use crate::ws::CanvasPixelFormat;
 
 /// Read the current theme from the DOM.
 fn read_theme() -> String {
@@ -33,6 +34,10 @@ fn apply_theme(theme: &str) {
 /// Extract dominant hue (0..360) from RGBA pixel data by averaging sampled pixels.
 /// Samples every Nth pixel for performance — runs on a throttled timer, not every frame.
 fn extract_dominant_hue(frame: &crate::ws::CanvasFrame) -> Option<f64> {
+    if frame.pixel_format() == CanvasPixelFormat::Jpeg {
+        return None;
+    }
+
     let pixel_count = frame.pixel_count();
     if pixel_count == 0 {
         return None;

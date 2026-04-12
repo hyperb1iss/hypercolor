@@ -6,7 +6,7 @@
 //! canvas frame and normalize it into a readable, cohesive band suitable
 //! for UI accents and text coloring on dark surfaces.
 
-use crate::ws::CanvasFrame;
+use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
 /// Three-color palette extracted from a canvas frame.
 #[derive(Clone, Copy, Debug)]
@@ -163,6 +163,10 @@ pub fn harmonize_palette(p: CanvasPalette) -> CanvasPalette {
 /// dark/desaturated pixels, and returns averaged RGB for the top 3 sectors.
 /// Returns `None` if no sector has enough vibrant pixels.
 pub fn extract_canvas_palette(frame: &CanvasFrame) -> Option<CanvasPalette> {
+    if frame.pixel_format() == CanvasPixelFormat::Jpeg {
+        return None;
+    }
+
     let pixel_count = frame.pixel_count();
     if pixel_count < 4 {
         return None;

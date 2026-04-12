@@ -16,7 +16,7 @@ use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
 use crate::color::{self, CanvasPalette};
-use crate::ws::CanvasFrame;
+use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
 const LOCAL_STORAGE_KEY: &str = "hypercolor:thumbnails";
 const WEBP_QUALITY: f64 = 0.7;
@@ -126,6 +126,10 @@ fn load_from_storage() -> Option<ThumbnailCache> {
 /// frame) or any DOM operation errors out — both are treated as "skip this
 /// capture, try again later" rather than fatal.
 pub fn capture_thumbnail(frame: &CanvasFrame, version: String) -> Option<Thumbnail> {
+    if frame.pixel_format() == CanvasPixelFormat::Jpeg {
+        return None;
+    }
+
     let palette = color::extract_canvas_palette(frame)?;
     let data_url = encode_frame_to_webp(frame).ok()?;
 

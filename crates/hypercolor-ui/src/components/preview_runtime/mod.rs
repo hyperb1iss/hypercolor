@@ -50,6 +50,10 @@ impl PreviewRuntime {
             return Ok(Self(PreviewRuntimeBackend::Worker(runtime)));
         }
 
+        if frame.pixel_format() == CanvasPixelFormat::Jpeg {
+            return Err(PreviewRuntimeInitError::WebGlUnavailable);
+        }
+
         match WebGlPreviewRuntime::new(canvas) {
             Ok(runtime) => Ok(Self(PreviewRuntimeBackend::WebGl(runtime))),
             Err(WebGlInitError::InitializationFailed) => {

@@ -206,6 +206,7 @@ function createImageData(frame) {
 
   return new ImageData(scratchRgba, frame.width, frame.height);
 }
+
 "#;
 
 pub(super) struct PreviewWorkerRuntime {
@@ -232,7 +233,7 @@ impl PreviewWorkerRuntime {
             .flatten()
             .and_then(|ctx| ctx.dyn_into::<ImageBitmapRenderingContext>().ok())
             .ok_or(())?;
-        probe_worker_canvas_support()?;
+        probe_worker_support(frame.pixel_format())?;
 
         let worker_url = create_worker_url().map_err(|_| ())?;
         let worker = Worker::new(&worker_url).map_err(|_| ())?;
@@ -319,6 +320,19 @@ fn probe_worker_canvas_support() -> Result<(), ()> {
     }
 }
 
+fn probe_worker_jpeg_support() -> Result<(), ()> {
+    js_sys::Reflect::has(&js_sys::global(), &JsValue::from_str("createImageBitmap"))
+        .map_err(|_| ())
+        .and_then(|supported| supported.then_some(()).ok_or(()))
+}
+
+fn probe_worker_support(format: CanvasPixelFormat) -> Result<(), ()> {
+    match format {
+        CanvasPixelFormat::Jpeg => probe_worker_jpeg_support(),
+        CanvasPixelFormat::Rgb | CanvasPixelFormat::Rgba => probe_worker_canvas_support(),
+    }
+}
+
 impl Drop for PreviewWorkerRuntime {
     fn drop(&mut self) {
         self.worker.set_onmessage(None);
@@ -380,7 +394,9 @@ fn present_bitmap(
 
 #[cfg(test)]
 mod tests {
-    use super::{DispatchDecision, FrameDispatchState};
+    use crate::ws::CanvasPixelFormat;
+
+    use super::{DispatchDecision, FrameDispatchState, pixel_format_code};
 
     #[test]
     fn dispatch_state_coalesces_frames_while_one_is_in_flight() {
@@ -392,5 +408,10 @@ mod tests {
         assert_eq!(state.push_or_defer(3), DispatchDecision::Deferred);
         assert_eq!(state.next_after_present(), Some(3));
         assert_eq!(state.next_after_present(), None);
+    }
+
+    #[test]
+    fn pixel_format_code_handles_jpeg() {
+        assert_eq!(pixel_format_code(CanvasPixelFormat::Jpeg), 2);
     }
 }

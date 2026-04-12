@@ -1,6 +1,7 @@
 //! Preview FPS cap logic, subscription management, and backpressure handling.
 
 use leptos::prelude::*;
+use wasm_bindgen::{JsCast, JsValue};
 
 use super::messages::CanvasFrame;
 
@@ -30,8 +31,36 @@ pub(super) fn preview_canvas_format() -> &'static str {
 
     match hostname.as_str() {
         "localhost" | "127.0.0.1" | "::1" => "rgba",
+        _ if supports_remote_jpeg_preview() => "jpeg",
         _ => "rgb",
     }
+}
+
+fn supports_remote_jpeg_preview() -> bool {
+    let Some(window) = web_sys::window() else {
+        return false;
+    };
+    let Some(document) = window.document() else {
+        return false;
+    };
+    let Ok(canvas) = document.create_element("canvas") else {
+        return false;
+    };
+    let Ok(canvas) = canvas.dyn_into::<web_sys::HtmlCanvasElement>() else {
+        return false;
+    };
+
+    let has_bitmap_renderer = canvas
+        .get_context("bitmaprenderer")
+        .ok()
+        .flatten()
+        .is_some();
+    let global = js_sys::global();
+    let has_create_image_bitmap =
+        js_sys::Reflect::has(&global, &JsValue::from_str("createImageBitmap")).unwrap_or(false);
+    let has_worker = js_sys::Reflect::has(&global, &JsValue::from_str("Worker")).unwrap_or(false);
+
+    has_bitmap_renderer && has_create_image_bitmap && has_worker
 }
 
 fn preview_canvas_request_dimensions() -> (u32, u32) {
