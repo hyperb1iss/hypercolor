@@ -156,6 +156,81 @@ async fn activate_simulated_displays_registers_virtual_display_in_runtime_surfac
 }
 
 #[tokio::test]
+async fn simulated_display_backend_reuses_owned_jpeg_payloads() {
+    let (state, _tempdir) = isolated_state();
+    let config = simulator_config(true).normalized();
+    state
+        .simulated_displays
+        .write()
+        .await
+        .upsert(config.clone());
+
+    activate_simulated_displays(
+        &state.driver_host.discovery_runtime(),
+        &state.simulated_displays,
+    )
+    .await
+    .expect("simulated displays should activate");
+
+    let jpeg = Arc::new(vec![0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+    {
+        let mut manager = state.backend_manager.lock().await;
+        manager
+            .write_device_display_frame_owned("simulator", config.id, Arc::clone(&jpeg))
+            .await
+            .expect("simulated backend should retain owned display frames");
+    }
+
+    let stored = state
+        .simulated_display_runtime
+        .read()
+        .await
+        .frame(config.id)
+        .expect("simulated runtime should capture the display frame");
+    assert!(
+        Arc::ptr_eq(&stored.jpeg_data, &jpeg),
+        "simulated display runtime should reuse the owned JPEG payload",
+    );
+}
+
+#[tokio::test]
+async fn simulated_display_backend_ignores_empty_led_writes_but_rejects_real_led_payloads() {
+    let (state, _tempdir) = isolated_state();
+    let config = simulator_config(true).normalized();
+    state
+        .simulated_displays
+        .write()
+        .await
+        .upsert(config.clone());
+
+    activate_simulated_displays(
+        &state.driver_host.discovery_runtime(),
+        &state.simulated_displays,
+    )
+    .await
+    .expect("simulated displays should activate");
+
+    let mut manager = state.backend_manager.lock().await;
+    manager
+        .write_device_colors("simulator", config.id, &[])
+        .await
+        .expect("display-only simulators should ignore empty LED writes");
+
+    let error = manager
+        .write_device_colors("simulator", config.id, &[[1, 2, 3]])
+        .await
+        .expect_err("display-only simulators should reject non-empty LED writes");
+    assert!(
+        error.chain().any(|cause| {
+            let message = cause.to_string();
+            message.contains("failed to write 1 colors")
+                || message.contains("does not accept LED color writes")
+        }),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
 async fn activate_simulated_displays_keeps_disabled_simulator_non_renderable() {
     let (state, _tempdir) = isolated_state();
     let config = simulator_config(false).normalized();

@@ -225,7 +225,7 @@ pub async fn get_simulated_display_frame(
         .await
         .frame(device_id)
     {
-        return jpeg_response(Bytes::from_owner(frame.jpeg_data));
+        return jpeg_response(Bytes::from_owner(OwnedDisplayJpeg(frame.jpeg_data)));
     }
 
     if let Some(frame) = state.display_frames.read().await.frame(device_id) {

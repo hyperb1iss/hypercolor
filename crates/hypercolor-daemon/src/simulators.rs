@@ -186,7 +186,7 @@ fn default_enabled() -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SimulatedDisplayFrame {
-    pub jpeg_data: Vec<u8>,
+    pub jpeg_data: Arc<Vec<u8>>,
     pub captured_at: SystemTime,
     pub width: u32,
     pub height: u32,
@@ -234,6 +234,26 @@ impl SimulatedDisplayBackend {
             runtime,
             connected: HashSet::new(),
         }
+    }
+
+    async fn store_display_frame(&self, id: &DeviceId, jpeg_data: Arc<Vec<u8>>) -> Result<()> {
+        if !self.connected.contains(id) {
+            bail!("simulated display {id} is not connected");
+        }
+        let store = self.store.read().await;
+        let Some(config) = store.get(*id) else {
+            bail!("simulated display {id} is not configured");
+        };
+        self.runtime.write().await.set_frame(
+            *id,
+            SimulatedDisplayFrame {
+                jpeg_data,
+                captured_at: SystemTime::now(),
+                width: config.width,
+                height: config.height,
+            },
+        );
+        Ok(())
     }
 }
 
@@ -284,28 +304,25 @@ impl DeviceBackend for SimulatedDisplayBackend {
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        if colors.is_empty() {
+            return Ok(());
+        }
+
         bail!("simulated display {id} does not accept LED color writes");
     }
 
     async fn write_display_frame(&mut self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
-        if !self.connected.contains(id) {
-            bail!("simulated display {id} is not connected");
-        }
-        let store = self.store.read().await;
-        let Some(config) = store.get(*id) else {
-            bail!("simulated display {id} is not configured");
-        };
-        self.runtime.write().await.set_frame(
-            *id,
-            SimulatedDisplayFrame {
-                jpeg_data: jpeg_data.to_vec(),
-                captured_at: SystemTime::now(),
-                width: config.width,
-                height: config.height,
-            },
-        );
-        Ok(())
+        self.store_display_frame(id, Arc::new(jpeg_data.to_vec()))
+            .await
+    }
+
+    async fn write_display_frame_owned(
+        &mut self,
+        id: &DeviceId,
+        jpeg_data: Arc<Vec<u8>>,
+    ) -> Result<()> {
+        self.store_display_frame(id, jpeg_data).await
     }
 
     fn target_fps(&self, _id: &DeviceId) -> Option<u32> {
