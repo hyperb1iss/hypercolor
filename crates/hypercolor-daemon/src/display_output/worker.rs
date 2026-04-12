@@ -447,8 +447,8 @@ async fn run_display_worker(
             delivered_frame_number = delivered_frame_number.saturating_add(1);
             continue;
         }
-        let sensor_snapshot = Arc::clone(&sensor_snapshot_rx.borrow());
         let encode_result = if overlay_composer.has_active_slots() {
+            let sensor_snapshot = Arc::clone(&sensor_snapshot_rx.borrow());
             render_canvas_frame_rgb(
                 source.as_ref(),
                 &target.viewport,
