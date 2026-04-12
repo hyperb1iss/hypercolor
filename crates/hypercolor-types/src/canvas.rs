@@ -534,6 +534,14 @@ impl Canvas {
         self.pixels.as_slice()
     }
 
+    /// Stable identity for the current storage backing this canvas.
+    #[must_use]
+    pub const fn storage_identity(&self) -> PublishedSurfaceStorageIdentity {
+        PublishedSurfaceStorageIdentity::CpuRgba {
+            id: self.storage_id,
+        }
+    }
+
     /// Whether the pixel buffer is currently shared with another canvas handle.
     #[must_use]
     pub fn is_shared(&self) -> bool {

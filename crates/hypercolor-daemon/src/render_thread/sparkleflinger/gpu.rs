@@ -471,6 +471,26 @@ impl GpuSparkleFlinger {
         requires_cpu_sampling_canvas: bool,
         requires_preview_surface: bool,
     ) -> ComposedFrameSet {
+        let same_output = readback_key.as_ref().is_some_and(|key| {
+            self.current_output == Some(GpuCompositorOutputSurface::Front)
+                && self.cached_composition_key.as_ref() == Some(key)
+        });
+        if same_output {
+            if !requires_cpu_sampling_canvas && !requires_preview_surface {
+                return gpu_bypassed_without_surfaces();
+            }
+            if let Some(key) = readback_key.as_ref()
+                && let Some(cached) = self.cached_readback_surface.as_ref()
+                && cached.key == *key
+            {
+                return gpu_bypassed_surface_frame(
+                    &cached.surface,
+                    requires_cpu_sampling_canvas,
+                    requires_preview_surface,
+                );
+            }
+        }
+
         self.ensure_surface_size(plan.width, plan.height);
         if let Some(surfaces) = self.surfaces.as_mut() {
             upload_frame_into_cached_texture(
@@ -483,19 +503,12 @@ impl GpuSparkleFlinger {
             );
             surfaces.back_contents = None;
         }
-        let same_output = self.current_output == Some(GpuCompositorOutputSurface::Front)
-            && self.cached_composition_key == readback_key;
         self.current_output = Some(GpuCompositorOutputSurface::Front);
-        self.cached_composition_key = readback_key;
+        self.cached_composition_key = readback_key.clone();
         if !same_output {
             self.output_generation = self.output_generation.saturating_add(1);
             self.cached_sample_result = None;
         }
-        self.cached_readback_surface = bypass_preview_surface(&layer.frame).and_then(|surface| {
-            self.cached_composition_key
-                .clone()
-                .map(|key| CachedReadbackSurface { key, surface })
-        });
 
         let mut composed = match &layer.frame {
             ProducerFrame::Surface(surface) => gpu_bypassed_surface_frame(
@@ -509,6 +522,14 @@ impl GpuSparkleFlinger {
                 requires_preview_surface,
             ),
         };
+        let cached_surface = composed
+            .preview_surface
+            .as_ref()
+            .or(composed.sampling_surface.as_ref())
+            .cloned()
+            .or_else(|| bypass_preview_surface(&layer.frame));
+        self.cached_readback_surface = readback_key
+            .and_then(|key| cached_surface.map(|surface| CachedReadbackSurface { key, surface }));
         composed.backend = CompositorBackendKind::Gpu;
         composed
     }
@@ -903,30 +924,30 @@ fn upload_frame_into_cached_texture(
 }
 
 fn cached_source_upload(frame: &ProducerFrame) -> Option<CachedSourceUpload> {
-    let ProducerFrame::Surface(surface) = frame else {
-        return None;
-    };
-    if surface.generation() == 0 {
-        return None;
-    }
+    match frame {
+        ProducerFrame::Surface(surface) => {
+            if surface.generation() == 0 {
+                return None;
+            }
 
-    Some(CachedSourceUpload {
-        storage: surface.storage_identity(),
-        generation: surface.generation(),
-        width: surface.width(),
-        height: surface.height(),
-    })
+            Some(CachedSourceUpload {
+                storage: surface.storage_identity(),
+                generation: surface.generation(),
+                width: surface.width(),
+                height: surface.height(),
+            })
+        }
+        ProducerFrame::Canvas(canvas) if canvas.is_shared() => Some(CachedSourceUpload {
+            storage: canvas.storage_identity(),
+            generation: 0,
+            width: canvas.width(),
+            height: canvas.height(),
+        }),
+        ProducerFrame::Canvas(_) => None,
+    }
 }
 
 fn cached_readback_key(plan: &CompositionPlan) -> Option<CachedReadbackKey> {
-    if !plan
-        .layers
-        .iter()
-        .all(|layer| matches!(layer.frame, ProducerFrame::Surface(_)))
-    {
-        return None;
-    }
-
     let mut layers = Vec::with_capacity(plan.layers.len());
     for layer in &plan.layers {
         layers.push(CachedReadbackLayer {
@@ -948,6 +969,16 @@ fn gpu_composed_without_surfaces() -> ComposedFrameSet {
         sampling_surface: None,
         preview_surface: None,
         bypassed: false,
+        backend: CompositorBackendKind::Gpu,
+    }
+}
+
+fn gpu_bypassed_without_surfaces() -> ComposedFrameSet {
+    ComposedFrameSet {
+        sampling_canvas: None,
+        sampling_surface: None,
+        preview_surface: None,
+        bypassed: true,
         backend: CompositorBackendKind::Gpu,
     }
 }
@@ -1005,12 +1036,21 @@ fn gpu_bypassed_canvas_frame(
     requires_cpu_sampling_canvas: bool,
     requires_preview_surface: bool,
 ) -> ComposedFrameSet {
-    let preview_surface = (!requires_cpu_sampling_canvas && requires_preview_surface)
+    let published_surface = (requires_cpu_sampling_canvas || requires_preview_surface)
         .then(|| PublishedSurface::from_owned_canvas(canvas.clone(), 0, 0));
+    let preview_surface = (!requires_cpu_sampling_canvas && requires_preview_surface)
+        .then(|| {
+            published_surface
+                .as_ref()
+                .expect("preview bypass should allocate a published surface")
+                .clone()
+        });
     let (sampling_canvas, sampling_surface) = if requires_cpu_sampling_canvas {
+        let sampling_surface = published_surface
+            .expect("CPU sampling bypass should allocate a published surface");
         (
-            Some(canvas.clone()),
-            Some(PublishedSurface::from_owned_canvas(canvas.clone(), 0, 0)),
+            Some(Canvas::from_published_surface(&sampling_surface)),
+            Some(sampling_surface),
         )
     } else {
         (None, None)
@@ -1483,6 +1523,85 @@ mod tests {
         assert!(composed.sampling_canvas.is_none());
         assert!(composed.sampling_surface.is_none());
         assert!(!composed.bypassed);
+    }
+
+    #[test]
+    fn gpu_compositor_bypassed_canvas_shares_sampling_surface_storage() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let plan = CompositionPlan::single(
+            4,
+            4,
+            CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                24, 88, 160, 255,
+            )))),
+        );
+
+        let composed = compositor
+            .compose(&plan, true, false)
+            .expect("single replace canvas should bypass on the GPU");
+        let sampling_surface = composed
+            .sampling_surface
+            .as_ref()
+            .expect("bypassed canvas should publish a sampling surface");
+        let sampling_canvas = composed
+            .sampling_canvas
+            .as_ref()
+            .expect("bypassed canvas should materialize a canvas view");
+
+        assert_eq!(
+            sampling_canvas.as_rgba_bytes().as_ptr(),
+            sampling_surface.rgba_bytes().as_ptr()
+        );
+        assert!(composed.preview_surface.is_none());
+        assert!(composed.bypassed);
+    }
+
+    #[test]
+    fn gpu_compositor_reuses_cached_shared_canvas_bypass_surfaces() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let canvas = solid_canvas(Rgba::new(24, 88, 160, 255));
+        let plan = CompositionPlan::single(
+            4,
+            4,
+            CompositionLayer::replace(ProducerFrame::Canvas(canvas.clone())),
+        );
+
+        let first = compositor
+            .compose(&plan, true, true)
+            .expect("initial shared canvas bypass should succeed");
+        let first_surface = first
+            .sampling_surface
+            .as_ref()
+            .expect("bypassed shared canvas should publish a sampling surface");
+        let first_ptr = first_surface.rgba_bytes().as_ptr();
+        let first_upload_count = compositor
+            .surfaces
+            .as_ref()
+            .expect("surface allocation should exist after bypass")
+            .front_upload_count;
+
+        let second = compositor
+            .compose(&plan, true, true)
+            .expect("cached shared canvas bypass should succeed");
+        let second_surface = second
+            .sampling_surface
+            .as_ref()
+            .expect("cached bypass should still publish a sampling surface");
+        let second_upload_count = compositor
+            .surfaces
+            .as_ref()
+            .expect("surface allocation should persist across bypasses")
+            .front_upload_count;
+
+        assert_eq!(second_surface.rgba_bytes().as_ptr(), first_ptr);
+        assert_eq!(second_upload_count, first_upload_count);
+        assert!(second.bypassed);
     }
 
     #[test]
