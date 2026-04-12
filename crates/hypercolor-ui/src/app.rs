@@ -12,6 +12,7 @@ use crate::components::preset_matching::controls_to_json;
 use crate::components::shell::Shell;
 use crate::pages::dashboard::DashboardPage;
 use crate::pages::devices::DevicesPage;
+use crate::pages::displays::DisplaysPage;
 use crate::pages::effects::EffectsPage;
 use crate::pages::layout::LayoutPage;
 use crate::pages::settings::SettingsPage;
@@ -635,6 +636,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/effects/:id") view=EffectsPage />
                     <Route path=path!("/layout") view=LayoutPage />
                     <Route path=path!("/devices") view=DevicesPage />
+                    <Route path=path!("/displays") view=DisplaysPage />
                     <Route path=path!("/settings") view=SettingsPage />
                 </Routes>
             </Shell>

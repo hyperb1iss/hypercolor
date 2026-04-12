@@ -128,6 +128,28 @@ where
     Ok(envelope.data)
 }
 
+/// PATCH JSON body, parse envelope, return inner data.
+pub async fn patch_json<Req, Res>(url: &str, body: &Req) -> Result<Res, ApiError>
+where
+    Req: Serialize + ?Sized,
+    Res: DeserializeOwned,
+{
+    let body_str = serde_json::to_string(body).map_err(|e| ApiError::Serialize(e.to_string()))?;
+    let resp = Request::patch(url)
+        .header("Content-Type", "application/json")
+        .body(body_str)
+        .map_err(|e| ApiError::Network(e.to_string()))?
+        .send()
+        .await
+        .map_err(|e| ApiError::Network(e.to_string()))?;
+    ensure_success(&resp)?;
+    let envelope: ApiEnvelope<Res> = resp
+        .json()
+        .await
+        .map_err(|e| ApiError::Parse(e.to_string()))?;
+    Ok(envelope.data)
+}
+
 /// PUT JSON body, parse envelope, return inner data.
 pub async fn put_json<Req, Res>(url: &str, body: &Req) -> Result<Res, ApiError>
 where

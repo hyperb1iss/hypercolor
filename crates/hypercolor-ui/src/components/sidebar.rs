@@ -60,6 +60,12 @@ pub fn Sidebar() -> impl IntoView {
             divider_before: false,
         },
         NavItem {
+            path: "/displays",
+            label: "Displays",
+            icon: LuMonitor,
+            divider_before: false,
+        },
+        NavItem {
             path: "/settings",
             label: "Settings",
             icon: LuSettings,

@@ -10,9 +10,11 @@ use serde::Deserialize;
 pub mod client;
 pub mod config;
 pub mod devices;
+pub mod displays;
 pub mod effects;
 pub mod layouts;
 pub mod library;
+pub mod overlays;
 pub mod system;
 
 // ── Shared Envelope ─────────────────────────────────────────────────────────
@@ -28,7 +30,10 @@ pub struct ApiEnvelope<T> {
 
 pub use config::*;
 pub use devices::*;
+pub use displays::*;
 pub use effects::*;
 pub use layouts::*;
 pub use library::*;
+#[allow(unused_imports)] // surfaced once the catalog modal lands
+pub use overlays::*;
 pub use system::*;
