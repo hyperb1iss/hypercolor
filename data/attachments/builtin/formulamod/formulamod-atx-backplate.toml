@@ -1,0 +1,32 @@
+schema_version = 1
+id = "formulamod-atx-backplate"
+name = "Formulamod ATX Motherboard Backplate - 120 LED"
+category = "case"
+origin = "built_in"
+description = "Formulamod ATX motherboard RGB backplate. 5V 3-pin ARGB rim that sits behind a full-size ATX board (305x244mm) with 120 LEDs laid out as a 35x25x35x25 perimeter loop."
+vendor = "Formulamod"
+compatible_slots = []
+tags = [
+    "case",
+    "motherboard",
+    "backplate",
+    "atx",
+    "perimeter",
+    "rim",
+    "argb",
+    "5v",
+]
+physical_size_mm = [305.0, 244.0]
+
+[default_size]
+width = 0.4
+height = 0.32
+
+[topology]
+type = "perimeter_loop"
+top = 35
+right = 25
+bottom = 35
+left = 25
+start_corner = "top_left"
+direction = "clockwise"
