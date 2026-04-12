@@ -2045,6 +2045,23 @@ where
     F: Fn(api::UpdateOverlaySlotRequest) + Clone + Send + Sync + 'static,
     D: Fn(api::UpdateOverlaySlotRequest) + Clone + Send + Sync + 'static,
 {
+    // Live sensor snapshot polled every 2s so the user can see which
+    // labels are available on the host and what each reports right now.
+    // Clicking a row sets the slot's sensor label to that reading.
+    let (sensor_snapshot, set_sensor_snapshot) =
+        signal(None::<hypercolor_types::sensor::SystemSnapshot>);
+    let fetch_sensors = move || {
+        let set_sensor_snapshot = set_sensor_snapshot;
+        spawn_local(async move {
+            if let Ok(snapshot) = api::fetch_system_sensors().await {
+                set_sensor_snapshot.set(Some(snapshot));
+            }
+        });
+    };
+    fetch_sensors();
+    let fetch_sensors_interval = fetch_sensors.clone();
+    let _sensor_interval = use_interval_fn(move || fetch_sensors_interval(), 2000_u64);
+
     let patch_sensor = patch.clone();
     let on_sensor = move |event: leptos::ev::Event| {
         let value = event_target_value(&event);
@@ -2052,6 +2069,19 @@ where
             mutate_sensor_source(slot_state, move |config| config.sensor = value.clone())
         {
             patch_sensor(api::UpdateOverlaySlotRequest {
+                source: Some(source),
+                ..Default::default()
+            });
+        }
+    };
+
+    let patch_pick = patch.clone();
+    let on_pick_sensor = move |label: String| {
+        let chosen = label.clone();
+        if let Some(source) =
+            mutate_sensor_source(slot_state, move |config| config.sensor = chosen)
+        {
+            patch_pick(api::UpdateOverlaySlotRequest {
                 source: Some(source),
                 ..Default::default()
             });
@@ -2133,6 +2163,53 @@ where
         SensorDisplayStyle::Minimal => "minimal",
     };
 
+    let sensor_browser = move || {
+        let snapshot = sensor_snapshot.get()?;
+        let readings = snapshot.readings();
+        if readings.is_empty() {
+            return None;
+        }
+        let selected = slot_state.with_value(|slot| match &slot.source {
+            OverlaySource::Sensor(config) => config.sensor.clone(),
+            _ => String::new(),
+        });
+        let rows = readings
+            .into_iter()
+            .map(|reading| {
+                let is_selected = reading.label == selected;
+                let label = reading.label.clone();
+                let label_for_click = label.clone();
+                let formatted_value = format_sensor_value(reading.value, reading.unit);
+                let pick = on_pick_sensor.clone();
+                let row_class = if is_selected {
+                    "flex w-full items-center justify-between gap-2 rounded-sm border border-accent-primary/40 bg-accent-primary/10 px-2 py-1 text-[11px] text-fg-primary"
+                } else {
+                    "flex w-full items-center justify-between gap-2 rounded-sm border border-transparent px-2 py-1 text-[11px] text-fg-tertiary transition hover:border-edge-subtle hover:bg-surface-overlay/60 hover:text-fg-secondary"
+                };
+                view! {
+                    <li>
+                        <button
+                            type="button"
+                            class=row_class
+                            on:click=move |_| pick(label_for_click.clone())
+                        >
+                            <span class="font-mono">{label}</span>
+                            <span class="font-mono">{formatted_value}</span>
+                        </button>
+                    </li>
+                }
+            })
+            .collect_view();
+        Some(view! {
+            <div class="rounded-sm border border-edge-subtle bg-surface-overlay/40 p-1">
+                <div class="px-1 pb-1 text-[10px] uppercase tracking-wider text-fg-tertiary">
+                    "Available sensors"
+                </div>
+                <ul class="flex max-h-48 flex-col gap-0.5 overflow-y-auto">{rows}</ul>
+            </div>
+        })
+    };
+
     view! {
         <InspectorField label="Sensor label">
             <input
@@ -2143,6 +2220,7 @@ where
                 on:change=on_sensor
             />
         </InspectorField>
+        {sensor_browser}
         <InspectorField label="Style">
             <select
                 class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none"
@@ -2312,6 +2390,27 @@ where
                 <option value="right" selected=align_value == "right">"Right"</option>
             </select>
         </InspectorField>
+    }
+}
+
+fn format_sensor_value(value: f32, unit: hypercolor_types::sensor::SensorUnit) -> String {
+    let symbol = unit.symbol();
+    // Temperatures and loads sit in the 0-200 range where 1 decimal is
+    // enough. Megabyte counts round to whole MB. Integer-looking units
+    // like RPM drop the decimals entirely.
+    match unit {
+        hypercolor_types::sensor::SensorUnit::Celsius
+        | hypercolor_types::sensor::SensorUnit::Percent => {
+            format!("{value:.1}{symbol}")
+        }
+        hypercolor_types::sensor::SensorUnit::Megabytes => {
+            format!("{} {symbol}", value.round() as i64)
+        }
+        hypercolor_types::sensor::SensorUnit::Rpm
+        | hypercolor_types::sensor::SensorUnit::Mhz
+        | hypercolor_types::sensor::SensorUnit::Watts => {
+            format!("{} {symbol}", value.round() as i64)
+        }
     }
 }
 

@@ -1,5 +1,6 @@
 //! System status API.
 
+use hypercolor_types::sensor::SystemSnapshot;
 use serde::Deserialize;
 
 use super::client;
@@ -25,6 +26,13 @@ pub struct SystemStatus {
 /// Fetch system status.
 pub async fn fetch_status() -> Result<SystemStatus, String> {
     client::fetch_json("/api/v1/status")
+        .await
+        .map_err(Into::into)
+}
+
+/// Fetch the latest system sensor snapshot.
+pub async fn fetch_system_sensors() -> Result<SystemSnapshot, String> {
+    client::fetch_json("/api/v1/system/sensors")
         .await
         .map_err(Into::into)
 }
