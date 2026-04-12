@@ -137,25 +137,31 @@ pub(crate) fn publish_frame_updates(
         .note_canvas_frame(frame_number, elapsed_ms);
     let canvas_receivers = state.preview_canvas_receiver_count();
     if canvas_receivers > 0 {
-        let canvas_frame = if let Some(surface) = preview_surface.or(frame_surface) {
-            CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
-        } else if let Some(canvas) = canvas {
-            let canvas_rgba_len = usize_to_u32(canvas.rgba_len());
-            let (frame, copied) =
-                CanvasFrame::from_owned_canvas_with_copy_info(canvas, frame_number, elapsed_ms);
-            if copied {
-                full_frame_copy_count = full_frame_copy_count.saturating_add(1);
-                full_frame_copy_bytes = full_frame_copy_bytes.saturating_add(canvas_rgba_len);
-            }
-            frame
-        } else {
-            CanvasFrame::empty()
-        };
         let publish_canvas = {
             let current = state.event_bus.canvas_sender().borrow();
-            should_publish_canvas_frame(&current, &canvas_frame)
+            if let Some(surface) = preview_surface.as_ref().or(frame_surface.as_ref()) {
+                should_publish_surface_frame(&current, surface)
+            } else if let Some(canvas) = canvas.as_ref() {
+                should_publish_canvas_storage(&current, canvas)
+            } else {
+                should_publish_canvas_frame(&current, &CanvasFrame::empty())
+            }
         };
         if publish_canvas {
+            let canvas_frame = if let Some(surface) = preview_surface.or(frame_surface) {
+                CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
+            } else if let Some(canvas) = canvas {
+                let canvas_rgba_len = usize_to_u32(canvas.rgba_len());
+                let (frame, copied) =
+                    CanvasFrame::from_owned_canvas_with_copy_info(canvas, frame_number, elapsed_ms);
+                if copied {
+                    full_frame_copy_count = full_frame_copy_count.saturating_add(1);
+                    full_frame_copy_bytes = full_frame_copy_bytes.saturating_add(canvas_rgba_len);
+                }
+                frame
+            } else {
+                CanvasFrame::empty()
+            };
             state
                 .preview_runtime
                 .record_canvas_publication(frame_number, elapsed_ms);
@@ -167,16 +173,20 @@ pub(crate) fn publish_frame_updates(
         .note_screen_canvas_frame(frame_number, elapsed_ms);
     let screen_canvas_receivers = state.event_bus.screen_canvas_receiver_count();
     if screen_canvas_receivers > 0 {
-        let screen_frame = if let Some(surface) = screen_preview_surface {
-            CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
-        } else {
-            CanvasFrame::empty()
-        };
         let publish_screen = {
             let current = state.event_bus.screen_canvas_sender().borrow();
-            should_publish_canvas_frame(&current, &screen_frame)
+            if let Some(surface) = screen_preview_surface.as_ref() {
+                should_publish_surface_frame(&current, surface)
+            } else {
+                should_publish_canvas_frame(&current, &CanvasFrame::empty())
+            }
         };
         if publish_screen {
+            let screen_frame = if let Some(surface) = screen_preview_surface {
+                CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
+            } else {
+                CanvasFrame::empty()
+            };
             state
                 .preview_runtime
                 .record_screen_canvas_publication(frame_number, elapsed_ms);
@@ -200,12 +210,40 @@ fn should_publish_canvas_frame(current: &CanvasFrame, next: &CanvasFrame) -> boo
     stable_canvas_frame_identity(current) != stable_canvas_frame_identity(next)
 }
 
+fn should_publish_surface_frame(current: &CanvasFrame, next: &PublishedSurface) -> bool {
+    stable_canvas_frame_identity(current) != stable_published_surface_identity(next)
+}
+
+fn should_publish_canvas_storage(current: &CanvasFrame, next: &Canvas) -> bool {
+    stable_canvas_frame_identity(current) != stable_canvas_identity(next)
+}
+
 fn stable_canvas_frame_identity(frame: &CanvasFrame) -> Option<StableCanvasFrameIdentity> {
     (frame.width > 0 && frame.height > 0).then(|| StableCanvasFrameIdentity {
         generation: frame.surface().generation(),
         storage: frame.surface().storage_identity(),
         width: frame.width,
         height: frame.height,
+    })
+}
+
+fn stable_published_surface_identity(
+    surface: &PublishedSurface,
+) -> Option<StableCanvasFrameIdentity> {
+    (surface.width() > 0 && surface.height() > 0).then(|| StableCanvasFrameIdentity {
+        generation: surface.generation(),
+        storage: surface.storage_identity(),
+        width: surface.width(),
+        height: surface.height(),
+    })
+}
+
+fn stable_canvas_identity(canvas: &Canvas) -> Option<StableCanvasFrameIdentity> {
+    (canvas.width() > 0 && canvas.height() > 0).then(|| StableCanvasFrameIdentity {
+        generation: 0,
+        storage: canvas.storage_identity(),
+        width: canvas.width(),
+        height: canvas.height(),
     })
 }
 
