@@ -764,7 +764,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                         }).collect::<Vec<_>>()
                     }}
 
-                    // Compound bounding box outline — shown when multiple zones are selected
+                    // Compound bounding box outline + navigation hint
                     {move || {
                         let ids = selected_zone_ids.get();
                         if ids.len() <= 1 {
@@ -792,10 +792,86 @@ pub fn LayoutCanvas() -> impl IntoView {
                                  transition: opacity 0.15s ease"
                             );
 
+                            // At Root, show a hint that double-click enters the compound
+                            let hint = matches!(depth, CompoundDepth::Root).then(|| view! {
+                                <div class="absolute -bottom-4 left-1/2 -translate-x-1/2 whitespace-nowrap
+                                            text-[9px] text-fg-tertiary/40 pointer-events-none select-none
+                                            animate-[fadeIn_0.3s_ease]">
+                                    "Double-click to select individually"
+                                </div>
+                            });
+
                             Some(view! {
-                                <div class="absolute" style=style />
+                                <div class="absolute" style=style>
+                                    {hint}
+                                </div>
                             })
                         })
+                    }}
+
+                    // Compound depth breadcrumb — shows the current navigation level
+                    // and how to exit (Esc). Hidden when nothing is selected or at Root.
+                    {move || {
+                        let depth = compound_depth.get();
+                        match depth {
+                            CompoundDepth::Root => None,
+                            CompoundDepth::Device { ref device_id } => {
+                                let name = layout.with(|l| {
+                                    l.as_ref().and_then(|l| {
+                                        l.zones.iter()
+                                            .find(|z| z.device_id == *device_id)
+                                            .map(|z| z.name.split(" \u{00b7} ").next().unwrap_or(&z.name).to_string())
+                                    })
+                                }).unwrap_or_else(|| "Device".to_string());
+                                Some(view! {
+                                    <div class="absolute bottom-2 left-1/2 -translate-x-1/2 z-50
+                                                flex items-center gap-2 px-3 py-1.5 rounded-lg
+                                                bg-black/60 backdrop-blur-sm border border-edge-subtle/30
+                                                pointer-events-none select-none">
+                                        <span class="text-[10px] font-medium" style="color: rgba(128, 255, 234, 0.7)">
+                                            {name}
+                                        </span>
+                                        <span class="text-[9px] text-fg-tertiary/40">
+                                            "\u{203a} Slots"
+                                        </span>
+                                        <span class="text-[9px] text-fg-tertiary/25 ml-1">
+                                            "Esc to exit"
+                                        </span>
+                                    </div>
+                                }.into_any())
+                            }
+                            CompoundDepth::Slot { ref device_id, ref slot_id } => {
+                                let (dev_name, slot_name) = layout.with(|l| {
+                                    let layout = l.as_ref()?;
+                                    let zone = layout.zones.iter().find(|z| {
+                                        z.device_id == *device_id
+                                            && z.attachment.as_ref().is_some_and(|a| a.slot_id == *slot_id)
+                                    })?;
+                                    let dev = zone.name.split(" \u{00b7} ").next().unwrap_or(&zone.name).to_string();
+                                    let slot = slot_id.replace('-', " ");
+                                    Some((dev, slot))
+                                }).unwrap_or_else(|| ("Device".to_string(), slot_id.replace('-', " ")));
+                                Some(view! {
+                                    <div class="absolute bottom-2 left-1/2 -translate-x-1/2 z-50
+                                                flex items-center gap-2 px-3 py-1.5 rounded-lg
+                                                bg-black/60 backdrop-blur-sm border border-edge-subtle/30
+                                                pointer-events-none select-none">
+                                        <span class="text-[10px] font-medium" style="color: rgba(128, 255, 234, 0.7)">
+                                            {dev_name}
+                                        </span>
+                                        <span class="text-[9px] text-fg-tertiary/40">
+                                            "\u{203a} "
+                                        </span>
+                                        <span class="text-[10px] font-medium capitalize" style="color: rgba(128, 255, 234, 0.5)">
+                                            {slot_name}
+                                        </span>
+                                        <span class="text-[9px] text-fg-tertiary/25 ml-1">
+                                            "Esc to go back"
+                                        </span>
+                                    </div>
+                                }.into_any())
+                            }
+                        }
                     }}
 
                     // Empty canvas hint — shown over the live effect when no zones are placed
