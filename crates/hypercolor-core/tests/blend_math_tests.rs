@@ -74,3 +74,13 @@ fn slice_blend_updates_pixels_in_place() {
         )
     );
 }
+
+#[test]
+fn opaque_normal_slice_blend_copies_source_at_full_opacity() {
+    let mut dst = vec![12, 34, 56, 255, 78, 90, 123, 255];
+    let src = vec![210, 180, 140, 255, 1, 2, 3, 255];
+
+    blend_rgba_pixels_in_place(&mut dst, &src, OverlayBlendMode::Normal, 1.0);
+
+    assert_eq!(dst, src);
+}
