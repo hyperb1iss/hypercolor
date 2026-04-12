@@ -90,7 +90,7 @@ struct GpuPreviewSurfaceSet {
     width: u32,
     height: u32,
     padded_bytes_per_row: u32,
-    texture: GpuCompositorTexture,
+    output_buffer: wgpu::Buffer,
     bind_groups: GpuPreviewScaleBindGroups,
     readback: wgpu::Buffer,
     readback_surfaces: RenderSurfacePool,
@@ -903,22 +903,12 @@ impl GpuSparkleFlinger {
             1,
         );
         drop(pass);
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &preview_surfaces.texture.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &preview_surfaces.readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(preview_surfaces.padded_bytes_per_row),
-                    rows_per_image: Some(request.height),
-                },
-            },
-            texture_extent(request.width, request.height),
+        encoder.copy_buffer_to_buffer(
+            &preview_surfaces.output_buffer,
+            0,
+            &preview_surfaces.readback,
+            0,
+            u64::from(preview_surfaces.padded_bytes_per_row) * u64::from(request.height),
         );
         self.pending_output_submission = Some(encoder);
         self.pending_preview_readback = Some(PendingPreviewReadback::Scaled {
@@ -1094,10 +1084,10 @@ impl GpuCompositorPipeline {
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::WriteOnly,
-                            format: COMPOSITOR_TEXTURE_FORMAT,
-                            view_dimension: wgpu::TextureViewDimension::D2,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
                         },
                         count: None,
                     },
@@ -1215,14 +1205,23 @@ impl GpuPreviewSurfaceSet {
         width: u32,
         height: u32,
     ) -> Self {
-        let padded_bytes_per_row = padded_bytes_per_row(width);
+        let padded_bytes_per_row = width * BYTES_PER_PIXEL as u32;
+        let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SparkleFlinger GPU preview output"),
+            size: u64::from(width)
+                .saturating_mul(u64::from(height))
+                .saturating_mul(BYTES_PER_PIXEL as u64),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("SparkleFlinger GPU preview readback"),
-            size: u64::from(padded_bytes_per_row) * u64::from(height),
+            size: u64::from(width)
+                .saturating_mul(u64::from(height))
+                .saturating_mul(BYTES_PER_PIXEL as u64),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let texture = GpuCompositorTexture::new(device, width, height, "SparkleFlinger Preview");
         Self {
             width,
             height,
@@ -1232,9 +1231,9 @@ impl GpuPreviewSurfaceSet {
                 pipeline,
                 front_view,
                 back_view,
-                &texture.view,
+                &output_buffer,
             ),
-            texture,
+            output_buffer,
             readback,
             readback_surfaces: RenderSurfacePool::new(SurfaceDescriptor::rgba8888(width, height)),
             cached_scale_params: None,
@@ -1301,21 +1300,21 @@ impl GpuPreviewScaleBindGroups {
         pipeline: &GpuCompositorPipeline,
         front_view: &wgpu::TextureView,
         back_view: &wgpu::TextureView,
-        preview_view: &wgpu::TextureView,
+        preview_buffer: &wgpu::Buffer,
     ) -> Self {
         Self {
             front_to_preview: create_preview_scale_bind_group(
                 device,
                 pipeline,
                 front_view,
-                preview_view,
+                preview_buffer,
                 "SparkleFlinger GPU preview scale bind group front->preview",
             ),
             back_to_preview: create_preview_scale_bind_group(
                 device,
                 pipeline,
                 back_view,
-                preview_view,
+                preview_buffer,
                 "SparkleFlinger GPU preview scale bind group back->preview",
             ),
         }
@@ -1728,7 +1727,7 @@ fn create_preview_scale_bind_group(
     device: &wgpu::Device,
     pipeline: &GpuCompositorPipeline,
     source: &wgpu::TextureView,
-    output: &wgpu::TextureView,
+    output: &wgpu::Buffer,
     label: &'static str,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1741,7 +1740,7 @@ fn create_preview_scale_bind_group(
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::TextureView(output),
+                resource: output.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 2,

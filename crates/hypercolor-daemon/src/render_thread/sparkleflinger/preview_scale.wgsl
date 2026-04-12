@@ -6,7 +6,7 @@ struct PreviewScaleParams {
 var source_texture: texture_2d<f32>;
 
 @group(0) @binding(1)
-var output_texture: texture_storage_2d<rgba8unorm, write>;
+var<storage, read_write> output_pixels: array<u32>;
 
 @group(0) @binding(2)
 var<uniform> params: PreviewScaleParams;
@@ -47,6 +47,17 @@ fn sample_source(x: u32, y: u32) -> vec4<f32> {
     return decode_srgb(textureLoad(source_texture, vec2<i32>(i32(x), i32(y)), 0));
 }
 
+fn pack_srgba8(color: vec4<f32>) -> u32 {
+    let srgb = encode_srgb(color);
+    let rgba8 = vec4<u32>(
+        u32(clamp(srgb.r, 0.0, 1.0) * 255.0 + 0.5),
+        u32(clamp(srgb.g, 0.0, 1.0) * 255.0 + 0.5),
+        u32(clamp(srgb.b, 0.0, 1.0) * 255.0 + 0.5),
+        u32(clamp(srgb.a, 0.0, 1.0) * 255.0 + 0.5),
+    );
+    return rgba8.r | (rgba8.g << 8u) | (rgba8.b << 16u) | (rgba8.a << 24u);
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn scale_preview(@builtin(global_invocation_id) gid: vec3<u32>) {
     let preview_width = params.size.z;
@@ -73,6 +84,6 @@ fn scale_preview(@builtin(global_invocation_id) gid: vec3<u32>) {
     let top = mix(sample_source(x0, y0), sample_source(x1, y0), tx);
     let bottom = mix(sample_source(x0, y1), sample_source(x1, y1), tx);
     let color = mix(top, bottom, ty);
-
-    textureStore(output_texture, vec2<i32>(i32(gid.x), i32(gid.y)), encode_srgb(color));
+    let pixel_index = gid.y * preview_width + gid.x;
+    output_pixels[pixel_index] = pack_srgba8(color);
 }
