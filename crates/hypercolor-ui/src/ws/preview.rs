@@ -8,9 +8,8 @@ use super::messages::CanvasFrame;
 pub const DEFAULT_PREVIEW_FPS_CAP: u32 = 30;
 pub(super) const HIDDEN_TAB_PREVIEW_FPS_CAP: u32 = 6;
 pub(super) const SCREEN_PREVIEW_FPS_CAP: u32 = 15;
-const REMOTE_PREVIEW_WIDTH_HIGH: u32 = 320;
-const REMOTE_PREVIEW_WIDTH_MEDIUM: u32 = 240;
-const REMOTE_PREVIEW_WIDTH_LOW: u32 = 160;
+const REMOTE_PREVIEW_WIDTH_MEDIUM: u32 = 640;
+const REMOTE_PREVIEW_WIDTH_LOW: u32 = 480;
 
 pub(super) fn desired_preview_fps(
     engine_target_fps: u32,
@@ -177,32 +176,38 @@ fn preview_canvas_request_dimensions_for_host(hostname: &str, requested_fps: u32
         return (0, 0);
     }
 
-    (remote_preview_width_for_fps(requested_fps), 0)
+    match remote_preview_width_for_fps(requested_fps) {
+        Some(width) => (width, 0),
+        None => (0, 0),
+    }
 }
 
-const fn remote_preview_width_for_fps(requested_fps: u32) -> u32 {
+const fn remote_preview_width_for_fps(requested_fps: u32) -> Option<u32> {
     match requested_fps {
-        24.. => REMOTE_PREVIEW_WIDTH_HIGH,
-        12..=23 => REMOTE_PREVIEW_WIDTH_MEDIUM,
-        _ => REMOTE_PREVIEW_WIDTH_LOW,
+        24.. => None,
+        12..=23 => Some(REMOTE_PREVIEW_WIDTH_MEDIUM),
+        _ => Some(REMOTE_PREVIEW_WIDTH_LOW),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        REMOTE_PREVIEW_WIDTH_HIGH, REMOTE_PREVIEW_WIDTH_LOW, REMOTE_PREVIEW_WIDTH_MEDIUM,
+        REMOTE_PREVIEW_WIDTH_LOW, REMOTE_PREVIEW_WIDTH_MEDIUM,
         preview_canvas_request_dimensions_for_host, remote_preview_width_for_fps,
     };
 
     #[test]
     fn remote_preview_width_tracks_requested_fps() {
-        assert_eq!(remote_preview_width_for_fps(30), REMOTE_PREVIEW_WIDTH_HIGH);
+        assert_eq!(remote_preview_width_for_fps(30), None);
         assert_eq!(
             remote_preview_width_for_fps(15),
-            REMOTE_PREVIEW_WIDTH_MEDIUM
+            Some(REMOTE_PREVIEW_WIDTH_MEDIUM)
         );
-        assert_eq!(remote_preview_width_for_fps(6), REMOTE_PREVIEW_WIDTH_LOW);
+        assert_eq!(
+            remote_preview_width_for_fps(6),
+            Some(REMOTE_PREVIEW_WIDTH_LOW)
+        );
     }
 
     #[test]
@@ -221,7 +226,7 @@ mod tests {
     fn remote_preview_dimensions_scale_with_fps() {
         assert_eq!(
             preview_canvas_request_dimensions_for_host("remote.example", 30),
-            (REMOTE_PREVIEW_WIDTH_HIGH, 0)
+            (0, 0)
         );
         assert_eq!(
             preview_canvas_request_dimensions_for_host("remote.example", 15),
