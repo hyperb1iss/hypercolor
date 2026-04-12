@@ -354,6 +354,7 @@ pub fn DisplaysPage() -> impl IntoView {
                                     current_face_id=current_face_id
                                     assigning=face_assignment_pending
                                     on_select=assign_face
+                                    on_clear=clear_face
                                     on_close=close_face_picker
                                 />
                             }
@@ -1749,55 +1750,95 @@ fn DisplayFacePickerModal(
     current_face_id: Signal<Option<String>>,
     assigning: ReadSignal<bool>,
     #[prop(into)] on_select: Callback<String>,
+    #[prop(into)] on_clear: Callback<()>,
     #[prop(into)] on_close: Callback<()>,
 ) -> impl IntoView {
     let (search, set_search) = signal(String::new());
+    let thumbnails = use_context::<crate::thumbnails::ThumbnailStore>();
     let close_backdrop = on_close.clone();
     let close_button = on_close.clone();
+    let clear_button = on_clear.clone();
 
     view! {
         <div
-            class="absolute inset-0 z-20 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+            class="absolute inset-0 z-20 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm animate-fade-in"
             on:click=move |_| close_backdrop.run(())
         >
             <div
-                class="flex w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-edge-subtle bg-surface-raised shadow-2xl"
+                class="flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-edge-subtle bg-surface-raised shadow-2xl edge-glow-accent"
+                style=format!("--glow-rgb: {DISPLAY_ACCENT_RGB};")
                 on:click=|event| event.stop_propagation()
             >
-                <div class="flex items-start justify-between gap-3 border-b border-edge-subtle px-4 py-4">
-                    <div>
-                        <h2 class="text-sm font-semibold text-fg-primary">"Choose display face"</h2>
-                        <p class="mt-1 text-[11px] leading-relaxed text-fg-tertiary">
-                            {format!(
-                                "Assign a full-screen HTML face to {display_name}. Overlays stay available for optional gauges and labels on top."
-                            )}
-                        </p>
+                // ── Header ────────────────────────────────────────────
+                <div class="flex items-start justify-between gap-3 border-b border-edge-subtle px-4 py-3">
+                    <div class="flex min-w-0 items-center gap-2">
+                        <div
+                            class="flex h-7 w-7 items-center justify-center rounded-md"
+                            style=format!(
+                                "background: rgba({DISPLAY_ACCENT_RGB}, 0.12); box-shadow: 0 0 12px rgba({DISPLAY_ACCENT_RGB}, 0.1);"
+                            )
+                        >
+                            <span style=format!("color: rgba({DISPLAY_ACCENT_RGB}, 0.85);")>
+                                <Icon icon=LuLayers width="14" height="14" />
+                            </span>
+                        </div>
+                        <div class="min-w-0">
+                            <h2 class="text-sm font-semibold text-fg-primary">
+                                "Choose display face"
+                            </h2>
+                            <p class="mt-0.5 text-[11px] leading-relaxed text-fg-tertiary">
+                                {format!("Assign a full-screen HTML face to {display_name}.")}
+                            </p>
+                        </div>
                     </div>
-                    <button
-                        type="button"
-                        class="rounded-sm p-1 text-fg-tertiary transition hover:text-accent-primary"
-                        title="Close"
-                        on:click=move |_| close_button.run(())
-                    >
-                        <Icon icon=LuX width="14" height="14" />
-                    </button>
+                    <div class="flex items-center gap-1">
+                        <button
+                            type="button"
+                            class="inline-flex items-center gap-1.5 rounded-md border border-edge-subtle bg-surface-overlay px-2.5 py-1.5 text-[10px] uppercase tracking-wider text-fg-tertiary transition hover:border-status-error/35 hover:text-status-error disabled:cursor-not-allowed disabled:opacity-40"
+                            disabled=move || assigning.get() || current_face_id.with(Option::is_none)
+                            on:click=move |_| clear_button.run(())
+                            title="Clear the current face assignment"
+                        >
+                            <Icon icon=LuX width="11" height="11" />
+                            "Clear"
+                        </button>
+                        <button
+                            type="button"
+                            class="rounded-sm p-1 text-fg-tertiary transition hover:text-accent-primary"
+                            title="Close"
+                            on:click=move |_| close_button.run(())
+                        >
+                            <Icon icon=LuX width="14" height="14" />
+                        </button>
+                    </div>
                 </div>
+
+                // ── Search ────────────────────────────────────────────
                 <div class="border-b border-edge-subtle px-4 py-3">
-                    <input
-                        type="search"
-                        class="w-full rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-sm text-fg-primary outline-none transition focus:border-accent-primary"
-                        placeholder="Search faces by name, author, or description"
-                        prop:value=move || search.get()
-                        on:input=move |event| set_search.set(event_target_value(&event))
-                    />
+                    <div class="relative">
+                        <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-tertiary">
+                            <Icon icon=LuSearch width="13" height="13" />
+                        </span>
+                        <input
+                            type="search"
+                            class="w-full rounded-md border border-edge-subtle bg-surface-overlay px-9 py-2 text-sm text-fg-primary outline-none transition focus:border-accent-primary"
+                            placeholder="Search faces by name, author, or description"
+                            prop:value=move || search.get()
+                            on:input=move |event| set_search.set(event_target_value(&event))
+                        />
+                    </div>
                 </div>
-                <div class="min-h-0 max-h-[60vh] overflow-y-auto p-4">
+
+                // ── Gallery grid ─────────────────────────────────────
+                <div class="min-h-0 flex-1 overflow-y-auto p-4">
                     {move || {
                         let query = search.get().trim().to_lowercase();
                         match faces.get() {
                             None => view! {
-                                <div class="py-8 text-center text-sm text-fg-tertiary">
-                                    "Loading display faces..."
+                                <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                                    <FaceGallerySkeleton />
+                                    <FaceGallerySkeleton />
+                                    <FaceGallerySkeleton />
                                 </div>
                             }
                             .into_any(),
@@ -1808,6 +1849,7 @@ fn DisplayFacePickerModal(
                             }
                             .into_any(),
                             Some(Ok(items)) => {
+                                let total = items.len();
                                 let filtered = items
                                     .into_iter()
                                     .filter(|effect| {
@@ -1821,69 +1863,36 @@ fn DisplayFacePickerModal(
                                     .collect::<Vec<_>>();
                                 if filtered.is_empty() {
                                     return view! {
-                                        <div class="py-8 text-center text-sm text-fg-tertiary">
-                                            "No display faces match that search."
+                                        <div class="flex flex-col items-center gap-2 py-12 text-center">
+                                            <Icon icon=LuSearch width="24" height="24" />
+                                            <p class="text-sm text-fg-secondary">
+                                                {if total == 0 {
+                                                    "No display faces installed yet. Build one with the Face SDK and rebuild the effects bundle.".to_owned()
+                                                } else {
+                                                    format!("No faces match \"{query}\".")
+                                                }}
+                                            </p>
                                         </div>
                                     }
                                     .into_any();
                                 }
 
-                                filtered
+                                let cards = filtered
                                     .into_iter()
-                                    .map(|effect| {
-                                        let effect_id = effect.id.clone();
-                                        let is_current = Signal::derive({
-                                            let effect_id = effect_id.clone();
-                                            move || {
-                                                current_face_id.get().as_deref()
-                                                    == Some(effect_id.as_str())
-                                            }
-                                        });
-                                        let card_class = move || {
-                                            if is_current.get() {
-                                                "flex w-full flex-col gap-2 rounded-lg border border-coral/40 bg-coral/10 px-4 py-3 text-left transition"
-                                            } else {
-                                                "flex w-full flex-col gap-2 rounded-lg border border-edge-subtle bg-surface-overlay/40 px-4 py-3 text-left transition hover:border-accent-primary/35 hover:bg-surface-overlay"
-                                            }
-                                        };
-                                        let name = effect.name;
-                                        let author = effect.author;
-                                        let description = effect.description;
-                                        view! {
-                                            <button
-                                                type="button"
-                                                class=card_class
-                                                disabled=move || assigning.get()
-                                                on:click=move |_| on_select.run(effect_id.clone())
-                                            >
-                                                <div class="flex items-start justify-between gap-3">
-                                                    <div class="min-w-0">
-                                                        <div class="flex flex-wrap items-center gap-2">
-                                                            <span class="text-sm font-medium text-fg-primary">
-                                                                {name}
-                                                            </span>
-                                                            <Show when=move || is_current.get() fallback=|| ()>
-                                                                <span class="rounded-full border border-coral/30 bg-coral/15 px-2 py-0.5 text-[10px] uppercase tracking-wider text-coral">
-                                                                    "Assigned"
-                                                                </span>
-                                                            </Show>
-                                                        </div>
-                                                        <div class="mt-1 text-[11px] uppercase tracking-wider text-fg-tertiary">
-                                                            {author}
-                                                        </div>
-                                                    </div>
-                                                    <span class="rounded-full border border-edge-subtle bg-surface-raised px-2 py-0.5 text-[10px] uppercase tracking-wider text-fg-tertiary">
-                                                        "Display"
-                                                    </span>
-                                                </div>
-                                                <p class="text-sm leading-relaxed text-fg-secondary">
-                                                    {description}
-                                                </p>
-                                            </button>
-                                        }
-                                    })
-                                    .collect_view()
-                                    .into_any()
+                                    .map(|effect| render_face_gallery_card(
+                                        effect,
+                                        current_face_id,
+                                        assigning,
+                                        on_select,
+                                        thumbnails,
+                                    ))
+                                    .collect_view();
+                                view! {
+                                    <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                                        {cards}
+                                    </div>
+                                }
+                                .into_any()
                             }
                         }
                     }}
@@ -1891,6 +1900,122 @@ fn DisplayFacePickerModal(
             </div>
         </div>
     }
+}
+
+/// Visual card used inside the face gallery. Shows a thumbnail (captured
+/// from the ThumbnailStore when the face has been rendered before) with a
+/// gradient fallback, plus name/author and an "Assigned" pill for the
+/// currently-active face.
+fn render_face_gallery_card(
+    effect: api::EffectSummary,
+    current_face_id: Signal<Option<String>>,
+    assigning: ReadSignal<bool>,
+    on_select: Callback<String>,
+    thumbnails: Option<crate::thumbnails::ThumbnailStore>,
+) -> impl IntoView {
+    let effect_id = effect.id.clone();
+    let effect_id_for_click = effect_id.clone();
+    let effect_id_for_current = effect_id.clone();
+    let effect_version = effect.version.clone();
+    let is_current = Signal::derive(move || {
+        current_face_id.get().as_deref() == Some(effect_id_for_current.as_str())
+    });
+
+    // Thumbnail lookup is reactive on the ThumbnailStore inner signal, so
+    // newly captured thumbnails appear without closing the picker.
+    let thumbnail = Signal::derive({
+        let effect_id = effect_id.clone();
+        let effect_version = effect_version.clone();
+        move || {
+            thumbnails.and_then(|store| store.get(&effect_id, &effect_version))
+        }
+    });
+
+    // Deterministic gradient fallback derived from the effect name so
+    // each face still has a distinct visual even without a thumbnail.
+    let gradient_fallback = face_gradient_fallback(&effect.name);
+
+    let name = effect.name;
+    let author = effect.author;
+
+    view! {
+        <button
+            type="button"
+            class=move || {
+                if is_current.get() {
+                    "group flex flex-col overflow-hidden rounded-lg border border-coral bg-coral/5 text-left transition disabled:cursor-not-allowed disabled:opacity-60"
+                } else {
+                    "group flex flex-col overflow-hidden rounded-lg border border-edge-subtle bg-surface-overlay/40 text-left transition hover:border-accent-primary/35 disabled:cursor-not-allowed disabled:opacity-60"
+                }
+            }
+            disabled=move || assigning.get()
+            on:click=move |_| on_select.run(effect_id_for_click.clone())
+        >
+            // Thumbnail slab (4:3 aspect)
+            <div
+                class="relative aspect-[4/3] overflow-hidden"
+                style=move || {
+                    thumbnail.get().map_or_else(
+                        || gradient_fallback.clone(),
+                        |thumb| format!(
+                            "background: #000 url('{}') center/cover no-repeat;",
+                            thumb.data_url
+                        ),
+                    )
+                }
+            >
+                <Show when=move || is_current.get() fallback=|| ()>
+                    <span
+                        class="absolute right-1.5 top-1.5 rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider"
+                        style=format!(
+                            "border-color: rgba({DISPLAY_ACCENT_RGB}, 0.6); background: rgba({DISPLAY_ACCENT_RGB}, 0.25); color: #ffffff; backdrop-filter: blur(4px);"
+                        )
+                    >
+                        "Assigned"
+                    </span>
+                </Show>
+            </div>
+            // Metadata footer
+            <div class="flex min-h-0 flex-col gap-1 border-t border-edge-subtle/50 px-3 py-2.5">
+                <div class="truncate text-sm font-medium text-fg-primary">{name}</div>
+                <div class="truncate text-[10px] uppercase tracking-wider text-fg-tertiary">
+                    {format!("by {author}")}
+                </div>
+            </div>
+        </button>
+    }
+}
+
+/// Skeleton card shown while the face catalog is loading.
+#[component]
+fn FaceGallerySkeleton() -> impl IntoView {
+    view! {
+        <div class="flex animate-pulse flex-col overflow-hidden rounded-lg border border-edge-subtle bg-surface-overlay/30">
+            <div class="aspect-[4/3] bg-surface-overlay/50" />
+            <div class="flex flex-col gap-1 border-t border-edge-subtle/50 px-3 py-2.5">
+                <div class="h-3 w-3/4 rounded bg-surface-overlay/60" />
+                <div class="h-2 w-1/2 rounded bg-surface-overlay/40" />
+            </div>
+        </div>
+    }
+}
+
+/// Deterministic CSS background for face cards without a thumbnail. The
+/// hue is derived from the effect name so each face keeps a distinct
+/// identity in the picker even before its first render.
+fn face_gradient_fallback(name: &str) -> String {
+    // Small FNV-1a-ish hash so the hue is stable per name but evenly
+    // distributed across the 360° wheel.
+    let mut hash: u32 = 2_166_136_261;
+    for byte in name.bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(16_777_619);
+    }
+    let hue = hash % 360;
+    format!(
+        "background: linear-gradient(135deg, hsl({hue}deg 65% 28%) 0%, hsl({secondary}deg 55% 18%) 100%);",
+        secondary = (hue + 40) % 360,
+    )
 }
 
 #[component]
