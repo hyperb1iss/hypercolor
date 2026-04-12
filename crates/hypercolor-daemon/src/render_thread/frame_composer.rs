@@ -173,10 +173,13 @@ impl ComposeContext<'_> {
             source_frame,
             source_frame_opaque,
         );
+        let producer_retained = producer_state.is_some_and(ProducerFrameState::is_retained);
         let composed = self.render.sparkleflinger.compose_for_outputs(
-            compiled_plan.plan,
+            compiled_plan.plan.with_cpu_replay_cacheable(
+                producer_retained && !compiled_plan.metadata.transition_active,
+            ),
             self.requires_cpu_sampling_canvas(),
-            self.requires_preview_surface(),
+            self.requires_published_surface(),
         );
         let composition_done_at = Instant::now();
         let composition_us = micros_between(composition_start, composition_done_at);
@@ -311,9 +314,11 @@ impl ComposeContext<'_> {
                     true,
                 );
                 let composed = self.render.sparkleflinger.compose_for_outputs(
-                    compiled_plan.plan,
+                    compiled_plan.plan.with_cpu_replay_cacheable(
+                        effect_retained && !compiled_plan.metadata.transition_active,
+                    ),
                     self.requires_cpu_sampling_canvas(),
-                    self.requires_preview_surface(),
+                    self.requires_published_surface(),
                 );
                 let composition_bypassed = composed.bypassed;
                 let composition_done_at = Instant::now();
@@ -362,9 +367,9 @@ impl ComposeContext<'_> {
                     true,
                 );
                 let composed = self.render.sparkleflinger.compose_for_outputs(
-                    compiled_plan.plan,
+                    compiled_plan.plan.with_cpu_replay_cacheable(false),
                     self.requires_cpu_sampling_canvas(),
-                    self.requires_preview_surface(),
+                    self.requires_published_surface(),
                 );
                 let composition_bypassed = composed.bypassed;
                 let composition_done_at = Instant::now();
@@ -438,8 +443,13 @@ impl ComposeContext<'_> {
         )
     }
 
-    fn requires_preview_surface(&self) -> bool {
-        requires_preview_surface(self.state.preview_canvas_receiver_count())
+    fn requires_published_surface(&self) -> bool {
+        requires_published_surface(
+            self.state.preview_canvas_receiver_count(),
+            self.state.event_bus.screen_canvas_receiver_count(),
+            self.scene_snapshot.effect_demand.effect_running,
+            self.scene_snapshot.effect_demand.screen_capture_active,
+        )
     }
 }
 
@@ -447,8 +457,14 @@ fn requires_cpu_sampling_canvas(can_gpu_sample: bool) -> bool {
     !can_gpu_sample
 }
 
-fn requires_preview_surface(preview_canvas_receivers: usize) -> bool {
+fn requires_published_surface(
+    preview_canvas_receivers: usize,
+    screen_canvas_receivers: usize,
+    effect_running: bool,
+    screen_capture_active: bool,
+) -> bool {
     preview_canvas_receivers > 0
+        || (screen_canvas_receivers > 0 && !effect_running && screen_capture_active)
 }
 
 async fn render_effect_frame(
@@ -559,7 +575,8 @@ async fn render_effect_frame(
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_render_group_layer_count, requires_cpu_sampling_canvas, requires_preview_surface,
+        effective_render_group_layer_count, requires_cpu_sampling_canvas,
+        requires_published_surface,
     };
 
     #[test]
@@ -575,8 +592,10 @@ mod tests {
     }
 
     #[test]
-    fn preview_surface_only_depends_on_preview_receivers() {
-        assert!(!requires_preview_surface(0));
-        assert!(requires_preview_surface(1));
+    fn published_surface_depends_on_preview_and_screen_passthrough_receivers() {
+        assert!(!requires_published_surface(0, 0, false, false));
+        assert!(requires_published_surface(1, 0, true, false));
+        assert!(requires_published_surface(0, 1, false, true));
+        assert!(!requires_published_surface(0, 1, true, true));
     }
 }

@@ -1350,7 +1350,7 @@ mod tests {
                 ),
             ],
         );
-        let expected = CpuSparkleFlinger::new().compose(plan.clone());
+        let expected = CpuSparkleFlinger::new().compose(plan.clone(), true, true);
         let composed = compositor
             .compose(&plan, true, true)
             .expect("GPU composition should succeed for replace + alpha plans");
@@ -1389,7 +1389,7 @@ mod tests {
                 ),
             ],
         );
-        let expected = CpuSparkleFlinger::new().compose(plan.clone());
+        let expected = CpuSparkleFlinger::new().compose(plan.clone(), true, true);
         let composed = compositor
             .compose(&plan, true, true)
             .expect("GPU composition should succeed for add plans");
@@ -1428,7 +1428,7 @@ mod tests {
                 ),
             ],
         );
-        let expected = CpuSparkleFlinger::new().compose(plan.clone());
+        let expected = CpuSparkleFlinger::new().compose(plan.clone(), true, true);
         let composed = compositor
             .compose(&plan, true, true)
             .expect("GPU composition should succeed for screen plans");
@@ -1717,7 +1717,7 @@ mod tests {
         assert_eq!(first_compose_dispatch_count, 1);
         assert_eq!(second_compose_dispatch_count, first_compose_dispatch_count);
 
-        let expected = CpuSparkleFlinger::new().compose(plan.clone());
+        let expected = CpuSparkleFlinger::new().compose(plan.clone(), true, true);
         let mut sampled = Vec::new();
         assert!(
             compositor
@@ -1788,7 +1788,7 @@ mod tests {
                 ),
             ],
         );
-        let expected = CpuSparkleFlinger::new().compose(plan.clone());
+        let expected = CpuSparkleFlinger::new().compose(plan.clone(), true, true);
         let expected_zones = engine.sample(
             expected
                 .sampling_canvas
@@ -1828,7 +1828,7 @@ mod tests {
                 ),
             ],
         );
-        let expected = CpuSparkleFlinger::new().compose(plan.clone());
+        let expected = CpuSparkleFlinger::new().compose(plan.clone(), true, true);
         compositor
             .compose(&plan, false, false)
             .expect("GPU composition should succeed before output reuse testing");

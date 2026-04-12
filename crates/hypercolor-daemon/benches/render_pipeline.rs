@@ -225,16 +225,8 @@ fn preview_fresh_plans() -> Vec<CompositionPlan> {
         .map(|variant| {
             let mut base = patterned_canvas_for(PREVIEW_WIDTH, PREVIEW_HEIGHT);
             let mut overlay = inverse_patterned_canvas_for(PREVIEW_WIDTH, PREVIEW_HEIGHT);
-            base.set_pixel(
-                variant,
-                0,
-                Rgba::new((variant * 17) as u8, 32, 96, 255),
-            );
-            overlay.set_pixel(
-                variant,
-                0,
-                Rgba::new(64, (variant * 29) as u8, 192, 255),
-            );
+            base.set_pixel(variant, 0, Rgba::new((variant * 17) as u8, 32, 96, 255));
+            overlay.set_pixel(variant, 0, Rgba::new(64, (variant * 29) as u8, 192, 255));
             CompositionPlan::with_layers(
                 PREVIEW_WIDTH,
                 PREVIEW_HEIGHT,
@@ -649,7 +641,9 @@ fn bench_sparkleflinger(c: &mut Criterion) {
     group.bench_function("alpha_two_layer_compose_640x480_fresh", |b| {
         b.iter(|| {
             let composed = preview_sparkleflinger.compose(black_box(
-                preview_fresh_plans[fresh_plan_index].clone(),
+                preview_fresh_plans[fresh_plan_index]
+                    .clone()
+                    .with_cpu_replay_cacheable(false),
             ));
             fresh_plan_index = (fresh_plan_index + 1) % preview_fresh_plans.len();
             black_box(
@@ -657,6 +651,29 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                     .sampling_canvas
                     .as_ref()
                     .expect("fresh preview compose benchmark expects a materialized canvas")
+                    .get_pixel(0, 0),
+            );
+        });
+    });
+    let mut fresh_canvas_only_plan_index = 0_usize;
+    group.bench_function("alpha_two_layer_compose_640x480_fresh_canvas_only", |b| {
+        b.iter(|| {
+            let composed = preview_sparkleflinger.compose_for_outputs(
+                black_box(
+                    preview_fresh_plans[fresh_canvas_only_plan_index]
+                        .clone()
+                        .with_cpu_replay_cacheable(false),
+                ),
+                true,
+                false,
+            );
+            fresh_canvas_only_plan_index =
+                (fresh_canvas_only_plan_index + 1) % preview_fresh_plans.len();
+            black_box(
+                composed
+                    .sampling_canvas
+                    .as_ref()
+                    .expect("fresh canvas-only preview compose benchmark expects a canvas")
                     .get_pixel(0, 0),
             );
         });
@@ -827,7 +844,9 @@ fn bench_sparkleflinger(c: &mut Criterion) {
         group.bench_function("cpu_compose_and_zone_sample_640x480_fresh", |b| {
             b.iter(|| {
                 let composed = cpu_fresh_end_to_end.compose(black_box(
-                    preview_fresh_plans[cpu_fresh_plan_index].clone(),
+                    preview_fresh_plans[cpu_fresh_plan_index]
+                        .clone()
+                        .with_cpu_replay_cacheable(false),
                 ));
                 cpu_fresh_plan_index = (cpu_fresh_plan_index + 1) % preview_fresh_plans.len();
                 sampling_engine.sample_into(
@@ -840,6 +859,34 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                 black_box(cpu_fresh_end_to_end_sampled.first());
             });
         });
+        let mut cpu_fresh_canvas_only = SparkleFlinger::cpu();
+        let mut cpu_fresh_canvas_only_sampled = Vec::new();
+        let mut cpu_fresh_canvas_only_plan_index = 0_usize;
+        group.bench_function(
+            "cpu_compose_and_zone_sample_640x480_fresh_canvas_only",
+            |b| {
+                b.iter(|| {
+                    let composed = cpu_fresh_canvas_only.compose_for_outputs(
+                        black_box(
+                            preview_fresh_plans[cpu_fresh_canvas_only_plan_index]
+                                .clone()
+                                .with_cpu_replay_cacheable(false),
+                        ),
+                        true,
+                        false,
+                    );
+                    cpu_fresh_canvas_only_plan_index =
+                        (cpu_fresh_canvas_only_plan_index + 1) % preview_fresh_plans.len();
+                    sampling_engine.sample_into(
+                        composed.sampling_canvas.as_ref().expect(
+                            "fresh canvas-only CPU benchmark expects a materialized canvas",
+                        ),
+                        &mut cpu_fresh_canvas_only_sampled,
+                    );
+                    black_box(cpu_fresh_canvas_only_sampled.first());
+                });
+            },
+        );
         let mut cpu_bypass_end_to_end = SparkleFlinger::cpu();
         let mut cpu_bypass_sampled = Vec::new();
         group.bench_function("cpu_single_replace_surface_and_zone_sample_640x480", |b| {

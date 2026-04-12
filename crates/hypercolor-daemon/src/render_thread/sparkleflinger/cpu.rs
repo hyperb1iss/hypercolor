@@ -45,28 +45,45 @@ impl CpuSparkleFlinger {
         clippy::unused_self,
         reason = "the CPU compositor keeps an instance method to match the GPU flinger API"
     )]
-    pub(super) fn compose(&mut self, plan: CompositionPlan) -> ComposedFrameSet {
+    pub(super) fn compose(
+        &mut self,
+        plan: CompositionPlan,
+        requires_cpu_sampling_canvas: bool,
+        requires_published_surface: bool,
+    ) -> ComposedFrameSet {
         let CompositionPlan {
             width,
             height,
             mut layers,
+            cpu_replay_cacheable,
         } = plan;
 
         if layers.len() == 1
             && let Some(layer) = layers.pop()
             && layer.is_bypass_candidate()
         {
-            return publish_composed_frame(layer.frame.into_render_frame(), true);
+            return publish_composed_frame(
+                layer.frame.into_render_frame(),
+                true,
+                requires_cpu_sampling_canvas,
+                requires_published_surface,
+            );
         }
 
-        let cached_key = cached_composition_key(width, height, &layers);
+        let cached_key = cpu_replay_cacheable
+            .then(|| cached_composition_key(width, height, &layers))
+            .flatten();
         if let Some(cached_surface) = cached_key.as_ref().and_then(|key| {
             self.cached_composition
                 .as_ref()
                 .filter(|cached| cached.key == *key)
                 .map(|cached| cached.surface.clone())
         }) {
-            return cached_surface_frame(cached_surface);
+            return cached_surface_frame(
+                cached_surface,
+                requires_cpu_sampling_canvas,
+                requires_published_surface,
+            );
         }
 
         let mut layers = layers.into_iter();
@@ -81,7 +98,12 @@ impl CpuSparkleFlinger {
                 compose_layer(&mut sampling_canvas, sampling_canvas_opaque, layer);
         }
 
-        let composed = publish_composed_frame((sampling_canvas, None), false);
+        let composed = publish_composed_frame(
+            (sampling_canvas, None),
+            false,
+            requires_cpu_sampling_canvas,
+            requires_published_surface || cached_key.is_some(),
+        );
         if let Some(key) = cached_key
             && let Some(surface) = composed.sampling_surface.clone()
         {
@@ -121,8 +143,17 @@ fn cached_layer_storage(frame: &ProducerFrame) -> Option<PublishedSurfaceStorage
     }
 }
 
-fn cached_surface_frame(surface: PublishedSurface) -> ComposedFrameSet {
-    publish_composed_frame((Canvas::from_published_surface(&surface), Some(surface)), false)
+fn cached_surface_frame(
+    surface: PublishedSurface,
+    requires_cpu_sampling_canvas: bool,
+    requires_published_surface: bool,
+) -> ComposedFrameSet {
+    publish_composed_frame(
+        (Canvas::from_published_surface(&surface), Some(surface)),
+        false,
+        requires_cpu_sampling_canvas,
+        requires_published_surface,
+    )
 }
 
 fn take_base_canvas(layer: CompositionLayer, width: u32, height: u32) -> (Canvas, bool) {

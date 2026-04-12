@@ -53,7 +53,10 @@ impl CompositionLayer {
         Self::screen_opaque(ProducerFrame::Canvas(canvas), opacity)
     }
 
-    #[allow(dead_code, reason = "used by tests and the optional wgpu compositor lane")]
+    #[allow(
+        dead_code,
+        reason = "used by tests and the optional wgpu compositor lane"
+    )]
     pub(crate) fn replace(frame: ProducerFrame) -> Self {
         Self::from_parts(frame, CompositionMode::Replace, 1.0, false)
     }
@@ -76,7 +79,10 @@ impl CompositionLayer {
         }
     }
 
-    #[allow(dead_code, reason = "used by tests and the optional wgpu compositor lane")]
+    #[allow(
+        dead_code,
+        reason = "used by tests and the optional wgpu compositor lane"
+    )]
     pub(crate) fn alpha(frame: ProducerFrame, opacity: f32) -> Self {
         Self::from_parts(frame, CompositionMode::Alpha, opacity, false)
     }
@@ -85,7 +91,10 @@ impl CompositionLayer {
         Self::from_parts(frame, CompositionMode::Alpha, opacity, true)
     }
 
-    #[allow(dead_code, reason = "used by tests and the optional wgpu compositor lane")]
+    #[allow(
+        dead_code,
+        reason = "used by tests and the optional wgpu compositor lane"
+    )]
     pub(crate) fn add(frame: ProducerFrame, opacity: f32) -> Self {
         Self::from_parts(frame, CompositionMode::Add, opacity, false)
     }
@@ -94,7 +103,10 @@ impl CompositionLayer {
         Self::from_parts(frame, CompositionMode::Add, opacity, true)
     }
 
-    #[allow(dead_code, reason = "used by tests and the optional wgpu compositor lane")]
+    #[allow(
+        dead_code,
+        reason = "used by tests and the optional wgpu compositor lane"
+    )]
     pub(crate) fn screen(frame: ProducerFrame, opacity: f32) -> Self {
         Self::from_parts(frame, CompositionMode::Screen, opacity, false)
     }
@@ -113,6 +125,7 @@ pub struct CompositionPlan {
     width: u32,
     height: u32,
     layers: Vec<CompositionLayer>,
+    cpu_replay_cacheable: bool,
 }
 
 impl CompositionPlan {
@@ -121,6 +134,7 @@ impl CompositionPlan {
             width,
             height,
             layers: vec![layer],
+            cpu_replay_cacheable: true,
         }
     }
 
@@ -129,7 +143,13 @@ impl CompositionPlan {
             width,
             height,
             layers,
+            cpu_replay_cacheable: true,
         }
+    }
+
+    pub fn with_cpu_replay_cacheable(mut self, cacheable: bool) -> Self {
+        self.cpu_replay_cacheable = cacheable;
+        self
     }
 }
 
@@ -183,23 +203,29 @@ impl SparkleFlinger {
     pub fn compose_for_outputs(
         &mut self,
         plan: CompositionPlan,
-        _requires_cpu_sampling_canvas: bool,
-        _requires_preview_surface: bool,
+        requires_cpu_sampling_canvas: bool,
+        requires_preview_surface: bool,
     ) -> ComposedFrameSet {
         match &mut self.backend {
-            SparkleFlingerBackend::Cpu(backend) => backend.compose(plan),
+            SparkleFlingerBackend::Cpu(backend) => {
+                backend.compose(plan, requires_cpu_sampling_canvas, requires_preview_surface)
+            }
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, cpu_fallback } => {
                 if gpu.supports_plan(&plan)
                     && let Ok(composed) = gpu.compose(
                         &plan,
-                        _requires_cpu_sampling_canvas,
-                        _requires_preview_surface,
+                        requires_cpu_sampling_canvas,
+                        requires_preview_surface,
                     )
                 {
                     return composed;
                 }
-                let mut composed = cpu_fallback.compose(plan);
+                let mut composed = cpu_fallback.compose(
+                    plan,
+                    requires_cpu_sampling_canvas,
+                    requires_preview_surface,
+                );
                 composed.backend = CompositorBackendKind::GpuFallback;
                 composed
             }
@@ -256,12 +282,29 @@ fn new_gpu_backend() -> Result<SparkleFlingerBackend> {
     )
 }
 
-pub(super) fn publish_composed_frame(frame: RenderFrame, bypassed: bool) -> ComposedFrameSet {
+pub(super) fn publish_composed_frame(
+    frame: RenderFrame,
+    bypassed: bool,
+    requires_cpu_sampling_canvas: bool,
+    requires_published_surface: bool,
+) -> ComposedFrameSet {
     let (sampling_canvas, sampling_surface) = frame;
     if let Some(sampling_surface) = sampling_surface {
+        let sampling_canvas = requires_cpu_sampling_canvas.then_some(sampling_canvas);
+        let sampling_surface = requires_published_surface.then_some(sampling_surface);
         return ComposedFrameSet {
-            sampling_canvas: Some(sampling_canvas),
-            sampling_surface: Some(sampling_surface),
+            sampling_canvas,
+            sampling_surface,
+            preview_surface: None,
+            bypassed,
+            backend: CompositorBackendKind::Cpu,
+        };
+    }
+
+    if !requires_published_surface {
+        return ComposedFrameSet {
+            sampling_canvas: requires_cpu_sampling_canvas.then_some(sampling_canvas),
+            sampling_surface: None,
             preview_surface: None,
             bypassed,
             backend: CompositorBackendKind::Cpu,
@@ -269,9 +312,10 @@ pub(super) fn publish_composed_frame(frame: RenderFrame, bypassed: bool) -> Comp
     }
 
     let sampling_surface = PublishedSurface::from_owned_canvas(sampling_canvas, 0, 0);
-    let sampling_canvas = Canvas::from_published_surface(&sampling_surface);
+    let sampling_canvas =
+        requires_cpu_sampling_canvas.then(|| Canvas::from_published_surface(&sampling_surface));
     ComposedFrameSet {
-        sampling_canvas: Some(sampling_canvas),
+        sampling_canvas,
         sampling_surface: Some(sampling_surface),
         preview_surface: None,
         bypassed,
@@ -328,6 +372,56 @@ mod tests {
                 .as_ptr(),
             source.rgba_bytes().as_ptr()
         );
+    }
+
+    #[test]
+    fn sparkleflinger_skips_sampling_surface_when_not_requested() {
+        let base = solid_canvas(Rgba::new(255, 0, 0, 255));
+        let overlay = solid_canvas(Rgba::new(0, 0, 255, 255));
+        let mut sparkleflinger = SparkleFlinger::cpu();
+        let composed = sparkleflinger.compose_for_outputs(
+            CompositionPlan::with_layers(
+                2,
+                2,
+                vec![
+                    CompositionLayer::replace(ProducerFrame::Canvas(base)),
+                    CompositionLayer::alpha(ProducerFrame::Canvas(overlay), 0.5),
+                ],
+            ),
+            true,
+            false,
+        );
+
+        assert!(composed.sampling_canvas.is_some());
+        assert!(composed.sampling_surface.is_none());
+    }
+
+    #[test]
+    fn sparkleflinger_skips_sampling_surface_for_uncacheable_shared_multilayer_plans() {
+        let base_surface =
+            PublishedSurface::from_owned_canvas(solid_canvas(Rgba::new(255, 0, 0, 255)), 0, 0);
+        let overlay_surface =
+            PublishedSurface::from_owned_canvas(solid_canvas(Rgba::new(0, 0, 255, 255)), 0, 0);
+        let mut sparkleflinger = SparkleFlinger::cpu();
+        let composed = sparkleflinger.compose_for_outputs(
+            CompositionPlan::with_layers(
+                2,
+                2,
+                vec![
+                    CompositionLayer::replace_canvas(Canvas::from_published_surface(&base_surface)),
+                    CompositionLayer::alpha_canvas(
+                        Canvas::from_published_surface(&overlay_surface),
+                        0.5,
+                    ),
+                ],
+            )
+            .with_cpu_replay_cacheable(false),
+            true,
+            false,
+        );
+
+        assert!(composed.sampling_canvas.is_some());
+        assert!(composed.sampling_surface.is_none());
     }
 
     #[test]
@@ -498,7 +592,10 @@ mod tests {
         let second_surface = second
             .sampling_surface
             .expect("cached shared composition should publish a sampling surface");
-        assert_eq!(first_surface.storage_identity(), second_surface.storage_identity());
+        assert_eq!(
+            first_surface.storage_identity(),
+            second_surface.storage_identity()
+        );
         assert_eq!(
             first_surface.rgba_bytes().as_ptr(),
             second_surface.rgba_bytes().as_ptr()
@@ -536,7 +633,10 @@ mod tests {
         let second_surface = second
             .sampling_surface
             .expect("mutated composition should publish a sampling surface");
-        assert_ne!(first_surface.storage_identity(), second_surface.storage_identity());
+        assert_ne!(
+            first_surface.storage_identity(),
+            second_surface.storage_identity()
+        );
         assert_ne!(
             first
                 .sampling_canvas
