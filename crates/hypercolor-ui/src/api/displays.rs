@@ -67,6 +67,15 @@ pub struct OverlaySlotResponse {
     pub runtime: OverlayRuntimeResponse,
 }
 
+/// Entry from `GET /api/v1/displays/{id}/overlays/runtime` — a batched
+/// per-slot runtime snapshot used to colour stack list rows without
+/// issuing one request per slot.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct OverlayRuntimeEntry {
+    pub slot_id: OverlaySlotId,
+    pub runtime: OverlayRuntimeResponse,
+}
+
 /// Request body for `POST /api/v1/displays/{id}/overlays`.
 #[derive(Debug, Clone, Serialize)]
 pub struct CreateOverlaySlotRequest {
@@ -129,6 +138,17 @@ pub async fn fetch_overlay_slot(
 ) -> Result<OverlaySlotResponse, String> {
     let url = format!("/api/v1/displays/{display_id}/overlays/{slot_id}");
     client::fetch_json::<OverlaySlotResponse>(&url)
+        .await
+        .map_err(Into::into)
+}
+
+/// `GET /api/v1/displays/{id}/overlays/runtime` — fetch every slot's
+/// runtime state in one call.
+pub async fn fetch_overlay_runtimes(
+    display_id: &str,
+) -> Result<Vec<OverlayRuntimeEntry>, String> {
+    let url = format!("/api/v1/displays/{display_id}/overlays/runtime");
+    client::fetch_json::<Vec<OverlayRuntimeEntry>>(&url)
         .await
         .map_err(Into::into)
 }

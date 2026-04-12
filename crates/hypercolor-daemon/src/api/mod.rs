@@ -679,6 +679,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
                 .post(displays::add_overlay),
         )
         .route(
+            "/displays/{id}/overlays/runtime",
+            axum::routing::get(displays::list_overlay_runtimes),
+        )
+        .route(
             "/displays/{id}/overlays/reorder",
             axum::routing::post(displays::reorder_overlays),
         )

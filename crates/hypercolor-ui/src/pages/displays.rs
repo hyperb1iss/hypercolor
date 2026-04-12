@@ -865,6 +865,8 @@ fn OverlayStackPanel(selected_id: ReadSignal<Option<String>>) -> impl IntoView {
     let (overlay_config, set_overlay_config) = signal(None::<Result<DisplayOverlayConfig, String>>);
     let (catalog_open, set_catalog_open) = signal(false);
     let (selected_slot_id, set_selected_slot_id) = signal(None::<OverlaySlotId>);
+    let (runtime_map, set_runtime_map) =
+        signal(std::collections::HashMap::<OverlaySlotId, api::OverlayRuntimeResponse>::new());
 
     // Reload the overlay stack whenever the selected display changes. We
     // keep the last-good config in place until the new one arrives so the
@@ -874,15 +876,52 @@ fn OverlayStackPanel(selected_id: ReadSignal<Option<String>>) -> impl IntoView {
         let Some(display_id) = selected_id.get() else {
             set_overlay_config.set(None);
             set_selected_slot_id.set(None);
+            set_runtime_map.set(std::collections::HashMap::new());
             return;
         };
         set_selected_slot_id.set(None);
+        set_runtime_map.set(std::collections::HashMap::new());
         let set_overlay_config = set_overlay_config;
         spawn_local(async move {
             let result = api::fetch_display_overlays(&display_id).await;
             set_overlay_config.set(Some(result));
         });
     });
+
+    // Batched runtime polling. One request every 2s pulls status for
+    // every slot, so stack list pills can show Failed/HtmlGated states
+    // without issuing one GET per row.
+    let fetch_runtime_map = move || {
+        let Some(display_id) = selected_id.get_untracked() else {
+            return;
+        };
+        let set_runtime_map = set_runtime_map;
+        spawn_local(async move {
+            if let Ok(entries) = api::fetch_overlay_runtimes(&display_id).await {
+                let map = entries
+                    .into_iter()
+                    .map(|entry| (entry.slot_id, entry.runtime))
+                    .collect();
+                set_runtime_map.set(map);
+            }
+        });
+    };
+    // Seed immediately on display change.
+    Effect::new({
+        let fetch_runtime_map = fetch_runtime_map.clone();
+        move |_| {
+            if selected_id.with(Option::is_some) {
+                fetch_runtime_map();
+            }
+        }
+    });
+    let _runtime_map_interval = use_interval_fn(
+        {
+            let fetch_runtime_map = fetch_runtime_map.clone();
+            move || fetch_runtime_map()
+        },
+        2000_u64,
+    );
 
     // If the selected slot disappears (deleted externally or via our own
     // delete button) clear the pinned selection so the inspector closes.
@@ -987,8 +1026,11 @@ fn OverlayStackPanel(selected_id: ReadSignal<Option<String>>) -> impl IntoView {
                                     .rev()
                                     .cloned()
                                     .map(|slot| {
+                                        let runtime_status = runtime_map
+                                            .with(|map| map.get(&slot.id).map(|r| r.status));
                                         render_slot_row(
                                             slot,
+                                            runtime_status,
                                             selected_id,
                                             refresh_for_view.clone(),
                                             set_selected_slot_id,
@@ -1089,6 +1131,7 @@ fn StackPlaceholder(#[prop(into)] message: String) -> impl IntoView {
 
 fn render_slot_row(
     slot: OverlaySlot,
+    runtime_status: Option<api::OverlaySlotStatus>,
     selected_id: ReadSignal<Option<String>>,
     refresh: impl Fn() + Clone + 'static,
     set_selected_slot_id: WriteSignal<Option<OverlaySlotId>>,
@@ -1103,11 +1146,21 @@ fn render_slot_row(
     )]
     let opacity_percent = (slot.opacity.clamp(0.0, 1.0) * 100.0).round() as i32;
     let (source_label, source_icon) = overlay_source_descriptor(&slot.source);
-    let status_label = if slot.enabled { "Active" } else { "Disabled" };
-    let status_class = if slot.enabled {
-        "bg-emerald-500/15 text-emerald-300"
-    } else {
-        "bg-fg-tertiary/15 text-fg-tertiary"
+    // Prefer the runtime-reported status from the batched aggregate
+    // endpoint when it's available so Failed and HtmlGated states show
+    // up on list rows. Fall back to the enabled flag while the first
+    // runtime fetch is still in flight.
+    let (status_label, status_class) = match runtime_status {
+        Some(api::OverlaySlotStatus::Active) => ("Active", "bg-emerald-500/15 text-emerald-300"),
+        Some(api::OverlaySlotStatus::Disabled) => {
+            ("Disabled", "bg-fg-tertiary/15 text-fg-tertiary")
+        }
+        Some(api::OverlaySlotStatus::Failed) => ("Failed", "bg-status-error/20 text-status-error"),
+        Some(api::OverlaySlotStatus::HtmlGated) => {
+            ("HTML gated", "bg-amber-500/20 text-amber-300")
+        }
+        None if slot.enabled => ("Active", "bg-emerald-500/15 text-emerald-300"),
+        None => ("Disabled", "bg-fg-tertiary/15 text-fg-tertiary"),
     };
     let slot_name = slot.name.clone();
 

@@ -94,6 +94,13 @@ pub struct OverlaySlotResponse {
     pub runtime: OverlayRuntimeResponse,
 }
 
+/// Single entry in `GET /api/v1/displays/{id}/overlays/runtime`.
+#[derive(Debug, Clone, Serialize)]
+pub struct OverlayRuntimeEntry {
+    pub slot_id: OverlaySlotId,
+    pub runtime: OverlayRuntimeResponse,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct OverlayCompatibilityWarning {
     pub code: &'static str,
@@ -265,6 +272,34 @@ pub async fn list_overlays(
         Err(response) => return response,
     };
     ApiResponse::ok(current_overlay_config(state.as_ref(), device_id).await)
+}
+
+/// `GET /api/v1/displays/{id}/overlays/runtime` — batched runtime status
+/// for every slot on a display.
+///
+/// Returning the whole set in one response keeps the UI stack list off
+/// the N+1 path that would otherwise be needed to colour each row with
+/// its current `Active`/`Disabled`/`Failed`/`HtmlGated` pill.
+pub async fn list_overlay_runtimes(
+    State(state): State<Arc<AppState>>,
+    Path(device): Path<String>,
+) -> Response {
+    let device_id = match resolve_display_device_id_or_response(&state, &device).await {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+    let config = current_overlay_config(state.as_ref(), device_id).await;
+
+    let mut entries = Vec::with_capacity(config.overlays.len());
+    for slot in &config.overlays {
+        let runtime = overlay_runtime_for_slot(state.as_ref(), device_id, slot).await;
+        entries.push(OverlayRuntimeEntry {
+            slot_id: slot.id,
+            runtime: OverlayRuntimeResponse::from(runtime),
+        });
+    }
+
+    ApiResponse::ok(entries)
 }
 
 pub async fn get_overlay(
