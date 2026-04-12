@@ -43,6 +43,7 @@ const DISPLAY_ERROR_WARN_INTERVAL: Duration = Duration::from_secs(5);
 const DISPLAY_OUTPUT_MAX_FPS: u32 = 15;
 const DISPLAY_FACE_DEFAULT_FPS: u32 = 30;
 const DISPLAY_FACE_MAX_FPS: u32 = 60;
+const DISPLAY_OUTPUT_DISPATCH_INTERVAL: Duration = Duration::from_millis(16);
 pub const DEFAULT_STATIC_HOLD_REFRESH_INTERVAL: Duration = Duration::from_secs(20);
 const DISPLAY_RUNTIME_WORKERS: usize = 2;
 const DISPLAY_RUNTIME_MAX_BLOCKING_THREADS: usize = 4;
@@ -270,8 +271,10 @@ async fn run_display_output(
     let mut workers = HashMap::<DisplayWorkerKey, DisplayWorkerHandle>::new();
     let mut targets_cache = DisplayTargetCache::default();
     let mut last_reconciled_target_version = None::<u64>;
-    let mut last_dispatched_target_version = None::<u64>;
-    let mut last_dispatched_frame = None::<StableDisplaySourceIdentity>;
+    let mut last_dispatched_sources =
+        HashMap::<DisplayWorkerKey, StableDisplaySourceIdentity>::new();
+    let mut dispatch_tick = tokio::time::interval(DISPLAY_OUTPUT_DISPATCH_INTERVAL);
+    dispatch_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -284,15 +287,10 @@ async fn run_display_output(
                     debug!("display output task exiting because canvas stream closed");
                     break;
                 }
+                let _ = canvas_rx.borrow_and_update();
             }
-        }
-
-        let has_canvas_frame = {
-            let frame = canvas_rx.borrow_and_update();
-            frame.width != 0 && frame.height != 0
-        };
-        if !has_canvas_frame {
-            continue;
+            _ = dispatch_tick.tick() => {
+            }
         }
 
         let targets = display_targets(
@@ -306,45 +304,43 @@ async fn run_display_output(
         if last_reconciled_target_version != Some(targets.version) {
             reconcile_display_workers(&state, &mut workers, targets.targets.as_ref()).await;
             last_reconciled_target_version = Some(targets.version);
+            last_dispatched_sources.clear();
         }
         if targets.targets.is_empty() {
-            last_dispatched_target_version = None;
+            last_dispatched_sources.clear();
             continue;
         }
 
-        // Stable slot-backed surfaces can be retained and republished across ticks.
-        // Skip waking every display worker when both the target set and surface are unchanged.
         let global_frame = {
             let frame = canvas_rx.borrow();
-            let stable_identity = stable_display_source_identity(&frame);
-            if stable_identity.is_some()
-                && last_dispatched_target_version == Some(targets.version)
-                && last_dispatched_frame == stable_identity
-            {
-                None
-            } else {
-                last_dispatched_target_version = Some(targets.version);
-                last_dispatched_frame = stable_identity;
-                Some(Arc::new(frame.clone()))
-            }
-        };
-        let Some(global_frame) = global_frame else {
-            continue;
+            stable_display_source_identity(&frame)
+                .map(|identity| (identity, Arc::new(frame.clone())))
         };
 
         for target in targets.targets.iter() {
-            if let Some(worker) = workers.get(&target.worker_key) {
-                let source_frame = match &target.canvas_source {
-                    DisplayCanvasSource::Global => Some(Arc::clone(&global_frame)),
-                    DisplayCanvasSource::GroupDirect { group_id } => {
-                        let sender = state.event_bus.group_canvas_sender(*group_id);
-                        let frame = sender.borrow();
-                        (frame.width > 0 && frame.height > 0).then(|| Arc::new(frame.clone()))
-                    }
-                };
-                if let Some(source_frame) = source_frame {
-                    worker.push(source_frame);
+            let source_frame = match &target.canvas_source {
+                DisplayCanvasSource::Global => {
+                    global_frame.as_ref().map(|(_, frame)| Arc::clone(frame))
                 }
+                DisplayCanvasSource::GroupDirect { group_id } => {
+                    let sender = state.event_bus.group_canvas_sender(*group_id);
+                    let frame = sender.borrow();
+                    stable_display_source_identity(&frame).map(|_| Arc::new(frame.clone()))
+                }
+            };
+            let Some(source_frame) = source_frame else {
+                continue;
+            };
+            let Some(source_identity) = stable_display_source_identity(source_frame.as_ref())
+            else {
+                continue;
+            };
+            if last_dispatched_sources.get(&target.worker_key) == Some(&source_identity) {
+                continue;
+            }
+            if let Some(worker) = workers.get(&target.worker_key) {
+                worker.push(Arc::clone(&source_frame));
+                last_dispatched_sources.insert(target.worker_key.clone(), source_identity);
             }
         }
     }
