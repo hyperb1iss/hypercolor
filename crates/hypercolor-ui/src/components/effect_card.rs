@@ -146,6 +146,18 @@ pub fn EffectCard(
                        rgba(0, 0, 0, 0.92) 100%)"
             />
 
+            // ── Accent strip ────────────────────────────────────────────
+            <div
+                class="absolute top-0 left-0 right-0 h-[2px] z-[1]"
+                style:background=move || format!(
+                    "linear-gradient(90deg, rgba({a}, 0.5), rgba({a}, 0.08))",
+                    a = accent_rgb.get()
+                )
+                style:box-shadow=move || format!(
+                    "0 1px 8px rgba({}, 0.2)", accent_rgb.get()
+                )
+            />
+
             // ── Active-state accents ─────────────────────────────────────
             {move || is_active.get().then(|| view! {
                 <div

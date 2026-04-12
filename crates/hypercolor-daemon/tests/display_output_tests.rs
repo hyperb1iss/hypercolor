@@ -14,6 +14,7 @@ use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend, Device
 use hypercolor_core::overlay::{
     OverlayBuffer, OverlayError, OverlayInput, OverlayRenderer, OverlaySize,
 };
+use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::device::{
@@ -306,6 +307,10 @@ fn default_device_settings() -> Arc<RwLock<DeviceSettingsStore>> {
     Arc::new(RwLock::new(DeviceSettingsStore::new(
         std::path::PathBuf::from("device-settings.json"),
     )))
+}
+
+fn default_scene_manager() -> Arc<RwLock<SceneManager>> {
+    Arc::new(RwLock::new(SceneManager::new()))
 }
 
 fn default_overlay_factory() -> Arc<dyn OverlayRendererFactory> {
@@ -615,6 +620,7 @@ async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_device
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -668,6 +674,7 @@ async fn automatic_display_output_skips_devices_without_display_capabilities() {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -724,6 +731,7 @@ async fn automatic_display_output_skips_display_devices_that_are_not_in_layout()
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -789,6 +797,7 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -881,6 +890,7 @@ async fn automatic_display_output_uses_logical_device_viewport_alias() {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -957,6 +967,7 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -1033,6 +1044,7 @@ async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -1133,6 +1145,7 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -1263,6 +1276,7 @@ async fn automatic_display_output_composites_mock_overlay_into_display_frame() {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -1383,6 +1397,7 @@ async fn automatic_display_output_hydrates_persisted_overlay_config_on_worker_sp
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: Arc::clone(&device_settings),
         event_bus: Arc::clone(&event_bus),
@@ -1490,6 +1505,7 @@ async fn automatic_display_output_publishes_overlay_runtime_failures() {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -1601,6 +1617,7 @@ async fn automatic_display_output_renders_clock_overlay_with_default_factory() {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -1673,6 +1690,7 @@ async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails()
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -1788,6 +1806,7 @@ async fn automatic_display_output_renders_text_overlay_with_default_factory() {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -1908,6 +1927,7 @@ async fn automatic_display_output_renders_sensor_overlay_with_default_factory() 
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -2018,6 +2038,7 @@ async fn automatic_display_output_renders_image_overlay_with_default_factory() {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -2099,6 +2120,7 @@ async fn automatic_display_output_skips_unchanged_frames() {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -2188,6 +2210,7 @@ async fn automatic_display_output_skips_metadata_only_owned_surface_updates() {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -2263,6 +2286,7 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -2358,6 +2382,7 @@ async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -2437,6 +2462,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
@@ -2527,6 +2553,7 @@ async fn automatic_display_output_refreshes_static_hold_frames_while_sleeping() 
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
         device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),

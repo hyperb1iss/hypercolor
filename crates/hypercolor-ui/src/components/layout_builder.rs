@@ -585,7 +585,7 @@ pub fn LayoutBuilder() -> impl IntoView {
 
     view! {
         <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div class="shrink-0 glass-subtle border-b border-edge-subtle/15">
+            <div class="shrink-0 glass-subtle border-b border-edge-default relative">
                 <div class="px-6 pt-5 pb-4">
                     <div class="flex items-end justify-between gap-4">
                         <PageHeader
@@ -597,7 +597,7 @@ pub fn LayoutBuilder() -> impl IntoView {
                         />
 
                         {move || layout_header_meta.get().map(|meta| view! {
-                            <span class="shrink-0 rounded-full border border-edge-subtle/60 bg-surface-overlay/45 px-3 py-1 text-[11px] font-mono text-fg-tertiary/70">
+                            <span class="shrink-0 rounded-md border border-edge-subtle bg-surface-overlay/45 px-3 py-1 text-[11px] font-mono text-fg-tertiary/70">
                                 {meta}
                             </span>
                         })}
@@ -833,6 +833,10 @@ pub fn LayoutBuilder() -> impl IntoView {
                     }
                 })}
                 </div>
+
+                // Accent strip
+                <div class="absolute bottom-0 left-0 right-0 h-[2px]"
+                     style="background: linear-gradient(90deg, rgba(255, 106, 193, 0.4), rgba(255, 106, 193, 0.05))" />
             </div>
 
             // Three-column layout
@@ -842,9 +846,10 @@ pub fn LayoutBuilder() -> impl IntoView {
                     view! {
                         <div class="flex-1 flex items-center justify-center">
                             <div class="text-center space-y-3 animate-fade-in">
-                                <Icon icon=LuLayoutTemplate width="48px" height="48px" style="color: rgba(139, 133, 160, 0.15)" />
-                                <div class="text-fg-tertiary text-sm">"Select or create a layout to begin"</div>
-                                <div class="text-fg-tertiary/40 text-xs">"Drag devices onto the canvas to build your spatial mapping"</div>
+                                <Icon icon=LuLayoutTemplate width="48px" height="48px"
+                                      style="color: rgba(255, 106, 193, 0.25); filter: drop-shadow(0 0 12px rgba(255, 106, 193, 0.15))" />
+                                <div class="text-fg-tertiary/50 text-sm">"Select or create a layout to begin"</div>
+                                <div class="text-fg-tertiary/40 text-xs font-mono tracking-wide">"Drag devices onto the canvas to build your spatial mapping"</div>
                             </div>
                         </div>
                     }

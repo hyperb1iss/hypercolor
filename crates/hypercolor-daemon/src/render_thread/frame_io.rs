@@ -5,6 +5,7 @@ use hypercolor_core::input::{InputData, InteractionData, ScreenData};
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface, PublishedSurfaceStorageIdentity};
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
+use hypercolor_types::scene::RenderGroupId;
 use hypercolor_types::sensor::SystemSnapshot;
 use std::sync::Arc;
 
@@ -84,6 +85,7 @@ pub(crate) fn publish_frame_updates(
     recycled_frame: &mut FrameData,
     audio: &AudioData,
     canvas: Option<Canvas>,
+    group_canvases: &[(RenderGroupId, Canvas)],
     frame_surface: Option<PublishedSurface>,
     preview_surface: Option<PublishedSurface>,
     screen_preview_surface: Option<PublishedSurface>,
@@ -132,6 +134,23 @@ pub(crate) fn publish_frame_updates(
         last_audio_level_update_ms,
         publish_audio_level,
     );
+    for (group_id, group_canvas) in group_canvases {
+        let sender = state.event_bus.group_canvas_sender(*group_id);
+        let publish_group_canvas = {
+            let current = sender.borrow();
+            should_publish_canvas_storage(&current, group_canvas)
+        };
+        if publish_group_canvas {
+            let canvas_rgba_len = usize_to_u32(group_canvas.rgba_len());
+            let (frame, copied) =
+                CanvasFrame::from_owned_canvas_with_copy_info(group_canvas.clone(), frame_number, elapsed_ms);
+            if copied {
+                full_frame_copy_count = full_frame_copy_count.saturating_add(1);
+                full_frame_copy_bytes = full_frame_copy_bytes.saturating_add(canvas_rgba_len);
+            }
+            let _ = sender.send(frame);
+        }
+    }
     state
         .preview_runtime
         .note_canvas_frame(frame_number, elapsed_ms);

@@ -88,7 +88,9 @@ fn snapshot_scene_runtime(manager: &SceneManager) -> SceneRuntimeSnapshot {
         active_render_groups
             .iter()
             .filter(|group| {
-                group.enabled && group.effect_id.is_some() && !group.layout.zones.is_empty()
+                group.enabled
+                    && group.effect_id.is_some()
+                    && (group.display_target.is_some() || !group.layout.zones.is_empty())
             })
             .count(),
     )
@@ -165,7 +167,7 @@ async fn current_render_group_effect_scene_snapshot(
     let mut screen_capture_active = false;
 
     for group in scene_runtime.active_render_groups.iter() {
-        if !group.enabled || group.layout.zones.is_empty() {
+        if !group.enabled || (group.layout.zones.is_empty() && group.display_target.is_none()) {
             continue;
         }
 

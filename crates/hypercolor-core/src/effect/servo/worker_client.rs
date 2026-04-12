@@ -57,7 +57,6 @@ impl WorkerClientState {
     const RUNNING: u8 = 2;
     const STOPPING: u8 = 3;
 
-    #[cfg(test)]
     fn from_u8(value: u8) -> Self {
         match value {
             Self::LOADING => Self::Loading,
@@ -92,6 +91,10 @@ pub(super) enum WorkerCommand {
         height: u32,
         response_tx: SyncSender<Result<()>>,
     },
+    #[expect(
+        dead_code,
+        reason = "explicit unload is kept in the worker protocol for future staged teardown paths"
+    )]
     Unload {
         session_id: ServoSessionId,
         response_tx: SyncSender<Result<()>>,
@@ -139,7 +142,6 @@ impl ClientStateSlot {
         }
     }
 
-    #[cfg(test)]
     fn load(&self) -> WorkerClientState {
         WorkerClientState::from_u8(self.current.load(Ordering::Acquire))
     }

@@ -252,6 +252,7 @@ pub(crate) async fn execute_frame(
         &mut render.recycled_frame,
         &inputs.audio,
         sampling_canvas,
+        &render_stage.group_canvases,
         sampling_surface,
         preview_surface,
         screen_watch_surface,

@@ -275,7 +275,7 @@ pub fn EffectsPage() -> impl IntoView {
 
     view! {
         <div class="flex h-full min-h-0 flex-col animate-fade-in">
-            <div class="shrink-0 glass-subtle border-b border-edge-subtle/15">
+            <div class="shrink-0 glass-subtle border-b border-edge-default">
                 <div class="px-6 pt-5 pb-4">
                     <div class="flex items-end justify-between gap-4">
                         <PageHeader

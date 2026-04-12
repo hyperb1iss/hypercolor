@@ -17,14 +17,15 @@ use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::encode::{
-    DisplayEncodeState, display_brightness_factor, encode_canvas_frame, encode_prepared_rgb_frame,
-    render_canvas_frame_rgb,
+    DisplayEncodeState, display_brightness_factor, encode_canvas_frame,
+    encode_direct_canvas_frame, encode_prepared_rgb_frame, render_canvas_frame_rgb,
+    render_direct_canvas_frame_rgb,
 };
 use super::overlay::{OverlayComposer, OverlayRendererFactory};
 use super::render::display_viewport_signature;
 use super::{
-    DISPLAY_ERROR_WARN_INTERVAL, DisplayGeometry, DisplayTarget, DisplayViewportSignature,
-    DisplayWorkerConfigSignature,
+    DISPLAY_ERROR_WARN_INTERVAL, DisplayCanvasSource, DisplayCanvasSourceSignature,
+    DisplayGeometry, DisplayTarget, DisplayViewportSignature, DisplayWorkerConfigSignature,
 };
 use crate::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
 use crate::display_overlays::DisplayOverlayRuntimeRegistry;
@@ -82,6 +83,7 @@ impl PendingDisplayFrame {
 struct DisplayFrameInputState {
     source_identity: DisplaySourceIdentity,
     source_snapshot: Option<Arc<CanvasFrame>>,
+    canvas_source: DisplayCanvasSourceSignature,
     brightness_factor: u16,
     geometry: DisplayGeometry,
     viewport: DisplayViewportSignature,
@@ -107,9 +109,11 @@ impl DisplayFrameInputState {
             });
 
         source_matches
+            && self.canvas_source == target.canvas_source.signature()
             && self.brightness_factor == display_brightness_factor(target.brightness)
             && self.geometry == target.geometry
-            && self.viewport == display_viewport_signature(&target.viewport)
+            && (self.canvas_source != DisplayCanvasSourceSignature::Global
+                || self.viewport == display_viewport_signature(&target.viewport))
     }
 
     fn capture(source: &Arc<CanvasFrame>, target: &DisplayTarget) -> Self {
@@ -117,6 +121,7 @@ impl DisplayFrameInputState {
         Self {
             source_identity,
             source_snapshot: Some(Arc::clone(source)),
+            canvas_source: target.canvas_source.signature(),
             brightness_factor: display_brightness_factor(target.brightness),
             geometry: target.geometry.clone(),
             viewport: display_viewport_signature(&target.viewport),
@@ -462,12 +467,19 @@ async fn run_display_worker(
         }
         let encode_result = if has_active_overlays {
             let sensor_snapshot = Arc::clone(&sensor_snapshot_rx.borrow());
-            render_canvas_frame_rgb(
-                source.as_ref(),
-                &target.viewport,
-                &target.geometry,
-                &mut encode_state,
-            );
+            match target.canvas_source {
+                DisplayCanvasSource::Global => render_canvas_frame_rgb(
+                    source.as_ref(),
+                    &target.viewport,
+                    &target.geometry,
+                    &mut encode_state,
+                ),
+                DisplayCanvasSource::GroupDirect { .. } => render_direct_canvas_frame_rgb(
+                    source.as_ref(),
+                    &target.geometry,
+                    &mut encode_state,
+                ),
+            }
             let (staging, runtime_changed) = overlay_composer
                 .compose_rgb_frame_with_runtime_change(
                     &encode_state.rgb_buffer,
@@ -501,15 +513,24 @@ async fn run_display_worker(
             let viewport = target.viewport;
             let geometry = target.geometry;
             let brightness = target.brightness;
+            let canvas_source = target.canvas_source.clone();
             tokio::task::spawn_blocking(move || {
                 let mut encode_state = encode_state;
-                let encoded = encode_canvas_frame(
-                    encode_source.as_ref(),
-                    &viewport,
-                    &geometry,
-                    brightness,
-                    &mut encode_state,
-                );
+                let encoded = match canvas_source {
+                    DisplayCanvasSource::Global => encode_canvas_frame(
+                        encode_source.as_ref(),
+                        &viewport,
+                        &geometry,
+                        brightness,
+                        &mut encode_state,
+                    ),
+                    DisplayCanvasSource::GroupDirect { .. } => encode_direct_canvas_frame(
+                        encode_source.as_ref(),
+                        &geometry,
+                        brightness,
+                        &mut encode_state,
+                    ),
+                };
                 (encode_state, encoded)
             })
             .await

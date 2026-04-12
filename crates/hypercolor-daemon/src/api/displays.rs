@@ -10,17 +10,20 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint};
-use hypercolor_types::effect::{EffectMetadata, EffectSource};
+use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, EffectSource};
 use hypercolor_types::overlay::{
     DisplayOverlayConfig, OverlayBlendMode, OverlayPosition, OverlaySlot, OverlaySlotId,
     OverlaySource,
 };
+use hypercolor_types::scene::{DisplayFaceTarget, RenderGroup, RenderGroupId};
+use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::api::AppState;
 use crate::api::devices;
 use crate::api::envelope::{ApiError, ApiResponse, iso8601_system_time};
+use crate::api::effects::resolve_effect_metadata;
 use crate::display_frames::DisplayFrameSnapshot;
 use crate::display_overlays::{OverlaySlotRuntime, OverlaySlotStatus};
 
@@ -42,6 +45,21 @@ pub(crate) struct DisplaySurfaceInfo {
     pub width: u32,
     pub height: u32,
     pub circular: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetDisplayFaceRequest {
+    pub effect_id: String,
+    #[serde(default)]
+    pub controls: std::collections::HashMap<String, ControlValue>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DisplayFaceResponse {
+    pub device_id: String,
+    pub scene_id: String,
+    pub effect: EffectMetadata,
+    pub group: RenderGroup,
 }
 
 struct OwnedDisplayJpeg(Arc<Vec<u8>>);
@@ -186,6 +204,143 @@ pub async fn get_display_preview(
     }
 
     display_preview_response(&etag, &last_modified, &frame)
+}
+
+/// `GET /api/v1/displays/{id}/face` — current face assignment for a display.
+pub async fn get_display_face(
+    State(state): State<Arc<AppState>>,
+    Path(device): Path<String>,
+) -> Response {
+    let device_id = match resolve_display_device_id_or_response(&state, &device).await {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+
+    match current_display_face_assignment(&state, device_id).await {
+        Ok(response) => ApiResponse::ok(response),
+        Err(response) => response,
+    }
+}
+
+/// `PUT /api/v1/displays/{id}/face` — assign or update a face in the active scene.
+pub async fn set_display_face(
+    State(state): State<Arc<AppState>>,
+    Path(device): Path<String>,
+    Json(body): Json<SetDisplayFaceRequest>,
+) -> Response {
+    let device_id = match resolve_display_device_id_or_response(&state, &device).await {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+    let Some(tracked) = state.device_registry.get(&device_id).await else {
+        return ApiError::not_found(format!("Device not found: {device}"));
+    };
+    let Some(surface) = display_surface_info(&tracked.info) else {
+        return ApiError::validation(format!(
+            "Device does not support display faces: {}",
+            tracked.info.name
+        ));
+    };
+
+    let effect = {
+        let registry = state.effect_registry.read().await;
+        let Some(effect) = resolve_effect_metadata(&registry, &body.effect_id) else {
+            return ApiError::not_found(format!("Effect not found: {}", body.effect_id));
+        };
+        if effect.category != EffectCategory::Display {
+            return ApiError::validation(format!(
+                "Effect '{}' is not a display face",
+                effect.name
+            ));
+        }
+        if !effect_source_is_html(&effect.source) {
+            return ApiError::validation(format!(
+                "Effect '{}' is not an HTML display face",
+                effect.name
+            ));
+        }
+        effect
+    };
+
+    let response = {
+        let mut scene_manager = state.scene_manager.write().await;
+        let Some(active_scene_id) = scene_manager.active_scene_id().copied() else {
+            return ApiError::conflict(
+                "No active scene to attach a display face to. Activate a scene first.".to_owned(),
+            );
+        };
+        let Some(mut active_scene) = scene_manager.get(&active_scene_id).cloned() else {
+            return ApiError::not_found(format!("Active scene not found: {active_scene_id}"));
+        };
+
+        let group = upsert_display_face_group(
+            &mut active_scene,
+            device_id,
+            tracked.info.name.as_str(),
+            surface,
+            &effect,
+            body.controls,
+        )
+        .clone();
+        if let Err(error) = scene_manager.update(active_scene) {
+            return ApiError::internal(format!("Failed to update active scene: {error}"));
+        }
+
+        DisplayFaceResponse {
+            device_id: device_id.to_string(),
+            scene_id: active_scene_id.to_string(),
+            effect,
+            group,
+        }
+    };
+
+    ApiResponse::ok(response)
+}
+
+/// `DELETE /api/v1/displays/{id}/face` — remove the active-scene face assignment.
+pub async fn delete_display_face(
+    State(state): State<Arc<AppState>>,
+    Path(device): Path<String>,
+) -> Response {
+    let device_id = match resolve_display_device_id_or_response(&state, &device).await {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+
+    let deleted = {
+        let mut scene_manager = state.scene_manager.write().await;
+        let Some(active_scene_id) = scene_manager.active_scene_id().copied() else {
+            return ApiError::conflict(
+                "No active scene to remove a display face from. Activate a scene first."
+                    .to_owned(),
+            );
+        };
+        let Some(mut active_scene) = scene_manager.get(&active_scene_id).cloned() else {
+            return ApiError::not_found(format!("Active scene not found: {active_scene_id}"));
+        };
+        let previous_len = active_scene.groups.len();
+        active_scene.groups.retain(|group| {
+            group
+                .display_target
+                .as_ref()
+                .is_none_or(|target| target.device_id != device_id)
+        });
+        if active_scene.groups.len() == previous_len {
+            return ApiError::not_found(format!(
+                "No display face is assigned to device {device_id}"
+            ));
+        }
+        if let Err(error) = scene_manager.update(active_scene) {
+            return ApiError::internal(format!("Failed to update active scene: {error}"));
+        }
+        active_scene_id
+    };
+
+    ApiResponse::ok(serde_json::json!({
+        "device_id": device_id.to_string(),
+        "scene_id": deleted.to_string(),
+        "deleted": true,
+    }))
 }
 
 fn display_preview_response(
@@ -508,6 +663,123 @@ async fn resolve_display_device_id_or_response(
         )));
     }
     Ok(device_id)
+}
+
+async fn current_display_face_assignment(
+    state: &Arc<AppState>,
+    device_id: DeviceId,
+) -> Result<DisplayFaceResponse, Response> {
+    let (scene_id, group) = {
+        let scene_manager = state.scene_manager.read().await;
+        let Some(active_scene) = scene_manager.active_scene() else {
+            return Err(ApiError::not_found(
+                "No active scene has a display face assignment".to_owned(),
+            ));
+        };
+        let Some(group) = active_scene
+            .groups
+            .iter()
+            .find(|group| {
+                group
+                    .display_target
+                    .as_ref()
+                    .is_some_and(|target| target.device_id == device_id)
+            })
+            .cloned()
+        else {
+            return Err(ApiError::not_found(format!(
+                "No display face is assigned to device {device_id}"
+            )));
+        };
+        (active_scene.id, group)
+    };
+
+    let Some(effect_id) = group.effect_id else {
+        return Err(ApiError::not_found(format!(
+            "Display face group {} has no assigned effect",
+            group.id
+        )));
+    };
+    let effect = {
+        let registry = state.effect_registry.read().await;
+        let Some(entry) = registry.get(&effect_id) else {
+            return Err(ApiError::not_found(format!(
+                "Assigned display face effect not found: {effect_id}"
+            )));
+        };
+        entry.metadata.clone()
+    };
+
+    Ok(DisplayFaceResponse {
+        device_id: device_id.to_string(),
+        scene_id: scene_id.to_string(),
+        effect,
+        group,
+    })
+}
+
+fn upsert_display_face_group<'a>(
+    scene: &'a mut hypercolor_types::scene::Scene,
+    device_id: DeviceId,
+    device_name: &str,
+    surface: DisplaySurfaceInfo,
+    effect: &EffectMetadata,
+    controls: std::collections::HashMap<String, ControlValue>,
+) -> &'a RenderGroup {
+    let layout = display_face_layout(device_id, device_name, surface);
+    if let Some(index) = scene.groups.iter().position(|group| {
+        group
+            .display_target
+            .as_ref()
+            .is_some_and(|target| target.device_id == device_id)
+    }) {
+        let group = &mut scene.groups[index];
+        group.effect_id = Some(effect.id);
+        group.controls = controls;
+        group.layout = layout;
+        group.display_target = Some(DisplayFaceTarget { device_id });
+        if group.name.trim().is_empty() {
+            group.name = format!("{device_name} Face");
+        }
+        return &scene.groups[index];
+    }
+
+    scene.groups.push(RenderGroup {
+        id: RenderGroupId::new(),
+        name: format!("{device_name} Face"),
+        description: Some(format!("Display face for {device_name}")),
+        effect_id: Some(effect.id),
+        controls,
+        preset_id: None,
+        layout,
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: Some(DisplayFaceTarget { device_id }),
+    });
+    scene
+        .groups
+        .last()
+        .expect("display face group should exist after insertion")
+}
+
+fn display_face_layout(
+    device_id: DeviceId,
+    device_name: &str,
+    surface: DisplaySurfaceInfo,
+) -> SpatialLayout {
+    SpatialLayout {
+        id: format!("display-face:{device_id}"),
+        name: format!("{device_name} Display Face"),
+        description: Some(format!("Native-resolution face canvas for {device_name}")),
+        canvas_width: surface.width,
+        canvas_height: surface.height,
+        zones: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    }
 }
 
 pub(crate) async fn current_overlay_config(

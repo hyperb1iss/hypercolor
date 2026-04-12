@@ -629,14 +629,15 @@ input[type="range"].slider-silk::-moz-range-track {
 }
 .card-hover:hover:not(:disabled) {
     border-color: var(--accent-muted);
-    box-shadow: 0 0 24px rgba(var(--glow-rgb, 225, 53, 255), 0.10),
-                0 0 2px rgba(var(--glow-rgb, 225, 53, 255), 0.18),
+    box-shadow: 0 0 8px rgba(var(--glow-rgb, 225, 53, 255), 0.18),
+                0 0 24px rgba(var(--glow-rgb, 225, 53, 255), 0.06),
                 inset 0 1px 0 rgba(255, 255, 255, 0.04);
     filter: brightness(1.06);
 }
 .card-hover:active:not(:disabled) {
     transform: scale(0.97);
-    box-shadow: 0 0 16px rgba(var(--glow-rgb, 225, 53, 255), 0.22),
+    box-shadow: 0 0 6px rgba(var(--glow-rgb, 225, 53, 255), 0.25),
+                0 0 16px rgba(var(--glow-rgb, 225, 53, 255), 0.08),
                 inset 0 0 12px rgba(var(--glow-rgb, 225, 53, 255), 0.06);
     filter: brightness(1.1);
     transition-duration: 0.08s;
@@ -766,8 +767,8 @@ input[type="range"].slider-silk::-moz-range-track {
 
 /* Accent edge glow — for active/important panels */
 .edge-glow-accent {
-    box-shadow: 0 0 24px rgba(var(--glow-rgb, 225, 53, 255), 0.08),
-                0 0 2px rgba(var(--glow-rgb, 225, 53, 255), 0.18),
+    box-shadow: 0 0 8px rgba(var(--glow-rgb, 225, 53, 255), 0.18),
+                0 0 24px rgba(var(--glow-rgb, 225, 53, 255), 0.06),
                 inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
@@ -827,16 +828,11 @@ input[type="range"].slider-silk::-moz-range-track {
 }
 
 .glass-dense {
-    background: var(--glass-bg-dense);
-    backdrop-filter: blur(20px) saturate(var(--glass-saturate));
-    -webkit-backdrop-filter: blur(20px) saturate(var(--glass-saturate));
-    border: 1px solid var(--glass-border);
+    background: var(--surface-overlay);
 }
 
 .glass-subtle {
-    background: var(--glass-bg);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
+    background: var(--surface-raised);
 }
 
 /* ── Card hover brightness ───────────────────────────────────────────────── */

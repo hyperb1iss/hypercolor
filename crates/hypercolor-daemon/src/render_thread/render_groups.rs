@@ -19,6 +19,7 @@ use super::producer_queue::ProducerFrame;
 
 pub(crate) struct RenderGroupResult {
     pub preview_frame: ProducerFrame,
+    pub group_canvases: Vec<(RenderGroupId, Canvas)>,
     pub layout: Arc<SpatialLayout>,
     pub sample_us: u32,
     pub logical_layer_count: u32,
@@ -71,6 +72,7 @@ impl RenderGroupRuntime {
 
         Some(RenderGroupResult {
             preview_frame: retained.preview_frame.clone(),
+            group_canvases: Vec::new(),
             layout: Arc::clone(&retained.layout),
             sample_us: 0,
             logical_layer_count: retained.logical_layer_count,
@@ -149,10 +151,20 @@ impl RenderGroupRuntime {
         )
         .unwrap_or(u32::MAX);
         let preview_frame = self.compose_preview(groups);
+        let group_canvases = groups
+            .iter()
+            .filter(|group| group.enabled && group.effect_id.is_some() && group.display_target.is_some())
+            .filter_map(|group| {
+                self.target_canvases
+                    .get(&group.id)
+                    .map(|canvas| (group.id, canvas.clone()))
+            })
+            .collect();
         let layout = Arc::clone(&self.combined_layout);
 
         let result = RenderGroupResult {
             preview_frame,
+            group_canvases,
             layout,
             sample_us,
             logical_layer_count,
@@ -256,10 +268,15 @@ impl RenderGroupRuntime {
         let next_index = spatial_engine.sample_append_into_at(lease.canvas_mut(), zones, 0);
         zones.truncate(next_index);
         let sample_us = micros_u32(sample_start.elapsed());
+        let group_canvases = group
+            .display_target
+            .as_ref()
+            .map_or_else(Vec::new, |_| vec![(group.id, lease.canvas_mut().clone())]);
         let preview_surface = lease.submit(0, 0);
 
         Ok(Some(RenderGroupResult {
             preview_frame: ProducerFrame::Surface(preview_surface),
+            group_canvases,
             layout: Arc::clone(&self.combined_layout),
             sample_us,
             logical_layer_count: 1,

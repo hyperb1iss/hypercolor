@@ -7,6 +7,7 @@
 //! - **Frame data** — latest LED colors via `tokio::sync::watch`. Subscribers skip stale frames.
 //! - **Spectrum data** — latest audio analysis via `tokio::sync::watch`. Same semantics.
 //! - **Canvas previews** — latest render and screen-source canvases via `tokio::sync::watch`.
+//! - **Per-group canvases** — latest render-group canvases via per-group `tokio::sync::watch`.
 //!
 //! The bus is `Send + Sync`, cloneable, and entirely lock-free.
 
@@ -14,7 +15,9 @@ mod filter;
 
 pub use filter::{EventFilter, FilteredEventReceiver};
 
+use std::collections::HashMap;
 use std::fmt;
+use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
 
 use serde::{Serialize, Serializer};
@@ -22,6 +25,7 @@ use tokio::sync::{broadcast, watch};
 
 use crate::types::canvas::{Canvas, PublishedSurface};
 use crate::types::event::{FrameData, HypercolorEvent, SpectrumData};
+use crate::types::scene::RenderGroupId;
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -218,6 +222,9 @@ pub struct HypercolorBus {
     /// Latest screen-source canvas snapshot.
     screen_canvas: watch::Sender<CanvasFrame>,
 
+    /// Latest per-render-group canvases for direct display consumption.
+    group_canvases: Arc<Mutex<HashMap<RenderGroupId, watch::Sender<CanvasFrame>>>>,
+
     /// Monotonic clock base for `mono_ms` timestamps.
     start_instant: Instant,
 }
@@ -238,6 +245,7 @@ impl HypercolorBus {
             spectrum,
             canvas,
             screen_canvas,
+            group_canvases: Arc::new(Mutex::new(HashMap::new())),
             start_instant: Instant::now(),
         }
     }
@@ -344,6 +352,37 @@ impl HypercolorBus {
     #[must_use]
     pub fn screen_canvas_receiver_count(&self) -> usize {
         self.screen_canvas.receiver_count()
+    }
+
+    /// Access or create the per-group canvas sender for a render group.
+    #[must_use]
+    pub fn group_canvas_sender(&self, id: RenderGroupId) -> watch::Sender<CanvasFrame> {
+        let mut group_canvases = self
+            .group_canvases
+            .lock()
+            .expect("group canvas registry should not be poisoned");
+        group_canvases
+            .entry(id)
+            .or_insert_with(|| {
+                let (sender, _) = watch::channel(CanvasFrame::empty());
+                sender
+            })
+            .clone()
+    }
+
+    /// Subscribe to a render group's canvas updates.
+    #[must_use]
+    pub fn group_canvas_receiver(&self, id: RenderGroupId) -> watch::Receiver<CanvasFrame> {
+        self.group_canvas_sender(id).subscribe()
+    }
+
+    /// Remove the per-group canvas stream for a render group.
+    pub fn remove_group_canvas(&self, id: RenderGroupId) {
+        let mut group_canvases = self
+            .group_canvases
+            .lock()
+            .expect("group canvas registry should not be poisoned");
+        group_canvases.remove(&id);
     }
 
     /// Number of active broadcast subscribers.

@@ -135,6 +135,16 @@ pub(super) fn encode_canvas_frame(
     }
 }
 
+pub(super) fn encode_direct_canvas_frame(
+    source: &CanvasFrame,
+    geometry: &DisplayGeometry,
+    brightness: f32,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<Vec<u8>> {
+    render_direct_canvas_frame_rgb(source, geometry, encode_state);
+    encode_prepared_rgb_frame(geometry, brightness, encode_state)
+}
+
 pub(super) fn render_canvas_frame_rgb(
     source: &CanvasFrame,
     viewport: &DisplayViewport,
@@ -149,6 +159,54 @@ pub(super) fn render_canvas_frame_rgb(
     render_display_view(
         source,
         viewport,
+        geometry.width,
+        geometry.height,
+        &mut encode_state.rgb_buffer,
+        &mut encode_state.axis_plan,
+        None,
+    );
+}
+
+pub(super) fn render_direct_canvas_frame_rgb(
+    source: &CanvasFrame,
+    geometry: &DisplayGeometry,
+    encode_state: &mut DisplayEncodeState,
+) {
+    if geometry.width == 0 || geometry.height == 0 {
+        encode_state.rgb_buffer.clear();
+        return;
+    }
+
+    if source.width == geometry.width && source.height == geometry.height {
+        let Some(render_len) = rgb_buffer_len(geometry.width, geometry.height) else {
+            encode_state.rgb_buffer.clear();
+            return;
+        };
+        if encode_state.rgb_buffer.len() != render_len {
+            encode_state.rgb_buffer.resize(render_len, 0);
+        }
+
+        for (pixel, rgba) in encode_state
+            .rgb_buffer
+            .chunks_exact_mut(3)
+            .zip(source.rgba_bytes().chunks_exact(4))
+        {
+            pixel[0] = rgba[0];
+            pixel[1] = rgba[1];
+            pixel[2] = rgba[2];
+        }
+        return;
+    }
+
+    render_display_view(
+        source,
+        &DisplayViewport {
+            position: hypercolor_types::spatial::NormalizedPosition::new(0.5, 0.5),
+            size: hypercolor_types::spatial::NormalizedPosition::new(1.0, 1.0),
+            rotation: 0.0,
+            scale: 1.0,
+            edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
+        },
         geometry.width,
         geometry.height,
         &mut encode_state.rgb_buffer,

@@ -284,7 +284,7 @@ pub fn SettingsPage() -> impl IntoView {
     view! {
         <div class="flex flex-col h-full animate-fade-in">
             // Sticky header with title + tab bar
-            <div class="sticky top-0 z-10 shrink-0 glass-dense border-b border-edge-subtle/15">
+            <div class="sticky top-0 z-10 shrink-0 glass-dense border-b border-edge-default">
                 <div class="flex items-end justify-between gap-4 px-6 pt-5 pb-4">
                     <PageHeader
                         icon=LuSettings2

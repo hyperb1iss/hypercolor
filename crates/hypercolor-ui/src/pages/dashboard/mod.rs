@@ -259,7 +259,7 @@ pub fn DashboardPage() -> impl IntoView {
             // context above the scroll container below, so the layout
             // gear menu can pop down past the header edge and float
             // over the hero row instead of being clipped behind it.
-            <header class="relative z-30 shrink-0 glass-subtle border-b border-edge-subtle/15">
+            <header class="relative z-30 shrink-0 glass-subtle border-b border-edge-default">
                 <div class="px-6 py-4 flex items-center gap-5 min-w-0">
                     // ── Title cluster: icon + "Dashboard" ──
                     <div class="flex items-center gap-2.5 shrink-0">

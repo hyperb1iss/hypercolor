@@ -216,7 +216,7 @@ pub fn DevicesPage() -> impl IntoView {
 
     view! {
         <div class="flex flex-col h-full animate-fade-in">
-            <div class="shrink-0 glass-subtle border-b border-edge-subtle/15">
+            <div class="shrink-0 glass-subtle border-b border-edge-default relative">
                 <div class="px-6 pt-5 pb-4">
                     <div class="flex items-end justify-between gap-4">
                         <PageHeader
@@ -340,6 +340,10 @@ pub fn DevicesPage() -> impl IntoView {
                         "Scan"
                     </button>
                 </div>
+
+                // Accent strip
+                <div class="absolute bottom-0 left-0 right-0 h-[2px]"
+                     style="background: linear-gradient(90deg, rgba(128, 255, 234, 0.4), rgba(128, 255, 234, 0.05))" />
             </div>
 
             // Grid + resizable sidebar
@@ -351,9 +355,10 @@ pub fn DevicesPage() -> impl IntoView {
                                 let devices = filtered_devices.get();
                                 if devices.is_empty() {
                                     view! {
-                                        <div class="flex flex-col items-center justify-center py-20 space-y-2">
-                                            <Icon icon=LuCpu width="36px" height="36px" style="color: rgba(139, 133, 160, 0.15)" />
-                                            <div class="text-fg-tertiary/40 text-xs">"No devices found"</div>
+                                        <div class="flex flex-col items-center justify-center py-20 space-y-3">
+                                            <Icon icon=LuCpu width="36px" height="36px"
+                                                  style="color: rgba(128, 255, 234, 0.25); filter: drop-shadow(0 0 12px rgba(128, 255, 234, 0.15))" />
+                                            <div class="text-fg-tertiary/50 text-xs font-mono tracking-wide">"No devices found"</div>
                                         </div>
                                     }.into_any()
                                 } else {

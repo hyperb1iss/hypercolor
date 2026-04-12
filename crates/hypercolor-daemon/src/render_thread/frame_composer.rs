@@ -8,6 +8,7 @@ use hypercolor_core::input::{InteractionData, ScreenData};
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::Canvas;
 use hypercolor_types::event::ZoneColors;
+use hypercolor_types::scene::RenderGroupId;
 use hypercolor_types::spatial::SpatialLayout;
 
 use super::frame_pacing::SkipDecision;
@@ -28,6 +29,7 @@ use super::{
 )]
 pub(crate) struct RenderStageStats {
     pub(crate) composed_frame: ComposedFrameSet,
+    pub(crate) group_canvases: Vec<(RenderGroupId, Canvas)>,
     pub(crate) sampled_layout: Option<Arc<SpatialLayout>>,
     pub(crate) sampled_zones: Option<Vec<ZoneColors>>,
     pub(crate) reuse_published_frame: bool,
@@ -181,6 +183,7 @@ impl ComposeContext<'_> {
         RenderStageStats {
             composition_bypassed: composed.bypassed,
             composed_frame: composed,
+            group_canvases: Vec::new(),
             sampled_layout: None,
             sampled_zones: None,
             reuse_published_frame: false,
@@ -317,6 +320,7 @@ impl ComposeContext<'_> {
 
                 RenderStageStats {
                     composed_frame: composed,
+                    group_canvases: render_group_result.group_canvases,
                     sampled_layout: Some(render_group_result.layout),
                     sampled_zones: None,
                     reuse_published_frame: render_group_result.reuse_published_zones,
@@ -366,6 +370,7 @@ impl ComposeContext<'_> {
 
                 RenderStageStats {
                     composed_frame: composed,
+                    group_canvases: Vec::new(),
                     sampled_layout: None,
                     sampled_zones: None,
                     reuse_published_frame: false,
