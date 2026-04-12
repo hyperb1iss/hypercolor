@@ -2,9 +2,7 @@ struct SamplePoint {
   x: f32,
   y: f32,
   method: u32,
-  attenuation: u32,
-  radius: u32,
-  _pad: u32,
+  extra: u32,
 }
 
 struct SampleParams {
@@ -150,6 +148,14 @@ fn sample_area_linear(position: vec2<f32>, radius: u32) -> vec3<f32> {
   return sum / max(count, 1.0);
 }
 
+fn sample_point_attenuation(point: SamplePoint) -> u32 {
+  return point.extra & 0xffffu;
+}
+
+fn sample_point_radius(point: SamplePoint) -> u32 {
+  return point.extra >> 16u;
+}
+
 @compute @workgroup_size(64)
 fn sample_pixels(@builtin(global_invocation_id) gid: vec3<u32>) {
   let index = gid.x;
@@ -169,10 +175,11 @@ fn sample_pixels(@builtin(global_invocation_id) gid: vec3<u32>) {
   } else if (point.method == 1u) {
     linear_rgb = sample_bilinear_linear(position);
   } else {
-    linear_rgb = sample_area_linear(position, point.radius);
+    linear_rgb = sample_area_linear(position, sample_point_radius(point));
   }
-  if (point.attenuation < 256u) {
-    linear_rgb *= f32(point.attenuation) / 256.0;
+  let attenuation = sample_point_attenuation(point);
+  if (attenuation < 256u) {
+    linear_rgb *= f32(attenuation) / 256.0;
   }
   output_rgb[index] = encode_linear_rgb(linear_rgb);
 }

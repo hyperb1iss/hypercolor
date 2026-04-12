@@ -165,7 +165,10 @@ impl CompositionPlanner {
                 transition.map_or(1.0, |transition| transition.eased_progress.clamp(0.0, 1.0));
             let mut layers = Vec::with_capacity(2);
             if let Some(base_frame) = self.transition_base_frame.clone() {
-                layers.push(PlannedSceneLayer::replace(base_frame, self.transition_base_opaque));
+                layers.push(PlannedSceneLayer::replace(
+                    base_frame,
+                    self.transition_base_opaque,
+                ));
             }
             if opacity < 1.0 {
                 layers.push(PlannedSceneLayer::alpha(
@@ -184,7 +187,10 @@ impl CompositionPlanner {
             self.active_transition = None;
             self.transition_base_frame = None;
             self.transition_base_opaque = false;
-            vec![PlannedSceneLayer::replace(current_frame.clone(), current_frame_opaque)]
+            vec![PlannedSceneLayer::replace(
+                current_frame.clone(),
+                current_frame_opaque,
+            )]
         }
     }
 }
@@ -329,9 +335,10 @@ mod tests {
             2,
             &SceneRuntimeSnapshot::default(),
             vec![
-                PlannedSceneLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
-                    255, 0, 0, 255,
-                ))), true),
+                PlannedSceneLayer::replace(
+                    ProducerFrame::Canvas(solid_canvas(Rgba::new(255, 0, 0, 255))),
+                    true,
+                ),
                 PlannedSceneLayer::alpha(
                     ProducerFrame::Canvas(solid_canvas(Rgba::new(0, 0, 255, 255))),
                     0.5,

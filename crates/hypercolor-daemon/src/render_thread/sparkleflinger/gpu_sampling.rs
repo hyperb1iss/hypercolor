@@ -7,7 +7,7 @@ use hypercolor_types::event::ZoneColors;
 
 const SAMPLE_WORKGROUP_SIZE: u32 = 64;
 const SAMPLE_PARAM_BYTES: usize = 16;
-const SAMPLE_POINT_BYTES: u64 = 24;
+const SAMPLE_POINT_BYTES: u64 = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -22,8 +22,29 @@ pub(super) struct GpuSamplePoint {
     pub(super) x: f32,
     pub(super) y: f32,
     pub(super) method: GpuSampleMethod,
-    pub(super) attenuation: u16,
-    pub(super) radius: u32,
+    packed_extra: u32,
+}
+
+impl GpuSamplePoint {
+    fn new(x: f32, y: f32, method: GpuSampleMethod, attenuation: u16, radius: u32) -> Self {
+        let packed_radius = radius.min(u32::from(u16::MAX));
+        Self {
+            x,
+            y,
+            method,
+            packed_extra: u32::from(attenuation) | (packed_radius << 16),
+        }
+    }
+
+    #[cfg(test)]
+    fn attenuation(self) -> u16 {
+        u16::try_from(self.packed_extra & u32::from(u16::MAX)).unwrap_or(u16::MAX)
+    }
+
+    #[cfg(test)]
+    fn radius(self) -> u32 {
+        self.packed_extra >> 16
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -458,14 +479,12 @@ impl GpuSpatialSampler {
 }
 
 fn encode_points(plan: &GpuSamplingPlan) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(plan.points.len().saturating_mul(24));
+    let mut bytes = Vec::with_capacity(plan.points.len().saturating_mul(16));
     for point in &plan.points {
         bytes.extend_from_slice(&point.x.to_le_bytes());
         bytes.extend_from_slice(&point.y.to_le_bytes());
         bytes.extend_from_slice(&(point.method as u32).to_le_bytes());
-        bytes.extend_from_slice(&u32::from(point.attenuation).to_le_bytes());
-        bytes.extend_from_slice(&point.radius.to_le_bytes());
-        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&point.packed_extra.to_le_bytes());
     }
     bytes
 }
@@ -476,13 +495,7 @@ fn gpu_sample_point(
     attenuation: u16,
     radius: u32,
 ) -> GpuSamplePoint {
-    GpuSamplePoint {
-        x: position.x,
-        y: position.y,
-        method,
-        attenuation,
-        radius,
-    }
+    GpuSamplePoint::new(position.x, position.y, method, attenuation, radius)
 }
 
 fn encode_sample_params(width: u32, height: u32, sample_count: usize) -> [u8; SAMPLE_PARAM_BYTES] {
@@ -627,8 +640,8 @@ mod tests {
         assert_eq!(plan.points[0].method, GpuSampleMethod::Nearest);
         assert_eq!(plan.points[4].method, GpuSampleMethod::Bilinear);
         assert_eq!(plan.points[8].method, GpuSampleMethod::Area);
-        assert_eq!(plan.points[0].attenuation, 256);
-        assert_eq!(plan.points[8].radius, 2);
+        assert_eq!(plan.points[0].attenuation(), 256);
+        assert_eq!(plan.points[8].radius(), 2);
     }
 
     #[test]
@@ -639,6 +652,6 @@ mod tests {
         }));
         let plan = GpuSamplingPlan::from_prepared_zones(area.sampling_plan().as_ref())
             .expect("area plans should stay GPU-sampleable");
-        assert_eq!(plan.points[0].radius, 3);
+        assert_eq!(plan.points[0].radius(), 3);
     }
 }

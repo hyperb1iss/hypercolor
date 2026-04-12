@@ -148,13 +148,7 @@ pub(super) fn sample_prepared_canvas_pixels_into(
             sample_prepared_bilinear_pixels_into(bytes, samples, colors, has_attenuation);
         }
         PreparedZoneSamples::Area(samples) => {
-            sample_prepared_area_pixels_into(
-                bytes,
-                row_stride,
-                samples,
-                colors,
-                has_attenuation,
-            );
+            sample_prepared_area_pixels_into(bytes, row_stride, samples, colors, has_attenuation);
         }
     }
 }

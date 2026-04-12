@@ -157,24 +157,21 @@ pub fn blend_opaque_normal_rgba_pixels_in_place(
     let len = target_pixels.len().min(source_pixels.len());
     let mut offset = 0;
     while offset + 3 < len {
-        target_pixels[offset] = encode_srgb_channel(
-            decode_srgb_channel(target_pixels[offset]).mul_add(
+        target_pixels[offset] =
+            encode_srgb_channel(decode_srgb_channel(target_pixels[offset]).mul_add(
                 inverse_alpha,
                 decode_srgb_channel(source_pixels[offset]) * opacity,
-            ),
-        );
-        target_pixels[offset + 1] = encode_srgb_channel(
-            decode_srgb_channel(target_pixels[offset + 1]).mul_add(
+            ));
+        target_pixels[offset + 1] =
+            encode_srgb_channel(decode_srgb_channel(target_pixels[offset + 1]).mul_add(
                 inverse_alpha,
                 decode_srgb_channel(source_pixels[offset + 1]) * opacity,
-            ),
-        );
-        target_pixels[offset + 2] = encode_srgb_channel(
-            decode_srgb_channel(target_pixels[offset + 2]).mul_add(
+            ));
+        target_pixels[offset + 2] =
+            encode_srgb_channel(decode_srgb_channel(target_pixels[offset + 2]).mul_add(
                 inverse_alpha,
                 decode_srgb_channel(source_pixels[offset + 2]) * opacity,
-            ),
-        );
+            ));
         offset += 4;
     }
 }

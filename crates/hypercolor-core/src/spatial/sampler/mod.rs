@@ -136,7 +136,9 @@ pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> Prepare
                     )
                 })
                 .collect::<Vec<_>>();
-            let has_attenuation = samples.iter().any(|sample| sample.attenuation < lut::ATTENUATION_ONE);
+            let has_attenuation = samples
+                .iter()
+                .any(|sample| sample.attenuation < lut::ATTENUATION_ONE);
             (PreparedZoneSamples::Nearest(samples), has_attenuation)
         }
         SamplingMethod::Bilinear => {
@@ -152,7 +154,9 @@ pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> Prepare
                     )
                 })
                 .collect::<Vec<_>>();
-            let has_attenuation = samples.iter().any(|sample| sample.attenuation < lut::ATTENUATION_ONE);
+            let has_attenuation = samples
+                .iter()
+                .any(|sample| sample.attenuation < lut::ATTENUATION_ONE);
             (PreparedZoneSamples::Bilinear(samples), has_attenuation)
         }
         SamplingMethod::Area { radius } => {
@@ -169,7 +173,9 @@ pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> Prepare
                     )
                 })
                 .collect::<Vec<_>>();
-            let has_attenuation = samples.iter().any(|sample| sample.attenuation < lut::ATTENUATION_ONE);
+            let has_attenuation = samples
+                .iter()
+                .any(|sample| sample.attenuation < lut::ATTENUATION_ONE);
             (PreparedZoneSamples::Area(samples), has_attenuation)
         }
     };
