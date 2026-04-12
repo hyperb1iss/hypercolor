@@ -757,6 +757,37 @@ fn EditSimulatorModal(
 fn DisplayWorkspace(selected_display: Memo<Option<api::DisplaySummary>>) -> impl IntoView {
     let (poll_counter, set_poll_counter) = signal(0_u64);
 
+    // Independent overlay config fetch so we can paint slot outlines on the
+    // preview image without coupling to OverlayStackPanel's internal state.
+    let (workspace_overlay_config, set_workspace_overlay_config) =
+        signal(None::<DisplayOverlayConfig>);
+    Effect::new(move |_| {
+        let Some(display) = selected_display.get() else {
+            set_workspace_overlay_config.set(None);
+            return;
+        };
+        let display_id = display.id.clone();
+        spawn_local(async move {
+            if let Ok(config) = api::fetch_display_overlays(&display_id).await {
+                set_workspace_overlay_config.set(Some(config));
+            }
+        });
+    });
+    // Refetch overlays alongside each preview poll so newly-added slots
+    // appear on the canvas within one poll cycle.
+    Effect::new(move |_| {
+        let _ts = poll_counter.get();
+        let Some(display) = selected_display.get_untracked() else {
+            return;
+        };
+        let display_id = display.id.clone();
+        spawn_local(async move {
+            if let Ok(config) = api::fetch_display_overlays(&display_id).await {
+                set_workspace_overlay_config.set(Some(config));
+            }
+        });
+    });
+
     // Steady-state polling of the preview JPEG. Tick the counter on every
     // cycle so the <img> src cache-busts; the daemon returns cheap 304s when
     // the frame hasn't advanced. The interval is paused automatically when
@@ -841,18 +872,35 @@ fn DisplayWorkspace(selected_display: Memo<Option<api::DisplaySummary>>) -> impl
                         "rounded-md"
                     };
                     let alt_text = format!("Live preview of {}", display.name);
-                    let img_class = format!(
-                        "max-h-full max-w-full object-contain border border-edge-subtle bg-black shadow-lg {rounded_class}"
+                    let container_class = format!(
+                        "relative max-h-full max-w-full overflow-hidden border border-edge-subtle bg-black shadow-lg {rounded_class}"
                     );
+                    let dw = display.width;
+                    let dh = display.height;
+                    let overlays = workspace_overlay_config
+                        .get()
+                        .map(|config| {
+                            config
+                                .overlays
+                                .into_iter()
+                                .filter(|slot| slot.enabled)
+                                .map(move |slot| render_slot_outline(slot, dw, dh))
+                                .collect_view()
+                        });
                     view! {
-                        <img
-                            class=img_class
-                            src=src
-                            alt=alt_text
+                        <div
+                            class=container_class
                             style=move || format!("aspect-ratio: {aspect};")
-                            loading="eager"
-                            decoding="async"
-                        />
+                        >
+                            <img
+                                class="h-full w-full object-cover"
+                                src=src
+                                alt=alt_text
+                                loading="eager"
+                                decoding="async"
+                            />
+                            {overlays}
+                        </div>
                     }.into_any()
                 }}
             </div>
@@ -2493,6 +2541,85 @@ where
                 <option value="right" selected=align_value == "right">"Right"</option>
             </select>
         </InspectorField>
+    }
+}
+
+/// Compute the top-left origin of a slot rectangle given its anchor, the
+/// display dimensions, and the slot size. Mirrors the daemon's
+/// `anchor_origin` in display_output/overlay.rs.
+fn anchor_origin_ui(
+    anchor: Anchor,
+    display_width: i32,
+    display_height: i32,
+    slot_width: i32,
+    slot_height: i32,
+) -> (i32, i32) {
+    match anchor {
+        Anchor::TopLeft => (0, 0),
+        Anchor::TopCenter => ((display_width - slot_width) / 2, 0),
+        Anchor::TopRight => (display_width - slot_width, 0),
+        Anchor::CenterLeft => (0, (display_height - slot_height) / 2),
+        Anchor::Center => (
+            (display_width - slot_width) / 2,
+            (display_height - slot_height) / 2,
+        ),
+        Anchor::CenterRight => (display_width - slot_width, (display_height - slot_height) / 2),
+        Anchor::BottomLeft => (0, display_height - slot_height),
+        Anchor::BottomCenter => ((display_width - slot_width) / 2, display_height - slot_height),
+        Anchor::BottomRight => (display_width - slot_width, display_height - slot_height),
+    }
+}
+
+/// Render a translucent outline on the preview canvas that shows where the
+/// slot is positioned. Coordinates are expressed as CSS percentages so the
+/// outline scales with the container regardless of rendered size.
+fn render_slot_outline(
+    slot: OverlaySlot,
+    display_width: u32,
+    display_height: u32,
+) -> impl IntoView {
+    let (left_pct, top_pct, width_pct, height_pct) = match &slot.position {
+        OverlayPosition::FullScreen => (0.0_f64, 0.0, 100.0, 100.0),
+        OverlayPosition::Anchored {
+            anchor,
+            offset_x,
+            offset_y,
+            width,
+            height,
+        } => {
+            let dw = display_width as i32;
+            let dh = display_height as i32;
+            let sw = *width as i32;
+            let sh = *height as i32;
+            let (base_x, base_y) = anchor_origin_ui(*anchor, dw, dh, sw, sh);
+            let x = base_x + offset_x;
+            let y = base_y + offset_y;
+            let left = (x as f64 / dw as f64) * 100.0;
+            let top = (y as f64 / dh as f64) * 100.0;
+            let w = (sw as f64 / dw as f64) * 100.0;
+            let h = (sh as f64 / dh as f64) * 100.0;
+            (left, top, w, h)
+        }
+    };
+    let (_, source_icon) = overlay_source_descriptor(&slot.source);
+    let name = slot.name.clone();
+    let style = format!(
+        "position:absolute; left:{left_pct:.3}%; top:{top_pct:.3}%; width:{width_pct:.3}%; height:{height_pct:.3}%; pointer-events:none;"
+    );
+
+    view! {
+        <div
+            class="flex items-end justify-start border border-accent-primary/60 bg-accent-primary/8"
+            style=style
+        >
+            <span
+                class="inline-flex items-center gap-1 rounded-tr-sm bg-accent-primary/40 px-1 py-0.5 text-[9px] font-medium text-white/90 backdrop-blur-sm"
+                style="line-height:1.1;"
+            >
+                <Icon icon=source_icon width="9" height="9" />
+                {name}
+            </span>
+        </div>
     }
 }
 
