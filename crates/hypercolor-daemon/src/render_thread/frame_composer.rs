@@ -16,7 +16,7 @@ use super::frame_scheduler::FrameSceneSnapshot;
 use super::frame_sources::{render_effect_into, static_surface};
 use super::pipeline_runtime::{FrameInputs, RenderCaches};
 use super::producer_queue::{ProducerFrame, ProducerFrameState};
-use super::render_groups::RenderGroupResult;
+use super::render_groups::{GroupCanvasFrame, RenderGroupResult};
 use super::sparkleflinger::ComposedFrameSet;
 use super::{
     MAX_RENDER_SURFACE_SLOTS, RenderThreadState, desired_render_surface_slots, micros_between,
@@ -29,7 +29,8 @@ use super::{
 )]
 pub(crate) struct RenderStageStats {
     pub(crate) composed_frame: ComposedFrameSet,
-    pub(crate) group_canvases: Vec<(RenderGroupId, Canvas)>,
+    pub(crate) group_canvases: Vec<(RenderGroupId, GroupCanvasFrame)>,
+    pub(crate) active_group_canvas_ids: Vec<RenderGroupId>,
     pub(crate) sampled_layout: Option<Arc<SpatialLayout>>,
     pub(crate) sampled_zones: Option<Vec<ZoneColors>>,
     pub(crate) reuse_published_frame: bool,
@@ -184,6 +185,7 @@ impl ComposeContext<'_> {
             composition_bypassed: composed.bypassed,
             composed_frame: composed,
             group_canvases: Vec::new(),
+            active_group_canvas_ids: Vec::new(),
             sampled_layout: None,
             sampled_zones: None,
             reuse_published_frame: false,
@@ -321,6 +323,7 @@ impl ComposeContext<'_> {
                 RenderStageStats {
                     composed_frame: composed,
                     group_canvases: render_group_result.group_canvases,
+                    active_group_canvas_ids: render_group_result.active_group_canvas_ids,
                     sampled_layout: Some(render_group_result.layout),
                     sampled_zones: None,
                     reuse_published_frame: render_group_result.reuse_published_zones,
@@ -371,6 +374,7 @@ impl ComposeContext<'_> {
                 RenderStageStats {
                     composed_frame: composed,
                     group_canvases: Vec::new(),
+                    active_group_canvas_ids: Vec::new(),
                     sampled_layout: None,
                     sampled_zones: None,
                     reuse_published_frame: false,

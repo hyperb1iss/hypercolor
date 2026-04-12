@@ -8,7 +8,7 @@ use hypercolor_core::effect::{EffectPool, EffectRegistry};
 use hypercolor_core::input::{InteractionData, ScreenData};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::AudioData;
-use hypercolor_types::canvas::{Canvas, RenderSurfacePool, SurfaceDescriptor};
+use hypercolor_types::canvas::{Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::{RenderGroup, RenderGroupId};
 use hypercolor_types::sensor::SystemSnapshot;
@@ -17,9 +17,16 @@ use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use super::micros_u32;
 use super::producer_queue::ProducerFrame;
 
+#[derive(Clone)]
+pub(crate) enum GroupCanvasFrame {
+    Canvas(Canvas),
+    Surface(PublishedSurface),
+}
+
 pub(crate) struct RenderGroupResult {
     pub preview_frame: ProducerFrame,
-    pub group_canvases: Vec<(RenderGroupId, Canvas)>,
+    pub group_canvases: Vec<(RenderGroupId, GroupCanvasFrame)>,
+    pub active_group_canvas_ids: Vec<RenderGroupId>,
     pub layout: Arc<SpatialLayout>,
     pub sample_us: u32,
     pub logical_layer_count: u32,
@@ -30,6 +37,7 @@ pub(crate) struct RenderGroupResult {
 struct RetainedRenderGroupFrame {
     groups_revision: u64,
     preview_frame: ProducerFrame,
+    active_group_canvas_ids: Vec<RenderGroupId>,
     layout: Arc<SpatialLayout>,
     logical_layer_count: u32,
 }
@@ -73,6 +81,7 @@ impl RenderGroupRuntime {
         Some(RenderGroupResult {
             preview_frame: retained.preview_frame.clone(),
             group_canvases: Vec::new(),
+            active_group_canvas_ids: retained.active_group_canvas_ids.clone(),
             layout: Arc::clone(&retained.layout),
             sample_us: 0,
             logical_layer_count: retained.logical_layer_count,
@@ -151,15 +160,19 @@ impl RenderGroupRuntime {
         )
         .unwrap_or(u32::MAX);
         let preview_frame = self.compose_preview(groups);
-        let group_canvases = groups
+        let active_group_canvas_ids = groups
             .iter()
             .filter(|group| {
                 group.enabled && group.effect_id.is_some() && group.display_target.is_some()
             })
+            .map(|group| group.id)
+            .collect::<Vec<_>>();
+        let group_canvases = active_group_canvas_ids
+            .iter()
             .filter_map(|group| {
                 self.target_canvases
-                    .get(&group.id)
-                    .map(|canvas| (group.id, canvas.clone()))
+                    .get(group)
+                    .map(|canvas| (*group, GroupCanvasFrame::Canvas(canvas.clone())))
             })
             .collect();
         let layout = Arc::clone(&self.combined_layout);
@@ -167,6 +180,7 @@ impl RenderGroupRuntime {
         let result = RenderGroupResult {
             preview_frame,
             group_canvases,
+            active_group_canvas_ids,
             layout,
             sample_us,
             logical_layer_count,
@@ -270,15 +284,19 @@ impl RenderGroupRuntime {
         let next_index = spatial_engine.sample_append_into_at(lease.canvas_mut(), zones, 0);
         zones.truncate(next_index);
         let sample_us = micros_u32(sample_start.elapsed());
-        let group_canvases = group
+        let preview_surface = lease.submit(0, 0);
+        let active_group_canvas_ids = group
             .display_target
             .as_ref()
-            .map_or_else(Vec::new, |_| vec![(group.id, lease.canvas_mut().clone())]);
-        let preview_surface = lease.submit(0, 0);
+            .map_or_else(Vec::new, |_| vec![group.id]);
+        let group_canvases = group.display_target.as_ref().map_or_else(Vec::new, |_| {
+            vec![(group.id, GroupCanvasFrame::Surface(preview_surface.clone()))]
+        });
 
         Ok(Some(RenderGroupResult {
             preview_frame: ProducerFrame::Surface(preview_surface),
             group_canvases,
+            active_group_canvas_ids,
             layout: Arc::clone(&self.combined_layout),
             sample_us,
             logical_layer_count: 1,
@@ -306,6 +324,7 @@ impl RenderGroupRuntime {
         self.retained_frame = Some(RetainedRenderGroupFrame {
             groups_revision,
             preview_frame: result.preview_frame.clone(),
+            active_group_canvas_ids: result.active_group_canvas_ids.clone(),
             layout: Arc::clone(&result.layout),
             logical_layer_count: result.logical_layer_count,
         });
@@ -644,5 +663,66 @@ mod tests {
                 .get_pixel(0, 0),
             Rgba::new(0, 0, 0, 255)
         );
+    }
+
+    #[test]
+    fn single_full_preview_display_group_reuses_surface_for_direct_canvas() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let registry = builtin_registry();
+        let solid_id = builtin_effect_id(&registry, "solid_color");
+        let group = RenderGroup {
+            id: RenderGroupId::new(),
+            name: "Display".into(),
+            description: None,
+            effect_id: Some(solid_id),
+            controls: HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+            preset_id: None,
+            layout: SpatialLayout {
+                id: "display-group".into(),
+                name: "Display Group".into(),
+                description: None,
+                canvas_width: 4,
+                canvas_height: 4,
+                zones: Vec::new(),
+                default_sampling_mode: SamplingMode::Bilinear,
+                default_edge_behavior: EdgeBehavior::Clamp,
+                spaces: None,
+                version: 1,
+            },
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+            display_target: Some(hypercolor_types::scene::DisplayFaceTarget {
+                device_id: hypercolor_types::device::DeviceId::new(),
+            }),
+        };
+        let mut zones = Vec::new();
+
+        let result = runtime
+            .render_scene(
+                std::slice::from_ref(&group),
+                1,
+                &registry,
+                1.0 / 60.0,
+                &AudioData::silence(),
+                &InteractionData::default(),
+                None,
+                &SystemSnapshot::empty(),
+                &mut zones,
+            )
+            .expect("single display group should render");
+
+        let ProducerFrame::Surface(preview_surface) = result.preview_frame else {
+            panic!("single display group should render into a surface");
+        };
+        let [(_, GroupCanvasFrame::Surface(group_surface))] = &result.group_canvases[..] else {
+            panic!("display group should publish a surface-backed direct canvas");
+        };
+
+        assert_eq!(
+            preview_surface.storage_identity(),
+            group_surface.storage_identity()
+        );
+        assert_eq!(preview_surface.generation(), group_surface.generation());
     }
 }

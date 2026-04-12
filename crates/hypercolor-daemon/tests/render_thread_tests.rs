@@ -1205,7 +1205,9 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
         brightness: 1.0,
         enabled: true,
         color: None,
-        display_target: Some(DisplayFaceTarget { device_id: display_id }),
+        display_target: Some(DisplayFaceTarget {
+            device_id: display_id,
+        }),
     }];
     scene.unassigned_behavior = UnassignedBehavior::Off;
 
@@ -1242,6 +1244,101 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
     assert_eq!(frame.width, 320);
     assert_eq!(frame.height, 200);
     assert_eq!(&frame.rgba_bytes()[0..4], [0, 0, 255, 255].as_slice());
+}
+
+#[tokio::test]
+async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change() {
+    let state = make_render_state(
+        EffectEngine::new(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    let mut frame_rx = state.event_bus.frame_receiver();
+
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+    let first_group_id = RenderGroupId::new();
+    let second_group_id = RenderGroupId::new();
+    let display_id = DeviceId::new();
+
+    let mut first_scene = make_scene("Face Scene A");
+    first_scene.groups = vec![RenderGroup {
+        id: first_group_id,
+        name: "Face A".into(),
+        description: None,
+        effect_id: Some(solid_id),
+        controls: HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+        preset_id: None,
+        layout: test_layout(Vec::new()),
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: Some(DisplayFaceTarget { device_id: display_id }),
+    }];
+    first_scene.unassigned_behavior = UnassignedBehavior::Off;
+
+    let mut second_scene = make_scene("Face Scene B");
+    second_scene.groups = vec![RenderGroup {
+        id: second_group_id,
+        name: "Face B".into(),
+        description: None,
+        effect_id: Some(solid_id),
+        controls: HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+        preset_id: None,
+        layout: test_layout(Vec::new()),
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: Some(DisplayFaceTarget { device_id: display_id }),
+    }];
+    second_scene.unassigned_behavior = UnassignedBehavior::Off;
+
+    {
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .create(first_scene.clone())
+            .expect("create first face scene");
+        scene_manager
+            .create(second_scene.clone())
+            .expect("create second face scene");
+        scene_manager
+            .activate(&first_scene.id, None)
+            .expect("activate first face scene");
+    }
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+    let first_frame = wait_for_next_frame(&mut frame_rx, 0).await;
+    assert!(first_frame.frame_number > 0);
+    assert_eq!(state.event_bus.group_canvas_stream_count(), 1);
+
+    {
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .activate(&second_scene.id, None)
+            .expect("activate second face scene");
+    }
+
+    let second_frame = wait_for_next_frame(&mut frame_rx, first_frame.frame_number).await;
+    assert!(second_frame.frame_number > first_frame.frame_number);
+    assert_eq!(state.event_bus.group_canvas_stream_count(), 1);
+
+    let stale_rx = state.event_bus.group_canvas_receiver(first_group_id);
+    let stale_frame = stale_rx.borrow().clone();
+    assert_eq!(stale_frame.width, 0);
+    assert_eq!(stale_frame.height, 0);
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test]

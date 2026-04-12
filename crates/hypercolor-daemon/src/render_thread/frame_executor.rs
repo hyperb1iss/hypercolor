@@ -253,6 +253,7 @@ pub(crate) async fn execute_frame(
         &inputs.audio,
         sampling_canvas,
         &render_stage.group_canvases,
+        &render_stage.active_group_canvas_ids,
         sampling_surface,
         preview_surface,
         screen_watch_surface,

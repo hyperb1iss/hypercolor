@@ -376,6 +376,33 @@ impl HypercolorBus {
         self.group_canvas_sender(id).subscribe()
     }
 
+    /// Number of tracked per-group canvas streams.
+    #[must_use]
+    pub fn group_canvas_stream_count(&self) -> usize {
+        self.group_canvases
+            .lock()
+            .expect("group canvas registry should not be poisoned")
+            .len()
+    }
+
+    /// Drop any per-group canvas streams not present in the active set.
+    pub fn retain_group_canvases(&self, active_ids: &[RenderGroupId]) {
+        let mut group_canvases = self
+            .group_canvases
+            .lock()
+            .expect("group canvas registry should not be poisoned");
+        if active_ids.is_empty() {
+            group_canvases.clear();
+            return;
+        }
+
+        let active_ids = active_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        group_canvases.retain(|group_id, _| active_ids.contains(group_id));
+    }
+
     /// Remove the per-group canvas stream for a render group.
     pub fn remove_group_canvas(&self, id: RenderGroupId) {
         let mut group_canvases = self
