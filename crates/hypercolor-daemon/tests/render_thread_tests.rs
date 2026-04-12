@@ -1115,6 +1115,7 @@ async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
             brightness: 1.0,
             enabled: true,
             color: None,
+            display_target: None,
         },
         RenderGroup {
             id: RenderGroupId::new(),
@@ -1127,6 +1128,7 @@ async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
             brightness: 1.0,
             enabled: true,
             color: None,
+            display_target: None,
         },
     ];
     scene.unassigned_behavior = UnassignedBehavior::Off;
@@ -1217,6 +1219,7 @@ async fn render_thread_gates_audio_capture_to_audio_reactive_scene_groups() {
         brightness: 1.0,
         enabled: true,
         color: None,
+        display_target: None,
     }];
     audio_scene.unassigned_behavior = UnassignedBehavior::Off;
 
@@ -1232,6 +1235,7 @@ async fn render_thread_gates_audio_capture_to_audio_reactive_scene_groups() {
         brightness: 1.0,
         enabled: true,
         color: None,
+        display_target: None,
     }];
     solid_scene.unassigned_behavior = UnassignedBehavior::Off;
 
@@ -1328,6 +1332,7 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
         brightness: 1.0,
         enabled: true,
         color: None,
+        display_target: None,
     }];
     screen_scene.unassigned_behavior = UnassignedBehavior::Off;
 
@@ -1343,6 +1348,7 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
         brightness: 1.0,
         enabled: true,
         color: None,
+        display_target: None,
     }];
     solid_scene.unassigned_behavior = UnassignedBehavior::Off;
 

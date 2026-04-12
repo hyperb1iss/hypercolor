@@ -472,6 +472,7 @@ mod tests {
             brightness: 1.0,
             enabled: true,
             color: None,
+            display_target: None,
         }
     }
 
@@ -591,6 +592,7 @@ mod tests {
             brightness: 1.0,
             enabled: true,
             color: None,
+            display_target: None,
         };
         let mut zones = Vec::new();
 

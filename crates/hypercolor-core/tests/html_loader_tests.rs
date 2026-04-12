@@ -199,6 +199,36 @@ fn register_html_effects_decodes_color_defaults_to_linear_rgba() {
 }
 
 #[test]
+fn register_html_effects_respects_explicit_display_category() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let root = temp.path().join("effects");
+
+    write_html(
+        &root.join("faces/system-monitor.html"),
+        r#"
+<head>
+  <title>System Monitor Face</title>
+  <meta description="Display dashboard" />
+  <meta publisher="Hypercolor" />
+  <meta category="display" />
+</head>
+"#,
+    );
+
+    let mut registry = EffectRegistry::new(vec![root.clone()]);
+    let report = register_html_effects(&mut registry, &[root]);
+
+    assert_eq!(report.failed_files(), 0);
+
+    let effect = registry
+        .search("System Monitor Face")
+        .into_iter()
+        .next()
+        .expect("display face should be loaded");
+    assert_eq!(effect.metadata.category, EffectCategory::Display);
+}
+
+#[test]
 fn parse_html_effect_metadata_prefers_webgl_when_shared_runtime_contains_2d_fallback() {
     let html = r#"
 <head>

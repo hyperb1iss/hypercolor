@@ -5,6 +5,7 @@
 //! registry and provide discovery/filtering in the API.
 
 use std::collections::{BTreeSet, HashMap};
+use std::str::FromStr;
 
 use hypercolor_types::effect::EffectCategory;
 
@@ -97,6 +98,7 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
     let mut description = String::new();
     let mut publisher = String::new();
     let mut title_from_meta: Option<String> = None;
+    let mut explicit_category = None;
     let mut controls = Vec::new();
     let mut presets = Vec::new();
 
@@ -136,6 +138,18 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
             }
         }
 
+        if explicit_category.is_none() {
+            explicit_category = attr_value(&attrs, "category")
+                .or_else(|| {
+                    if attr_name_is(&attrs, "category") {
+                        attr_value(&attrs, "content")
+                    } else {
+                        None
+                    }
+                })
+                .and_then(parse_effect_category);
+        }
+
         if let Some(preset) = parse_preset_metadata(&attrs) {
             presets.push(preset);
         } else if let Some(control) = parse_control_metadata(&attrs) {
@@ -172,7 +186,8 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
             (uses_canvas2d, uses_webgl)
         }
     };
-    let category = infer_category(&lower, &controls, audio_reactive);
+    let category =
+        explicit_category.unwrap_or_else(|| infer_category(&lower, &controls, audio_reactive));
     let tags = build_tags(
         &controls,
         category,
@@ -585,6 +600,11 @@ fn infer_category(
     EffectCategory::Ambient
 }
 
+fn parse_effect_category(raw: &str) -> Option<EffectCategory> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    EffectCategory::from_str(&normalized).ok()
+}
+
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
 }
@@ -797,6 +817,25 @@ mod tests {
         assert_eq!(parsed.controls.len(), 1);
         assert!(matches!(parsed.controls[0].kind, HtmlControlKind::Sensor));
         assert!(parsed.tags.contains(&"sensor-control".to_owned()));
+    }
+
+    #[test]
+    fn explicit_category_meta_overrides_heuristic() {
+        let html = r#"
+<head>
+  <title>System Monitor Face</title>
+  <meta description="Display dashboard" />
+  <meta category="display" />
+</head>
+<script>
+  console.log("monitor clock widgets");
+</script>
+"#;
+
+        let parsed = parse_html_effect_metadata(html);
+
+        assert_eq!(parsed.category, EffectCategory::Display);
+        assert!(parsed.tags.contains(&"display".to_owned()));
     }
 
     #[test]

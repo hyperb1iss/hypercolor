@@ -1,8 +1,9 @@
+use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::scene::{
-    ActionKind, AutomationRule, ColorInterpolation, EasingFunction, RenderGroup, RenderGroupId,
-    Scene, SceneId, ScenePriority, SceneScope, TransitionSpec, TriggerSource, UnassignedBehavior,
-    ZoneAssignment,
+    ActionKind, AutomationRule, ColorInterpolation, DisplayFaceTarget, EasingFunction, RenderGroup,
+    RenderGroupId, Scene, SceneId, ScenePriority, SceneScope, TransitionSpec, TriggerSource,
+    UnassignedBehavior, ZoneAssignment,
 };
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -91,6 +92,7 @@ fn sample_group(name: &str, zone_id: &str, effect_id: EffectId) -> RenderGroup {
         brightness: 0.8,
         enabled: true,
         color: Some("#e135ff".into()),
+        display_target: None,
     }
 }
 
@@ -209,6 +211,27 @@ fn scene_effective_zone_assignments_flatten_render_groups() {
         Some("0.5")
     );
     assert_eq!(assignments[0].brightness, Some(0.8));
+}
+
+#[test]
+fn render_group_display_target_round_trips_in_scene_json() {
+    let effect_id = EffectId::from(Uuid::now_v7());
+    let device_id = DeviceId::new();
+    let scene = Scene {
+        groups: vec![RenderGroup {
+            display_target: Some(DisplayFaceTarget { device_id }),
+            ..sample_group("AIO Display", "desk:display", effect_id)
+        }],
+        ..sample_scene()
+    };
+
+    let json = serde_json::to_string(&scene).expect("serialize Scene");
+    let restored: Scene = serde_json::from_str(&json).expect("deserialize Scene");
+
+    assert_eq!(
+        restored.groups[0].display_target,
+        Some(DisplayFaceTarget { device_id })
+    );
 }
 
 #[test]

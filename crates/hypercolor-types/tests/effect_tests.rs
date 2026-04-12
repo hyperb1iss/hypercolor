@@ -80,8 +80,9 @@ fn effect_category_all_variants_exist() {
         EffectCategory::Interactive,
         EffectCategory::Fun,
         EffectCategory::Utility,
+        EffectCategory::Display,
     ];
-    assert_eq!(categories.len(), 8);
+    assert_eq!(categories.len(), 9);
 }
 
 #[test]
@@ -101,6 +102,7 @@ fn effect_category_display_via_strum() {
     assert_eq!(EffectCategory::Interactive.to_string(), "interactive");
     assert_eq!(EffectCategory::Fun.to_string(), "fun");
     assert_eq!(EffectCategory::Utility.to_string(), "utility");
+    assert_eq!(EffectCategory::Display.to_string(), "display");
 }
 
 #[test]
@@ -125,6 +127,10 @@ fn effect_category_from_str_via_strum() {
         EffectCategory::from_str("generative").expect("parse"),
         EffectCategory::Generative
     );
+    assert_eq!(
+        EffectCategory::from_str("display").expect("parse"),
+        EffectCategory::Display
+    );
 }
 
 #[test]
@@ -143,6 +149,7 @@ fn effect_category_serde_round_trip() {
         EffectCategory::Interactive,
         EffectCategory::Fun,
         EffectCategory::Utility,
+        EffectCategory::Display,
     ] {
         let json = serde_json::to_string(&cat).expect("serialize");
         let back: EffectCategory = serde_json::from_str(&json).expect("deserialize");

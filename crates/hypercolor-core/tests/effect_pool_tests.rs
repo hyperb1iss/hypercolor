@@ -77,6 +77,7 @@ fn render_group(id: RenderGroupId, effect_id: EffectId) -> RenderGroup {
         brightness: 1.0,
         enabled: true,
         color: None,
+        display_target: None,
     }
 }
 

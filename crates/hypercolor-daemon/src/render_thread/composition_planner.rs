@@ -289,6 +289,7 @@ mod tests {
             brightness: 1.0,
             enabled: true,
             color: None,
+            display_target: None,
         }
     }
 

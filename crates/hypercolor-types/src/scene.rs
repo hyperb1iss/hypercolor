@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::fmt;
 use uuid::Uuid;
 
+use crate::device::DeviceId;
 use crate::effect::{ControlValue, EffectId};
 use crate::library::PresetId;
 use crate::spatial::SpatialLayout;
@@ -101,6 +102,18 @@ pub struct RenderGroup {
 
     /// Optional UI accent color.
     pub color: Option<String>,
+
+    /// Direct display target for face-style render groups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_target: Option<DisplayFaceTarget>,
+}
+
+/// Direct LCD target for a display-face render group.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DisplayFaceTarget {
+    /// Physical display-capable device that should consume this group's canvas.
+    pub device_id: DeviceId,
 }
 
 impl RenderGroup {

@@ -74,6 +74,8 @@ pub enum EffectCategory {
     Fun,
     /// Functional (solid color, off, system monitor).
     Utility,
+    /// Full-fidelity HTML display faces for LCD surfaces.
+    Display,
 }
 
 // ── EffectSource ──────────────────────────────────────────────────────────────
