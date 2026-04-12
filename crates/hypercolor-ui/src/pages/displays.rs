@@ -1214,6 +1214,14 @@ where
     let (source_label, source_icon) = overlay_source_descriptor(&overlay_slot.source);
     let source_label_owned = source_label.to_string();
 
+    // The slot state lives in a StoredValue so each field handler mutates
+    // the latest snapshot and subsequent PATCHes compound on top of earlier
+    // edits. Without this, consecutive edits to different source fields
+    // (e.g. range_min then range_max on a Sensor overlay) would race and
+    // revert each other, because every closure captured `config.clone()`
+    // at render time.
+    let slot_state: StoredValue<OverlaySlot> = StoredValue::new(overlay_slot.clone());
+
     // Runtime telemetry polled every 2s for the currently-selected slot.
     let (runtime_state, set_runtime_state) = signal(None::<api::OverlayRuntimeResponse>);
 
@@ -1321,13 +1329,20 @@ where
     // builder treats `Fn(_)` generic props as reactive functions, which
     // rejects closures that return `()`.
     let source_editor = match overlay_slot.source.clone() {
-        OverlaySource::Clock(config) => clock_inspector_fields(config, patch.clone()).into_any(),
-        OverlaySource::Sensor(config) => {
-            sensor_inspector_fields(config, patch.clone(), patch_debounced.clone()).into_any()
+        OverlaySource::Clock(config) => {
+            clock_inspector_fields(config, slot_state, patch.clone()).into_any()
         }
+        OverlaySource::Sensor(config) => sensor_inspector_fields(
+            config,
+            slot_state,
+            patch.clone(),
+            patch_debounced.clone(),
+        )
+        .into_any(),
         OverlaySource::Image(config) => image_inspector_fields(config).into_any(),
         OverlaySource::Text(config) => {
-            text_inspector_fields(config, patch.clone(), patch_debounced.clone()).into_any()
+            text_inspector_fields(config, slot_state, patch.clone(), patch_debounced.clone())
+                .into_any()
         }
         OverlaySource::Html(_) => view! {
             <div class="rounded-md border border-edge-subtle bg-surface-overlay/50 p-3 text-[11px] leading-relaxed text-fg-tertiary">
@@ -1499,12 +1514,67 @@ fn InspectorField(#[prop(into)] label: String, children: Children) -> impl IntoV
     }
 }
 
-fn clock_inspector_fields<F>(config: ClockConfig, patch: F) -> impl IntoView
+/// Apply a mutation to the live `ClockConfig` stored in `slot_state` and
+/// return the fully-populated updated `OverlaySource`. Returns `None` if
+/// the slot's source has been swapped to a different variant (which only
+/// happens if the slot was edited externally), in which case the caller
+/// skips the PATCH.
+fn mutate_clock_source(
+    slot_state: StoredValue<OverlaySlot>,
+    mutation: impl FnOnce(&mut ClockConfig),
+) -> Option<OverlaySource> {
+    let mut applied = false;
+    slot_state.update_value(|slot| {
+        if let OverlaySource::Clock(config) = &mut slot.source {
+            mutation(config);
+            applied = true;
+        }
+    });
+    applied.then(|| slot_state.with_value(|slot| slot.source.clone()))
+}
+
+/// Companion helper for `SensorOverlayConfig`. See `mutate_clock_source`.
+fn mutate_sensor_source(
+    slot_state: StoredValue<OverlaySlot>,
+    mutation: impl FnOnce(&mut SensorOverlayConfig),
+) -> Option<OverlaySource> {
+    let mut applied = false;
+    slot_state.update_value(|slot| {
+        if let OverlaySource::Sensor(config) = &mut slot.source {
+            mutation(config);
+            applied = true;
+        }
+    });
+    applied.then(|| slot_state.with_value(|slot| slot.source.clone()))
+}
+
+/// Companion helper for `TextOverlayConfig`. See `mutate_clock_source`.
+fn mutate_text_source(
+    slot_state: StoredValue<OverlaySlot>,
+    mutation: impl FnOnce(&mut TextOverlayConfig),
+) -> Option<OverlaySource> {
+    let mut applied = false;
+    slot_state.update_value(|slot| {
+        if let OverlaySource::Text(config) = &mut slot.source {
+            mutation(config);
+            applied = true;
+        }
+    });
+    applied.then(|| slot_state.with_value(|slot| slot.source.clone()))
+}
+
+fn clock_inspector_fields<F>(
+    config: ClockConfig,
+    slot_state: StoredValue<OverlaySlot>,
+    patch: F,
+) -> impl IntoView
 where
     F: Fn(api::UpdateOverlaySlotRequest) + Clone + Send + Sync + 'static,
 {
+    // Each handler mutates slot_state before building a PATCH body so the
+    // request always reflects every prior edit rather than the render-time
+    // snapshot.
     let patch_style = patch.clone();
-    let config_for_style = config.clone();
     let on_style = move |event: leptos::ev::Event| {
         let value = event_target_value(&event);
         let style = if value == "analog" {
@@ -1512,16 +1582,15 @@ where
         } else {
             ClockStyle::Digital
         };
-        let mut updated = config_for_style.clone();
-        updated.style = style;
-        patch_style(api::UpdateOverlaySlotRequest {
-            source: Some(OverlaySource::Clock(updated)),
-            ..Default::default()
-        });
+        if let Some(source) = mutate_clock_source(slot_state, |config| config.style = style) {
+            patch_style(api::UpdateOverlaySlotRequest {
+                source: Some(source),
+                ..Default::default()
+            });
+        }
     };
 
     let patch_format = patch.clone();
-    let config_for_format = config.clone();
     let on_format = move |event: leptos::ev::Event| {
         let value = event_target_value(&event);
         let format = if value == "12" {
@@ -1529,35 +1598,39 @@ where
         } else {
             HourFormat::TwentyFour
         };
-        let mut updated = config_for_format.clone();
-        updated.hour_format = format;
-        patch_format(api::UpdateOverlaySlotRequest {
-            source: Some(OverlaySource::Clock(updated)),
-            ..Default::default()
-        });
+        if let Some(source) =
+            mutate_clock_source(slot_state, |config| config.hour_format = format)
+        {
+            patch_format(api::UpdateOverlaySlotRequest {
+                source: Some(source),
+                ..Default::default()
+            });
+        }
     };
 
     let patch_seconds = patch.clone();
-    let config_for_seconds = config.clone();
     let on_seconds = move |_| {
-        let mut updated = config_for_seconds.clone();
-        updated.show_seconds = !updated.show_seconds;
-        patch_seconds(api::UpdateOverlaySlotRequest {
-            source: Some(OverlaySource::Clock(updated)),
-            ..Default::default()
-        });
+        if let Some(source) =
+            mutate_clock_source(slot_state, |config| config.show_seconds = !config.show_seconds)
+        {
+            patch_seconds(api::UpdateOverlaySlotRequest {
+                source: Some(source),
+                ..Default::default()
+            });
+        }
     };
 
     let patch_color = patch.clone();
-    let config_for_color = config.clone();
     let on_color = move |event: leptos::ev::Event| {
         let value = event_target_value(&event);
-        let mut updated = config_for_color.clone();
-        updated.color = value;
-        patch_color(api::UpdateOverlaySlotRequest {
-            source: Some(OverlaySource::Clock(updated)),
-            ..Default::default()
-        });
+        if let Some(source) = mutate_clock_source(slot_state, move |config| {
+            config.color = value.clone();
+        }) {
+            patch_color(api::UpdateOverlaySlotRequest {
+                source: Some(source),
+                ..Default::default()
+            });
+        }
     };
 
     let style_value = match config.style {
@@ -1612,6 +1685,7 @@ where
 
 fn sensor_inspector_fields<F, D>(
     config: SensorOverlayConfig,
+    slot_state: StoredValue<OverlaySlot>,
     patch: F,
     patch_debounced: D,
 ) -> impl IntoView
@@ -1620,75 +1694,80 @@ where
     D: Fn(api::UpdateOverlaySlotRequest) + Clone + Send + Sync + 'static,
 {
     let patch_sensor = patch.clone();
-    let config_for_sensor = config.clone();
     let on_sensor = move |event: leptos::ev::Event| {
-        let mut updated = config_for_sensor.clone();
-        updated.sensor = event_target_value(&event);
-        patch_sensor(api::UpdateOverlaySlotRequest {
-            source: Some(OverlaySource::Sensor(updated)),
-            ..Default::default()
-        });
+        let value = event_target_value(&event);
+        if let Some(source) =
+            mutate_sensor_source(slot_state, move |config| config.sensor = value.clone())
+        {
+            patch_sensor(api::UpdateOverlaySlotRequest {
+                source: Some(source),
+                ..Default::default()
+            });
+        }
     };
 
     let patch_style = patch.clone();
-    let config_for_style = config.clone();
     let on_style = move |event: leptos::ev::Event| {
-        let mut updated = config_for_style.clone();
-        updated.style = match event_target_value(&event).as_str() {
+        let style = match event_target_value(&event).as_str() {
             "gauge" => SensorDisplayStyle::Gauge,
             "bar" => SensorDisplayStyle::Bar,
             "minimal" => SensorDisplayStyle::Minimal,
             _ => SensorDisplayStyle::Numeric,
         };
-        patch_style(api::UpdateOverlaySlotRequest {
-            source: Some(OverlaySource::Sensor(updated)),
-            ..Default::default()
-        });
+        if let Some(source) = mutate_sensor_source(slot_state, |config| config.style = style) {
+            patch_style(api::UpdateOverlaySlotRequest {
+                source: Some(source),
+                ..Default::default()
+            });
+        }
     };
 
     let patch_min = patch_debounced.clone();
-    let config_for_min = config.clone();
     let on_min = move |event: leptos::ev::Event| {
         let Ok(value) = event_target_value(&event).parse::<f32>() else {
             return;
         };
-        let mut updated = config_for_min.clone();
-        updated.range_min = value;
-        patch_min(api::UpdateOverlaySlotRequest {
-            source: Some(OverlaySource::Sensor(updated)),
-            ..Default::default()
-        });
+        if let Some(source) =
+            mutate_sensor_source(slot_state, move |config| config.range_min = value)
+        {
+            patch_min(api::UpdateOverlaySlotRequest {
+                source: Some(source),
+                ..Default::default()
+            });
+        }
     };
 
     let patch_max = patch_debounced.clone();
-    let config_for_max = config.clone();
     let on_max = move |event: leptos::ev::Event| {
         let Ok(value) = event_target_value(&event).parse::<f32>() else {
             return;
         };
-        let mut updated = config_for_max.clone();
-        updated.range_max = value;
-        patch_max(api::UpdateOverlaySlotRequest {
-            source: Some(OverlaySource::Sensor(updated)),
-            ..Default::default()
-        });
+        if let Some(source) =
+            mutate_sensor_source(slot_state, move |config| config.range_max = value)
+        {
+            patch_max(api::UpdateOverlaySlotRequest {
+                source: Some(source),
+                ..Default::default()
+            });
+        }
     };
 
     let patch_unit = patch.clone();
-    let config_for_unit = config.clone();
     let on_unit = move |event: leptos::ev::Event| {
         let raw = event_target_value(&event);
-        let trimmed = raw.trim();
-        let mut updated = config_for_unit.clone();
-        updated.unit_label = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        };
-        patch_unit(api::UpdateOverlaySlotRequest {
-            source: Some(OverlaySource::Sensor(updated)),
-            ..Default::default()
-        });
+        let trimmed = raw.trim().to_string();
+        if let Some(source) = mutate_sensor_source(slot_state, move |config| {
+            config.unit_label = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            };
+        }) {
+            patch_unit(api::UpdateOverlaySlotRequest {
+                source: Some(source),
+                ..Default::default()
+            });
+        }
     };
 
     let sensor = config.sensor.clone();
@@ -1772,6 +1851,7 @@ fn image_inspector_fields(config: ImageOverlayConfig) -> impl IntoView {
 
 fn text_inspector_fields<F, D>(
     config: TextOverlayConfig,
+    slot_state: StoredValue<OverlaySlot>,
     patch: F,
     patch_debounced: D,
 ) -> impl IntoView
@@ -1780,54 +1860,59 @@ where
     D: Fn(api::UpdateOverlaySlotRequest) + Clone + Send + Sync + 'static,
 {
     let patch_text = patch.clone();
-    let config_for_text = config.clone();
     let on_text = move |event: leptos::ev::Event| {
-        let mut updated = config_for_text.clone();
-        updated.text = event_target_value(&event);
-        patch_text(api::UpdateOverlaySlotRequest {
-            source: Some(OverlaySource::Text(updated)),
-            ..Default::default()
-        });
+        let value = event_target_value(&event);
+        if let Some(source) =
+            mutate_text_source(slot_state, move |config| config.text = value.clone())
+        {
+            patch_text(api::UpdateOverlaySlotRequest {
+                source: Some(source),
+                ..Default::default()
+            });
+        }
     };
 
     let patch_size = patch_debounced.clone();
-    let config_for_size = config.clone();
     let on_size = move |event: leptos::ev::Event| {
         let Ok(value) = event_target_value(&event).parse::<f32>() else {
             return;
         };
-        let mut updated = config_for_size.clone();
-        updated.font_size = value.max(1.0);
-        patch_size(api::UpdateOverlaySlotRequest {
-            source: Some(OverlaySource::Text(updated)),
-            ..Default::default()
-        });
+        if let Some(source) = mutate_text_source(slot_state, move |config| {
+            config.font_size = value.max(1.0);
+        }) {
+            patch_size(api::UpdateOverlaySlotRequest {
+                source: Some(source),
+                ..Default::default()
+            });
+        }
     };
 
     let patch_color = patch.clone();
-    let config_for_color = config.clone();
     let on_color = move |event: leptos::ev::Event| {
-        let mut updated = config_for_color.clone();
-        updated.color = event_target_value(&event);
-        patch_color(api::UpdateOverlaySlotRequest {
-            source: Some(OverlaySource::Text(updated)),
-            ..Default::default()
-        });
+        let value = event_target_value(&event);
+        if let Some(source) =
+            mutate_text_source(slot_state, move |config| config.color = value.clone())
+        {
+            patch_color(api::UpdateOverlaySlotRequest {
+                source: Some(source),
+                ..Default::default()
+            });
+        }
     };
 
     let patch_align = patch.clone();
-    let config_for_align = config.clone();
     let on_align = move |event: leptos::ev::Event| {
-        let mut updated = config_for_align.clone();
-        updated.align = match event_target_value(&event).as_str() {
+        let align = match event_target_value(&event).as_str() {
             "left" => TextAlign::Left,
             "right" => TextAlign::Right,
             _ => TextAlign::Center,
         };
-        patch_align(api::UpdateOverlaySlotRequest {
-            source: Some(OverlaySource::Text(updated)),
-            ..Default::default()
-        });
+        if let Some(source) = mutate_text_source(slot_state, move |config| config.align = align) {
+            patch_align(api::UpdateOverlaySlotRequest {
+                source: Some(source),
+                ..Default::default()
+            });
+        }
     };
 
     let text = config.text.clone();
