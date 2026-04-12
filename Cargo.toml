@@ -156,6 +156,7 @@ cosmic-text = "0.18.2"
 resvg = "0.47.0"
 time = { version = "0.3.47", features = ["local-offset"] }
 turbojpeg = { version = "1.4.0", default-features = false, features = ["cmake", "require-simd"] }
+fast_image_resize = "6.0.0"
 wgpu = { version = "29.0.1", default-features = false, features = ["std", "vulkan", "metal", "dx12", "gles", "wgsl"] }
 pollster = "0.4.0"
 

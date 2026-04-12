@@ -44,6 +44,14 @@ struct AxisSample {
     upper_weight: u16,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct FastDisplayCrop {
+    pub left: f64,
+    pub top: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
 #[allow(
     clippy::as_conversions,
     clippy::cast_precision_loss,
@@ -163,6 +171,37 @@ fn sample_image_bilinear(
 
     let sampled = bilinear_sample(source, sample_x, sample_y);
     apply_fade_to_black(sampled, canvas_pos, edge_behavior)
+}
+
+#[allow(clippy::cast_precision_loss, reason = "display crop boxes are defined in source-pixel space")]
+pub(super) fn fast_display_crop(
+    source: &CanvasFrame,
+    viewport: &DisplayViewport,
+) -> Option<FastDisplayCrop> {
+    if viewport.rotation.abs() > f32::EPSILON || viewport.edge_behavior != EdgeBehavior::Clamp {
+        return None;
+    }
+
+    let span_x = viewport.size.x * viewport.scale;
+    let span_y = viewport.size.y * viewport.scale;
+    if span_x <= 0.0 || span_y <= 0.0 {
+        return None;
+    }
+
+    let start_x = viewport.position.x - (span_x * 0.5);
+    let start_y = viewport.position.y - (span_y * 0.5);
+    let end_x = start_x + span_x;
+    let end_y = start_y + span_y;
+    if start_x < 0.0 || start_y < 0.0 || end_x > 1.0 || end_y > 1.0 {
+        return None;
+    }
+
+    Some(FastDisplayCrop {
+        left: f64::from(start_x) * f64::from(source.width),
+        top: f64::from(start_y) * f64::from(source.height),
+        width: f64::from(span_x) * f64::from(source.width),
+        height: f64::from(span_y) * f64::from(source.height),
+    })
 }
 
 pub(super) fn apply_edge_normalized(value: f32, edge_behavior: EdgeBehavior) -> f32 {
@@ -302,6 +341,14 @@ fn apply_fade_to_black(
 }
 
 pub(super) fn apply_circular_mask(image: &mut [u8], width: u32, height: u32) {
+    apply_circular_mask_with_stride(image, width, height, 3);
+}
+
+pub(super) fn apply_circular_mask_rgba(image: &mut [u8], width: u32, height: u32) {
+    apply_circular_mask_with_stride(image, width, height, 4);
+}
+
+fn apply_circular_mask_with_stride(image: &mut [u8], width: u32, height: u32, stride: usize) {
     let width = i64::from(width);
     let height = i64::from(height);
     let radius = width.min(height);
@@ -313,12 +360,13 @@ pub(super) fn apply_circular_mask(image: &mut [u8], width: u32, height: u32) {
             let dy = y.saturating_mul(2).saturating_add(1) - height;
             let distance_sq = dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy));
             if distance_sq > radius_sq {
-                let index = rgb_offset(
+                let index = pixel_offset_with_stride(
                     usize::try_from(width).unwrap_or_default(),
                     usize::try_from(x).unwrap_or_default(),
                     usize::try_from(y).unwrap_or_default(),
+                    stride,
                 );
-                image[index..index + 3].fill(0);
+                image[index..index + stride].fill(0);
             }
         }
     }
@@ -329,6 +377,13 @@ pub(super) fn rgb_buffer_len(width: u32, height: u32) -> Option<usize> {
         .ok()?
         .checked_mul(usize::try_from(height).ok()?)?
         .checked_mul(3)
+}
+
+pub(super) fn rgba_buffer_len(width: u32, height: u32) -> Option<usize> {
+    usize::try_from(width)
+        .ok()?
+        .checked_mul(usize::try_from(height).ok()?)?
+        .checked_mul(4)
 }
 
 #[allow(
@@ -533,7 +588,11 @@ pub(super) fn rgba_offset(width: usize, x: usize, y: usize) -> usize {
 }
 
 fn rgb_offset(width: usize, x: usize, y: usize) -> usize {
-    (y * width + x) * 3
+    pixel_offset_with_stride(width, x, y, 3)
+}
+
+fn pixel_offset_with_stride(width: usize, x: usize, y: usize, stride: usize) -> usize {
+    (y * width + x) * stride
 }
 
 pub(super) fn display_viewport_signature(viewport: &DisplayViewport) -> DisplayViewportSignature {
@@ -553,5 +612,72 @@ pub(super) fn display_viewport_signature(viewport: &DisplayViewport) -> DisplayV
         scale_bits: viewport.scale.to_bits(),
         edge_behavior,
         fade_falloff_bits,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hypercolor_core::bus::CanvasFrame;
+    use hypercolor_types::canvas::{Canvas, Rgba};
+    use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
+
+    use super::{DisplayViewport, FastDisplayCrop, fast_display_crop};
+
+    fn sample_frame() -> CanvasFrame {
+        let mut canvas = Canvas::new(320, 200);
+        canvas.fill(Rgba::new(255, 0, 0, 255));
+        CanvasFrame::from_canvas(&canvas, 1, 16)
+    }
+
+    #[test]
+    fn fast_display_crop_maps_axis_aligned_clamp_viewport_to_source_pixels() {
+        let frame = sample_frame();
+        let viewport = DisplayViewport {
+            position: NormalizedPosition::new(0.25, 0.5),
+            size: NormalizedPosition::new(0.5, 1.0),
+            rotation: 0.0,
+            scale: 1.0,
+            edge_behavior: EdgeBehavior::Clamp,
+        };
+
+        assert_eq!(
+            fast_display_crop(&frame, &viewport),
+            Some(FastDisplayCrop {
+                left: 0.0,
+                top: 0.0,
+                width: 160.0,
+                height: 200.0,
+            })
+        );
+    }
+
+    #[test]
+    fn fast_display_crop_rejects_non_clamp_or_out_of_bounds_viewports() {
+        let frame = sample_frame();
+        let rotated = DisplayViewport {
+            position: NormalizedPosition::new(0.5, 0.5),
+            size: NormalizedPosition::new(1.0, 1.0),
+            rotation: 0.1,
+            scale: 1.0,
+            edge_behavior: EdgeBehavior::Clamp,
+        };
+        let wrapped = DisplayViewport {
+            position: NormalizedPosition::new(0.5, 0.5),
+            size: NormalizedPosition::new(1.0, 1.0),
+            rotation: 0.0,
+            scale: 1.0,
+            edge_behavior: EdgeBehavior::Wrap,
+        };
+        let out_of_bounds = DisplayViewport {
+            position: NormalizedPosition::new(0.1, 0.5),
+            size: NormalizedPosition::new(0.4, 1.0),
+            rotation: 0.0,
+            scale: 1.0,
+            edge_behavior: EdgeBehavior::Clamp,
+        };
+
+        assert!(fast_display_crop(&frame, &rotated).is_none());
+        assert!(fast_display_crop(&frame, &wrapped).is_none());
+        assert!(fast_display_crop(&frame, &out_of_bounds).is_none());
     }
 }

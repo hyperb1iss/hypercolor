@@ -50,6 +50,7 @@ toml = { workspace = true }
 cpal = { workspace = true }
 image = { workspace = true }
 turbojpeg = { workspace = true }
+fast_image_resize = { workspace = true }
 tokio-util = { workspace = true }
 mdns-sd = { workspace = true }
 owo-colors = { workspace = true }

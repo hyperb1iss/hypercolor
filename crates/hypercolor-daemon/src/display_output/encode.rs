@@ -1,16 +1,19 @@
 //! JPEG encoding and brightness scaling for display frames.
 
 use anyhow::{Context, Result};
+use fast_image_resize as fr;
 use turbojpeg::{
     Compressor as TurboJpegCompressor, Image as TurboJpegImage,
     PixelFormat as TurboJpegPixelFormat, Subsamp as TurboJpegSubsamp,
     compressed_buf_len as turbojpeg_compressed_buf_len,
 };
+use tracing::debug;
 
 use hypercolor_core::bus::CanvasFrame;
 
 use super::render::{
-    PreparedDisplayPlan, apply_circular_mask, render_display_view, rgb_buffer_len,
+    PreparedDisplayPlan, apply_circular_mask, apply_circular_mask_rgba, fast_display_crop,
+    render_display_view, rgb_buffer_len, rgba_buffer_len,
 };
 use super::{DisplayGeometry, DisplayViewport};
 
@@ -19,8 +22,10 @@ const JPEG_SUBSAMP: TurboJpegSubsamp = TurboJpegSubsamp::Sub2x2;
 
 pub(super) struct DisplayEncodeState {
     pub rgb_buffer: Vec<u8>,
+    pub rgba_buffer: Vec<u8>,
     pub jpeg_buffer: Vec<u8>,
     pub jpeg_compressor: TurboJpegCompressor,
+    pub fast_resizer: fr::Resizer,
     pub axis_plan: Option<PreparedDisplayPlan>,
     brightness_factor: u16,
     brightness_lut: [u8; 256],
@@ -39,8 +44,10 @@ impl DisplayEncodeState {
 
         Ok(Self {
             rgb_buffer: Vec::new(),
+            rgba_buffer: Vec::new(),
             jpeg_buffer: Vec::new(),
             jpeg_compressor,
+            fast_resizer: fr::Resizer::new(),
             axis_plan: None,
             brightness_factor: u16::from(u8::MAX),
             brightness_lut: identity_brightness_lut(),
@@ -61,36 +68,79 @@ pub(super) fn encode_canvas_frame(
         return encode_rgb_to_jpeg(geometry, encode_state);
     }
 
-    let brightness_lut = if brightness_factor >= u16::from(u8::MAX) {
-        None
-    } else {
+    let use_brightness_lut = brightness_factor < u16::from(u8::MAX);
+    if use_brightness_lut {
         refresh_display_brightness_lut(encode_state, brightness_factor);
-        Some(&encode_state.brightness_lut)
-    };
+    }
 
-    if geometry.width == 0 || geometry.height == 0 {
+    let used_fast_path = if geometry.width == 0 || geometry.height == 0 {
         encode_state.rgb_buffer.clear();
+        encode_state.rgba_buffer.clear();
+        false
     } else {
-        render_display_view(
+        match try_render_canvas_frame_rgba_fast(
             source,
             viewport,
-            geometry.width,
-            geometry.height,
-            &mut encode_state.rgb_buffer,
-            &mut encode_state.axis_plan,
-            brightness_lut,
+            geometry,
+            encode_state,
+        ) {
+            Ok(true) => true,
+            Ok(false) => {
+                render_display_view(
+                    source,
+                    viewport,
+                    geometry.width,
+                    geometry.height,
+                    &mut encode_state.rgb_buffer,
+                    &mut encode_state.axis_plan,
+                    use_brightness_lut.then_some(&encode_state.brightness_lut),
+                );
+                false
+            }
+            Err(error) => {
+                debug!(%error, "fast display resize fell back to scalar path");
+                render_display_view(
+                    source,
+                    viewport,
+                    geometry.width,
+                    geometry.height,
+                    &mut encode_state.rgb_buffer,
+                    &mut encode_state.axis_plan,
+                    use_brightness_lut.then_some(&encode_state.brightness_lut),
+                );
+                false
+            }
+        }
+    };
+
+    if used_fast_path && use_brightness_lut {
+        apply_display_brightness_rgba(
+            &mut encode_state.rgba_buffer,
+            &encode_state.brightness_lut,
         );
     }
 
     if geometry.circular {
-        apply_circular_mask(
-            &mut encode_state.rgb_buffer,
-            geometry.width,
-            geometry.height,
-        );
+        if used_fast_path {
+            apply_circular_mask_rgba(
+                &mut encode_state.rgba_buffer,
+                geometry.width,
+                geometry.height,
+            );
+        } else {
+            apply_circular_mask(
+                &mut encode_state.rgb_buffer,
+                geometry.width,
+                geometry.height,
+            );
+        }
     }
 
-    encode_rgb_to_jpeg(geometry, encode_state)
+    if used_fast_path {
+        encode_rgba_to_jpeg(geometry, encode_state)
+    } else {
+        encode_rgb_to_jpeg(geometry, encode_state)
+    }
 }
 
 pub(super) fn render_canvas_frame_rgb(
@@ -156,6 +206,14 @@ pub(super) fn apply_display_brightness(
     }
 }
 
+fn apply_display_brightness_rgba(rgba_buffer: &mut [u8], brightness_lut: &[u8; 256]) {
+    for pixel in rgba_buffer.chunks_exact_mut(4) {
+        pixel[0] = brightness_lut[usize::from(pixel[0])];
+        pixel[1] = brightness_lut[usize::from(pixel[1])];
+        pixel[2] = brightness_lut[usize::from(pixel[2])];
+    }
+}
+
 fn encode_rgb_to_jpeg(
     geometry: &DisplayGeometry,
     encode_state: &mut DisplayEncodeState,
@@ -195,6 +253,94 @@ fn encode_rgb_to_jpeg(
 
     jpeg_buffer.truncate(jpeg_len);
     Ok(jpeg_buffer)
+}
+
+fn encode_rgba_to_jpeg(
+    geometry: &DisplayGeometry,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<Vec<u8>> {
+    let width = usize::try_from(geometry.width).context("display width does not fit usize")?;
+    let height = usize::try_from(geometry.height).context("display height does not fit usize")?;
+    let pitch = width
+        .checked_mul(TurboJpegPixelFormat::RGBA.size())
+        .context("display row pitch overflow")?;
+    let required_len = turbojpeg_compressed_buf_len(width, height, JPEG_SUBSAMP)
+        .context("failed to size TurboJPEG display buffer")?;
+
+    let mut jpeg_buffer = std::mem::take(&mut encode_state.jpeg_buffer);
+    if jpeg_buffer.len() < required_len {
+        jpeg_buffer.resize(required_len, 0);
+    } else {
+        jpeg_buffer.truncate(required_len);
+    }
+
+    let image = TurboJpegImage {
+        pixels: encode_state.rgba_buffer.as_slice(),
+        width,
+        pitch,
+        height,
+        format: TurboJpegPixelFormat::RGBA,
+    };
+    let jpeg_len = match encode_state
+        .jpeg_compressor
+        .compress_to_slice(image, jpeg_buffer.as_mut_slice())
+    {
+        Ok(len) => len,
+        Err(error) => {
+            encode_state.jpeg_buffer = jpeg_buffer;
+            return Err(error).context("failed to TurboJPEG-encode display frame");
+        }
+    };
+
+    jpeg_buffer.truncate(jpeg_len);
+    Ok(jpeg_buffer)
+}
+
+fn try_render_canvas_frame_rgba_fast(
+    source: &CanvasFrame,
+    viewport: &DisplayViewport,
+    geometry: &DisplayGeometry,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<bool> {
+    if source.width == 0 || source.height == 0 {
+        encode_state.rgba_buffer.clear();
+        return Ok(false);
+    }
+
+    let Some(crop) = fast_display_crop(source, viewport) else {
+        return Ok(false);
+    };
+    let Some(render_len) = rgba_buffer_len(geometry.width, geometry.height) else {
+        encode_state.rgba_buffer.clear();
+        return Ok(false);
+    };
+    if encode_state.rgba_buffer.len() != render_len {
+        encode_state.rgba_buffer.resize(render_len, 0);
+    }
+
+    let src_image = fr::images::ImageRef::new(
+        source.width,
+        source.height,
+        source.rgba_bytes(),
+        fr::PixelType::U8x4,
+    )
+    .context("display source image buffer is invalid for fast resize")?;
+    let mut dst_image = fr::images::Image::from_slice_u8(
+        geometry.width,
+        geometry.height,
+        encode_state.rgba_buffer.as_mut_slice(),
+        fr::PixelType::U8x4,
+    )
+    .context("display destination image buffer is invalid for fast resize")?;
+    let options = fr::ResizeOptions::new()
+        .resize_alg(fr::ResizeAlg::Interpolation(fr::FilterType::Bilinear))
+        .crop(crop.left, crop.top, crop.width, crop.height);
+    encode_state
+        .fast_resizer
+        .resize(&src_image, &mut dst_image, &options)
+        .context("fast display resize failed")?;
+
+    Ok(true)
 }
 
 fn scale_channel(channel: u8, factor: u16) -> u8 {
