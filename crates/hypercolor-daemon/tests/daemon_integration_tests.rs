@@ -249,7 +249,8 @@ async fn daemon_start_restores_last_runtime_session() {
         .expect("initialization should succeed");
     *state.input_manager.lock().await = test_input_manager();
 
-    let effect_id = {
+    let requested_speed = ControlValue::Float(7.0);
+    let (effect_id, expected_speed) = {
         let registry = state.effect_registry.read().await;
         let (_, entry) = registry
             .iter()
@@ -258,12 +259,18 @@ async fn daemon_start_restores_last_runtime_session() {
                     && entry.metadata.control_by_id("speed").is_some()
             })
             .expect("expected at least one native effect with a speed control in registry");
-        entry.metadata.id.to_string()
+        let expected_speed = entry
+            .metadata
+            .control_by_id("speed")
+            .expect("speed control should exist")
+            .validate_value(&requested_speed)
+            .expect("speed control should normalize persisted value");
+        (entry.metadata.id.to_string(), expected_speed)
     };
     let snapshot = RuntimeSessionSnapshot {
         active_effect_id: Some(effect_id.clone()),
         active_preset_id: Some("startup-preset".to_owned()),
-        control_values: HashMap::from([("speed".to_owned(), ControlValue::Float(7.0))]),
+        control_values: HashMap::from([("speed".to_owned(), requested_speed)]),
         control_bindings: HashMap::from([(
             "speed".to_owned(),
             ControlBinding {
@@ -295,10 +302,7 @@ async fn daemon_start_restores_last_runtime_session() {
             .expect("effect should be restored on startup");
         assert_eq!(active.id.to_string(), effect_id);
         assert_eq!(engine.active_preset_id(), Some("startup-preset"));
-        assert_eq!(
-            engine.active_controls().get("speed"),
-            Some(&ControlValue::Float(7.0))
-        );
+        assert_eq!(engine.active_controls().get("speed"), Some(&expected_speed));
         let binding = active
             .control_by_id("speed")
             .and_then(|control| control.binding.as_ref())

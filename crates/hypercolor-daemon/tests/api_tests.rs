@@ -238,7 +238,7 @@ async fn health_check_returns_200() {
     let json = body_json(response).await;
     assert_eq!(json["status"], "healthy");
     assert_eq!(json["checks"]["render_loop"], "idle");
-    assert_eq!(json["checks"]["device_backends"], "idle");
+    assert_eq!(json["checks"]["device_backends"], "ok");
     assert_eq!(json["checks"]["event_bus"], "idle");
     assert!(json["version"].is_string());
 }
@@ -1449,12 +1449,7 @@ async fn debug_device_routing_returns_empty_snapshot() {
     let json = body_json(response).await;
     assert_eq!(json["data"]["mapping_count"], 0);
     assert_eq!(json["data"]["queue_count"], 0);
-    assert!(
-        json["data"]["backend_ids"]
-            .as_array()
-            .expect("backend_ids should be an array")
-            .is_empty()
-    );
+    assert_eq!(json["data"]["backend_ids"], serde_json::json!(["simulator"]));
 }
 
 #[tokio::test]
