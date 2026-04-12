@@ -563,14 +563,35 @@ pub(super) struct MetricsConfigPatch {
 
 /// Patch for `DisplayPreviewConfig`. `device_id` uses a double-Option so
 /// clients can distinguish "leave as-is" (`device_id: undefined`) from
-/// "clear the target" (`device_id: null`). Setting to `None` detaches
-/// the relay and stops emitting frames.
+/// "clear the target" (`device_id: null`). Setting the outer `Some(None)`
+/// detaches the relay and stops emitting frames.
+///
+/// The custom `deserialize_with` is required because plain
+/// `Option<Option<String>>` with serde's default behavior collapses
+/// `null` and missing-key to the same `None` — losing the tri-state we
+/// need for "clear".
 #[derive(Debug, Deserialize)]
 pub(super) struct DisplayPreviewConfigPatch {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_double_option_string",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub(super) device_id: Option<Option<String>>,
     #[serde(default)]
     pub(super) fps: Option<u32>,
+}
+
+/// Deserialize a double-Option so `null` maps to `Some(None)` (explicit
+/// clear) and a missing key keeps the outer `None` (via `#[serde(default)]`).
+/// Without this helper serde's default collapses both into `None`.
+fn deserialize_double_option_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 /// Server-to-client acknowledgment messages.

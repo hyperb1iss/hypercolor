@@ -505,8 +505,114 @@ fn ws_capabilities_include_commands() {
     assert!(capabilities.contains(&"canvas".to_owned()));
     assert!(capabilities.contains(&"screen_canvas".to_owned()));
     assert!(capabilities.contains(&"metrics".to_owned()));
+    assert!(capabilities.contains(&"display_preview".to_owned()));
     assert!(capabilities.contains(&"commands".to_owned()));
     assert!(capabilities.contains(&"canvas_format_jpeg".to_owned()));
+}
+
+#[test]
+fn display_preview_patch_tri_state_distinguishes_missing_null_and_value() {
+    // Three JSON shapes the client can send:
+    //   - key absent → device_id stays `None` (leave as-is)
+    //   - `null`     → device_id becomes `Some(None)` (explicit clear)
+    //   - a string   → device_id becomes `Some(Some(...))` (set target)
+    // Without the custom deserializer, `null` and "missing" collapse to
+    // the same `None`, losing the explicit-clear path.
+
+    let absent: ChannelConfigPatch =
+        serde_json::from_value(serde_json::json!({ "display_preview": { "fps": 10 } }))
+            .expect("fps-only patch should deserialize");
+    let absent_display = absent.display_preview.expect("display_preview present");
+    assert!(absent_display.device_id.is_none(), "missing key → None");
+
+    let null_value: ChannelConfigPatch = serde_json::from_value(
+        serde_json::json!({ "display_preview": { "device_id": null } }),
+    )
+    .expect("null device_id should deserialize");
+    let null_display = null_value.display_preview.expect("display_preview present");
+    assert_eq!(
+        null_display.device_id,
+        Some(None),
+        "null key → Some(None) (explicit clear)"
+    );
+
+    let set_value: ChannelConfigPatch = serde_json::from_value(
+        serde_json::json!({ "display_preview": { "device_id": "device-abc" } }),
+    )
+    .expect("string device_id should deserialize");
+    let set_display = set_value.display_preview.expect("display_preview present");
+    assert_eq!(
+        set_display.device_id,
+        Some(Some("device-abc".to_owned())),
+        "string value → Some(Some(value))"
+    );
+}
+
+#[test]
+fn display_preview_patch_applies_tri_state_to_config() {
+    let mut config = ChannelConfig::default();
+
+    // Start with a set target.
+    let set_patch: ChannelConfigPatch = serde_json::from_value(serde_json::json!({
+        "display_preview": { "device_id": "device-abc", "fps": 20 }
+    }))
+    .expect("valid set patch");
+    config.apply_patch(set_patch).expect("set applied");
+    assert_eq!(config.display_preview.device_id.as_deref(), Some("device-abc"));
+    assert_eq!(config.display_preview.fps, 20);
+
+    // Missing key leaves device_id as-is but updates fps.
+    let leave_patch: ChannelConfigPatch =
+        serde_json::from_value(serde_json::json!({ "display_preview": { "fps": 15 } }))
+            .expect("valid fps-only patch");
+    config.apply_patch(leave_patch).expect("fps-only applied");
+    assert_eq!(config.display_preview.device_id.as_deref(), Some("device-abc"));
+    assert_eq!(config.display_preview.fps, 15);
+
+    // null explicitly clears the target.
+    let clear_patch: ChannelConfigPatch = serde_json::from_value(serde_json::json!({
+        "display_preview": { "device_id": null }
+    }))
+    .expect("valid clear patch");
+    config.apply_patch(clear_patch).expect("clear applied");
+    assert!(config.display_preview.device_id.is_none());
+    assert_eq!(config.display_preview.fps, 15);
+}
+
+#[test]
+fn display_preview_patch_rejects_empty_device_id_string() {
+    let mut config = ChannelConfig::default();
+    let bad: ChannelConfigPatch =
+        serde_json::from_value(serde_json::json!({ "display_preview": { "device_id": "   " } }))
+            .expect("empty whitespace still deserializes");
+    let err = config
+        .apply_patch(bad)
+        .expect_err("empty-string device_id should be rejected");
+    let message = format!("{err:?}");
+    assert!(
+        message.contains("device_id") || message.contains("non-empty"),
+        "expected device_id validation error, got: {message}"
+    );
+}
+
+#[test]
+fn display_preview_patch_fps_must_be_in_range() {
+    let mut config = ChannelConfig::default();
+    let too_high: ChannelConfigPatch = serde_json::from_value(serde_json::json!({
+        "display_preview": { "fps": 120 }
+    }))
+    .expect("high fps deserializes");
+    config
+        .apply_patch(too_high)
+        .expect_err("fps above 30 should be rejected");
+
+    let too_low: ChannelConfigPatch = serde_json::from_value(serde_json::json!({
+        "display_preview": { "fps": 0 }
+    }))
+    .expect("zero fps deserializes");
+    config
+        .apply_patch(too_low)
+        .expect_err("fps of 0 should be rejected");
 }
 
 #[tokio::test]

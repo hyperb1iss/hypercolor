@@ -590,6 +590,13 @@ pub(super) fn sync_preview_receiver(
 /// parameterized by `device_id` — switching the config's `device_id`
 /// detaches the old watch subscriber and attaches a fresh one for the
 /// new display.
+///
+/// Pacing mirrors `relay_canvas`: the sleep branch is guarded by
+/// `pending_send` so the task never tight-loops when nothing has
+/// changed. `dead_target_id` tracks the last device observed as gone so
+/// we don't auto-resubscribe to a silent channel until the client sends
+/// a new subscription — without this, a removed device would spin the
+/// registry write lock once per loop iteration.
 pub(super) async fn relay_display_preview(
     display_frames: Arc<tokio::sync::RwLock<crate::display_frames::DisplayFrameRuntime>>,
     json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
@@ -609,14 +616,18 @@ pub(super) async fn relay_display_preview(
         rx: watch::Receiver<Option<Arc<DisplayFrameSnapshot>>>,
         last_frame_number: Option<u64>,
         last_sent_at: Instant,
+        pending_send: bool,
     }
 
     let mut active: Option<ActiveTarget> = None;
+    let mut dead_target_id: Option<DeviceId> = None;
 
     loop {
         // Re-derive the desired target from the current subscription
-        // state. Dropping `active` here lets us pick up device_id or fps
-        // changes without leaking the previous watch receiver.
+        // state. We skip retargeting when the desired id matches a
+        // device we've already observed as gone — the client must send
+        // a fresh subscribe (possibly for the same id, after reconnect)
+        // to re-arm the relay.
         let desired = {
             let subs = subscriptions.borrow();
             if !subs.channels.contains(WsChannel::DisplayPreview) {
@@ -634,14 +645,19 @@ pub(super) async fn relay_display_preview(
         match (&active, desired) {
             (None, None) => {}
             (Some(current), Some((want_id, want_fps))) if current.device_id == want_id => {
-                // Same device, maybe new fps — rebuild only if needed.
-                if current.fps != want_fps {
-                    if let Some(target) = active.as_mut() {
-                        target.fps = want_fps;
-                    }
+                if current.fps != want_fps
+                    && let Some(target) = active.as_mut()
+                {
+                    target.fps = want_fps;
                 }
             }
             (_, None) => {
+                active = None;
+                dead_target_id = None;
+            }
+            (_, Some((want_id, _))) if dead_target_id == Some(want_id) => {
+                // Avoid spin-resubscribing to a removed device. Wait
+                // for the next subscription change before trying again.
                 active = None;
             }
             (_, Some((want_id, want_fps))) => {
@@ -652,6 +668,7 @@ pub(super) async fn relay_display_preview(
                     rx,
                     last_frame_number: None,
                     last_sent_at: preview_initial_last_sent(),
+                    pending_send: false,
                 });
             }
         }
@@ -661,61 +678,72 @@ pub(super) async fn relay_display_preview(
                 break;
             }
             let _ = subscriptions.borrow_and_update();
+            // Any subscription change clears the dead-target latch so
+            // the client can retarget the same (possibly reconnected)
+            // device without first bouncing to a different id.
+            dead_target_id = None;
             continue;
         };
 
         tokio::select! {
             changed = target.rx.changed() => {
                 if changed.is_err() {
-                    // Sender dropped — device gone. Clear so we re-evaluate
-                    // against the subscription state on the next iteration.
+                    // Sender dropped — device gone. Latch the id so we
+                    // don't auto-resubscribe until the subscription
+                    // changes, and clear active.
+                    dead_target_id = Some(target.device_id);
                     active = None;
                     continue;
                 }
+                // Either a new frame or the terminal None marker.
+                // Inspect after the select to decide what to do.
+                target.pending_send = true;
             }
             changed = subscriptions.changed() => {
                 if changed.is_err() {
                     break;
                 }
                 let _ = subscriptions.borrow_and_update();
-                // Don't clear `active` here — the top of the loop decides
-                // whether to retarget based on the new subscription.
+                dead_target_id = None;
                 continue;
             }
-            _ = tokio::time::sleep(preview_send_delay(target.last_sent_at, target.fps, Instant::now())) => {
-                // Fps-pacing tick — we may have a frame to resend after a
-                // pause or just re-check the latest value.
+            _ = tokio::time::sleep(preview_send_delay(target.last_sent_at, target.fps, Instant::now())), if target.pending_send => {
+                let snapshot = target.rx.borrow().as_ref().map(Arc::clone);
+                let Some(snapshot) = snapshot else {
+                    // Sender signaled device removal via None. Clear
+                    // pending_send to avoid re-entering this branch
+                    // immediately; the next rx.changed() or subscription
+                    // change will re-arm us.
+                    dead_target_id = Some(target.device_id);
+                    active = None;
+                    continue;
+                };
+
+                if target.last_frame_number == Some(snapshot.frame_number) {
+                    // No forward motion since last send — nothing to do.
+                    target.pending_send = false;
+                    continue;
+                }
+
+                let payload = encode_display_preview_frame(&snapshot);
+                if binary_tx.try_send(payload).is_err() {
+                    enqueue_backpressure_notice(&json_tx, "display_preview", target.fps);
+                    debug!("Dropping binary display_preview update for slow WebSocket consumer");
+                    // Advance last_sent_at so the next retry waits out a
+                    // full fps interval instead of spinning the encoder.
+                    // Clear pending_send too — if the consumer is slow
+                    // enough to fill the queue, a fresh rx.changed() will
+                    // re-arm us for whichever frame is current then.
+                    target.last_sent_at = Instant::now();
+                    target.pending_send = false;
+                    continue;
+                }
+
+                target.last_frame_number = Some(snapshot.frame_number);
+                target.last_sent_at = Instant::now();
+                target.pending_send = false;
             }
         }
-
-        let Some(snapshot) = target.rx.borrow().as_ref().map(Arc::clone) else {
-            // `None` means the sender signaled device removal. Drop the
-            // target and loop to reconsider the subscription state.
-            active = None;
-            continue;
-        };
-
-        if target.last_frame_number == Some(snapshot.frame_number) {
-            continue;
-        }
-
-        // Pace against the requested fps so slow renderers don't
-        // saturate the socket. We already consumed any new value above;
-        // drop this iteration's send until enough time has passed.
-        let now = Instant::now();
-        if preview_send_delay(target.last_sent_at, target.fps, now) > Duration::ZERO {
-            continue;
-        }
-
-        let payload = encode_display_preview_frame(&snapshot);
-        if binary_tx.try_send(payload).is_err() {
-            enqueue_backpressure_notice(&json_tx, "display_preview", target.fps);
-            debug!("Dropping binary display_preview update for slow WebSocket consumer");
-            continue;
-        }
-
-        target.last_frame_number = Some(snapshot.frame_number);
-        target.last_sent_at = now;
     }
 }
 
