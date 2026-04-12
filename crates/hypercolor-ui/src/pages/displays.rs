@@ -16,6 +16,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_icons::Icon;
 use leptos_use::{use_debounce_fn_with_arg, use_interval_fn};
+use web_sys::PointerEvent;
 
 use crate::api;
 use crate::components::page_header::PageHeader;
@@ -26,6 +27,77 @@ type DisplaysResource = LocalResource<Result<Vec<api::DisplaySummary>, String>>;
 
 /// Polling cadence for the live preview JPEG, in milliseconds.
 const PREVIEW_POLL_INTERVAL_MS: u64 = 500;
+
+/// Live drag state for a slot being repositioned on the preview canvas.
+#[derive(Clone)]
+struct DragState {
+    slot_id: OverlaySlotId,
+    /// Resolved slot top-left in display pixels at drag start.
+    start_slot_x: f64,
+    start_slot_y: f64,
+    /// Pointer position in CSS pixels relative to the container at drag start.
+    start_pointer_x: f64,
+    start_pointer_y: f64,
+    /// Current pointer position in CSS pixels relative to the container.
+    current_pointer_x: f64,
+    current_pointer_y: f64,
+    /// Display native resolution (needed for scale factor computation).
+    display_width: u32,
+    display_height: u32,
+    /// Slot size in display pixels (carried through to anchor computation).
+    slot_width: u32,
+    slot_height: u32,
+}
+
+impl DragState {
+    /// Current slot top-left position in display pixels, accounting for
+    /// the pointer delta scaled from CSS pixels to display coordinates.
+    fn current_display_position(&self, container_width: f64) -> (f64, f64) {
+        let scale = if container_width > 0.0 {
+            f64::from(self.display_width) / container_width
+        } else {
+            1.0
+        };
+        let dx = (self.current_pointer_x - self.start_pointer_x) * scale;
+        let dy = (self.current_pointer_y - self.start_pointer_y) * scale;
+        (self.start_slot_x + dx, self.start_slot_y + dy)
+    }
+
+    /// Convert the current display-pixel position back to an anchor +
+    /// offset by finding the 9-point anchor that minimizes the residual
+    /// offset magnitude.
+    fn resolved_position(&self, container_width: f64) -> OverlayPosition {
+        let (x, y) = self.current_display_position(container_width);
+        let dw = self.display_width as i32;
+        let dh = self.display_height as i32;
+        let sw = self.slot_width as i32;
+        let sh = self.slot_height as i32;
+
+        let mut best_anchor = Anchor::TopLeft;
+        let mut best_distance = i64::MAX;
+        for row in &ANCHOR_GRID {
+            for &anchor in row {
+                let (base_x, base_y) = anchor_origin_ui(anchor, dw, dh, sw, sh);
+                let off_x = x.round() as i64 - i64::from(base_x);
+                let off_y = y.round() as i64 - i64::from(base_y);
+                let distance = off_x.abs() + off_y.abs();
+                if distance < best_distance {
+                    best_distance = distance;
+                    best_anchor = anchor;
+                }
+            }
+        }
+
+        let (base_x, base_y) = anchor_origin_ui(best_anchor, dw, dh, sw, sh);
+        OverlayPosition::Anchored {
+            anchor: best_anchor,
+            offset_x: (x.round() as i32).saturating_sub(base_x),
+            offset_y: (y.round() as i32).saturating_sub(base_y),
+            width: self.slot_width,
+            height: self.slot_height,
+        }
+    }
+}
 
 #[component]
 pub fn DisplaysPage() -> impl IntoView {
@@ -761,6 +833,8 @@ fn DisplayWorkspace(selected_display: Memo<Option<api::DisplaySummary>>) -> impl
     // preview image without coupling to OverlayStackPanel's internal state.
     let (workspace_overlay_config, set_workspace_overlay_config) =
         signal(None::<DisplayOverlayConfig>);
+    let (drag_state, set_drag_state) = signal(None::<DragState>);
+    let container_ref = NodeRef::<leptos::html::Div>::new();
     Effect::new(move |_| {
         let Some(display) = selected_display.get() else {
             set_workspace_overlay_config.set(None);
@@ -864,6 +938,7 @@ fn DisplayWorkspace(selected_display: Memo<Option<api::DisplaySummary>>) -> impl
                         }.into_any();
                     };
                     let ts = poll_counter.get();
+                    let display_id = display.id.clone();
                     let src = api::display_preview_url(&display.id, Some(ts));
                     let aspect = format!("{} / {}", display.width, display.height);
                     let rounded_class = if display.circular {
@@ -873,7 +948,7 @@ fn DisplayWorkspace(selected_display: Memo<Option<api::DisplaySummary>>) -> impl
                     };
                     let alt_text = format!("Live preview of {}", display.name);
                     let container_class = format!(
-                        "relative max-h-full max-w-full overflow-hidden border border-edge-subtle bg-black shadow-lg {rounded_class}"
+                        "relative max-h-full max-w-full overflow-hidden border border-edge-subtle bg-black shadow-lg select-none {rounded_class}"
                     );
                     let dw = display.width;
                     let dh = display.height;
@@ -884,20 +959,88 @@ fn DisplayWorkspace(selected_display: Memo<Option<api::DisplaySummary>>) -> impl
                                 .overlays
                                 .into_iter()
                                 .filter(|slot| slot.enabled)
-                                .map(move |slot| render_slot_outline(slot, dw, dh))
+                                .map(move |slot| {
+                                    render_slot_outline(
+                                        slot,
+                                        dw,
+                                        dh,
+                                        drag_state,
+                                        set_drag_state,
+                                        container_ref,
+                                    )
+                                })
                                 .collect_view()
                         });
+
+                    let on_pointermove = move |event: PointerEvent| {
+                        if drag_state.with(Option::is_none) {
+                            return;
+                        }
+                        let Some(container) = container_ref.get() else {
+                            return;
+                        };
+                        let rect = container.get_bounding_client_rect();
+                        let x = event.client_x() as f64 - rect.left();
+                        let y = event.client_y() as f64 - rect.top();
+                        set_drag_state.update(|state| {
+                            if let Some(state) = state {
+                                state.current_pointer_x = x;
+                                state.current_pointer_y = y;
+                            }
+                        });
+                    };
+
+                    let on_pointerup = {
+                        let display_id = display_id.clone();
+                        move |_: PointerEvent| {
+                            let Some(state) = drag_state.get() else {
+                                return;
+                            };
+                            let Some(container) = container_ref.get() else {
+                                set_drag_state.set(None);
+                                return;
+                            };
+                            let container_width = container.get_bounding_client_rect().width();
+                            let new_position = state.resolved_position(container_width);
+                            let slot_id = state.slot_id;
+                            let display_id = display_id.clone();
+                            set_drag_state.set(None);
+                            spawn_local(async move {
+                                let body = api::UpdateOverlaySlotRequest {
+                                    position: Some(new_position),
+                                    ..Default::default()
+                                };
+                                if let Err(error) =
+                                    api::patch_overlay_slot(&display_id, slot_id, &body).await
+                                {
+                                    toasts::toast_error(&format!(
+                                        "Reposition failed: {error}"
+                                    ));
+                                }
+                            });
+                        }
+                    };
+
+                    let on_pointerleave = move |_: PointerEvent| {
+                        set_drag_state.set(None);
+                    };
+
                     view! {
                         <div
+                            node_ref=container_ref
                             class=container_class
-                            style=move || format!("aspect-ratio: {aspect};")
+                            style=move || format!("aspect-ratio: {aspect}; cursor: {};", if drag_state.with(Option::is_some) { "grabbing" } else { "default" })
+                            on:pointermove=on_pointermove
+                            on:pointerup=on_pointerup
+                            on:pointerleave=on_pointerleave
                         >
                             <img
-                                class="h-full w-full object-cover"
+                                class="pointer-events-none h-full w-full object-cover"
                                 src=src
                                 alt=alt_text
                                 loading="eager"
                                 decoding="async"
+                                draggable="false"
                             />
                             {overlays}
                         </div>
@@ -2570,16 +2713,14 @@ fn anchor_origin_ui(
     }
 }
 
-/// Render a translucent outline on the preview canvas that shows where the
-/// slot is positioned. Coordinates are expressed as CSS percentages so the
-/// outline scales with the container regardless of rendered size.
-fn render_slot_outline(
-    slot: OverlaySlot,
+/// Resolve a slot's position to CSS percentage coordinates on the preview.
+fn resolve_slot_css_pct(
+    position: &OverlayPosition,
     display_width: u32,
     display_height: u32,
-) -> impl IntoView {
-    let (left_pct, top_pct, width_pct, height_pct) = match &slot.position {
-        OverlayPosition::FullScreen => (0.0_f64, 0.0, 100.0, 100.0),
+) -> (f64, f64, f64, f64) {
+    match position {
+        OverlayPosition::FullScreen => (0.0, 0.0, 100.0, 100.0),
         OverlayPosition::Anchored {
             anchor,
             offset_x,
@@ -2587,30 +2728,142 @@ fn render_slot_outline(
             width,
             height,
         } => {
-            let dw = display_width as i32;
-            let dh = display_height as i32;
-            let sw = *width as i32;
-            let sh = *height as i32;
+            #[expect(clippy::as_conversions, reason = "coordinate math on bounded display pixel values")]
+            let (dw, dh, sw, sh) = (
+                display_width as i32,
+                display_height as i32,
+                *width as i32,
+                *height as i32,
+            );
             let (base_x, base_y) = anchor_origin_ui(*anchor, dw, dh, sw, sh);
             let x = base_x + offset_x;
             let y = base_y + offset_y;
+            #[expect(clippy::as_conversions, reason = "percentage conversion from i32")]
             let left = (x as f64 / dw as f64) * 100.0;
+            #[expect(clippy::as_conversions, reason = "percentage conversion from i32")]
             let top = (y as f64 / dh as f64) * 100.0;
+            #[expect(clippy::as_conversions, reason = "percentage conversion from i32")]
             let w = (sw as f64 / dw as f64) * 100.0;
+            #[expect(clippy::as_conversions, reason = "percentage conversion from i32")]
             let h = (sh as f64 / dh as f64) * 100.0;
             (left, top, w, h)
         }
-    };
+    }
+}
+
+/// Render a draggable outline on the preview canvas.
+fn render_slot_outline(
+    slot: OverlaySlot,
+    display_width: u32,
+    display_height: u32,
+    drag_state: ReadSignal<Option<DragState>>,
+    set_drag_state: WriteSignal<Option<DragState>>,
+    container_ref: NodeRef<leptos::html::Div>,
+) -> impl IntoView {
+    let slot_id = slot.id;
     let (_, source_icon) = overlay_source_descriptor(&slot.source);
     let name = slot.name.clone();
-    let style = format!(
-        "position:absolute; left:{left_pct:.3}%; top:{top_pct:.3}%; width:{width_pct:.3}%; height:{height_pct:.3}%; pointer-events:none;"
-    );
+
+    let (slot_width, slot_height) = match &slot.position {
+        OverlayPosition::FullScreen => (display_width, display_height),
+        OverlayPosition::Anchored { width, height, .. } => (*width, *height),
+    };
+
+    // Static CSS percentages used when this slot is NOT being dragged.
+    let (static_left, static_top, width_pct, height_pct) =
+        resolve_slot_css_pct(&slot.position, display_width, display_height);
+
+    // Resolved display-pixel origin for drag start reference.
+    let (resolved_x, resolved_y) = match &slot.position {
+        OverlayPosition::FullScreen => (0.0, 0.0),
+        OverlayPosition::Anchored {
+            anchor,
+            offset_x,
+            offset_y,
+            width,
+            height,
+        } => {
+            let (bx, by) = anchor_origin_ui(
+                *anchor,
+                display_width as i32,
+                display_height as i32,
+                *width as i32,
+                *height as i32,
+            );
+            ((bx + offset_x) as f64, (by + offset_y) as f64)
+        }
+    };
+
+    let is_full_screen = matches!(slot.position, OverlayPosition::FullScreen);
+
+    let on_pointerdown = move |event: PointerEvent| {
+        if is_full_screen {
+            return;
+        }
+        event.prevent_default();
+        let Some(container) = container_ref.get() else {
+            return;
+        };
+        let rect = container.get_bounding_client_rect();
+        let pointer_x = event.client_x() as f64 - rect.left();
+        let pointer_y = event.client_y() as f64 - rect.top();
+        set_drag_state.set(Some(DragState {
+            slot_id,
+            start_slot_x: resolved_x,
+            start_slot_y: resolved_y,
+            start_pointer_x: pointer_x,
+            start_pointer_y: pointer_y,
+            current_pointer_x: pointer_x,
+            current_pointer_y: pointer_y,
+            display_width,
+            display_height,
+            slot_width,
+            slot_height,
+        }));
+    };
+
+    let style = Signal::derive(move || {
+        let is_dragging = drag_state
+            .with(|d| d.as_ref().is_some_and(|d| d.slot_id == slot_id));
+        if is_dragging {
+            let container_width = container_ref
+                .get()
+                .map_or(1.0, |c| c.get_bounding_client_rect().width());
+            let (dx, dy) = drag_state.with(|d| {
+                d.as_ref()
+                    .map(|d| d.current_display_position(container_width))
+                    .unwrap_or((resolved_x, resolved_y))
+            });
+            let dw = f64::from(display_width);
+            let dh = f64::from(display_height);
+            let left = (dx / dw) * 100.0;
+            let top = (dy / dh) * 100.0;
+            format!(
+                "position:absolute; left:{left:.3}%; top:{top:.3}%; width:{width_pct:.3}%; height:{height_pct:.3}%; z-index:20; cursor:grabbing;"
+            )
+        } else {
+            let cursor = if is_full_screen { "default" } else { "grab" };
+            format!(
+                "position:absolute; left:{static_left:.3}%; top:{static_top:.3}%; width:{width_pct:.3}%; height:{height_pct:.3}%; cursor:{cursor};"
+            )
+        }
+    });
+
+    let is_dragging_this = Signal::derive(move || {
+        drag_state.with(|d| d.as_ref().is_some_and(|d| d.slot_id == slot_id))
+    });
 
     view! {
         <div
-            class="flex items-end justify-start border border-accent-primary/60 bg-accent-primary/8"
+            class=move || {
+                if is_dragging_this.get() {
+                    "flex items-end justify-start border-2 border-accent-primary bg-accent-primary/15"
+                } else {
+                    "flex items-end justify-start border border-accent-primary/60 bg-accent-primary/8 transition-[left,top] duration-150"
+                }
+            }
             style=style
+            on:pointerdown=on_pointerdown
         >
             <span
                 class="inline-flex items-center gap-1 rounded-tr-sm bg-accent-primary/40 px-1 py-0.5 text-[9px] font-medium text-white/90 backdrop-blur-sm"
