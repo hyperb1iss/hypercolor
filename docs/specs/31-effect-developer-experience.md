@@ -1143,7 +1143,7 @@ curl -X POST http://localhost:9420/api/v1/effects/rescan
 
 ## 11. Claude Code Agent Skill
 
-A Claude Code skill that wraps the `hyper` CLI, enabling AI-assisted effect
+A Claude Code skill that wraps the `hypercolor` CLI, enabling AI-assisted effect
 development and system control from within a conversation.
 
 ### 11.1 Skill Metadata
@@ -1171,25 +1171,25 @@ The skill activates on:
 
 ### 11.3 Command Reference
 
-The skill provides the agent with the full `hyper` CLI surface:
+The skill provides the agent with the full `hypercolor` CLI surface:
 
 ```
 SYSTEM STATUS
-  hyper status [--watch] [--json]
-  hyper diagnose [--system] [--json]
+  hypercolor status [--watch] [--json]
+  hypercolor diagnose [--system] [--json]
 
 DEVICES
-  hyper devices list [--json]
-  hyper devices discover [--backend hid|wled|hue]
-  hyper devices info <device>
-  hyper devices identify <device> [--duration <secs>]
-  hyper devices set-color <device> <color>
+  hypercolor devices list [--json]
+  hypercolor devices discover [--backend hid|wled|hue]
+  hypercolor devices info <device>
+  hypercolor devices identify <device> [--duration <secs>]
+  hypercolor devices set-color <device> <color>
 
 EFFECTS
-  hyper effects list [--search <term>] [--audio] [--json]
-  hyper effects info <effect>
-  hyper effects activate <effect> [-p key=value]... [--speed N] [--intensity N]
-  hyper effects stop
+  hypercolor effects list [--search <term>] [--audio] [--json]
+  hypercolor effects info <effect>
+  hypercolor effects activate <effect> [-p key=value]... [--speed N] [--intensity N]
+  hypercolor effects stop
 
 LIVE CONTROL
   curl -X PATCH localhost:9420/api/v1/effects/current/controls \
@@ -1197,50 +1197,50 @@ LIVE CONTROL
     -d '{"controls": {"speed": 7, "brightness": 90}}'
 
 PROFILES
-  hyper profiles list [--json]
-  hyper profiles create <name> [--description <desc>]
-  hyper profiles apply <name>
-  hyper profiles delete <name> --yes
+  hypercolor profiles list [--json]
+  hypercolor profiles create <name> [--description <desc>]
+  hypercolor profiles apply <name>
+  hypercolor profiles delete <name> --yes
 
 LIBRARY — PRESETS
-  hyper library presets list [--json]
-  hyper library presets create <name> --effect <effect> [-c key=value]...
-  hyper library presets apply <preset>
-  hyper library presets delete <preset> --yes
+  hypercolor library presets list [--json]
+  hypercolor library presets create <name> --effect <effect> [-c key=value]...
+  hypercolor library presets apply <preset>
+  hypercolor library presets delete <preset> --yes
 
 LIBRARY — PLAYLISTS
-  hyper library playlists list [--json]
-  hyper library playlists create <name> [-i effect:name:duration_ms]...
-  hyper library playlists activate <playlist>
-  hyper library playlists stop
+  hypercolor library playlists list [--json]
+  hypercolor library playlists create <name> [-i effect:name:duration_ms]...
+  hypercolor library playlists activate <playlist>
+  hypercolor library playlists stop
 
 LIBRARY — FAVORITES
-  hyper library favorites list [--json]
-  hyper library favorites add <effect>
-  hyper library favorites remove <effect>
+  hypercolor library favorites list [--json]
+  hypercolor library favorites add <effect>
+  hypercolor library favorites remove <effect>
 
 SCENES
-  hyper scenes list [--json]
-  hyper scenes create <name> --profile <profile> --trigger <type>
-  hyper scenes activate <scene>
-  hyper scenes delete <scene> --yes
+  hypercolor scenes list [--json]
+  hypercolor scenes create <name> --profile <profile> --trigger <type>
+  hypercolor scenes activate <scene>
+  hypercolor scenes delete <scene> --yes
 
 LAYOUTS
-  hyper layouts list [--json]
-  hyper layouts show <layout>
+  hypercolor layouts list [--json]
+  hypercolor layouts show <layout>
 
 CONFIG
-  hyper config show [--json]
-  hyper config get <key>
-  hyper config set <key> <value> [--live]
+  hypercolor config show [--json]
+  hypercolor config get <key>
+  hypercolor config set <key> <value> [--live]
 
 EFFECTS MANAGEMENT
-  hyper effects install <file.html>
+  hypercolor effects install <file.html>
   curl -X POST localhost:9420/api/v1/effects/rescan
 
 SERVICE
-  hyper service status
-  hyper service logs [-f] [-n <lines>]
+  hypercolor service status
+  hypercolor service logs [-f] [-n <lines>]
 
 SETTINGS
   curl -X PUT localhost:9420/api/v1/settings/brightness \
@@ -1257,28 +1257,28 @@ SETTINGS
 2. npx hypercolor build
 3. npx hypercolor validate dist/my-effect.html
 4. npx hypercolor install dist/my-effect.html
-5. hyper effects activate my-effect
-6. hyper effects activate my-effect -p speed=8 -p brightness=90
+5. hypercolor effects activate my-effect
+6. hypercolor effects activate my-effect -p speed=8 -p brightness=90
 7. Iterate on source, rebuild, re-install
 ```
 
 **Live tweaking:**
 
 ```
-1. hyper effects activate iris
+1. hypercolor effects activate iris
 2. PATCH /api/v1/effects/current/controls → {"controls": {"speed": 3}}
 3. Observe result
 4. PATCH /api/v1/effects/current/controls → {"controls": {"speed": 7}}
-5. hyper library presets create "iris-fast" --effect iris -c speed=7
+5. hypercolor library presets create "iris-fast" --effect iris -c speed=7
 ```
 
 **Diagnostics:**
 
 ```
-1. hyper status --json
-2. hyper diagnose --system
-3. hyper service logs -n 50
-4. hyper devices list --json
+1. hypercolor status --json
+2. hypercolor diagnose --system
+3. hypercolor service logs -n 50
+4. hypercolor devices list --json
 ```
 
 ### 11.5 Implementation
@@ -1288,7 +1288,7 @@ lives in the Hypercolor repo or a dedicated plugin. It contains the command
 reference above as context, plus behavioral guidance:
 
 - Always use `--json` when parsing output programmatically
-- Prefer `hyper effects activate` over raw curl for effect activation
+- Prefer `hypercolor effects activate` over raw curl for effect activation
 - Use `PATCH /effects/current/controls` for live control tweaking (no CLI
   equivalent currently)
 - Don't restart the daemon without asking the user
@@ -1339,7 +1339,7 @@ Add the install endpoint and UI upload.
 | 3.1 | Daemon | Add `POST /api/v1/effects/install` endpoint (multipart upload) |
 | 3.2 | Daemon | Validation logic (reuse meta parser, check required elements) |
 | 3.3 | Daemon | File write to user effects dir + dedup naming |
-| 3.4 | CLI | Add `hyper effects install <file>` command |
+| 3.4 | CLI | Add `hypercolor effects install <file>` command |
 | 3.5 | SDK | Add `--daemon` mode to `hypercolor install` |
 | 3.6 | UI | "Install Effect" button on effects page |
 | 3.7 | Types | Add `hypercolor-version` meta tag to format version constant |
@@ -1352,7 +1352,7 @@ Create the Claude Code skill for Hypercolor control.
 
 | Task | Scope | Description |
 |------|-------|-------------|
-| 4.1 | Skill | Write the skill file with full `hyper` CLI reference |
+| 4.1 | Skill | Write the skill file with full `hypercolor` CLI reference |
 | 4.2 | Skill | Add workflow examples and behavioral guidance |
 | 4.3 | Skill | Test trigger patterns and command execution |
 

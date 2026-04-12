@@ -450,7 +450,7 @@ The CLI should move to the generic device-scoped route.
 
 Temporary compatibility strategy:
 
-- keep legacy `hyper devices pair hue|nanoleaf` commands as wrappers
+- keep legacy `hypercolor devices pair hue|nanoleaf` commands as wrappers
 - internally resolve the device and call the generic route
 - remove backend-specific CLI subcommands in a later cleanup wave
 

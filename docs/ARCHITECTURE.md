@@ -137,16 +137,16 @@ hypercolor/
 │   │       └── dbus/                   # D-Bus service (zbus)
 │   │           └── mod.rs
 │   │
-│   ├── hypercolor-tui/                 # Binary: terminal interface
+│   ├── hypercolor-tui/                 # Library: terminal interface (launched by `hypercolor tui`)
 │   │   ├── Cargo.toml
 │   │   └── src/
-│   │       ├── main.rs
+│   │       ├── lib.rs
 │   │       └── widgets/                # LED preview, spectrum, device list
 │   │
-│   └── hypercolor-cli/                 # Binary: command-line tool
+│   └── hypercolor-cli/                 # Binary: `hypercolor` command-line tool
 │       ├── Cargo.toml
 │       └── src/
-│           └── main.rs                 # clap derive subcommands
+│           └── main.rs                 # clap derive subcommands (hosts `hypercolor tui`)
 │
 ├── web/                                # SvelteKit frontend
 │   ├── package.json

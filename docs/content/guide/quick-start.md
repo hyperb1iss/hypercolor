@@ -26,7 +26,7 @@ Hypercolor automatically discovers connected USB HID devices and network devices
 **Via CLI:**
 
 ```bash
-hyper devices list
+hypercolor devices list
 ```
 
 **Via REST API:**
@@ -48,7 +48,7 @@ Hypercolor ships with a library of 30+ built-in effects: audio-reactive visualiz
 **Via CLI:**
 
 ```bash
-hyper effects list
+hypercolor effects list
 ```
 
 **Via REST API:**
@@ -68,7 +68,7 @@ Pick an effect ID from the list and apply it:
 **Via CLI:**
 
 ```bash
-hyper effects activate <effect-id>
+hypercolor effects activate <effect-id>
 ```
 
 **Via REST API:**

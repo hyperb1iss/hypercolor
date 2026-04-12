@@ -1,6 +1,6 @@
 # Spec 37 — CLI Completeness, Styling Parity, and Remote Control
 
-> Implementation-ready specification for completing the `hyper` CLI as a full
+> Implementation-ready specification for completing the `hypercolor` CLI as a full
 > control surface over the Hypercolor daemon, replacing hardcoded ANSI escapes
 > with an opaline-themed `Painter` that matches the TUI, and turning remote
 > operation from a flag-heavy chore into a first-class experience with named
@@ -38,7 +38,7 @@
 
 Hypercolor's daemon is the most complete layer in the project. It exposes
 roughly 95 REST endpoints across 12 route groups, a WebSocket with six
-streaming channels, and a 14-tool MCP server. The `hyper` CLI, in contrast,
+streaming channels, and a 14-tool MCP server. The `hypercolor` CLI, in contrast,
 covers only the happy-path fraction of that surface, renders output with
 hardcoded ANSI escape codes that bypass the opaline theme engine the TUI
 already uses, and treats remote operation as an afterthought that requires
@@ -47,7 +47,7 @@ already uses, and treats remote operation as an afterthought that requires
 This spec closes all three gaps in a single coordinated initiative:
 
 - **Coverage.** Every REST endpoint that makes sense as a scriptable operation
-  gets a `hyper` subcommand. Attachments, logical devices, effect-layout
+  gets a `hypercolor` subcommand. Attachments, logical devices, effect-layout
   associations, live control patching, brightness, audio devices, and the
   handful of smaller orphans all become first-class commands.
 - **Styling.** The CLI adopts `opaline` with a dedicated `Painter` struct that
@@ -56,10 +56,10 @@ This spec closes all three gaps in a single coordinated initiative:
   `id`, `muted`, `keyword`) that every command handler uses instead of
   `\x1b[38;2;...` literals.
 - **Remote polish.** Connection profiles live in a new TOML config file, so
-  `hyper --profile home status` replaces `hyper --host 192.168.1.42 --port
+  `hypercolor --profile home status` replaces `hypercolor --host 192.168.1.42 --port
   9420 --api-key $SECRET status`. A WebSocket streaming client powers
-  subscription commands like `hyper status --watch`, `hyper effects watch`,
-  `hyper stream frames`, and `hyper stream events`.
+  subscription commands like `hypercolor status --watch`, `hypercolor effects watch`,
+  `hypercolor stream frames`, and `hypercolor stream events`.
 
 The result is a CLI that can drive every aspect of a local or remote daemon,
 looks and feels identical to the TUI, and works over the network without
@@ -88,7 +88,7 @@ zero CLI exposure:
   linking a specific effect to a preferred layout — is entirely absent.
 - **Live control patching.** `PATCH /effects/current/controls` and `POST
   /effects/current/reset`. Today the only way to change controls is
-  `hyper effects activate <name> --param ...`, which re-applies the whole
+  `hypercolor effects activate <name> --param ...`, which re-applies the whole
   effect rather than patching the running instance.
 - **Effect rescan.** `POST /effects/rescan` — triggers a reload of the effect
   library without restarting the daemon.
@@ -101,7 +101,7 @@ zero CLI exposure:
 - **Preset and playlist updates.** `PUT /library/presets/{id}` and
   `PUT /library/playlists/{id}` — the CLI can create and delete but not edit.
 
-The audit also confirmed that `hyper status --watch` polls the REST `status`
+The audit also confirmed that `hypercolor status --watch` polls the REST `status`
 endpoint on an interval, because the CLI has no WebSocket client at all. Every
 watch command in the current CLI is a polling loop.
 
@@ -132,7 +132,7 @@ mechanically possible today. What is missing is ergonomics:
 
 - Every invocation requires `--host`, `--port`, and `--api-key` (or matching
   env vars). There is no way to say "my living room daemon" once and reuse it.
-- The only automated way to pick a daemon is `hyper servers discover`, which
+- The only automated way to pick a daemon is `hypercolor servers discover`, which
   scans mDNS and prints a list. There is no "pick one and remember it."
 - No WebSocket client exists, so watching state from a remote daemon means
   HTTP polling — which is wasteful over a network and introduces latency on
@@ -147,13 +147,13 @@ that is a surprisingly weak remote story.
 
 ### Goals
 
-- `hyper` exposes every daemon REST endpoint that has a meaningful CLI shape.
-- `hyper` uses `opaline` for all colored output, via a `Painter` struct that
+- `hypercolor` exposes every daemon REST endpoint that has a meaningful CLI shape.
+- `hypercolor` uses `opaline` for all colored output, via a `Painter` struct that
   centralizes theme access and provides semantic helpers.
 - CLI and TUI share theme resolution order: `--theme` flag → `HYPERCOLOR_THEME`
   env → CLI config `defaults.theme` → `silkcircuit-neon` default.
 - Connection profiles live in `~/.config/hypercolor/cli.toml`. Users invoke
-  remote daemons by name: `hyper --profile home effects list`.
+  remote daemons by name: `hypercolor --profile home effects list`.
 - A WebSocket streaming client drives `--watch` variants and new `stream`
   subcommands without polling.
 - Exit codes are stable and documented so scripts can rely on them.
@@ -179,8 +179,8 @@ that is a surprisingly weak remote story.
 
 ## 4. Design Principles
 
-**One binary, many surfaces.** `hyper` is the scripting surface; `hypercolor`
-(the daemon) is the execution surface; the TUI is the interactive surface.
+**One binary, many surfaces.** `hypercolor` is the scripting surface; `hypercolor-daemon`
+is the execution surface; `hypercolor tui` is the interactive surface.
 All three should feel like one product. Shared theming via opaline is the
 mechanism that makes this real.
 
@@ -247,8 +247,8 @@ crates/hypercolor-cli/
         ├── logical.rs           # NEW: logical-devices subcommand tree
         ├── brightness.rs        # NEW
         ├── audio.rs             # NEW
-        ├── server.rs            # NEW: `hyper server info`
-        └── stream.rs            # NEW: `hyper stream frames|events|metrics|spectrum`
+        ├── server.rs            # NEW: `hypercolor server info`
+        └── stream.rs            # NEW: `hypercolor stream frames|events|metrics|spectrum`
 ```
 
 The `output.rs` file as it exists today is split into three modules:
@@ -346,7 +346,7 @@ JSON output never touches the painter.
 
 ## 6. Command Inventory
 
-This section is the authoritative list of every `hyper` subcommand after
+This section is the authoritative list of every `hypercolor` subcommand after
 this spec lands. Existing commands are marked **(existing)**; new commands
 are marked **(new)**. Subcommands that are partially implemented today are
 marked **(existing, extended)** with a note about what changes.
@@ -376,17 +376,17 @@ marked **(existing, extended)** with a note about what changes.
 ### 6.2 Extended Subcommand: `effects`
 
 ```
-hyper effects list                              # (existing)
-hyper effects info <name>                       # (existing)
-hyper effects activate <name> [--param ...]     # (existing)
-hyper effects stop                              # (existing)
-hyper effects patch --param key=value ...       # (new)  PATCH /effects/current/controls
-hyper effects reset                             # (new)  POST  /effects/current/reset
-hyper effects rescan                            # (new)  POST  /effects/rescan
-hyper effects layout show <name>                # (new)  GET   /effects/{id}/layout
-hyper effects layout set <name> <layout-id>     # (new)  PUT   /effects/{id}/layout
-hyper effects layout clear <name>               # (new)  DELETE /effects/{id}/layout
-hyper effects watch                             # (new)  WS events channel, filters to effect events
+hypercolor effects list                              # (existing)
+hypercolor effects info <name>                       # (existing)
+hypercolor effects activate <name> [--param ...]     # (existing)
+hypercolor effects stop                              # (existing)
+hypercolor effects patch --param key=value ...       # (new)  PATCH /effects/current/controls
+hypercolor effects reset                             # (new)  POST  /effects/current/reset
+hypercolor effects rescan                            # (new)  POST  /effects/rescan
+hypercolor effects layout show <name>                # (new)  GET   /effects/{id}/layout
+hypercolor effects layout set <name> <layout-id>     # (new)  PUT   /effects/{id}/layout
+hypercolor effects layout clear <name>               # (new)  DELETE /effects/{id}/layout
+hypercolor effects watch                             # (new)  WS events channel, filters to effect events
 ```
 
 `patch` accepts the same `--param key=value` syntax as `activate` but
@@ -400,39 +400,39 @@ shape.
 ### 6.3 Extended Subcommand: `devices`
 
 ```
-hyper devices list                                          # (existing)
-hyper devices info <id>                                     # (existing)
-hyper devices discover [--backend ...] [--timeout ...]      # (existing)
-hyper devices pair <id>                                     # (existing)
-hyper devices unpair <id>                                   # (new)     DELETE /devices/{id}/pair
-hyper devices identify <id>                                 # (existing)
-hyper devices identify <id> zone <zone-id>                  # (new)     POST   /devices/{id}/zones/{zone_id}/identify
-hyper devices identify <id> slot <slot-id>                  # (new)     POST   /devices/{id}/attachments/{slot_id}/identify
-hyper devices set-color <id> <color>                        # (existing)
-hyper devices delete <id>                                   # (new)     DELETE /devices/{id}
-hyper devices update <id> [--name ...] [--enabled ...]      # (new)     PUT    /devices/{id}
-hyper devices attachments show <id>                         # (new)     GET    /devices/{id}/attachments
-hyper devices attachments set <id> --slot <n> --template <t># (new)     PUT    /devices/{id}/attachments
-hyper devices attachments preview <id> --slot ...           # (new)     POST   /devices/{id}/attachments/preview
-hyper devices attachments clear <id>                        # (new)     DELETE /devices/{id}/attachments
-hyper devices logical list <id>                             # (new)     GET    /devices/{id}/logical-devices
-hyper devices logical create <id> --name ... --zones ...    # (new)     POST   /devices/{id}/logical-devices
+hypercolor devices list                                          # (existing)
+hypercolor devices info <id>                                     # (existing)
+hypercolor devices discover [--backend ...] [--timeout ...]      # (existing)
+hypercolor devices pair <id>                                     # (existing)
+hypercolor devices unpair <id>                                   # (new)     DELETE /devices/{id}/pair
+hypercolor devices identify <id>                                 # (existing)
+hypercolor devices identify <id> zone <zone-id>                  # (new)     POST   /devices/{id}/zones/{zone_id}/identify
+hypercolor devices identify <id> slot <slot-id>                  # (new)     POST   /devices/{id}/attachments/{slot_id}/identify
+hypercolor devices set-color <id> <color>                        # (existing)
+hypercolor devices delete <id>                                   # (new)     DELETE /devices/{id}
+hypercolor devices update <id> [--name ...] [--enabled ...]      # (new)     PUT    /devices/{id}
+hypercolor devices attachments show <id>                         # (new)     GET    /devices/{id}/attachments
+hypercolor devices attachments set <id> --slot <n> --template <t># (new)     PUT    /devices/{id}/attachments
+hypercolor devices attachments preview <id> --slot ...           # (new)     POST   /devices/{id}/attachments/preview
+hypercolor devices attachments clear <id>                        # (new)     DELETE /devices/{id}/attachments
+hypercolor devices logical list <id>                             # (new)     GET    /devices/{id}/logical-devices
+hypercolor devices logical create <id> --name ... --zones ...    # (new)     POST   /devices/{id}/logical-devices
 ```
 
 `devices identify` becomes a group command. The bare form
-(`hyper devices identify <id>`) keeps its existing meaning for backward
+(`hypercolor devices identify <id>`) keeps its existing meaning for backward
 compatibility; `zone` and `slot` are new positional subcommand variants.
 
 ### 6.4 New Subcommand: `attachments`
 
 ```
-hyper attachments templates list                                   # GET    /attachments/templates
-hyper attachments templates info <id>                              # GET    /attachments/templates/{id}
-hyper attachments templates create --name ... --category ... ...   # POST   /attachments/templates
-hyper attachments templates update <id> [--name ...] [...]         # PUT    /attachments/templates/{id}
-hyper attachments templates delete <id>                            # DELETE /attachments/templates/{id}
-hyper attachments categories                                       # GET    /attachments/categories
-hyper attachments vendors                                          # GET    /attachments/vendors
+hypercolor attachments templates list                                   # GET    /attachments/templates
+hypercolor attachments templates info <id>                              # GET    /attachments/templates/{id}
+hypercolor attachments templates create --name ... --category ... ...   # POST   /attachments/templates
+hypercolor attachments templates update <id> [--name ...] [...]         # PUT    /attachments/templates/{id}
+hypercolor attachments templates delete <id>                            # DELETE /attachments/templates/{id}
+hypercolor attachments categories                                       # GET    /attachments/categories
+hypercolor attachments vendors                                          # GET    /attachments/vendors
 ```
 
 Template creation requires at least a name and category; all other fields
@@ -444,11 +444,11 @@ here to avoid drift.
 ### 6.5 New Subcommand: `logical`
 
 ```
-hyper logical list                                                 # GET    /logical-devices
-hyper logical info <id>                                            # GET    /logical-devices/{id}
-hyper logical create --device <id> --name ... --zones ...          # POST   /logical-devices
-hyper logical update <id> [--name ...] [--zones ...]               # PUT    /logical-devices/{id}
-hyper logical delete <id>                                          # DELETE /logical-devices/{id}
+hypercolor logical list                                                 # GET    /logical-devices
+hypercolor logical info <id>                                            # GET    /logical-devices/{id}
+hypercolor logical create --device <id> --name ... --zones ...          # POST   /logical-devices
+hypercolor logical update <id> [--name ...] [--zones ...]               # PUT    /logical-devices/{id}
+hypercolor logical delete <id>                                          # DELETE /logical-devices/{id}
 ```
 
 Logical devices are cross-device LED segment groupings. The `--zones`
@@ -457,60 +457,60 @@ argument takes a comma-separated list of `device_id:zone_id` pairs.
 ### 6.6 Extended Subcommand: `layouts`
 
 ```
-hyper layouts list                                        # (existing)
-hyper layouts show <id>                                   # (existing)
-hyper layouts update <id>                                 # (existing)
-hyper layouts create --name ... --file <path>             # (new)     POST   /layouts
-hyper layouts delete <id>                                 # (new)     DELETE /layouts/{id}
-hyper layouts active                                      # (new)     GET    /layouts/active
-hyper layouts apply <id>                                  # (new)     POST   /layouts/{id}/apply
-hyper layouts preview <id>                                # (new)     PUT    /layouts/active/preview
+hypercolor layouts list                                        # (existing)
+hypercolor layouts show <id>                                   # (existing)
+hypercolor layouts update <id>                                 # (existing)
+hypercolor layouts create --name ... --file <path>             # (new)     POST   /layouts
+hypercolor layouts delete <id>                                 # (new)     DELETE /layouts/{id}
+hypercolor layouts active                                      # (new)     GET    /layouts/active
+hypercolor layouts apply <id>                                  # (new)     POST   /layouts/{id}/apply
+hypercolor layouts preview <id>                                # (new)     PUT    /layouts/active/preview
 ```
 
 ### 6.7 Extended Subcommand: `library`
 
 ```
-hyper library favorites list                             # (existing)
-hyper library favorites add <effect>                     # (existing)
-hyper library favorites remove <effect>                  # (existing)
-hyper library presets list                               # (existing)
-hyper library presets info <id>                          # (existing)
-hyper library presets create ...                         # (existing)
-hyper library presets update <id> ...                    # (new)   PUT    /library/presets/{id}
-hyper library presets apply <id>                         # (existing)
-hyper library presets delete <id>                        # (existing)
-hyper library playlists list                             # (existing)
-hyper library playlists info <id>                        # (existing)
-hyper library playlists create ...                       # (existing)
-hyper library playlists update <id> ...                  # (new)   PUT    /library/playlists/{id}
-hyper library playlists activate <id>                    # (existing)
-hyper library playlists active                           # (existing)
-hyper library playlists stop                             # (existing)
-hyper library playlists delete <id>                      # (existing)
+hypercolor library favorites list                             # (existing)
+hypercolor library favorites add <effect>                     # (existing)
+hypercolor library favorites remove <effect>                  # (existing)
+hypercolor library presets list                               # (existing)
+hypercolor library presets info <id>                          # (existing)
+hypercolor library presets create ...                         # (existing)
+hypercolor library presets update <id> ...                    # (new)   PUT    /library/presets/{id}
+hypercolor library presets apply <id>                         # (existing)
+hypercolor library presets delete <id>                        # (existing)
+hypercolor library playlists list                             # (existing)
+hypercolor library playlists info <id>                        # (existing)
+hypercolor library playlists create ...                       # (existing)
+hypercolor library playlists update <id> ...                  # (new)   PUT    /library/playlists/{id}
+hypercolor library playlists activate <id>                    # (existing)
+hypercolor library playlists active                           # (existing)
+hypercolor library playlists stop                             # (existing)
+hypercolor library playlists delete <id>                      # (existing)
 ```
 
 ### 6.8 New Subcommand: `brightness`
 
 ```
-hyper brightness get                                     # GET /settings/brightness
-hyper brightness set <value>                             # PUT /settings/brightness  (value: 0-100)
+hypercolor brightness get                                     # GET /settings/brightness
+hypercolor brightness set <value>                             # PUT /settings/brightness  (value: 0-100)
 ```
 
 ### 6.9 New Subcommand: `audio`
 
 ```
-hyper audio devices                                      # GET /audio/devices
+hypercolor audio devices                                      # GET /audio/devices
 ```
 
 Lists available audio input devices and marks the currently selected one.
-Setting the audio source lives in `hyper config set audio.device ...` using
+Setting the audio source lives in `hypercolor config set audio.device ...` using
 the existing config tree, so this subcommand is read-only.
 
 ### 6.10 New Subcommand: `server`
 
 ```
-hyper server info                                        # GET /server
-hyper server health                                      # GET /health
+hypercolor server info                                        # GET /server
+hypercolor server health                                      # GET /health
 ```
 
 Replaces the current implicit "query the daemon to see if it's up" pattern
@@ -519,11 +519,11 @@ with explicit commands that script authors can rely on.
 ### 6.11 New Subcommand: `stream`
 
 ```
-hyper stream frames   [--zone <id>] [--format rgb|rgba] [--fps <n>]
-hyper stream events   [--filter <type>]
-hyper stream metrics  [--fps <n>]
-hyper stream spectrum [--bins 8|16|32|64|128] [--fps <n>]
-hyper stream canvas   [--format rgb|rgba] [--fps <n>]
+hypercolor stream frames   [--zone <id>] [--format rgb|rgba] [--fps <n>]
+hypercolor stream events   [--filter <type>]
+hypercolor stream metrics  [--fps <n>]
+hypercolor stream spectrum [--bins 8|16|32|64|128] [--fps <n>]
+hypercolor stream canvas   [--format rgb|rgba] [--fps <n>]
 ```
 
 Each `stream` subcommand opens the corresponding WebSocket channel and
@@ -542,8 +542,8 @@ extension could render ASCII art previews, but that is out of scope here.
 ### 6.12 Extended Subcommand: `servers`
 
 ```
-hyper servers discover [--timeout <s>]                   # (existing)
-hyper servers adopt <instance-name> [--as <profile>]     # (new)
+hypercolor servers discover [--timeout <s>]                   # (existing)
+hypercolor servers adopt <instance-name> [--as <profile>]     # (new)
 ```
 
 `adopt` takes the instance name from a previous `discover` run and writes
@@ -554,8 +554,8 @@ persistent use without manual TOML editing.
 ### 6.13 Extended Subcommand: `status`
 
 ```
-hyper status                                             # (existing)
-hyper status --watch [--interval <s>]                    # (existing, reimplemented over WS)
+hypercolor status                                             # (existing)
+hypercolor status --watch [--interval <s>]                    # (existing, reimplemented over WS)
 ```
 
 The `--watch` flag is reimplemented on top of the `events` channel, so
@@ -615,7 +615,7 @@ covered; this matrix uses strict endpoint-level coverage.)
 
 The one WebSocket channel without first-class CLI coverage is
 `screen_canvas`, which is nearly identical to `canvas` and is best served by
-adding a `--source screen` flag to `hyper stream canvas` rather than a
+adding a `--source screen` flag to `hypercolor stream canvas` rather than a
 dedicated subcommand. The debug endpoints `/devices/debug/queues` and
 `/devices/debug/routing` remain intentionally unexposed; they are daemon
 internals, not user-facing surfaces.
@@ -631,10 +631,10 @@ existing `dirs` dependency. On Linux that is `$XDG_CONFIG_HOME/hypercolor/`,
 on macOS `~/Library/Application Support/hypercolor/`, on Windows
 `%APPDATA%\hypercolor\`.
 
-The file is created lazily: if absent, `hyper` uses compiled-in defaults.
+The file is created lazily: if absent, `hypercolor` uses compiled-in defaults.
 If a profile flag is supplied and the file does not exist,
-`hyper --profile home status` exits with code `2` and a message pointing to
-`hyper servers adopt` as the usual creation path.
+`hypercolor --profile home status` exits with code `2` and a message pointing to
+`hypercolor servers adopt` as the usual creation path.
 
 ### 8.2 Schema
 
@@ -661,7 +661,7 @@ api_key = "hck_live_..."
 host    = "192.168.1.42"
 port    = 9420
 api_key = "hck_live_..."
-# Optional metadata, displayed by `hyper servers list-profiles`
+# Optional metadata, displayed by `hypercolor servers list-profiles`
 label       = "Living Room (Razer + Hue)"
 description = "RGB scenery for the main space"
 ```
@@ -672,7 +672,7 @@ fields inherit from the built-in defaults (localhost:9420, no auth).
 
 ### 8.3 Resolution
 
-When `hyper` starts:
+When `hypercolor` starts:
 
 1. Load `cli.toml` if present.
 2. Determine active profile: `--profile <name>` flag, else
@@ -689,12 +689,12 @@ per-shell overrides, flags are per-invocation overrides.
 ### 8.4 Profile Management Commands
 
 ```
-hyper config profile list                  # enumerate profiles
-hyper config profile show [name]           # show a profile's settings (active if omitted)
-hyper config profile add <name> --host ... # add a new profile
-hyper config profile set <name> <key> <value>
-hyper config profile remove <name>
-hyper config profile default <name>        # set defaults.profile
+hypercolor config profile list                  # enumerate profiles
+hypercolor config profile show [name]           # show a profile's settings (active if omitted)
+hypercolor config profile add <name> --host ... # add a new profile
+hypercolor config profile set <name> <key> <value>
+hypercolor config profile remove <name>
+hypercolor config profile default <name>        # set defaults.profile
 ```
 
 These live under the existing `config` subcommand tree rather than being
@@ -1018,7 +1018,7 @@ by other crates; no version changes needed.
 | `130` | Interrupted (SIGINT, e.g. during `stream` or `status --watch`) |
 
 These codes are stable and are part of the CLI's public contract. Scripts
-built against any post-Spec-37 `hyper` can rely on them.
+built against any post-Spec-37 `hypercolor` can rely on them.
 
 ---
 
@@ -1057,8 +1057,8 @@ Verification:
 - All existing commands render visibly identical output to before when
   the default theme is `silkcircuit-neon`
 - Snapshot tests (new) lock in the byte-exact colored output of
-  `hyper status`, `hyper devices list`, `hyper effects list`
-- `NO_COLOR=1 hyper status` produces zero ANSI bytes
+  `hypercolor status`, `hypercolor devices list`, `hypercolor effects list`
+- `NO_COLOR=1 hypercolor status` produces zero ANSI bytes
 
 ### Phase 2: Connection Profiles
 
@@ -1075,8 +1075,8 @@ Tasks:
 - Define `CliConfig` and `Profile` TOML schemas with serde
 - Implement the flag → env → profile → default resolution precedence
 - Add `--profile` global flag and `HYPERCOLOR_PROFILE` env var
-- Implement `hyper config profile {list, show, add, set, remove, default}`
-- Implement `hyper servers adopt`, writing the selected mDNS instance into
+- Implement `hypercolor config profile {list, show, add, set, remove, default}`
+- Implement `hypercolor servers adopt`, writing the selected mDNS instance into
   `cli.toml` with mode `0600` on Unix
 - Create `cli.toml` lazily on first write; never on read
 
@@ -1085,8 +1085,8 @@ Verification:
 - `just verify` passes
 - Integration test with a temp dir as `$XDG_CONFIG_HOME` exercises the
   full add → show → default → resolve cycle
-- Starting `hyper` without a `cli.toml` uses compiled-in localhost defaults
-- `hyper --profile nonexistent` exits with code `2` and a helpful message
+- Starting `hypercolor` without a `cli.toml` uses compiled-in localhost defaults
+- `hypercolor --profile nonexistent` exits with code `2` and a helpful message
 
 ### Phase 3: Coverage Catch-Up (REST)
 
@@ -1115,7 +1115,7 @@ Tasks:
 - For every new subcommand, add: clap struct, handler function, table
   renderer, JSON renderer, doc strings
 - Snapshot tests for the default render of each new command
-- Update `hyper completions` fixtures if generation is tested
+- Update `hypercolor completions` fixtures if generation is tested
 
 Verification:
 
@@ -1176,10 +1176,10 @@ Tasks:
 Verification:
 
 - `just verify` passes
-- `hyper stream events` against a local daemon receives a scene activation
+- `hypercolor stream events` against a local daemon receives a scene activation
   broadcast within one second of triggering it from another terminal
-- `hyper status --watch` updates on event rather than on timer
-- `hyper stream canvas --max-fps 5` never exceeds five messages per second
+- `hypercolor status --watch` updates on event rather than on timer
+- `hypercolor stream canvas --max-fps 5` never exceeds five messages per second
   in JSON mode
 
 ### Phase 6: Polish and Documentation
@@ -1202,7 +1202,7 @@ Tasks:
 Verification:
 
 - `just verify` passes
-- `hyper completions bash | bash` loads cleanly in a subshell
+- `hypercolor completions bash | bash` loads cleanly in a subshell
 - Every new command's help text reads well and matches the section
   definitions in this spec
 
@@ -1241,10 +1241,10 @@ already present in `crates/hypercolor-cli/Cargo.toml:30-34`.
 Use `insta` for byte-exact snapshots of colored output on a small set of
 canonical commands:
 
-- `hyper status`
-- `hyper devices list`
-- `hyper effects list`
-- `hyper stream events` (first five lines against a scripted event
+- `hypercolor status`
+- `hypercolor devices list`
+- `hypercolor effects list`
+- `hypercolor stream events` (first five lines against a scripted event
   sequence)
 
 Snapshot tests catch accidental theme drift early and force intentional
@@ -1254,12 +1254,12 @@ review on any visual change.
 
 Before merging each phase:
 
-- Run `hyper` against a real local daemon on the dev machine
-- Run `hyper --profile remote` against a daemon on a second machine over
+- Run `hypercolor` against a real local daemon on the dev machine
+- Run `hypercolor --profile remote` against a daemon on a second machine over
   the LAN
 - Run every `stream` subcommand for at least 30 seconds and Ctrl-C out
   cleanly
-- Confirm `NO_COLOR=1 hyper status` is visually monochrome
+- Confirm `NO_COLOR=1 hypercolor status` is visually monochrome
 
 ### 13.5 Regression Guards
 
@@ -1277,19 +1277,19 @@ The following choices are deliberately left for implementation or for a
 brief discussion before Phase 1 starts. None of them blocks the spec's
 shape.
 
-1. **Should `hyper --profile X` also accept bare positional shorthand?**
-   For example, `hyper @home effects list` as sugar for
-   `hyper --profile home effects list`. It reads nicely but costs a clap
+1. **Should `hypercolor --profile X` also accept bare positional shorthand?**
+   For example, `hypercolor @home effects list` as sugar for
+   `hypercolor --profile home effects list`. It reads nicely but costs a clap
    custom parser. The spec assumes `--profile` is the only form.
 2. **Should `stream canvas` render ASCII art by default?** Terminal image
    rendering is a nice party trick but is out of scope here. The spec
    assumes table-mode `stream canvas` prints metadata only.
-3. **Does `hyper audio set <device>` belong as a proper subcommand?**
-   The spec routes audio device selection through `hyper config set
+3. **Does `hypercolor audio set <device>` belong as a proper subcommand?**
+   The spec routes audio device selection through `hypercolor config set
    audio.device ...` on the grounds that it is CLI config, not an API
    call. If the daemon grows a dedicated `PUT /audio/device` endpoint,
    we add a subcommand then.
-4. **Should `hyper effects patch` support `--json-patch` for complex
+4. **Should `hypercolor effects patch` support `--json-patch` for complex
    nested control shapes?** The daemon's `PATCH /effects/current/controls`
    accepts a JSON object today. `--param k=v` is easy; `--json-patch` would
    be for scripts that need more than scalar overrides. The spec defers
@@ -1320,7 +1320,7 @@ walking into a room, reaching for a terminal, and changing the scene.
 Once this lands, the project has a single scriptable, themable, remote-
 capable entry point that covers every daemon capability a user can
 reasonably script. That unlocks three things downstream: shell-level
-automation ("before sunset, `hyper scenes activate evening`"), CI
+automation ("before sunset, `hypercolor scenes activate evening`"), CI
 integration testing of real daemons from remote runners, and a clean
 base for any future scripting surface (python bindings, a TypeScript
 SDK, etc.) that would otherwise have to re-derive the same REST calls

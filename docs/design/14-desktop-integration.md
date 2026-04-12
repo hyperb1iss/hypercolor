@@ -2823,9 +2823,9 @@ These scenarios validate the design against real usage patterns.
 
 | Component | Package | Required? | Notes |
 |---|---|---|---|
-| `hypercolor-daemon` | `hypercolor` | Yes | Core daemon binary |
-| `hypercolor-cli` | `hypercolor` | Yes | CLI binary (same package) |
-| `hypercolor-tui` | `hypercolor` | Yes | TUI binary (same package) |
+| `hypercolor-daemon` | `hypercolor` | Yes | Core daemon binary (`hypercolor-daemon`) |
+| `hypercolor-cli` | `hypercolor` | Yes | CLI binary (`hypercolor`, hosts the `hypercolor tui` subcommand) |
+| `hypercolor-tui` | `hypercolor` | Yes | TUI library (launched via `hypercolor tui`) |
 | `hypercolor-tray` | `hypercolor-tray` | Optional | System tray indicator (ksni) |
 | GNOME extension | `gnome-shell-extension-hypercolor` | Optional | GNOME Shell extension |
 | KDE widget | `plasma-widget-hypercolor` | Optional | Plasma plasmoid |

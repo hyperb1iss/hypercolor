@@ -72,7 +72,7 @@ Save the current state as a named profile:
 
 ```bash
 # Via CLI
-hyper profiles create "Gaming"
+hypercolor profiles create "Gaming"
 
 # Via REST API
 curl -X POST http://localhost:9420/api/v1/profiles \
@@ -84,7 +84,7 @@ curl -X POST http://localhost:9420/api/v1/profiles \
 
 ```bash
 # Via CLI
-hyper profiles apply "Gaming"
+hypercolor profiles apply "Gaming"
 
 # Via REST API — use the profile ID from the list
 curl -X POST http://localhost:9420/api/v1/profiles/<id>/apply
@@ -94,10 +94,10 @@ curl -X POST http://localhost:9420/api/v1/profiles/<id>/apply
 
 ```bash
 # List all profiles
-hyper profiles list
+hypercolor profiles list
 
 # Delete a profile
-hyper profiles delete <id>
+hypercolor profiles delete <id>
 ```
 
 ## Scenes

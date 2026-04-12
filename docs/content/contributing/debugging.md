@@ -45,7 +45,7 @@ The daemon includes a diagnostic endpoint that runs health checks across all sub
 
 ```bash
 # Via CLI
-hyper diagnose
+hypercolor diagnose
 
 # Via REST API
 curl -X POST http://localhost:9420/api/v1/diagnose | jq
@@ -216,7 +216,7 @@ Install udev rules with `just udev-install` and re-plug the device. You may need
 Check `lsusb` to confirm the device is visible. If it is, the vendor/product ID may not be in Hypercolor's device database. Check the logs at `debug` level for discovery output.
 
 **Effects apply but LEDs show wrong colors**
-This is usually a spatial layout issue. Check that the device zones are properly positioned in the layout. Try the identify command (`hyper devices identify <id>`) to verify the device is receiving data.
+This is usually a spatial layout issue. Check that the device zones are properly positioned in the layout. Try the identify command (`hypercolor devices identify <id>`) to verify the device is receiving data.
 
 **Low FPS in the render loop**
 Enable performance tracing: `RUST_LOG=hypercolor_core::engine=trace`. Look for frame time spikes. Common causes: slow USB writes (try reducing the frame rate), Servo rendering overhead (consider using a wgpu-native effect), or too many devices on the same USB bus.

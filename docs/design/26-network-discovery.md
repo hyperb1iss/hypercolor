@@ -12,7 +12,7 @@ network-scoped API key authentication for remote access.
 1. Daemon publishes `_hypercolor._tcp.local.` mDNS service record on startup
 2. Tray applet discovers all Hypercolor instances on the network and lets the
    user switch between them
-3. CLI can discover instances via `hyper servers` and connect to any by name/host
+3. CLI can discover instances via `hypercolor servers` and connect to any by name/host
 4. Remote access works when daemon binds to `0.0.0.0` (opt-in via config)
 5. Optional API key protects remote access (integrated with existing tiered auth)
 6. All discoverable instances expose a stable identity (name + instance ID)
@@ -349,18 +349,18 @@ the same `ServerIdentity` fields. Additive change — no existing fields removed
 - Reuse `mdns-sd` patterns from WLED scanner (`device/wled/scanner.rs`)
 - Verify: `cargo test -p hypercolor-core`
 
-#### Task 9: `hyper servers` CLI command
+#### Task 9: `hypercolor servers` CLI command
 
 **Files:** `crates/hypercolor-cli/src/commands/servers.rs` (new), CLI registration
 
-- `hyper servers discover` — pretty table of instances (name, host:port, version, devices, auth)
-- `hyper servers discover --json` — machine-readable
+- `hypercolor servers discover` — pretty table of instances (name, host:port, version, devices, auth)
+- `hypercolor servers discover --json` — machine-readable
 - `--timeout <secs>` flag (default 3s)
 - Add `--api-key` global CLI arg + `HYPERCOLOR_API_KEY` env var support
 - Verify: `cargo check -p hypercolor-cli`, manual test
 
-> Named `hyper servers discover` to avoid confusion with existing
-> `hyper devices discover` (which scans for LED hardware, not daemon instances).
+> Named `hypercolor servers discover` to avoid confusion with existing
+> `hypercolor devices discover` (which scans for LED hardware, not daemon instances).
 
 #### Task 10: Multi-server tray applet
 

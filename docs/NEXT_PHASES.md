@@ -95,11 +95,11 @@ Call `register_builtin_effects()` during daemon init. Wire `create_builtin_rende
 ### 5.4 — CLI → Daemon Round-Trip
 
 Make these CLI commands actually work end-to-end:
-- `hyper status` — shows real daemon state (FPS, device count, active effect)
-- `hyper devices list` — shows discovered devices
-- `hyper effects list` — shows registered effects
-- `hyper effects activate rainbow` — activates the Rainbow effect
-- `hyper effects stop` — stops the active effect
+- `hypercolor status` — shows real daemon state (FPS, device count, active effect)
+- `hypercolor devices list` — shows discovered devices
+- `hypercolor effects list` — shows registered effects
+- `hypercolor effects activate rainbow` — activates the Rainbow effect
+- `hypercolor effects stop` — stops the active effect
 
 **Verify:** `cargo run -p hypercolor-daemon &` then `cargo run -p hypercolor-cli -- status` works
 
@@ -236,7 +236,7 @@ Create a test harness that loads an effect, renders N frames, and verifies non-b
 
 ## Phase 7: TUI Dashboard
 
-**Goal:** `hyper tui` launches a Ratatui terminal dashboard for monitoring and control.
+**Goal:** `hypercolor tui` launches a Ratatui terminal dashboard for monitoring and control.
 
 ### 7.1 — TUI Framework
 
@@ -293,7 +293,7 @@ TUI connects to the daemon's WebSocket at `ws://localhost:9420/api/v1/ws`:
 ### Estimated Scope
 - 8-12 new files
 - 30+ tests for widget rendering, event handling
-- `hyper tui` launches a live dashboard
+- `hypercolor tui` launches a live dashboard
 
 ---
 
@@ -407,23 +407,23 @@ When Phase 5 is complete, this should work:
 cargo run -p hypercolor-daemon
 
 # Terminal 2: Interact via CLI
-hyper status              # Shows: running, 60fps, 0 devices
-hyper effects list        # Shows: 6 built-in effects
-hyper effects activate rainbow
-hyper status              # Shows: running, 60fps, effect: Rainbow
+hypercolor status              # Shows: running, 60fps, 0 devices
+hypercolor effects list        # Shows: 6 built-in effects
+hypercolor effects activate rainbow
+hypercolor status              # Shows: running, 60fps, effect: Rainbow
 
 # With WLED running:
-hyper devices list        # Shows discovered devices
-hyper devices discover    # Triggers rescan
+hypercolor devices list        # Shows discovered devices
+hypercolor devices discover    # Triggers rescan
 ```
 
 When Phase 6 is complete, this should also work:
 
 ```bash
-hyper effects list        # Shows: 6 built-in + 230 HTML effects
-hyper effects activate "Voronoi Flow"  # Activates a WebGL effect via Servo
-hyper effects activate "Rainbow Wave"  # Activates a Canvas 2D effect via Servo
-hyper status              # Shows: running, 60fps, effect: Voronoi Flow, renderer: Servo
+hypercolor effects list        # Shows: 6 built-in + 230 HTML effects
+hypercolor effects activate "Voronoi Flow"  # Activates a WebGL effect via Servo
+hypercolor effects activate "Rainbow Wave"  # Activates a Canvas 2D effect via Servo
+hypercolor status              # Shows: running, 60fps, effect: Voronoi Flow, renderer: Servo
 ```
 
 When Phase 7 is complete, this should work:
@@ -433,7 +433,7 @@ When Phase 7 is complete, this should work:
 cargo run -p hypercolor-daemon
 
 # Terminal 2: Launch TUI
-hyper tui                 # Live dashboard with canvas preview
+hypercolor tui                 # Live dashboard with canvas preview
 ```
 
 You see the effect animating in your terminal via braille-dot color approximation.

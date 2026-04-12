@@ -209,7 +209,7 @@ Files:
 
 ## 4) CLI Spec Command Surface Drift
 
-Current CLI command tree (`hyper`) does not fully match `docs/specs/15-cli-commands.md` command surface and transport contract.
+Current CLI command tree (`hypercolor`) does not fully match `docs/specs/15-cli-commands.md` command surface and transport contract.
 
 Current implementation modules:
 

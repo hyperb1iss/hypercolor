@@ -30,12 +30,12 @@ This is the current supported install contract for the repo itself. Native distr
 
 The installer should:
 
-1. Build and install the daemon binary (`hypercolor`)
-2. Build and install the CLI binary (`hyper`)
+1. Build and install the daemon binary (`hypercolor-daemon`)
+2. Build and install the CLI binary (`hypercolor`, which also hosts `hypercolor tui`)
 3. Build and install the web UI into a stable runtime path outside the repo
 4. Install a systemd user service that starts the daemon with `--ui-dir`
 5. Install a desktop launcher that opens the local web UI
-6. Install shell completions for `hyper`
+6. Install shell completions for `hypercolor`
 7. Install and reload udev rules
 8. Install `/etc/modules-load.d/i2c-dev.conf`
 9. Run `modprobe i2c-dev` during install so SMBus is available immediately
@@ -44,8 +44,8 @@ The installer should:
 
 User-local files:
 
+- `~/.local/bin/hypercolor-daemon`
 - `~/.local/bin/hypercolor`
-- `~/.local/bin/hyper`
 - `~/.local/bin/hypercolor-open`
 - `~/.local/share/hypercolor/ui/`
 - `~/.local/share/applications/hypercolor.desktop`
@@ -94,6 +94,6 @@ The installer must reflect the codebase as it exists today:
 
 After the bootstrap script lands, the next installation work should be:
 
-1. Add a real `hyper permissions install` CLI path so the app can repair host integration after install
+1. Add a real `hypercolor permissions install` CLI path so the app can repair host integration after install
 2. Add a diagnostics check that explicitly reports `i2c-dev` missing vs permission denied
 3. Port the bootstrap logic into package-native hooks for Arch, Debian, Fedora, and Nix

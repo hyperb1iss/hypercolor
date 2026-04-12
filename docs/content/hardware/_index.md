@@ -92,7 +92,7 @@ Trigger a manual discovery sweep:
 
 ```bash
 # Via CLI
-hyper devices discover
+hypercolor devices discover
 
 # Via REST API
 curl -X POST http://localhost:9420/api/v1/devices/discover

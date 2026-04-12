@@ -8,7 +8,7 @@ packet inspection, mock backends, and development recipes.
 
 ## Table of Contents
 
-- [CLI Diagnostics (`hyper diagnose`)](#cli-diagnostics)
+- [CLI Diagnostics (`hypercolor diagnose`)](#cli-diagnostics)
 - [Debug Discovery Tool (`hypercolor-debug`)](#debug-discovery-tool)
 - [REST API Diagnostics](#rest-api-diagnostics)
 - [Device Debug Endpoints](#device-debug-endpoints)
@@ -26,14 +26,14 @@ packet inspection, mock backends, and development recipes.
 
 ## CLI Diagnostics
 
-**Binary:** `hyper` (hypercolor-cli)
+**Binary:** `hypercolor` (hypercolor-cli)
 **Source:** `crates/hypercolor-cli/src/commands/diagnose.rs`
 
 Run system-wide health checks from the terminal. Talks to the daemon's
 `/api/v1/diagnose` endpoint and formats the results.
 
 ```bash
-hyper diagnose [OPTIONS]
+hypercolor diagnose [OPTIONS]
 ```
 
 ### Flags
@@ -49,16 +49,16 @@ hyper diagnose [OPTIONS]
 
 ```bash
 # Full system diagnostics with styled table output
-hyper diagnose --system
+hypercolor diagnose --system
 
 # Check only the render loop and device registry
-hyper diagnose --check render --check devices
+hypercolor diagnose --check render --check devices
 
 # Generate a bug report file
-hyper diagnose --system --report /tmp/hypercolor-diag.json
+hypercolor diagnose --system --report /tmp/hypercolor-diag.json
 
 # Machine-readable JSON
-hyper diagnose --format json
+hypercolor diagnose --format json
 ```
 
 ### Output

@@ -1270,8 +1270,8 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 - `crates/hypercolor-cli/src/commands/devices.rs` (extend existing)
 
 **Implementation:**
-- `hyper devices pair hue [--bridge-ip <IP>]` — interactive Hue pairing
-- `hyper devices pair nanoleaf [--device-ip <IP>]` — interactive Nanoleaf pairing
+- `hypercolor devices pair hue [--bridge-ip <IP>]` — interactive Hue pairing
+- `hypercolor devices pair nanoleaf [--device-ip <IP>]` — interactive Nanoleaf pairing
 - Progress spinner while waiting for button press
 - Credential store confirmation
 

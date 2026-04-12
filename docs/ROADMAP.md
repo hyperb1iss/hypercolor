@@ -676,7 +676,7 @@ Each backend implements `DeviceBackend`. Each agent owns one backend module. Aud
 // Cargo.toml metadata: description, repository, homepage, keywords, categories
 // systemd user unit: hypercolor.service
 // Desktop entry: hypercolor.desktop
-// Binary naming: hypercolor (daemon), hyper (cli)
+// Binary naming: hypercolor-daemon (daemon), hypercolor (cli, also hosts `hypercolor tui`)
 // Feature flag documentation in README
 ```
 

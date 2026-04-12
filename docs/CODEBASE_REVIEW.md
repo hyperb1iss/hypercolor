@@ -237,7 +237,7 @@ These findings were real and are already fixed in the working tree history:
 1. macOS workspace build failure from Linux-only `CaptureHandle::LinuxPulse` references
 2. broken `hypercolor-ui` test imports referencing `src/api.rs`
 3. CLI HTTP client missing timeout configuration
-4. macOS `hyper service logs --since` silently ignored
+4. macOS `hypercolor service logs --since` silently ignored
 5. broken release installer udev URL
 6. missing workspace lint inheritance in `hypercolor-desktop`
 7. duplicated SDK `BaseControls` export shape

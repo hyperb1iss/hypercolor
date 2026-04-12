@@ -42,7 +42,7 @@ graph TB
     subgraph Client Interfaces
         G1[Web UI<br/>Leptos WASM]
         G2[TUI<br/>Ratatui]
-        G3[CLI<br/>hyper]
+        G3[CLI<br/>hypercolor]
         G4[MCP Server<br/>AI Assistants]
     end
 
@@ -83,10 +83,10 @@ hypercolor-core      Engine: traits, bus, sampler, config, render loop
     |
 hypercolor-hal       Hardware abstraction — USB/HID drivers
     |
-hypercolor-daemon    Binary: daemon + REST API + WebSocket + MCP
+hypercolor-daemon    Binary: `hypercolor-daemon` — REST API + WebSocket + MCP
     |
-    +-- hypercolor-cli   Binary: `hyper` CLI tool
-    +-- hypercolor-tui   Binary: terminal UI (Ratatui)
+    +-- hypercolor-cli   Binary: `hypercolor` — CLI tool (also hosts `hypercolor tui`)
+    +-- hypercolor-tui   Library: terminal UI (Ratatui), launched via `hypercolor tui`
     +-- hypercolor-ui    Leptos WASM web UI (separate from workspace)
 ```
 
@@ -97,7 +97,7 @@ hypercolor-daemon    Binary: daemon + REST API + WebSocket + MCP
 | `hypercolor-hal` | `types`, `core` | USB/HID device drivers, protocol implementations |
 | `hypercolor-daemon` | `core`, `hal` | HTTP/WS server, REST API, MCP server, daemon lifecycle |
 | `hypercolor-cli` | `core` | CLI parsing, output formatting, IPC client |
-| `hypercolor-tui` | `core` | Terminal UI with LED preview and spectrum visualizer |
+| `hypercolor-tui` | `core` | Terminal UI library (launched by `hypercolor tui`) with LED preview and spectrum visualizer |
 | `hypercolor-ui` | (standalone) | Leptos 0.8 CSR web app, compiled to WASM via Trunk |
 
 {% callout(type="warning", title="UI crate exclusion") %}

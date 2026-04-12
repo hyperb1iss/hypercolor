@@ -1,16 +1,16 @@
 +++
 title = "CLI Reference"
-description = "Command reference for the hyper CLI tool"
+description = "Command reference for the hypercolor CLI tool"
 weight = 3
 template = "page.html"
 +++
 
-The `hyper` command-line tool controls the Hypercolor daemon over its REST API. It supports styled table output, plain text, and JSON for scripting.
+The `hypercolor` command-line tool controls the Hypercolor daemon over its REST API. It supports styled table output, plain text, and JSON for scripting.
 
 ## Global Options
 
 ```
-hyper [OPTIONS] <COMMAND>
+hypercolor [OPTIONS] <COMMAND>
 
 Options:
   --format <FORMAT>    Output format: table, json, plain [default: table]
@@ -25,12 +25,12 @@ Options:
 
 ## Commands
 
-### `hyper status`
+### `hypercolor status`
 
 Show the current system state — running effect, connected devices, audio status, FPS.
 
 ```bash
-hyper status
+hypercolor status
 ```
 
 ```
@@ -40,14 +40,14 @@ Devices: 3 connected
 Audio:   enabled (level: 0.42)
 ```
 
-### `hyper devices`
+### `hypercolor devices`
 
 Device discovery and management.
 
 ```bash
-hyper devices list              # List all devices
-hyper devices discover          # Trigger device discovery
-hyper devices identify <id>     # Flash a device for identification
+hypercolor devices list              # List all devices
+hypercolor devices discover          # Trigger device discovery
+hypercolor devices identify <id>     # Flash a device for identification
 ```
 
 Example output:
@@ -59,109 +59,117 @@ wled-living-room            WLED Living Room        wled      300    connected
 prism8-001                  Lian Li Prism 8         prismrgb  1008   connected
 ```
 
-### `hyper effects`
+### `hypercolor effects`
 
 Browse and control effects.
 
 ```bash
-hyper effects list              # List all available effects
-hyper effects activate <id>     # Activate an effect
-hyper effects stop              # Stop the current effect
-hyper effects info              # Show the active effect and its controls
+hypercolor effects list              # List all available effects
+hypercolor effects activate <id>     # Activate an effect
+hypercolor effects stop              # Stop the current effect
+hypercolor effects info              # Show the active effect and its controls
 ```
 
 Apply with custom controls:
 
 ```bash
-hyper effects activate borealis --param speed=7 --param palette=SilkCircuit
+hypercolor effects activate borealis --param speed=7 --param palette=SilkCircuit
 ```
 
-### `hyper scenes`
+### `hypercolor scenes`
 
 Scene management for automated lighting triggers.
 
 ```bash
-hyper scenes list               # List all scenes
-hyper scenes create <name>      # Create a scene from current state
-hyper scenes activate <id>      # Activate a scene
-hyper scenes delete <id>        # Delete a scene
+hypercolor scenes list               # List all scenes
+hypercolor scenes create <name>      # Create a scene from current state
+hypercolor scenes activate <id>      # Activate a scene
+hypercolor scenes delete <id>        # Delete a scene
 ```
 
-### `hyper profiles`
+### `hypercolor profiles`
 
 Save and restore complete lighting states.
 
 ```bash
-hyper profiles list             # List saved profiles
-hyper profiles create <name>    # Save current state as a profile
-hyper profiles apply <id>       # Apply a saved profile
-hyper profiles delete <id>      # Delete a profile
+hypercolor profiles list             # List saved profiles
+hypercolor profiles create <name>    # Save current state as a profile
+hypercolor profiles apply <id>       # Apply a saved profile
+hypercolor profiles delete <id>      # Delete a profile
 ```
 
-### `hyper library`
+### `hypercolor library`
 
 Manage the effect library — favorites, presets, playlists.
 
 ```bash
-hyper library favorites         # List favorites
-hyper library presets           # List presets
-hyper library playlists         # List playlists
+hypercolor library favorites         # List favorites
+hypercolor library presets           # List presets
+hypercolor library playlists         # List playlists
 ```
 
-### `hyper layouts`
+### `hypercolor layouts`
 
 Spatial layout management.
 
 ```bash
-hyper layouts list              # List all layouts
-hyper layouts show <id>         # Show layout details
-hyper layouts update <id>       # Update a layout
+hypercolor layouts list              # List all layouts
+hypercolor layouts show <id>         # Show layout details
+hypercolor layouts update <id>       # Update a layout
 ```
 
-### `hyper config`
+### `hypercolor config`
 
 Configuration management.
 
 ```bash
-hyper config show               # Show full configuration
-hyper config get <key>          # Get a specific value
-hyper config set <key> <value>  # Set a value
+hypercolor config show               # Show full configuration
+hypercolor config get <key>          # Get a specific value
+hypercolor config set <key> <value>  # Set a value
 ```
 
-### `hyper service`
+### `hypercolor service`
 
 Daemon service lifecycle management.
 
 ```bash
-hyper service status            # Check daemon status
+hypercolor service status            # Check daemon status
 ```
 
-### `hyper diagnose`
+### `hypercolor diagnose`
 
 Run system diagnostics.
 
 ```bash
-hyper diagnose
+hypercolor diagnose
 ```
 
 Checks device connectivity, audio capture status, effect engine health, USB permissions, and configuration validity. Outputs a diagnostic report with pass/fail status for each check.
 
-### `hyper servers`
+### `hypercolor servers`
 
 Discover Hypercolor daemons on the local network.
 
 ```bash
-hyper servers discover          # Find daemons via mDNS
+hypercolor servers discover          # Find daemons via mDNS
 ```
 
-### `hyper completions`
+### `hypercolor tui`
+
+Launch the interactive terminal dashboard. Auto-starts a local daemon if one isn't already running.
+
+```bash
+hypercolor tui
+```
+
+### `hypercolor completions`
 
 Generate shell completions.
 
 ```bash
-hyper completions bash          # Bash completions
-hyper completions zsh           # Zsh completions
-hyper completions fish          # Fish completions
+hypercolor completions bash          # Bash completions
+hypercolor completions zsh           # Zsh completions
+hypercolor completions fish          # Fish completions
 ```
 
 ## Output Formats
@@ -174,10 +182,10 @@ The `--format` flag controls how results are rendered:
 
 ```bash
 # Pipe device list to jq for filtering
-hyper devices list -j | jq '.[] | select(.status == "connected")'
+hypercolor devices list -j | jq '.[] | select(.status == "connected")'
 
 # Use in shell scripts
-EFFECT_COUNT=$(hyper effects list -j | jq length)
+EFFECT_COUNT=$(hypercolor effects list -j | jq length)
 echo "Found $EFFECT_COUNT effects"
 ```
 

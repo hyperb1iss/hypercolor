@@ -399,7 +399,7 @@ raw API calls or helper scripts.
 - Add simulator selection in the TUI preview surface
 - Reuse existing fast preview rendering path where possible
 
-**Exit criteria:** A developer can inspect a simulated display from `hyper tui`
+**Exit criteria:** A developer can inspect a simulated display from `hypercolor tui`
 without needing a browser.
 
 Wave 3 landed on 2026-04-11 with simulator source selection in the effect

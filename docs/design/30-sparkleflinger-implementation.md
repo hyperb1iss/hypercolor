@@ -578,7 +578,7 @@ canvas_buffer_kb), `devices`, and `websocket`
 counters). Emitted at the configured metrics cadence on the WebSocket
 metrics channel.
 
-**CLI `hyper status`** — renders a compact SilkCircuit table with a Render
+**CLI `hypercolor status`** — renders a compact SilkCircuit table with a Render
 line showing the actual/target FPS ratio as a coloured bar, then a
 second-level line with tier, ceiling, miss count, and total frames. The
 Frame line reports total/wake/age, the Surfaces line reports slot state

@@ -42,14 +42,14 @@ ARTIFACT = hypercolor-{os}-{arch}   (e.g., hypercolor-linux-amd64)
 
 | Platform | Artifact Suffix | Binaries |
 |----------|----------------|----------|
-| Linux x86_64 | `linux-amd64` | `hypercolor`, `hyper` |
-| Linux aarch64 | `linux-arm64` | `hypercolor`, `hyper` |
-| macOS arm64 | `macos-arm64` | `hypercolor`, `hyper` |
+| Linux x86_64 | `linux-amd64` | `hypercolor-daemon`, `hypercolor` |
+| Linux aarch64 | `linux-arm64` | `hypercolor-daemon`, `hypercolor` |
+| macOS arm64 | `macos-arm64` | `hypercolor-daemon`, `hypercolor` |
 
 **Install steps (Linux):**
 
 1. Detect latest release tag from GitHub API (`/repos/hyperb1iss/hypercolor/releases/latest`)
-2. Download `hypercolor-linux-{arch}` and `hyper-linux-{arch}` to temp dir
+2. Download `hypercolor-daemon-linux-{arch}` and `hypercolor-linux-{arch}` to temp dir
 3. Install binaries to `~/.local/bin/`
 4. Install systemd user service to `~/.config/systemd/user/hypercolor.service`
 5. Install desktop entry to `~/.local/share/applications/hypercolor.desktop`
@@ -65,7 +65,7 @@ ARTIFACT = hypercolor-{os}-{arch}   (e.g., hypercolor-linux-amd64)
 **Install steps (macOS):**
 
 1. Detect latest release tag from GitHub API
-2. Download `hypercolor-macos-arm64` and `hyper-macos-arm64` to temp dir
+2. Download `hypercolor-daemon-macos-arm64` and `hypercolor-macos-arm64` to temp dir
 3. Install binaries to `~/.local/bin/` (create if needed, add to PATH advice)
 4. Install launchd agent plist to `~/Library/LaunchAgents/`
 5. Load the launchd agent
@@ -94,7 +94,7 @@ Handled by CI — the `homebrew-update` job in `ci.yml` auto-generates the formu
 brew install hyperb1iss/tap/hypercolor
 ```
 
-The formula installs `hypercolor` and `hyper` binaries. Post-install caveats instruct the
+The formula installs `hypercolor-daemon` and `hypercolor` binaries. Post-install caveats instruct the
 user to load the launchd agent:
 
 ```
@@ -250,16 +250,16 @@ launchctl stop tech.hyperbliss.hypercolor
 
 ### CLI Service Management
 
-The `hyper` CLI wraps platform-specific service commands behind a unified interface:
+The `hypercolor` CLI wraps platform-specific service commands behind a unified interface:
 
 ```bash
-hyper service start       # systemctl --user start / launchctl start
-hyper service stop        # systemctl --user stop / launchctl stop
-hyper service restart     # systemctl --user restart / launchctl kickstart
-hyper service status      # systemctl --user status / launchctl print
-hyper service enable      # systemctl --user enable / launchctl load
-hyper service disable     # systemctl --user disable / launchctl unload
-hyper service logs        # journalctl --user -u hypercolor / tail -f ~/Library/Logs/...
+hypercolor service start       # systemctl --user start / launchctl start
+hypercolor service stop        # systemctl --user stop / launchctl stop
+hypercolor service restart     # systemctl --user restart / launchctl kickstart
+hypercolor service status      # systemctl --user status / launchctl print
+hypercolor service enable      # systemctl --user enable / launchctl load
+hypercolor service disable     # systemctl --user disable / launchctl unload
+hypercolor service logs        # journalctl --user -u hypercolor / tail -f ~/Library/Logs/...
 ```
 
 This is already specced in [15-cli-commands.md](../specs/15-cli-commands.md). The
@@ -395,7 +395,7 @@ state updates. This keeps the menu current without polling:
 The primary interaction. Clicking "Open Web UI" (or left-clicking the tray icon on Linux):
 
 1. Check if daemon is running (GET `/api/v1/status`)
-2. If not running, attempt to start it (`hyper service start`)
+2. If not running, attempt to start it (`hypercolor service start`)
 3. Wait up to 5 seconds for health check
 4. Open `http://localhost:9420` in the default browser:
    - **Linux:** `xdg-open`
@@ -411,7 +411,7 @@ The primary interaction. Clicking "Open Web UI" (or left-clicking the tray icon 
 ```
 ~/.local/bin/
     hypercolor              # daemon
-    hyper                   # CLI
+    hypercolor              # CLI (hosts `hypercolor tui`)
     hypercolor-tray         # status bar applet
     hypercolor-open         # legacy launcher helper (kept for .desktop)
 ~/.local/share/hypercolor/
@@ -438,7 +438,7 @@ The primary interaction. Clicking "Open Web UI" (or left-clicking the tray icon 
 ```
 ~/.local/bin/
     hypercolor              # daemon
-    hyper                   # CLI
+    hypercolor              # CLI (hosts `hypercolor tui`)
     hypercolor-tray         # menu bar applet
 ~/Library/LaunchAgents/
     tech.hyperbliss.hypercolor.plist       # daemon agent
@@ -465,7 +465,7 @@ The primary interaction. Clicking "Open Web UI" (or left-clicking the tray icon 
 ### Phase 2: Service Hardening
 - [ ] `sd_notify` integration in daemon (READY=1 + WATCHDOG=1)
 - [ ] Update systemd unit to `Type=notify` with hardening
-- [ ] `hyper service` CLI commands with platform detection
+- [ ] `hypercolor service` CLI commands with platform detection
 - [ ] Launchd lifecycle management in CLI
 
 ### Phase 3: Status Bar Applet
@@ -481,5 +481,5 @@ The primary interaction. Clicking "Open Web UI" (or left-clicking the tray icon 
 ### Phase 4: Polish
 - [ ] Tray icon set (SVG symbolic for Linux, PDF template for macOS)
 - [ ] Homebrew post-install caveats
-- [ ] `hyper doctor` / `hyper diagnose` for installation health checks
+- [ ] `hypercolor doctor` / `hypercolor diagnose` for installation health checks
 - [ ] Uninstall support in curl installer

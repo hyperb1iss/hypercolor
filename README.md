@@ -145,7 +145,7 @@ the render loop from ever blocking on audio.
 - **Scene engine** with priority stacking, Oklab cross-fades, and automation rules
 - **REST API + WebSocket** for full programmatic control
 - **MCP server** for AI assistant integration (Claude Code, Cursor, and friends)
-- **CLI tool** (`hyper`) with table/JSON output and shell completions
+- **CLI tool** (`hypercolor`) with table/JSON output and shell completions
 - **Hot-reload** on effect changes, no restart required
 - **Screen capture** input for ambient backlighting
 - **D-Bus integration** for desktop automation triggers
@@ -251,15 +251,15 @@ are still manual outside Linux.
 
 ```bash
 # Start the daemon (opens UI at http://localhost:9420)
-hypercolor
+hypercolor-daemon
 
-# Or use the TUI (auto-starts a local daemon)
-hypercolor-tui
+# Control from the command line
+hypercolor effects list
+hypercolor effects activate "Neon City"
+hypercolor devices
 
-# Or control from the command line
-hyper effects list
-hyper effects activate "Neon City"
-hyper devices
+# Or drop into the interactive terminal dashboard (auto-starts a local daemon)
+hypercolor tui
 ```
 
 ### Development
@@ -327,7 +327,7 @@ graph TD
     end
 
     subgraph clients [Clients]
-        CLI[CLI<br><i>hyper</i>]
+        CLI[CLI<br><i>hypercolor</i>]
         TUI[TUI<br><i>Ratatui</i>]
         UI[Web UI<br><i>Leptos WASM</i>]
         DT[Desktop<br><i>Tauri</i>]
