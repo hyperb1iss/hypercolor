@@ -665,7 +665,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                         .with_cpu_replay_cacheable(false),
                 ),
                 true,
-                false,
+                None,
             );
             fresh_canvas_only_plan_index =
                 (fresh_canvas_only_plan_index + 1) % preview_fresh_plans.len();
@@ -749,7 +749,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                         ],
                     ),
                     false,
-                    false,
+                    None,
                 );
                 black_box(composed.bypassed);
             });
@@ -792,7 +792,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                         ],
                     ),
                     false,
-                    false,
+                    None,
                 );
                 black_box(composed.bypassed);
             });
@@ -806,7 +806,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                     let composed = gpu_bypass_sparkleflinger.compose_for_outputs(
                         bypass_surface_plan.clone(),
                         false,
-                        false,
+                        None,
                     );
                     black_box(composed.bypassed);
                 });
@@ -873,7 +873,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                                 .with_cpu_replay_cacheable(false),
                         ),
                         true,
-                        false,
+                        None,
                     );
                     cpu_fresh_canvas_only_plan_index =
                         (cpu_fresh_canvas_only_plan_index + 1) % preview_fresh_plans.len();
@@ -909,7 +909,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
         group.bench_function("gpu_compose_and_zone_sample_640x480", |b| {
             b.iter(|| {
                 let composed =
-                    gpu_end_to_end.compose_for_outputs(preview_plan.clone(), false, false);
+                    gpu_end_to_end.compose_for_outputs(preview_plan.clone(), false, None);
                 black_box(composed.bypassed);
                 assert!(
                     gpu_end_to_end
@@ -927,7 +927,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                 let composed = gpu_bypass_end_to_end.compose_for_outputs(
                     bypass_surface_plan.clone(),
                     false,
-                    false,
+                    None,
                 );
                 black_box(composed.bypassed);
                 assert!(

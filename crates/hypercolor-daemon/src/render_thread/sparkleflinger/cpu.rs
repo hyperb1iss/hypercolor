@@ -6,7 +6,8 @@ use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::overlay::OverlayBlendMode;
 
 use super::{
-    ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, publish_composed_frame,
+    ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan,
+    PreviewSurfaceRequest, publish_composed_frame,
 };
 use crate::render_thread::producer_queue::ProducerFrame;
 
@@ -49,7 +50,7 @@ impl CpuSparkleFlinger {
         &mut self,
         plan: CompositionPlan,
         requires_cpu_sampling_canvas: bool,
-        requires_published_surface: bool,
+        preview_surface_request: Option<PreviewSurfaceRequest>,
     ) -> ComposedFrameSet {
         let CompositionPlan {
             width,
@@ -57,17 +58,36 @@ impl CpuSparkleFlinger {
             mut layers,
             cpu_replay_cacheable,
         } = plan;
+        let requires_full_size_preview = preview_request_matches_plan(
+            preview_surface_request,
+            width,
+            height,
+        );
+        let requires_published_surface = preview_surface_request.is_some() && requires_full_size_preview;
 
         if layers.len() == 1
             && let Some(layer) = layers.pop()
             && layer.is_bypass_candidate()
         {
-            return publish_composed_frame(
-                layer.frame.into_render_frame(),
+            let (canvas, surface) = layer.frame.into_render_frame();
+            let preview_surface = preview_surface_request.and_then(|request| {
+                scaled_preview_surface_from_rgba(
+                    canvas.as_rgba_bytes(),
+                    canvas.width(),
+                    canvas.height(),
+                    request,
+                )
+            });
+            let mut composed = publish_composed_frame(
+                (canvas, surface),
                 true,
                 requires_cpu_sampling_canvas,
                 requires_published_surface,
             );
+            if !requires_full_size_preview {
+                composed.preview_surface = preview_surface;
+            }
+            return composed;
         }
 
         let cached_key = cpu_replay_cacheable
@@ -82,7 +102,9 @@ impl CpuSparkleFlinger {
             return cached_surface_frame(
                 cached_surface,
                 requires_cpu_sampling_canvas,
-                requires_published_surface,
+                preview_surface_request,
+                width,
+                height,
             );
         }
 
@@ -97,13 +119,24 @@ impl CpuSparkleFlinger {
             sampling_canvas_opaque =
                 compose_layer(&mut sampling_canvas, sampling_canvas_opaque, layer);
         }
+        let preview_surface = preview_surface_request.and_then(|request| {
+            scaled_preview_surface_from_rgba(
+                sampling_canvas.as_rgba_bytes(),
+                sampling_canvas.width(),
+                sampling_canvas.height(),
+                request,
+            )
+        });
 
-        let composed = publish_composed_frame(
+        let mut composed = publish_composed_frame(
             (sampling_canvas, None),
             false,
             requires_cpu_sampling_canvas,
             requires_published_surface || cached_key.is_some(),
         );
+        if !requires_full_size_preview {
+            composed.preview_surface = preview_surface;
+        }
         if let Some(key) = cached_key
             && let Some(surface) = composed.sampling_surface.clone()
         {
@@ -146,14 +179,76 @@ fn cached_layer_storage(frame: &ProducerFrame) -> Option<PublishedSurfaceStorage
 fn cached_surface_frame(
     surface: PublishedSurface,
     requires_cpu_sampling_canvas: bool,
-    requires_published_surface: bool,
+    preview_surface_request: Option<PreviewSurfaceRequest>,
+    width: u32,
+    height: u32,
 ) -> ComposedFrameSet {
-    publish_composed_frame(
+    let requires_published_surface = preview_surface_request
+        .is_some_and(|request| request.width == width && request.height == height);
+    let preview_surface = preview_surface_request.and_then(|request| {
+        scaled_preview_surface_from_rgba(surface.rgba_bytes(), width, height, request)
+    });
+    let mut composed = publish_composed_frame(
         (Canvas::from_published_surface(&surface), Some(surface)),
         false,
         requires_cpu_sampling_canvas,
         requires_published_surface,
-    )
+    );
+    if !requires_published_surface {
+        composed.preview_surface = preview_surface;
+    }
+    composed
+}
+
+fn preview_request_matches_plan(
+    request: Option<PreviewSurfaceRequest>,
+    width: u32,
+    height: u32,
+) -> bool {
+    request.is_some_and(|request| request.width == width && request.height == height)
+}
+
+fn scaled_preview_surface_from_rgba(
+    rgba: &[u8],
+    source_width: u32,
+    source_height: u32,
+    request: PreviewSurfaceRequest,
+) -> Option<PublishedSurface> {
+    if request.width == 0
+        || request.height == 0
+        || request.width == source_width && request.height == source_height
+    {
+        return None;
+    }
+    let mut preview = Canvas::new(request.width, request.height);
+    let preview_bytes = preview.as_rgba_bytes_mut();
+    let source_width_usize = usize::try_from(source_width).ok()?;
+    let source_height_usize = usize::try_from(source_height).ok()?;
+    let target_width_usize = usize::try_from(request.width).ok()?;
+    let target_height_usize = usize::try_from(request.height).ok()?;
+    for y in 0..target_height_usize {
+        let source_y = y
+            .saturating_mul(source_height_usize)
+            .checked_div(target_height_usize.max(1))?
+            .min(source_height_usize.saturating_sub(1));
+        for x in 0..target_width_usize {
+            let source_x = x
+                .saturating_mul(source_width_usize)
+                .checked_div(target_width_usize.max(1))?
+                .min(source_width_usize.saturating_sub(1));
+            let source_offset = source_y
+                .checked_mul(source_width_usize)?
+                .checked_add(source_x)?
+                .checked_mul(4)?;
+            let target_offset = y
+                .checked_mul(target_width_usize)?
+                .checked_add(x)?
+                .checked_mul(4)?;
+            preview_bytes[target_offset..target_offset + 4]
+                .copy_from_slice(&rgba[source_offset..source_offset + 4]);
+        }
+    }
+    Some(PublishedSurface::from_owned_canvas(preview, 0, 0))
 }
 
 fn take_base_canvas(layer: CompositionLayer, width: u32, height: u32) -> (Canvas, bool) {

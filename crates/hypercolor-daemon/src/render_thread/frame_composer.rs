@@ -17,11 +17,12 @@ use super::frame_sources::{render_effect_into, static_surface};
 use super::pipeline_runtime::{FrameInputs, RenderCaches};
 use super::producer_queue::{ProducerFrame, ProducerFrameState};
 use super::render_groups::{GroupCanvasFrame, RenderGroupResult};
-use super::sparkleflinger::ComposedFrameSet;
+use super::sparkleflinger::{ComposedFrameSet, PreviewSurfaceRequest};
 use super::{
     MAX_RENDER_SURFACE_SLOTS, RenderThreadState, desired_render_surface_slots, micros_between,
     micros_u32,
 };
+use crate::preview_runtime::PreviewDemandSummary;
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -185,7 +186,7 @@ impl ComposeContext<'_> {
                 producer_retained && !compiled_plan.metadata.transition_active,
             ),
             self.requires_cpu_sampling_canvas(),
-            self.requires_published_surface(),
+            self.preview_surface_request(),
         );
         let composition_done_at = Instant::now();
         let composition_us = micros_between(composition_start, composition_done_at);
@@ -324,7 +325,7 @@ impl ComposeContext<'_> {
                         effect_retained && !compiled_plan.metadata.transition_active,
                     ),
                     self.requires_cpu_sampling_canvas(),
-                    self.requires_published_surface(),
+                    self.preview_surface_request(),
                 );
                 let composition_bypassed = composed.bypassed;
                 let composition_done_at = Instant::now();
@@ -375,7 +376,7 @@ impl ComposeContext<'_> {
                 let composed = self.render.sparkleflinger.compose_for_outputs(
                     compiled_plan.plan.with_cpu_replay_cacheable(false),
                     self.requires_cpu_sampling_canvas(),
-                    self.requires_published_surface(),
+                    self.preview_surface_request(),
                 );
                 let composition_bypassed = composed.bypassed;
                 let composition_done_at = Instant::now();
@@ -449,12 +450,20 @@ impl ComposeContext<'_> {
         )
     }
 
-    fn requires_published_surface(&self) -> bool {
-        requires_published_surface(
+    fn preview_surface_request(&self) -> Option<PreviewSurfaceRequest> {
+        preview_surface_request(
+            self.state.canvas_dims.width(),
+            self.state.canvas_dims.height(),
             self.publish_canvas_preview,
             self.publish_screen_canvas_preview,
             self.scene_snapshot.effect_demand.effect_running,
             self.scene_snapshot.effect_demand.screen_capture_active,
+            self.state.preview_canvas_receiver_count(),
+            self.state.preview_runtime.canvas_receiver_count(),
+            self.state.preview_runtime.canvas_demand(),
+            self.state.event_bus.screen_canvas_receiver_count(),
+            self.state.preview_runtime.screen_canvas_receiver_count(),
+            self.state.preview_runtime.screen_canvas_demand(),
         )
     }
 }
@@ -471,6 +480,72 @@ fn requires_published_surface(
 ) -> bool {
     publish_canvas_preview
         || (publish_screen_canvas_preview && !effect_running && screen_capture_active)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preview request sizing depends on tracked demand and receiver topology"
+)]
+fn preview_surface_request(
+    canvas_width: u32,
+    canvas_height: u32,
+    publish_canvas_preview: bool,
+    publish_screen_canvas_preview: bool,
+    effect_running: bool,
+    screen_capture_active: bool,
+    canvas_receivers: usize,
+    tracked_canvas_receivers: usize,
+    canvas_demand: PreviewDemandSummary,
+    screen_canvas_receivers: usize,
+    tracked_screen_canvas_receivers: usize,
+    screen_canvas_demand: PreviewDemandSummary,
+) -> Option<PreviewSurfaceRequest> {
+    let wants_screen_passthrough =
+        publish_screen_canvas_preview && !effect_running && screen_capture_active;
+    if !requires_published_surface(
+        publish_canvas_preview,
+        publish_screen_canvas_preview,
+        effect_running,
+        screen_capture_active,
+    ) {
+        return None;
+    }
+
+    if (publish_canvas_preview && canvas_receivers > tracked_canvas_receivers)
+        || (wants_screen_passthrough
+            && screen_canvas_receivers > tracked_screen_canvas_receivers)
+    {
+        return Some(PreviewSurfaceRequest {
+            width: canvas_width,
+            height: canvas_height,
+        });
+    }
+
+    let mut max_width = 0;
+    let mut max_height = 0;
+    let mut any_full_resolution = false;
+    if publish_canvas_preview {
+        max_width = max_width.max(canvas_demand.max_width);
+        max_height = max_height.max(canvas_demand.max_height);
+        any_full_resolution |= canvas_demand.any_full_resolution;
+    }
+    if wants_screen_passthrough {
+        max_width = max_width.max(screen_canvas_demand.max_width);
+        max_height = max_height.max(screen_canvas_demand.max_height);
+        any_full_resolution |= screen_canvas_demand.any_full_resolution;
+    }
+
+    if any_full_resolution || max_width == 0 || max_height == 0 {
+        return Some(PreviewSurfaceRequest {
+            width: canvas_width,
+            height: canvas_height,
+        });
+    }
+
+    Some(PreviewSurfaceRequest {
+        width: max_width.clamp(1, canvas_width),
+        height: max_height.clamp(1, canvas_height),
+    })
 }
 
 async fn render_effect_frame(
@@ -581,9 +656,10 @@ async fn render_effect_frame(
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_render_group_layer_count, requires_cpu_sampling_canvas,
-        requires_published_surface,
+        PreviewSurfaceRequest, effective_render_group_layer_count, preview_surface_request,
+        requires_cpu_sampling_canvas, requires_published_surface,
     };
+    use crate::preview_runtime::PreviewDemandSummary;
 
     #[test]
     fn render_group_layer_count_adds_transition_base_once() {
@@ -603,5 +679,65 @@ mod tests {
         assert!(requires_published_surface(true, false, true, false));
         assert!(requires_published_surface(false, true, false, true));
         assert!(!requires_published_surface(false, true, true, true));
+    }
+
+    #[test]
+    fn preview_surface_request_uses_scaled_tracked_demand() {
+        assert_eq!(
+            preview_surface_request(
+                1280,
+                720,
+                true,
+                false,
+                true,
+                false,
+                1,
+                1,
+                PreviewDemandSummary {
+                    subscribers: 1,
+                    max_fps: 20,
+                    max_width: 640,
+                    max_height: 360,
+                    ..PreviewDemandSummary::default()
+                },
+                0,
+                0,
+                PreviewDemandSummary::default(),
+            ),
+            Some(PreviewSurfaceRequest {
+                width: 640,
+                height: 360,
+            })
+        );
+    }
+
+    #[test]
+    fn preview_surface_request_falls_back_to_full_size_for_untracked_receivers() {
+        assert_eq!(
+            preview_surface_request(
+                1280,
+                720,
+                true,
+                false,
+                true,
+                false,
+                2,
+                1,
+                PreviewDemandSummary {
+                    subscribers: 1,
+                    max_fps: 20,
+                    max_width: 640,
+                    max_height: 360,
+                    ..PreviewDemandSummary::default()
+                },
+                0,
+                0,
+                PreviewDemandSummary::default(),
+            ),
+            Some(PreviewSurfaceRequest {
+                width: 1280,
+                height: 720,
+            })
+        );
     }
 }

@@ -164,6 +164,12 @@ pub struct ComposedFrameSet {
 
 pub(crate) type RenderFrame = (Canvas, Option<PublishedSurface>);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreviewSurfaceRequest {
+    pub width: u32,
+    pub height: u32,
+}
+
 #[derive(Debug)]
 enum SparkleFlingerBackend {
     Cpu(cpu::CpuSparkleFlinger),
@@ -197,18 +203,30 @@ impl SparkleFlinger {
     }
 
     pub fn compose(&mut self, plan: CompositionPlan) -> ComposedFrameSet {
-        self.compose_for_outputs(plan, true, true)
+        let preview_surface_request = Some(PreviewSurfaceRequest {
+            width: plan.width,
+            height: plan.height,
+        });
+        self.compose_for_outputs(
+            plan,
+            true,
+            preview_surface_request,
+        )
     }
 
     pub fn compose_for_outputs(
         &mut self,
         plan: CompositionPlan,
         requires_cpu_sampling_canvas: bool,
-        requires_preview_surface: bool,
+        preview_surface_request: Option<PreviewSurfaceRequest>,
     ) -> ComposedFrameSet {
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(backend) => {
-                backend.compose(plan, requires_cpu_sampling_canvas, requires_preview_surface)
+                backend.compose(
+                    plan,
+                    requires_cpu_sampling_canvas,
+                    preview_surface_request,
+                )
             }
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, cpu_fallback } => {
@@ -216,7 +234,7 @@ impl SparkleFlinger {
                     && let Ok(composed) = gpu.compose(
                         &plan,
                         requires_cpu_sampling_canvas,
-                        requires_preview_surface,
+                        preview_surface_request,
                     )
                 {
                     return composed;
@@ -224,7 +242,7 @@ impl SparkleFlinger {
                 let mut composed = cpu_fallback.compose(
                     plan,
                     requires_cpu_sampling_canvas,
-                    requires_preview_surface,
+                    preview_surface_request,
                 );
                 composed.backend = CompositorBackendKind::GpuFallback;
                 composed
@@ -327,7 +345,7 @@ pub(super) fn publish_composed_frame(
 mod tests {
     use hypercolor_core::types::canvas::{BlendMode, Canvas, PublishedSurface, Rgba, RgbaF32};
 
-    use super::{CompositionLayer, CompositionPlan, SparkleFlinger};
+    use super::{CompositionLayer, CompositionPlan, PreviewSurfaceRequest, SparkleFlinger};
     use crate::render_thread::producer_queue::ProducerFrame;
 
     fn solid_canvas(color: Rgba) -> Canvas {
@@ -389,7 +407,7 @@ mod tests {
                 ],
             ),
             true,
-            false,
+            None,
         );
 
         assert!(composed.sampling_canvas.is_some());
@@ -417,11 +435,47 @@ mod tests {
             )
             .with_cpu_replay_cacheable(false),
             true,
-            false,
+            None,
         );
 
         assert!(composed.sampling_canvas.is_some());
         assert!(composed.sampling_surface.is_none());
+    }
+
+    #[test]
+    fn sparkleflinger_cpu_scales_preview_surface_when_requested() {
+        let base = solid_canvas(Rgba::new(255, 0, 0, 255));
+        let overlay = solid_canvas(Rgba::new(0, 0, 255, 255));
+        let mut sparkleflinger = SparkleFlinger::cpu();
+        let composed = sparkleflinger.compose_for_outputs(
+            CompositionPlan::with_layers(
+                2,
+                2,
+                vec![
+                    CompositionLayer::replace(ProducerFrame::Canvas(base)),
+                    CompositionLayer::alpha(ProducerFrame::Canvas(overlay), 0.5),
+                ],
+            ),
+            true,
+            Some(PreviewSurfaceRequest {
+                width: 1,
+                height: 1,
+            }),
+        );
+
+        assert_eq!(
+            composed
+                .sampling_canvas
+                .as_ref()
+                .expect("CPU sampling should keep the full-size canvas")
+                .width(),
+            2
+        );
+        let preview_surface = composed
+            .preview_surface
+            .expect("scaled preview requests should publish a preview surface");
+        assert_eq!(preview_surface.width(), 1);
+        assert_eq!(preview_surface.height(), 1);
     }
 
     #[test]
