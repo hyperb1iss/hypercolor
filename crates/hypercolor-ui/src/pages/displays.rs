@@ -301,11 +301,11 @@ fn render_picker_row(
     }
 }
 
-fn is_simulator_display(display: &api::DisplaySummary) -> bool {
+pub(crate) fn is_simulator_display(display: &api::DisplaySummary) -> bool {
     display.family.eq_ignore_ascii_case("simulator")
 }
 
-fn parse_simulator_dimension(raw: &str, label: &str) -> Result<u32, String> {
+pub(crate) fn parse_simulator_dimension(raw: &str, label: &str) -> Result<u32, String> {
     raw.trim()
         .parse::<u32>()
         .ok()
