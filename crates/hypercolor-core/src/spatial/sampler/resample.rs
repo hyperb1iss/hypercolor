@@ -331,21 +331,63 @@ fn sample_bilinear_linear_rgb(bytes: &[u8], sample: &PreparedBilinearSample) -> 
     let top_right_rgb = read_linear_rgb_at(bytes, top_right);
     let bottom_left_rgb = read_linear_rgb_at(bytes, bottom_left);
     let bottom_right_rgb = read_linear_rgb_at(bytes, bottom_right);
-    let mut blended = [0u16; 3];
 
-    for (channel, output) in blended.iter_mut().enumerate() {
-        let top = u32::from(top_left_rgb[channel]) * x_lower_weight
-            + u32::from(top_right_rgb[channel]) * x_upper_weight;
-        let bottom = u32::from(bottom_left_rgb[channel]) * x_lower_weight
-            + u32::from(bottom_right_rgb[channel]) * x_upper_weight;
-        *output = u16::try_from(
-            (u64::from(top) * y_lower_weight + u64::from(bottom) * y_upper_weight)
-                >> BILINEAR_SHIFT,
-        )
-        .expect("bilinear interpolation result fits in u16");
-    }
+    [
+        bilinear_channel(
+            top_left_rgb[0],
+            top_right_rgb[0],
+            bottom_left_rgb[0],
+            bottom_right_rgb[0],
+            x_lower_weight,
+            x_upper_weight,
+            y_lower_weight,
+            y_upper_weight,
+        ),
+        bilinear_channel(
+            top_left_rgb[1],
+            top_right_rgb[1],
+            bottom_left_rgb[1],
+            bottom_right_rgb[1],
+            x_lower_weight,
+            x_upper_weight,
+            y_lower_weight,
+            y_upper_weight,
+        ),
+        bilinear_channel(
+            top_left_rgb[2],
+            top_right_rgb[2],
+            bottom_left_rgb[2],
+            bottom_right_rgb[2],
+            x_lower_weight,
+            x_upper_weight,
+            y_lower_weight,
+            y_upper_weight,
+        ),
+    ]
+}
 
-    blended
+#[must_use]
+#[inline]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "bilinear interpolation stays within the 16-bit fixed-point color domain"
+)]
+fn bilinear_channel(
+    top_left: u16,
+    top_right: u16,
+    bottom_left: u16,
+    bottom_right: u16,
+    x_lower_weight: u32,
+    x_upper_weight: u32,
+    y_lower_weight: u64,
+    y_upper_weight: u64,
+) -> u16 {
+    let top =
+        u32::from(top_left) * x_lower_weight + u32::from(top_right) * x_upper_weight;
+    let bottom =
+        u32::from(bottom_left) * x_lower_weight + u32::from(bottom_right) * x_upper_weight;
+    ((u64::from(top) * y_lower_weight + u64::from(bottom) * y_upper_weight) >> BILINEAR_SHIFT)
+        as u16
 }
 
 #[must_use]
