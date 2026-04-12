@@ -6,7 +6,10 @@
 //! shell plus the display picker; later tasks fill in the preview canvas,
 //! catalog modal, and per-type inspector forms.
 
+use hypercolor_types::overlay::{DisplayOverlayConfig, OverlaySlot, OverlaySource};
+use icondata_core::Icon as IconData;
 use leptos::prelude::*;
+use leptos::task::spawn_local;
 use leptos_icons::Icon;
 use leptos_use::use_interval_fn;
 
@@ -57,7 +60,7 @@ pub fn DisplaysPage() -> impl IntoView {
                     />
                 </div>
             </div>
-            <div class="grid min-h-0 flex-1 grid-cols-[260px_minmax(0,1fr)_320px] gap-3 p-3">
+            <div class="grid min-h-0 flex-1 grid-cols-[260px_minmax(0,1fr)_340px] gap-3 p-3">
                 <DisplayPicker
                     displays=displays
                     selected_id=selected_id
@@ -282,17 +285,201 @@ fn DisplayWorkspace(selected_display: Memo<Option<api::DisplaySummary>>) -> impl
 
 #[component]
 fn OverlayStackPanel(selected_id: ReadSignal<Option<String>>) -> impl IntoView {
+    let (overlay_config, set_overlay_config) =
+        signal(None::<Result<DisplayOverlayConfig, String>>);
+
+    // Reload the overlay stack whenever the selected display changes. We
+    // keep the last-good config in place until the new one arrives so the
+    // panel doesn't flash an empty state mid-swap.
+    Effect::new(move |_| {
+        let Some(display_id) = selected_id.get() else {
+            set_overlay_config.set(None);
+            return;
+        };
+        let set_overlay_config = set_overlay_config;
+        spawn_local(async move {
+            let result = api::fetch_display_overlays(&display_id).await;
+            set_overlay_config.set(Some(result));
+        });
+    });
+
+    let refresh = move || {
+        let Some(display_id) = selected_id.get_untracked() else {
+            return;
+        };
+        let set_overlay_config = set_overlay_config;
+        spawn_local(async move {
+            let result = api::fetch_display_overlays(&display_id).await;
+            set_overlay_config.set(Some(result));
+        });
+    };
+
     view! {
         <aside class="flex min-h-0 flex-col overflow-hidden rounded-lg border border-edge-subtle bg-surface-raised">
-            <header class="border-b border-edge-subtle px-3 py-2 text-xs uppercase tracking-wider text-fg-tertiary">
-                "Overlay stack"
+            <header class="flex items-center justify-between border-b border-edge-subtle px-3 py-2">
+                <div class="text-xs uppercase tracking-wider text-fg-tertiary">
+                    "Overlay stack"
+                </div>
+                <button
+                    type="button"
+                    class="flex items-center gap-1 rounded-sm px-2 py-0.5 text-[11px] uppercase tracking-wider text-fg-tertiary transition hover:text-accent-primary"
+                    title="Catalog modal arrives in the next task"
+                    disabled=true
+                >
+                    <Icon icon=LuPlus width="12" height="12" />
+                    "Add"
+                </button>
             </header>
-            <div class="min-h-0 flex-1 overflow-y-auto p-3 text-xs text-fg-tertiary">
-                {move || match selected_id.get() {
-                    Some(_) => "Stack list and inspector land in the following tasks.",
-                    None => "Select a display to view its overlay stack.",
+            <div class="min-h-0 flex-1 overflow-y-auto p-2">
+                {move || {
+                    if selected_id.with(Option::is_none) {
+                        return view! {
+                            <StackPlaceholder message="Select a display to view its overlay stack." />
+                        }
+                        .into_any();
+                    }
+                    match overlay_config.get() {
+                        None => view! {
+                            <StackPlaceholder message="Loading overlays..." />
+                        }
+                        .into_any(),
+                        Some(Err(error)) => view! {
+                            <StackPlaceholder message=error />
+                        }
+                        .into_any(),
+                        Some(Ok(config)) if config.overlays.is_empty() => view! {
+                            <StackPlaceholder message="No overlays yet. Add a clock, sensor, image, or text widget." />
+                        }
+                        .into_any(),
+                        Some(Ok(config)) => {
+                            let rows = config
+                                .overlays
+                                .iter()
+                                .rev()
+                                .cloned()
+                                .map(|slot| {
+                                    render_slot_row(slot, selected_id, refresh)
+                                })
+                                .collect_view();
+                            view! { <ul class="flex flex-col gap-2">{rows}</ul> }.into_any()
+                        }
+                    }
                 }}
             </div>
         </aside>
+    }
+}
+
+#[component]
+fn StackPlaceholder(#[prop(into)] message: String) -> impl IntoView {
+    view! {
+        <div class="px-2 py-6 text-xs leading-relaxed text-fg-tertiary">{message}</div>
+    }
+}
+
+fn render_slot_row(
+    slot: OverlaySlot,
+    selected_id: ReadSignal<Option<String>>,
+    refresh: impl Fn() + Clone + 'static,
+) -> impl IntoView {
+    let slot_id = slot.id;
+    let enabled = slot.enabled;
+    let opacity_percent = (slot.opacity.clamp(0.0, 1.0) * 100.0).round() as i32;
+    let (source_label, source_icon) = overlay_source_descriptor(&slot.source);
+    let status_label = if slot.enabled { "Active" } else { "Disabled" };
+    let status_class = if slot.enabled {
+        "bg-emerald-500/15 text-emerald-300"
+    } else {
+        "bg-fg-tertiary/15 text-fg-tertiary"
+    };
+    let slot_name = slot.name.clone();
+
+    let on_toggle = {
+        let refresh = refresh.clone();
+        move |_| {
+            let Some(display_id) = selected_id.get_untracked() else {
+                return;
+            };
+            let refresh = refresh.clone();
+            spawn_local(async move {
+                let body = api::UpdateOverlaySlotRequest {
+                    enabled: Some(!enabled),
+                    ..Default::default()
+                };
+                if api::patch_overlay_slot(&display_id, slot_id, &body)
+                    .await
+                    .is_ok()
+                {
+                    refresh();
+                }
+            });
+        }
+    };
+
+    let on_delete = {
+        let refresh = refresh.clone();
+        move |_| {
+            let Some(display_id) = selected_id.get_untracked() else {
+                return;
+            };
+            let refresh = refresh.clone();
+            spawn_local(async move {
+                if api::delete_overlay_slot(&display_id, slot_id).await.is_ok() {
+                    refresh();
+                }
+            });
+        }
+    };
+
+    view! {
+        <li class="flex flex-col gap-2 rounded-md border border-edge-subtle bg-surface-overlay/60 p-2.5">
+            <div class="flex items-center gap-2">
+                <span class="flex h-7 w-7 items-center justify-center rounded-sm bg-surface-raised text-accent-primary">
+                    <Icon icon=source_icon width="14" height="14" />
+                </span>
+                <div class="min-w-0 flex-1">
+                    <div class="truncate text-sm font-medium text-fg-primary">{slot_name}</div>
+                    <div class="text-[10px] uppercase tracking-wider text-fg-tertiary">
+                        {source_label}
+                    </div>
+                </div>
+                <span class=format!(
+                    "rounded-sm px-1.5 py-0.5 text-[10px] uppercase tracking-wider {status_class}"
+                )>
+                    {status_label}
+                </span>
+            </div>
+            <div class="flex items-center justify-between gap-2 text-[11px] text-fg-tertiary">
+                <span>{format!("Opacity {opacity_percent}%")}</span>
+                <div class="flex items-center gap-1">
+                    <button
+                        type="button"
+                        class="rounded-sm px-2 py-1 text-fg-tertiary transition hover:text-accent-primary"
+                        title=if enabled { "Disable overlay" } else { "Enable overlay" }
+                        on:click=on_toggle
+                    >
+                        <Icon icon=if enabled { LuEye } else { LuEyeOff } width="14" height="14" />
+                    </button>
+                    <button
+                        type="button"
+                        class="rounded-sm px-2 py-1 text-fg-tertiary transition hover:text-status-error"
+                        title="Delete overlay"
+                        on:click=on_delete
+                    >
+                        <Icon icon=LuTrash2 width="14" height="14" />
+                    </button>
+                </div>
+            </div>
+        </li>
+    }
+}
+
+fn overlay_source_descriptor(source: &OverlaySource) -> (&'static str, IconData) {
+    match source {
+        OverlaySource::Clock(_) => ("Clock", LuTimer),
+        OverlaySource::Sensor(_) => ("Sensor", LuGauge),
+        OverlaySource::Image(_) => ("Image", LuLayers),
+        OverlaySource::Text(_) => ("Text", LuType),
+        OverlaySource::Html(_) => ("HTML", LuCode),
     }
 }
