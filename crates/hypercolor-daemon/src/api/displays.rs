@@ -22,8 +22,8 @@ use tracing::warn;
 
 use crate::api::AppState;
 use crate::api::devices;
-use crate::api::envelope::{ApiError, ApiResponse, iso8601_system_time};
 use crate::api::effects::resolve_effect_metadata;
+use crate::api::envelope::{ApiError, ApiResponse, iso8601_system_time};
 use crate::display_frames::DisplayFrameSnapshot;
 use crate::display_overlays::{OverlaySlotRuntime, OverlaySlotStatus};
 
@@ -248,10 +248,7 @@ pub async fn set_display_face(
             return ApiError::not_found(format!("Effect not found: {}", body.effect_id));
         };
         if effect.category != EffectCategory::Display {
-            return ApiError::validation(format!(
-                "Effect '{}' is not a display face",
-                effect.name
-            ));
+            return ApiError::validation(format!("Effect '{}' is not a display face", effect.name));
         }
         if !effect_source_is_html(&effect.source) {
             return ApiError::validation(format!(
@@ -311,8 +308,7 @@ pub async fn delete_display_face(
         let mut scene_manager = state.scene_manager.write().await;
         let Some(active_scene_id) = scene_manager.active_scene_id().copied() else {
             return ApiError::conflict(
-                "No active scene to remove a display face from. Activate a scene first."
-                    .to_owned(),
+                "No active scene to remove a display face from. Activate a scene first.".to_owned(),
             );
         };
         let Some(mut active_scene) = scene_manager.get(&active_scene_id).cloned() else {
@@ -718,7 +714,7 @@ async fn current_display_face_assignment(
     })
 }
 
-fn upsert_display_face_group<'a>(
+pub(crate) fn upsert_display_face_group<'a>(
     scene: &'a mut hypercolor_types::scene::Scene,
     device_id: DeviceId,
     device_name: &str,
@@ -763,7 +759,7 @@ fn upsert_display_face_group<'a>(
         .expect("display face group should exist after insertion")
 }
 
-fn display_face_layout(
+pub(crate) fn display_face_layout(
     device_id: DeviceId,
     device_name: &str,
     surface: DisplaySurfaceInfo,

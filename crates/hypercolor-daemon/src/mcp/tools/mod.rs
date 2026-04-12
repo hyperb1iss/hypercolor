@@ -52,6 +52,7 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
         system::build_get_sensor_data(),
         overlays::build_list_display_overlays(),
         overlays::build_set_display_overlay(),
+        overlays::build_set_display_face(),
         library::build_set_profile(),
         system::build_get_layout(),
         system::build_diagnose(),
@@ -82,6 +83,7 @@ pub fn execute_tool(name: &str, params: &Value) -> Result<Value, ToolError> {
         "get_sensor_data" => system::handle_get_sensor_data(params),
         "list_display_overlays" => overlays::handle_list_display_overlays(params),
         "set_display_overlay" => overlays::handle_set_display_overlay(params),
+        "set_display_face" => overlays::handle_set_display_face(params),
         "set_profile" => library::handle_set_profile(params),
         "get_layout" => system::handle_get_layout(params),
         "diagnose" => system::handle_diagnose(params),
@@ -114,6 +116,7 @@ pub async fn execute_tool_with_state(
         "set_display_overlay" => {
             overlays::handle_set_display_overlay_with_state(params, state).await
         }
+        "set_display_face" => overlays::handle_set_display_face_with_state(params, state).await,
         "set_profile" => library::handle_set_profile_with_state(params, state).await,
         "get_layout" => system::handle_get_layout_with_state(state).await,
         "diagnose" => system::handle_diagnose_with_state(params, state).await,

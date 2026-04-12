@@ -1,5 +1,6 @@
 //! Integration tests for the MCP HTTP surface and its reusable domain helpers.
 
+use std::collections::HashMap;
 use std::fs;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
@@ -25,6 +26,10 @@ use hypercolor_types::device::{
 };
 use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
+};
+use hypercolor_types::scene::{
+    ColorInterpolation, EasingFunction, Scene, SceneId, ScenePriority, SceneScope, TransitionSpec,
+    UnassignedBehavior,
 };
 use reqwest::{Client, Response};
 use serde_json::{Value, json};
@@ -147,6 +152,12 @@ fn test_html_effect_metadata(name: &str) -> EffectMetadata {
     }
 }
 
+fn test_display_face_effect_metadata(name: &str) -> EffectMetadata {
+    let mut metadata = test_html_effect_metadata(name);
+    metadata.category = EffectCategory::Display;
+    metadata
+}
+
 async fn activate_test_html_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
     let metadata = test_html_effect_metadata(name);
     let mut engine = state.effect_engine.lock().await;
@@ -154,6 +165,48 @@ async fn activate_test_html_effect(state: &Arc<AppState>, name: &str) -> EffectM
         .activate(Box::new(TestHtmlRenderer), metadata.clone())
         .expect("html test effect should activate");
     metadata
+}
+
+async fn insert_test_display_face_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
+    let metadata = test_display_face_effect_metadata(name);
+    let entry = hypercolor_core::effect::EffectEntry {
+        metadata: metadata.clone(),
+        source_path: format!("/tmp/{name}.html").into(),
+        modified: std::time::SystemTime::now(),
+        state: hypercolor_types::effect::EffectState::Loading,
+    };
+    let mut registry = state.effect_registry.write().await;
+    let _ = registry.register(entry);
+    metadata
+}
+
+async fn activate_empty_test_scene(state: &Arc<AppState>, name: &str) -> SceneId {
+    let scene = Scene {
+        id: SceneId::new(),
+        name: name.to_owned(),
+        description: None,
+        scope: SceneScope::Full,
+        zone_assignments: Vec::new(),
+        groups: Vec::new(),
+        transition: TransitionSpec {
+            duration_ms: 0,
+            easing: EasingFunction::Linear,
+            color_interpolation: ColorInterpolation::Oklab,
+        },
+        priority: ScenePriority::USER,
+        enabled: true,
+        metadata: HashMap::new(),
+        unassigned_behavior: UnassignedBehavior::Off,
+    };
+
+    let mut manager = state.scene_manager.write().await;
+    manager
+        .create(scene.clone())
+        .expect("test scene should be created");
+    manager
+        .activate(&scene.id, None)
+        .expect("test scene should activate");
+    scene.id
 }
 
 async fn post_raw(client: &Client, url: &str, body: &str, session_id: Option<&str>) -> Response {
@@ -263,7 +316,7 @@ async fn mcp_http_tools_list_and_call_return_structured_results() {
     let tools = list_payload["result"]["tools"]
         .as_array()
         .expect("tools list array");
-    assert_eq!(tools.len(), 17);
+    assert_eq!(tools.len(), 18);
     assert!(tools.iter().all(|tool| tool["outputSchema"].is_object()));
     assert!(
         tools
@@ -275,6 +328,7 @@ async fn mcp_http_tools_list_and_call_return_structured_results() {
             .iter()
             .any(|tool| tool["name"] == "set_display_overlay")
     );
+    assert!(tools.iter().any(|tool| tool["name"] == "set_display_face"));
 
     let call_response = post_json(
         &client,
@@ -582,6 +636,50 @@ async fn stateful_overlay_tools_manage_display_configs() {
 }
 
 #[tokio::test]
+async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    let scene_id = activate_empty_test_scene(&state, "Desk Scene").await;
+
+    let assign_result = execute_tool_with_state(
+        "set_display_face",
+        &json!({
+            "device": display_id.to_string(),
+            "effect_id": face.id.to_string(),
+            "controls": {
+                "title": "CPU"
+            }
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("display face assignment should succeed");
+    assert_eq!(assign_result["scene_id"], scene_id.to_string());
+    assert_eq!(assign_result["effect"]["id"], face.id.to_string());
+    assert_eq!(
+        assign_result["group"]["display_target"]["device_id"],
+        display_id.to_string()
+    );
+    assert_eq!(assign_result["group"]["layout"]["canvas_width"], 320);
+    assert_eq!(assign_result["group"]["controls"]["title"]["text"], "CPU");
+
+    let clear_result = execute_tool_with_state(
+        "set_display_face",
+        &json!({
+            "device": display_id.to_string(),
+            "clear": true
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("display face clear should succeed");
+    assert_eq!(clear_result["scene_id"], scene_id.to_string());
+    assert_eq!(clear_result["cleared"], true);
+}
+
+#[tokio::test]
 async fn list_display_overlays_reports_html_gated_runtime() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
@@ -640,13 +738,14 @@ async fn list_display_overlays_reports_html_gated_runtime() {
 #[test]
 fn tool_definitions_have_valid_schemas() {
     let tools = build_tool_definitions();
-    assert_eq!(tools.len(), 17);
+    assert_eq!(tools.len(), 18);
     assert!(
         tools
             .iter()
             .all(|tool| tool.input_schema["type"] == "object")
     );
     assert!(tools.iter().all(|tool| tool.output_schema.is_object()));
+    assert!(tools.iter().any(|tool| tool.name == "set_display_face"));
 }
 
 #[test]

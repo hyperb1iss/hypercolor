@@ -3,6 +3,7 @@
 //! Tests use `axum::Router` directly with tower's `ServiceExt` and
 //! `Request::builder()` — no TCP server needed.
 
+use std::collections::HashMap;
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -41,6 +42,10 @@ use hypercolor_types::effect::{
     EffectId, EffectMetadata, EffectSource, EffectState,
 };
 use hypercolor_types::event::{ChangeTrigger, EffectStopReason, HypercolorEvent};
+use hypercolor_types::scene::{
+    ColorInterpolation, EasingFunction, Scene, SceneId, ScenePriority, SceneScope, TransitionSpec,
+    UnassignedBehavior,
+};
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
@@ -956,6 +961,12 @@ fn test_html_effect_metadata(name: &str) -> EffectMetadata {
     }
 }
 
+fn test_display_face_effect_metadata(name: &str) -> EffectMetadata {
+    let mut metadata = test_html_effect_metadata(name);
+    metadata.category = EffectCategory::Display;
+    metadata
+}
+
 async fn activate_test_html_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
     let metadata = test_html_effect_metadata(name);
     let mut engine = state.effect_engine.lock().await;
@@ -963,6 +974,48 @@ async fn activate_test_html_effect(state: &Arc<AppState>, name: &str) -> EffectM
         .activate(Box::new(TestHtmlRenderer), metadata.clone())
         .expect("html test effect should activate");
     metadata
+}
+
+async fn insert_test_display_face_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
+    let metadata = test_display_face_effect_metadata(name);
+    let entry = EffectEntry {
+        metadata: metadata.clone(),
+        source_path: format!("/tmp/{name}.html").into(),
+        modified: SystemTime::now(),
+        state: EffectState::Loading,
+    };
+    let mut registry = state.effect_registry.write().await;
+    let _ = registry.register(entry);
+    metadata
+}
+
+async fn activate_empty_test_scene(state: &Arc<AppState>, name: &str) -> SceneId {
+    let scene = Scene {
+        id: SceneId::new(),
+        name: name.to_owned(),
+        description: None,
+        scope: SceneScope::Full,
+        zone_assignments: Vec::new(),
+        groups: Vec::new(),
+        transition: TransitionSpec {
+            duration_ms: 0,
+            easing: EasingFunction::Linear,
+            color_interpolation: ColorInterpolation::Oklab,
+        },
+        priority: ScenePriority::USER,
+        enabled: true,
+        metadata: HashMap::new(),
+        unassigned_behavior: UnassignedBehavior::Off,
+    };
+
+    let mut manager = state.scene_manager.write().await;
+    manager
+        .create(scene.clone())
+        .expect("test scene should be created");
+    manager
+        .activate(&scene.id, None)
+        .expect("test scene should activate");
+    scene.id
 }
 
 fn default_config_path() -> String {
@@ -4008,6 +4061,150 @@ async fn list_displays_only_returns_display_capable_devices() {
     assert_eq!(items[0]["circular"], true);
     assert_eq!(items[0]["overlay_count"], 0);
     assert_eq!(items[0]["enabled_overlay_count"], 0);
+}
+
+#[tokio::test]
+async fn display_face_endpoints_assign_get_and_delete_face() {
+    let state = Arc::new(isolated_state());
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    let scene_id = activate_empty_test_scene(&state, "Desk Scene").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let put_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"effect_id":"{}"}}"#, face.id)))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(put_response.status(), StatusCode::OK);
+    let put_json = body_json(put_response).await;
+    assert_eq!(put_json["data"]["device_id"], display_id.to_string());
+    assert_eq!(put_json["data"]["scene_id"], scene_id.to_string());
+    assert_eq!(put_json["data"]["effect"]["id"], face.id.to_string());
+    assert_eq!(put_json["data"]["effect"]["category"], "display");
+    assert_eq!(
+        put_json["data"]["group"]["display_target"]["device_id"],
+        display_id.to_string()
+    );
+    assert_eq!(put_json["data"]["group"]["layout"]["canvas_width"], 320);
+    assert_eq!(put_json["data"]["group"]["layout"]["canvas_height"], 320);
+    assert!(
+        put_json["data"]["group"]["layout"]["zones"]
+            .as_array()
+            .expect("zones should serialize as an array")
+            .is_empty()
+    );
+
+    let get_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let get_json = body_json(get_response).await;
+    assert_eq!(get_json["data"]["effect"]["id"], face.id.to_string());
+    assert_eq!(
+        get_json["data"]["group"]["display_target"]["device_id"],
+        display_id.to_string()
+    );
+
+    {
+        let manager = state.scene_manager.read().await;
+        let active_scene = manager.active_scene().expect("scene should be active");
+        assert_eq!(active_scene.id, scene_id);
+        assert_eq!(active_scene.groups.len(), 1);
+    }
+
+    let delete_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(delete_response.status(), StatusCode::OK);
+    let delete_json = body_json(delete_response).await;
+    assert_eq!(delete_json["data"]["deleted"], true);
+
+    let missing_response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);
+
+    let manager = state.scene_manager.read().await;
+    let active_scene = manager.active_scene().expect("scene should remain active");
+    assert!(active_scene.groups.is_empty());
+}
+
+#[tokio::test]
+async fn display_face_endpoint_requires_active_scene() {
+    let state = Arc::new(isolated_state());
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"effect_id":"{}"}}"#, face.id)))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "conflict");
+}
+
+#[tokio::test]
+async fn display_face_endpoint_rejects_non_display_effects() {
+    let state = Arc::new(isolated_state());
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    insert_test_effect(&state, "Rainbow").await;
+    activate_empty_test_scene(&state, "Desk Scene").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"effect_id":"Rainbow"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
 }
 
 #[tokio::test]

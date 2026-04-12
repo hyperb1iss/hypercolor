@@ -10,9 +10,11 @@ use crate::api::AppState;
 use crate::api::displays::{
     CreateOverlaySlotRequest, OverlayRuntimeResponse, UpdateOverlaySlotRequest,
     current_overlay_config, display_surface_info, overlay_runtime_for_slot, persist_overlay_config,
-    validate_overlay_config,
+    upsert_display_face_group, validate_overlay_config,
 };
+use crate::api::effects::resolve_effect_metadata;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
+use hypercolor_types::effect::{ControlValue, EffectCategory};
 use hypercolor_types::overlay::{DisplayOverlayConfig, OverlaySlot, OverlaySlotId};
 
 pub(super) fn build_list_display_overlays() -> ToolDefinition {
@@ -84,6 +86,41 @@ pub(super) fn build_set_display_overlay() -> ToolDefinition {
     }
 }
 
+pub(super) fn build_set_display_face() -> ToolDefinition {
+    ToolDefinition {
+        name: "set_display_face".into(),
+        title: "Assign Display Face".into(),
+        description: "Assign or clear an HTML display-face effect on a display device by updating the active scene's display-target render group.".into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "device": {
+                    "type": "string",
+                    "description": "Display device ID or exact display name."
+                },
+                "effect_id": {
+                    "type": "string",
+                    "description": "Display-face effect UUID, exact name, or source stem. Omit when clearing."
+                },
+                "clear": {
+                    "type": "boolean",
+                    "description": "When true, removes the active scene's face assignment for the display."
+                },
+                "controls": {
+                    "type": "object",
+                    "description": "Optional control overrides to store on the display face group.",
+                    "additionalProperties": true
+                }
+            },
+            "required": ["device"],
+            "additionalProperties": false
+        }),
+        output_schema: default_output_schema(),
+        read_only: false,
+        idempotent: true,
+    }
+}
+
 #[expect(
     clippy::unnecessary_wraps,
     reason = "stateless MCP mode returns a placeholder payload until daemon state is injected"
@@ -105,6 +142,19 @@ pub(super) fn handle_set_display_overlay(params: &Value) -> Result<Value, ToolEr
         "device": device,
         "applied": false,
         "message": "Display overlay tools require live daemon state."
+    }))
+}
+
+pub(super) fn handle_set_display_face(params: &Value) -> Result<Value, ToolError> {
+    let device = params
+        .get("device")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::MissingParam("device".into()))?;
+
+    Ok(json!({
+        "device": device,
+        "applied": false,
+        "message": "Display face tools require live daemon state."
     }))
 }
 
@@ -305,6 +355,110 @@ pub(super) async fn handle_set_display_overlay_with_state(
     }))
 }
 
+pub(super) async fn handle_set_display_face_with_state(
+    params: &Value,
+    state: &AppState,
+) -> Result<Value, ToolError> {
+    let raw_device = params
+        .get("device")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::MissingParam("device".into()))?;
+    let clear = params
+        .get("clear")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let (device_id, info, surface) = resolve_display_device(state, raw_device).await?;
+    let controls = parse_controls_map(params.get("controls"))?;
+
+    let mut scene_manager = state.scene_manager.write().await;
+    let Some(active_scene_id) = scene_manager.active_scene_id().copied() else {
+        return Err(ToolError::InvalidParam {
+            param: "device".into(),
+            reason: "no active scene to attach the display face to".into(),
+        });
+    };
+    let Some(mut active_scene) = scene_manager.get(&active_scene_id).cloned() else {
+        return Err(ToolError::Internal(format!(
+            "active scene disappeared: {active_scene_id}"
+        )));
+    };
+
+    if clear {
+        let previous_len = active_scene.groups.len();
+        active_scene.groups.retain(|group| {
+            group
+                .display_target
+                .as_ref()
+                .is_none_or(|target| target.device_id != device_id)
+        });
+        if active_scene.groups.len() == previous_len {
+            return Err(ToolError::InvalidParam {
+                param: "device".into(),
+                reason: format!("no display face is assigned to {device_id}"),
+            });
+        }
+        scene_manager
+            .update(active_scene)
+            .map_err(|error| ToolError::Internal(error.to_string()))?;
+        return Ok(json!({
+            "device": display_device_payload(&info, surface),
+            "scene_id": active_scene_id.to_string(),
+            "cleared": true,
+        }));
+    }
+
+    let effect_lookup = params
+        .get("effect_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::MissingParam("effect_id".into()))?;
+    let effect = {
+        let registry = state.effect_registry.read().await;
+        let Some(effect) = resolve_effect_metadata(&registry, effect_lookup) else {
+            return Err(ToolError::InvalidParam {
+                param: "effect_id".into(),
+                reason: format!("effect not found: {effect_lookup}"),
+            });
+        };
+        if effect.category != EffectCategory::Display {
+            return Err(ToolError::InvalidParam {
+                param: "effect_id".into(),
+                reason: format!("effect '{}' is not a display face", effect.name),
+            });
+        }
+        if !matches!(
+            effect.source,
+            hypercolor_types::effect::EffectSource::Html { .. }
+        ) {
+            return Err(ToolError::InvalidParam {
+                param: "effect_id".into(),
+                reason: format!("effect '{}' is not an HTML display face", effect.name),
+            });
+        }
+        effect
+    };
+
+    let group = upsert_display_face_group(
+        &mut active_scene,
+        device_id,
+        info.name.as_str(),
+        surface,
+        &effect,
+        controls,
+    )
+    .clone();
+    scene_manager
+        .update(active_scene)
+        .map_err(|error| ToolError::Internal(error.to_string()))?;
+
+    Ok(json!({
+        "device": display_device_payload(&info, surface),
+        "scene_id": active_scene_id.to_string(),
+        "effect": effect,
+        "group": group,
+        "cleared": false,
+    }))
+}
+
 fn inferred_operation(params: &Value) -> Result<&str, ToolError> {
     if let Some(operation) = params.get("operation").and_then(Value::as_str) {
         return Ok(operation);
@@ -335,6 +489,73 @@ fn parse_json_param<T: DeserializeOwned>(params: &Value, param: &str) -> Result<
         param: param.into(),
         reason: error.to_string(),
     })
+}
+
+fn parse_controls_map(
+    value: Option<&Value>,
+) -> Result<std::collections::HashMap<String, ControlValue>, ToolError> {
+    let Some(value) = value else {
+        return Ok(std::collections::HashMap::new());
+    };
+    let Some(map) = value.as_object() else {
+        return Err(ToolError::InvalidParam {
+            param: "controls".into(),
+            reason: "controls must be an object".into(),
+        });
+    };
+
+    let mut controls = std::collections::HashMap::with_capacity(map.len());
+    for (key, value) in map {
+        let Some(control) = control_value_from_json(value) else {
+            return Err(ToolError::InvalidParam {
+                param: "controls".into(),
+                reason: format!("unsupported control value for '{key}'"),
+            });
+        };
+        controls.insert(key.clone(), control);
+    }
+    Ok(controls)
+}
+
+fn control_value_from_json(value: &Value) -> Option<ControlValue> {
+    if let Some(flag) = value.as_bool() {
+        return Some(ControlValue::Boolean(flag));
+    }
+
+    if let Some(integer_value) = value.as_i64() {
+        let coerced = i32::try_from(integer_value).ok()?;
+        return Some(ControlValue::Integer(coerced));
+    }
+
+    if let Some(float_value) = value.as_f64() {
+        let finite = if float_value.is_finite() {
+            float_value
+        } else {
+            return None;
+        };
+        #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let coerced = finite as f32;
+        return Some(ControlValue::Float(coerced));
+    }
+
+    if let Some(text) = value.as_str() {
+        return Some(ControlValue::Text(text.to_owned()));
+    }
+
+    if let Some(array) = value.as_array()
+        && array.len() == 4
+    {
+        let mut rgba = [0.0_f32; 4];
+        for (idx, component) in array.iter().enumerate() {
+            let number = component.as_f64()?;
+            #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
+            let number = number as f32;
+            rgba[idx] = number;
+        }
+        return Some(ControlValue::Color(rgba));
+    }
+
+    None
 }
 
 fn required_slot_id(params: &Value, param: &str) -> Result<OverlaySlotId, ToolError> {

@@ -638,7 +638,7 @@ pub struct RescanResponse {
     pub updated: usize,
 }
 
-pub(super) fn resolve_effect_metadata(
+pub(crate) fn resolve_effect_metadata(
     registry: &EffectRegistry,
     id_or_name: &str,
 ) -> Option<EffectMetadata> {
