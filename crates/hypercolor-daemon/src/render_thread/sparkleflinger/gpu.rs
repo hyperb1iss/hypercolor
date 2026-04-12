@@ -71,6 +71,7 @@ struct GpuCompositorSurfaceSet {
     bind_groups: GpuCompositorBindGroups,
     readback: wgpu::Buffer,
     readback_surfaces: RenderSurfacePool,
+    cached_compose_params: Option<[u8; COMPOSE_PARAM_BYTES]>,
     front_contents: Option<CachedSourceUpload>,
     back_contents: Option<CachedSourceUpload>,
     cached_source_upload: Option<CachedSourceUpload>,
@@ -80,6 +81,8 @@ struct GpuCompositorSurfaceSet {
     source_upload_count: usize,
     #[cfg(test)]
     compose_dispatch_count: usize,
+    #[cfg(test)]
+    compose_param_write_count: usize,
 }
 
 struct GpuPreviewSurfaceSet {
@@ -1104,6 +1107,7 @@ impl GpuCompositorSurfaceSet {
             source,
             readback,
             readback_surfaces: RenderSurfacePool::new(SurfaceDescriptor::rgba8888(width, height)),
+            cached_compose_params: None,
             front_contents: None,
             back_contents: None,
             cached_source_upload: None,
@@ -1113,6 +1117,8 @@ impl GpuCompositorSurfaceSet {
             source_upload_count: 0,
             #[cfg(test)]
             compose_dispatch_count: 0,
+            #[cfg(test)]
+            compose_param_write_count: 0,
         }
     }
 
@@ -1294,11 +1300,16 @@ fn compose_layer_into_gpu(
         return;
     }
 
-    queue.write_buffer(
-        &pipeline.params_buffer,
-        0,
-        &encode_compose_params(surfaces.width, surfaces.height, shader_mode, layer.opacity),
-    );
+    let params = encode_compose_params(surfaces.width, surfaces.height, shader_mode, layer.opacity);
+    if surfaces.cached_compose_params != Some(params) {
+        queue.write_buffer(&pipeline.params_buffer, 0, &params);
+        surfaces.cached_compose_params = Some(params);
+        #[cfg(test)]
+        {
+            surfaces.compose_param_write_count =
+                surfaces.compose_param_write_count.saturating_add(1);
+        }
+    }
     #[cfg(test)]
     {
         surfaces.compose_dispatch_count = surfaces.compose_dispatch_count.saturating_add(1);
@@ -2449,6 +2460,60 @@ mod tests {
                     .as_ref()
                     .expect("CPU compose should materialize a canvas"),
             )
+        );
+    }
+
+    #[test]
+    fn gpu_compositor_reuses_compose_params_for_same_alpha_shape() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let first_plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(patterned_canvas(96)),
+                    0.35,
+                ),
+            ],
+        );
+        let second_plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(44))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(patterned_canvas(180)),
+                    0.35,
+                ),
+            ],
+        );
+
+        compositor
+            .compose(&first_plan, false, None)
+            .expect("first GPU composition should succeed");
+        assert_eq!(
+            compositor
+                .surfaces
+                .as_ref()
+                .expect("surface allocation should exist after composition")
+                .compose_param_write_count,
+            1
+        );
+
+        compositor
+            .compose(&second_plan, false, None)
+            .expect("second GPU composition should succeed");
+        assert_eq!(
+            compositor
+                .surfaces
+                .as_ref()
+                .expect("surface allocation should persist across compositions")
+                .compose_param_write_count,
+            1
         );
     }
 
