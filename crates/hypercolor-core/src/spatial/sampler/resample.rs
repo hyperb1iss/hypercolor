@@ -322,11 +322,30 @@ fn read_linear_rgb_at(bytes: &[u8], offset: usize) -> [u16; 3] {
 
 #[must_use]
 fn sample_bilinear_linear_rgb(bytes: &[u8], sample: &PreparedBilinearSample) -> [u16; 3] {
-    [
-        sample_bilinear_linear_channel(bytes, sample, 0),
-        sample_bilinear_linear_channel(bytes, sample, 1),
-        sample_bilinear_linear_channel(bytes, sample, 2),
-    ]
+    let [top_left, top_right, bottom_left, bottom_right] = sample.offsets;
+    let x_lower_weight = u32::from(sample.x_lower_weight);
+    let x_upper_weight = u32::from(sample.x_upper_weight);
+    let y_lower_weight = u64::from(sample.y_lower_weight);
+    let y_upper_weight = u64::from(sample.y_upper_weight);
+    let top_left_rgb = read_linear_rgb_at(bytes, top_left);
+    let top_right_rgb = read_linear_rgb_at(bytes, top_right);
+    let bottom_left_rgb = read_linear_rgb_at(bytes, bottom_left);
+    let bottom_right_rgb = read_linear_rgb_at(bytes, bottom_right);
+    let mut blended = [0u16; 3];
+
+    for (channel, output) in blended.iter_mut().enumerate() {
+        let top = u32::from(top_left_rgb[channel]) * x_lower_weight
+            + u32::from(top_right_rgb[channel]) * x_upper_weight;
+        let bottom = u32::from(bottom_left_rgb[channel]) * x_lower_weight
+            + u32::from(bottom_right_rgb[channel]) * x_upper_weight;
+        *output = u16::try_from(
+            (u64::from(top) * y_lower_weight + u64::from(bottom) * y_upper_weight)
+                >> BILINEAR_SHIFT,
+        )
+        .expect("bilinear interpolation result fits in u16");
+    }
+
+    blended
 }
 
 #[must_use]
@@ -465,56 +484,8 @@ fn sample_prepared_area_pixels_into(
 #[must_use]
 #[inline]
 fn sample_prepared_bilinear_srgb_rgb(bytes: &[u8], sample: &PreparedBilinearSample) -> [u8; 3] {
-    [
-        sample_bilinear_srgb_channel(bytes, sample, 0),
-        sample_bilinear_srgb_channel(bytes, sample, 1),
-        sample_bilinear_srgb_channel(bytes, sample, 2),
-    ]
-}
-
-#[must_use]
-#[inline]
-fn sample_bilinear_srgb_channel(
-    bytes: &[u8],
-    sample: &PreparedBilinearSample,
-    channel: usize,
-) -> u8 {
-    let linear = sample_bilinear_linear_channel(bytes, sample, channel);
-    encode_linear_byte(attenuate_linear_channel(linear, sample.attenuation))
-}
-
-#[must_use]
-#[inline]
-fn sample_bilinear_linear_channel(
-    bytes: &[u8],
-    sample: &PreparedBilinearSample,
-    channel: usize,
-) -> u16 {
-    let [top_left, top_right, bottom_left, bottom_right] = sample.offsets;
-    let x_lower_weight = u32::from(sample.x_lower_weight);
-    let x_upper_weight = u32::from(sample.x_upper_weight);
-    let y_lower_weight = u64::from(sample.y_lower_weight);
-    let y_upper_weight = u64::from(sample.y_upper_weight);
-
-    let top = u32::from(decode_srgb_byte(bytes[top_left + channel])) * x_lower_weight
-        + u32::from(decode_srgb_byte(bytes[top_right + channel])) * x_upper_weight;
-    let bottom = u32::from(decode_srgb_byte(bytes[bottom_left + channel])) * x_lower_weight
-        + u32::from(decode_srgb_byte(bytes[bottom_right + channel])) * x_upper_weight;
-
-    u16::try_from(
-        (u64::from(top) * y_lower_weight + u64::from(bottom) * y_upper_weight) >> BILINEAR_SHIFT,
-    )
-    .expect("bilinear interpolation result fits in u16")
-}
-
-#[must_use]
-#[inline]
-fn attenuate_linear_channel(channel: u16, attenuation: u16) -> u16 {
-    if attenuation >= ATTENUATION_ONE {
-        return channel;
-    }
-
-    let attenuation = u32::from(attenuation);
-    u16::try_from((u32::from(channel) * attenuation + 128) / u32::from(ATTENUATION_ONE))
-        .expect("attenuated channel fits in u16")
+    encode_linear_rgb(attenuate_rgb(
+        sample_bilinear_linear_rgb(bytes, sample),
+        sample.attenuation,
+    ))
 }
