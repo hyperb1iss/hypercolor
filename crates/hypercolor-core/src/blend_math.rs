@@ -32,44 +32,94 @@ pub fn blend_rgba_pixels_in_place(
 
     match mode {
         OverlayBlendMode::Normal => {
-            for (dst_px, src_px) in target_pixels
-                .chunks_exact_mut(4)
-                .zip(source_pixels.chunks_exact(4))
-            {
-                let source_alpha_channel = src_px[3];
-                if source_alpha_channel == 0 {
-                    continue;
-                }
-
-                if source_alpha_channel == 255 && dst_px[3] == 255 {
-                    if opacity >= 1.0 {
-                        dst_px.copy_from_slice(src_px);
+            let len = target_pixels.len().min(source_pixels.len());
+            if opacity >= 1.0 {
+                let mut offset = 0;
+                while offset + 3 < len {
+                    let source_alpha_channel = source_pixels[offset + 3];
+                    if source_alpha_channel == 0 {
+                        offset += 4;
                         continue;
                     }
 
-                    let inverse_alpha = 1.0 - opacity;
-                    dst_px[0] = encode_srgb_channel(
-                        decode_srgb_channel(dst_px[0])
-                            .mul_add(inverse_alpha, decode_srgb_channel(src_px[0]) * opacity),
-                    );
-                    dst_px[1] = encode_srgb_channel(
-                        decode_srgb_channel(dst_px[1])
-                            .mul_add(inverse_alpha, decode_srgb_channel(src_px[1]) * opacity),
-                    );
-                    dst_px[2] = encode_srgb_channel(
-                        decode_srgb_channel(dst_px[2])
-                            .mul_add(inverse_alpha, decode_srgb_channel(src_px[2]) * opacity),
-                    );
-                    continue;
-                }
+                    if source_alpha_channel == 255 && target_pixels[offset + 3] == 255 {
+                        target_pixels[offset..offset + 4]
+                            .copy_from_slice(&source_pixels[offset..offset + 4]);
+                        offset += 4;
+                        continue;
+                    }
 
-                let blended = blend_rgba_pixel(
-                    [dst_px[0], dst_px[1], dst_px[2], dst_px[3]],
-                    [src_px[0], src_px[1], src_px[2], src_px[3]],
-                    OverlayBlendMode::Normal,
-                    opacity,
-                );
-                dst_px.copy_from_slice(&blended);
+                    let blended = blend_rgba_pixel(
+                        [
+                            target_pixels[offset],
+                            target_pixels[offset + 1],
+                            target_pixels[offset + 2],
+                            target_pixels[offset + 3],
+                        ],
+                        [
+                            source_pixels[offset],
+                            source_pixels[offset + 1],
+                            source_pixels[offset + 2],
+                            source_pixels[offset + 3],
+                        ],
+                        OverlayBlendMode::Normal,
+                        opacity,
+                    );
+                    target_pixels[offset..offset + 4].copy_from_slice(&blended);
+                    offset += 4;
+                }
+            } else {
+                let inverse_alpha = 1.0 - opacity;
+                let mut offset = 0;
+                while offset + 3 < len {
+                    let source_alpha_channel = source_pixels[offset + 3];
+                    if source_alpha_channel == 0 {
+                        offset += 4;
+                        continue;
+                    }
+
+                    if source_alpha_channel == 255 && target_pixels[offset + 3] == 255 {
+                        target_pixels[offset] = encode_srgb_channel(
+                            decode_srgb_channel(target_pixels[offset]).mul_add(
+                                inverse_alpha,
+                                decode_srgb_channel(source_pixels[offset]) * opacity,
+                            ),
+                        );
+                        target_pixels[offset + 1] = encode_srgb_channel(
+                            decode_srgb_channel(target_pixels[offset + 1]).mul_add(
+                                inverse_alpha,
+                                decode_srgb_channel(source_pixels[offset + 1]) * opacity,
+                            ),
+                        );
+                        target_pixels[offset + 2] = encode_srgb_channel(
+                            decode_srgb_channel(target_pixels[offset + 2]).mul_add(
+                                inverse_alpha,
+                                decode_srgb_channel(source_pixels[offset + 2]) * opacity,
+                            ),
+                        );
+                        offset += 4;
+                        continue;
+                    }
+
+                    let blended = blend_rgba_pixel(
+                        [
+                            target_pixels[offset],
+                            target_pixels[offset + 1],
+                            target_pixels[offset + 2],
+                            target_pixels[offset + 3],
+                        ],
+                        [
+                            source_pixels[offset],
+                            source_pixels[offset + 1],
+                            source_pixels[offset + 2],
+                            source_pixels[offset + 3],
+                        ],
+                        OverlayBlendMode::Normal,
+                        opacity,
+                    );
+                    target_pixels[offset..offset + 4].copy_from_slice(&blended);
+                    offset += 4;
+                }
             }
         }
         OverlayBlendMode::Add | OverlayBlendMode::Screen => {
