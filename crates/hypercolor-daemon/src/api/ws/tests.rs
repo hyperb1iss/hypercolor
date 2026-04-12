@@ -43,7 +43,9 @@ use super::relays::{
 use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
 use crate::performance::{CompositorBackendKind, FrameTimeline, LatestFrameMetrics};
-use crate::preview_runtime::{PreviewFrameReceiver, PreviewRuntime};
+use crate::preview_runtime::{
+    PreviewFrameReceiver, PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand,
+};
 
 static WS_CACHE_TEST_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
 
@@ -116,8 +118,20 @@ fn filter_frame_zones(
 #[tokio::test]
 async fn metrics_message_includes_latest_frame_timeline() {
     let state = Arc::new(AppState::new());
-    let _preview_rx = state.preview_runtime.canvas_receiver();
-    let _screen_preview_rx = state.preview_runtime.screen_canvas_receiver();
+    let mut preview_rx = state.preview_runtime.canvas_receiver();
+    let mut screen_preview_rx = state.preview_runtime.screen_canvas_receiver();
+    preview_rx.update_demand(PreviewStreamDemand {
+        fps: 20,
+        format: PreviewPixelFormat::Jpeg,
+        width: 640,
+        height: 360,
+    });
+    screen_preview_rx.update_demand(PreviewStreamDemand {
+        fps: 30,
+        format: PreviewPixelFormat::Rgba,
+        width: 0,
+        height: 0,
+    });
     let canvas_frame = CanvasFrame::from_canvas(&Canvas::new(2, 1), 88, 44);
     let screen_frame = CanvasFrame::from_canvas(&Canvas::new(1, 1), 45, 21);
     let _ = state.event_bus.canvas_sender().send(canvas_frame.clone());
@@ -210,6 +224,17 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["preview"]["screen_canvas_frames_published"], 1);
     assert_eq!(json["preview"]["latest_canvas_frame_number"], 88);
     assert_eq!(json["preview"]["latest_screen_canvas_frame_number"], 45);
+    assert_eq!(json["preview"]["canvas_demand"]["subscribers"], 1);
+    assert_eq!(json["preview"]["canvas_demand"]["max_fps"], 20);
+    assert_eq!(json["preview"]["canvas_demand"]["max_width"], 640);
+    assert_eq!(json["preview"]["canvas_demand"]["max_height"], 360);
+    assert_eq!(json["preview"]["canvas_demand"]["any_jpeg"], true);
+    assert_eq!(json["preview"]["screen_canvas_demand"]["subscribers"], 1);
+    assert_eq!(
+        json["preview"]["screen_canvas_demand"]["any_full_resolution"],
+        true
+    );
+    assert_eq!(json["preview"]["screen_canvas_demand"]["any_rgba"], true);
 }
 
 #[tokio::test]

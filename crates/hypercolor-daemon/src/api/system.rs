@@ -17,7 +17,7 @@ use crate::api::envelope::{ApiError, ApiResponse};
 use crate::api::security;
 use crate::api::settings;
 use crate::performance::LatestFrameMetrics;
-use crate::preview_runtime::PreviewRuntimeSnapshot;
+use crate::preview_runtime::{PreviewDemandSummary, PreviewRuntime};
 use crate::session::current_global_brightness;
 
 use hypercolor_core::config::ConfigManager;
@@ -93,6 +93,20 @@ pub struct PreviewRuntimeStatus {
     pub screen_canvas_frames_published: u64,
     pub latest_canvas_frame_number: u32,
     pub latest_screen_canvas_frame_number: u32,
+    pub canvas_demand: PreviewDemandStatus,
+    pub screen_canvas_demand: PreviewDemandStatus,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PreviewDemandStatus {
+    pub subscribers: u32,
+    pub max_fps: u32,
+    pub max_width: u32,
+    pub max_height: u32,
+    pub any_full_resolution: bool,
+    pub any_rgb: bool,
+    pub any_rgba: bool,
+    pub any_jpeg: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -155,7 +169,7 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     let latest_frame = performance
         .latest_frame
         .map(|frame| latest_frame_status(frame, state.start_time.elapsed().as_secs_f64() * 1000.0));
-    let preview_runtime = preview_runtime_status(state.preview_runtime.snapshot());
+    let preview_runtime = preview_runtime_status(&state.preview_runtime);
 
     let uptime_seconds = state.start_time.elapsed().as_secs();
     let config_path = config_path(&state).display().to_string();
@@ -353,7 +367,8 @@ fn latest_frame_status(frame: LatestFrameMetrics, render_elapsed_ms: f64) -> Lat
     }
 }
 
-fn preview_runtime_status(snapshot: PreviewRuntimeSnapshot) -> PreviewRuntimeStatus {
+fn preview_runtime_status(runtime: &PreviewRuntime) -> PreviewRuntimeStatus {
+    let snapshot = runtime.snapshot();
     PreviewRuntimeStatus {
         canvas_receivers: snapshot.canvas_receivers,
         screen_canvas_receivers: snapshot.screen_canvas_receivers,
@@ -361,6 +376,21 @@ fn preview_runtime_status(snapshot: PreviewRuntimeSnapshot) -> PreviewRuntimeSta
         screen_canvas_frames_published: snapshot.screen_canvas_frames_published,
         latest_canvas_frame_number: snapshot.latest_canvas_frame_number,
         latest_screen_canvas_frame_number: snapshot.latest_screen_canvas_frame_number,
+        canvas_demand: preview_demand_status(runtime.canvas_demand()),
+        screen_canvas_demand: preview_demand_status(runtime.screen_canvas_demand()),
+    }
+}
+
+fn preview_demand_status(summary: PreviewDemandSummary) -> PreviewDemandStatus {
+    PreviewDemandStatus {
+        subscribers: summary.subscribers,
+        max_fps: summary.max_fps,
+        max_width: summary.max_width,
+        max_height: summary.max_height,
+        any_full_resolution: summary.any_full_resolution,
+        any_rgb: summary.any_rgb,
+        any_rgba: summary.any_rgba,
+        any_jpeg: summary.any_jpeg,
     }
 }
 
@@ -393,6 +423,7 @@ mod tests {
     use super::{get_sensor, get_sensors, get_status};
     use crate::api::AppState;
     use crate::performance::{CompositorBackendKind, FrameTimeline, LatestFrameMetrics};
+    use crate::preview_runtime::{PreviewPixelFormat, PreviewStreamDemand};
     use axum::body::to_bytes;
     use axum::extract::{Path, State};
     use hypercolor_core::bus::CanvasFrame;
@@ -409,8 +440,20 @@ mod tests {
     #[tokio::test]
     async fn status_includes_latest_frame_surface_stats() {
         let state = Arc::new(AppState::new());
-        let _preview_rx = state.preview_runtime.canvas_receiver();
-        let _screen_preview_rx = state.preview_runtime.screen_canvas_receiver();
+        let mut preview_rx = state.preview_runtime.canvas_receiver();
+        let mut screen_preview_rx = state.preview_runtime.screen_canvas_receiver();
+        preview_rx.update_demand(PreviewStreamDemand {
+            fps: 24,
+            format: PreviewPixelFormat::Jpeg,
+            width: 640,
+            height: 360,
+        });
+        screen_preview_rx.update_demand(PreviewStreamDemand {
+            fps: 30,
+            format: PreviewPixelFormat::Rgba,
+            width: 0,
+            height: 0,
+        });
         let canvas_frame = CanvasFrame::from_canvas(&Canvas::new(2, 1), 88, 44);
         let screen_frame = CanvasFrame::from_canvas(&Canvas::new(1, 1), 45, 21);
         let _ = state.event_bus.canvas_sender().send(canvas_frame.clone());
@@ -521,6 +564,38 @@ mod tests {
         assert_eq!(
             json["data"]["preview_runtime"]["latest_screen_canvas_frame_number"],
             45
+        );
+        assert_eq!(
+            json["data"]["preview_runtime"]["canvas_demand"]["subscribers"],
+            1
+        );
+        assert_eq!(
+            json["data"]["preview_runtime"]["canvas_demand"]["max_fps"],
+            24
+        );
+        assert_eq!(
+            json["data"]["preview_runtime"]["canvas_demand"]["max_width"],
+            640
+        );
+        assert_eq!(
+            json["data"]["preview_runtime"]["canvas_demand"]["max_height"],
+            360
+        );
+        assert_eq!(
+            json["data"]["preview_runtime"]["canvas_demand"]["any_jpeg"],
+            true
+        );
+        assert_eq!(
+            json["data"]["preview_runtime"]["screen_canvas_demand"]["subscribers"],
+            1
+        );
+        assert_eq!(
+            json["data"]["preview_runtime"]["screen_canvas_demand"]["any_full_resolution"],
+            true
+        );
+        assert_eq!(
+            json["data"]["preview_runtime"]["screen_canvas_demand"]["any_rgba"],
+            true
         );
     }
 

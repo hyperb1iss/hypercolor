@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
@@ -28,16 +29,85 @@ struct PreviewRuntimeTelemetry {
     latest_screen_canvas_timestamp_ms: AtomicU32,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PreviewPixelFormat {
+    #[default]
+    Rgb,
+    Rgba,
+    Jpeg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreviewStreamDemand {
+    pub fps: u32,
+    pub format: PreviewPixelFormat,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Default for PreviewStreamDemand {
+    fn default() -> Self {
+        Self {
+            fps: 15,
+            format: PreviewPixelFormat::Rgb,
+            width: 0,
+            height: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PreviewDemandSummary {
+    pub subscribers: u32,
+    pub max_fps: u32,
+    pub max_width: u32,
+    pub max_height: u32,
+    pub any_full_resolution: bool,
+    pub any_rgb: bool,
+    pub any_rgba: bool,
+    pub any_jpeg: bool,
+}
+
+#[derive(Debug, Default)]
+struct PreviewRuntimeDemandState {
+    next_subscription_id: AtomicU64,
+    canvas: Mutex<Vec<(u64, PreviewStreamDemand)>>,
+    screen_canvas: Mutex<Vec<(u64, PreviewStreamDemand)>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreviewStreamKind {
+    Canvas,
+    ScreenCanvas,
+}
+
+#[derive(Debug)]
+struct PreviewDemandRegistration {
+    kind: PreviewStreamKind,
+    id: u64,
+    state: Arc<PreviewRuntimeDemandState>,
+    demand: PreviewStreamDemand,
+}
+
 #[derive(Debug)]
 pub struct PreviewFrameReceiver {
     receiver: watch::Receiver<CanvasFrame>,
     counter: Arc<AtomicU32>,
+    demand_registration: PreviewDemandRegistration,
 }
 
 impl PreviewFrameReceiver {
-    fn new(receiver: watch::Receiver<CanvasFrame>, counter: Arc<AtomicU32>) -> Self {
+    fn new(
+        receiver: watch::Receiver<CanvasFrame>,
+        counter: Arc<AtomicU32>,
+        demand_registration: PreviewDemandRegistration,
+    ) -> Self {
         counter.fetch_add(1, Ordering::Relaxed);
-        Self { receiver, counter }
+        Self {
+            receiver,
+            counter,
+            demand_registration,
+        }
     }
 
     pub async fn changed(&mut self) -> Result<(), watch::error::RecvError> {
@@ -51,6 +121,10 @@ impl PreviewFrameReceiver {
     pub fn borrow_and_update(&mut self) -> watch::Ref<'_, CanvasFrame> {
         self.receiver.borrow_and_update()
     }
+
+    pub fn update_demand(&mut self, demand: PreviewStreamDemand) {
+        self.demand_registration.update(demand);
+    }
 }
 
 impl Drop for PreviewFrameReceiver {
@@ -63,6 +137,7 @@ impl Drop for PreviewFrameReceiver {
 pub struct PreviewRuntime {
     event_bus: Arc<HypercolorBus>,
     telemetry: Arc<PreviewRuntimeTelemetry>,
+    demand_state: Arc<PreviewRuntimeDemandState>,
 }
 
 impl PreviewRuntime {
@@ -75,6 +150,7 @@ impl PreviewRuntime {
                 screen_canvas_receivers: Arc::new(AtomicU32::new(0)),
                 ..PreviewRuntimeTelemetry::default()
             }),
+            demand_state: Arc::new(PreviewRuntimeDemandState::default()),
         }
     }
 
@@ -99,6 +175,10 @@ impl PreviewRuntime {
         PreviewFrameReceiver::new(
             self.event_bus.canvas_receiver(),
             Arc::clone(&self.telemetry.canvas_receivers),
+            PreviewDemandRegistration::new(
+                Arc::clone(&self.demand_state),
+                PreviewStreamKind::Canvas,
+            ),
         )
     }
 
@@ -129,6 +209,10 @@ impl PreviewRuntime {
         PreviewFrameReceiver::new(
             self.event_bus.screen_canvas_receiver(),
             Arc::clone(&self.telemetry.screen_canvas_receivers),
+            PreviewDemandRegistration::new(
+                Arc::clone(&self.demand_state),
+                PreviewStreamKind::ScreenCanvas,
+            ),
         )
     }
 
@@ -176,10 +260,115 @@ impl PreviewRuntime {
                 .load(Ordering::Relaxed),
         }
     }
+
+    #[must_use]
+    pub fn canvas_demand(&self) -> PreviewDemandSummary {
+        self.demand_state.summary(PreviewStreamKind::Canvas)
+    }
+
+    #[must_use]
+    pub fn screen_canvas_demand(&self) -> PreviewDemandSummary {
+        self.demand_state.summary(PreviewStreamKind::ScreenCanvas)
+    }
 }
 
 impl Default for PreviewRuntime {
     fn default() -> Self {
         Self::new(Arc::new(HypercolorBus::new()))
+    }
+}
+
+impl PreviewRuntimeDemandState {
+    fn register(
+        &self,
+        kind: PreviewStreamKind,
+        id: u64,
+        demand: PreviewStreamDemand,
+    ) -> PreviewStreamDemand {
+        let entries = match kind {
+            PreviewStreamKind::Canvas => &self.canvas,
+            PreviewStreamKind::ScreenCanvas => &self.screen_canvas,
+        };
+        let mut entries = entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        entries.push((id, demand));
+        demand
+    }
+
+    fn update(&self, kind: PreviewStreamKind, id: u64, demand: PreviewStreamDemand) {
+        let entries = match kind {
+            PreviewStreamKind::Canvas => &self.canvas,
+            PreviewStreamKind::ScreenCanvas => &self.screen_canvas,
+        };
+        let mut entries = entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((_, current)) = entries.iter_mut().find(|(entry_id, _)| *entry_id == id) {
+            *current = demand;
+        }
+    }
+
+    fn unregister(&self, kind: PreviewStreamKind, id: u64) {
+        let entries = match kind {
+            PreviewStreamKind::Canvas => &self.canvas,
+            PreviewStreamKind::ScreenCanvas => &self.screen_canvas,
+        };
+        let mut entries = entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        entries.retain(|(entry_id, _)| *entry_id != id);
+    }
+
+    fn summary(&self, kind: PreviewStreamKind) -> PreviewDemandSummary {
+        let entries = match kind {
+            PreviewStreamKind::Canvas => &self.canvas,
+            PreviewStreamKind::ScreenCanvas => &self.screen_canvas,
+        };
+        let entries = entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut summary = PreviewDemandSummary {
+            subscribers: u32::try_from(entries.len()).unwrap_or(u32::MAX),
+            ..PreviewDemandSummary::default()
+        };
+        for (_, demand) in entries.iter() {
+            summary.max_fps = summary.max_fps.max(demand.fps);
+            summary.max_width = summary.max_width.max(demand.width);
+            summary.max_height = summary.max_height.max(demand.height);
+            summary.any_full_resolution |= demand.width == 0 && demand.height == 0;
+            summary.any_rgb |= demand.format == PreviewPixelFormat::Rgb;
+            summary.any_rgba |= demand.format == PreviewPixelFormat::Rgba;
+            summary.any_jpeg |= demand.format == PreviewPixelFormat::Jpeg;
+        }
+        summary
+    }
+}
+
+impl PreviewDemandRegistration {
+    fn new(state: Arc<PreviewRuntimeDemandState>, kind: PreviewStreamKind) -> Self {
+        let id = state.next_subscription_id.fetch_add(1, Ordering::Relaxed);
+        let demand = state.register(kind, id, PreviewStreamDemand::default());
+        Self {
+            kind,
+            id,
+            state,
+            demand,
+        }
+    }
+
+    fn update(&mut self, demand: PreviewStreamDemand) {
+        if self.demand == demand {
+            return;
+        }
+
+        self.state.update(self.kind, self.id, demand);
+        self.demand = demand;
+    }
+}
+
+impl Drop for PreviewDemandRegistration {
+    fn drop(&mut self) {
+        self.state.unregister(self.kind, self.id);
     }
 }

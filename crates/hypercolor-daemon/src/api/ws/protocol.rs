@@ -736,6 +736,20 @@ pub(super) struct MetricsPreview {
     pub(super) screen_canvas_frames_published: u64,
     pub(super) latest_canvas_frame_number: u32,
     pub(super) latest_screen_canvas_frame_number: u32,
+    pub(super) canvas_demand: MetricsPreviewDemand,
+    pub(super) screen_canvas_demand: MetricsPreviewDemand,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct MetricsPreviewDemand {
+    pub(super) subscribers: u32,
+    pub(super) max_fps: u32,
+    pub(super) max_width: u32,
+    pub(super) max_height: u32,
+    pub(super) any_full_resolution: bool,
+    pub(super) any_rgb: bool,
+    pub(super) any_rgba: bool,
+    pub(super) any_jpeg: bool,
 }
 
 #[derive(Debug, Serialize)]

@@ -26,12 +26,13 @@ use super::cache::{
 };
 use super::protocol::{
     ActiveFramesConfig, CanvasConfig, MetricsCopies, MetricsDevices, MetricsFps, MetricsFrameTime,
-    MetricsMemory, MetricsPacing, MetricsPayload, MetricsPreview, MetricsRenderSurfaces,
-    MetricsStages, MetricsTimeline, MetricsWebsocket, ServerMessage, SpectrumConfig,
-    SubscriptionState, WsChannel, event_message_parts, should_relay_event,
+    MetricsMemory, MetricsPacing, MetricsPayload, MetricsPreview, MetricsPreviewDemand,
+    MetricsRenderSurfaces, MetricsStages, MetricsTimeline, MetricsWebsocket, ServerMessage,
+    SpectrumConfig, SubscriptionState, WsChannel, event_message_parts, should_relay_event,
 };
 use crate::api::AppState;
 use crate::performance::FrameTimeSummary as RenderFrameTimeSummary;
+use crate::preview_runtime::{PreviewDemandSummary, PreviewPixelFormat, PreviewStreamDemand};
 use crate::session::OutputPowerState;
 
 /// Relay events from the broadcast bus to a bounded mpsc channel.
@@ -288,6 +289,7 @@ pub(super) async fn relay_canvas(
         let canvas_rx = canvas_rx
             .as_mut()
             .expect("preview canvas receiver should exist while subscribed");
+        canvas_rx.update_demand(preview_stream_demand(canvas_config));
 
         if canvas_config.fps != active_fps {
             active_fps = canvas_config.fps.max(1);
@@ -402,6 +404,7 @@ pub(super) async fn relay_screen_canvas(
         let canvas_rx = canvas_rx
             .as_mut()
             .expect("screen preview receiver should exist while subscribed");
+        canvas_rx.update_demand(preview_stream_demand(canvas_config));
 
         if canvas_config.fps != active_fps {
             active_fps = canvas_config.fps.max(1);
@@ -654,6 +657,32 @@ fn encode_display_preview_frame(snapshot: &crate::display_frames::DisplayFrameSn
     Bytes::from(buf)
 }
 
+fn preview_stream_demand(config: &CanvasConfig) -> PreviewStreamDemand {
+    PreviewStreamDemand {
+        fps: config.fps,
+        format: match config.format {
+            super::protocol::CanvasFormat::Rgb => PreviewPixelFormat::Rgb,
+            super::protocol::CanvasFormat::Rgba => PreviewPixelFormat::Rgba,
+            super::protocol::CanvasFormat::Jpeg => PreviewPixelFormat::Jpeg,
+        },
+        width: config.width,
+        height: config.height,
+    }
+}
+
+fn metrics_preview_demand(summary: PreviewDemandSummary) -> MetricsPreviewDemand {
+    MetricsPreviewDemand {
+        subscribers: summary.subscribers,
+        max_fps: summary.max_fps,
+        max_width: summary.max_width,
+        max_height: summary.max_height,
+        any_full_resolution: summary.any_full_resolution,
+        any_rgb: summary.any_rgb,
+        any_rgba: summary.any_rgba,
+        any_jpeg: summary.any_jpeg,
+    }
+}
+
 /// Relay periodic metrics snapshots to the WebSocket client.
 pub(super) async fn relay_metrics(
     state: Arc<AppState>,
@@ -848,6 +877,8 @@ pub(super) async fn build_metrics_message(
     let daemon_rss_mb = process_rss_mb().unwrap_or(0.0);
     let client_count = WS_CLIENT_COUNT.load(Ordering::Relaxed);
     let preview_runtime = state.preview_runtime.snapshot();
+    let canvas_demand = state.preview_runtime.canvas_demand();
+    let screen_canvas_demand = state.preview_runtime.screen_canvas_demand();
 
     ServerMessage::Metrics {
         timestamp: format_iso8601_now(),
@@ -926,6 +957,8 @@ pub(super) async fn build_metrics_message(
                 latest_canvas_frame_number: preview_runtime.latest_canvas_frame_number,
                 latest_screen_canvas_frame_number: preview_runtime
                     .latest_screen_canvas_frame_number,
+                canvas_demand: metrics_preview_demand(canvas_demand),
+                screen_canvas_demand: metrics_preview_demand(screen_canvas_demand),
             },
             copies: MetricsCopies {
                 full_frame_count: latest_frame.full_frame_copy_count,
