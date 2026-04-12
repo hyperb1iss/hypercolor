@@ -276,7 +276,7 @@ pub(crate) async fn apply_profile_snapshot(
         };
 
         let render_acceleration_mode =
-            crate::api::configured_render_acceleration_mode(state.config_manager.as_ref());
+            crate::api::configured_effect_renderer_acceleration_mode(state.config_manager.as_ref());
         let renderer = create_renderer_for_metadata_with_mode(&metadata, render_acceleration_mode)
             .map_err(|error| {
                 format!(

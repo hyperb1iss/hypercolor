@@ -360,10 +360,9 @@ impl DaemonState {
 
         let renderer = create_renderer_for_metadata_with_mode(
             &metadata,
-            self.config_manager
-                .get()
-                .effect_engine
-                .render_acceleration_mode,
+            crate::api::effect_renderer_acceleration_mode(
+                self.config_manager.get().effect_engine.render_acceleration_mode,
+            ),
         )
         .with_context(|| format!("failed to create renderer for '{}'", metadata.name))?;
 

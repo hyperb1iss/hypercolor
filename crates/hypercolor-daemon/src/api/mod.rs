@@ -234,6 +234,48 @@ pub(crate) fn configured_render_acceleration_mode(
     })
 }
 
+pub(crate) const fn effect_renderer_acceleration_mode(
+    requested_mode: RenderAccelerationMode,
+) -> RenderAccelerationMode {
+    match requested_mode {
+        RenderAccelerationMode::Gpu => RenderAccelerationMode::Cpu,
+        mode => mode,
+    }
+}
+
+pub(crate) fn configured_effect_renderer_acceleration_mode(
+    config_manager: Option<&Arc<ConfigManager>>,
+) -> RenderAccelerationMode {
+    effect_renderer_acceleration_mode(configured_render_acceleration_mode(config_manager))
+}
+
+#[cfg(test)]
+mod tests {
+    use hypercolor_types::config::RenderAccelerationMode;
+
+    use super::effect_renderer_acceleration_mode;
+
+    #[test]
+    fn effect_renderer_mode_keeps_cpu_and_auto_requests() {
+        assert_eq!(
+            effect_renderer_acceleration_mode(RenderAccelerationMode::Cpu),
+            RenderAccelerationMode::Cpu
+        );
+        assert_eq!(
+            effect_renderer_acceleration_mode(RenderAccelerationMode::Auto),
+            RenderAccelerationMode::Auto
+        );
+    }
+
+    #[test]
+    fn effect_renderer_mode_downgrades_gpu_requests_to_cpu() {
+        assert_eq!(
+            effect_renderer_acceleration_mode(RenderAccelerationMode::Gpu),
+            RenderAccelerationMode::Cpu
+        );
+    }
+}
+
 impl AppState {
     /// Create a new `AppState` with default empty subsystems.
     ///

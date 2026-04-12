@@ -72,7 +72,7 @@ pub(crate) async fn activate_effect_with_controls(
     controls: &HashMap<String, ControlValue>,
 ) -> Result<ActivationResult, ActivateEffectError> {
     let render_acceleration_mode =
-        crate::api::configured_render_acceleration_mode(state.config_manager.as_ref());
+        crate::api::configured_effect_renderer_acceleration_mode(state.config_manager.as_ref());
     let renderer = create_renderer_for_metadata_with_mode(metadata, render_acceleration_mode)
         .map_err(|error| ActivateEffectError::Renderer(error.to_string()))?;
 

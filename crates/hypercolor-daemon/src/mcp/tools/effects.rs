@@ -303,7 +303,7 @@ pub(super) async fn handle_set_effect_with_state(
 
     let previous_effect = {
         let requested_mode =
-            crate::api::configured_render_acceleration_mode(state.config_manager.as_ref());
+            crate::api::configured_effect_renderer_acceleration_mode(state.config_manager.as_ref());
         let renderer = create_renderer_for_metadata_with_mode(&best_match.effect, requested_mode)
             .map_err(|error| {
             ToolError::Internal(format!("failed to prepare effect: {error}"))
@@ -516,7 +516,7 @@ pub(super) async fn handle_set_color_with_state(
 
     let previous_effect = {
         let requested_mode =
-            crate::api::configured_render_acceleration_mode(state.config_manager.as_ref());
+            crate::api::configured_effect_renderer_acceleration_mode(state.config_manager.as_ref());
         let renderer = create_renderer_for_metadata_with_mode(&solid_effect, requested_mode)
             .map_err(|error| {
                 ToolError::Internal(format!("failed to prepare solid color: {error}"))

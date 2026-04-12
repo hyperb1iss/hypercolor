@@ -356,7 +356,7 @@ pub async fn apply_effect(
     };
 
     let render_acceleration_mode =
-        crate::api::configured_render_acceleration_mode(state.config_manager.as_ref());
+        crate::api::configured_effect_renderer_acceleration_mode(state.config_manager.as_ref());
     let renderer = match create_renderer_for_metadata_with_mode(&metadata, render_acceleration_mode)
     {
         Ok(renderer) => renderer,
