@@ -4,6 +4,7 @@
 //! the shared [`AppState`] that every handler receives via Axum's
 //! [`State`](axum::extract::State) extractor.
 
+pub mod access_log;
 pub mod attachments;
 pub mod config;
 pub mod control_values;
@@ -38,7 +39,6 @@ use tokio::sync::{Mutex, RwLock, watch};
 use tokio::task::JoinHandle;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
-use tower_http::trace::TraceLayer;
 use tracing::warn;
 
 use hypercolor_core::attachment::AttachmentRegistry;
@@ -985,7 +985,7 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
                 ])
                 .allow_headers([header::ACCEPT, header::AUTHORIZATION, header::CONTENT_TYPE]),
         )
-        .layer(TraceLayer::new_for_http())
+        .layer(axum::middleware::from_fn(access_log::log_access))
         .with_state(state)
 }
 
