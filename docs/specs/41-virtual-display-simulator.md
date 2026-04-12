@@ -294,6 +294,13 @@ follow-on wave.
 
 These APIs manage the synthetic device definitions, not the live frame data.
 
+The `/displays` page also landed simulator management on 2026-04-11:
+
+- create simulators directly from the picker header or empty state
+- badge simulator rows distinctly from hardware-backed displays
+- edit simulator name, size, and shape from a dedicated settings modal
+- delete simulators without leaving the display workspace
+
 ### 7.2 Inspection API
 
 Add read-only frame inspection:
@@ -377,6 +384,10 @@ inspection remain follow-on work.
 **Exit criteria:** A user can create a simulated display, assign it in a
 layout, and inspect the final rendered result in the browser.
 
+The browser-facing management side of this wave also landed on 2026-04-11 via
+the `/displays` page, so simulator creation and basic CRUD no longer require
+raw API calls or helper scripts.
+
 ### Wave 3 — TUI Integration
 
 **Goal:** Inspect simulator frames in terminal workflows.
@@ -438,7 +449,14 @@ tuning.
 - circular simulators are visibly masked as circular
 - multiple simulators can coexist without frame mix-ups
 
-### 9.4 Honest Boundary
+### 9.4 Browser UI Coverage
+
+- simulator request payloads serialize cleanly for partial updates
+- simulator family detection remains case-insensitive in the picker
+- simulator dimension parsing rejects invalid browser form input
+- display-page simulator helpers stay covered by focused `hypercolor-ui` tests
+
+### 9.5 Honest Boundary
 
 Simulator verification reduces hardware dependence, but it does **not** replace
 real-device checks for:
