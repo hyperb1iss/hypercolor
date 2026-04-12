@@ -459,6 +459,113 @@ impl DeviceBackend for DiscoverRetryBackend {
     }
 }
 
+struct CleanupRetryBackend {
+    expected_device_id: DeviceId,
+    connected: bool,
+    connect_attempts: Arc<AtomicUsize>,
+    disconnect_attempts: Arc<AtomicUsize>,
+    discover_attempts: Arc<AtomicUsize>,
+    target_fps: u32,
+}
+
+impl CleanupRetryBackend {
+    fn new(
+        expected_device_id: DeviceId,
+        connect_attempts: Arc<AtomicUsize>,
+        disconnect_attempts: Arc<AtomicUsize>,
+        discover_attempts: Arc<AtomicUsize>,
+        target_fps: u32,
+    ) -> Self {
+        Self {
+            expected_device_id,
+            connected: true,
+            connect_attempts,
+            disconnect_attempts,
+            discover_attempts,
+            target_fps,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for CleanupRetryBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "cleanup_retry".to_owned(),
+            name: "Cleanup Retry Backend".to_owned(),
+            description: "Requires disconnect cleanup before a retry can reconnect".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        self.discover_attempts.fetch_add(1, Ordering::Relaxed);
+        Ok(vec![DeviceInfo {
+            id: self.expected_device_id,
+            name: "Cleanup Retry Device".to_owned(),
+            vendor: "Test".to_owned(),
+            family: DeviceFamily::Custom("Test".to_owned()),
+            model: None,
+            connection_type: ConnectionType::Network,
+            zones: vec![ZoneInfo {
+                name: "Main".to_owned(),
+                led_count: 4,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+            }],
+            firmware_version: None,
+            capabilities: DeviceCapabilities {
+                led_count: 4,
+                supports_direct: true,
+                supports_brightness: false,
+                has_display: false,
+                display_resolution: None,
+                max_fps: self.target_fps,
+                color_space: hypercolor_types::device::DeviceColorSpace::default(),
+                features: DeviceFeatures::default(),
+            },
+        }])
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        self.connect_attempts.fetch_add(1, Ordering::Relaxed);
+        if self.connected {
+            bail!("stale session still connected");
+        }
+
+        self.connected = true;
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        self.disconnect_attempts.fetch_add(1, Ordering::Relaxed);
+        self.connected = false;
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        if !self.connected {
+            bail!("write while disconnected");
+        }
+
+        Ok(())
+    }
+
+    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
+        (*id == self.expected_device_id && self.connected).then_some(self.target_fps)
+    }
+}
+
 #[async_trait::async_trait]
 impl DeviceBackend for DisplayRecordingBackend {
     fn info(&self) -> BackendInfo {
@@ -1053,6 +1160,35 @@ async fn backend_io_connect_with_refresh_retries_and_caches_target_fps() {
 
     assert_eq!(target_fps, 48);
     assert_eq!(manager.cached_target_fps("retry", device_id), Some(48));
+}
+
+#[tokio::test]
+async fn backend_io_connect_with_refresh_cleans_up_stale_session_before_retry() {
+    let device_id = DeviceId::new();
+    let connect_attempts = Arc::new(AtomicUsize::new(0));
+    let disconnect_attempts = Arc::new(AtomicUsize::new(0));
+    let discover_attempts = Arc::new(AtomicUsize::new(0));
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(CleanupRetryBackend::new(
+        device_id,
+        Arc::clone(&connect_attempts),
+        Arc::clone(&disconnect_attempts),
+        Arc::clone(&discover_attempts),
+        36,
+    )));
+
+    let io = manager
+        .backend_io("cleanup_retry")
+        .expect("backend io handle should exist");
+    let target_fps = io
+        .connect_with_refresh(device_id)
+        .await
+        .expect("connect with refresh should recover after cleanup");
+
+    assert_eq!(target_fps, 36);
+    assert_eq!(connect_attempts.load(Ordering::Relaxed), 2);
+    assert_eq!(disconnect_attempts.load(Ordering::Relaxed), 1);
+    assert_eq!(discover_attempts.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]

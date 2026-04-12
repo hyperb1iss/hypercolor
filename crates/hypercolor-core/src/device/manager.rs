@@ -46,7 +46,7 @@ pub struct BackendIo {
 }
 
 impl BackendIo {
-    /// Connect a device, retrying once after backend discovery refresh.
+    /// Connect a device, retrying once after cleanup and backend discovery refresh.
     ///
     /// Returns the backend's preferred output FPS for the connected device.
     ///
@@ -65,6 +65,20 @@ impl BackendIo {
                 error = %initial_message,
                 "initial connect failed; refreshing backend discovery state and retrying"
             );
+
+            match backend.disconnect(&device_id).await {
+                Ok(()) => debug!(
+                    backend_id = %self.backend_id,
+                    %device_id,
+                    "best-effort cleanup after failed connect completed"
+                ),
+                Err(cleanup_error) => debug!(
+                    backend_id = %self.backend_id,
+                    %device_id,
+                    error = %cleanup_error,
+                    "best-effort cleanup after failed connect could not release an existing session"
+                ),
+            }
 
             backend.discover().await.with_context(|| {
                 format!(

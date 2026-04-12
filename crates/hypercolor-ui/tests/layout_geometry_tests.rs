@@ -695,3 +695,179 @@ fn translate_zones_clamps_to_canvas() {
     assert!(a.position.x >= 0.0);
     assert!(a.position.y >= 0.0);
 }
+
+// ── Group centroid ──────────────────────────────────────────────────────
+
+#[test]
+fn group_centroid_averages_zone_positions() {
+    let layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.2, 0.3, 0.1, 0.1),
+        plain_zone("b", "dev", 0.6, 0.3, 0.1, 0.1),
+        plain_zone("c", "dev", 0.4, 0.7, 0.1, 0.1),
+    ]);
+
+    let ids: std::collections::HashSet<String> =
+        ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+    let centroid = layout_geometry::group_centroid(&layout, &ids)
+        .expect("should compute centroid for 3 zones");
+
+    assert!((centroid.x - 0.4).abs() < 0.001);
+    assert!((centroid.y - (0.3 + 0.3 + 0.7) / 3.0).abs() < 0.001);
+}
+
+#[test]
+fn group_centroid_empty_returns_none() {
+    let layout = simple_layout(vec![plain_zone("a", "dev", 0.5, 0.5, 0.1, 0.1)]);
+    let ids = std::collections::HashSet::new();
+    assert!(layout_geometry::group_centroid(&layout, &ids).is_none());
+}
+
+// ── Group translate ─────────────────────────────────────────────────────
+
+#[test]
+fn translate_group_moves_centroid_preserving_relative_positions() {
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.3, 0.4, 0.1, 0.1),
+        plain_zone("b", "dev", 0.5, 0.4, 0.1, 0.1),
+    ]);
+
+    let ids: std::collections::HashSet<String> =
+        ["a", "b"].iter().map(|s| s.to_string()).collect();
+
+    // Centroid is (0.4, 0.4). Move it to (0.6, 0.6).
+    layout_geometry::translate_group(&mut layout, &ids, NormalizedPosition::new(0.6, 0.6));
+
+    let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
+    let b = layout.zones.iter().find(|z| z.id == "b").expect("b");
+
+    // Relative offset should be preserved: b is 0.2 to the right of a
+    assert!((b.position.x - a.position.x - 0.2).abs() < 0.001);
+    assert!((b.position.y - a.position.y).abs() < 0.001);
+
+    // New centroid should be at (0.6, 0.6)
+    assert!(((a.position.x + b.position.x) / 2.0 - 0.6).abs() < 0.001);
+    assert!(((a.position.y + b.position.y) / 2.0 - 0.6).abs() < 0.001);
+}
+
+// ── Group rotate ────────────────────────────────────────────────────────
+
+#[test]
+fn rotate_group_90_degrees_orbits_and_rotates_zones() {
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.4, 0.5, 0.1, 0.1),
+        plain_zone("b", "dev", 0.6, 0.5, 0.1, 0.1),
+    ]);
+
+    let ids: std::collections::HashSet<String> =
+        ["a", "b"].iter().map(|s| s.to_string()).collect();
+
+    // Centroid is (0.5, 0.5). Rotate 90 degrees.
+    let delta = std::f32::consts::FRAC_PI_2;
+    layout_geometry::rotate_group(&mut layout, &ids, delta);
+
+    let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
+    let b = layout.zones.iter().find(|z| z.id == "b").expect("b");
+
+    // Zone A was at (-0.1, 0) offset from centroid.
+    // After 90 CCW rotation: (0, -0.1) offset -> position (0.5, 0.4)
+    assert!((a.position.x - 0.5).abs() < 0.01);
+    assert!((a.position.y - 0.4).abs() < 0.01);
+
+    // Zone B was at (0.1, 0) offset -> after 90: (0, 0.1) -> position (0.5, 0.6)
+    assert!((b.position.x - 0.5).abs() < 0.01);
+    assert!((b.position.y - 0.6).abs() < 0.01);
+
+    // Both zones' individual rotation should include the 90-degree offset
+    assert!((a.rotation - delta).abs() < 0.01);
+    assert!((b.rotation - delta).abs() < 0.01);
+}
+
+#[test]
+fn rotate_group_preserves_centroid() {
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.3, 0.4, 0.1, 0.1),
+        plain_zone("b", "dev", 0.5, 0.4, 0.1, 0.1),
+        plain_zone("c", "dev", 0.4, 0.6, 0.1, 0.1),
+    ]);
+
+    let ids: std::collections::HashSet<String> =
+        ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+
+    let centroid_before = layout_geometry::group_centroid(&layout, &ids).expect("centroid");
+    layout_geometry::rotate_group(&mut layout, &ids, 0.7); // ~40 degrees
+    let centroid_after = layout_geometry::group_centroid(&layout, &ids).expect("centroid");
+
+    assert!((centroid_before.x - centroid_after.x).abs() < 0.01);
+    assert!((centroid_before.y - centroid_after.y).abs() < 0.01);
+}
+
+#[test]
+fn rotate_group_zero_delta_returns_false() {
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.3, 0.4, 0.1, 0.1),
+        plain_zone("b", "dev", 0.5, 0.4, 0.1, 0.1),
+    ]);
+    let ids: std::collections::HashSet<String> =
+        ["a", "b"].iter().map(|s| s.to_string()).collect();
+
+    assert!(!layout_geometry::rotate_group(&mut layout, &ids, 0.0));
+}
+
+// ── Group scale ─────────────────────────────────────────────────────────
+
+#[test]
+fn scale_group_doubles_spread_and_zone_scales() {
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.4, 0.5, 0.1, 0.1),
+        plain_zone("b", "dev", 0.6, 0.5, 0.1, 0.1),
+    ]);
+
+    let ids: std::collections::HashSet<String> =
+        ["a", "b"].iter().map(|s| s.to_string()).collect();
+
+    // Centroid is (0.5, 0.5). Scale 2x.
+    layout_geometry::scale_group(&mut layout, &ids, 2.0);
+
+    let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
+    let b = layout.zones.iter().find(|z| z.id == "b").expect("b");
+
+    // Zone A was at -0.1 offset from centroid, now should be -0.2 -> position 0.3
+    assert!((a.position.x - 0.3).abs() < 0.01);
+    // Zone B was at +0.1 offset, now +0.2 -> position 0.7
+    assert!((b.position.x - 0.7).abs() < 0.01);
+
+    // Individual scales should double
+    assert!((a.scale - 2.0).abs() < 0.01);
+    assert!((b.scale - 2.0).abs() < 0.01);
+}
+
+#[test]
+fn scale_group_preserves_centroid() {
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.3, 0.4, 0.1, 0.1),
+        plain_zone("b", "dev", 0.5, 0.4, 0.1, 0.1),
+        plain_zone("c", "dev", 0.4, 0.6, 0.1, 0.1),
+    ]);
+
+    let ids: std::collections::HashSet<String> =
+        ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+
+    let centroid_before = layout_geometry::group_centroid(&layout, &ids).expect("centroid");
+    layout_geometry::scale_group(&mut layout, &ids, 1.5);
+    let centroid_after = layout_geometry::group_centroid(&layout, &ids).expect("centroid");
+
+    assert!((centroid_before.x - centroid_after.x).abs() < 0.01);
+    assert!((centroid_before.y - centroid_after.y).abs() < 0.01);
+}
+
+#[test]
+fn scale_group_identity_returns_false() {
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.3, 0.4, 0.1, 0.1),
+        plain_zone("b", "dev", 0.5, 0.4, 0.1, 0.1),
+    ]);
+    let ids: std::collections::HashSet<String> =
+        ["a", "b"].iter().map(|s| s.to_string()).collect();
+
+    assert!(!layout_geometry::scale_group(&mut layout, &ids, 1.0));
+}
