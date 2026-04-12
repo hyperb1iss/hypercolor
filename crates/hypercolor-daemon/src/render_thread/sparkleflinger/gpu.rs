@@ -543,12 +543,17 @@ impl GpuSparkleFlinger {
             }
         }
         if sampled && let Some(sampling_plan) = sampling_plan {
+            let mut cached_zones = self
+                .cached_sample_result
+                .take()
+                .map_or_else(Vec::new, |cached| cached.zones);
+            cached_zones.clone_from(zones);
             self.cached_sample_result = Some(CachedSampleResult {
                 key: CachedSampleResultKey {
                     output_generation: self.output_generation,
                     sampling_plan,
                 },
-                zones: zones.clone(),
+                zones: cached_zones,
             });
         }
         Ok(sampled)
