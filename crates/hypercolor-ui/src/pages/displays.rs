@@ -590,8 +590,9 @@ fn OverlayStackPanel(selected_id: ReadSignal<Option<String>>) -> impl IntoView {
         let refresh = refresh_for_catalog.clone();
         spawn_local(async move {
             let body = kind.default_create_request();
-            if api::create_overlay_slot(&display_id, &body).await.is_ok() {
-                refresh();
+            match api::create_overlay_slot(&display_id, &body).await {
+                Ok(_) => refresh(),
+                Err(error) => toasts::toast_error(&format!("Could not add overlay: {error}")),
             }
             set_catalog_open.set(false);
         });
@@ -789,11 +790,11 @@ fn render_slot_row(
                     enabled: Some(!enabled),
                     ..Default::default()
                 };
-                if api::patch_overlay_slot(&display_id, slot_id, &body)
-                    .await
-                    .is_ok()
-                {
-                    refresh();
+                match api::patch_overlay_slot(&display_id, slot_id, &body).await {
+                    Ok(_) => refresh(),
+                    Err(error) => {
+                        toasts::toast_error(&format!("Overlay toggle failed: {error}"));
+                    }
                 }
             });
         }
@@ -807,8 +808,11 @@ fn render_slot_row(
             };
             let refresh = refresh.clone();
             spawn_local(async move {
-                if api::delete_overlay_slot(&display_id, slot_id).await.is_ok() {
-                    refresh();
+                match api::delete_overlay_slot(&display_id, slot_id).await {
+                    Ok(()) => refresh(),
+                    Err(error) => {
+                        toasts::toast_error(&format!("Overlay delete failed: {error}"));
+                    }
                 }
             });
         }
@@ -1088,8 +1092,70 @@ where
                 </div>
                 {source_editor}
             </div>
+
+            <div class="flex flex-col gap-2 border-t border-edge-subtle pt-2">
+                <div class="text-[10px] uppercase tracking-wider text-fg-tertiary">
+                    "Diagnostics"
+                </div>
+                {move || render_runtime_diagnostics(runtime_state.get())}
+            </div>
         </div>
     }
+}
+
+fn render_runtime_diagnostics(runtime: Option<api::OverlayRuntimeResponse>) -> impl IntoView {
+    let Some(runtime) = runtime else {
+        return view! {
+            <div class="text-[11px] text-fg-tertiary">"Waiting for runtime telemetry..."</div>
+        }
+        .into_any();
+    };
+
+    let (status_label, status_class) = match runtime.status {
+        api::OverlaySlotStatus::Active => ("Active", "bg-emerald-500/15 text-emerald-300"),
+        api::OverlaySlotStatus::Disabled => ("Disabled", "bg-fg-tertiary/15 text-fg-tertiary"),
+        api::OverlaySlotStatus::Failed => ("Failed", "bg-status-error/20 text-status-error"),
+        api::OverlaySlotStatus::HtmlGated => {
+            ("HTML gated", "bg-amber-500/20 text-amber-300")
+        }
+    };
+
+    let last_rendered = runtime
+        .last_rendered_at
+        .clone()
+        .unwrap_or_else(|| "never".to_string());
+    let failures = runtime.consecutive_failures;
+    let error_row = runtime.last_error.clone().map(|error| {
+        view! {
+            <div class="rounded-sm border border-status-error/30 bg-status-error/10 p-2 text-[11px] leading-relaxed text-status-error">
+                <div class="font-semibold">"Last error"</div>
+                <div class="mt-0.5 font-mono text-[10px]">{error}</div>
+            </div>
+        }
+    });
+
+    view! {
+        <div class="flex flex-col gap-2">
+            <div class="flex items-center gap-2 text-[11px] text-fg-tertiary">
+                <span class=format!(
+                    "rounded-sm px-1.5 py-0.5 text-[10px] uppercase tracking-wider {status_class}"
+                )>
+                    {status_label}
+                </span>
+                {(failures > 0).then(|| view! {
+                    <span class="rounded-sm bg-status-error/15 px-1.5 py-0.5 text-[10px] text-status-error">
+                        {format!("{failures} consecutive failures")}
+                    </span>
+                })}
+            </div>
+            <div class="text-[11px] text-fg-tertiary">
+                "Last rendered "
+                <span class="font-mono text-fg-secondary">{last_rendered}</span>
+            </div>
+            {error_row}
+        </div>
+    }
+    .into_any()
 }
 
 #[component]
