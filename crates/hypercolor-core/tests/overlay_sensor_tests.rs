@@ -55,13 +55,7 @@ fn alpha_tile_signature(buffer: &OverlayBuffer, columns: usize, rows: usize) -> 
     signature
 }
 
-fn clear_normalized_rect(
-    buffer: &mut OverlayBuffer,
-    left: f32,
-    top: f32,
-    width: f32,
-    height: f32,
-) {
+fn clear_normalized_rect(buffer: &mut OverlayBuffer, left: f32, top: f32, width: f32, height: f32) {
     let x_start = ((buffer.width as f32) * left).floor().max(0.0) as usize;
     let y_start = ((buffer.height as f32) * top).floor().max(0.0) as usize;
     let x_end = ((buffer.width as f32) * (left + width))
@@ -298,22 +292,22 @@ fn sensor_gauge_visual_signatures_match_reference_tiles() {
         (
             32.0,
             vec![
-                0, 0, 11, 11, 0, 0, 0, 44, 69, 69, 44, 0, 12, 16, 1, 1, 16, 12, 37, 35, 0, 0,
-                17, 13, 5, 86, 28, 28, 17, 0, 0, 0, 11, 11, 0, 0,
+                0, 0, 11, 11, 0, 0, 0, 44, 69, 69, 44, 0, 12, 16, 1, 1, 16, 12, 37, 35, 0, 0, 17,
+                13, 5, 86, 28, 28, 17, 0, 0, 0, 11, 11, 0, 0,
             ],
         ),
         (
             68.0,
             vec![
-                0, 0, 11, 11, 0, 0, 0, 86, 135, 134, 48, 0, 25, 45, 1, 1, 16, 12, 52, 45, 0, 0,
-                17, 13, 5, 86, 28, 28, 17, 0, 0, 0, 11, 11, 0, 0,
+                0, 0, 11, 11, 0, 0, 0, 86, 135, 134, 48, 0, 25, 45, 1, 1, 16, 12, 52, 45, 0, 0, 17,
+                13, 5, 86, 28, 28, 17, 0, 0, 0, 11, 11, 0, 0,
             ],
         ),
         (
             92.0,
             vec![
-                0, 0, 11, 11, 0, 0, 0, 86, 135, 135, 86, 0, 25, 45, 1, 1, 45, 25, 52, 45, 0, 0,
-                45, 52, 5, 86, 28, 28, 23, 3, 0, 0, 11, 11, 0, 0,
+                0, 0, 11, 11, 0, 0, 0, 86, 135, 135, 86, 0, 25, 45, 1, 1, 45, 25, 52, 45, 0, 0, 45,
+                52, 5, 86, 28, 28, 23, 3, 0, 0, 11, 11, 0, 0,
             ],
         ),
     ] {

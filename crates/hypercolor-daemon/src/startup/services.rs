@@ -465,6 +465,9 @@ impl DaemonState {
             simulated_display_runtime,
             display_overlays: Arc::new(DisplayOverlayRegistry::new()),
             display_overlay_runtime: Arc::new(DisplayOverlayRuntimeRegistry::new()),
+            display_frames: Arc::new(RwLock::new(
+                crate::display_frames::DisplayFrameRuntime::new(),
+            )),
             effect_layout_links,
             effect_layout_links_path,
             layouts_path,

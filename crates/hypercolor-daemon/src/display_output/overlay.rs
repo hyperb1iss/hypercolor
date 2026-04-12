@@ -1070,8 +1070,13 @@ mod tests {
         let base = vec![0_u8; 4 * 4 * 3];
         let sensors = SystemSnapshot::empty();
         let start = Instant::now();
-        let (_, first_changed) =
-            composer.compose_rgb_frame_with_runtime_change(&base, &sensors, 1, SystemTime::now(), start);
+        let (_, first_changed) = composer.compose_rgb_frame_with_runtime_change(
+            &base,
+            &sensors,
+            1,
+            SystemTime::now(),
+            start,
+        );
         let (_, second_changed) = composer.compose_rgb_frame_with_runtime_change(
             &base,
             &sensors,

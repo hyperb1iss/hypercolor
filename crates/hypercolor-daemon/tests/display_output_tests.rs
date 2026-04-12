@@ -32,6 +32,7 @@ use hypercolor_types::spatial::{
 };
 
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
+use hypercolor_daemon::display_frames::DisplayFrameRuntime;
 use hypercolor_daemon::display_output::overlay::{
     DefaultOverlayRendererFactory, OverlayRendererBinding, OverlayRendererFactory,
 };
@@ -540,6 +541,7 @@ async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_device
         display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
     let canvas = sample_canvas();
@@ -592,6 +594,7 @@ async fn automatic_display_output_skips_devices_without_display_capabilities() {
         display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
     let canvas = sample_canvas();
@@ -647,6 +650,7 @@ async fn automatic_display_output_skips_display_devices_that_are_not_in_layout()
         display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
     let canvas = sample_canvas();
@@ -711,6 +715,7 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
         display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
     let canvas = split_color_canvas();
@@ -786,6 +791,7 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
         display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
     let canvas = split_color_canvas();
@@ -861,6 +867,7 @@ async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
         display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
@@ -960,6 +967,7 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
         display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
@@ -1092,6 +1100,7 @@ async fn automatic_display_output_composites_mock_overlay_into_display_frame() {
             color: [255, 0, 0, 255],
             interval: Duration::from_secs(1),
         }),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
     let canvas = solid_canvas(Rgba::BLACK);
@@ -1211,6 +1220,7 @@ async fn automatic_display_output_hydrates_persisted_overlay_config_on_worker_sp
             color: [255, 0, 0, 255],
             interval: Duration::from_secs(1),
         }),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
     let canvas = solid_canvas(Rgba::BLACK);
@@ -1314,6 +1324,7 @@ async fn automatic_display_output_publishes_overlay_runtime_failures() {
         display_overlay_runtime: Arc::clone(&overlay_runtime),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
     let canvas = solid_canvas(Rgba::BLACK);
@@ -1424,6 +1435,7 @@ async fn automatic_display_output_renders_clock_overlay_with_default_factory() {
         display_overlay_runtime: Arc::clone(&overlay_runtime),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
     let canvas = solid_canvas(Rgba::BLACK);
@@ -1541,6 +1553,7 @@ async fn automatic_display_output_renders_text_overlay_with_default_factory() {
         display_overlay_runtime: Arc::clone(&overlay_runtime),
         sensor_snapshot_rx: sensor_rx,
         overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
     let canvas = solid_canvas(Rgba::BLACK);
@@ -1660,6 +1673,7 @@ async fn automatic_display_output_renders_sensor_overlay_with_default_factory() 
         display_overlay_runtime: Arc::clone(&overlay_runtime),
         sensor_snapshot_rx: sensor_rx,
         overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
     let canvas = solid_canvas(Rgba::BLACK);
@@ -1769,6 +1783,7 @@ async fn automatic_display_output_renders_image_overlay_with_default_factory() {
         display_overlay_runtime: Arc::clone(&overlay_runtime),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
     let canvas = solid_canvas(Rgba::BLACK);
@@ -1849,6 +1864,7 @@ async fn automatic_display_output_skips_unchanged_frames() {
         display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
@@ -1937,6 +1953,7 @@ async fn automatic_display_output_skips_metadata_only_owned_surface_updates() {
         display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
     let surface =
@@ -2011,6 +2028,7 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
         display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
@@ -2105,6 +2123,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
         display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
     let canvas = split_color_canvas();
@@ -2194,6 +2213,7 @@ async fn automatic_display_output_refreshes_static_hold_frames_while_sleeping() 
         display_overlay_runtime: default_display_overlay_runtime(),
         sensor_snapshot_rx: default_sensor_snapshot_rx(),
         overlay_factory: default_overlay_factory(),
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
     let black = solid_canvas(Rgba::BLACK);

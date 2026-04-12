@@ -41,8 +41,8 @@ pub use auto_layout::{
 pub(crate) use device_helpers::{
     apply_persisted_device_settings, backend_id_for_device, sync_registry_state,
 };
-pub(crate) use lifecycle::handle_async_write_failures;
 pub(crate) use lifecycle::execute_lifecycle_actions;
+pub(crate) use lifecycle::handle_async_write_failures;
 pub use lifecycle::{
     UserEnabledStateResult, activate_pairable_device, apply_user_enabled_state,
     disconnect_tracked_device, release_renderable_devices, shutdown_renderable_devices,

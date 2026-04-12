@@ -53,6 +53,7 @@ turbojpeg = { workspace = true }
 tokio-util = { workspace = true }
 mdns-sd = { workspace = true }
 owo-colors = { workspace = true }
+httpdate = "1.0"
 wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 

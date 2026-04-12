@@ -42,12 +42,12 @@ impl PreviewJpegEncoder {
         })
     }
 
-    pub(super) fn encode(
+    pub(super) fn encode_payload(
         &mut self,
         frame: &CanvasFrame,
         header: u8,
         brightness: f32,
-    ) -> Result<Bytes> {
+    ) -> Result<Vec<u8>> {
         let mut jpeg = self.encode_body(frame, brightness)?;
         let width_u16 = u16::try_from(frame.width).unwrap_or(u16::MAX);
         let height_u16 = u16::try_from(frame.height).unwrap_or(u16::MAX);
@@ -65,7 +65,17 @@ impl PreviewJpegEncoder {
         payload[body_offset..].copy_from_slice(&jpeg);
         jpeg.clear();
         self.jpeg_buffer = jpeg;
-        Ok(Bytes::from(payload))
+        Ok(payload)
+    }
+
+    #[cfg(test)]
+    pub(super) fn encode(
+        &mut self,
+        frame: &CanvasFrame,
+        header: u8,
+        brightness: f32,
+    ) -> Result<Bytes> {
+        self.encode_payload(frame, header, brightness).map(Bytes::from)
     }
 
     pub(super) fn encode_body(&mut self, frame: &CanvasFrame, brightness: f32) -> Result<Vec<u8>> {
@@ -156,6 +166,7 @@ impl PreviewJpegEncoder {
     }
 }
 
+#[cfg(test)]
 pub(super) fn encode_canvas_jpeg_binary_stateless(
     frame: &CanvasFrame,
     header: u8,
@@ -163,6 +174,15 @@ pub(super) fn encode_canvas_jpeg_binary_stateless(
 ) -> Result<Bytes> {
     let mut encoder = PreviewJpegEncoder::new()?;
     encoder.encode(frame, header, brightness)
+}
+
+pub(super) fn encode_canvas_jpeg_payload_stateless(
+    frame: &CanvasFrame,
+    header: u8,
+    brightness: f32,
+) -> Result<Vec<u8>> {
+    let mut encoder = PreviewJpegEncoder::new()?;
+    encoder.encode_payload(frame, header, brightness)
 }
 
 fn write_canvas_header(

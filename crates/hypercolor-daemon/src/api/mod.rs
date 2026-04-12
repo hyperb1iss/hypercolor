@@ -61,6 +61,7 @@ use hypercolor_types::spatial::SpatialLayout;
 
 use crate::attachment_profiles::AttachmentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
+use crate::display_frames::DisplayFrameRuntime;
 use crate::display_overlays::{DisplayOverlayRegistry, DisplayOverlayRuntimeRegistry};
 use crate::layout_auto_exclusions;
 use crate::library::{InMemoryLibraryStore, JsonLibraryStore, LibraryStore};
@@ -163,6 +164,9 @@ pub struct AppState {
 
     /// Live per-slot overlay runtime state published by display workers.
     pub display_overlay_runtime: Arc<DisplayOverlayRuntimeRegistry>,
+
+    /// Latest composited display frames captured per device for preview surfaces.
+    pub display_frames: Arc<RwLock<DisplayFrameRuntime>>,
 
     /// Shared encrypted credential store for network-authenticated backends.
     pub credential_store: Arc<CredentialStore>,
@@ -341,6 +345,7 @@ impl AppState {
         let simulated_display_runtime = Arc::new(RwLock::new(SimulatedDisplayRuntime::new()));
         let display_overlays = Arc::new(DisplayOverlayRegistry::new());
         let display_overlay_runtime = Arc::new(DisplayOverlayRuntimeRegistry::new());
+        let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
         let layouts = Arc::new(RwLock::new(HashMap::new()));
         let layouts_path = ConfigManager::data_dir().join("layouts.json");
         let layout_auto_exclusions = Arc::new(RwLock::new(HashMap::new()));
@@ -413,6 +418,7 @@ impl AppState {
             simulated_display_runtime,
             display_overlays,
             display_overlay_runtime,
+            display_frames,
             credential_store,
             driver_host,
             driver_registry,
@@ -496,6 +502,7 @@ impl AppState {
             simulated_display_runtime: Arc::clone(&daemon.simulated_display_runtime),
             display_overlays: Arc::clone(&daemon.display_overlays),
             display_overlay_runtime: Arc::clone(&daemon.display_overlay_runtime),
+            display_frames: Arc::clone(&daemon.display_frames),
             credential_store: Arc::clone(&daemon.credential_store),
             driver_host,
             driver_registry,
@@ -661,6 +668,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(overlays::get_overlay_catalog),
         )
         .route("/displays", axum::routing::get(displays::list_displays))
+        .route(
+            "/displays/{id}/preview.jpg",
+            axum::routing::get(displays::get_display_preview),
+        )
         .route(
             "/displays/{id}/overlays",
             axum::routing::get(displays::list_overlays)

@@ -50,14 +50,9 @@ const JS_TIMER_MIN_DURATION_MS: i64 = 4;
 // daemon lifetime.
 static SERVO_WORKER: OnceLock<Mutex<SharedServoWorkerState>> = OnceLock::new();
 static SERVO_CIRCUIT_BREAKER: ServoCircuitBreaker = ServoCircuitBreaker::new();
-thread_local! {
-    static SERVO_WORKER_EXIT_GUARD: ServoWorkerExitGuard = const { ServoWorkerExitGuard };
-}
 
 /// Acquire a client handle to the shared Servo worker, spawning it on first use.
 pub(super) fn acquire_servo_worker(width: u32, height: u32) -> Result<ServoWorkerClient> {
-    SERVO_WORKER_EXIT_GUARD.with(|_| {});
-
     if !SERVO_CIRCUIT_BREAKER.can_attempt() {
         let cooldown = SERVO_CIRCUIT_BREAKER
             .cooldown_remaining()
@@ -576,16 +571,6 @@ fn combined_script(buffer: &mut String, scripts: &[String]) {
     for script in scripts {
         buffer.push_str(script);
         buffer.push('\n');
-    }
-}
-
-struct ServoWorkerExitGuard;
-
-impl Drop for ServoWorkerExitGuard {
-    fn drop(&mut self) {
-        if let Err(error) = shutdown_shared_servo_worker() {
-            warn!(%error, "Failed to shut down shared Servo worker cleanly");
-        }
     }
 }
 

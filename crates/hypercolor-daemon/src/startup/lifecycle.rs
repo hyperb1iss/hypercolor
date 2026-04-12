@@ -124,6 +124,7 @@ impl DaemonState {
             display_overlay_runtime: Arc::clone(&self.display_overlay_runtime),
             sensor_snapshot_rx,
             overlay_factory: Arc::new(DefaultOverlayRendererFactory::new()),
+            display_frames: Arc::clone(&self.display_frames),
         }));
 
         // Publish a startup event so subscribers know the daemon is alive.

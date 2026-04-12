@@ -155,6 +155,9 @@ pub struct DaemonState {
     /// Live per-slot overlay runtime state shared with display workers and the API.
     pub display_overlay_runtime: Arc<DisplayOverlayRuntimeRegistry>,
 
+    /// Latest composited display frames captured per device for preview surfaces.
+    pub display_frames: Arc<RwLock<crate::display_frames::DisplayFrameRuntime>>,
+
     /// Persisted effect -> layout association map.
     pub effect_layout_links: Arc<RwLock<HashMap<String, String>>>,
 

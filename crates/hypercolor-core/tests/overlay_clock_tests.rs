@@ -92,7 +92,12 @@ fn digital_clock_renderer_draws_visible_pixels_and_tracks_seconds() {
         "same second should stay cached after the first render"
     );
     assert!(
-        renderer.content_changed(&overlay_input(now + Duration::from_secs(1), 240, 120, false)),
+        renderer.content_changed(&overlay_input(
+            now + Duration::from_secs(1),
+            240,
+            120,
+            false
+        )),
         "next second should request a rerender"
     );
 }
@@ -131,7 +136,10 @@ fn digital_clock_renderer_changes_output_for_twelve_hour_mode() {
     let mut twelve_buffer = OverlayBuffer::new(size);
 
     twenty_four
-        .render_into(&overlay_input(now, 240, 120, false), &mut twenty_four_buffer)
+        .render_into(
+            &overlay_input(now, 240, 120, false),
+            &mut twenty_four_buffer,
+        )
         .expect("24h render should succeed");
     twelve
         .render_into(&overlay_input(now, 240, 120, false), &mut twelve_buffer)
@@ -255,22 +263,22 @@ fn analog_clock_visual_signatures_match_reference_tiles() {
         (
             OverlaySize::new(480, 480),
             vec![
-                0, 1, 27, 27, 1, 0, 1, 54, 52, 52, 75, 1, 27, 52, 57, 136, 86, 27, 27, 52, 63,
-                69, 52, 27, 1, 54, 52, 59, 62, 1, 0, 1, 27, 27, 1, 0,
+                0, 1, 27, 27, 1, 0, 1, 54, 52, 52, 75, 1, 27, 52, 57, 136, 86, 27, 27, 52, 63, 69,
+                52, 27, 1, 54, 52, 59, 62, 1, 0, 1, 27, 27, 1, 0,
             ],
         ),
         (
             OverlaySize::new(240, 240),
             vec![
-                0, 1, 27, 27, 1, 0, 1, 54, 52, 52, 75, 1, 27, 52, 57, 136, 86, 27, 27, 52, 63,
-                69, 52, 27, 1, 54, 52, 59, 62, 1, 0, 1, 27, 27, 1, 0,
+                0, 1, 27, 27, 1, 0, 1, 54, 52, 52, 75, 1, 27, 52, 57, 136, 86, 27, 27, 52, 63, 69,
+                52, 27, 1, 54, 52, 59, 62, 1, 0, 1, 27, 27, 1, 0,
             ],
         ),
         (
             OverlaySize::new(120, 120),
             vec![
-                0, 1, 27, 27, 1, 0, 1, 55, 52, 52, 76, 1, 27, 52, 57, 136, 86, 27, 27, 52, 63,
-                69, 52, 27, 1, 55, 52, 59, 63, 1, 0, 1, 27, 27, 1, 0,
+                0, 1, 27, 27, 1, 0, 1, 55, 52, 52, 76, 1, 27, 52, 57, 136, 86, 27, 27, 52, 63, 69,
+                52, 27, 1, 55, 52, 59, 63, 1, 0, 1, 27, 27, 1, 0,
             ],
         ),
     ] {
@@ -290,7 +298,10 @@ fn analog_clock_visual_signatures_match_reference_tiles() {
         let mut buffer = OverlayBuffer::new(size);
 
         renderer
-            .render_into(&overlay_input(now, size.width, size.height, true), &mut buffer)
+            .render_into(
+                &overlay_input(now, size.width, size.height, true),
+                &mut buffer,
+            )
             .expect("render should succeed");
 
         let signature = alpha_tile_signature(&buffer, 6, 6);

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::anyhow;
-use tokio::sync::watch;
+use tokio::sync::{RwLock, watch};
 use tokio::task::JoinHandle;
 use tracing::{trace, warn};
 
@@ -26,8 +26,29 @@ use super::{
     DISPLAY_ERROR_WARN_INTERVAL, DisplayGeometry, DisplayTarget, DisplayViewportSignature,
     DisplayWorkerConfigSignature,
 };
+use crate::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
 use crate::display_overlays::DisplayOverlayRuntimeRegistry;
 use crate::session::OutputPowerState;
+
+async fn publish_display_frame_snapshot(
+    display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
+    device_id: DeviceId,
+    geometry: &DisplayGeometry,
+    frame_number: u64,
+    jpeg: Arc<Vec<u8>>,
+) {
+    display_frames.write().await.set_frame(
+        device_id,
+        DisplayFrameSnapshot {
+            jpeg_data: jpeg,
+            width: geometry.width,
+            height: geometry.height,
+            circular: geometry.circular,
+            frame_number,
+            captured_at: SystemTime::now(),
+        },
+    );
+}
 
 pub(super) struct DisplayWorkerHandle {
     tx: watch::Sender<Option<Arc<CanvasFrame>>>,
@@ -113,6 +134,10 @@ fn display_source_identity(source: &CanvasFrame) -> DisplaySourceIdentity {
 }
 
 impl DisplayWorkerHandle {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "worker spawn plumbs every shared subsystem it consumes"
+    )]
     pub fn spawn(
         target: Arc<DisplayTarget>,
         backend_io: BackendIo,
@@ -122,6 +147,7 @@ impl DisplayWorkerHandle {
         overlay_runtime: Arc<DisplayOverlayRuntimeRegistry>,
         sensor_snapshot_rx: watch::Receiver<Arc<SystemSnapshot>>,
         overlay_factory: Arc<dyn OverlayRendererFactory>,
+        display_frames: Arc<RwLock<DisplayFrameRuntime>>,
     ) -> Self {
         let (tx, rx) = watch::channel(None::<Arc<CanvasFrame>>);
         let worker_backend_id = target.backend_id.clone();
@@ -139,6 +165,7 @@ impl DisplayWorkerHandle {
             overlay_runtime,
             sensor_snapshot_rx,
             overlay_factory,
+            display_frames,
         ));
 
         Self {
@@ -162,6 +189,10 @@ impl DisplayWorkerHandle {
     clippy::too_many_lines,
     reason = "display worker is a self-contained event loop"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "display worker borrows every subsystem it drives"
+)]
 async fn run_display_worker(
     backend_io: BackendIo,
     backend_key: String,
@@ -174,6 +205,7 @@ async fn run_display_worker(
     overlay_runtime: Arc<DisplayOverlayRuntimeRegistry>,
     mut sensor_snapshot_rx: watch::Receiver<Arc<SystemSnapshot>>,
     overlay_factory: Arc<dyn OverlayRendererFactory>,
+    display_frames: Arc<RwLock<DisplayFrameRuntime>>,
 ) {
     let target_fps = target.target_fps;
     let send_interval = target_interval_for_fps(target_fps);
@@ -385,6 +417,14 @@ async fn run_display_worker(
             && !overlay_composer.has_active_slots()
             && let Some(jpeg) = last_delivered_jpeg.as_ref()
         {
+            publish_display_frame_snapshot(
+                &display_frames,
+                device_id,
+                &target.geometry,
+                delivered_frame_number.saturating_add(1),
+                Arc::clone(jpeg),
+            )
+            .await;
             if let Err(error) = backend_io
                 .write_display_frame_owned(device_id, Arc::clone(jpeg))
                 .await
@@ -409,13 +449,14 @@ async fn run_display_worker(
                 &target.geometry,
                 &mut encode_state,
             );
-            let (staging, runtime_changed) = overlay_composer.compose_rgb_frame_with_runtime_change(
-                &encode_state.rgb_buffer,
-                sensor_snapshot.as_ref(),
-                delivered_frame_number,
-                SystemTime::now(),
-                Instant::now(),
-            );
+            let (staging, runtime_changed) = overlay_composer
+                .compose_rgb_frame_with_runtime_change(
+                    &encode_state.rgb_buffer,
+                    sensor_snapshot.as_ref(),
+                    delivered_frame_number,
+                    SystemTime::now(),
+                    Instant::now(),
+                );
             if let Some(staging) = staging {
                 staging.write_into_rgb(&mut encode_state.rgb_buffer);
             }
@@ -490,6 +531,14 @@ async fn run_display_worker(
         };
 
         let jpeg_bytes = jpeg.len();
+        publish_display_frame_snapshot(
+            &display_frames,
+            device_id,
+            &target.geometry,
+            delivered_frame_number.saturating_add(1),
+            Arc::clone(&jpeg),
+        )
+        .await;
         let write_result = backend_io
             .write_display_frame_owned(device_id, Arc::clone(&jpeg))
             .await;

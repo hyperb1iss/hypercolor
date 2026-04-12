@@ -20,7 +20,7 @@ use hypercolor_types::canvas::{
     PublishedSurfaceStorageIdentity, linear_to_srgb_u8, srgb_u8_to_linear,
 };
 
-use super::preview_encode::{PreviewJpegEncoder, encode_canvas_jpeg_binary_stateless};
+use super::preview_encode::{PreviewJpegEncoder, encode_canvas_jpeg_payload_stateless};
 use super::protocol::{ActiveFramesConfig, CanvasFormat, FrameFormat, FrameZoneSelection};
 use crate::api::AppState;
 
@@ -555,9 +555,7 @@ fn encode_canvas_binary_with_header_and_brightness(
     brightness: f32,
 ) -> Vec<u8> {
     if format == CanvasFormat::Jpeg {
-        return encode_canvas_jpeg_binary_stateless(canvas, header, brightness)
-            .map(|bytes| bytes.to_vec())
-            .unwrap_or_default();
+        return encode_canvas_jpeg_payload_stateless(canvas, header, brightness).unwrap_or_default();
     }
     if format == CanvasFormat::Rgba && brightness.clamp(0.0, 1.0) >= 0.999 {
         return build_canvas_rgba_payload_from_source(canvas, header);

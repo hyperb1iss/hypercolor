@@ -3,6 +3,7 @@ pub mod api;
 pub mod attachment_profiles;
 pub mod device_settings;
 pub mod discovery;
+pub mod display_frames;
 pub mod display_output;
 pub mod display_overlays;
 pub mod effect_layouts;

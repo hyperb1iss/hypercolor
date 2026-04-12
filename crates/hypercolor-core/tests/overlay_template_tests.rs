@@ -98,7 +98,13 @@ fn render_sensor_template(
     let mut buffer = OverlayBuffer::new(size);
     renderer
         .render_into(
-            &overlay_input(SystemTime::UNIX_EPOCH, size.width, size.height, circular, &sensors),
+            &overlay_input(
+                SystemTime::UNIX_EPOCH,
+                size.width,
+                size.height,
+                circular,
+                &sensors,
+            ),
             &mut buffer,
         )
         .expect("sensor render should succeed");

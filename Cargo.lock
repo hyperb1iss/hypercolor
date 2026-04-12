@@ -4191,6 +4191,7 @@ dependencies = [
  "cpal",
  "criterion",
  "http 1.4.0",
+ "httpdate",
  "hypercolor-core",
  "hypercolor-driver-api",
  "hypercolor-driver-hue",

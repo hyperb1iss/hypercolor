@@ -28,6 +28,7 @@ use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout}
 
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::backend_id_for_device;
+use crate::display_frames::DisplayFrameRuntime;
 use crate::display_overlays::{DisplayOverlayRegistry, DisplayOverlayRuntimeRegistry};
 use crate::logical_devices::{self, LogicalDevice};
 use crate::session::OutputPowerState;
@@ -76,6 +77,8 @@ pub struct DisplayOutputState {
     pub sensor_snapshot_rx: watch::Receiver<Arc<SystemSnapshot>>,
     /// Overlay renderer factory for display workers.
     pub overlay_factory: Arc<dyn OverlayRendererFactory>,
+    /// Latest composited JPEG frames published per device for preview surfaces.
+    pub display_frames: Arc<RwLock<DisplayFrameRuntime>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -366,6 +369,7 @@ async fn reconcile_display_workers(
                         Arc::clone(&state.display_overlay_runtime),
                         state.sensor_snapshot_rx.clone(),
                         Arc::clone(&state.overlay_factory),
+                        Arc::clone(&state.display_frames),
                     ),
                 );
             }

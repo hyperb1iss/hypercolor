@@ -2,11 +2,11 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint};
 use hypercolor_types::effect::{EffectMetadata, EffectSource};
@@ -20,6 +20,7 @@ use tracing::warn;
 use crate::api::AppState;
 use crate::api::devices;
 use crate::api::envelope::{ApiError, ApiResponse, iso8601_system_time};
+use crate::display_frames::DisplayFrameSnapshot;
 use crate::display_overlays::{OverlaySlotRuntime, OverlaySlotStatus};
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,6 +122,124 @@ pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
 
     displays.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
     ApiResponse::ok(displays)
+}
+
+/// `GET /api/v1/displays/{id}/preview.jpg` — latest composited frame for a display.
+///
+/// Honors `If-None-Match` (ETag derived from the monotonic frame counter) and
+/// `If-Modified-Since` (derived from the capture timestamp) so polling clients
+/// can re-fetch cheaply during idle periods. Returns `404` when the display has
+/// not yet produced a frame.
+pub async fn get_display_preview(
+    State(state): State<Arc<AppState>>,
+    Path(device): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let device_id = match resolve_display_device_id_or_response(&state, &device).await {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+
+    let Some(frame) = state.display_frames.read().await.frame(device_id) else {
+        return ApiError::not_found(format!("Display preview frame not available: {device_id}"));
+    };
+
+    let etag = format_display_preview_etag(device_id, frame.frame_number);
+    let last_modified = http_date(frame.captured_at);
+
+    if client_cache_is_current(&headers, &etag, frame.captured_at) {
+        let mut not_modified = StatusCode::NOT_MODIFIED.into_response();
+        let response_headers = not_modified.headers_mut();
+        if let Ok(value) = HeaderValue::from_str(&etag) {
+            response_headers.insert(header::ETAG, value);
+        }
+        if let Ok(value) = HeaderValue::from_str(&last_modified) {
+            response_headers.insert(header::LAST_MODIFIED, value);
+        }
+        response_headers.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, max-age=0, must-revalidate"),
+        );
+        return not_modified;
+    }
+
+    display_preview_response(&etag, &last_modified, &frame)
+}
+
+fn display_preview_response(
+    etag: &str,
+    last_modified: &str,
+    frame: &DisplayFrameSnapshot,
+) -> Response {
+    let mut response = (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"))],
+        frame.jpeg_data.as_ref().clone(),
+    )
+        .into_response();
+    let headers = response.headers_mut();
+    if let Ok(value) = HeaderValue::from_str(etag) {
+        headers.insert(header::ETAG, value);
+    }
+    if let Ok(value) = HeaderValue::from_str(last_modified) {
+        headers.insert(header::LAST_MODIFIED, value);
+    }
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=0, must-revalidate"),
+    );
+    headers.insert("X-Display-Frame-Number", frame.frame_number.into());
+    if let Ok(value) = HeaderValue::from_str(&frame.width.to_string()) {
+        headers.insert("X-Display-Width", value);
+    }
+    if let Ok(value) = HeaderValue::from_str(&frame.height.to_string()) {
+        headers.insert("X-Display-Height", value);
+    }
+    headers.insert(
+        "X-Display-Circular",
+        HeaderValue::from_static(if frame.circular { "1" } else { "0" }),
+    );
+    response
+}
+
+fn format_display_preview_etag(device_id: DeviceId, frame_number: u64) -> String {
+    format!("\"{device_id}-{frame_number}\"")
+}
+
+fn client_cache_is_current(headers: &HeaderMap, etag: &str, captured_at: SystemTime) -> bool {
+    if let Some(value) = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        && value
+            .split(',')
+            .map(str::trim)
+            .any(|candidate| candidate == etag)
+    {
+        return true;
+    }
+    if let Some(value) = headers
+        .get(header::IF_MODIFIED_SINCE)
+        .and_then(|v| v.to_str().ok())
+        && let Some(since) = parse_http_date(value)
+        && let Ok(captured_secs) = captured_at.duration_since(UNIX_EPOCH)
+        && let Ok(since_secs) = since.duration_since(UNIX_EPOCH)
+    {
+        return captured_secs.as_secs() <= since_secs.as_secs();
+    }
+    false
+}
+
+fn http_date(time: SystemTime) -> String {
+    httpdate::fmt_http_date(time)
+}
+
+fn parse_http_date(value: &str) -> Option<SystemTime> {
+    httpdate::parse_http_date(value).ok().map(|time| {
+        // httpdate rounds to whole seconds, so we round-trip through Duration
+        // to keep arithmetic deterministic in tests.
+        let _ = Duration::from_secs(0);
+        time
+    })
 }
 
 pub async fn list_overlays(
