@@ -1686,6 +1686,12 @@ fn FaceControlsSection(
             // preset values we're about to send.
             let _ = pending_updates.try_update_value(std::mem::take);
 
+            // Snapshot the pre-apply values so we can roll back if the
+            // server rejects the PATCH. Without this, a failed apply
+            // would leave the UI claiming the preset is active even
+            // though the daemon never accepted it.
+            let previous_values = face_control_values.get_untracked();
+
             // Optimistic local update so preset pills highlight
             // immediately without waiting for the round-trip.
             set_face_control_values.update(|map| {
@@ -1706,6 +1712,9 @@ fn FaceControlsSection(
                             .update(|value| *value = value.wrapping_add(1));
                     }
                     Err(error) => {
+                        // Restore pre-apply state so the "Assigned" pill
+                        // no longer claims this preset is active.
+                        set_face_control_values.set(previous_values);
                         toasts::toast_error(&format!("Preset apply failed: {error}"));
                     }
                 }
@@ -2090,6 +2099,7 @@ fn FacePresetBar(
                                 type="button"
                                 class=pill_class
                                 style=active_style
+                                aria-pressed=if is_active { "true" } else { "false" }
                                 on:click=move |_| on_apply.run(preset_controls.clone())
                             >
                                 {name}

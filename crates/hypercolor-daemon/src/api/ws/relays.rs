@@ -662,13 +662,20 @@ pub(super) async fn relay_display_preview(
             }
             (_, Some((want_id, want_fps))) => {
                 let rx = display_frames.write().await.subscribe(want_id);
+                // `watch::Sender::subscribe()` marks the new receiver as
+                // already-observed, so rx.changed() will not fire for the
+                // initial value. Prime pending_send when a snapshot exists
+                // so the first sleep tick delivers the current frame —
+                // otherwise clients would stall on connect until the
+                // daemon publishes a fresh frame.
+                let has_initial_frame = rx.borrow().is_some();
                 active = Some(ActiveTarget {
                     device_id: want_id,
                     fps: want_fps,
                     rx,
                     last_frame_number: None,
                     last_sent_at: preview_initial_last_sent(),
-                    pending_send: false,
+                    pending_send: has_initial_frame,
                 });
             }
         }
