@@ -533,7 +533,7 @@ mod tests {
     use super::*;
     use crate::effect::servo::worker::{
         install_running_shared_worker, reset_shared_servo_worker_state,
-        shutdown_shared_servo_worker_for_tests,
+        shutdown_shared_servo_worker,
         test_support::{
             SHARED_WORKER_STATE_TEST_LOCK, spawn_load_test_worker, spawn_render_test_worker,
             spawn_test_worker, worker_client_from,
@@ -753,7 +753,7 @@ mod tests {
             .recv_timeout(Duration::from_millis(100))
             .expect("destroy should unload test worker");
 
-        shutdown_shared_servo_worker_for_tests().expect("shared worker shutdown should succeed");
+        shutdown_shared_servo_worker().expect("shared worker shutdown should succeed");
         assert!(stopped.load(Ordering::SeqCst));
     }
 

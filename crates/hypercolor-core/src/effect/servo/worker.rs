@@ -167,8 +167,8 @@ pub(super) fn poison_shared_servo_worker(reason: &str) {
     }
 }
 
-/// Drop the shared worker entirely. Called from the thread-local exit guard.
-fn shutdown_shared_servo_worker() -> Result<()> {
+#[cfg(test)]
+pub(super) fn shutdown_shared_servo_worker() -> Result<()> {
     let slot = SERVO_WORKER.get_or_init(|| Mutex::new(SharedServoWorkerState::Vacant));
     let mut guard = match slot.lock() {
         Ok(guard) => guard,
@@ -1054,11 +1054,6 @@ pub(super) fn shared_worker_is_vacant() -> bool {
         Err(poisoned) => poisoned.into_inner(),
     };
     matches!(&*guard, SharedServoWorkerState::Vacant)
-}
-
-#[cfg(test)]
-pub(super) fn shutdown_shared_servo_worker_for_tests() -> Result<()> {
-    shutdown_shared_servo_worker()
 }
 
 #[cfg(test)]
