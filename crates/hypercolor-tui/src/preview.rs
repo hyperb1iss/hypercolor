@@ -1,7 +1,7 @@
 //! Preview transport manager for the live canvas overlay.
 
-mod halfblocks_fast;
 mod kitty_fast;
+mod quarterblocks_fast;
 
 use std::env;
 use std::sync::Arc;
@@ -22,6 +22,7 @@ use ratatui_image::{Resize, ResizeEncodeRender};
 use crate::state::CanvasFrame;
 
 static NEXT_KITTY_IMAGE_ID: AtomicU32 = AtomicU32::new(1);
+const FAST_TEXT_FALLBACK_MIN_CELLS: u32 = 1_800;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PreviewTransport {
@@ -140,6 +141,16 @@ impl Default for PreviewPolicy {
     }
 }
 
+fn use_fast_text_fallback(primary_protocol: ProtocolType, request: &PreviewBuildRequest) -> bool {
+    if primary_protocol != ProtocolType::Halfblocks
+        && request.transport != PreviewTransport::Halfblocks
+    {
+        return false;
+    }
+
+    u32::from(request.area.width) * u32::from(request.area.height) >= FAST_TEXT_FALLBACK_MIN_CELLS
+}
+
 struct PreviewBuildRequest {
     request_id: u64,
     frame: Arc<CanvasFrame>,
@@ -172,7 +183,7 @@ enum PreviewBuildResult {
 
 enum PreviewSurface {
     Stateful(StatefulSurface),
-    Halfblocks(halfblocks_fast::HalfblocksFrame),
+    Quarterblocks(quarterblocks_fast::QuarterblocksFrame),
     Kitty(kitty_fast::KittyFrame),
 }
 
@@ -180,7 +191,7 @@ impl PreviewSurface {
     fn kind(&self) -> &'static str {
         match self {
             Self::Stateful(_) => "stateful",
-            Self::Halfblocks(_) => "halfblocks",
+            Self::Quarterblocks(_) => "quarterblocks",
             Self::Kitty(_) => "kitty_fast",
         }
     }
@@ -188,7 +199,7 @@ impl PreviewSurface {
     fn render(&mut self, area: Rect, buf: &mut Buffer) {
         match self {
             Self::Stateful(protocol) => protocol.render(area, buf),
-            Self::Halfblocks(frame) => frame.render(area, buf),
+            Self::Quarterblocks(frame) => frame.render(area, buf),
             Self::Kitty(frame) => frame.render(area, buf),
         }
     }
@@ -196,7 +207,7 @@ impl PreviewSurface {
     fn matches_area(&self, resize_area: Rect) -> bool {
         match self {
             Self::Stateful(surface) => surface.matches_area(resize_area),
-            Self::Halfblocks(frame) => frame.area() == resize_area,
+            Self::Quarterblocks(frame) => frame.area() == resize_area,
             Self::Kitty(frame) => frame.area() == resize_area,
         }
     }
@@ -537,7 +548,6 @@ impl PreviewManager {
         let build_use_kitty_fast = build_primary_protocol == ProtocolType::Kitty;
         let build_use_kitty_fast_fullscreen =
             env::var("HYPERCOLOR_TUI_KITTY_FAST_FULLSCREEN").map_or(true, |value| value != "0");
-        let build_use_fast_halfblocks = build_primary_protocol == ProtocolType::Halfblocks;
         let build_is_tmux = env::var("TERM").is_ok_and(|term| term.starts_with("tmux"))
             || env::var("TERM_PROGRAM").is_ok_and(|term_program| term_program == "tmux");
         let build_worker = thread::Builder::new()
@@ -546,11 +556,8 @@ impl PreviewManager {
                 while let Ok(request) = build_requests.recv() {
                     let build_started = Instant::now();
 
-                    let use_fast_halfblocks = request.transport == PreviewTransport::Halfblocks
-                        || build_use_fast_halfblocks;
-
-                    if use_fast_halfblocks {
-                        match halfblocks_fast::HalfblocksFrame::new(
+                    if use_fast_text_fallback(build_primary_protocol, &request) {
+                        match quarterblocks_fast::QuarterblocksFrame::new(
                             request.frame.as_ref(),
                             request.area,
                         ) {
@@ -562,7 +569,7 @@ impl PreviewManager {
                                         transport: request.transport,
                                         area: request.area,
                                         build_duration: build_started.elapsed(),
-                                        surface: PreviewSurface::Halfblocks(frame),
+                                        surface: PreviewSurface::Quarterblocks(frame),
                                     }))
                                     .is_err()
                                 {
@@ -1204,13 +1211,15 @@ fn cover_source_rect(
 #[cfg(test)]
 mod tests {
     use super::{
-        BuildBackpressure, DrawBackpressure, PreviewPolicy, PreviewTransport, StatefulResizeMode,
-        build_preview_image, cover_source_rect, primary_resize_mode,
+        BuildBackpressure, DrawBackpressure, PreviewBuildRequest, PreviewPolicy, PreviewTransport,
+        StatefulResizeMode, build_preview_image, cover_source_rect, primary_resize_mode,
+        use_fast_text_fallback,
     };
     use crate::state::CanvasFrame;
     use bytes::Bytes;
     use ratatui::layout::Rect;
     use ratatui_image::picker::ProtocolType;
+    use std::sync::Arc;
     use std::time::Duration;
 
     #[test]
@@ -1318,6 +1327,46 @@ mod tests {
             primary_resize_mode(PreviewTransport::Primary, ProtocolType::Halfblocks),
             StatefulResizeMode::Scale
         );
+    }
+
+    #[test]
+    fn small_text_preview_uses_stock_halfblocks_path() {
+        let request = PreviewBuildRequest {
+            request_id: 1,
+            frame: Arc::new(CanvasFrame {
+                frame_number: 1,
+                timestamp_ms: 0,
+                width: 320,
+                height: 200,
+                pixels: Bytes::from(vec![0; 320 * 200 * 3]),
+            }),
+            transport: PreviewTransport::Halfblocks,
+            area: Rect::new(0, 0, 40, 20),
+            fullscreen: false,
+            image_id: 0,
+        };
+
+        assert!(!use_fast_text_fallback(ProtocolType::Halfblocks, &request));
+    }
+
+    #[test]
+    fn large_text_preview_uses_custom_text_fallback() {
+        let request = PreviewBuildRequest {
+            request_id: 1,
+            frame: Arc::new(CanvasFrame {
+                frame_number: 1,
+                timestamp_ms: 0,
+                width: 320,
+                height: 200,
+                pixels: Bytes::from(vec![0; 320 * 200 * 3]),
+            }),
+            transport: PreviewTransport::Halfblocks,
+            area: Rect::new(0, 0, 90, 30),
+            fullscreen: false,
+            image_id: 0,
+        };
+
+        assert!(use_fast_text_fallback(ProtocolType::Halfblocks, &request));
     }
 
     #[test]

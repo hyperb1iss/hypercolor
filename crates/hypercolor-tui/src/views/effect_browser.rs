@@ -229,7 +229,10 @@ impl EffectBrowserView {
                 .simulators
                 .iter()
                 .find(|simulator| simulator.id == *id)
-                .map_or_else(|| "Simulator".to_string(), |simulator| simulator.name.clone()),
+                .map_or_else(
+                    || "Simulator".to_string(),
+                    |simulator| simulator.name.clone(),
+                ),
         }
     }
 
@@ -659,7 +662,9 @@ impl EffectBrowserView {
                 self.focus_pane = FocusPane::List;
                 None
             }
-            KeyCode::Left => self.next_preview_source(false).map(Action::SetPreviewSource),
+            KeyCode::Left => self
+                .next_preview_source(false)
+                .map(Action::SetPreviewSource),
             KeyCode::Right => self.next_preview_source(true).map(Action::SetPreviewSource),
             KeyCode::Home => {
                 self.selected_preset = 0;
