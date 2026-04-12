@@ -10,9 +10,9 @@ use std::sync::mpsc::{self as std_mpsc, Receiver as StdReceiver, Sender as StdSe
 use std::thread;
 use std::time::{Duration, Instant};
 
-use image::imageops::FilterType;
 use image::DynamicImage;
 use image::GenericImageView;
+use image::imageops::FilterType;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui_image::picker::{Picker, ProtocolType};
@@ -514,6 +514,7 @@ pub(crate) struct PreviewManager {
     fullscreen: bool,
     selected_transport: PreviewTransport,
     kitty_fast_image_id: Option<u32>,
+    kitty_fast_fullscreen_enabled: bool,
     next_request_id: u64,
     in_flight_request_id: Option<u64>,
     last_build_started: Option<Instant>,
@@ -535,7 +536,7 @@ impl PreviewManager {
         let build_halfblocks_picker = halfblocks_picker.clone();
         let build_use_kitty_fast = build_primary_protocol == ProtocolType::Kitty;
         let build_use_kitty_fast_fullscreen =
-            env::var("HYPERCOLOR_TUI_KITTY_FAST_FULLSCREEN").is_ok_and(|value| value == "1");
+            env::var("HYPERCOLOR_TUI_KITTY_FAST_FULLSCREEN").map_or(true, |value| value != "0");
         let build_use_fast_halfblocks = build_primary_protocol == ProtocolType::Halfblocks;
         let build_is_tmux = env::var("TERM").is_ok_and(|term| term.starts_with("tmux"))
             || env::var("TERM_PROGRAM").is_ok_and(|term_program| term_program == "tmux");
@@ -597,13 +598,14 @@ impl PreviewManager {
                             build_primary_picker.font_size(),
                         );
                         match kitty_fast::KittyFrame::new(
-                            request.frame.pixels.as_slice(),
+                            request.frame.pixels.as_ref(),
                             u32::from(request.frame.width),
                             u32::from(request.frame.height),
                             source_rect,
                             request.area,
                             request.image_id,
                             build_is_tmux,
+                            request.fullscreen,
                         ) {
                             Ok(frame) => {
                                 if build_results_tx
@@ -731,6 +733,7 @@ impl PreviewManager {
             fullscreen: false,
             selected_transport: PreviewTransport::Primary,
             kitty_fast_image_id: None,
+            kitty_fast_fullscreen_enabled: build_use_kitty_fast_fullscreen,
             next_request_id: 0,
             in_flight_request_id: None,
             last_build_started: None,
@@ -799,7 +802,8 @@ impl PreviewManager {
                             completed.build_duration,
                         );
                         if completed.transport == PreviewTransport::Primary {
-                            self.build_backpressure.observe_build(completed.build_duration);
+                            self.build_backpressure
+                                .observe_build(completed.build_duration);
                         }
                         self.current = Some(completed.surface);
                         self.current_frame_number = Some(completed.frame_number);
@@ -880,7 +884,7 @@ impl PreviewManager {
         }
 
         self.draw_backpressure.observe_draw(elapsed);
-        if self.draw_backpressure.pressure_level >= 3 {
+        if self.draw_backpressure.pressure_level >= 3 && !self.keep_fullscreen_primary() {
             self.primary_cooloff_until = Some(Instant::now() + Duration::from_secs(2));
             if self.fullscreen {
                 self.fullscreen_primary_locked_out = true;
@@ -918,10 +922,7 @@ impl PreviewManager {
             ),
             self.build_backpressure.frame_interval(),
         );
-        let frame_interval = std::cmp::max(
-            frame_interval,
-            self.draw_backpressure.frame_interval(),
-        );
+        let frame_interval = std::cmp::max(frame_interval, self.draw_backpressure.frame_interval());
         let area_matches = self
             .current
             .as_ref()
@@ -931,9 +932,9 @@ impl PreviewManager {
         let image_id = if transport == PreviewTransport::Primary
             && self.primary_protocol == ProtocolType::Kitty
         {
-            let image_id = self.kitty_fast_image_id.get_or_insert_with(|| {
-                NEXT_KITTY_IMAGE_ID.fetch_add(1, Ordering::Relaxed).max(1)
-            });
+            let image_id = self
+                .kitty_fast_image_id
+                .get_or_insert_with(|| NEXT_KITTY_IMAGE_ID.fetch_add(1, Ordering::Relaxed).max(1));
             if resize_or_transport_changed {
                 *image_id = NEXT_KITTY_IMAGE_ID.fetch_add(1, Ordering::Relaxed).max(1);
             }
@@ -996,6 +997,10 @@ impl PreviewManager {
             return PreviewTransport::Halfblocks;
         }
 
+        if self.keep_fullscreen_primary() {
+            return transport;
+        }
+
         if transport == PreviewTransport::Primary
             && self
                 .primary_cooloff_until
@@ -1037,6 +1042,7 @@ impl PreviewManager {
             current_transport = ?self.current_transport,
             current_surface = self.current.as_ref().map_or("none", PreviewSurface::kind),
             fullscreen = self.fullscreen,
+            keep_fullscreen_primary = self.keep_fullscreen_primary(),
             fullscreen_primary_locked_out = self.fullscreen_primary_locked_out,
             area_width = area.map_or(0, |rect| rect.width),
             area_height = area.map_or(0, |rect| rect.height),
@@ -1092,6 +1098,12 @@ impl PreviewManager {
     fn resize_area(area: Rect) -> Rect {
         Rect::new(0, 0, area.width, area.height)
     }
+
+    fn keep_fullscreen_primary(&self) -> bool {
+        self.fullscreen
+            && self.primary_protocol == ProtocolType::Kitty
+            && self.kitty_fast_fullscreen_enabled
+    }
 }
 
 fn primary_resize_mode(
@@ -1115,7 +1127,7 @@ fn build_preview_image(
     let Some(img) = image::RgbImage::from_raw(
         u32::from(frame.width),
         u32::from(frame.height),
-        frame.pixels.as_ref().clone(),
+        frame.pixels.to_vec(),
     ) else {
         return Err("invalid preview frame length".to_string());
     };
@@ -1191,13 +1203,13 @@ fn cover_source_rect(
 #[cfg(test)]
 mod tests {
     use super::{
-        BuildBackpressure, DrawBackpressure, PreviewPolicy, PreviewTransport,
-        StatefulResizeMode, build_preview_image, cover_source_rect, primary_resize_mode,
+        BuildBackpressure, DrawBackpressure, PreviewPolicy, PreviewTransport, StatefulResizeMode,
+        build_preview_image, cover_source_rect, primary_resize_mode,
     };
     use crate::state::CanvasFrame;
+    use bytes::Bytes;
     use ratatui::layout::Rect;
     use ratatui_image::picker::ProtocolType;
-    use std::sync::Arc;
     use std::time::Duration;
 
     #[test]
@@ -1209,7 +1221,7 @@ mod tests {
             timestamp_ms: 0,
             width: 320,
             height: 200,
-            pixels: Arc::new(vec![0; 320 * 200 * 3]),
+            pixels: Bytes::from(vec![0; 320 * 200 * 3]),
         };
 
         assert_eq!(
@@ -1242,7 +1254,7 @@ mod tests {
             timestamp_ms: 0,
             width: 320,
             height: 200,
-            pixels: Arc::new(vec![0; 320 * 200 * 3]),
+            pixels: Bytes::from(vec![0; 320 * 200 * 3]),
         };
 
         assert_eq!(
@@ -1265,7 +1277,7 @@ mod tests {
             timestamp_ms: 0,
             width: 320,
             height: 200,
-            pixels: Arc::new(vec![0; 320 * 200 * 3]),
+            pixels: Bytes::from(vec![0; 320 * 200 * 3]),
         };
 
         assert_eq!(
@@ -1314,7 +1326,7 @@ mod tests {
             timestamp_ms: 0,
             width: 4,
             height: 2,
-            pixels: Arc::new(vec![255; 4 * 2 * 3]),
+            pixels: Bytes::from(vec![255; 4 * 2 * 3]),
         };
 
         let image = build_preview_image(

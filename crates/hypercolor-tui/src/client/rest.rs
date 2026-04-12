@@ -1,9 +1,9 @@
 //! REST client for the Hypercolor daemon HTTP API.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use bytes::Bytes;
 use futures_util::stream::{self, StreamExt};
 use hypercolor_types::effect::{
     ControlDefinition as ApiControlDefinition, ControlType as ApiControlType,
@@ -115,7 +115,10 @@ impl DaemonClient {
     }
 
     /// Fetch the latest rendered frame for a virtual display simulator.
-    pub async fn get_simulated_display_frame(&self, simulator_id: &str) -> Result<Option<CanvasFrame>> {
+    pub async fn get_simulated_display_frame(
+        &self,
+        simulator_id: &str,
+    ) -> Result<Option<CanvasFrame>> {
         let url = format!(
             "{}/api/v1/simulators/displays/{simulator_id}/frame",
             self.base_url
@@ -440,7 +443,8 @@ fn map_device_summary(device: ApiDeviceSummary) -> DeviceSummary {
 }
 
 fn decode_simulated_display_frame(bytes: &[u8]) -> Result<CanvasFrame> {
-    let image = image::load_from_memory(bytes).context("Failed to decode simulator preview image")?;
+    let image =
+        image::load_from_memory(bytes).context("Failed to decode simulator preview image")?;
     let rgb = image.to_rgb8();
     let width = rgb.width();
     let height = rgb.height();
@@ -455,7 +459,7 @@ fn decode_simulated_display_frame(bytes: &[u8]) -> Result<CanvasFrame> {
         timestamp_ms: 0,
         width: width as u16,
         height: height as u16,
-        pixels: Arc::new(rgb.into_raw()),
+        pixels: Bytes::from(rgb.into_raw()),
     })
 }
 

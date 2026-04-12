@@ -605,7 +605,7 @@ impl App {
                 if let Some((r, g, b)) = crate::motion::sample_canvas_border(
                     frame.width,
                     frame.height,
-                    frame.pixels.as_slice(),
+                    frame.pixels.as_ref(),
                 ) {
                     self.motion.canvas_color_channel().write(r, g, b);
                 }

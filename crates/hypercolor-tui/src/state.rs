@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 use crate::screen::ScreenId;
@@ -193,7 +194,7 @@ pub struct CanvasFrame {
     pub width: u16,
     pub height: u16,
     /// RGB pixel data, 3 bytes per pixel, row-major.
-    pub pixels: Arc<Vec<u8>>,
+    pub pixels: Bytes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -50,8 +50,8 @@ impl HalfblocksFrame {
             for x in 0..target_width {
                 let src_x = sample_index(x, target_width, frame_width);
                 cells.push(HalfblockCell {
-                    upper: read_pixel(frame.pixels.as_slice(), frame_width, src_x, upper_y),
-                    lower: read_pixel(frame.pixels.as_slice(), frame_width, src_x, lower_y),
+                    upper: read_pixel(frame.pixels.as_ref(), frame_width, src_x, upper_y),
+                    lower: read_pixel(frame.pixels.as_ref(), frame_width, src_x, lower_y),
                 });
             }
         }
@@ -99,8 +99,6 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::style::Color;
-    use std::sync::Arc;
-
     #[test]
     fn samples_top_and_bottom_colors_into_one_cell() {
         let frame = CanvasFrame {
@@ -108,7 +106,7 @@ mod tests {
             timestamp_ms: 0,
             width: 1,
             height: 2,
-            pixels: Arc::new(vec![255, 0, 0, 0, 0, 255]),
+            pixels: bytes::Bytes::from(vec![255, 0, 0, 0, 0, 255]),
         };
 
         let halfblocks =
@@ -128,7 +126,7 @@ mod tests {
             timestamp_ms: 0,
             width: 2,
             height: 2,
-            pixels: Arc::new(vec![0; 3]),
+            pixels: bytes::Bytes::from(vec![0; 3]),
         };
 
         let error = HalfblocksFrame::new(&frame, Rect::new(0, 0, 1, 1))

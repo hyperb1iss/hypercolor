@@ -34,6 +34,7 @@ impl KittyFrame {
         area: Rect,
         image_id: u32,
         is_tmux: bool,
+        fullscreen: bool,
     ) -> Result<Self, String> {
         Self::new_with_medium(
             pixels,
@@ -43,7 +44,7 @@ impl KittyFrame {
             area,
             image_id,
             is_tmux,
-            preferred_medium(area),
+            preferred_medium(fullscreen, area),
         )
     }
 
@@ -70,11 +71,12 @@ impl KittyFrame {
         let [id_extra, id_r, id_g, id_b] = image_id.to_be_bytes();
         let id_color = format!("\x1b[38;2;{id_r};{id_g};{id_b}m");
         let id_extra = u16::from(id_extra);
+        let row_symbols = build_row_symbols(area, &id_color, id_extra);
         Ok(Self {
             rect: area,
-            id_color: id_color.clone(),
+            id_color,
             id_extra,
-            row_symbols: build_row_symbols(area, &id_color, id_extra),
+            row_symbols,
             transmit: Some(transmit),
             temp_path,
         })
@@ -153,7 +155,7 @@ fn build_transmit(
         image_id,
         is_tmux,
     )
-        .map(|transmit| (transmit, None))
+    .map(|transmit| (transmit, None))
 }
 
 fn transmit_direct(
@@ -255,14 +257,21 @@ enum KittyMedium {
     TempFile,
 }
 
-fn preferred_medium(area: Rect) -> KittyMedium {
-    match env::var("HYPERCOLOR_TUI_KITTY_TRANSPORT").ok().as_deref() {
+fn preferred_medium(fullscreen: bool, area: Rect) -> KittyMedium {
+    preferred_medium_for(
+        fullscreen,
+        area,
+        env::var("HYPERCOLOR_TUI_KITTY_TRANSPORT").ok().as_deref(),
+    )
+}
+
+fn preferred_medium_for(_fullscreen: bool, _area: Rect, forced: Option<&str>) -> KittyMedium {
+    match forced {
         Some("direct") => return KittyMedium::Direct,
         Some("temp") => return KittyMedium::TempFile,
         _ => {}
     }
 
-    let _ = area;
     KittyMedium::Direct
 }
 
@@ -342,7 +351,9 @@ fn render_cached(area: Rect, buf: &mut Buffer, row_symbols: &[String], transmit:
     let height = area.height.min(row_symbols.len() as u16);
     for y in 0..height {
         let symbol = if y == 0 {
-            first_row_symbol.as_deref().unwrap_or(row_symbols[0].as_str())
+            first_row_symbol
+                .as_deref()
+                .unwrap_or(row_symbols[0].as_str())
         } else {
             row_symbols[usize::from(y)].as_str()
         };
@@ -723,7 +734,7 @@ static DIACRITICS: [char; 297] = [
 
 #[cfg(test)]
 mod tests {
-    use super::{KittyFrame, KittyMedium, preferred_medium};
+    use super::{KittyFrame, KittyMedium, preferred_medium_for};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use std::path::PathBuf;
@@ -736,8 +747,17 @@ mod tests {
     fn transmit_sequence_uses_compressed_rgb_payload() {
         let image = vec![0, 0, 0, 255, 0, 0, 0, 255, 0, 255, 255, 255];
 
-        let kitty = KittyFrame::new(&image, 2, 2, (0, 0, 2, 2), Rect::new(0, 0, 2, 2), 42, false)
-            .expect("kitty frame should build");
+        let kitty = KittyFrame::new(
+            &image,
+            2,
+            2,
+            (0, 0, 2, 2),
+            Rect::new(0, 0, 2, 2),
+            42,
+            false,
+            false,
+        )
+        .expect("kitty frame should build");
 
         let transmit = kitty.transmit.as_deref().expect("transmit should exist");
         assert!(transmit.contains("i=42"));
@@ -751,9 +771,17 @@ mod tests {
     #[test]
     fn render_marks_trailing_cells_as_skip() {
         let pixels = solid_pixels(2, 2);
-        let mut kitty =
-            KittyFrame::new(&pixels, 2, 2, (0, 0, 2, 2), Rect::new(0, 0, 2, 2), 7, false)
-            .expect("kitty frame should build");
+        let mut kitty = KittyFrame::new(
+            &pixels,
+            2,
+            2,
+            (0, 0, 2, 2),
+            Rect::new(0, 0, 2, 2),
+            7,
+            false,
+            false,
+        )
+        .expect("kitty frame should build");
         let mut buf = Buffer::empty(Rect::new(0, 0, 2, 2));
         kitty.render(Rect::new(0, 0, 2, 2), &mut buf);
 
@@ -765,9 +793,17 @@ mod tests {
     #[test]
     fn render_only_sends_transmit_sequence_once() {
         let pixels = solid_pixels(2, 2);
-        let mut kitty =
-            KittyFrame::new(&pixels, 2, 2, (0, 0, 2, 2), Rect::new(0, 0, 2, 2), 7, false)
-            .expect("kitty frame should build");
+        let mut kitty = KittyFrame::new(
+            &pixels,
+            2,
+            2,
+            (0, 0, 2, 2),
+            Rect::new(0, 0, 2, 2),
+            7,
+            false,
+            false,
+        )
+        .expect("kitty frame should build");
 
         let mut first = Buffer::empty(Rect::new(0, 0, 2, 2));
         kitty.render(Rect::new(0, 0, 2, 2), &mut first);
@@ -779,15 +815,19 @@ mod tests {
     }
 
     #[test]
-    fn large_area_defaults_to_direct_transport() {
+    fn default_transport_is_direct() {
         assert_eq!(
-            preferred_medium(Rect::new(0, 0, 50, 30)),
+            preferred_medium_for(false, Rect::new(0, 0, 80, 60), None),
+            KittyMedium::Direct
+        );
+        assert_eq!(
+            preferred_medium_for(true, Rect::new(0, 0, 20, 10), None),
             KittyMedium::Direct
         );
     }
 
     #[test]
-    fn temp_file_transport_cleans_up_payload() {
+    fn forced_temp_transport_cleans_up_payload() {
         let payload_path: PathBuf;
         let pixels = solid_pixels(2, 2);
         {
@@ -804,6 +844,7 @@ mod tests {
             .expect("kitty frame should build");
             let transmit = kitty.transmit.as_deref().expect("transmit should exist");
             assert!(transmit.contains("t=t"));
+            assert!(transmit.contains("o=z"));
             payload_path = kitty
                 .temp_path
                 .clone()
@@ -812,5 +853,17 @@ mod tests {
         }
 
         assert!(!payload_path.exists());
+    }
+
+    #[test]
+    fn forced_transport_override_is_honored() {
+        assert_eq!(
+            preferred_medium_for(false, Rect::new(0, 0, 20, 10), Some("temp")),
+            KittyMedium::TempFile
+        );
+        assert_eq!(
+            preferred_medium_for(false, Rect::new(0, 0, 20, 10), Some("direct")),
+            KittyMedium::Direct
+        );
     }
 }

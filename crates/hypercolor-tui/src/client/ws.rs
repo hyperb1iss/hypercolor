@@ -3,9 +3,8 @@
 //! Subscribes to canvas frames, spectrum data, and events over a persistent
 //! WebSocket connection. Binary frames are decoded inline.
 
-use std::sync::Arc;
-
 use anyhow::{Context, Result};
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -66,7 +65,7 @@ pub async fn connect(host: &str, port: u16, tx: mpsc::UnboundedSender<WsMessage>
         };
 
         let decoded = match msg {
-            Message::Binary(data) => decode_binary(&data),
+            Message::Binary(data) => decode_binary_owned(data),
             Message::Text(text) => decode_json(&text),
             Message::Close(_) => Some(WsMessage::Closed),
             Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => None,
@@ -100,6 +99,21 @@ pub fn decode_binary(data: &[u8]) -> Option<WsMessage> {
     }
 }
 
+fn decode_binary_owned(data: Bytes) -> Option<WsMessage> {
+    if data.is_empty() {
+        return None;
+    }
+
+    match data[0] {
+        0x03 => decode_canvas_owned(data),
+        0x02 => decode_spectrum(&data),
+        _ => {
+            tracing::trace!("Unknown binary message type: 0x{:02x}", data[0]);
+            None
+        }
+    }
+}
+
 /// Decode a canvas frame (type 0x03).
 ///
 /// Layout:
@@ -111,6 +125,14 @@ pub fn decode_binary(data: &[u8]) -> Option<WsMessage> {
 ///   - 13:    format (0=RGB, 1=RGBA)
 ///   - 14+:   pixel data
 pub fn decode_canvas(data: &[u8]) -> Option<WsMessage> {
+    decode_canvas_impl(data, None)
+}
+
+fn decode_canvas_owned(data: Bytes) -> Option<WsMessage> {
+    decode_canvas_impl(data.as_ref(), Some(data.clone()))
+}
+
+fn decode_canvas_impl(data: &[u8], owned: Option<Bytes>) -> Option<WsMessage> {
     if data.len() < 14 {
         return None;
     }
@@ -136,12 +158,17 @@ pub fn decode_canvas(data: &[u8]) -> Option<WsMessage> {
 
     // If RGBA, strip alpha to get RGB
     let pixels = if format == 0 {
-        pixel_data.to_vec()
+        owned.map_or_else(
+            || Bytes::copy_from_slice(pixel_data),
+            |data| data.slice(14..expected_len),
+        )
     } else {
-        pixel_data
-            .chunks_exact(4)
-            .flat_map(|chunk| [chunk[0], chunk[1], chunk[2]])
-            .collect()
+        Bytes::from(
+            pixel_data
+                .chunks_exact(4)
+                .flat_map(|chunk| [chunk[0], chunk[1], chunk[2]])
+                .collect::<Vec<_>>(),
+        )
     };
 
     Some(WsMessage::Canvas(CanvasFrame {
@@ -149,7 +176,7 @@ pub fn decode_canvas(data: &[u8]) -> Option<WsMessage> {
         timestamp_ms,
         width,
         height,
-        pixels: Arc::new(pixels),
+        pixels,
     }))
 }
 
