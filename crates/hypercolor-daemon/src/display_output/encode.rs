@@ -2,12 +2,12 @@
 
 use anyhow::{Context, Result};
 use fast_image_resize as fr;
+use tracing::debug;
 use turbojpeg::{
     Compressor as TurboJpegCompressor, Image as TurboJpegImage,
     PixelFormat as TurboJpegPixelFormat, Subsamp as TurboJpegSubsamp,
     compressed_buf_len as turbojpeg_compressed_buf_len,
 };
-use tracing::debug;
 
 use hypercolor_core::bus::CanvasFrame;
 
@@ -78,12 +78,7 @@ pub(super) fn encode_canvas_frame(
         encode_state.rgba_buffer.clear();
         false
     } else {
-        match try_render_canvas_frame_rgba_fast(
-            source,
-            viewport,
-            geometry,
-            encode_state,
-        ) {
+        match try_render_canvas_frame_rgba_fast(source, viewport, geometry, encode_state) {
             Ok(true) => true,
             Ok(false) => {
                 render_display_view(
@@ -114,10 +109,7 @@ pub(super) fn encode_canvas_frame(
     };
 
     if used_fast_path && use_brightness_lut {
-        apply_display_brightness_rgba(
-            &mut encode_state.rgba_buffer,
-            &encode_state.brightness_lut,
-        );
+        apply_display_brightness_rgba(&mut encode_state.rgba_buffer, &encode_state.brightness_lut);
     }
 
     if geometry.circular {

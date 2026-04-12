@@ -173,7 +173,10 @@ fn sample_image_bilinear(
     apply_fade_to_black(sampled, canvas_pos, edge_behavior)
 }
 
-#[allow(clippy::cast_precision_loss, reason = "display crop boxes are defined in source-pixel space")]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "display crop boxes are defined in source-pixel space"
+)]
 pub(super) fn fast_display_crop(
     source: &CanvasFrame,
     viewport: &DisplayViewport,

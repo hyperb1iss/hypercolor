@@ -31,9 +31,9 @@
     --text-inverse:      oklch(0.110 0.020 280);
 
     /* Borders */
-    --border-subtle:     oklch(1 0 0 / 0.06);
-    --border-default:    oklch(1 0 0 / 0.10);
-    --border-strong:     oklch(1 0 0 / 0.16);
+    --border-subtle:     oklch(1 0 0 / 0.10);
+    --border-default:    oklch(1 0 0 / 0.16);
+    --border-strong:     oklch(1 0 0 / 0.22);
     --border-focus:      oklch(0.88 0.18 175 / 0.40);
 
     /* Accent */
@@ -96,9 +96,9 @@
     --text-inverse:      oklch(0.985 0.005 280);
 
     /* Borders */
-    --border-subtle:     oklch(0 0 0 / 0.06);
-    --border-default:    oklch(0 0 0 / 0.10);
-    --border-strong:     oklch(0 0 0 / 0.18);
+    --border-subtle:     oklch(0 0 0 / 0.10);
+    --border-default:    oklch(0 0 0 / 0.16);
+    --border-strong:     oklch(0 0 0 / 0.24);
     --border-focus:      oklch(0.65 0.30 320 / 0.50);
 
     /* Accent (slightly desaturated for light backgrounds) */

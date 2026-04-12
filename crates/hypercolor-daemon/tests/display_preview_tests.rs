@@ -317,8 +317,14 @@ async fn overlay_runtime_batch_endpoint_matches_per_slot_status() {
             )
         })
         .collect();
-    assert_eq!(by_id.get(&slot_one.id.to_string()).map(String::as_str), Some("active"));
-    assert_eq!(by_id.get(&slot_two.id.to_string()).map(String::as_str), Some("disabled"));
+    assert_eq!(
+        by_id.get(&slot_one.id.to_string()).map(String::as_str),
+        Some("active")
+    );
+    assert_eq!(
+        by_id.get(&slot_two.id.to_string()).map(String::as_str),
+        Some("disabled")
+    );
 }
 
 // RFC 7232 §6: when both `If-None-Match` and `If-Modified-Since` are sent

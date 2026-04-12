@@ -475,12 +475,12 @@ impl GpuSparkleFlinger {
             self.current_output == Some(GpuCompositorOutputSurface::Front)
                 && self.cached_composition_key.as_ref() == Some(key)
         }) || matches!(&layer.frame, ProducerFrame::Canvas(canvas)
-            if self.current_output == Some(GpuCompositorOutputSurface::Front)
-                && self.cached_readback_surface.as_ref().is_some_and(|cached| {
-                    cached.surface.width() == plan.width
-                        && cached.surface.height() == plan.height
-                        && cached.surface.storage_identity() == canvas.storage_identity()
-                }));
+        if self.current_output == Some(GpuCompositorOutputSurface::Front)
+            && self.cached_readback_surface.as_ref().is_some_and(|cached| {
+                cached.surface.width() == plan.width
+                    && cached.surface.height() == plan.height
+                    && cached.surface.storage_identity() == canvas.storage_identity()
+            }));
         if same_output {
             if !requires_cpu_sampling_canvas && !requires_preview_surface {
                 return gpu_bypassed_without_surfaces();
@@ -1043,16 +1043,15 @@ fn gpu_bypassed_canvas_frame(
 ) -> ComposedFrameSet {
     let published_surface = (requires_cpu_sampling_canvas || requires_preview_surface)
         .then(|| PublishedSurface::from_owned_canvas(canvas.clone(), 0, 0));
-    let preview_surface = (!requires_cpu_sampling_canvas && requires_preview_surface)
-        .then(|| {
-            published_surface
-                .as_ref()
-                .expect("preview bypass should allocate a published surface")
-                .clone()
-        });
+    let preview_surface = (!requires_cpu_sampling_canvas && requires_preview_surface).then(|| {
+        published_surface
+            .as_ref()
+            .expect("preview bypass should allocate a published surface")
+            .clone()
+    });
     let (sampling_canvas, sampling_surface) = if requires_cpu_sampling_canvas {
-        let sampling_surface = published_surface
-            .expect("CPU sampling bypass should allocate a published surface");
+        let sampling_surface =
+            published_surface.expect("CPU sampling bypass should allocate a published surface");
         (
             Some(Canvas::from_published_surface(&sampling_surface)),
             Some(sampling_surface),
