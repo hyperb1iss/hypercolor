@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::env;
 use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
@@ -15,6 +16,11 @@ use ratatui::layout::Rect;
 use ratatui_image::picker::cap_parser::Parser;
 
 static NEXT_TEMP_FILE_ID: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    static COMPRESSED_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static BASE64_SCRATCH: RefCell<String> = const { RefCell::new(String::new()) };
+}
 
 pub(crate) struct KittyFrame {
     rect: Rect,
@@ -167,42 +173,45 @@ fn transmit_direct(
     image_id: u32,
     is_tmux: bool,
 ) -> Result<String, String> {
-    let compressed = compress_pixels(pixels)?;
-    let encoded = BASE64_STANDARD.encode(compressed);
-    let (start, escape, end) = Parser::escape_tmux(is_tmux);
+    with_compressed_pixels(pixels, |compressed| {
+        with_base64_encoded(compressed, |encoded| {
+            let (start, escape, end) = Parser::escape_tmux(is_tmux);
 
-    const CHARS_PER_CHUNK: usize = 4096;
-    let chunk_count = encoded.len().div_ceil(CHARS_PER_CHUNK);
-    let mut data =
-        String::with_capacity(encoded.len() + (chunk_count * (64 + escape.len() * 2 + end.len())));
-    let (source_x, source_y, source_width, source_height) = source_rect;
+            const CHARS_PER_CHUNK: usize = 4096;
+            let chunk_count = encoded.len().div_ceil(CHARS_PER_CHUNK);
+            let mut data = String::with_capacity(
+                encoded.len() + (chunk_count * (64 + escape.len() * 2 + end.len())),
+            );
+            let (source_x, source_y, source_width, source_height) = source_rect;
 
-    for (index, chunk) in encoded.as_bytes().chunks(CHARS_PER_CHUNK).enumerate() {
-        data.push_str(start);
-        write!(data, "{escape}_Gq=2,").map_err(|error| error.to_string())?;
-        if index == 0 {
-            write!(
-                data,
-                "i={image_id},a=T,U=1,C=1,c={},r={},x={},y={},w={},h={},f=24,o=z,s={},v={},",
-                area.width,
-                area.height,
-                source_x,
-                source_y,
-                source_width,
-                source_height,
-                image_width,
-                image_height
-            )
-            .map_err(|error| error.to_string())?;
-        }
-        let more = u8::from(index + 1 < chunk_count);
-        write!(data, "m={more};").map_err(|error| error.to_string())?;
-        data.push_str(std::str::from_utf8(chunk).map_err(|error| error.to_string())?);
-        write!(data, "{escape}\\").map_err(|error| error.to_string())?;
-        data.push_str(end);
-    }
+            for (index, chunk) in encoded.as_bytes().chunks(CHARS_PER_CHUNK).enumerate() {
+                data.push_str(start);
+                write!(data, "{escape}_Gq=2,").map_err(|error| error.to_string())?;
+                if index == 0 {
+                    write!(
+                        data,
+                        "i={image_id},a=T,U=1,C=1,c={},r={},x={},y={},w={},h={},f=24,o=z,s={},v={},",
+                        area.width,
+                        area.height,
+                        source_x,
+                        source_y,
+                        source_width,
+                        source_height,
+                        image_width,
+                        image_height
+                    )
+                    .map_err(|error| error.to_string())?;
+                }
+                let more = u8::from(index + 1 < chunk_count);
+                write!(data, "m={more};").map_err(|error| error.to_string())?;
+                data.push_str(std::str::from_utf8(chunk).map_err(|error| error.to_string())?);
+                write!(data, "{escape}\\").map_err(|error| error.to_string())?;
+                data.push_str(end);
+            }
 
-    Ok(data)
+            Ok(data)
+        })
+    })
 }
 
 fn transmit_temp_file(
@@ -214,41 +223,82 @@ fn transmit_temp_file(
     image_id: u32,
     is_tmux: bool,
 ) -> Result<(String, Option<PathBuf>), String> {
-    let compressed = compress_pixels(pixels)?;
-    let path = write_temp_payload(&compressed)?;
-    let encoded_path = BASE64_STANDARD.encode(path.to_string_lossy().as_bytes());
-    let (start, escape, end) = Parser::escape_tmux(is_tmux);
-    let mut data = String::with_capacity(encoded_path.len() + 128 + escape.len() * 2 + end.len());
-    let (source_x, source_y, source_width, source_height) = source_rect;
+    with_compressed_pixels(pixels, |compressed| {
+        let path = write_temp_payload(compressed)?;
+        let compressed_len = compressed.len();
+        let encoded_path_source = path.to_string_lossy().into_owned();
+        with_base64_encoded(encoded_path_source.as_bytes(), |encoded_path| {
+            let (start, escape, end) = Parser::escape_tmux(is_tmux);
+            let mut data =
+                String::with_capacity(encoded_path.len() + 128 + escape.len() * 2 + end.len());
+            let (source_x, source_y, source_width, source_height) = source_rect;
 
-    data.push_str(start);
-    write!(
-        data,
-        "{escape}_Gq=2,i={image_id},a=T,U=1,C=1,c={},r={},x={},y={},w={},h={},f=24,t=t,o=z,s={},v={},S={};",
-        area.width,
-        area.height,
-        source_x,
-        source_y,
-        source_width,
-        source_height,
-        image_width,
-        image_height,
-        compressed.len()
-    )
-    .map_err(|error| error.to_string())?;
-    data.push_str(&encoded_path);
-    write!(data, "{escape}\\").map_err(|error| error.to_string())?;
-    data.push_str(end);
+            data.push_str(start);
+            write!(
+                data,
+                "{escape}_Gq=2,i={image_id},a=T,U=1,C=1,c={},r={},x={},y={},w={},h={},f=24,t=t,o=z,s={},v={},S={};",
+                area.width,
+                area.height,
+                source_x,
+                source_y,
+                source_width,
+                source_height,
+                image_width,
+                image_height,
+                compressed_len
+            )
+            .map_err(|error| error.to_string())?;
+            data.push_str(encoded_path);
+            write!(data, "{escape}\\").map_err(|error| error.to_string())?;
+            data.push_str(end);
 
-    Ok((data, Some(path)))
+            Ok((data, Some(path)))
+        })
+    })
 }
 
-fn compress_pixels(pixels: &[u8]) -> Result<Vec<u8>, String> {
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
-    encoder
-        .write_all(pixels)
-        .map_err(|error| error.to_string())?;
-    encoder.finish().map_err(|error| error.to_string())
+fn with_compressed_pixels<T>(
+    pixels: &[u8],
+    f: impl FnOnce(&[u8]) -> Result<T, String>,
+) -> Result<T, String> {
+    COMPRESSED_SCRATCH.with(|scratch| {
+        let mut compressed = scratch.take();
+        compressed.clear();
+
+        let mut encoder = ZlibEncoder::new(compressed, Compression::fast());
+        let encode_result = encoder
+            .write_all(pixels)
+            .map_err(|error| error.to_string())
+            .and_then(|()| encoder.finish().map_err(|error| error.to_string()));
+
+        match encode_result {
+            Ok(mut compressed) => {
+                let result = f(&compressed);
+                compressed.clear();
+                scratch.replace(compressed);
+                result
+            }
+            Err(error) => {
+                scratch.replace(Vec::new());
+                Err(error)
+            }
+        }
+    })
+}
+
+fn with_base64_encoded<T>(
+    bytes: &[u8],
+    f: impl FnOnce(&str) -> Result<T, String>,
+) -> Result<T, String> {
+    BASE64_SCRATCH.with(|scratch| {
+        let mut encoded = scratch.take();
+        encoded.clear();
+        BASE64_STANDARD.encode_string(bytes, &mut encoded);
+        let result = f(&encoded);
+        encoded.clear();
+        scratch.replace(encoded);
+        result
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -163,12 +163,7 @@ fn decode_canvas_impl(data: &[u8], owned: Option<Bytes>) -> Option<WsMessage> {
             |data| data.slice(14..expected_len),
         )
     } else {
-        Bytes::from(
-            pixel_data
-                .chunks_exact(4)
-                .flat_map(|chunk| [chunk[0], chunk[1], chunk[2]])
-                .collect::<Vec<_>>(),
-        )
+        Bytes::from(rgba_to_rgb(pixel_data))
     };
 
     Some(WsMessage::Canvas(CanvasFrame {
@@ -178,6 +173,14 @@ fn decode_canvas_impl(data: &[u8], owned: Option<Bytes>) -> Option<WsMessage> {
         height,
         pixels,
     }))
+}
+
+fn rgba_to_rgb(pixel_data: &[u8]) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity((pixel_data.len() / 4) * 3);
+    for chunk in pixel_data.chunks_exact(4) {
+        rgb.extend_from_slice(&chunk[..3]);
+    }
+    rgb
 }
 
 /// Decode a spectrum snapshot (type 0x02).

@@ -11,7 +11,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use image::DynamicImage;
-use image::GenericImageView;
+use image::Rgb;
+use image::flat::{FlatSamples, SampleLayout};
 use image::imageops::FilterType;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -1132,28 +1133,41 @@ fn build_preview_image(
     resize_mode: StatefulResizeMode,
     fullscreen: bool,
 ) -> Result<DynamicImage, String> {
-    let Some(img) = image::RgbImage::from_raw(
-        u32::from(frame.width),
-        u32::from(frame.height),
-        frame.pixels.to_vec(),
-    ) else {
-        return Err("invalid preview frame length".to_string());
-    };
+    validate_preview_frame_len(frame)?;
 
     if resize_mode != StatefulResizeMode::Cover || area.width == 0 || area.height == 0 {
+        let Some(img) = image::RgbImage::from_raw(
+            u32::from(frame.width),
+            u32::from(frame.height),
+            frame.pixels.to_vec(),
+        ) else {
+            return Err("invalid preview frame length".to_string());
+        };
         return Ok(DynamicImage::ImageRgb8(img));
     }
 
     let target_width = u32::from(area.width) * u32::from(font_size.0.max(1));
     let target_height = u32::from(area.height) * u32::from(font_size.1.max(1));
     if target_width == 0 || target_height == 0 {
+        let Some(img) = image::RgbImage::from_raw(
+            u32::from(frame.width),
+            u32::from(frame.height),
+            frame.pixels.to_vec(),
+        ) else {
+            return Err("invalid preview frame length".to_string());
+        };
         return Ok(DynamicImage::ImageRgb8(img));
     }
 
-    let image = DynamicImage::ImageRgb8(img);
-    let (source_width, source_height) = image.dimensions();
-    if source_width == target_width && source_height == target_height {
-        return Ok(image);
+    if u32::from(frame.width) == target_width && u32::from(frame.height) == target_height {
+        let Some(img) = image::RgbImage::from_raw(
+            u32::from(frame.width),
+            u32::from(frame.height),
+            frame.pixels.to_vec(),
+        ) else {
+            return Err("invalid preview frame length".to_string());
+        };
+        return Ok(DynamicImage::ImageRgb8(img));
     }
 
     let filter = if fullscreen {
@@ -1161,7 +1175,56 @@ fn build_preview_image(
     } else {
         FilterType::Triangle
     };
-    Ok(image.resize_to_fill(target_width, target_height, filter))
+    let source = FlatSamples {
+        samples: frame.pixels.as_ref(),
+        layout: SampleLayout::row_major_packed(3, u32::from(frame.width), u32::from(frame.height)),
+        color_hint: None,
+    };
+    let view = source
+        .as_view::<Rgb<u8>>()
+        .map_err(|error| format!("invalid preview frame layout: {error}"))?;
+    let source_width = u64::from(frame.width);
+    let source_height = u64::from(frame.height);
+    let target_width_u64 = u64::from(target_width);
+    let target_height_u64 = u64::from(target_height);
+    let (scaled_width, scaled_height) =
+        if source_width * target_height_u64 >= source_height * target_width_u64 {
+            (
+                (source_width * target_height_u64).div_ceil(source_height),
+                target_height_u64,
+            )
+        } else {
+            (
+                target_width_u64,
+                (source_height * target_width_u64).div_ceil(source_width),
+            )
+        };
+    let scaled_width =
+        u32::try_from(scaled_width).map_err(|_| "preview area too large".to_string())?;
+    let scaled_height =
+        u32::try_from(scaled_height).map_err(|_| "preview area too large".to_string())?;
+    let resized = if scaled_width == target_width && scaled_height == target_height {
+        image::imageops::resize(&view, target_width, target_height, filter)
+    } else {
+        let resized = image::imageops::resize(&view, scaled_width, scaled_height, filter);
+        let crop_x = (scaled_width - target_width) / 2;
+        let crop_y = (scaled_height - target_height) / 2;
+        image::imageops::crop_imm(&resized, crop_x, crop_y, target_width, target_height).to_image()
+    };
+    Ok(DynamicImage::ImageRgb8(resized))
+}
+
+fn validate_preview_frame_len(frame: &CanvasFrame) -> Result<(), String> {
+    let expected_len = usize::from(frame.width)
+        .checked_mul(usize::from(frame.height))
+        .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or_else(|| "preview dimensions overflow".to_string())?;
+
+    if frame.pixels.len() == expected_len {
+        Ok(())
+    } else {
+        Err("invalid preview frame length".to_string())
+    }
 }
 
 fn cover_source_rect(
