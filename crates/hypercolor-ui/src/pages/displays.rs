@@ -8,14 +8,14 @@
 
 use hypercolor_types::overlay::{
     Anchor, ClockConfig, ClockStyle, DisplayOverlayConfig, HourFormat, ImageFit,
-    ImageOverlayConfig, OverlayBlendMode, OverlayPosition, OverlaySlot, OverlaySource,
-    SensorDisplayStyle, SensorOverlayConfig, TextAlign, TextOverlayConfig,
+    ImageOverlayConfig, OverlayBlendMode, OverlayPosition, OverlaySlot, OverlaySlotId,
+    OverlaySource, SensorDisplayStyle, SensorOverlayConfig, TextAlign, TextOverlayConfig,
 };
 use icondata_core::Icon as IconData;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_icons::Icon;
-use leptos_use::use_interval_fn;
+use leptos_use::{use_debounce_fn_with_arg, use_interval_fn};
 
 use crate::api;
 use crate::components::page_header::PageHeader;
@@ -237,7 +237,10 @@ fn DisplayWorkspace(selected_display: Memo<Option<api::DisplaySummary>>) -> impl
                 } else {
                     "rect"
                 };
-                format!("{} · {}x{} · {}", summary.vendor, summary.width, summary.height, shape)
+                format!(
+                    "{} · {}x{} · {}",
+                    summary.vendor, summary.width, summary.height, shape
+                )
             })
         })
     });
@@ -289,23 +292,45 @@ fn DisplayWorkspace(selected_display: Memo<Option<api::DisplaySummary>>) -> impl
 
 #[component]
 fn OverlayStackPanel(selected_id: ReadSignal<Option<String>>) -> impl IntoView {
-    let (overlay_config, set_overlay_config) =
-        signal(None::<Result<DisplayOverlayConfig, String>>);
+    let (overlay_config, set_overlay_config) = signal(None::<Result<DisplayOverlayConfig, String>>);
     let (catalog_open, set_catalog_open) = signal(false);
+    let (selected_slot_id, set_selected_slot_id) = signal(None::<OverlaySlotId>);
 
     // Reload the overlay stack whenever the selected display changes. We
     // keep the last-good config in place until the new one arrives so the
-    // panel doesn't flash an empty state mid-swap.
+    // panel doesn't flash an empty state mid-swap. Also clear any pinned
+    // slot selection so the inspector doesn't linger on a stale id.
     Effect::new(move |_| {
         let Some(display_id) = selected_id.get() else {
             set_overlay_config.set(None);
+            set_selected_slot_id.set(None);
             return;
         };
+        set_selected_slot_id.set(None);
         let set_overlay_config = set_overlay_config;
         spawn_local(async move {
             let result = api::fetch_display_overlays(&display_id).await;
             set_overlay_config.set(Some(result));
         });
+    });
+
+    // If the selected slot disappears (deleted externally or via our own
+    // delete button) clear the pinned selection so the inspector closes.
+    Effect::new(move |_| {
+        let Some(slot_id) = selected_slot_id.get() else {
+            return;
+        };
+        if let Some(Ok(config)) = overlay_config.with(|value| value.clone())
+            && !config.overlays.iter().any(|slot| slot.id == slot_id)
+        {
+            set_selected_slot_id.set(None);
+        }
+    });
+
+    let selected_slot = Memo::new(move |_| {
+        let slot_id = selected_slot_id.get()?;
+        let config = overlay_config.with(|value| value.clone())?.ok()?;
+        config.overlays.into_iter().find(|slot| slot.id == slot_id)
     });
 
     let refresh = move || {
@@ -353,40 +378,58 @@ fn OverlayStackPanel(selected_id: ReadSignal<Option<String>>) -> impl IntoView {
                 </button>
             </header>
             <div class="min-h-0 flex-1 overflow-y-auto p-2">
-                {move || {
-                    if selected_id.with(Option::is_none) {
-                        return view! {
-                            <StackPlaceholder message="Select a display to view its overlay stack." />
+                {
+                    let refresh_for_view = refresh.clone();
+                    move || {
+                        if selected_id.with(Option::is_none) {
+                            return view! {
+                                <StackPlaceholder message="Select a display to view its overlay stack." />
+                            }
+                            .into_any();
                         }
-                        .into_any();
+                        if let Some(slot) = selected_slot.get() {
+                            return overlay_slot_inspector(
+                                slot,
+                                selected_id,
+                                refresh_for_view.clone(),
+                                move || set_selected_slot_id.set(None),
+                            )
+                            .into_any();
+                        }
+                        match overlay_config.get() {
+                            None => view! {
+                                <StackPlaceholder message="Loading overlays..." />
+                            }
+                            .into_any(),
+                            Some(Err(error)) => view! {
+                                <StackPlaceholder message=error />
+                            }
+                            .into_any(),
+                            Some(Ok(config)) if config.overlays.is_empty() => view! {
+                                <StackPlaceholder message="No overlays yet. Add a clock, sensor, image, or text widget." />
+                            }
+                            .into_any(),
+                            Some(Ok(config)) => {
+                                let rows = config
+                                    .overlays
+                                    .iter()
+                                    .rev()
+                                    .cloned()
+                                    .map(|slot| {
+                                        render_slot_row(
+                                            slot,
+                                            selected_id,
+                                            refresh_for_view.clone(),
+                                            set_selected_slot_id,
+                                        )
+                                    })
+                                    .collect_view();
+                                view! { <ul class="flex flex-col gap-2">{rows}</ul> }
+                                    .into_any()
+                            }
+                        }
                     }
-                    match overlay_config.get() {
-                        None => view! {
-                            <StackPlaceholder message="Loading overlays..." />
-                        }
-                        .into_any(),
-                        Some(Err(error)) => view! {
-                            <StackPlaceholder message=error />
-                        }
-                        .into_any(),
-                        Some(Ok(config)) if config.overlays.is_empty() => view! {
-                            <StackPlaceholder message="No overlays yet. Add a clock, sensor, image, or text widget." />
-                        }
-                        .into_any(),
-                        Some(Ok(config)) => {
-                            let rows = config
-                                .overlays
-                                .iter()
-                                .rev()
-                                .cloned()
-                                .map(|slot| {
-                                    render_slot_row(slot, selected_id, refresh)
-                                })
-                                .collect_view();
-                            view! { <ul class="flex flex-col gap-2">{rows}</ul> }.into_any()
-                        }
-                    }
-                }}
+                }
             </div>
             <Show when=move || catalog_open.get() fallback=|| ()>
                 <OverlayCatalogModal
@@ -477,9 +520,16 @@ fn render_slot_row(
     slot: OverlaySlot,
     selected_id: ReadSignal<Option<String>>,
     refresh: impl Fn() + Clone + 'static,
+    set_selected_slot_id: WriteSignal<Option<OverlaySlotId>>,
 ) -> impl IntoView {
     let slot_id = slot.id;
     let enabled = slot.enabled;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::as_conversions,
+        reason = "opacity is bounded to [0,1] and rendered as a 0-100 integer label"
+    )]
     let opacity_percent = (slot.opacity.clamp(0.0, 1.0) * 100.0).round() as i32;
     let (source_label, source_icon) = overlay_source_descriptor(&slot.source);
     let status_label = if slot.enabled { "Active" } else { "Disabled" };
@@ -528,45 +578,643 @@ fn render_slot_row(
     };
 
     view! {
-        <li class="flex flex-col gap-2 rounded-md border border-edge-subtle bg-surface-overlay/60 p-2.5">
+        <li>
+            <button
+                type="button"
+                class="flex w-full flex-col gap-2 rounded-md border border-edge-subtle bg-surface-overlay/60 p-2.5 text-left transition hover:border-accent-primary/60"
+                on:click=move |_| set_selected_slot_id.set(Some(slot_id))
+            >
+                <div class="flex items-center gap-2">
+                    <span class="flex h-7 w-7 items-center justify-center rounded-sm bg-surface-raised text-accent-primary">
+                        <Icon icon=source_icon width="14" height="14" />
+                    </span>
+                    <div class="min-w-0 flex-1">
+                        <div class="truncate text-sm font-medium text-fg-primary">{slot_name}</div>
+                        <div class="text-[10px] uppercase tracking-wider text-fg-tertiary">
+                            {source_label}
+                        </div>
+                    </div>
+                    <span class=format!(
+                        "rounded-sm px-1.5 py-0.5 text-[10px] uppercase tracking-wider {status_class}"
+                    )>
+                        {status_label}
+                    </span>
+                </div>
+                <div class="flex items-center justify-between gap-2 text-[11px] text-fg-tertiary">
+                    <span>{format!("Opacity {opacity_percent}%")}</span>
+                    <div class="flex items-center gap-1" on:click=|event| event.stop_propagation()>
+                        <button
+                            type="button"
+                            class="rounded-sm px-2 py-1 text-fg-tertiary transition hover:text-accent-primary"
+                            title=if enabled { "Disable overlay" } else { "Enable overlay" }
+                            on:click=on_toggle
+                        >
+                            <Icon icon=if enabled { LuEye } else { LuEyeOff } width="14" height="14" />
+                        </button>
+                        <button
+                            type="button"
+                            class="rounded-sm px-2 py-1 text-fg-tertiary transition hover:text-status-error"
+                            title="Delete overlay"
+                            on:click=on_delete
+                        >
+                            <Icon icon=LuTrash2 width="14" height="14" />
+                        </button>
+                    </div>
+                </div>
+            </button>
+        </li>
+    }
+}
+
+fn overlay_slot_inspector<R, B>(
+    overlay_slot: OverlaySlot,
+    selected_id: ReadSignal<Option<String>>,
+    refresh: R,
+    on_back: B,
+) -> impl IntoView
+where
+    R: Fn() + Clone + Send + Sync + 'static,
+    B: Fn() + Clone + Send + Sync + 'static,
+{
+    let slot_id = overlay_slot.id;
+    let (source_label, source_icon) = overlay_source_descriptor(&overlay_slot.source);
+    let source_label_owned = source_label.to_string();
+
+    let refresh_immediate = refresh.clone();
+    let patch = move |body: api::UpdateOverlaySlotRequest| {
+        let Some(display_id) = selected_id.get_untracked() else {
+            return;
+        };
+        let refresh = refresh_immediate.clone();
+        spawn_local(async move {
+            if api::patch_overlay_slot(&display_id, slot_id, &body)
+                .await
+                .is_ok()
+            {
+                refresh();
+            }
+        });
+    };
+
+    let patch_for_debounce = patch.clone();
+    let patch_debounced_raw = use_debounce_fn_with_arg(
+        move |body: api::UpdateOverlaySlotRequest| patch_for_debounce(body),
+        75.0,
+    );
+    let patch_debounced = move |body: api::UpdateOverlaySlotRequest| {
+        patch_debounced_raw(body);
+    };
+
+    // ── Shared field handlers ─────────────────────────────────────────
+    let patch_for_name = patch.clone();
+    let on_name_change = move |event: leptos::ev::Event| {
+        let value = event_target_value(&event);
+        patch_for_name(api::UpdateOverlaySlotRequest {
+            name: Some(value),
+            ..Default::default()
+        });
+    };
+
+    let patch_for_enabled = patch.clone();
+    let slot_for_enabled = overlay_slot.clone();
+    let on_enabled_toggle = move |_| {
+        patch_for_enabled(api::UpdateOverlaySlotRequest {
+            enabled: Some(!slot_for_enabled.enabled),
+            ..Default::default()
+        });
+    };
+
+    let patch_debounced_opacity = patch_debounced.clone();
+    let on_opacity_input = move |event: leptos::ev::Event| {
+        let Ok(raw) = event_target_value(&event).parse::<i32>() else {
+            return;
+        };
+        #[expect(
+            clippy::cast_precision_loss,
+            clippy::as_conversions,
+            reason = "opacity converts from a 0-100 slider integer"
+        )]
+        let opacity = (raw as f32 / 100.0).clamp(0.0, 1.0);
+        patch_debounced_opacity(api::UpdateOverlaySlotRequest {
+            opacity: Some(opacity),
+            ..Default::default()
+        });
+    };
+
+    let patch_for_blend = patch.clone();
+    let on_blend_change = move |event: leptos::ev::Event| {
+        let value = event_target_value(&event);
+        let mode = match value.as_str() {
+            "add" => OverlayBlendMode::Add,
+            "screen" => OverlayBlendMode::Screen,
+            _ => OverlayBlendMode::Normal,
+        };
+        patch_for_blend(api::UpdateOverlaySlotRequest {
+            blend_mode: Some(mode),
+            ..Default::default()
+        });
+    };
+
+    // Source-specific fields live in inner helpers so each closure only
+    // borrows what it needs and the overall inspector stays readable.
+    // These are plain functions (not #[component]) because the Leptos props
+    // builder treats `Fn(_)` generic props as reactive functions, which
+    // rejects closures that return `()`.
+    let source_editor = match overlay_slot.source.clone() {
+        OverlaySource::Clock(config) => clock_inspector_fields(config, patch.clone()).into_any(),
+        OverlaySource::Sensor(config) => {
+            sensor_inspector_fields(config, patch.clone(), patch_debounced.clone()).into_any()
+        }
+        OverlaySource::Image(config) => image_inspector_fields(config).into_any(),
+        OverlaySource::Text(config) => {
+            text_inspector_fields(config, patch.clone(), patch_debounced.clone()).into_any()
+        }
+        OverlaySource::Html(_) => view! {
+            <div class="rounded-md border border-edge-subtle bg-surface-overlay/50 p-3 text-[11px] leading-relaxed text-fg-tertiary">
+                "HTML overlays are gated until Servo supports multi-session rendering alongside HTML effects."
+            </div>
+        }
+        .into_any(),
+    };
+
+    let opacity_value = (overlay_slot.opacity.clamp(0.0, 1.0) * 100.0).round() as i32;
+    let opacity_value_str = opacity_value.to_string();
+    let slot_name = overlay_slot.name.clone();
+    let blend_value = match overlay_slot.blend_mode {
+        OverlayBlendMode::Normal => "normal",
+        OverlayBlendMode::Add => "add",
+        OverlayBlendMode::Screen => "screen",
+    };
+
+    view! {
+        <div class="flex flex-col gap-3">
             <div class="flex items-center gap-2">
+                <button
+                    type="button"
+                    class="rounded-sm p-1 text-fg-tertiary transition hover:text-accent-primary"
+                    title="Back to stack"
+                    on:click=move |_| on_back()
+                >
+                    <Icon icon=LuChevronLeft width="14" height="14" />
+                </button>
                 <span class="flex h-7 w-7 items-center justify-center rounded-sm bg-surface-raised text-accent-primary">
                     <Icon icon=source_icon width="14" height="14" />
                 </span>
                 <div class="min-w-0 flex-1">
-                    <div class="truncate text-sm font-medium text-fg-primary">{slot_name}</div>
                     <div class="text-[10px] uppercase tracking-wider text-fg-tertiary">
-                        {source_label}
+                        {source_label_owned}
+                    </div>
+                    <div class="truncate text-sm font-medium text-fg-primary">
+                        {slot_name.clone()}
                     </div>
                 </div>
-                <span class=format!(
-                    "rounded-sm px-1.5 py-0.5 text-[10px] uppercase tracking-wider {status_class}"
-                )>
-                    {status_label}
-                </span>
             </div>
-            <div class="flex items-center justify-between gap-2 text-[11px] text-fg-tertiary">
-                <span>{format!("Opacity {opacity_percent}%")}</span>
-                <div class="flex items-center gap-1">
-                    <button
-                        type="button"
-                        class="rounded-sm px-2 py-1 text-fg-tertiary transition hover:text-accent-primary"
-                        title=if enabled { "Disable overlay" } else { "Enable overlay" }
-                        on:click=on_toggle
-                    >
-                        <Icon icon=if enabled { LuEye } else { LuEyeOff } width="14" height="14" />
-                    </button>
-                    <button
-                        type="button"
-                        class="rounded-sm px-2 py-1 text-fg-tertiary transition hover:text-status-error"
-                        title="Delete overlay"
-                        on:click=on_delete
-                    >
-                        <Icon icon=LuTrash2 width="14" height="14" />
-                    </button>
+
+            <InspectorField label="Name">
+                <input
+                    type="text"
+                    class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none"
+                    prop:value=slot_name
+                    on:change=on_name_change
+                />
+            </InspectorField>
+
+            <InspectorField label="Enabled">
+                <button
+                    type="button"
+                    class=move || {
+                        if overlay_slot.enabled {
+                            "flex items-center gap-1 rounded-sm bg-emerald-500/15 px-2 py-1 text-xs text-emerald-300 transition hover:bg-emerald-500/25"
+                        } else {
+                            "flex items-center gap-1 rounded-sm bg-surface-overlay/60 px-2 py-1 text-xs text-fg-tertiary transition hover:bg-surface-overlay"
+                        }
+                    }
+                    on:click=on_enabled_toggle
+                >
+                    <Icon icon=if overlay_slot.enabled { LuEye } else { LuEyeOff } width="12" height="12" />
+                    {if overlay_slot.enabled { "Active" } else { "Disabled" }}
+                </button>
+            </InspectorField>
+
+            <InspectorField label=format!("Opacity {opacity_value}%")>
+                <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    class="w-full accent-accent-primary"
+                    prop:value=opacity_value_str
+                    on:input=on_opacity_input
+                />
+            </InspectorField>
+
+            <InspectorField label="Blend mode">
+                <select
+                    class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none"
+                    on:change=on_blend_change
+                >
+                    <option value="normal" selected=blend_value == "normal">"Normal"</option>
+                    <option value="add" selected=blend_value == "add">"Add"</option>
+                    <option value="screen" selected=blend_value == "screen">"Screen"</option>
+                </select>
+            </InspectorField>
+
+            <div class="flex flex-col gap-2 border-t border-edge-subtle pt-2">
+                <div class="text-[10px] uppercase tracking-wider text-fg-tertiary">
+                    {format!("{source_label} settings")}
                 </div>
+                {source_editor}
             </div>
-        </li>
+        </div>
+    }
+}
+
+#[component]
+fn InspectorField(#[prop(into)] label: String, children: Children) -> impl IntoView {
+    view! {
+        <label class="flex flex-col gap-1">
+            <span class="text-[10px] uppercase tracking-wider text-fg-tertiary">{label}</span>
+            {children()}
+        </label>
+    }
+}
+
+fn clock_inspector_fields<F>(config: ClockConfig, patch: F) -> impl IntoView
+where
+    F: Fn(api::UpdateOverlaySlotRequest) + Clone + Send + Sync + 'static,
+{
+    let patch_style = patch.clone();
+    let config_for_style = config.clone();
+    let on_style = move |event: leptos::ev::Event| {
+        let value = event_target_value(&event);
+        let style = if value == "analog" {
+            ClockStyle::Analog
+        } else {
+            ClockStyle::Digital
+        };
+        let mut updated = config_for_style.clone();
+        updated.style = style;
+        patch_style(api::UpdateOverlaySlotRequest {
+            source: Some(OverlaySource::Clock(updated)),
+            ..Default::default()
+        });
+    };
+
+    let patch_format = patch.clone();
+    let config_for_format = config.clone();
+    let on_format = move |event: leptos::ev::Event| {
+        let value = event_target_value(&event);
+        let format = if value == "12" {
+            HourFormat::Twelve
+        } else {
+            HourFormat::TwentyFour
+        };
+        let mut updated = config_for_format.clone();
+        updated.hour_format = format;
+        patch_format(api::UpdateOverlaySlotRequest {
+            source: Some(OverlaySource::Clock(updated)),
+            ..Default::default()
+        });
+    };
+
+    let patch_seconds = patch.clone();
+    let config_for_seconds = config.clone();
+    let on_seconds = move |_| {
+        let mut updated = config_for_seconds.clone();
+        updated.show_seconds = !updated.show_seconds;
+        patch_seconds(api::UpdateOverlaySlotRequest {
+            source: Some(OverlaySource::Clock(updated)),
+            ..Default::default()
+        });
+    };
+
+    let patch_color = patch.clone();
+    let config_for_color = config.clone();
+    let on_color = move |event: leptos::ev::Event| {
+        let value = event_target_value(&event);
+        let mut updated = config_for_color.clone();
+        updated.color = value;
+        patch_color(api::UpdateOverlaySlotRequest {
+            source: Some(OverlaySource::Clock(updated)),
+            ..Default::default()
+        });
+    };
+
+    let style_value = match config.style {
+        ClockStyle::Digital => "digital",
+        ClockStyle::Analog => "analog",
+    };
+    let format_value = match config.hour_format {
+        HourFormat::Twelve => "12",
+        HourFormat::TwentyFour => "24",
+    };
+    let show_seconds = config.show_seconds;
+    let color = config.color.clone();
+
+    view! {
+        <InspectorField label="Style">
+            <select
+                class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none"
+                on:change=on_style
+            >
+                <option value="digital" selected=style_value == "digital">"Digital"</option>
+                <option value="analog" selected=style_value == "analog">"Analog"</option>
+            </select>
+        </InspectorField>
+        <InspectorField label="Hour format">
+            <select
+                class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none"
+                on:change=on_format
+            >
+                <option value="24" selected=format_value == "24">"24 hour"</option>
+                <option value="12" selected=format_value == "12">"12 hour"</option>
+            </select>
+        </InspectorField>
+        <InspectorField label="Show seconds">
+            <button
+                type="button"
+                class="self-start rounded-sm bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary transition hover:bg-surface-overlay"
+                on:click=on_seconds
+            >
+                {if show_seconds { "On" } else { "Off" }}
+            </button>
+        </InspectorField>
+        <InspectorField label="Color">
+            <input
+                type="color"
+                class="h-7 w-16 rounded-sm border border-edge-subtle bg-transparent"
+                prop:value=color
+                on:change=on_color
+            />
+        </InspectorField>
+    }
+}
+
+fn sensor_inspector_fields<F, D>(
+    config: SensorOverlayConfig,
+    patch: F,
+    patch_debounced: D,
+) -> impl IntoView
+where
+    F: Fn(api::UpdateOverlaySlotRequest) + Clone + Send + Sync + 'static,
+    D: Fn(api::UpdateOverlaySlotRequest) + Clone + Send + Sync + 'static,
+{
+    let patch_sensor = patch.clone();
+    let config_for_sensor = config.clone();
+    let on_sensor = move |event: leptos::ev::Event| {
+        let mut updated = config_for_sensor.clone();
+        updated.sensor = event_target_value(&event);
+        patch_sensor(api::UpdateOverlaySlotRequest {
+            source: Some(OverlaySource::Sensor(updated)),
+            ..Default::default()
+        });
+    };
+
+    let patch_style = patch.clone();
+    let config_for_style = config.clone();
+    let on_style = move |event: leptos::ev::Event| {
+        let mut updated = config_for_style.clone();
+        updated.style = match event_target_value(&event).as_str() {
+            "gauge" => SensorDisplayStyle::Gauge,
+            "bar" => SensorDisplayStyle::Bar,
+            "minimal" => SensorDisplayStyle::Minimal,
+            _ => SensorDisplayStyle::Numeric,
+        };
+        patch_style(api::UpdateOverlaySlotRequest {
+            source: Some(OverlaySource::Sensor(updated)),
+            ..Default::default()
+        });
+    };
+
+    let patch_min = patch_debounced.clone();
+    let config_for_min = config.clone();
+    let on_min = move |event: leptos::ev::Event| {
+        let Ok(value) = event_target_value(&event).parse::<f32>() else {
+            return;
+        };
+        let mut updated = config_for_min.clone();
+        updated.range_min = value;
+        patch_min(api::UpdateOverlaySlotRequest {
+            source: Some(OverlaySource::Sensor(updated)),
+            ..Default::default()
+        });
+    };
+
+    let patch_max = patch_debounced.clone();
+    let config_for_max = config.clone();
+    let on_max = move |event: leptos::ev::Event| {
+        let Ok(value) = event_target_value(&event).parse::<f32>() else {
+            return;
+        };
+        let mut updated = config_for_max.clone();
+        updated.range_max = value;
+        patch_max(api::UpdateOverlaySlotRequest {
+            source: Some(OverlaySource::Sensor(updated)),
+            ..Default::default()
+        });
+    };
+
+    let patch_unit = patch.clone();
+    let config_for_unit = config.clone();
+    let on_unit = move |event: leptos::ev::Event| {
+        let raw = event_target_value(&event);
+        let trimmed = raw.trim();
+        let mut updated = config_for_unit.clone();
+        updated.unit_label = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+        patch_unit(api::UpdateOverlaySlotRequest {
+            source: Some(OverlaySource::Sensor(updated)),
+            ..Default::default()
+        });
+    };
+
+    let sensor = config.sensor.clone();
+    let unit = config.unit_label.clone().unwrap_or_default();
+    let range_min = config.range_min.to_string();
+    let range_max = config.range_max.to_string();
+    let style_value = match config.style {
+        SensorDisplayStyle::Numeric => "numeric",
+        SensorDisplayStyle::Gauge => "gauge",
+        SensorDisplayStyle::Bar => "bar",
+        SensorDisplayStyle::Minimal => "minimal",
+    };
+
+    view! {
+        <InspectorField label="Sensor label">
+            <input
+                type="text"
+                class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none"
+                prop:value=sensor
+                placeholder="cpu_temp"
+                on:change=on_sensor
+            />
+        </InspectorField>
+        <InspectorField label="Style">
+            <select
+                class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none"
+                on:change=on_style
+            >
+                <option value="numeric" selected=style_value == "numeric">"Numeric"</option>
+                <option value="gauge" selected=style_value == "gauge">"Gauge"</option>
+                <option value="bar" selected=style_value == "bar">"Bar"</option>
+                <option value="minimal" selected=style_value == "minimal">"Minimal"</option>
+            </select>
+        </InspectorField>
+        <div class="grid grid-cols-2 gap-2">
+            <InspectorField label="Range min">
+                <input
+                    type="number"
+                    class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none"
+                    prop:value=range_min
+                    on:input=on_min
+                />
+            </InspectorField>
+            <InspectorField label="Range max">
+                <input
+                    type="number"
+                    class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none"
+                    prop:value=range_max
+                    on:input=on_max
+                />
+            </InspectorField>
+        </div>
+        <InspectorField label="Unit label">
+            <input
+                type="text"
+                class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none"
+                prop:value=unit
+                placeholder="°C"
+                on:change=on_unit
+            />
+        </InspectorField>
+    }
+}
+
+fn image_inspector_fields(config: ImageOverlayConfig) -> impl IntoView {
+    let path = config.path.clone();
+    let display_path = if path.is_empty() {
+        "(unset)".to_string()
+    } else {
+        path
+    };
+
+    view! {
+        <div class="rounded-md border border-edge-subtle bg-surface-overlay/50 p-3 text-[11px] leading-relaxed text-fg-tertiary">
+            "Path: " <span class="font-mono text-fg-secondary">{display_path}</span>
+            <br />
+            "Image upload UI lands in a follow-up. For now, set the path via the API."
+        </div>
+    }
+}
+
+fn text_inspector_fields<F, D>(
+    config: TextOverlayConfig,
+    patch: F,
+    patch_debounced: D,
+) -> impl IntoView
+where
+    F: Fn(api::UpdateOverlaySlotRequest) + Clone + Send + Sync + 'static,
+    D: Fn(api::UpdateOverlaySlotRequest) + Clone + Send + Sync + 'static,
+{
+    let patch_text = patch.clone();
+    let config_for_text = config.clone();
+    let on_text = move |event: leptos::ev::Event| {
+        let mut updated = config_for_text.clone();
+        updated.text = event_target_value(&event);
+        patch_text(api::UpdateOverlaySlotRequest {
+            source: Some(OverlaySource::Text(updated)),
+            ..Default::default()
+        });
+    };
+
+    let patch_size = patch_debounced.clone();
+    let config_for_size = config.clone();
+    let on_size = move |event: leptos::ev::Event| {
+        let Ok(value) = event_target_value(&event).parse::<f32>() else {
+            return;
+        };
+        let mut updated = config_for_size.clone();
+        updated.font_size = value.max(1.0);
+        patch_size(api::UpdateOverlaySlotRequest {
+            source: Some(OverlaySource::Text(updated)),
+            ..Default::default()
+        });
+    };
+
+    let patch_color = patch.clone();
+    let config_for_color = config.clone();
+    let on_color = move |event: leptos::ev::Event| {
+        let mut updated = config_for_color.clone();
+        updated.color = event_target_value(&event);
+        patch_color(api::UpdateOverlaySlotRequest {
+            source: Some(OverlaySource::Text(updated)),
+            ..Default::default()
+        });
+    };
+
+    let patch_align = patch.clone();
+    let config_for_align = config.clone();
+    let on_align = move |event: leptos::ev::Event| {
+        let mut updated = config_for_align.clone();
+        updated.align = match event_target_value(&event).as_str() {
+            "left" => TextAlign::Left,
+            "right" => TextAlign::Right,
+            _ => TextAlign::Center,
+        };
+        patch_align(api::UpdateOverlaySlotRequest {
+            source: Some(OverlaySource::Text(updated)),
+            ..Default::default()
+        });
+    };
+
+    let text = config.text.clone();
+    let font_size = config.font_size.to_string();
+    let color = config.color.clone();
+    let align_value = match config.align {
+        TextAlign::Left => "left",
+        TextAlign::Center => "center",
+        TextAlign::Right => "right",
+    };
+
+    view! {
+        <InspectorField label="Text">
+            <input
+                type="text"
+                class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none"
+                prop:value=text
+                on:change=on_text
+            />
+        </InspectorField>
+        <InspectorField label="Font size">
+            <input
+                type="number"
+                min="1"
+                class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none"
+                prop:value=font_size
+                on:input=on_size
+            />
+        </InspectorField>
+        <InspectorField label="Color">
+            <input
+                type="color"
+                class="h-7 w-16 rounded-sm border border-edge-subtle bg-transparent"
+                prop:value=color
+                on:change=on_color
+            />
+        </InspectorField>
+        <InspectorField label="Align">
+            <select
+                class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none"
+                on:change=on_align
+            >
+                <option value="left" selected=align_value == "left">"Left"</option>
+                <option value="center" selected=align_value == "center">"Center"</option>
+                <option value="right" selected=align_value == "right">"Right"</option>
+            </select>
+        </InspectorField>
     }
 }
 
