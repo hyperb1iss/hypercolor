@@ -1392,7 +1392,9 @@ where
             patch_debounced.clone(),
         )
         .into_any(),
-        OverlaySource::Image(config) => image_inspector_fields(config).into_any(),
+        OverlaySource::Image(config) => {
+            image_inspector_fields(config, slot_state, patch.clone()).into_any()
+        }
         OverlaySource::Text(config) => {
             text_inspector_fields(config, slot_state, patch.clone(), patch_debounced.clone())
                 .into_any()
@@ -1900,6 +1902,21 @@ fn mutate_sensor_source(
     applied.then(|| slot_state.with_value(|slot| slot.source.clone()))
 }
 
+/// Companion helper for `ImageOverlayConfig`. See `mutate_clock_source`.
+fn mutate_image_source(
+    slot_state: StoredValue<OverlaySlot>,
+    mutation: impl FnOnce(&mut ImageOverlayConfig),
+) -> Option<OverlaySource> {
+    let mut applied = false;
+    slot_state.update_value(|slot| {
+        if let OverlaySource::Image(config) = &mut slot.source {
+            mutation(config);
+            applied = true;
+        }
+    });
+    applied.then(|| slot_state.with_value(|slot| slot.source.clone()))
+}
+
 /// Companion helper for `TextOverlayConfig`. See `mutate_clock_source`.
 fn mutate_text_source(
     slot_state: StoredValue<OverlaySlot>,
@@ -2262,20 +2279,75 @@ where
     }
 }
 
-fn image_inspector_fields(config: ImageOverlayConfig) -> impl IntoView {
+fn image_inspector_fields<F>(
+    config: ImageOverlayConfig,
+    slot_state: StoredValue<OverlaySlot>,
+    patch: F,
+) -> impl IntoView
+where
+    F: Fn(api::UpdateOverlaySlotRequest) + Clone + Send + Sync + 'static,
+{
+    let patch_path = patch.clone();
+    let on_path = move |event: leptos::ev::Event| {
+        let value = event_target_value(&event);
+        if let Some(source) =
+            mutate_image_source(slot_state, move |config| config.path = value.clone())
+        {
+            patch_path(api::UpdateOverlaySlotRequest {
+                source: Some(source),
+                ..Default::default()
+            });
+        }
+    };
+
+    let patch_fit = patch.clone();
+    let on_fit = move |event: leptos::ev::Event| {
+        let fit = match event_target_value(&event).as_str() {
+            "cover" => ImageFit::Cover,
+            "stretch" => ImageFit::Stretch,
+            "original" => ImageFit::Original,
+            _ => ImageFit::Contain,
+        };
+        if let Some(source) = mutate_image_source(slot_state, move |config| config.fit = fit) {
+            patch_fit(api::UpdateOverlaySlotRequest {
+                source: Some(source),
+                ..Default::default()
+            });
+        }
+    };
+
     let path = config.path.clone();
-    let display_path = if path.is_empty() {
-        "(unset)".to_string()
-    } else {
-        path
+    let fit_value = match config.fit {
+        ImageFit::Cover => "cover",
+        ImageFit::Contain => "contain",
+        ImageFit::Stretch => "stretch",
+        ImageFit::Original => "original",
     };
 
     view! {
-        <div class="rounded-md border border-edge-subtle bg-surface-overlay/50 p-3 text-[11px] leading-relaxed text-fg-tertiary">
-            "Path: " <span class="font-mono text-fg-secondary">{display_path}</span>
-            <br />
-            "Image upload UI lands in a follow-up. For now, set the path via the API."
-        </div>
+        <InspectorField label="Image path">
+            <input
+                type="text"
+                class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none"
+                prop:value=path
+                placeholder="/path/to/image.png"
+                on:change=on_path
+            />
+        </InspectorField>
+        <InspectorField label="Fit">
+            <select
+                class="w-full rounded-sm border border-edge-subtle bg-surface-overlay/60 px-2 py-1 text-xs text-fg-primary focus:border-accent-primary focus:outline-none"
+                on:change=on_fit
+            >
+                <option value="contain" selected=fit_value == "contain">"Contain"</option>
+                <option value="cover" selected=fit_value == "cover">"Cover"</option>
+                <option value="stretch" selected=fit_value == "stretch">"Stretch"</option>
+                <option value="original" selected=fit_value == "original">"Original"</option>
+            </select>
+        </InspectorField>
+        <p class="text-[11px] leading-relaxed text-fg-tertiary">
+            "Point at a PNG, JPEG, WebP, or GIF on the daemon host. Upload UX lands in a follow-up."
+        </p>
     }
 }
 
