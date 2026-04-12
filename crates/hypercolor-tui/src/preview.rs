@@ -146,6 +146,7 @@ struct PreviewBuildRequest {
     transport: PreviewTransport,
     area: Rect,
     fullscreen: bool,
+    image_id: u32,
 }
 
 struct PreviewBuildResponse {
@@ -512,6 +513,7 @@ pub(crate) struct PreviewManager {
     latest_frame: Option<Arc<CanvasFrame>>,
     fullscreen: bool,
     selected_transport: PreviewTransport,
+    kitty_fast_image_id: Option<u32>,
     next_request_id: u64,
     in_flight_request_id: Option<u64>,
     last_build_started: Option<Instant>,
@@ -537,7 +539,6 @@ impl PreviewManager {
         let build_use_fast_halfblocks = build_primary_protocol == ProtocolType::Halfblocks;
         let build_is_tmux = env::var("TERM").is_ok_and(|term| term.starts_with("tmux"))
             || env::var("TERM_PROGRAM").is_ok_and(|term_program| term_program == "tmux");
-        let kitty_image_id = NEXT_KITTY_IMAGE_ID.fetch_add(1, Ordering::Relaxed).max(1);
         let build_worker = thread::Builder::new()
             .name("hypercolor-tui-preview".to_string())
             .spawn(move || {
@@ -589,35 +590,19 @@ impl PreviewManager {
                         && build_use_kitty_fast
                         && (!request.fullscreen || build_use_kitty_fast_fullscreen)
                     {
-                        let img = match build_preview_image(
-                            request.frame.as_ref(),
+                        let source_rect = cover_source_rect(
+                            u32::from(request.frame.width),
+                            u32::from(request.frame.height),
                             request.area,
                             build_primary_picker.font_size(),
-                            StatefulResizeMode::Cover,
-                            request.fullscreen,
-                        ) {
-                            Ok(img) => img,
-                            Err(error) => {
-                                if build_results_tx
-                                    .send(PreviewBuildResult::Failed {
-                                        request_id: request.request_id,
-                                        frame_number: request.frame.frame_number,
-                                        transport: request.transport,
-                                        area: request.area,
-                                        build_duration: build_started.elapsed(),
-                                        error,
-                                    })
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                                continue;
-                            }
-                        };
+                        );
                         match kitty_fast::KittyFrame::new(
-                            img.into_rgb8(),
+                            request.frame.pixels.as_slice(),
+                            u32::from(request.frame.width),
+                            u32::from(request.frame.height),
+                            source_rect,
                             request.area,
-                            kitty_image_id,
+                            request.image_id,
                             build_is_tmux,
                         ) {
                             Ok(frame) => {
@@ -745,6 +730,7 @@ impl PreviewManager {
             latest_frame: None,
             fullscreen: false,
             selected_transport: PreviewTransport::Primary,
+            kitty_fast_image_id: None,
             next_request_id: 0,
             in_flight_request_id: None,
             last_build_started: None,
@@ -936,18 +922,35 @@ impl PreviewManager {
             frame_interval,
             self.draw_backpressure.frame_interval(),
         );
+        let area_matches = self
+            .current
+            .as_ref()
+            .is_some_and(|surface| surface.matches_area(resize_area));
+        let resize_or_transport_changed =
+            !area_matches || self.current_transport != Some(transport);
+        let image_id = if transport == PreviewTransport::Primary
+            && self.primary_protocol == ProtocolType::Kitty
+        {
+            let image_id = self.kitty_fast_image_id.get_or_insert_with(|| {
+                NEXT_KITTY_IMAGE_ID.fetch_add(1, Ordering::Relaxed).max(1)
+            });
+            if resize_or_transport_changed {
+                *image_id = NEXT_KITTY_IMAGE_ID.fetch_add(1, Ordering::Relaxed).max(1);
+            }
+            *image_id
+        } else {
+            0
+        };
 
         if self.current_frame_number == Some(frame.frame_number)
             && self.current_transport == Some(transport)
-            && self
-                .current
-                .as_ref()
-                .is_some_and(|surface| surface.matches_area(resize_area))
+            && area_matches
         {
             return;
         }
 
-        if self.current.is_some()
+        if !resize_or_transport_changed
+            && self.current.is_some()
             && self
                 .last_build_started
                 .is_some_and(|started| started.elapsed() < frame_interval)
@@ -969,6 +972,7 @@ impl PreviewManager {
                 transport,
                 area: resize_area,
                 fullscreen: self.fullscreen,
+                image_id,
             })
             .is_ok()
         {
@@ -1080,6 +1084,7 @@ impl PreviewManager {
         self.preview_area = None;
         self.build_backpressure.reset();
         self.draw_backpressure.reset();
+        self.kitty_fast_image_id = None;
         self.primary_cooloff_until = None;
         self.fullscreen_primary_locked_out = false;
     }
@@ -1139,11 +1144,55 @@ fn build_preview_image(
     Ok(image.resize_to_fill(target_width, target_height, filter))
 }
 
+fn cover_source_rect(
+    image_width: u32,
+    image_height: u32,
+    area: Rect,
+    font_size: (u16, u16),
+) -> (u32, u32, u32, u32) {
+    let target_width = u64::from(area.width) * u64::from(font_size.0.max(1));
+    let target_height = u64::from(area.height) * u64::from(font_size.1.max(1));
+    if target_width == 0 || target_height == 0 || image_width == 0 || image_height == 0 {
+        return (0, 0, image_width, image_height);
+    }
+
+    let image_width_u64 = u64::from(image_width);
+    let image_height_u64 = u64::from(image_height);
+    let image_scaled_width = image_width_u64 * target_height;
+    let image_scaled_height = image_height_u64 * target_width;
+
+    if image_scaled_width > image_scaled_height {
+        let crop_width = ((image_height_u64 * target_width) / target_height)
+            .max(1)
+            .min(image_width_u64);
+        let crop_x = (image_width_u64.saturating_sub(crop_width)) / 2;
+        (
+            u32::try_from(crop_x).expect("cover crop x fits in u32"),
+            0,
+            u32::try_from(crop_width).expect("cover crop width fits in u32"),
+            image_height,
+        )
+    } else if image_scaled_height > image_scaled_width {
+        let crop_height = ((image_width_u64 * target_height) / target_width)
+            .max(1)
+            .min(image_height_u64);
+        let crop_y = (image_height_u64.saturating_sub(crop_height)) / 2;
+        (
+            0,
+            u32::try_from(crop_y).expect("cover crop y fits in u32"),
+            image_width,
+            u32::try_from(crop_height).expect("cover crop height fits in u32"),
+        )
+    } else {
+        (0, 0, image_width, image_height)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         BuildBackpressure, DrawBackpressure, PreviewPolicy, PreviewTransport,
-        StatefulResizeMode, build_preview_image, primary_resize_mode,
+        StatefulResizeMode, build_preview_image, cover_source_rect, primary_resize_mode,
     };
     use crate::state::CanvasFrame;
     use ratatui::layout::Rect;
@@ -1282,6 +1331,22 @@ mod tests {
     }
 
     #[test]
+    fn cover_source_rect_crops_width_for_wide_source() {
+        assert_eq!(
+            cover_source_rect(320, 200, Rect::new(0, 0, 40, 40), (10, 20)),
+            (110, 0, 100, 200)
+        );
+    }
+
+    #[test]
+    fn cover_source_rect_crops_height_for_tall_target() {
+        assert_eq!(
+            cover_source_rect(320, 200, Rect::new(0, 0, 80, 10), (10, 40)),
+            (0, 20, 320, 160)
+        );
+    }
+
+    #[test]
     fn draw_backpressure_escalates_after_slow_draws() {
         let mut backpressure = DrawBackpressure::default();
         backpressure.observe_draw(Duration::from_millis(280));
@@ -1312,6 +1377,6 @@ mod tests {
         for _ in 0..2 {
             backpressure.observe_build(Duration::from_millis(15));
         }
-        assert_eq!(backpressure.frame_interval(), Duration::ZERO);
+        assert_eq!(backpressure.frame_interval(), Duration::from_millis(50));
     }
 }

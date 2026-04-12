@@ -249,6 +249,7 @@ impl App {
             while let Ok(action) = self.action_rx.try_recv() {
                 if let Action::Render = action {
                     render_requested = true;
+                    self.view.render_dirty = true;
                     continue;
                 }
 
@@ -268,12 +269,16 @@ impl App {
 
             if let Some(snapshot) = latest_spectrum {
                 self.process_action(&Action::SpectrumUpdated(snapshot));
-                self.view.render_dirty = true;
+                if !self.view.fullscreen_preview {
+                    self.view.render_dirty = true;
+                }
             }
 
             if let Some(frame) = latest_canvas_frame {
                 self.process_action(&Action::CanvasFrameReceived(frame));
-                self.view.render_dirty = true;
+                if !self.view.fullscreen_preview {
+                    self.view.render_dirty = true;
+                }
             }
 
             if self.view.render_dirty

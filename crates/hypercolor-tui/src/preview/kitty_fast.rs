@@ -10,7 +10,6 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
-use image::RgbImage;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui_image::picker::cap_parser::Parser;
@@ -19,47 +18,63 @@ static NEXT_TEMP_FILE_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) struct KittyFrame {
     rect: Rect,
-    image_id: u32,
     id_color: String,
     id_extra: u16,
+    row_symbols: Vec<String>,
     transmit: Option<String>,
     temp_path: Option<PathBuf>,
 }
 
 impl KittyFrame {
     pub(crate) fn new(
-        image: RgbImage,
+        pixels: &[u8],
+        image_width: u32,
+        image_height: u32,
+        source_rect: (u32, u32, u32, u32),
         area: Rect,
         image_id: u32,
         is_tmux: bool,
     ) -> Result<Self, String> {
-        Self::new_with_medium(image, area, image_id, is_tmux, preferred_medium(area))
+        Self::new_with_medium(
+            pixels,
+            image_width,
+            image_height,
+            source_rect,
+            area,
+            image_id,
+            is_tmux,
+            preferred_medium(area),
+        )
     }
 
     fn new_with_medium(
-        image: RgbImage,
+        pixels: &[u8],
+        image_width: u32,
+        image_height: u32,
+        source_rect: (u32, u32, u32, u32),
         area: Rect,
         image_id: u32,
         is_tmux: bool,
         medium: KittyMedium,
     ) -> Result<Self, String> {
-        let image_width = image.width();
-        let image_height = image.height();
         let (transmit, temp_path) = build_transmit(
-            image.as_raw(),
+            pixels,
             image_width,
             image_height,
+            source_rect,
             area,
             image_id,
             is_tmux,
             medium,
         )?;
         let [id_extra, id_r, id_g, id_b] = image_id.to_be_bytes();
+        let id_color = format!("\x1b[38;2;{id_r};{id_g};{id_b}m");
+        let id_extra = u16::from(id_extra);
         Ok(Self {
             rect: area,
-            image_id,
-            id_color: format!("\x1b[38;2;{id_r};{id_g};{id_b}m"),
-            id_extra: u16::from(id_extra),
+            id_color: id_color.clone(),
+            id_extra,
+            row_symbols: build_row_symbols(area, &id_color, id_extra),
             transmit: Some(transmit),
             temp_path,
         })
@@ -70,16 +85,19 @@ impl KittyFrame {
     }
 
     pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer) {
-        let seq = self.transmit.take();
-        render(
-            area,
-            self.rect,
-            buf,
-            self.image_id,
-            &self.id_color,
-            self.id_extra,
-            seq.as_deref(),
-        );
+        let transmit = self.transmit.take();
+        if area.width == self.rect.width && area.height == self.rect.height {
+            render_cached(area, buf, &self.row_symbols, transmit);
+        } else {
+            render_dynamic(
+                area,
+                self.rect,
+                buf,
+                &self.id_color,
+                self.id_extra,
+                transmit.as_deref(),
+            );
+        }
     }
 }
 
@@ -101,13 +119,22 @@ fn build_transmit(
     pixels: &[u8],
     image_width: u32,
     image_height: u32,
+    source_rect: (u32, u32, u32, u32),
     area: Rect,
     image_id: u32,
     is_tmux: bool,
     medium: KittyMedium,
 ) -> Result<(String, Option<PathBuf>), String> {
     if medium == KittyMedium::TempFile {
-        match transmit_temp_file(pixels, image_width, image_height, area, image_id, is_tmux) {
+        match transmit_temp_file(
+            pixels,
+            image_width,
+            image_height,
+            source_rect,
+            area,
+            image_id,
+            is_tmux,
+        ) {
             Ok(result) => return Ok(result),
             Err(error) => {
                 tracing::debug!(
@@ -117,7 +144,15 @@ fn build_transmit(
         }
     }
 
-    transmit_direct(pixels, image_width, image_height, area, image_id, is_tmux)
+    transmit_direct(
+        pixels,
+        image_width,
+        image_height,
+        source_rect,
+        area,
+        image_id,
+        is_tmux,
+    )
         .map(|transmit| (transmit, None))
 }
 
@@ -125,7 +160,8 @@ fn transmit_direct(
     pixels: &[u8],
     image_width: u32,
     image_height: u32,
-    _area: Rect,
+    source_rect: (u32, u32, u32, u32),
+    area: Rect,
     image_id: u32,
     is_tmux: bool,
 ) -> Result<String, String> {
@@ -137,6 +173,7 @@ fn transmit_direct(
     let chunk_count = encoded.len().div_ceil(CHARS_PER_CHUNK);
     let mut data =
         String::with_capacity(encoded.len() + (chunk_count * (64 + escape.len() * 2 + end.len())));
+    let (source_x, source_y, source_width, source_height) = source_rect;
 
     for (index, chunk) in encoded.as_bytes().chunks(CHARS_PER_CHUNK).enumerate() {
         data.push_str(start);
@@ -144,8 +181,15 @@ fn transmit_direct(
         if index == 0 {
             write!(
                 data,
-                "i={image_id},a=T,U=1,f=24,o=z,s={},v={},",
-                image_width, image_height
+                "i={image_id},a=T,U=1,C=1,c={},r={},x={},y={},w={},h={},f=24,o=z,s={},v={},",
+                area.width,
+                area.height,
+                source_x,
+                source_y,
+                source_width,
+                source_height,
+                image_width,
+                image_height
             )
             .map_err(|error| error.to_string())?;
         }
@@ -163,7 +207,8 @@ fn transmit_temp_file(
     pixels: &[u8],
     image_width: u32,
     image_height: u32,
-    _area: Rect,
+    source_rect: (u32, u32, u32, u32),
+    area: Rect,
     image_id: u32,
     is_tmux: bool,
 ) -> Result<(String, Option<PathBuf>), String> {
@@ -172,11 +217,18 @@ fn transmit_temp_file(
     let encoded_path = BASE64_STANDARD.encode(path.to_string_lossy().as_bytes());
     let (start, escape, end) = Parser::escape_tmux(is_tmux);
     let mut data = String::with_capacity(encoded_path.len() + 128 + escape.len() * 2 + end.len());
+    let (source_x, source_y, source_width, source_height) = source_rect;
 
     data.push_str(start);
     write!(
         data,
-        "{escape}_Gq=2,i={image_id},a=T,U=1,f=24,t=t,o=z,s={},v={},S={};",
+        "{escape}_Gq=2,i={image_id},a=T,U=1,C=1,c={},r={},x={},y={},w={},h={},f=24,t=t,o=z,s={},v={},S={};",
+        area.width,
+        area.height,
+        source_x,
+        source_y,
+        source_width,
+        source_height,
         image_width,
         image_height,
         compressed.len()
@@ -242,11 +294,75 @@ fn write_temp_payload(payload: &[u8]) -> Result<PathBuf, String> {
     Err("failed to allocate kitty temp payload".to_string())
 }
 
-fn render(
+fn build_row_symbols(area: Rect, id_color: &str, id_extra: u16) -> Vec<String> {
+    let width_usize = usize::from(area.width);
+    if width_usize == 0 {
+        return Vec::new();
+    }
+
+    let estimated_placeholder_row_size = id_color.len() + 30 + (width_usize * 4) + 30;
+    let row_diacritics: String = std::iter::repeat_n('\u{10EEEE}', width_usize - 1).collect();
+    let right = area.width.saturating_sub(1);
+    let down = area.height.saturating_sub(1);
+    let restore_cursor = format!("\x1b[u\x1b[{right}C\x1b[{down}B");
+    let height = area.height.min(DIACRITICS.len() as u16);
+    let mut rows = Vec::with_capacity(usize::from(height));
+
+    for y in 0..height {
+        let mut symbol = String::with_capacity(estimated_placeholder_row_size);
+        write!(
+            symbol,
+            "\x1b[s{id_color}\u{10EEEE}{}{}{}",
+            diacritic(y),
+            diacritic(0),
+            diacritic(id_extra)
+        )
+        .expect("string write cannot fail");
+        symbol.push_str(&row_diacritics);
+        symbol.push_str(&restore_cursor);
+        rows.push(symbol);
+    }
+
+    rows
+}
+
+fn render_cached(area: Rect, buf: &mut Buffer, row_symbols: &[String], transmit: Option<String>) {
+    let full_width = area.width;
+    let width_usize = usize::from(full_width);
+    if width_usize == 0 || row_symbols.is_empty() {
+        return;
+    }
+
+    let first_row_symbol = transmit.as_deref().map(|transmit| {
+        let mut symbol = String::with_capacity(transmit.len() + row_symbols[0].len());
+        symbol.push_str(transmit);
+        symbol.push_str(&row_symbols[0]);
+        symbol
+    });
+    let height = area.height.min(row_symbols.len() as u16);
+    for y in 0..height {
+        let symbol = if y == 0 {
+            first_row_symbol.as_deref().unwrap_or(row_symbols[0].as_str())
+        } else {
+            row_symbols[usize::from(y)].as_str()
+        };
+
+        for x in 1..full_width {
+            if let Some(cell) = buf.cell_mut((area.left() + x, area.top() + y)) {
+                cell.set_skip(true);
+            }
+        }
+
+        if let Some(cell) = buf.cell_mut((area.left(), area.top() + y)) {
+            cell.set_symbol(&symbol);
+        }
+    }
+}
+
+fn render_dynamic(
     area: Rect,
     rect: Rect,
     buf: &mut Buffer,
-    _image_id: u32,
     id_color: &str,
     id_extra: u16,
     mut seq: Option<&str>,
@@ -608,34 +724,35 @@ static DIACRITICS: [char; 297] = [
 #[cfg(test)]
 mod tests {
     use super::{KittyFrame, KittyMedium, preferred_medium};
-    use image::RgbImage;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use std::path::PathBuf;
 
-    fn solid_image(width: u32, height: u32) -> RgbImage {
-        RgbImage::from_raw(width, height, vec![0; (width * height * 3) as usize])
-            .expect("valid image buffer")
+    fn solid_pixels(width: u32, height: u32) -> Vec<u8> {
+        vec![0; (width * height * 3) as usize]
     }
 
     #[test]
     fn transmit_sequence_uses_compressed_rgb_payload() {
-        let image = RgbImage::from_raw(2, 2, vec![0, 0, 0, 255, 0, 0, 0, 255, 0, 255, 255, 255])
-            .expect("valid image buffer");
+        let image = vec![0, 0, 0, 255, 0, 0, 0, 255, 0, 255, 255, 255];
 
-        let kitty = KittyFrame::new(image, Rect::new(0, 0, 2, 2), 42, false)
+        let kitty = KittyFrame::new(&image, 2, 2, (0, 0, 2, 2), Rect::new(0, 0, 2, 2), 42, false)
             .expect("kitty frame should build");
 
         let transmit = kitty.transmit.as_deref().expect("transmit should exist");
         assert!(transmit.contains("i=42"));
         assert!(transmit.contains("f=24"));
         assert!(transmit.contains("o=z"));
+        assert!(transmit.contains("c=2,r=2"));
+        assert!(transmit.contains("x=0,y=0,w=2,h=2"));
         assert!(!transmit.contains("t=t"));
     }
 
     #[test]
     fn render_marks_trailing_cells_as_skip() {
-        let mut kitty = KittyFrame::new(solid_image(2, 2), Rect::new(0, 0, 2, 2), 7, false)
+        let pixels = solid_pixels(2, 2);
+        let mut kitty =
+            KittyFrame::new(&pixels, 2, 2, (0, 0, 2, 2), Rect::new(0, 0, 2, 2), 7, false)
             .expect("kitty frame should build");
         let mut buf = Buffer::empty(Rect::new(0, 0, 2, 2));
         kitty.render(Rect::new(0, 0, 2, 2), &mut buf);
@@ -643,6 +760,22 @@ mod tests {
         assert!(buf[(1, 0)].skip);
         assert!(buf[(1, 1)].skip);
         assert!(!buf[(0, 0)].symbol().is_empty());
+    }
+
+    #[test]
+    fn render_only_sends_transmit_sequence_once() {
+        let pixels = solid_pixels(2, 2);
+        let mut kitty =
+            KittyFrame::new(&pixels, 2, 2, (0, 0, 2, 2), Rect::new(0, 0, 2, 2), 7, false)
+            .expect("kitty frame should build");
+
+        let mut first = Buffer::empty(Rect::new(0, 0, 2, 2));
+        kitty.render(Rect::new(0, 0, 2, 2), &mut first);
+        assert!(first[(0, 0)].symbol().contains("_Gq=2,"));
+
+        let mut second = Buffer::empty(Rect::new(0, 0, 2, 2));
+        kitty.render(Rect::new(0, 0, 2, 2), &mut second);
+        assert!(!second[(0, 0)].symbol().contains("_Gq=2,"));
     }
 
     #[test]
@@ -656,9 +789,13 @@ mod tests {
     #[test]
     fn temp_file_transport_cleans_up_payload() {
         let payload_path: PathBuf;
+        let pixels = solid_pixels(2, 2);
         {
             let kitty = KittyFrame::new_with_medium(
-                solid_image(2, 2),
+                &pixels,
+                2,
+                2,
+                (0, 0, 2, 2),
                 Rect::new(0, 0, 50, 30),
                 17,
                 false,

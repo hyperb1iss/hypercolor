@@ -1466,7 +1466,7 @@ impl Component for EffectBrowserView {
     fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
         // Resizable splits take priority — consume drag events on dividers
         if self.h_split.handle_mouse(&mouse) || self.v_split.handle_mouse(&mouse) {
-            return Ok(None);
+            return Ok(Some(Action::Render));
         }
 
         let col = mouse.column;

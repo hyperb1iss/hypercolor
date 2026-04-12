@@ -663,7 +663,7 @@ impl Component for DashboardView {
     fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
         // Resizable splits take priority
         if self.v_split.handle_mouse(&mouse) || self.h_split.handle_mouse(&mouse) {
-            return Ok(None);
+            return Ok(Some(Action::Render));
         }
         Ok(None)
     }
