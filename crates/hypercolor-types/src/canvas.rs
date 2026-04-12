@@ -1084,7 +1084,10 @@ impl SurfaceSlot {
     }
 
     fn begin_dequeue(&mut self, descriptor: SurfaceDescriptor) {
-        if self.state == SurfaceState::Published && self.canvas.is_shared() {
+        if self.canvas.width() != descriptor.width
+            || self.canvas.height() != descriptor.height
+            || (self.state == SurfaceState::Published && self.canvas.is_shared())
+        {
             self.canvas = Canvas::new(descriptor.width, descriptor.height);
         }
 
@@ -1251,8 +1254,10 @@ impl SurfaceLease<'_> {
     pub fn submit(self, frame_number: u32, timestamp_ms: u32) -> PublishedSurface {
         self.slot.generation = self.slot.generation.saturating_add(1);
         self.slot.state = SurfaceState::Published;
+        let descriptor =
+            SurfaceDescriptor::rgba8888(self.slot.canvas.width(), self.slot.canvas.height());
         PublishedSurface {
-            descriptor: self.descriptor,
+            descriptor,
             generation: self.slot.generation,
             frame_number,
             timestamp_ms,

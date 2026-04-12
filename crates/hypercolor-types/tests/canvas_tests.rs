@@ -402,6 +402,35 @@ fn render_surface_pool_rebinds_published_slots_under_retention_pressure() {
 }
 
 #[test]
+fn render_surface_pool_submit_uses_actual_canvas_dimensions() {
+    let descriptor = SurfaceDescriptor::rgba8888(4, 4);
+    let mut pool = RenderSurfacePool::with_slot_count(descriptor, 1);
+
+    let mut lease = pool.dequeue().expect("lease");
+    *lease.canvas_mut() = Canvas::new(2, 2);
+    let surface = lease.submit(1, 10);
+
+    assert_eq!(surface.width(), 2);
+    assert_eq!(surface.height(), 2);
+    assert_eq!(surface.rgba_len(), 2 * 2 * BYTES_PER_PIXEL);
+}
+
+#[test]
+fn render_surface_pool_recreates_mismatched_canvas_on_next_dequeue() {
+    let descriptor = SurfaceDescriptor::rgba8888(4, 4);
+    let mut pool = RenderSurfacePool::with_slot_count(descriptor, 1);
+
+    let mut lease = pool.dequeue().expect("lease");
+    *lease.canvas_mut() = Canvas::new(2, 2);
+    let surface = lease.submit(1, 10);
+    drop(surface);
+
+    let mut lease = pool.dequeue().expect("reclaimed lease");
+    assert_eq!(lease.canvas_mut().width(), 4);
+    assert_eq!(lease.canvas_mut().height(), 4);
+}
+
+#[test]
 fn published_surface_storage_identity_survives_metadata_updates() {
     let mut canvas = Canvas::new(2, 1);
     canvas.set_pixel(0, 0, Rgba::new(10, 20, 30, 255));

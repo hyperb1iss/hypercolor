@@ -391,7 +391,10 @@ impl EffectRenderer for ServoRenderer {
         self.poll_in_flight_render();
         self.try_submit_queued_frame();
 
-        if let Some(canvas) = self.last_canvas.as_ref() {
+        if let Some(canvas) = self.last_canvas.as_ref()
+            && canvas.width() == input.canvas_width
+            && canvas.height() == input.canvas_height
+        {
             target.clone_from(canvas);
         } else {
             Self::render_placeholder_into(target, input);
@@ -847,6 +850,26 @@ mod tests {
         assert_eq!(target.height(), 3);
         assert_eq!(target.get_pixel(0, 0), Rgba::new(7, 127, 39, 255));
         assert_eq!(target.get_pixel(3, 2), Rgba::new(7, 127, 39, 255));
+    }
+
+    #[test]
+    fn render_into_ignores_completed_frame_with_stale_dimensions() {
+        let mut renderer = ServoRenderer::new();
+        renderer.initialized = true;
+        renderer.last_canvas = Some(Canvas::new(2, 2));
+
+        let audio = custom_audio(0.5);
+        let interaction = custom_interaction(&[], &[]);
+        let input = frame_input_with(1.0 / 30.0, 7, &audio, &interaction, 4, 3);
+        let mut target = Canvas::new(1, 1);
+
+        renderer
+            .render_into(&input, &mut target)
+            .expect("placeholder render should succeed");
+
+        assert_eq!(target.width(), 4);
+        assert_eq!(target.height(), 3);
+        assert_eq!(target.get_pixel(0, 0), Rgba::new(7, 127, 39, 255));
     }
 
     #[test]
