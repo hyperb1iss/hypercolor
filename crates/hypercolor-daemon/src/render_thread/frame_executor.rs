@@ -6,7 +6,7 @@ use hypercolor_core::types::event::FrameTiming;
 
 use super::frame_admission::FrameAdmissionSample;
 use super::frame_composer::{ComposeRequest, compose_frame};
-use super::frame_io::{publish_frame_updates, sample_inputs};
+use super::frame_io::{preview_publication_due, publish_frame_updates, sample_inputs};
 use super::frame_pacing::{FrameExecution, NextWake, SkipDecision};
 use super::frame_state::{
     build_frame_scene_snapshot, reconcile_audio_capture, reconcile_screen_capture,
@@ -124,11 +124,27 @@ pub(crate) async fn execute_frame(
     let input_done_at = Instant::now();
     let input_us = micros_between(input_start, input_done_at);
     let input_done_us = micros_between(frame_start, input_done_at);
+    let canvas_preview_due = preview_publication_due(
+        scene_snapshot.elapsed_ms,
+        frame_loop.last_canvas_preview_publish_ms,
+        state.preview_canvas_receiver_count(),
+        state.preview_runtime.canvas_receiver_count(),
+        state.preview_runtime.canvas_demand().max_fps,
+    );
+    let screen_canvas_preview_due = preview_publication_due(
+        scene_snapshot.elapsed_ms,
+        frame_loop.last_screen_canvas_preview_publish_ms,
+        state.event_bus.screen_canvas_receiver_count(),
+        state.preview_runtime.screen_canvas_receiver_count(),
+        state.preview_runtime.screen_canvas_demand().max_fps,
+    );
 
     let mut render_stage = compose_frame(ComposeRequest {
         state,
         render,
         scene_snapshot: &scene_snapshot,
+        publish_canvas_preview: canvas_preview_due,
+        publish_screen_canvas_preview: screen_canvas_preview_due,
         skip_decision,
         inputs,
         delta_secs,
@@ -227,7 +243,7 @@ pub(crate) async fn execute_frame(
         bypassed: _,
         backend: compositor_backend,
     } = render_stage.composed_frame;
-    let screen_watch_surface = if screen_canvas_receivers == 0 {
+    let screen_watch_surface = if !screen_canvas_preview_due || screen_canvas_receivers == 0 {
         None
     } else if !scene_snapshot.effect_demand.effect_running
         && scene_snapshot.effect_demand.screen_capture_active

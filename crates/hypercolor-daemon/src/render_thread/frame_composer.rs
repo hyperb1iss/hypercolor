@@ -53,6 +53,8 @@ pub(crate) struct ComposeRequest<'a> {
     pub(crate) state: &'a RenderThreadState,
     pub(crate) render: &'a mut RenderCaches,
     pub(crate) scene_snapshot: &'a FrameSceneSnapshot,
+    pub(crate) publish_canvas_preview: bool,
+    pub(crate) publish_screen_canvas_preview: bool,
     pub(crate) skip_decision: SkipDecision,
     pub(crate) inputs: &'a mut FrameInputs,
     pub(crate) delta_secs: f32,
@@ -69,6 +71,8 @@ struct ComposeContext<'a> {
     state: &'a RenderThreadState,
     render: &'a mut RenderCaches,
     scene_snapshot: &'a FrameSceneSnapshot,
+    publish_canvas_preview: bool,
+    publish_screen_canvas_preview: bool,
     skip_decision: SkipDecision,
     inputs: &'a mut FrameInputs,
     delta_secs: f32,
@@ -79,6 +83,8 @@ pub(crate) async fn compose_frame(request: ComposeRequest<'_>) -> RenderStageSta
         state: request.state,
         render: request.render,
         scene_snapshot: request.scene_snapshot,
+        publish_canvas_preview: request.publish_canvas_preview,
+        publish_screen_canvas_preview: request.publish_screen_canvas_preview,
         skip_decision: request.skip_decision,
         inputs: request.inputs,
         delta_secs: request.delta_secs,
@@ -445,8 +451,8 @@ impl ComposeContext<'_> {
 
     fn requires_published_surface(&self) -> bool {
         requires_published_surface(
-            self.state.preview_canvas_receiver_count(),
-            self.state.event_bus.screen_canvas_receiver_count(),
+            self.publish_canvas_preview,
+            self.publish_screen_canvas_preview,
             self.scene_snapshot.effect_demand.effect_running,
             self.scene_snapshot.effect_demand.screen_capture_active,
         )
@@ -458,13 +464,13 @@ fn requires_cpu_sampling_canvas(can_gpu_sample: bool) -> bool {
 }
 
 fn requires_published_surface(
-    preview_canvas_receivers: usize,
-    screen_canvas_receivers: usize,
+    publish_canvas_preview: bool,
+    publish_screen_canvas_preview: bool,
     effect_running: bool,
     screen_capture_active: bool,
 ) -> bool {
-    preview_canvas_receivers > 0
-        || (screen_canvas_receivers > 0 && !effect_running && screen_capture_active)
+    publish_canvas_preview
+        || (publish_screen_canvas_preview && !effect_running && screen_capture_active)
 }
 
 async fn render_effect_frame(
@@ -593,9 +599,9 @@ mod tests {
 
     #[test]
     fn published_surface_depends_on_preview_and_screen_passthrough_receivers() {
-        assert!(!requires_published_surface(0, 0, false, false));
-        assert!(requires_published_surface(1, 0, true, false));
-        assert!(requires_published_surface(0, 1, false, true));
-        assert!(!requires_published_surface(0, 1, true, true));
+        assert!(!requires_published_surface(false, false, false, false));
+        assert!(requires_published_surface(true, false, true, false));
+        assert!(requires_published_surface(false, true, false, true));
+        assert!(!requires_published_surface(false, true, true, true));
     }
 }

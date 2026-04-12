@@ -182,11 +182,6 @@ pub(crate) fn publish_frame_updates(
     let canvas_receivers = state.preview_canvas_receiver_count();
     if canvas_receivers > 0 {
         let tracked_canvas_receivers = state.preview_runtime.canvas_receiver_count();
-        let canvas_publish_fps = preview_publish_fps_limit(
-            canvas_receivers,
-            tracked_canvas_receivers,
-            state.preview_runtime.canvas_demand().max_fps,
-        );
         let publish_canvas = {
             let current = state.event_bus.canvas_sender().borrow();
             let changed = if let Some(surface) = preview_surface.as_ref().or(frame_surface.as_ref())
@@ -198,10 +193,12 @@ pub(crate) fn publish_frame_updates(
                 should_publish_canvas_frame(&current, &CanvasFrame::empty())
             };
             changed
-                && should_publish_preview_frame(
+                && preview_publication_due(
                     elapsed_ms,
                     *last_canvas_preview_publish_ms,
-                    canvas_publish_fps,
+                    canvas_receivers,
+                    tracked_canvas_receivers,
+                    state.preview_runtime.canvas_demand().max_fps,
                 )
         };
         if publish_canvas {
@@ -232,11 +229,6 @@ pub(crate) fn publish_frame_updates(
     let screen_canvas_receivers = state.event_bus.screen_canvas_receiver_count();
     if screen_canvas_receivers > 0 {
         let tracked_screen_canvas_receivers = state.preview_runtime.screen_canvas_receiver_count();
-        let screen_canvas_publish_fps = preview_publish_fps_limit(
-            screen_canvas_receivers,
-            tracked_screen_canvas_receivers,
-            state.preview_runtime.screen_canvas_demand().max_fps,
-        );
         let publish_screen = {
             let current = state.event_bus.screen_canvas_sender().borrow();
             let changed = if let Some(surface) = screen_preview_surface.as_ref() {
@@ -245,10 +237,12 @@ pub(crate) fn publish_frame_updates(
                 should_publish_canvas_frame(&current, &CanvasFrame::empty())
             };
             changed
-                && should_publish_preview_frame(
+                && preview_publication_due(
                     elapsed_ms,
                     *last_screen_canvas_preview_publish_ms,
-                    screen_canvas_publish_fps,
+                    screen_canvas_receivers,
+                    tracked_screen_canvas_receivers,
+                    state.preview_runtime.screen_canvas_demand().max_fps,
                 )
         };
         if publish_screen {
@@ -372,6 +366,24 @@ fn should_publish_preview_frame(
     };
     let interval_ms = 1000_u32.div_ceil(target_fps.max(1));
     !last_publish_ms.is_some_and(|last_sent| elapsed_ms.saturating_sub(last_sent) < interval_ms)
+}
+
+pub(crate) fn preview_publication_due(
+    elapsed_ms: u32,
+    last_publish_ms: Option<u32>,
+    total_receivers: usize,
+    tracked_receivers: usize,
+    tracked_max_fps: u32,
+) -> bool {
+    if total_receivers == 0 {
+        return false;
+    }
+
+    should_publish_preview_frame(
+        elapsed_ms,
+        last_publish_ms,
+        preview_publish_fps_limit(total_receivers, tracked_receivers, tracked_max_fps),
+    )
 }
 
 fn update_spectrum_from_audio(
