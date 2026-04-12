@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use axum::body::Bytes;
 use turbojpeg::{
     Compressor as TurboJpegCompressor, Image as TurboJpegImage,
     PixelFormat as TurboJpegPixelFormat, Subsamp as TurboJpegSubsamp,
@@ -74,8 +73,9 @@ impl PreviewJpegEncoder {
         frame: &CanvasFrame,
         header: u8,
         brightness: f32,
-    ) -> Result<Bytes> {
-        self.encode_payload(frame, header, brightness).map(Bytes::from)
+    ) -> Result<axum::body::Bytes> {
+        self.encode_payload(frame, header, brightness)
+            .map(axum::body::Bytes::from)
     }
 
     pub(super) fn encode_body(&mut self, frame: &CanvasFrame, brightness: f32) -> Result<Vec<u8>> {
@@ -171,7 +171,7 @@ pub(super) fn encode_canvas_jpeg_binary_stateless(
     frame: &CanvasFrame,
     header: u8,
     brightness: f32,
-) -> Result<Bytes> {
+) -> Result<axum::body::Bytes> {
     let mut encoder = PreviewJpegEncoder::new()?;
     encoder.encode(frame, header, brightness)
 }
