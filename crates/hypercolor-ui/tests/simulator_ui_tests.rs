@@ -3,8 +3,12 @@
 #[path = "../src/components/page_header.rs"]
 pub mod page_header_mod;
 
+#[path = "../src/components/resize_handle.rs"]
+pub mod resize_handle_mod;
+
 mod components {
     pub use super::page_header_mod as page_header;
+    pub use super::resize_handle_mod as resize_handle;
 }
 
 #[path = "../src/api/mod.rs"]
@@ -13,6 +17,8 @@ mod api;
 mod displays;
 #[path = "../src/icons.rs"]
 mod icons;
+#[path = "../src/storage.rs"]
+mod storage;
 #[path = "../src/style_utils.rs"]
 mod style_utils;
 #[path = "../src/toasts.rs"]
