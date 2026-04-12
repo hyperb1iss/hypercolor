@@ -175,6 +175,14 @@ impl ChannelConfig {
             if let Some(format) = canvas.format {
                 self.canvas.format = format;
             }
+            if let Some(width) = canvas.width {
+                validate_range(width, 0, 4096, "config.canvas.width", "expected 0..=4096")?;
+                self.canvas.width = width;
+            }
+            if let Some(height) = canvas.height {
+                validate_range(height, 0, 4096, "config.canvas.height", "expected 0..=4096")?;
+                self.canvas.height = height;
+            }
         }
 
         if let Some(screen_canvas) = patch.screen_canvas {
@@ -184,6 +192,26 @@ impl ChannelConfig {
             }
             if let Some(format) = screen_canvas.format {
                 self.screen_canvas.format = format;
+            }
+            if let Some(width) = screen_canvas.width {
+                validate_range(
+                    width,
+                    0,
+                    4096,
+                    "config.screen_canvas.width",
+                    "expected 0..=4096",
+                )?;
+                self.screen_canvas.width = width;
+            }
+            if let Some(height) = screen_canvas.height {
+                validate_range(
+                    height,
+                    0,
+                    4096,
+                    "config.screen_canvas.height",
+                    "expected 0..=4096",
+                )?;
+                self.screen_canvas.height = height;
             }
         }
 
@@ -314,6 +342,8 @@ impl Default for SpectrumConfig {
 pub(super) struct CanvasConfig {
     pub(super) fps: u32,
     pub(super) format: CanvasFormat,
+    pub(super) width: u32,
+    pub(super) height: u32,
 }
 
 impl Default for CanvasConfig {
@@ -321,6 +351,8 @@ impl Default for CanvasConfig {
         Self {
             fps: 15,
             format: CanvasFormat::Rgb,
+            width: 0,
+            height: 0,
         }
     }
 }
@@ -411,6 +443,10 @@ pub(super) struct CanvasConfigPatch {
     pub(super) fps: Option<u32>,
     #[serde(default)]
     pub(super) format: Option<CanvasFormat>,
+    #[serde(default)]
+    pub(super) width: Option<u32>,
+    #[serde(default)]
+    pub(super) height: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]

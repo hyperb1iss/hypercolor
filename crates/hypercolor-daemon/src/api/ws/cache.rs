@@ -20,7 +20,9 @@ use hypercolor_types::canvas::{
     PublishedSurfaceStorageIdentity, linear_to_srgb_u8, srgb_u8_to_linear,
 };
 
-use super::preview_encode::{PreviewJpegEncoder, encode_canvas_jpeg_payload_stateless};
+use super::preview_encode::{
+    PreviewJpegEncoder, encode_canvas_jpeg_payload_scaled_stateless,
+};
 use super::protocol::{ActiveFramesConfig, CanvasFormat, FrameFormat, FrameZoneSelection};
 use crate::api::AppState;
 
@@ -163,6 +165,8 @@ struct CanvasJpegBodyCacheKey {
     storage: PublishedSurfaceStorageIdentity,
     width: u32,
     height: u32,
+    output_width: u32,
+    output_height: u32,
     brightness_bits: u32,
 }
 
@@ -172,8 +176,16 @@ struct CanvasRawBodyCacheKey {
     storage: PublishedSurfaceStorageIdentity,
     width: u32,
     height: u32,
+    output_width: u32,
+    output_height: u32,
     format_tag: u8,
     brightness_bits: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct CanvasOutputSize {
+    width: u32,
+    height: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -483,12 +495,13 @@ pub(super) fn cached_spectrum_payload(
     payload
 }
 
+#[cfg(test)]
 pub(super) fn encode_canvas_preview_binary(
     canvas: &hypercolor_core::bus::CanvasFrame,
     format: CanvasFormat,
     brightness: f32,
 ) -> Vec<u8> {
-    encode_canvas_binary_with_header_and_brightness(canvas, format, WS_CANVAS_HEADER, brightness)
+    encode_canvas_binary_with_header_and_brightness(canvas, format, WS_CANVAS_HEADER, brightness, 0, 0)
 }
 
 #[cfg(test)]
@@ -497,53 +510,105 @@ pub(super) fn encode_cached_canvas_preview_binary(
     format: CanvasFormat,
     brightness: f32,
 ) -> Bytes {
-    try_encode_cached_canvas_preview_binary(canvas, format, brightness).unwrap_or_default()
+    try_encode_cached_canvas_preview_binary(canvas, format, brightness, 0, 0).unwrap_or_default()
 }
 
 pub(super) fn try_encode_cached_canvas_preview_binary(
     canvas: &hypercolor_core::bus::CanvasFrame,
     format: CanvasFormat,
     brightness: f32,
+    requested_width: u32,
+    requested_height: u32,
 ) -> Option<Bytes> {
+    let output_size =
+        resolve_canvas_output_size(canvas.width, canvas.height, requested_width, requested_height);
     if format == CanvasFormat::Jpeg {
-        return try_encode_cached_canvas_jpeg_binary(canvas, WS_CANVAS_HEADER, brightness);
+        return try_encode_cached_canvas_jpeg_binary(
+            canvas,
+            WS_CANVAS_HEADER,
+            brightness,
+            output_size,
+        );
     }
 
     if let Some(payload) =
-        try_encode_cached_canvas_binary_from_body(canvas, format, WS_CANVAS_HEADER, brightness)
+        try_encode_cached_canvas_binary_from_body(
+            canvas,
+            format,
+            WS_CANVAS_HEADER,
+            brightness,
+            output_size,
+        )
     {
         return Some(payload);
     }
 
-    cached_canvas_binary(canvas, format, WS_CANVAS_HEADER, brightness, || {
-        Bytes::from(encode_canvas_preview_binary(canvas, format, brightness))
-    })
+    cached_canvas_binary(
+        canvas,
+        format,
+        WS_CANVAS_HEADER,
+        brightness,
+        output_size,
+        || {
+            Bytes::from(encode_canvas_binary_with_header_and_brightness(
+                canvas,
+                format,
+                WS_CANVAS_HEADER,
+                brightness,
+                output_size.width,
+                output_size.height,
+            ))
+        },
+    )
     .into()
 }
 
+#[cfg(test)]
 pub(super) fn encode_canvas_binary_with_header(
     canvas: &hypercolor_core::bus::CanvasFrame,
     format: CanvasFormat,
     header: u8,
 ) -> Vec<u8> {
-    encode_canvas_binary_with_header_and_brightness(canvas, format, header, 1.0)
+    encode_canvas_binary_with_header_and_brightness(canvas, format, header, 1.0, 0, 0)
 }
 
+#[cfg(test)]
 pub(super) fn try_encode_cached_canvas_binary_with_header(
     canvas: &hypercolor_core::bus::CanvasFrame,
     format: CanvasFormat,
     header: u8,
 ) -> Option<Bytes> {
+    try_encode_cached_canvas_binary_with_header_scaled(canvas, format, header, 0, 0)
+}
+
+pub(super) fn try_encode_cached_canvas_binary_with_header_scaled(
+    canvas: &hypercolor_core::bus::CanvasFrame,
+    format: CanvasFormat,
+    header: u8,
+    requested_width: u32,
+    requested_height: u32,
+) -> Option<Bytes> {
+    let output_size =
+        resolve_canvas_output_size(canvas.width, canvas.height, requested_width, requested_height);
     if format == CanvasFormat::Jpeg {
-        return try_encode_cached_canvas_jpeg_binary(canvas, header, 1.0);
+        return try_encode_cached_canvas_jpeg_binary(canvas, header, 1.0, output_size);
     }
 
-    if let Some(payload) = try_encode_cached_canvas_binary_from_body(canvas, format, header, 1.0) {
+    if let Some(payload) =
+        try_encode_cached_canvas_binary_from_body(canvas, format, header, 1.0, output_size)
+    {
         return Some(payload);
     }
 
-    cached_canvas_binary(canvas, format, header, 1.0, || {
-        Bytes::from(encode_canvas_binary_with_header(canvas, format, header))
+    cached_canvas_binary(canvas, format, header, 1.0, output_size, || {
+        Bytes::from(encode_canvas_binary_with_header_and_brightness(
+            canvas,
+            format,
+            header,
+            1.0,
+            output_size.width,
+            output_size.height,
+        ))
     })
     .into()
 }
@@ -553,29 +618,47 @@ fn encode_canvas_binary_with_header_and_brightness(
     format: CanvasFormat,
     header: u8,
     brightness: f32,
+    requested_width: u32,
+    requested_height: u32,
 ) -> Vec<u8> {
+    let output_size =
+        resolve_canvas_output_size(canvas.width, canvas.height, requested_width, requested_height);
     if format == CanvasFormat::Jpeg {
-        return encode_canvas_jpeg_payload_stateless(canvas, header, brightness).unwrap_or_default();
+        return encode_canvas_jpeg_payload_scaled_stateless(
+            canvas,
+            header,
+            brightness,
+            output_size.width,
+            output_size.height,
+        )
+        .unwrap_or_default();
     }
-    if format == CanvasFormat::Rgba && brightness.clamp(0.0, 1.0) >= 0.999 {
-        return build_canvas_rgba_payload_from_source(canvas, header);
+    if format == CanvasFormat::Rgba
+        && brightness.clamp(0.0, 1.0) >= 0.999
+        && output_size.width == canvas.width
+        && output_size.height == canvas.height
+    {
+        return build_canvas_rgba_payload_from_source(canvas, header, output_size);
     }
 
-    let body = encode_canvas_body(canvas, format, brightness);
-    build_canvas_binary_payload(canvas, header, format, &body)
+    let body = encode_canvas_body(canvas, format, brightness, output_size);
+    build_canvas_binary_payload(canvas, header, format, &body, output_size)
 }
 
 fn encode_canvas_body(
     canvas: &hypercolor_core::bus::CanvasFrame,
     format: CanvasFormat,
     brightness: f32,
+    output_size: CanvasOutputSize,
 ) -> Vec<u8> {
     let brightness = brightness.clamp(0.0, 1.0);
-    let width_u16 = u16::try_from(canvas.width).unwrap_or(u16::MAX);
-    let height_u16 = u16::try_from(canvas.height).unwrap_or(u16::MAX);
+    let width_u16 = u16::try_from(output_size.width).unwrap_or(u16::MAX);
+    let height_u16 = u16::try_from(output_size.height).unwrap_or(u16::MAX);
     let width = usize::from(width_u16);
     let height = usize::from(height_u16);
     let px_count = width.saturating_mul(height);
+    let source_width = usize::try_from(canvas.width).unwrap_or(0);
+    let source_height = usize::try_from(canvas.height).unwrap_or(0);
 
     let bpp = match format {
         CanvasFormat::Rgb => 3_usize,
@@ -589,7 +672,10 @@ fn encode_canvas_body(
     let scale_lut = (brightness < 0.999).then(|| preview_scale_lut(brightness));
     match format {
         CanvasFormat::Rgb => {
-            if brightness >= 0.999 {
+            if brightness >= 0.999
+                && output_size.width == canvas.width
+                && output_size.height == canvas.height
+            {
                 for (pixel, out) in rgba
                     .chunks_exact(4)
                     .take(px_count)
@@ -598,36 +684,65 @@ fn encode_canvas_body(
                     out.copy_from_slice(&pixel[..3]);
                 }
             } else {
-                let scale_lut = scale_lut
-                    .as_ref()
-                    .expect("dimmed preview path should precompute scale table");
-                for (pixel, out) in rgba
-                    .chunks_exact(4)
-                    .take(px_count)
-                    .zip(body.chunks_exact_mut(3))
-                {
-                    out[0] = scale_lut[usize::from(pixel[0])];
-                    out[1] = scale_lut[usize::from(pixel[1])];
-                    out[2] = scale_lut[usize::from(pixel[2])];
+                for y in 0..height {
+                    let source_y = y
+                        .saturating_mul(source_height)
+                        .checked_div(height.max(1))
+                        .unwrap_or(0);
+                    for x in 0..width {
+                        let source_x = x
+                            .saturating_mul(source_width)
+                            .checked_div(width.max(1))
+                            .unwrap_or(0);
+                        let source_offset = source_y
+                            .saturating_mul(source_width)
+                            .saturating_add(source_x)
+                            .saturating_mul(4);
+                        let out_offset = y.saturating_mul(width).saturating_add(x).saturating_mul(3);
+                        let pixel = &rgba[source_offset..source_offset + 4];
+                        if let Some(scale_lut) = scale_lut.as_ref() {
+                            body[out_offset] = scale_lut[usize::from(pixel[0])];
+                            body[out_offset + 1] = scale_lut[usize::from(pixel[1])];
+                            body[out_offset + 2] = scale_lut[usize::from(pixel[2])];
+                        } else {
+                            body[out_offset..out_offset + 3].copy_from_slice(&pixel[..3]);
+                        }
+                    }
                 }
             }
         }
         CanvasFormat::Rgba => {
-            if brightness >= 0.999 {
+            if brightness >= 0.999
+                && output_size.width == canvas.width
+                && output_size.height == canvas.height
+            {
                 body.copy_from_slice(&rgba[..payload_len]);
             } else {
-                let scale_lut = scale_lut
-                    .as_ref()
-                    .expect("dimmed preview path should precompute scale table");
-                for (pixel, out) in rgba
-                    .chunks_exact(4)
-                    .take(px_count)
-                    .zip(body.chunks_exact_mut(4))
-                {
-                    out[0] = scale_lut[usize::from(pixel[0])];
-                    out[1] = scale_lut[usize::from(pixel[1])];
-                    out[2] = scale_lut[usize::from(pixel[2])];
-                    out[3] = pixel[3];
+                for y in 0..height {
+                    let source_y = y
+                        .saturating_mul(source_height)
+                        .checked_div(height.max(1))
+                        .unwrap_or(0);
+                    for x in 0..width {
+                        let source_x = x
+                            .saturating_mul(source_width)
+                            .checked_div(width.max(1))
+                            .unwrap_or(0);
+                        let source_offset = source_y
+                            .saturating_mul(source_width)
+                            .saturating_add(source_x)
+                            .saturating_mul(4);
+                        let out_offset = y.saturating_mul(width).saturating_add(x).saturating_mul(4);
+                        let pixel = &rgba[source_offset..source_offset + 4];
+                        if let Some(scale_lut) = scale_lut.as_ref() {
+                            body[out_offset] = scale_lut[usize::from(pixel[0])];
+                            body[out_offset + 1] = scale_lut[usize::from(pixel[1])];
+                            body[out_offset + 2] = scale_lut[usize::from(pixel[2])];
+                            body[out_offset + 3] = pixel[3];
+                        } else {
+                            body[out_offset..out_offset + 4].copy_from_slice(pixel);
+                        }
+                    }
                 }
             }
         }
@@ -643,11 +758,12 @@ fn build_canvas_binary_payload(
     header: u8,
     format: CanvasFormat,
     body: &[u8],
+    output_size: CanvasOutputSize,
 ) -> Vec<u8> {
     const CANVAS_HEADER_LEN: usize = 14;
 
-    let width_u16 = u16::try_from(canvas.width).unwrap_or(u16::MAX);
-    let height_u16 = u16::try_from(canvas.height).unwrap_or(u16::MAX);
+    let width_u16 = u16::try_from(output_size.width).unwrap_or(u16::MAX);
+    let height_u16 = u16::try_from(output_size.height).unwrap_or(u16::MAX);
     let mut payload = vec![0; CANVAS_HEADER_LEN.saturating_add(body.len())];
     write_canvas_payload_header(
         &mut payload[..CANVAS_HEADER_LEN],
@@ -664,12 +780,13 @@ fn build_canvas_binary_payload(
 fn build_canvas_rgba_payload_from_source(
     canvas: &hypercolor_core::bus::CanvasFrame,
     header: u8,
+    output_size: CanvasOutputSize,
 ) -> Vec<u8> {
     const CANVAS_HEADER_LEN: usize = 14;
 
     let rgba = canvas.rgba_bytes();
-    let width_u16 = u16::try_from(canvas.width).unwrap_or(u16::MAX);
-    let height_u16 = u16::try_from(canvas.height).unwrap_or(u16::MAX);
+    let width_u16 = u16::try_from(output_size.width).unwrap_or(u16::MAX);
+    let height_u16 = u16::try_from(output_size.height).unwrap_or(u16::MAX);
     let payload_len = CANVAS_HEADER_LEN.saturating_add(rgba.len());
     let mut payload = vec![0; payload_len];
     write_canvas_payload_header(
@@ -689,6 +806,7 @@ fn try_encode_cached_canvas_binary_from_body(
     format: CanvasFormat,
     header: u8,
     brightness: f32,
+    output_size: CanvasOutputSize,
 ) -> Option<Bytes> {
     let brightness = brightness.clamp(0.0, 1.0);
     if !should_cache_canvas_raw_body(format, brightness) {
@@ -699,8 +817,8 @@ fn try_encode_cached_canvas_binary_from_body(
         generation: canvas.surface().generation(),
         frame_number: canvas.frame_number,
         timestamp_ms: canvas.timestamp_ms,
-        width: canvas.width,
-        height: canvas.height,
+        width: output_size.width,
+        height: output_size.height,
         header,
         format_tag: canvas_format_tag(format),
         brightness_bits: brightness.to_bits(),
@@ -710,12 +828,13 @@ fn try_encode_cached_canvas_binary_from_body(
         return Some(cached);
     }
 
-    let body = cached_canvas_raw_body(canvas, format, brightness)?;
+    let body = cached_canvas_raw_body(canvas, format, brightness, output_size)?;
     let payload = Bytes::from(build_canvas_binary_payload(
         canvas,
         header,
         format,
         body.as_ref(),
+        output_size,
     ));
     WS_CANVAS_PAYLOAD_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
     canvas_binary_cache_put(key, payload.clone());
@@ -726,14 +845,15 @@ fn try_encode_cached_canvas_jpeg_binary(
     canvas: &hypercolor_core::bus::CanvasFrame,
     header: u8,
     brightness: f32,
+    output_size: CanvasOutputSize,
 ) -> Option<Bytes> {
     let brightness = brightness.clamp(0.0, 1.0);
     let key = CanvasBinaryCacheKey {
         generation: canvas.surface().generation(),
         frame_number: canvas.frame_number,
         timestamp_ms: canvas.timestamp_ms,
-        width: canvas.width,
-        height: canvas.height,
+        width: output_size.width,
+        height: output_size.height,
         header,
         format_tag: canvas_format_tag(CanvasFormat::Jpeg),
         brightness_bits: brightness.to_bits(),
@@ -743,11 +863,12 @@ fn try_encode_cached_canvas_jpeg_binary(
         return Some(cached);
     }
 
-    let jpeg_body = cached_canvas_jpeg_body(canvas, brightness)?;
+    let jpeg_body = cached_canvas_jpeg_body(canvas, brightness, output_size)?;
     let payload = Bytes::from(build_canvas_jpeg_payload(
         canvas,
         header,
         jpeg_body.as_ref(),
+        output_size,
     ));
     WS_CANVAS_PAYLOAD_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
     canvas_binary_cache_put(key, payload.clone());
@@ -757,6 +878,7 @@ fn try_encode_cached_canvas_jpeg_binary(
 fn cached_canvas_jpeg_body(
     canvas: &hypercolor_core::bus::CanvasFrame,
     brightness: f32,
+    output_size: CanvasOutputSize,
 ) -> Option<Bytes> {
     let brightness = brightness.clamp(0.0, 1.0);
     let key = CanvasJpegBodyCacheKey {
@@ -764,6 +886,8 @@ fn cached_canvas_jpeg_body(
         storage: canvas.surface().storage_identity(),
         width: canvas.width,
         height: canvas.height,
+        output_width: output_size.width,
+        output_height: output_size.height,
         brightness_bits: brightness.to_bits(),
     };
     if let Some(cached) = canvas_jpeg_body_cache_get(key) {
@@ -772,7 +896,8 @@ fn cached_canvas_jpeg_body(
     }
 
     let shard_index = cache_shard_index(&key);
-    let jpeg_body = try_encode_canvas_jpeg_body_shared(canvas, brightness, shard_index)?;
+    let jpeg_body =
+        try_encode_canvas_jpeg_body_shared(canvas, brightness, output_size, shard_index)?;
     WS_CANVAS_JPEG_BODY_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
     canvas_jpeg_body_cache_put(key, jpeg_body.clone());
     Some(jpeg_body)
@@ -782,6 +907,7 @@ fn cached_canvas_raw_body(
     canvas: &hypercolor_core::bus::CanvasFrame,
     format: CanvasFormat,
     brightness: f32,
+    output_size: CanvasOutputSize,
 ) -> Option<Bytes> {
     let brightness = brightness.clamp(0.0, 1.0);
     let key = CanvasRawBodyCacheKey {
@@ -789,6 +915,8 @@ fn cached_canvas_raw_body(
         storage: canvas.surface().storage_identity(),
         width: canvas.width,
         height: canvas.height,
+        output_width: output_size.width,
+        output_height: output_size.height,
         format_tag: canvas_format_tag(format),
         brightness_bits: brightness.to_bits(),
     };
@@ -797,7 +925,7 @@ fn cached_canvas_raw_body(
         return Some(cached);
     }
 
-    let body = Bytes::from(encode_canvas_body(canvas, format, brightness));
+    let body = Bytes::from(encode_canvas_body(canvas, format, brightness, output_size));
     WS_CANVAS_RAW_BODY_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
     canvas_raw_body_cache_put(key, body.clone());
     Some(body)
@@ -806,6 +934,7 @@ fn cached_canvas_raw_body(
 fn try_encode_canvas_jpeg_body_shared(
     canvas: &hypercolor_core::bus::CanvasFrame,
     brightness: f32,
+    output_size: CanvasOutputSize,
     shard_index: usize,
 ) -> Option<Bytes> {
     let mut encoder = WS_PREVIEW_JPEG_ENCODERS[shard_index]
@@ -813,13 +942,15 @@ fn try_encode_canvas_jpeg_body_shared(
         .unwrap_or_else(PoisonError::into_inner);
     match &mut *encoder {
         PreviewJpegEncoderState::Ready(encoder) => encoder
-            .encode_body(canvas, brightness)
+            .encode_scaled_body(canvas, brightness, output_size.width, output_size.height)
             .ok()
             .map(Bytes::from),
         PreviewJpegEncoderState::Failed => None,
         PreviewJpegEncoderState::Uninitialized => match PreviewJpegEncoder::new() {
             Ok(mut fresh) => {
-                let payload = fresh.encode_body(canvas, brightness).ok()?;
+                let payload = fresh
+                    .encode_scaled_body(canvas, brightness, output_size.width, output_size.height)
+                    .ok()?;
                 *encoder = PreviewJpegEncoderState::Ready(fresh);
                 Some(Bytes::from(payload))
             }
@@ -836,11 +967,12 @@ fn build_canvas_jpeg_payload(
     canvas: &hypercolor_core::bus::CanvasFrame,
     header: u8,
     jpeg_body: &[u8],
+    output_size: CanvasOutputSize,
 ) -> Vec<u8> {
     const CANVAS_HEADER_LEN: usize = 14;
 
-    let width_u16 = u16::try_from(canvas.width).unwrap_or(u16::MAX);
-    let height_u16 = u16::try_from(canvas.height).unwrap_or(u16::MAX);
+    let width_u16 = u16::try_from(output_size.width).unwrap_or(u16::MAX);
+    let height_u16 = u16::try_from(output_size.height).unwrap_or(u16::MAX);
     let mut payload = vec![0; CANVAS_HEADER_LEN.saturating_add(jpeg_body.len())];
     write_canvas_payload_header(
         &mut payload[..CANVAS_HEADER_LEN],
@@ -952,6 +1084,7 @@ fn cached_canvas_binary<F>(
     format: CanvasFormat,
     header: u8,
     brightness: f32,
+    output_size: CanvasOutputSize,
     encode: F,
 ) -> Bytes
 where
@@ -961,8 +1094,8 @@ where
         generation: canvas.surface().generation(),
         frame_number: canvas.frame_number,
         timestamp_ms: canvas.timestamp_ms,
-        width: canvas.width,
-        height: canvas.height,
+        width: output_size.width,
+        height: output_size.height,
         header,
         format_tag: canvas_format_tag(format),
         brightness_bits: brightness.to_bits(),
@@ -1126,6 +1259,52 @@ const fn canvas_format_tag(format: CanvasFormat) -> u8 {
 
 fn should_cache_canvas_raw_body(format: CanvasFormat, brightness: f32) -> bool {
     matches!(format, CanvasFormat::Rgb) || brightness < 0.999
+}
+
+fn resolve_canvas_output_size(
+    source_width: u32,
+    source_height: u32,
+    requested_width: u32,
+    requested_height: u32,
+) -> CanvasOutputSize {
+    if source_width == 0 || source_height == 0 {
+        return CanvasOutputSize {
+            width: source_width,
+            height: source_height,
+        };
+    }
+    if requested_width == 0 && requested_height == 0 {
+        return CanvasOutputSize {
+            width: source_width,
+            height: source_height,
+        };
+    }
+    if requested_width == 0 {
+        let height = requested_height.max(1);
+        let width = u32::try_from(
+            (u64::from(source_width) * u64::from(height))
+                .checked_div(u64::from(source_height))
+                .unwrap_or(1),
+        )
+        .unwrap_or(u32::MAX)
+        .max(1);
+        return CanvasOutputSize { width, height };
+    }
+    if requested_height == 0 {
+        let width = requested_width.max(1);
+        let height = u32::try_from(
+            (u64::from(source_height) * u64::from(width))
+                .checked_div(u64::from(source_width))
+                .unwrap_or(1),
+        )
+        .unwrap_or(u32::MAX)
+        .max(1);
+        return CanvasOutputSize { width, height };
+    }
+    CanvasOutputSize {
+        width: requested_width.max(1),
+        height: requested_height.max(1),
+    }
 }
 
 fn sanitize_f32(value: f32) -> f32 {

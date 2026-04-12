@@ -26,7 +26,10 @@ use super::cache::{
 use super::command::{
     command_response_from_http, dispatch_command, normalize_command_path, parse_command_method,
 };
-use super::preview_encode::{PreviewJpegEncoder, encode_canvas_jpeg_binary_stateless};
+use super::preview_encode::{
+    PreviewJpegEncoder, encode_canvas_jpeg_binary_stateless,
+    encode_canvas_jpeg_payload_scaled_stateless,
+};
 use super::protocol::{
     ActiveFramesConfig, CanvasFormat, ChannelConfig, ChannelConfigPatch, ChannelSet, FrameFormat,
     FrameZoneSelection, FramesConfig, ServerMessage, SubscriptionState, WsChannel,
@@ -359,8 +362,8 @@ fn channel_config_apply_patch_supports_all_channels() {
     let patch: ChannelConfigPatch = serde_json::from_value(serde_json::json!({
         "frames": {"fps": 30, "format": "binary"},
         "spectrum": {"fps": 20, "bins": 32},
-        "canvas": {"fps": 60, "format": "jpeg"},
-        "screen_canvas": {"fps": 24, "format": "jpeg"},
+        "canvas": {"fps": 60, "format": "jpeg", "width": 320, "height": 0},
+        "screen_canvas": {"fps": 24, "format": "jpeg", "width": 480, "height": 270},
         "metrics": {"interval_ms": 500}
     }))
     .expect("valid json patch");
@@ -372,8 +375,12 @@ fn channel_config_apply_patch_supports_all_channels() {
     let json = serde_json::to_value(config).expect("config serializes");
     assert_eq!(json["canvas"]["fps"], 60);
     assert_eq!(json["canvas"]["format"], "jpeg");
+    assert_eq!(json["canvas"]["width"], 320);
+    assert_eq!(json["canvas"]["height"], 0);
     assert_eq!(json["screen_canvas"]["fps"], 24);
     assert_eq!(json["screen_canvas"]["format"], "jpeg");
+    assert_eq!(json["screen_canvas"]["width"], 480);
+    assert_eq!(json["screen_canvas"]["height"], 270);
     assert_eq!(json["metrics"]["interval_ms"], 500);
 }
 
@@ -386,7 +393,11 @@ fn channel_config_defaults_are_stable() {
     assert_eq!(json["frames"]["format"], "binary");
     assert_eq!(json["spectrum"]["bins"], 64);
     assert_eq!(json["canvas"]["fps"], 15);
+    assert_eq!(json["canvas"]["width"], 0);
+    assert_eq!(json["canvas"]["height"], 0);
     assert_eq!(json["screen_canvas"]["fps"], 15);
+    assert_eq!(json["screen_canvas"]["width"], 0);
+    assert_eq!(json["screen_canvas"]["height"], 0);
     assert_eq!(json["metrics"]["interval_ms"], 1000);
 }
 
@@ -1021,6 +1032,29 @@ fn canvas_binary_encoder_writes_jpeg_payload() {
 }
 
 #[test]
+fn canvas_binary_encoder_scales_rgb_payload_and_updates_header() {
+    let mut canvas = Canvas::new(2, 2);
+    canvas.set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
+    canvas.set_pixel(1, 0, Rgba::new(40, 50, 60, 255));
+    canvas.set_pixel(0, 1, Rgba::new(70, 80, 90, 255));
+    canvas.set_pixel(1, 1, Rgba::new(100, 110, 120, 255));
+    let frame = CanvasFrame::from_canvas(&canvas, 7, 99);
+
+    let encoded = super::cache::try_encode_cached_canvas_binary_with_header_scaled(
+        &frame,
+        CanvasFormat::Rgb,
+        WS_CANVAS_HEADER,
+        1,
+        0,
+    )
+    .expect("scaled preview payload should encode");
+
+    assert_eq!(u16::from_le_bytes([encoded[9], encoded[10]]), 1);
+    assert_eq!(u16::from_le_bytes([encoded[11], encoded[12]]), 1);
+    assert_eq!(&encoded[14..17], &[10, 20, 30]);
+}
+
+#[test]
 fn canvas_preview_binary_applies_brightness_without_mutating_source() {
     let mut canvas = Canvas::new(1, 1);
     canvas.set_pixel(0, 0, Rgba::new(255, 128, 0, 200));
@@ -1061,6 +1095,23 @@ fn canvas_preview_jpeg_binary_keys_brightness_separately() {
         .expect("dimmed JPEG preview encoding should succeed");
 
     assert_ne!(full, dimmed);
+}
+
+#[test]
+fn canvas_preview_jpeg_binary_scales_header_dimensions() {
+    let mut canvas = Canvas::new(2, 2);
+    canvas.set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
+    canvas.set_pixel(1, 0, Rgba::new(40, 50, 60, 255));
+    canvas.set_pixel(0, 1, Rgba::new(70, 80, 90, 255));
+    canvas.set_pixel(1, 1, Rgba::new(100, 110, 120, 255));
+    let frame = CanvasFrame::from_canvas(&canvas, 7, 99);
+
+    let encoded = encode_canvas_jpeg_payload_scaled_stateless(&frame, WS_CANVAS_HEADER, 1.0, 1, 0)
+        .expect("scaled JPEG preview encoding should succeed");
+
+    assert_eq!(u16::from_le_bytes([encoded[9], encoded[10]]), 1);
+    assert_eq!(u16::from_le_bytes([encoded[11], encoded[12]]), 1);
+    assert_eq!(encoded[13], 2);
 }
 
 #[test]
@@ -1216,6 +1267,30 @@ fn cached_canvas_preview_binary_keys_brightness_separately() {
     let dimmed = encode_cached_canvas_preview_binary(&frame, CanvasFormat::Rgba, 0.5);
 
     assert_ne!(full, dimmed);
+}
+
+#[test]
+fn cached_canvas_preview_binary_keys_dimensions_separately() {
+    let _guard = WS_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    reset_ws_payload_caches();
+
+    let mut canvas = Canvas::new(2, 2);
+    canvas.set_pixel(0, 0, Rgba::new(255, 128, 0, 200));
+    canvas.set_pixel(1, 0, Rgba::new(128, 255, 0, 200));
+    canvas.set_pixel(0, 1, Rgba::new(0, 128, 255, 200));
+    canvas.set_pixel(1, 1, Rgba::new(64, 64, 64, 200));
+    let frame = CanvasFrame::from_canvas(&canvas, 7002, 9902);
+
+    let full =
+        super::cache::try_encode_cached_canvas_preview_binary(&frame, CanvasFormat::Rgba, 1.0, 0, 0)
+            .expect("full-size cached preview should encode");
+    let scaled =
+        super::cache::try_encode_cached_canvas_preview_binary(&frame, CanvasFormat::Rgba, 1.0, 1, 0)
+            .expect("scaled cached preview should encode");
+
+    assert_ne!(full, scaled);
 }
 
 #[test]

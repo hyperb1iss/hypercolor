@@ -21,7 +21,7 @@ use super::cache::{
     FrameRelayMessage, WS_CANVAS_BYTES_PER_PIXEL_RGBA, WS_CANVAS_PAYLOAD_BUILD_COUNT,
     WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT, WS_CLIENT_COUNT, WS_FRAME_PAYLOAD_BUILD_COUNT,
     WS_FRAME_PAYLOAD_CACHE_HIT_COUNT, WS_SCREEN_CANVAS_HEADER, WS_TOTAL_BYTES_SENT,
-    cached_frame_payload, cached_spectrum_payload, try_encode_cached_canvas_binary_with_header,
+    cached_frame_payload, cached_spectrum_payload, try_encode_cached_canvas_binary_with_header_scaled,
     try_encode_cached_canvas_preview_binary,
 };
 use super::protocol::{
@@ -338,6 +338,8 @@ pub(super) async fn relay_canvas(
                     &latest_canvas,
                     canvas_config.format,
                     brightness,
+                    canvas_config.width,
+                    canvas_config.height,
                 );
 
                 let Some(payload) = payload else {
@@ -438,10 +440,12 @@ pub(super) async fn relay_screen_canvas(
                     continue;
                 }
 
-                let payload = try_encode_cached_canvas_binary_with_header(
+                let payload = try_encode_cached_canvas_binary_with_header_scaled(
                     &latest_canvas,
                     canvas_config.format,
                     WS_SCREEN_CANVAS_HEADER,
+                    canvas_config.width,
+                    canvas_config.height,
                 );
 
                 let Some(payload) = payload else {

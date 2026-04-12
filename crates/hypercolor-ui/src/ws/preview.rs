@@ -7,6 +7,7 @@ use super::messages::CanvasFrame;
 pub const DEFAULT_PREVIEW_FPS_CAP: u32 = 30;
 pub(super) const HIDDEN_TAB_PREVIEW_FPS_CAP: u32 = 6;
 pub(super) const SCREEN_PREVIEW_FPS_CAP: u32 = 15;
+const REMOTE_PREVIEW_WIDTH: u32 = 320;
 
 pub(super) fn desired_preview_fps(
     engine_target_fps: u32,
@@ -33,6 +34,18 @@ pub(super) fn preview_canvas_format() -> &'static str {
     }
 }
 
+fn preview_canvas_request_dimensions() -> (u32, u32) {
+    let hostname = web_sys::window()
+        .map(|window| window.location())
+        .and_then(|location| location.hostname().ok())
+        .unwrap_or_default();
+
+    match hostname.as_str() {
+        "localhost" | "127.0.0.1" | "::1" => (0, 0),
+        _ => (REMOTE_PREVIEW_WIDTH, 0),
+    }
+}
+
 pub(super) fn request_preview_subscription(
     ws: &web_sys::WebSocket,
     requested_preview_fps: StoredValue<u32>,
@@ -48,12 +61,18 @@ pub(super) fn request_preview_subscription(
 
     requested_preview_fps.set_value(desired_fps);
     set_preview_target_fps.set(desired_fps);
+    let (preview_width, preview_height) = preview_canvas_request_dimensions();
 
     let subscribe_msg = serde_json::json!({
         "type": "subscribe",
         "channels": ["canvas"],
         "config": {
-            "canvas": { "fps": desired_fps, "format": preview_canvas_format() }
+            "canvas": {
+                "fps": desired_fps,
+                "format": preview_canvas_format(),
+                "width": preview_width,
+                "height": preview_height
+            }
         }
     });
     let _ = ws.send_with_str(&subscribe_msg.to_string());
@@ -71,12 +90,18 @@ pub(super) fn request_screen_preview_subscription(
     }
 
     requested_preview_fps.set_value(desired_fps);
+    let (preview_width, preview_height) = preview_canvas_request_dimensions();
 
     let subscribe_msg = serde_json::json!({
         "type": "subscribe",
         "channels": ["screen_canvas"],
         "config": {
-            "screen_canvas": { "fps": desired_fps, "format": preview_canvas_format() }
+            "screen_canvas": {
+                "fps": desired_fps,
+                "format": preview_canvas_format(),
+                "width": preview_width,
+                "height": preview_height
+            }
         }
     });
     let _ = ws.send_with_str(&subscribe_msg.to_string());
