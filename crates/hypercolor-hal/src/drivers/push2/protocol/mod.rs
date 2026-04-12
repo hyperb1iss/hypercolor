@@ -4,7 +4,7 @@ mod display;
 mod led_palette;
 
 use std::borrow::Cow;
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 
 use hypercolor_types::device::{
@@ -108,6 +108,7 @@ impl Default for Push2State {
 /// Palette-indexed Push 2 protocol implementation.
 pub struct Push2Protocol {
     state: RwLock<Push2State>,
+    display_encoder: Mutex<display::Push2DisplayEncoder>,
 }
 
 impl Push2Protocol {
@@ -116,6 +117,7 @@ impl Push2Protocol {
     pub fn new() -> Self {
         Self {
             state: RwLock::new(Push2State::default()),
+            display_encoder: Mutex::new(display::Push2DisplayEncoder::default()),
         }
     }
 
@@ -308,7 +310,10 @@ impl Protocol for Push2Protocol {
         jpeg_data: &[u8],
         commands: &mut Vec<ProtocolCommand>,
     ) -> Option<()> {
-        display::encode_display_frame_from_jpeg(jpeg_data, commands)
+        self.display_encoder
+            .lock()
+            .expect("Push 2 display encoder lock should not be poisoned")
+            .encode_display_frame_from_jpeg(jpeg_data, commands)
     }
 
     fn zones(&self) -> Vec<ProtocolZone> {

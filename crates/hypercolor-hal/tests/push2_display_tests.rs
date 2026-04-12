@@ -425,6 +425,26 @@ fn same_input_produces_identical_output() {
     }
 }
 
+#[test]
+fn changed_input_invalidates_display_frame_cache() {
+    let protocol = Push2Protocol::new();
+    let red = make_960x160_jpeg([255, 0, 0]);
+    let blue = make_960x160_jpeg([0, 0, 248]);
+
+    let first = protocol
+        .encode_display_frame(&red)
+        .expect("first encode should succeed");
+    let second = protocol
+        .encode_display_frame(&blue)
+        .expect("second encode should succeed");
+
+    assert_ne!(
+        &first[1].data[..8],
+        &second[1].data[..8],
+        "changing the JPEG payload should invalidate the cached Push 2 display frame"
+    );
+}
+
 // --- build_push2_protocol factory ---
 
 #[test]

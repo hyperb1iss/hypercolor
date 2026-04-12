@@ -7,6 +7,10 @@
 use std::time::Duration;
 
 use image::{ImageFormat, imageops::FilterType};
+use turbojpeg::{
+    Decompressor as TurboJpegDecompressor, Image as TurboJpegImage,
+    PixelFormat as TurboJpegPixelFormat,
+};
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{CommandBuffer, ProtocolCommand, TransferType};
@@ -45,19 +49,96 @@ const _: () = assert!(
     "Push2DisplayLine must be exactly 2048 bytes"
 );
 
-pub(super) fn encode_display_frame_from_jpeg(
+#[derive(Default)]
+pub(super) struct Push2DisplayEncoder {
+    cached_jpeg: Vec<u8>,
+    cached_commands: Vec<ProtocolCommand>,
+    rgb_buffer: Vec<u8>,
+    turbojpeg: Option<TurboJpegDecompressor>,
+}
+
+impl Push2DisplayEncoder {
+    pub(super) fn encode_display_frame_from_jpeg(
+        &mut self,
+        jpeg_data: &[u8],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> Option<()> {
+        if !self.cached_commands.is_empty() && self.cached_jpeg == jpeg_data {
+            commands.clone_from(&self.cached_commands);
+            return Some(());
+        }
+
+        encode_display_frame_uncached(
+            jpeg_data,
+            commands,
+            &mut self.rgb_buffer,
+            &mut self.turbojpeg,
+        )?;
+
+        self.cached_jpeg.clear();
+        self.cached_jpeg.extend_from_slice(jpeg_data);
+        self.cached_commands.clone_from(commands);
+        Some(())
+    }
+}
+
+fn encode_display_frame_uncached(
     jpeg_data: &[u8],
     commands: &mut Vec<ProtocolCommand>,
+    rgb_buffer: &mut Vec<u8>,
+    turbojpeg: &mut Option<TurboJpegDecompressor>,
 ) -> Option<()> {
+    if decode_jpeg_into_rgb_buffer(jpeg_data, rgb_buffer, turbojpeg).is_some() {
+        build_display_commands(rgb_buffer.as_slice(), commands);
+        return Some(());
+    }
+
     let image = image::load_from_memory_with_format(jpeg_data, ImageFormat::Jpeg).ok()?;
-    let rgb = image
-        .resize_exact(
-            u32::try_from(PUSH2_DISPLAY_WIDTH).unwrap_or(960),
-            u32::try_from(PUSH2_DISPLAY_HEIGHT).unwrap_or(160),
-            FilterType::Nearest,
-        )
-        .to_rgb8();
+    let rgb = if image.width() == 960 && image.height() == 160 {
+        image.into_rgb8()
+    } else {
+        image
+            .resize_exact(960, 160, FilterType::Nearest)
+            .into_rgb8()
+    };
     build_display_commands(rgb.as_raw(), commands);
+    Some(())
+}
+
+fn decode_jpeg_into_rgb_buffer(
+    jpeg_data: &[u8],
+    rgb_buffer: &mut Vec<u8>,
+    turbojpeg: &mut Option<TurboJpegDecompressor>,
+) -> Option<()> {
+    if turbojpeg.is_none() {
+        *turbojpeg = TurboJpegDecompressor::new().ok();
+    }
+
+    let decompressor = turbojpeg.as_mut()?;
+    let header = decompressor.read_header(jpeg_data).ok()?;
+    if header.width != PUSH2_DISPLAY_WIDTH || header.height != PUSH2_DISPLAY_HEIGHT {
+        return None;
+    }
+
+    let pixel_format = TurboJpegPixelFormat::RGB;
+    let pitch = PUSH2_DISPLAY_WIDTH.checked_mul(pixel_format.size())?;
+    let required_len = pitch.checked_mul(PUSH2_DISPLAY_HEIGHT)?;
+    if rgb_buffer.len() != required_len {
+        rgb_buffer.resize(required_len, 0);
+    }
+
+    decompressor
+        .decompress(
+            jpeg_data,
+            TurboJpegImage {
+                pixels: rgb_buffer.as_mut_slice(),
+                width: PUSH2_DISPLAY_WIDTH,
+                pitch,
+                height: PUSH2_DISPLAY_HEIGHT,
+                format: pixel_format,
+            },
+        )
+        .ok()?;
     Some(())
 }
 
@@ -124,10 +205,16 @@ fn encode_rgb565(red: u8, green: u8, blue: u8) -> [u8; 2] {
 }
 
 fn xor_shape_line(line: &mut Push2DisplayLine) {
-    for (index, byte) in line.pixels.iter_mut().enumerate() {
-        *byte ^= PUSH2_DISPLAY_XOR_MASK[index & 3];
+    for chunk in line.pixels.chunks_exact_mut(4) {
+        chunk[0] ^= PUSH2_DISPLAY_XOR_MASK[0];
+        chunk[1] ^= PUSH2_DISPLAY_XOR_MASK[1];
+        chunk[2] ^= PUSH2_DISPLAY_XOR_MASK[2];
+        chunk[3] ^= PUSH2_DISPLAY_XOR_MASK[3];
     }
-    for (index, byte) in line.padding.iter_mut().enumerate() {
-        *byte ^= PUSH2_DISPLAY_XOR_MASK[(PUSH2_DISPLAY_LINE_PIXELS + index) & 3];
+    for chunk in line.padding.chunks_exact_mut(4) {
+        chunk[0] ^= PUSH2_DISPLAY_XOR_MASK[0];
+        chunk[1] ^= PUSH2_DISPLAY_XOR_MASK[1];
+        chunk[2] ^= PUSH2_DISPLAY_XOR_MASK[2];
+        chunk[3] ^= PUSH2_DISPLAY_XOR_MASK[3];
     }
 }

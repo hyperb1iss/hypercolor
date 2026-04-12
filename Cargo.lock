@@ -4317,6 +4317,7 @@ dependencies = [
  "tokio",
  "tokio-serial",
  "tracing",
+ "turbojpeg",
  "zerocopy",
 ]
 

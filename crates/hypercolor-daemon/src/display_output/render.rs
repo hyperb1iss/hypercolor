@@ -30,10 +30,7 @@ pub(super) struct PreparedDisplayPlan {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PreparedDisplaySample {
     pub offsets: [usize; 4],
-    pub x_lower_weight: u16,
-    pub x_upper_weight: u16,
-    pub y_lower_weight: u16,
-    pub y_upper_weight: u16,
+    pub corner_weights: [u32; 4],
 }
 
 #[derive(Clone, Copy)]
@@ -290,10 +287,12 @@ fn prepare_display_plan(
                     rgba_offset(source_width, x_sample.lower, y_sample.upper),
                     rgba_offset(source_width, x_sample.upper, y_sample.upper),
                 ],
-                x_lower_weight: x_sample.lower_weight,
-                x_upper_weight: x_sample.upper_weight,
-                y_lower_weight: y_sample.lower_weight,
-                y_upper_weight: y_sample.upper_weight,
+                corner_weights: [
+                    u32::from(x_sample.lower_weight) * u32::from(y_sample.lower_weight),
+                    u32::from(x_sample.upper_weight) * u32::from(y_sample.lower_weight),
+                    u32::from(x_sample.lower_weight) * u32::from(y_sample.upper_weight),
+                    u32::from(x_sample.upper_weight) * u32::from(y_sample.upper_weight),
+                ],
             });
         }
     }
@@ -493,34 +492,66 @@ fn sample_prepared_display_rgb(
     sample: &PreparedDisplaySample,
     brightness_lut: Option<&[u8; 256]>,
 ) -> [u8; 3] {
+    apply_display_brightness(prepared_display_rgb(rgba, sample), brightness_lut)
+}
+
+fn prepared_display_rgb(rgba: &[u8], sample: &PreparedDisplaySample) -> [u8; 3] {
+    let [top_left, top_right, bottom_left, bottom_right] = sample.offsets;
+    let [
+        top_left_weight,
+        top_right_weight,
+        bottom_left_weight,
+        bottom_right_weight,
+    ] = sample.corner_weights;
+
     [
-        apply_display_brightness_channel(
-            prepared_display_channel(rgba, sample.offsets, 0, sample),
-            brightness_lut,
+        prepared_display_channel(
+            rgba[top_left],
+            rgba[top_right],
+            rgba[bottom_left],
+            rgba[bottom_right],
+            top_left_weight,
+            top_right_weight,
+            bottom_left_weight,
+            bottom_right_weight,
         ),
-        apply_display_brightness_channel(
-            prepared_display_channel(rgba, sample.offsets, 1, sample),
-            brightness_lut,
+        prepared_display_channel(
+            rgba[top_left + 1],
+            rgba[top_right + 1],
+            rgba[bottom_left + 1],
+            rgba[bottom_right + 1],
+            top_left_weight,
+            top_right_weight,
+            bottom_left_weight,
+            bottom_right_weight,
         ),
-        apply_display_brightness_channel(
-            prepared_display_channel(rgba, sample.offsets, 2, sample),
-            brightness_lut,
+        prepared_display_channel(
+            rgba[top_left + 2],
+            rgba[top_right + 2],
+            rgba[bottom_left + 2],
+            rgba[bottom_right + 2],
+            top_left_weight,
+            top_right_weight,
+            bottom_left_weight,
+            bottom_right_weight,
         ),
     ]
 }
 
 fn prepared_display_channel(
-    rgba: &[u8],
-    offsets: [usize; 4],
-    channel: usize,
-    sample: &PreparedDisplaySample,
+    top_left: u8,
+    top_right: u8,
+    bottom_left: u8,
+    bottom_right: u8,
+    top_left_weight: u32,
+    top_right_weight: u32,
+    bottom_left_weight: u32,
+    bottom_right_weight: u32,
 ) -> u8 {
-    let top = u32::from(rgba[offsets[0] + channel]) * u32::from(sample.x_lower_weight)
-        + u32::from(rgba[offsets[1] + channel]) * u32::from(sample.x_upper_weight);
-    let bottom = u32::from(rgba[offsets[2] + channel]) * u32::from(sample.x_lower_weight)
-        + u32::from(rgba[offsets[3] + channel]) * u32::from(sample.x_upper_weight);
-    let blended =
-        top * u32::from(sample.y_lower_weight) + bottom * u32::from(sample.y_upper_weight);
+    let blended = u32::from(top_left) * top_left_weight
+        + u32::from(top_right) * top_right_weight
+        + u32::from(bottom_left) * bottom_left_weight
+        + u32::from(bottom_right) * bottom_right_weight;
     let rounded = blended.saturating_add(BILINEAR_WEIGHT_ROUNDING) >> 16;
     u8::try_from(rounded).expect("bilinear interpolation should remain within byte range")
 }

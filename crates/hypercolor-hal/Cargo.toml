@@ -23,6 +23,7 @@ zerocopy = { workspace = true }
 hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw", "macos-shared-device"] }
 midir = "0.10.3"
 image = { workspace = true }
+turbojpeg = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 alsa = "0.11"
