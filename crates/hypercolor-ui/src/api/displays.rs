@@ -157,10 +157,7 @@ pub async fn patch_overlay_slot(
 }
 
 /// `DELETE /api/v1/displays/{id}/overlays/{slot_id}` — remove a slot.
-pub async fn delete_overlay_slot(
-    display_id: &str,
-    slot_id: OverlaySlotId,
-) -> Result<(), String> {
+pub async fn delete_overlay_slot(display_id: &str, slot_id: OverlaySlotId) -> Result<(), String> {
     let url = format!("/api/v1/displays/{display_id}/overlays/{slot_id}");
     client::delete_empty(&url).await.map_err(Into::into)
 }

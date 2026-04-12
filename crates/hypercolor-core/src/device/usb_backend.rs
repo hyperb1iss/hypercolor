@@ -754,7 +754,7 @@ impl UsbBackend {
         commands: &mut Vec<ProtocolCommand>,
     ) -> Result<()> {
         protocol
-            .encode_display_frame_into(frame.jpeg_data.as_slice(), commands)
+            .encode_display_frame_into(frame.jpeg_data.as_ref(), commands)
             .with_context(|| {
                 format!("USB protocol does not support display output for device {device_id}")
             })?;
