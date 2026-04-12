@@ -87,46 +87,46 @@ const TAU = Math.PI * 2
 
 const THEMES: Record<Exclude<ThemeName, 'Custom'>, ThemePalette> = {
     Abyssal: {
-        accent: '#3ef3ff',
-        background: '#080607',
-        core: '#ffd166',
-        wallA: '#5d1028',
-        wallB: '#ff6200',
+        accent: '#ff4f9d',
+        background: '#09040a',
+        core: '#8c5cff',
+        wallA: '#7a1038',
+        wallB: '#ff6a00',
     },
     'Event Horizon': {
-        accent: '#ff4fd8',
+        accent: '#ff4fb7',
         background: '#030714',
-        core: '#ffd166',
-        wallA: '#2840ff',
-        wallB: '#20f0ff',
+        core: '#8a59ff',
+        wallA: '#3558ff',
+        wallB: '#18efff',
     },
     Quantum: {
-        accent: '#ffde59',
-        background: '#031112',
-        core: '#9056ff',
-        wallA: '#00d7ff',
-        wallB: '#7bff58',
+        accent: '#63ffbe',
+        background: '#031114',
+        core: '#ff5ad6',
+        wallA: '#18dcff',
+        wallB: '#7d5cff',
     },
     'Solar Flare': {
-        accent: '#ff4b7a',
+        accent: '#ffd166',
         background: '#140700',
-        core: '#20f0ff',
+        core: '#ff3b82',
         wallA: '#ff5e00',
-        wallB: '#ffd166',
+        wallB: '#ff8f1f',
     },
     Spectral: {
         accent: '#ff4fb4',
         background: '#060612',
-        core: '#ffd166',
-        wallA: '#20f0ff',
-        wallB: '#8d5cff',
+        core: '#ffc24d',
+        wallA: '#18ecff',
+        wallB: '#8c5cff',
     },
     'Void Gate': {
         accent: '#ff3ca8',
         background: '#0a0416',
-        core: '#ffd6ff',
+        core: '#c56cff',
         wallA: '#6121ff',
-        wallB: '#18f0ff',
+        wallB: '#15d8ff',
     },
 }
 
@@ -220,10 +220,6 @@ function rgb(color: Rgb): string {
     return `rgb(${color.r}, ${color.g}, ${color.b})`
 }
 
-function rgba(color: Rgb, alpha: number): string {
-    return `rgba(${color.r}, ${color.g}, ${color.b}, ${clamp(alpha, 0, 1).toFixed(3)})`
-}
-
 function resolvePalette(
     theme: ThemeName,
     color1: string,
@@ -258,24 +254,18 @@ function resolvePalette(
 
 function sampleSpectralPalette(t: number, palette: ResolvedPalette): Rgb {
     const phase = wrap(t, 1)
-    const prismA = saturateRgb(mixRgb(palette.wallA, palette.core, 0.34), 1.18)
-    const prismB = saturateRgb(mixRgb(palette.accent, palette.wallB, 0.42), 1.24)
-    const prismC = saturateRgb(mixRgb(palette.core, palette.accent, 0.58), 1.16)
-    const prismD = saturateRgb(mixRgb(palette.wallB, palette.core, 0.28), 1.12)
-
-    if (phase < 0.2) {
-        return mixRgb(prismA, palette.accent, phase / 0.2)
-    }
-    if (phase < 0.4) {
-        return mixRgb(palette.accent, prismB, (phase - 0.2) / 0.2)
-    }
-    if (phase < 0.6) {
-        return mixRgb(prismB, palette.core, (phase - 0.4) / 0.2)
-    }
-    if (phase < 0.8) {
-        return mixRgb(palette.core, prismC, (phase - 0.6) / 0.2)
-    }
-    return mixRgb(prismC, prismD, (phase - 0.8) / 0.2)
+    const stops = [
+        richenRgb(palette.wallA, 1.18, 0.14, 236),
+        richenRgb(mixRgb(palette.wallA, palette.accent, 0.34), 1.22, 0.12, 240),
+        richenRgb(palette.accent, 1.24, 0.1, 240),
+        richenRgb(mixRgb(palette.accent, palette.wallB, 0.3), 1.22, 0.12, 238),
+        richenRgb(palette.wallB, 1.2, 0.14, 236),
+        richenRgb(palette.core, 1.16, 0.12, 232),
+    ]
+    const scaled = phase * stops.length
+    const index = Math.floor(scaled) % stops.length
+    const nextIndex = (index + 1) % stops.length
+    return mixRgb(stops[index], stops[nextIndex], scaled - Math.floor(scaled))
 }
 
 function addPoint(a: Point, b: Point): Point {
@@ -334,10 +324,6 @@ function drawPolyline(ctx: CanvasRenderingContext2D, points: Point[]): void {
     }
 }
 
-function offsetPoints(points: Point[], offset: Point): Point[] {
-    return points.map((point) => addPoint(point, offset))
-}
-
 function samplePolyline(points: Point[], t: number): Point {
     if (points.length === 0) return { x: 0, y: 0 }
     if (points.length === 1) return points[0]
@@ -357,6 +343,22 @@ function sampleSegment(points: Point[], start: number, end: number, samples: num
         segment.push(samplePolyline(points, t))
     }
     return segment
+}
+
+function pulseRanges(progress: number, lead = 0.05, trail = 0.07): Array<[number, number]> {
+    if (progress < trail) {
+        return [
+            [progress + (1 - trail), 1],
+            [0, progress + lead],
+        ]
+    }
+    if (progress > 1 - lead) {
+        return [
+            [progress - trail, 1],
+            [0, wrap(progress + lead, 1)],
+        ]
+    }
+    return [[progress - trail, progress + lead]]
 }
 
 function ribbonWave(
@@ -386,7 +388,10 @@ function ribbonWave(
         )
     }
 
-    return Math.sin(t * TAU * 1.5 + phase + time * (0.46 + twistMix * 0.7))
+    return (
+        Math.sin(t * TAU * (1.7 + twistMix * 0.6) + phase + time * (0.48 + twistMix * 0.72)) * 0.72 +
+        Math.cos(t * TAU * (3.1 + pulseMix * 0.8) - phase * 0.45 - time * (0.26 + pulseMix * 0.34)) * 0.28
+    )
 }
 
 function buildRibbonPoints(
@@ -404,8 +409,8 @@ function buildRibbonPoints(
     const tangent = normalizePoint(axis, { x: 1, y: 0 })
     const normal = perpendicular(tangent)
     const midpoint = lerpPoint(leftNode, rightNode, 0.5)
-    const laneOffset = seed.lane * span * (0.05 + thicknessMix * 0.05)
-    const bow = span * (0.08 + seed.amplitude * 0.1 + pulseMix * 0.04)
+    const laneOffset = seed.lane * span * (0.075 + thicknessMix * 0.085)
+    const bow = span * (0.11 + seed.amplitude * 0.12 + pulseMix * 0.05)
     const direction = seed.lane >= 0 ? 1 : -1
 
     const p0 = addPoint(leftNode, scalePoint(normal, laneOffset))
@@ -420,7 +425,7 @@ function buildRibbonPoints(
     )
 
     const points: Point[] = []
-    const sampleCount = 44
+    const sampleCount = 56
 
     for (let index = 0; index < sampleCount; index++) {
         const t = index / (sampleCount - 1)
@@ -428,19 +433,19 @@ function buildRibbonPoints(
         const weave =
             ribbonWave(geometry, t, seed.phase, time * seed.speed, twistMix, pulseMix) *
             span *
-            (0.025 + twistMix * 0.05 + seed.amplitude * 0.025) *
+            (0.038 + twistMix * 0.072 + seed.amplitude * 0.03) *
             envelope
         const ripple =
             Math.sin(t * TAU * (2.5 + seed.width * 2.2) - time * (0.36 + pulseMix * 0.55) + seed.phase * 0.7) *
             span *
-            0.008 *
-            (0.4 + twistMix)
+            0.011 *
+            (0.55 + twistMix * 0.9)
         const centerPull =
             Math.cos((t - 0.5) * Math.PI) *
             span *
-            0.018 *
-            (0.5 + pulseMix * 0.6) *
-            (geometry === 'Halo Exchange' ? 1.2 : 1)
+            0.028 *
+            (0.65 + pulseMix * 0.9) *
+            (geometry === 'Halo Exchange' ? 1.2 : geometry === 'Tidal Lattice' ? 1.1 : 1)
 
         const base = cubicBezierPoint(p0, p1, p2, p3, t)
         const towardCenter = subPoint(midpoint, base)
@@ -466,18 +471,9 @@ function drawNodeHalo(
     phase: number,
     geometry: GeometryName,
     pulseMix: number,
-    contrastMix: number,
+    _contrastMix: number,
     strength: number,
 ): void {
-    const glowA = richenRgb(sampleSpectralPalette(phase * 0.09 + time * 0.05, palette), 1.16, 0.22, 228)
-    const glowB = richenRgb(sampleSpectralPalette(phase * 0.09 + 0.38 - time * 0.04, palette), 1.16, 0.22, 220)
-    const glow = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, radius * 1.45)
-    glow.addColorStop(0, rgba(glowA, (0.055 + contrastMix * 0.025) * strength))
-    glow.addColorStop(0.44, rgba(glowB, (0.02 + pulseMix * 0.016) * strength))
-    glow.addColorStop(1, 'rgba(0,0,0,0)')
-    ctx.fillStyle = glow
-    ctx.fillRect(node.x - radius * 1.6, node.y - radius * 1.6, radius * 3.2, radius * 3.2)
-
     ctx.save()
     ctx.globalCompositeOperation = 'source-over'
     ctx.lineCap = 'round'
@@ -512,7 +508,9 @@ function drawNodeHalo(
             0.18,
             236,
         )
-        const alpha = (0.05 + (1 - orbit) * 0.04 + pulseMix * 0.02) * strength
+        const alpha = (0.035 + (1 - orbit) * 0.03 + pulseMix * 0.015) * strength
+        const ringFactor = clamp(alpha * 5.4, 0.16, 0.72)
+        const fringeFactor = ringFactor * 0.72
         const chromaSpread = radius * (0.02 + pulseMix * 0.018 + orbit * 0.01)
         const chromaOffset = {
             x: Math.cos(rotation + Math.PI * 0.5) * chromaSpread,
@@ -524,19 +522,19 @@ function drawNodeHalo(
         ctx.beginPath()
         ctx.ellipse(node.x - chromaOffset.x, node.y - chromaOffset.y, radiusX, radiusY, rotation, 0, TAU)
         ctx.lineWidth = Math.max(1, radius * 0.06 * (1 - orbit * 0.25) * (0.7 + strength * 0.3))
-        ctx.strokeStyle = rgba(fringeA, alpha * 0.4)
+        ctx.strokeStyle = rgb(scaleRgb(fringeA, fringeFactor))
         ctx.stroke()
 
         ctx.beginPath()
         ctx.ellipse(node.x + chromaOffset.x, node.y + chromaOffset.y, radiusX, radiusY, rotation, 0, TAU)
         ctx.lineWidth = Math.max(1, radius * 0.06 * (1 - orbit * 0.25) * (0.7 + strength * 0.3))
-        ctx.strokeStyle = rgba(fringeB, alpha * 0.4)
+        ctx.strokeStyle = rgb(scaleRgb(fringeB, fringeFactor))
         ctx.stroke()
 
         ctx.beginPath()
         ctx.ellipse(node.x, node.y, radiusX, radiusY, rotation, 0, TAU)
         ctx.lineWidth = Math.max(1, radius * 0.075 * (1 - orbit * 0.25) * (0.7 + strength * 0.3))
-        ctx.strokeStyle = rgba(color, alpha)
+        ctx.strokeStyle = rgb(scaleRgb(color, ringFactor))
         ctx.stroke()
     }
 
@@ -569,70 +567,6 @@ function drawLensDiamond(
         addPoint(center, scalePoint(normal, -halfWidth)),
     ]
 
-    const lensGradient = ctx.createLinearGradient(points[2].x, points[2].y, points[0].x, points[0].y)
-    lensGradient.addColorStop(
-        0,
-        rgba(
-            richenRgb(sampleSpectralPalette(time * 0.035 + 0.06, palette), 1.18, 0.22, 228),
-            (0.06 + contrastMix * 0.03) * strength,
-        ),
-    )
-    lensGradient.addColorStop(
-        0.35,
-        rgba(
-            richenRgb(sampleSpectralPalette(time * 0.03 + 0.26, palette), 1.2, 0.2, 228),
-            (0.075 + pulseMix * 0.025) * strength,
-        ),
-    )
-    lensGradient.addColorStop(
-        0.65,
-        rgba(
-            richenRgb(sampleSpectralPalette(time * 0.04 + 0.52, palette), 1.2, 0.2, 228),
-            (0.09 + pulseMix * 0.03) * strength,
-        ),
-    )
-    lensGradient.addColorStop(
-        1,
-        rgba(
-            richenRgb(sampleSpectralPalette(time * 0.025 + 0.78, palette), 1.18, 0.22, 228),
-            (0.06 + contrastMix * 0.03) * strength,
-        ),
-    )
-
-    ctx.beginPath()
-    ctx.moveTo(points[0].x, points[0].y)
-    ctx.lineTo(points[1].x, points[1].y)
-    ctx.lineTo(points[2].x, points[2].y)
-    ctx.lineTo(points[3].x, points[3].y)
-    ctx.closePath()
-    ctx.fillStyle = lensGradient
-    ctx.fill()
-
-    ctx.save()
-    ctx.clip()
-    ctx.globalCompositeOperation = 'source-over'
-    for (let stripe = 0; stripe < 3; stripe++) {
-        const stripeShift = (wrap(time * (0.12 + stripe * 0.03), 1) - 0.5) * halfLength * 3
-        const stripeGradient = ctx.createLinearGradient(
-            center.x - tangent.x * halfLength * 2 - normal.x * halfWidth + tangent.x * stripeShift,
-            center.y - tangent.y * halfLength * 2 - normal.y * halfWidth + tangent.y * stripeShift,
-            center.x + tangent.x * halfLength * 2 + normal.x * halfWidth + tangent.x * stripeShift,
-            center.y + tangent.y * halfLength * 2 + normal.y * halfWidth + tangent.y * stripeShift,
-        )
-        stripeGradient.addColorStop(0, 'rgba(0,0,0,0)')
-        stripeGradient.addColorStop(
-            0.5,
-            rgba(
-                richenRgb(sampleSpectralPalette(stripe * 0.21 + time * 0.06, palette), 1.24, 0.18, 236),
-                (0.035 + pulseMix * 0.018) * strength,
-            ),
-        )
-        stripeGradient.addColorStop(1, 'rgba(0,0,0,0)')
-        ctx.fillStyle = stripeGradient
-        ctx.fillRect(center.x - halfLength * 2.4, center.y - halfWidth * 2.4, halfLength * 4.8, halfWidth * 4.8)
-    }
-    ctx.restore()
-
     const chromaSpread = span * 0.008 * strength
 
     ctx.beginPath()
@@ -642,9 +576,8 @@ function drawLensDiamond(
     ctx.lineTo(points[3].x - normal.x * chromaSpread, points[3].y - normal.y * chromaSpread)
     ctx.closePath()
     ctx.lineWidth = Math.max(1, span * 0.006)
-    ctx.strokeStyle = rgba(
-        richenRgb(sampleSpectralPalette(time * 0.04 + 0.18, palette), 1.2, 0.18, 236),
-        (0.07 + contrastMix * 0.035) * strength,
+    ctx.strokeStyle = rgb(
+        scaleRgb(richenRgb(sampleSpectralPalette(time * 0.04 + 0.18, palette), 1.2, 0.18, 236), 0.32 + strength * 0.18),
     )
     ctx.stroke()
 
@@ -655,9 +588,11 @@ function drawLensDiamond(
     ctx.lineTo(points[3].x + normal.x * chromaSpread, points[3].y + normal.y * chromaSpread)
     ctx.closePath()
     ctx.lineWidth = Math.max(1, span * 0.006)
-    ctx.strokeStyle = rgba(
-        richenRgb(sampleSpectralPalette(0.58 - time * 0.035, palette), 1.2, 0.18, 236),
-        (0.07 + contrastMix * 0.035) * strength,
+    ctx.strokeStyle = rgb(
+        scaleRgb(
+            richenRgb(sampleSpectralPalette(0.58 - time * 0.035, palette), 1.2, 0.18, 236),
+            0.32 + strength * 0.18,
+        ),
     )
     ctx.stroke()
 
@@ -668,9 +603,8 @@ function drawLensDiamond(
     ctx.lineTo(points[3].x, points[3].y)
     ctx.closePath()
     ctx.lineWidth = Math.max(2, span * 0.01)
-    ctx.strokeStyle = rgba(
-        richenRgb(mixRgb(palette.accent, palette.core, 0.25), 1.14, 0.18, 232),
-        (0.14 + contrastMix * 0.08) * strength,
+    ctx.strokeStyle = rgb(
+        scaleRgb(richenRgb(mixRgb(palette.accent, palette.core, 0.25), 1.14, 0.18, 232), 0.44 + strength * 0.22),
     )
     ctx.stroke()
 }
@@ -699,7 +633,7 @@ export default canvas.stateful(
         let sparkCount = 0
 
         function ensureRibbons(count: number): void {
-            const target = clamp(Math.round(count), 6, 14)
+            const target = clamp(Math.round(count), 4, 8)
             if (target === ribbonCount && ribbons.length === target) return
 
             if (target > ribbons.length) {
@@ -722,7 +656,7 @@ export default canvas.stateful(
         }
 
         function ensureSparks(count: number): void {
-            const target = clamp(Math.round(count), 10, 26)
+            const target = clamp(Math.round(count), 3, 7)
             if (target === sparkCount && sparks.length === target) return
 
             if (target > sparks.length) {
@@ -752,6 +686,7 @@ export default canvas.stateful(
             if (width === 0 || height === 0) return
 
             const speedMix = clamp((((controls.speed as number) ?? 5) - 1) / 9, 0, 1)
+            const motionTime = time * lerp(0.45, 2.1, speedMix)
             const depthMix = clamp(((controls.depth as number) ?? 66) / 100, 0, 1)
             const twistMix = clamp(((controls.twist as number) ?? 58) / 100, 0, 1)
             const driftMix = clamp(((controls.drift as number) ?? 42) / 100, 0, 1)
@@ -770,9 +705,9 @@ export default canvas.stateful(
             )
 
             const center = { x: width * 0.5, y: height * 0.5 }
-            const axisTime = time * (0.16 + speedMix * 0.1)
-            const axisRotation = Math.sin(axisTime * 0.42) * (0.12 + driftMix * 0.18)
-            const fieldCount = geometry === 'Tidal Lattice' ? 4 : 3
+            const axisTime = motionTime * 0.22
+            const axisRotation = Math.sin(axisTime * 0.42) * (0.18 + driftMix * 0.22)
+            const fieldCount = geometry === 'Tidal Lattice' ? 3 : 2
             const bridgeFields: BridgeField[] = []
 
             for (let fieldIndex = 0; fieldIndex < fieldCount; fieldIndex++) {
@@ -780,12 +715,12 @@ export default canvas.stateful(
                 const centerBias = fieldMix - 0.5
                 const rotationSpread =
                     geometry === 'Prism Bridge'
-                        ? 1.18
+                        ? 0.78
                         : geometry === 'Halo Exchange'
-                          ? 1.42
+                          ? 1.02
                           : geometry === 'Tidal Lattice'
-                            ? 0.96
-                            : 0.84
+                            ? 0.66
+                            : 0.58
                 const fieldRotation =
                     axisRotation +
                     centerBias * rotationSpread +
@@ -798,25 +733,25 @@ export default canvas.stateful(
                     { x: 1, y: 0 },
                 )
                 const axisNormal = perpendicular(axisDir)
-                const span = maxDim * (0.55 + depthMix * 0.26 + Math.abs(centerBias) * 0.08)
+                const span = maxDim * (0.72 + depthMix * 0.34 + Math.abs(centerBias) * 0.04)
                 const sheetOffset =
-                    centerBias * minDim * (0.72 + driftMix * 0.18) +
-                    Math.sin(axisTime * 0.73 + fieldIndex * 1.3) * minDim * (0.05 + driftMix * 0.04)
-                const travelOffset = Math.cos(axisTime * 0.37 + fieldIndex * 1.8) * minDim * (0.06 + driftMix * 0.03)
+                    centerBias * minDim * (geometry === 'Tidal Lattice' ? 0.34 : 0.28 + driftMix * 0.08) +
+                    Math.sin(axisTime * 0.73 + fieldIndex * 1.3) * minDim * (0.035 + driftMix * 0.03)
+                const travelOffset = Math.cos(axisTime * 0.37 + fieldIndex * 1.8) * minDim * (0.11 + driftMix * 0.05)
                 const fieldCenter = addPoint(
                     center,
                     addPoint(scalePoint(axisNormal, sheetOffset), scalePoint(axisDir, travelOffset)),
                 )
-                const nodeOffsetY = minDim * (0.08 + driftMix * 0.12 + Math.abs(centerBias) * 0.02)
-                const strength = 1 - Math.abs(centerBias) * 0.58
-                const nodeRadius = minDim * (0.06 + depthMix * 0.035) * (0.82 + strength * 0.38)
+                const nodeOffsetY = minDim * (0.12 + driftMix * 0.16 + Math.abs(centerBias) * 0.04)
+                const strength = 1 - Math.abs(centerBias) * 0.34
+                const nodeRadius = minDim * (0.05 + depthMix * 0.024) * (0.78 + strength * 0.24)
                 const leftNode = addPoint(
                     addPoint(fieldCenter, scalePoint(axisDir, -span)),
                     addPoint(
                         scalePoint(axisNormal, Math.sin(axisTime * 0.83 + 0.9 + fieldIndex * 0.9) * nodeOffsetY),
                         scalePoint(
                             axisDir,
-                            Math.cos(axisTime * 0.31 + 1.7 + fieldIndex * 0.4) * minDim * driftMix * 0.03,
+                            Math.cos(axisTime * 0.31 + 1.7 + fieldIndex * 0.4) * minDim * driftMix * 0.05,
                         ),
                     ),
                 )
@@ -826,7 +761,7 @@ export default canvas.stateful(
                         scalePoint(axisNormal, Math.sin(axisTime * 0.83 + 3.2 + fieldIndex * 0.9) * -nodeOffsetY),
                         scalePoint(
                             axisDir,
-                            Math.cos(axisTime * 0.31 + 3.4 + fieldIndex * 0.4) * minDim * driftMix * 0.03,
+                            Math.cos(axisTime * 0.31 + 3.4 + fieldIndex * 0.4) * minDim * driftMix * 0.05,
                         ),
                     ),
                 )
@@ -843,86 +778,10 @@ export default canvas.stateful(
                 })
             }
 
+            bridgeFields.sort((left, right) => left.midpoint.y - right.midpoint.y)
+
             ctx.fillStyle = rgb(palette.background)
             ctx.fillRect(0, 0, width, height)
-
-            const backdrop = ctx.createLinearGradient(0, 0, width, height)
-            backdrop.addColorStop(
-                0,
-                rgba(
-                    mixRgb(sampleSpectralPalette(time * 0.01 + 0.04, palette), palette.background, 0.56),
-                    0.24 + contrastMix * 0.05,
-                ),
-            )
-            backdrop.addColorStop(
-                0.26,
-                rgba(
-                    mixRgb(sampleSpectralPalette(time * 0.015 + 0.22, palette), palette.background, 0.68),
-                    0.1 + pulseMix * 0.04,
-                ),
-            )
-            backdrop.addColorStop(
-                0.5,
-                rgba(
-                    mixRgb(sampleSpectralPalette(time * 0.012 + 0.46, palette), palette.background, 0.78),
-                    0.05 + pulseMix * 0.03,
-                ),
-            )
-            backdrop.addColorStop(
-                0.74,
-                rgba(
-                    mixRgb(sampleSpectralPalette(0.68 - time * 0.013, palette), palette.background, 0.66),
-                    0.1 + contrastMix * 0.03,
-                ),
-            )
-            backdrop.addColorStop(
-                1,
-                rgba(
-                    mixRgb(sampleSpectralPalette(0.9 - time * 0.01, palette), palette.background, 0.54),
-                    0.22 + contrastMix * 0.05,
-                ),
-            )
-            ctx.fillStyle = backdrop
-            ctx.fillRect(0, 0, width, height)
-
-            ctx.save()
-            ctx.globalCompositeOperation = 'source-over'
-            for (const [fieldIndex, field] of bridgeFields.entries()) {
-                for (let storm = 0; storm < 2; storm++) {
-                    const orbit = time * (0.06 + storm * 0.03 + speedMix * 0.05) + storm * 1.7 + fieldIndex * 1.2
-                    const stormCenter = addPoint(
-                        field.midpoint,
-                        addPoint(
-                            scalePoint(field.axisDir, Math.cos(orbit) * minDim * (0.12 + storm * 0.07)),
-                            scalePoint(field.axisNormal, Math.sin(orbit * 1.2) * minDim * (0.2 + storm * 0.08)),
-                        ),
-                    )
-                    const stormColor = sampleSpectralPalette(fieldIndex * 0.18 + storm * 0.22 + time * 0.035, palette)
-                    const glow = ctx.createRadialGradient(
-                        stormCenter.x,
-                        stormCenter.y,
-                        0,
-                        stormCenter.x,
-                        stormCenter.y,
-                        minDim * (0.22 + storm * 0.08),
-                    )
-                    glow.addColorStop(
-                        0,
-                        rgba(stormColor, (0.028 + contrastMix * 0.014 + pulseMix * 0.012) * field.strength),
-                    )
-                    glow.addColorStop(
-                        0.48,
-                        rgba(
-                            sampleSpectralPalette(fieldIndex * 0.21 + storm * 0.17 + 0.36 - time * 0.028, palette),
-                            (0.012 + pulseMix * 0.01) * field.strength,
-                        ),
-                    )
-                    glow.addColorStop(1, 'rgba(0,0,0,0)')
-                    ctx.fillStyle = glow
-                    ctx.fillRect(0, 0, width, height)
-                }
-            }
-            ctx.restore()
 
             for (const [fieldIndex, field] of bridgeFields.entries()) {
                 drawNodeHalo(
@@ -930,7 +789,7 @@ export default canvas.stateful(
                     field.leftNode,
                     field.nodeRadius,
                     palette,
-                    time,
+                    motionTime,
                     fieldIndex * 0.75,
                     geometry,
                     pulseMix,
@@ -942,7 +801,7 @@ export default canvas.stateful(
                     field.rightNode,
                     field.nodeRadius,
                     palette,
-                    time,
+                    motionTime,
                     Math.PI + fieldIndex * 0.75,
                     geometry,
                     pulseMix,
@@ -951,13 +810,15 @@ export default canvas.stateful(
                 )
             }
 
-            ensureRibbons(5 + Math.round(depthMix * 3))
-            ensureSparks(8 + Math.round(depthMix * 5))
+            ensureRibbons(4 + Math.round(depthMix * 3))
+            ensureSparks(3 + Math.round(depthMix * 4))
 
             const renderedRibbons: RenderedRibbon[] = []
 
             ctx.save()
             ctx.globalCompositeOperation = 'source-over'
+            ctx.lineCap = 'round'
+            ctx.lineJoin = 'round'
 
             for (const [fieldIndex, field] of bridgeFields.entries()) {
                 const fieldRibbons: RenderedRibbon[] = ribbons.map((seed, index) => {
@@ -978,31 +839,40 @@ export default canvas.stateful(
                         field.rightNode,
                         fieldSeed,
                         geometry,
-                        time,
+                        motionTime,
                         twistMix,
                         pulseMix,
                         thicknessMix,
                     )
                     const colorA = richenRgb(
-                        sampleSpectralPalette(fieldSeed.colorBias + time * (0.04 + speedMix * 0.03), palette),
+                        sampleSpectralPalette(fieldSeed.colorBias + motionTime * (0.04 + speedMix * 0.03), palette),
                         1.2,
                         0.18,
                         236,
                     )
                     const colorB = richenRgb(
-                        sampleSpectralPalette(fieldSeed.colorBias + 0.31 + time * (0.036 + speedMix * 0.03), palette),
+                        sampleSpectralPalette(
+                            fieldSeed.colorBias + 0.31 + motionTime * (0.036 + speedMix * 0.03),
+                            palette,
+                        ),
                         1.2,
                         0.18,
                         236,
                     )
                     const fringeA = richenRgb(
-                        sampleSpectralPalette(fieldSeed.colorBias + 0.14 - time * (0.024 + speedMix * 0.015), palette),
+                        sampleSpectralPalette(
+                            fieldSeed.colorBias + 0.14 - motionTime * (0.024 + speedMix * 0.015),
+                            palette,
+                        ),
                         1.28,
                         0.14,
                         240,
                     )
                     const fringeB = richenRgb(
-                        sampleSpectralPalette(fieldSeed.colorBias + 0.64 + time * (0.02 + speedMix * 0.014), palette),
+                        sampleSpectralPalette(
+                            fieldSeed.colorBias + 0.64 + motionTime * (0.02 + speedMix * 0.014),
+                            palette,
+                        ),
                         1.28,
                         0.14,
                         240,
@@ -1035,57 +905,30 @@ export default canvas.stateful(
                         strength: field.strength,
                         width:
                             minDim *
-                            (0.007 + thicknessMix * 0.016) *
-                            (0.72 + fieldSeed.width * 0.88) *
-                            (0.82 + field.strength * 0.35),
+                            (0.009 + thicknessMix * 0.02) *
+                            (0.82 + fieldSeed.width * 0.9) *
+                            (0.86 + field.strength * 0.26),
                     }
                 })
 
-                fieldRibbons.sort((left, right) => Math.abs(right.lane) - Math.abs(left.lane))
+                fieldRibbons.sort((left, right) => left.lane - right.lane)
                 renderedRibbons.push(...fieldRibbons)
 
                 for (const ribbon of fieldRibbons) {
-                    const ribbonAxis = normalizePoint(subPoint(ribbon.rightNode, ribbon.leftNode), { x: 1, y: 0 })
-                    const ribbonNormal = perpendicular(ribbonAxis)
-                    const fringeOffsetA = addPoint(
-                        scalePoint(ribbonNormal, ribbon.width * (0.1 + contrastMix * 0.05) * ribbon.strength),
-                        scalePoint(ribbonAxis, ribbon.width * 0.05 * Math.sin(time * 0.8 + ribbon.phase)),
-                    )
-                    const fringeOffsetB = addPoint(
-                        scalePoint(ribbonNormal, -ribbon.width * (0.1 + contrastMix * 0.05) * ribbon.strength),
-                        scalePoint(ribbonAxis, -ribbon.width * 0.05 * Math.cos(time * 0.74 + ribbon.phase)),
-                    )
-                    const fringePointsA = offsetPoints(ribbon.points, fringeOffsetA)
-                    const fringePointsB = offsetPoints(ribbon.points, fringeOffsetB)
+                    const bodyFactor = 0.58 + ribbon.strength * 0.28
+                    const edgeFactor = 0.48 + ribbon.strength * 0.24
+                    const coreFactor = 0.74 + ribbon.strength * 0.18
                     const gradient = ctx.createLinearGradient(
                         ribbon.leftNode.x,
                         ribbon.leftNode.y,
                         ribbon.rightNode.x,
                         ribbon.rightNode.y,
                     )
-                    gradient.addColorStop(0, rgba(ribbon.fringeA, (0.1 + contrastMix * 0.03) * ribbon.strength))
-                    gradient.addColorStop(0.2, rgba(ribbon.colorA, (0.14 + contrastMix * 0.05) * ribbon.strength))
-                    gradient.addColorStop(0.5, rgba(ribbon.core, (0.2 + pulseMix * 0.05) * ribbon.strength))
-                    gradient.addColorStop(0.8, rgba(ribbon.colorB, (0.14 + contrastMix * 0.05) * ribbon.strength))
-                    gradient.addColorStop(1, rgba(ribbon.fringeB, (0.1 + contrastMix * 0.03) * ribbon.strength))
-
-                    drawPolyline(ctx, fringePointsA)
-                    ctx.lineWidth = ribbon.width * 0.38
-                    ctx.strokeStyle = rgba(ribbon.fringeA, (0.09 + contrastMix * 0.03) * ribbon.strength)
-                    ctx.stroke()
-
-                    drawPolyline(ctx, fringePointsB)
-                    ctx.lineWidth = ribbon.width * 0.38
-                    ctx.strokeStyle = rgba(ribbon.fringeB, (0.09 + contrastMix * 0.03) * ribbon.strength)
-                    ctx.stroke()
-
-                    drawPolyline(ctx, ribbon.points)
-                    ctx.lineWidth = ribbon.width * 1.15
-                    ctx.strokeStyle = rgba(
-                        richenRgb(mixRgb(ribbon.fringeA, ribbon.fringeB, 0.5), 1.08, 0.18, 224),
-                        (0.012 + contrastMix * 0.01) * ribbon.strength,
-                    )
-                    ctx.stroke()
+                    gradient.addColorStop(0, rgb(scaleRgb(ribbon.fringeA, edgeFactor)))
+                    gradient.addColorStop(0.2, rgb(scaleRgb(ribbon.colorA, bodyFactor)))
+                    gradient.addColorStop(0.5, rgb(scaleRgb(ribbon.core, coreFactor)))
+                    gradient.addColorStop(0.8, rgb(scaleRgb(ribbon.colorB, bodyFactor)))
+                    gradient.addColorStop(1, rgb(scaleRgb(ribbon.fringeB, edgeFactor)))
 
                     drawPolyline(ctx, ribbon.points)
                     ctx.lineWidth = ribbon.width
@@ -1094,66 +937,49 @@ export default canvas.stateful(
 
                     ctx.save()
                     ctx.setLineDash([ribbon.span * 0.04, ribbon.span * 0.055])
-                    ctx.lineDashOffset = -time * (70 + speedMix * 90) * ribbon.speed
+                    ctx.lineDashOffset = -motionTime * (70 + speedMix * 90) * ribbon.speed
                     drawPolyline(ctx, ribbon.points)
-                    ctx.lineWidth = Math.max(1, ribbon.width * 0.28)
-                    ctx.strokeStyle = rgba(
-                        richenRgb(mixRgb(ribbon.core, palette.core, 0.4), 1.08, 0.14, 228),
-                        (0.12 + pulseMix * 0.04) * ribbon.strength,
+                    ctx.lineWidth = Math.max(1, ribbon.width * 0.18)
+                    ctx.strokeStyle = rgb(
+                        scaleRgb(
+                            richenRgb(mixRgb(ribbon.core, palette.core, 0.4), 1.08, 0.14, 228),
+                            0.72 + pulseMix * 0.12,
+                        ),
                     )
                     ctx.stroke()
                     ctx.restore()
 
-                    const pulseProgress = wrap(time * (0.07 + speedMix * 0.16) * ribbon.speed + ribbon.phase / TAU, 1)
-                    const segmentRanges =
-                        pulseProgress < 0.07
-                            ? [
-                                  [pulseProgress + 0.93, 1],
-                                  [0, pulseProgress + 0.05],
-                              ]
-                            : pulseProgress > 0.93
-                              ? [
-                                    [pulseProgress - 0.07, 1],
-                                    [0, wrap(pulseProgress + 0.05, 1)],
-                                ]
-                              : [[pulseProgress - 0.07, pulseProgress + 0.05]]
+                    const pulseBase = motionTime * (0.07 + speedMix * 0.16) * ribbon.speed + ribbon.phase / TAU
+                    const forwardPulse = wrap(pulseBase, 1)
+                    const returnPulse = wrap(1 - pulseBase + ribbon.lane * 0.08 + ribbon.fieldIndex * 0.11, 1)
+                    const pulseSets = [
+                        {
+                            color: scaleRgb(
+                                richenRgb(mixRgb(ribbon.core, ribbon.fringeA, 0.38), 1.1, 0.14, 232),
+                                0.88 + pulseMix * 0.1,
+                            ),
+                            progress: forwardPulse,
+                            width: ribbon.width * 0.28,
+                        },
+                        {
+                            color: scaleRgb(
+                                richenRgb(mixRgb(ribbon.core, ribbon.colorB, 0.42), 1.08, 0.12, 236),
+                                0.72 + pulseMix * 0.12,
+                            ),
+                            progress: returnPulse,
+                            width: ribbon.width * 0.2,
+                        },
+                    ]
 
-                    for (const [start, end] of segmentRanges) {
-                        const segment = sampleSegment(ribbon.points, start, end, 10)
-                        drawPolyline(ctx, segment)
-                        ctx.lineWidth = ribbon.width * 0.42
-                        ctx.strokeStyle = rgba(
-                            richenRgb(mixRgb(ribbon.core, ribbon.fringeA, 0.38), 1.1, 0.14, 232),
-                            (0.18 + pulseMix * 0.05) * ribbon.strength,
-                        )
-                        ctx.stroke()
+                    for (const pulse of pulseSets) {
+                        for (const [start, end] of pulseRanges(pulse.progress)) {
+                            const segment = sampleSegment(ribbon.points, start, end, 10)
+                            drawPolyline(ctx, segment)
+                            ctx.lineWidth = pulse.width
+                            ctx.strokeStyle = rgb(pulse.color)
+                            ctx.stroke()
+                        }
                     }
-                }
-
-                const orderedRibbons = [...fieldRibbons].sort((left, right) => left.lane - right.lane)
-                const meshCount = 5 + Math.round(depthMix * 5)
-                for (let index = 0; index < meshCount; index++) {
-                    const baseT = 0.08 + (index / Math.max(1, meshCount - 1)) * 0.84
-                    const drift = Math.sin(time * (0.18 + speedMix * 0.12) + index * 1.1 + fieldIndex * 0.7) * 0.045
-                    const crossPoints = orderedRibbons.map((ribbon) =>
-                        samplePolyline(ribbon.points, clamp(baseT + drift * ribbon.lane * 0.45, 0, 1)),
-                    )
-
-                    drawPolyline(ctx, crossPoints)
-                    ctx.lineWidth = Math.max(
-                        1,
-                        minDim * (0.0018 + thicknessMix * 0.0035) * (0.8 + field.strength * 0.4),
-                    )
-                    ctx.strokeStyle = rgba(
-                        richenRgb(
-                            sampleSpectralPalette(baseT + time * 0.03 + index * 0.11 + fieldIndex * 0.09, palette),
-                            1.16,
-                            0.18,
-                            232,
-                        ),
-                        (0.025 + contrastMix * 0.02 + pulseMix * 0.012) * field.strength,
-                    )
-                    ctx.stroke()
                 }
 
                 drawLensDiamond(
@@ -1161,7 +987,7 @@ export default canvas.stateful(
                     field.leftNode,
                     field.rightNode,
                     palette,
-                    time,
+                    motionTime,
                     pulseMix,
                     contrastMix,
                     field.strength * 0.75,
@@ -1171,15 +997,15 @@ export default canvas.stateful(
             ctx.restore()
 
             ctx.save()
-            ctx.globalCompositeOperation = 'lighter'
+            ctx.globalCompositeOperation = 'source-over'
             for (const spark of sparks) {
                 const ribbon = renderedRibbons[spark.ribbon % Math.max(1, renderedRibbons.length)]
-                const progress = wrap(time * (0.08 + speedMix * 0.14) * spark.speed + spark.phase, 1)
+                const progress = wrap(motionTime * (0.08 + speedMix * 0.14) * spark.speed + spark.phase, 1)
                 const point = samplePolyline(ribbon.points, progress)
                 const tail = sampleSegment(ribbon.points, clamp(progress - 0.05 - spark.size * 0.02, 0, 1), progress, 8)
                 const sparkColor = richenRgb(
                     mixRgb(
-                        sampleSpectralPalette(spark.colorBias + time * 0.05 + ribbon.fieldIndex * 0.07, palette),
+                        sampleSpectralPalette(spark.colorBias + motionTime * 0.05 + ribbon.fieldIndex * 0.07, palette),
                         ribbon.core,
                         0.35,
                     ),
@@ -1187,43 +1013,12 @@ export default canvas.stateful(
                     0.1,
                     244,
                 )
-                const sparkFringeA = richenRgb(
-                    sampleSpectralPalette(spark.colorBias + 0.16 - time * 0.035, palette),
-                    1.28,
-                    0.08,
-                    246,
-                )
-                const sparkFringeB = richenRgb(
-                    sampleSpectralPalette(spark.colorBias + 0.61 + time * 0.03, palette),
-                    1.28,
-                    0.08,
-                    246,
-                )
-                const sparkAxis = normalizePoint(subPoint(ribbon.rightNode, ribbon.leftNode), { x: 1, y: 0 })
-                const sparkNormal = perpendicular(sparkAxis)
-                const sparkSpread = ribbon.width * (0.18 + spark.size * 0.12)
-                const fringeTailA = offsetPoints(tail, scalePoint(sparkNormal, sparkSpread * 0.45))
-                const fringeTailB = offsetPoints(tail, scalePoint(sparkNormal, -sparkSpread * 0.45))
-
-                drawPolyline(ctx, fringeTailA)
-                ctx.lineWidth = Math.max(1, ribbon.width * (0.05 + spark.size * 0.05))
-                ctx.strokeStyle = rgba(sparkFringeA, (0.16 + contrastMix * 0.03 + pulseMix * 0.03) * ribbon.strength)
-                ctx.stroke()
-
-                drawPolyline(ctx, fringeTailB)
-                ctx.lineWidth = Math.max(1, ribbon.width * (0.05 + spark.size * 0.05))
-                ctx.strokeStyle = rgba(sparkFringeB, (0.16 + contrastMix * 0.03 + pulseMix * 0.03) * ribbon.strength)
-                ctx.stroke()
-
                 drawPolyline(ctx, tail)
-                ctx.lineWidth = Math.max(1, ribbon.width * (0.08 + spark.size * 0.08))
-                ctx.strokeStyle = rgba(sparkColor, (0.18 + pulseMix * 0.05) * ribbon.strength)
+                ctx.lineWidth = Math.max(1, ribbon.width * (0.07 + spark.size * 0.06))
+                ctx.strokeStyle = rgb(scaleRgb(sparkColor, 0.88))
                 ctx.stroke()
 
-                ctx.fillStyle = rgba(
-                    richenRgb(mixRgb(sparkColor, ribbon.core, 0.18), 1.08, 0.06, 248),
-                    0.34 * ribbon.strength,
-                )
+                ctx.fillStyle = rgb(scaleRgb(richenRgb(mixRgb(sparkColor, ribbon.core, 0.18), 1.08, 0.06, 248), 0.96))
                 ctx.beginPath()
                 ctx.arc(point.x, point.y, Math.max(0.75, ribbon.width * (0.08 + spark.size * 0.05)), 0, TAU)
                 ctx.fill()
@@ -1238,121 +1033,121 @@ export default canvas.stateful(
             {
                 controls: {
                     background: '#050913',
-                    color1: '#20f0ff',
-                    color2: '#9056ff',
-                    color3: '#ff5cb7',
-                    contrast: 88,
-                    depth: 86,
-                    drift: 36,
+                    color1: '#14e7ff',
+                    color2: '#5e63ff',
+                    color3: '#ff4fba',
+                    contrast: 84,
+                    depth: 92,
+                    drift: 44,
                     geometry: 'Braided Flux',
                     pulse: 68,
-                    speed: 7,
-                    theme: 'Event Horizon',
-                    thickness: 72,
-                    twist: 88,
+                    speed: 6,
+                    theme: 'Custom',
+                    thickness: 62,
+                    twist: 78,
                 },
                 description:
-                    'Two bright anchors trade ribbons of cyan, violet, and rose, woven tight enough to feel like engineered spacetime',
+                    'Cyan, indigo, and electric rose trade tightly wound traffic across a bridge that feels engineered instead of accidental',
                 name: 'Causal Braid',
             },
             {
                 controls: {
                     background: '#020814',
                     color1: '#20f0ff',
-                    color2: '#9056ff',
-                    color3: '#ff5cb7',
-                    contrast: 82,
-                    depth: 74,
+                    color2: '#7d5cff',
+                    color3: '#ffc24d',
+                    contrast: 78,
+                    depth: 82,
                     drift: 18,
                     geometry: 'Prism Bridge',
-                    pulse: 44,
-                    speed: 5,
+                    pulse: 48,
+                    speed: 4,
                     theme: 'Spectral',
-                    thickness: 58,
-                    twist: 76,
+                    thickness: 52,
+                    twist: 70,
                 },
                 description:
-                    'A crystalline bridge of spectral facets refracts its own currents, like a portal built by impossible optics',
+                    'Cold prism rails split cyan, violet, and amber into crisp treaty lines, more cut glass than storm',
                 name: 'Prism Treaty',
             },
             {
                 controls: {
-                    background: '#04110d',
-                    color1: '#20f0ff',
-                    color2: '#41ff7d',
-                    color3: '#88ffd3',
-                    contrast: 58,
-                    depth: 62,
-                    drift: 64,
+                    background: '#03120f',
+                    color1: '#13dcff',
+                    color2: '#28ff7a',
+                    color3: '#7effd3',
+                    contrast: 60,
+                    depth: 72,
+                    drift: 42,
                     geometry: 'Tidal Lattice',
-                    pulse: 82,
-                    speed: 4,
-                    theme: 'Quantum',
+                    pulse: 70,
+                    speed: 3,
+                    theme: 'Custom',
                     thickness: 48,
-                    twist: 54,
+                    twist: 56,
                 },
                 description:
-                    'Soft green currents pulse through a breathing lattice, more tidal than violent, like spacetime acting as fabric instead of vacuum',
+                    'A breathing lattice of aqua and emerald that feels alive, like the bridge learned to flex with the tide',
                 name: 'Living Continuum',
             },
             {
                 controls: {
                     background: '#09040f',
-                    color1: '#ff5c8a',
-                    color2: '#ff8a00',
-                    color3: '#ffd166',
-                    contrast: 84,
-                    depth: 92,
-                    drift: 42,
+                    color1: '#ff6a00',
+                    color2: '#ff3f73',
+                    color3: '#ffba4a',
+                    contrast: 74,
+                    depth: 90,
+                    drift: 36,
                     geometry: 'Halo Exchange',
-                    pulse: 96,
-                    speed: 8,
+                    pulse: 78,
+                    speed: 6,
                     theme: 'Solar Flare',
-                    thickness: 76,
-                    twist: 42,
+                    thickness: 62,
+                    twist: 48,
                 },
                 description:
-                    'Amber and gold halos whip around twin stars as if a bridge has been forged out of solar weather',
+                    'Amber and rose plasma whip between twin wells until the whole bridge reads like solar weather under tension',
                 name: 'Coronal Relay',
             },
             {
                 controls: {
                     background: '#080607',
-                    color1: '#ff6200',
-                    color2: '#b4154e',
-                    color3: '#ff9340',
-                    contrast: 78,
-                    depth: 88,
+                    color1: '#ff5a00',
+                    color2: '#7b2cff',
+                    color3: '#ff3e86',
+                    contrast: 80,
+                    depth: 90,
                     drift: 26,
                     geometry: 'Braided Flux',
-                    pulse: 74,
-                    speed: 6,
-                    theme: 'Abyssal',
-                    thickness: 82,
-                    twist: 72,
+                    pulse: 72,
+                    speed: 5,
+                    theme: 'Custom',
+                    thickness: 68,
+                    twist: 68,
                 },
                 description:
-                    'A heavier, predatory bridge burns with ember-red traffic, like two hungry wells laced together by molten gravity',
+                    'Molten orange traffic cuts through a bruised violet trench, turning the bridge into something dangerous and hungry',
                 name: 'Abyssal Exchange',
             },
             {
                 controls: {
-                    background: '#0a0416',
-                    color1: '#7f5cff',
-                    color2: '#ff3ca8',
-                    color3: '#ff7bd0',
+                    background: '#090417',
+                    color1: '#5166ff',
+                    color2: '#16d6ff',
+                    color3: '#c86dff',
                     contrast: 46,
-                    depth: 40,
-                    drift: 72,
+                    depth: 56,
+                    drift: 42,
                     geometry: 'Halo Exchange',
-                    pulse: 26,
+                    pulse: 22,
                     speed: 2,
-                    theme: 'Void Gate',
+                    theme: 'Custom',
                     thickness: 36,
-                    twist: 28,
+                    twist: 30,
                 },
                 description:
-                    'The bridge relaxes into a slow violet conversation, with distant halos whispering between two patient anchors',
+                    'A slow indigo exchange with cyan highlights and soft orchid edges, built for quiet rooms and long nights',
                 name: 'Quiet Transfer',
             },
         ],
