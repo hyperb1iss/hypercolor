@@ -48,7 +48,7 @@ struct OwnedDisplayJpeg(Arc<Vec<u8>>);
 
 impl AsRef<[u8]> for OwnedDisplayJpeg {
     fn as_ref(&self) -> &[u8] {
-        self.0.as_slice()
+        self.0.as_ref().as_slice()
     }
 }
 
@@ -217,15 +217,19 @@ fn format_display_preview_etag(device_id: DeviceId, frame_number: u64) -> String
 }
 
 fn client_cache_is_current(headers: &HeaderMap, etag: &str, captured_at: SystemTime) -> bool {
+    // RFC 7232 §6: when `If-None-Match` is present, a recipient MUST NOT
+    // perform `If-Modified-Since`. We honor that here — if the client sent
+    // `If-None-Match` we only care whether the etag matches; we never fall
+    // back to the timestamp test. This matters because display frames can
+    // advance multiple times within the same HTTP-date second.
     if let Some(value) = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
-        && value
+    {
+        return value
             .split(',')
             .map(str::trim)
-            .any(|candidate| candidate == etag)
-    {
-        return true;
+            .any(|candidate| candidate == etag);
     }
     if let Some(value) = headers
         .get(header::IF_MODIFIED_SINCE)

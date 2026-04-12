@@ -241,3 +241,42 @@ async fn display_preview_returns_404_for_unknown_device() {
     let response = send(app, preview_request(unknown_id)).await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+// RFC 7232 §6: when both `If-None-Match` and `If-Modified-Since` are sent
+// and the etag does not match, the server must NOT fall through to the
+// date check. This catches the case where frames advance multiple times
+// within the same HTTP-date second (round-tripped to seconds by httpdate).
+#[tokio::test]
+async fn display_preview_if_none_match_beats_if_modified_since() {
+    let (state, _tempdir) = isolated_state();
+    let device_id = register_display(&state).await;
+    let baseline = SystemTime::now();
+    publish_frame(&state, device_id, vec![1, 2, 3], 1, baseline).await;
+
+    let app = api::build_router(Arc::clone(&state), None);
+    let first = send(app.clone(), preview_request(device_id)).await;
+    let last_modified = first
+        .headers()
+        .get(http::header::LAST_MODIFIED)
+        .expect("first response should carry Last-Modified")
+        .to_str()
+        .expect("last-modified should be ASCII")
+        .to_owned();
+    let _ = body_bytes(first).await;
+
+    // New frame in the same second — same Last-Modified string but a
+    // brand-new etag. A client that relies on the etag must not get a 304.
+    publish_frame(&state, device_id, vec![9, 9, 9, 9], 2, baseline).await;
+
+    let conditional = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/api/v1/displays/{device_id}/preview.jpg"))
+        .header(http::header::IF_NONE_MATCH, "\"stale-etag\"")
+        .header(http::header::IF_MODIFIED_SINCE, last_modified)
+        .body(Body::empty())
+        .expect("conditional request should build");
+    let response = send(app, conditional).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_bytes(response).await;
+    assert_eq!(body.as_ref(), &[9, 9, 9, 9]);
+}

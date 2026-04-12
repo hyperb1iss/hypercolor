@@ -229,6 +229,11 @@ async fn run_display_worker(
     };
     let mut pending = None::<PendingDisplayFrame>;
     let mut delivered_frame_number = 0_u64;
+    // Monotonic per-worker counter incremented on every preview publish so
+    // repeated write failures don't reuse the same ETag for different JPEGs.
+    // Decoupled from delivered_frame_number, which only advances on
+    // successful device writes.
+    let mut preview_frame_number = 0_u64;
     let mut last_delivered_jpeg = None::<Arc<Vec<u8>>>;
     let mut overlay_composer = OverlayComposer::new(
         target.geometry.width,
@@ -417,11 +422,12 @@ async fn run_display_worker(
             && !overlay_composer.has_active_slots()
             && let Some(jpeg) = last_delivered_jpeg.as_ref()
         {
+            preview_frame_number = preview_frame_number.saturating_add(1);
             publish_display_frame_snapshot(
                 &display_frames,
                 device_id,
                 &target.geometry,
-                delivered_frame_number.saturating_add(1),
+                preview_frame_number,
                 Arc::clone(jpeg),
             )
             .await;
@@ -531,11 +537,12 @@ async fn run_display_worker(
         };
 
         let jpeg_bytes = jpeg.len();
+        preview_frame_number = preview_frame_number.saturating_add(1);
         publish_display_frame_snapshot(
             &display_frames,
             device_id,
             &target.geometry,
-            delivered_frame_number.saturating_add(1),
+            preview_frame_number,
             Arc::clone(&jpeg),
         )
         .await;
@@ -580,6 +587,10 @@ async fn run_display_worker(
     }
 
     overlay_runtime.clear(device_id).await;
+    // Drop the last-published preview so /api/v1/displays/{id}/preview.jpg
+    // stops serving a stale frame after the device goes away and the JPEG
+    // bytes stop being pinned in the runtime.
+    display_frames.write().await.remove(device_id);
 }
 
 async fn publish_overlay_runtime(
