@@ -49,14 +49,14 @@ impl PreviewJpegEncoder {
         requested_width: u32,
         requested_height: u32,
     ) -> Result<Vec<u8>> {
-        let (target_width, target_height) =
-            resolve_preview_dimensions(frame.width, frame.height, requested_width, requested_height);
-        let mut jpeg = self.encode_scaled_body(
-            frame,
-            brightness,
+        let (target_width, target_height) = resolve_preview_dimensions(
+            frame.width,
+            frame.height,
             requested_width,
             requested_height,
-        )?;
+        );
+        let mut jpeg =
+            self.encode_scaled_body(frame, brightness, requested_width, requested_height)?;
         let width_u16 = u16::try_from(target_width).unwrap_or(u16::MAX);
         let height_u16 = u16::try_from(target_height).unwrap_or(u16::MAX);
         let body_offset = CANVAS_HEADER_LEN;
@@ -95,8 +95,12 @@ impl PreviewJpegEncoder {
         requested_height: u32,
     ) -> Result<Vec<u8>> {
         let brightness = brightness.clamp(0.0, 1.0);
-        let (target_width, target_height) =
-            resolve_preview_dimensions(frame.width, frame.height, requested_width, requested_height);
+        let (target_width, target_height) = resolve_preview_dimensions(
+            frame.width,
+            frame.height,
+            requested_width,
+            requested_height,
+        );
         let width_u16 = u16::try_from(target_width).unwrap_or(u16::MAX);
         let height_u16 = u16::try_from(target_height).unwrap_or(u16::MAX);
         let width = usize::from(width_u16);
@@ -176,10 +180,8 @@ impl PreviewJpegEncoder {
                     self.rgba_buffer[out_offset..out_offset + 4].copy_from_slice(pixel);
                 } else {
                     self.rgba_buffer[out_offset] = self.brightness_lut[usize::from(pixel[0])];
-                    self.rgba_buffer[out_offset + 1] =
-                        self.brightness_lut[usize::from(pixel[1])];
-                    self.rgba_buffer[out_offset + 2] =
-                        self.brightness_lut[usize::from(pixel[2])];
+                    self.rgba_buffer[out_offset + 1] = self.brightness_lut[usize::from(pixel[1])];
+                    self.rgba_buffer[out_offset + 2] = self.brightness_lut[usize::from(pixel[2])];
                     self.rgba_buffer[out_offset + 3] = pixel[3];
                 }
             }

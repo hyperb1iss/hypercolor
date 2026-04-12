@@ -14,6 +14,7 @@ use hypercolor_types::config::HypercolorConfig;
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
+use crate::scene_transactions::{SceneTransaction, apply_layout_update};
 
 #[derive(Debug, Deserialize)]
 pub struct GetConfigQuery {
@@ -385,20 +386,71 @@ async fn maybe_apply_render_config_change(state: &Arc<AppState>, key: Option<&st
     }
 
     if key.is_none_or(|k| k == "daemon.canvas_width" || k == "daemon.canvas_height") {
-        use crate::scene_transactions::SceneTransaction;
-        state
-            .scene_transactions
-            .push(SceneTransaction::ResizeCanvas {
-                width: config.daemon.canvas_width,
-                height: config.daemon.canvas_height,
-            });
+        let layout_synced = sync_active_layout_canvas_size(
+            state,
+            config.daemon.canvas_width,
+            config.daemon.canvas_height,
+        )
+        .await;
+        if !layout_synced {
+            state
+                .scene_transactions
+                .push(SceneTransaction::ResizeCanvas {
+                    width: config.daemon.canvas_width,
+                    height: config.daemon.canvas_height,
+                });
+        }
         info!(
             canvas_width = config.daemon.canvas_width,
             canvas_height = config.daemon.canvas_height,
+            layout_synced,
             "Queued live canvas resize (takes effect next frame)"
         );
         applied = true;
     }
 
     applied
+}
+
+async fn sync_active_layout_canvas_size(state: &Arc<AppState>, width: u32, height: u32) -> bool {
+    let updated_layout = {
+        let spatial = state.spatial_engine.read().await;
+        let current = spatial.layout().as_ref().clone();
+        if current.canvas_width == width && current.canvas_height == height {
+            None
+        } else {
+            let mut updated = current;
+            updated.canvas_width = width;
+            updated.canvas_height = height;
+            Some(updated)
+        }
+    };
+
+    let Some(updated_layout) = updated_layout else {
+        return false;
+    };
+
+    apply_layout_update(
+        &state.spatial_engine,
+        &state.scene_transactions,
+        updated_layout.clone(),
+    )
+    .await;
+
+    let persisted_layout_updated = {
+        let mut layouts = state.layouts.write().await;
+        if let Some(saved_layout) = layouts.get_mut(&updated_layout.id) {
+            saved_layout.canvas_width = width;
+            saved_layout.canvas_height = height;
+            true
+        } else {
+            false
+        }
+    };
+
+    if persisted_layout_updated {
+        crate::api::persist_layouts(state).await;
+    }
+
+    true
 }

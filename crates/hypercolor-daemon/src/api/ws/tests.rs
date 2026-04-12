@@ -1283,12 +1283,22 @@ fn cached_canvas_preview_binary_keys_dimensions_separately() {
     canvas.set_pixel(1, 1, Rgba::new(64, 64, 64, 200));
     let frame = CanvasFrame::from_canvas(&canvas, 7002, 9902);
 
-    let full =
-        super::cache::try_encode_cached_canvas_preview_binary(&frame, CanvasFormat::Rgba, 1.0, 0, 0)
-            .expect("full-size cached preview should encode");
-    let scaled =
-        super::cache::try_encode_cached_canvas_preview_binary(&frame, CanvasFormat::Rgba, 1.0, 1, 0)
-            .expect("scaled cached preview should encode");
+    let full = super::cache::try_encode_cached_canvas_preview_binary(
+        &frame,
+        CanvasFormat::Rgba,
+        1.0,
+        0,
+        0,
+    )
+    .expect("full-size cached preview should encode");
+    let scaled = super::cache::try_encode_cached_canvas_preview_binary(
+        &frame,
+        CanvasFormat::Rgba,
+        1.0,
+        1,
+        0,
+    )
+    .expect("scaled cached preview should encode");
 
     assert_ne!(full, scaled);
 }

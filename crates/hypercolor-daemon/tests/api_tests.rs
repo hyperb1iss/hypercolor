@@ -759,6 +759,106 @@ async fn config_set_identical_audio_value_skips_live_rebuild() {
 }
 
 #[tokio::test]
+async fn config_set_render_canvas_updates_active_layout_dimensions() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let config_manager =
+        Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
+
+    let mut state = isolated_state();
+    state.config_manager = Some(config_manager);
+
+    let active_layout = {
+        let spatial = state
+            .spatial_engine
+            .try_read()
+            .expect("spatial engine should not be contended");
+        spatial.layout().as_ref().clone()
+    };
+    {
+        let mut layouts = state
+            .layouts
+            .try_write()
+            .expect("layout store should not be contended");
+        layouts.insert(active_layout.id.clone(), active_layout.clone());
+    }
+
+    let state = Arc::new(state);
+    let app = test_app_with_state(Arc::clone(&state));
+
+    for (key, value) in [
+        ("daemon.canvas_width", "1024"),
+        ("daemon.canvas_height", "768"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/config/set")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"key":"{key}","value":"{value}"}}"#
+                    )))
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["data"]["key"], key);
+        assert_eq!(json["data"]["live"], true);
+    }
+
+    {
+        let spatial = state.spatial_engine.read().await;
+        assert_eq!(spatial.layout().canvas_width, 1024);
+        assert_eq!(spatial.layout().canvas_height, 768);
+    }
+
+    {
+        let layouts = state.layouts.read().await;
+        let saved = layouts
+            .get("default")
+            .expect("active layout should remain persisted");
+        assert_eq!(saved.canvas_width, 1024);
+        assert_eq!(saved.canvas_height, 768);
+    }
+
+    let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
+    let config: HypercolorConfig =
+        toml::from_str(&config_raw).expect("saved config should deserialize");
+    assert_eq!(config.daemon.canvas_width, 1024);
+    assert_eq!(config.daemon.canvas_height, 768);
+
+    let transactions = state.scene_transactions.drain();
+    assert!(transactions.len() >= 4);
+    assert!(transactions.iter().any(|transaction| {
+        matches!(
+            transaction,
+            SceneTransaction::ReplaceLayout(layout)
+                if layout.id == "default"
+                    && layout.canvas_width == 1024
+                    && layout.canvas_height == 768
+        )
+    }));
+    assert!(transactions.iter().any(|transaction| {
+        matches!(
+            transaction,
+            SceneTransaction::ResizeCanvas { width, height }
+                if *width == 1024 && *height == 768
+        )
+    }));
+    assert!(transactions.iter().any(|transaction| {
+        matches!(
+            transaction,
+            SceneTransaction::ResizeCanvas { width, .. } if *width == 1024
+        )
+    }));
+}
+
+#[tokio::test]
 async fn preview_page_returns_html() {
     let app = test_app();
 

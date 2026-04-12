@@ -20,9 +20,7 @@ use hypercolor_types::canvas::{
     PublishedSurfaceStorageIdentity, linear_to_srgb_u8, srgb_u8_to_linear,
 };
 
-use super::preview_encode::{
-    PreviewJpegEncoder, encode_canvas_jpeg_payload_scaled_stateless,
-};
+use super::preview_encode::{PreviewJpegEncoder, encode_canvas_jpeg_payload_scaled_stateless};
 use super::protocol::{ActiveFramesConfig, CanvasFormat, FrameFormat, FrameZoneSelection};
 use crate::api::AppState;
 
@@ -501,7 +499,14 @@ pub(super) fn encode_canvas_preview_binary(
     format: CanvasFormat,
     brightness: f32,
 ) -> Vec<u8> {
-    encode_canvas_binary_with_header_and_brightness(canvas, format, WS_CANVAS_HEADER, brightness, 0, 0)
+    encode_canvas_binary_with_header_and_brightness(
+        canvas,
+        format,
+        WS_CANVAS_HEADER,
+        brightness,
+        0,
+        0,
+    )
 }
 
 #[cfg(test)]
@@ -520,8 +525,12 @@ pub(super) fn try_encode_cached_canvas_preview_binary(
     requested_width: u32,
     requested_height: u32,
 ) -> Option<Bytes> {
-    let output_size =
-        resolve_canvas_output_size(canvas.width, canvas.height, requested_width, requested_height);
+    let output_size = resolve_canvas_output_size(
+        canvas.width,
+        canvas.height,
+        requested_width,
+        requested_height,
+    );
     if format == CanvasFormat::Jpeg {
         return try_encode_cached_canvas_jpeg_binary(
             canvas,
@@ -531,15 +540,13 @@ pub(super) fn try_encode_cached_canvas_preview_binary(
         );
     }
 
-    if let Some(payload) =
-        try_encode_cached_canvas_binary_from_body(
-            canvas,
-            format,
-            WS_CANVAS_HEADER,
-            brightness,
-            output_size,
-        )
-    {
+    if let Some(payload) = try_encode_cached_canvas_binary_from_body(
+        canvas,
+        format,
+        WS_CANVAS_HEADER,
+        brightness,
+        output_size,
+    ) {
         return Some(payload);
     }
 
@@ -588,8 +595,12 @@ pub(super) fn try_encode_cached_canvas_binary_with_header_scaled(
     requested_width: u32,
     requested_height: u32,
 ) -> Option<Bytes> {
-    let output_size =
-        resolve_canvas_output_size(canvas.width, canvas.height, requested_width, requested_height);
+    let output_size = resolve_canvas_output_size(
+        canvas.width,
+        canvas.height,
+        requested_width,
+        requested_height,
+    );
     if format == CanvasFormat::Jpeg {
         return try_encode_cached_canvas_jpeg_binary(canvas, header, 1.0, output_size);
     }
@@ -621,8 +632,12 @@ fn encode_canvas_binary_with_header_and_brightness(
     requested_width: u32,
     requested_height: u32,
 ) -> Vec<u8> {
-    let output_size =
-        resolve_canvas_output_size(canvas.width, canvas.height, requested_width, requested_height);
+    let output_size = resolve_canvas_output_size(
+        canvas.width,
+        canvas.height,
+        requested_width,
+        requested_height,
+    );
     if format == CanvasFormat::Jpeg {
         return encode_canvas_jpeg_payload_scaled_stateless(
             canvas,
@@ -698,7 +713,8 @@ fn encode_canvas_body(
                             .saturating_mul(source_width)
                             .saturating_add(source_x)
                             .saturating_mul(4);
-                        let out_offset = y.saturating_mul(width).saturating_add(x).saturating_mul(3);
+                        let out_offset =
+                            y.saturating_mul(width).saturating_add(x).saturating_mul(3);
                         let pixel = &rgba[source_offset..source_offset + 4];
                         if let Some(scale_lut) = scale_lut.as_ref() {
                             body[out_offset] = scale_lut[usize::from(pixel[0])];
@@ -732,7 +748,8 @@ fn encode_canvas_body(
                             .saturating_mul(source_width)
                             .saturating_add(source_x)
                             .saturating_mul(4);
-                        let out_offset = y.saturating_mul(width).saturating_add(x).saturating_mul(4);
+                        let out_offset =
+                            y.saturating_mul(width).saturating_add(x).saturating_mul(4);
                         let pixel = &rgba[source_offset..source_offset + 4];
                         if let Some(scale_lut) = scale_lut.as_ref() {
                             body[out_offset] = scale_lut[usize::from(pixel[0])];
