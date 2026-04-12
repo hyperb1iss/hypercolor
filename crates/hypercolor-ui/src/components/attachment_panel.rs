@@ -29,11 +29,14 @@ pub fn WiringPanel(
     #[prop(into)] device: Signal<Option<api::DeviceSummary>>,
 ) -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
-    let (refetch_tick, set_refetch_tick) = signal(0_u32);
 
+    // Note: we intentionally don't wire a refetch tick here. After a save, the
+    // response contains the updated bindings so we patch local state in place
+    // rather than refetching — that's what preserves scroll position and input
+    // focus in the component editor. The resources still re-trigger naturally
+    // when `device_id` changes (device switch).
     let attachments = LocalResource::new(move || {
         let id = device_id.get();
-        refetch_tick.get();
         async move {
             if id.is_empty() {
                 return Ok(api::DeviceAttachmentsResponse {
@@ -48,13 +51,10 @@ pub fn WiringPanel(
         }
     });
 
-    let templates = LocalResource::new(move || {
-        refetch_tick.get();
-        async move {
-            api::fetch_attachment_templates(None)
-                .await
-                .unwrap_or_default()
-        }
+    let templates = LocalResource::new(move || async move {
+        api::fetch_attachment_templates(None)
+            .await
+            .unwrap_or_default()
     });
 
     view! {
@@ -246,6 +246,10 @@ pub fn WiringPanel(
                                                         let did_for_save = StoredValue::new(did.clone());
                                                         let did_for_identify = StoredValue::new(did.clone());
                                                         let slot_id_for_identify = StoredValue::new(slot_id.clone());
+                                                        // Per-channel hardware LED cap (e.g. PrismRGB Prism 8 = 126/channel).
+                                                        // Used to clamp the custom-strip input so users can't draft a strip
+                                                        // that exceeds the channel's physical capacity.
+                                                        let slot_max_leds = slot.led_count.max(1);
                                                         let (save_in_flight, set_save_in_flight) = signal(false);
 
                                                         let is_dirty = Signal::derive(move || {
@@ -341,7 +345,30 @@ pub fn WiringPanel(
                                                                 match result {
                                                                     Ok(updated) => {
                                                                         toasts::toast_success("Saved");
-                                                                        set_refetch_tick.update(|t| *t += 1);
+                                                                        // Patch drafts in place so row_ids stay stable — this is
+                                                                        // what keeps scroll position, input focus, and the <For>
+                                                                        // keyed list intact across a save. We also backfill
+                                                                        // persisted_target on rows that were just saved so the
+                                                                        // identify button starts working without a refetch.
+                                                                        let slot_id_local = slot_id_for_save.get_value();
+                                                                        set_drafts.update(|rows| {
+                                                                            let mut slot_bindings: Vec<(usize, &api::AttachmentBindingSummary)> = updated
+                                                                                .bindings
+                                                                                .iter()
+                                                                                .enumerate()
+                                                                                .filter(|(_, binding)| binding.slot_id == slot_id_local)
+                                                                                .collect();
+                                                                            slot_bindings.sort_by_key(|(_, binding)| binding.led_offset);
+                                                                            for (row, (binding_index, _)) in rows.iter_mut().zip(slot_bindings.iter()) {
+                                                                                row.persisted_target = Some(attachment_editor::PersistedAttachmentTarget {
+                                                                                    binding_index: *binding_index,
+                                                                                    instance: 0,
+                                                                                });
+                                                                            }
+                                                                        });
+                                                                        // Reset the dirty baseline — is_dirty becomes false and
+                                                                        // the save button hides until the next edit.
+                                                                        initial_store.set_value(drafts.get_untracked());
                                                                         if let Some(dev) = device_for_sync
                                                                             && !updated.suggested_zones.is_empty() {
                                                                                 sync_wiring_to_layout(dev, updated.suggested_zones, layouts_resource);
@@ -354,182 +381,246 @@ pub fn WiringPanel(
 
                                                     view! {
                                                     <div class="border-t border-edge-subtle/50 px-3 py-2.5 space-y-2">
-                                                        // Component rows with inline editing
-                                                        {move || {
-                                                            let rows = drafts.get();
-                                                            if rows.is_empty() {
+                                                        // Component rows — <For> keyed on row_id keeps existing row DOM
+                                                        // (and input focus/scroll position) stable across drafts mutations.
+                                                        // Handlers look rows up by row_id instead of draft index so
+                                                        // reorders and deletes can't desync them.
+                                                        <For
+                                                            each=move || drafts.get()
+                                                            key=|row: &attachment_editor::DraftRow| row.row_id
+                                                            children=move |row: attachment_editor::DraftRow| {
+                                                                let row_id = row.row_id;
+                                                                let initial_kind = row.kind.clone();
+                                                                let initial_name = row.name.clone();
+                                                                let is_custom = row.needs_template_creation();
+                                                                let type_label = match &initial_kind {
+                                                                    attachment_editor::ComponentDraft::Strip { .. } => "Strip",
+                                                                    attachment_editor::ComponentDraft::Matrix { .. } => "Matrix",
+                                                                    attachment_editor::ComponentDraft::Component { .. } => "Component",
+                                                                };
+                                                                let placeholder = if initial_name.is_empty() {
+                                                                    type_label.to_string()
+                                                                } else {
+                                                                    initial_name.clone()
+                                                                };
+                                                                let did_c = did_for_identify.get_value();
+                                                                let sid_c = slot_id_for_identify.get_value();
+
+                                                                // Per-row reactive views of `drafts`, looked up by row_id so
+                                                                // reorders or deletes can't point at the wrong row.
+                                                                let name_sig = Memo::new(move |_| {
+                                                                    drafts
+                                                                        .with(|rows| {
+                                                                            rows.iter()
+                                                                                .find(|r| r.row_id == row_id)
+                                                                                .map(|r| r.name.clone())
+                                                                        })
+                                                                        .unwrap_or_default()
+                                                                });
+                                                                let strip_led_count = Memo::new(move |_| {
+                                                                    drafts
+                                                                        .with(|rows| {
+                                                                            rows.iter().find(|r| r.row_id == row_id).and_then(|r| match &r.kind {
+                                                                                attachment_editor::ComponentDraft::Strip { led_count } => Some(*led_count),
+                                                                                _ => None,
+                                                                            })
+                                                                        })
+                                                                        .unwrap_or(0)
+                                                                });
+                                                                let matrix_cols_sig = Memo::new(move |_| {
+                                                                    drafts
+                                                                        .with(|rows| {
+                                                                            rows.iter().find(|r| r.row_id == row_id).and_then(|r| match &r.kind {
+                                                                                attachment_editor::ComponentDraft::Matrix { cols, .. } => Some(*cols),
+                                                                                _ => None,
+                                                                            })
+                                                                        })
+                                                                        .unwrap_or(0)
+                                                                });
+                                                                let matrix_rows_sig = Memo::new(move |_| {
+                                                                    drafts
+                                                                        .with(|rows| {
+                                                                            rows.iter().find(|r| r.row_id == row_id).and_then(|r| match &r.kind {
+                                                                                attachment_editor::ComponentDraft::Matrix { rows: r, .. } => Some(*r),
+                                                                                _ => None,
+                                                                            })
+                                                                        })
+                                                                        .unwrap_or(0)
+                                                                });
+                                                                let persisted_sig = Memo::new(move |_| {
+                                                                    drafts.with(|rows| {
+                                                                        rows.iter()
+                                                                            .find(|r| r.row_id == row_id)
+                                                                            .and_then(|r| r.persisted_target)
+                                                                    })
+                                                                });
+
                                                                 view! {
-                                                                    <div class="text-[10px] text-fg-tertiary/40 text-center py-2">"No components"</div>
-                                                                }.into_any()
-                                                            } else {
-                                                                let did_id = did_for_identify.get_value();
-                                                                let sid_id = slot_id_for_identify.get_value();
-                                                                rows.into_iter().enumerate().map(|(i, row)| {
-                                                                    let identify_target = row.persisted_target;
-                                                                    let is_custom = row.needs_template_creation();
-                                                                    let type_label = match &row.kind {
-                                                                        attachment_editor::ComponentDraft::Strip { .. } => "Strip",
-                                                                        attachment_editor::ComponentDraft::Matrix { .. } => "Matrix",
-                                                                        attachment_editor::ComponentDraft::Component { .. } => "Component",
-                                                                    };
-                                                                    let placeholder = if row.name.is_empty() { type_label.to_string() } else { row.name.clone() };
-                                                                    let did_c = did_id.clone();
-                                                                    let sid_c = sid_id.clone();
+                                                                    <div class="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-surface-overlay/10
+                                                                                border border-edge-subtle/50 hover:border-edge-subtle transition-all group/row">
+                                                                        // Type icon
+                                                                        <div class="w-5 h-5 rounded flex items-center justify-center shrink-0"
+                                                                             style="color: rgba(128, 255, 234, 0.6)">
+                                                                            <Icon icon={match &initial_kind {
+                                                                                attachment_editor::ComponentDraft::Strip { .. } => LuMinus,
+                                                                                attachment_editor::ComponentDraft::Matrix { .. } => LuGrid2x2,
+                                                                                attachment_editor::ComponentDraft::Component { .. } => LuCircleDot,
+                                                                            }} width="14px" height="14px" />
+                                                                        </div>
 
-                                                                    view! {
-                                                                        <div class="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-surface-overlay/10
-                                                                                    border border-edge-subtle/50 hover:border-edge-subtle transition-all group/row">
-                                                                            // Type icon
-                                                                            <div class="w-5 h-5 rounded flex items-center justify-center shrink-0"
-                                                                                 style="color: rgba(128, 255, 234, 0.6)">
-                                                                                <Icon icon={match &row.kind {
-                                                                                    attachment_editor::ComponentDraft::Strip { .. } => LuMinus,
-                                                                                    attachment_editor::ComponentDraft::Matrix { .. } => LuGrid2x2,
-                                                                                    attachment_editor::ComponentDraft::Component { .. } => LuCircleDot,
-                                                                                }} width="14px" height="14px" />
-                                                                            </div>
+                                                                        // Name field
+                                                                        {if is_custom {
+                                                                            view! {
+                                                                                <input
+                                                                                    type="text"
+                                                                                    placeholder=placeholder
+                                                                                    class="flex-1 min-w-0 bg-transparent text-[12px] text-fg-primary
+                                                                                           placeholder-fg-tertiary/30 focus:outline-none border-none p-0"
+                                                                                    prop:value=move || name_sig.get()
+                                                                                    on:input=move |ev| {
+                                                                                        let val = event_target_value(&ev);
+                                                                                        set_drafts.update(|rows| {
+                                                                                            if let Some(r) = rows.iter_mut().find(|r| r.row_id == row_id) {
+                                                                                                r.name = val;
+                                                                                            }
+                                                                                        });
+                                                                                    }
+                                                                                />
+                                                                            }.into_any()
+                                                                        } else {
+                                                                            view! {
+                                                                                <span class="flex-1 min-w-0 text-[12px] text-fg-primary truncate">{placeholder}</span>
+                                                                            }.into_any()
+                                                                        }}
 
-                                                                            // Name field
-                                                                            {if is_custom {
-                                                                                view! {
-                                                                                    <input
-                                                                                        type="text"
-                                                                                        placeholder=placeholder
-                                                                                        class="flex-1 min-w-0 bg-transparent text-[12px] text-fg-primary
-                                                                                               placeholder-fg-tertiary/30 focus:outline-none border-none p-0"
-                                                                                        prop:value=row.name.clone()
-                                                                                        on:change=move |ev| {
-                                                                                            let val = event_target_value(&ev);
+                                                                        // LED count / dimensions — editable for custom, static for library.
+                                                                        // `on:input` commits every keystroke/arrow so values can't get
+                                                                        // lost between blur and click. The strip input is clamped to
+                                                                        // `slot_max_leds` (the channel's hardware capacity).
+                                                                        {match &initial_kind {
+                                                                            attachment_editor::ComponentDraft::Strip { .. } => view! {
+                                                                                <input
+                                                                                    type="number" min="1" max=slot_max_leds.to_string()
+                                                                                    class="w-14 bg-surface-base/40 border border-edge-subtle rounded px-1.5 py-0.5
+                                                                                           text-[11px] font-mono tabular-nums text-right shrink-0
+                                                                                           focus:outline-none focus:border-neon-cyan/30"
+                                                                                    style="color: rgba(128, 255, 234, 0.8)"
+                                                                                    prop:value=move || strip_led_count.get().to_string()
+                                                                                    on:input=move |ev| {
+                                                                                        if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                                                            let clamped = v.clamp(1, slot_max_leds);
                                                                                             set_drafts.update(|rows| {
-                                                                                                if let Some(r) = rows.get_mut(i) { r.name = val; }
+                                                                                                if let Some(r) = rows.iter_mut().find(|r| r.row_id == row_id) {
+                                                                                                    r.kind = attachment_editor::ComponentDraft::Strip { led_count: clamped };
+                                                                                                }
                                                                                             });
                                                                                         }
-                                                                                    />
-                                                                                }.into_any()
-                                                                            } else {
-                                                                                view! {
-                                                                                    <span class="flex-1 min-w-0 text-[12px] text-fg-primary truncate">{placeholder}</span>
-                                                                                }.into_any()
-                                                                            }}
-
-                                                                            // LED count / dimensions (editable for custom, static for library)
-                                                                            {match &row.kind {
-                                                                                attachment_editor::ComponentDraft::Strip { led_count } => {
-                                                                                    let count = *led_count;
-                                                                                    view! {
-                                                                                        <input
-                                                                                            type="number" min="1" max="2000"
-                                                                                            class="w-14 bg-surface-base/40 border border-edge-subtle rounded px-1.5 py-0.5
-                                                                                                   text-[11px] font-mono tabular-nums text-right shrink-0
-                                                                                                   focus:outline-none focus:border-neon-cyan/30"
-                                                                                            style="color: rgba(128, 255, 234, 0.8)"
-                                                                                            prop:value=count.to_string()
-                                                                                            on:change=move |ev| {
-                                                                                                if let Ok(v) = event_target_value(&ev).parse::<u32>() {
-                                                                                                    let v = v.clamp(1, 2000);
-                                                                                                    set_drafts.update(|rows| {
-                                                                                                        if let Some(r) = rows.get_mut(i) {
-                                                                                                            r.kind = attachment_editor::ComponentDraft::Strip { led_count: v };
-                                                                                                        }
-                                                                                                    });
-                                                                                                }
+                                                                                    }
+                                                                                />
+                                                                            }.into_any(),
+                                                                            attachment_editor::ComponentDraft::Matrix { .. } => view! {
+                                                                                <div class="flex items-center gap-0.5 shrink-0">
+                                                                                    <input
+                                                                                        type="number" min="1" max="64"
+                                                                                        class="w-10 bg-surface-base/40 border border-edge-subtle rounded px-1 py-0.5
+                                                                                               text-[11px] font-mono tabular-nums text-right
+                                                                                               focus:outline-none focus:border-neon-cyan/30"
+                                                                                        style="color: rgba(128, 255, 234, 0.8)"
+                                                                                        prop:value=move || matrix_cols_sig.get().to_string()
+                                                                                        on:input=move |ev| {
+                                                                                            if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                                                                let clamped = v.clamp(1, 64);
+                                                                                                set_drafts.update(|rows| {
+                                                                                                    if let Some(r) = rows.iter_mut().find(|r| r.row_id == row_id)
+                                                                                                        && let attachment_editor::ComponentDraft::Matrix { cols, .. } = &mut r.kind {
+                                                                                                        *cols = clamped;
+                                                                                                    }
+                                                                                                });
                                                                                             }
-                                                                                        />
-                                                                                    }.into_any()
-                                                                                }
-                                                                                attachment_editor::ComponentDraft::Matrix { cols, rows } => {
-                                                                                    let c = *cols;
-                                                                                    let r = *rows;
-                                                                                    view! {
-                                                                                        <div class="flex items-center gap-0.5 shrink-0">
-                                                                                            <input
-                                                                                                type="number" min="1" max="64"
-                                                                                                class="w-10 bg-surface-base/40 border border-edge-subtle rounded px-1 py-0.5
-                                                                                                       text-[11px] font-mono tabular-nums text-right
-                                                                                                       focus:outline-none focus:border-neon-cyan/30"
-                                                                                                style="color: rgba(128, 255, 234, 0.8)"
-                                                                                                prop:value=c.to_string()
-                                                                                                on:change=move |ev| {
-                                                                                                    if let Ok(v) = event_target_value(&ev).parse::<u32>() {
-                                                                                                        set_drafts.update(|rows| {
-                                                                                                            if let Some(r) = rows.get_mut(i)
-                                                                                                                && let attachment_editor::ComponentDraft::Matrix { cols, .. } = &mut r.kind {
-                                                                                                                    *cols = v.clamp(1, 64);
-                                                                                                                }
-                                                                                                        });
+                                                                                        }
+                                                                                    />
+                                                                                    <span class="text-[9px] text-fg-tertiary/30">{"\u{00d7}"}</span>
+                                                                                    <input
+                                                                                        type="number" min="1" max="64"
+                                                                                        class="w-10 bg-surface-base/40 border border-edge-subtle rounded px-1 py-0.5
+                                                                                               text-[11px] font-mono tabular-nums text-right
+                                                                                               focus:outline-none focus:border-neon-cyan/30"
+                                                                                        style="color: rgba(128, 255, 234, 0.8)"
+                                                                                        prop:value=move || matrix_rows_sig.get().to_string()
+                                                                                        on:input=move |ev| {
+                                                                                            if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                                                                let clamped = v.clamp(1, 64);
+                                                                                                set_drafts.update(|rows| {
+                                                                                                    if let Some(r) = rows.iter_mut().find(|r| r.row_id == row_id)
+                                                                                                        && let attachment_editor::ComponentDraft::Matrix { rows, .. } = &mut r.kind {
+                                                                                                        *rows = clamped;
                                                                                                     }
-                                                                                                }
-                                                                                            />
-                                                                                            <span class="text-[9px] text-fg-tertiary/30">{"\u{00d7}"}</span>
-                                                                                            <input
-                                                                                                type="number" min="1" max="64"
-                                                                                                class="w-10 bg-surface-base/40 border border-edge-subtle rounded px-1 py-0.5
-                                                                                                       text-[11px] font-mono tabular-nums text-right
-                                                                                                       focus:outline-none focus:border-neon-cyan/30"
-                                                                                                style="color: rgba(128, 255, 234, 0.8)"
-                                                                                                prop:value=r.to_string()
-                                                                                                on:change=move |ev| {
-                                                                                                    if let Ok(v) = event_target_value(&ev).parse::<u32>() {
-                                                                                                        set_drafts.update(|rows| {
-                                                                                                            if let Some(r) = rows.get_mut(i)
-                                                                                                                && let attachment_editor::ComponentDraft::Matrix { rows, .. } = &mut r.kind {
-                                                                                                                    *rows = v.clamp(1, 64);
-                                                                                                                }
-                                                                                                        });
-                                                                                                    }
-                                                                                                }
-                                                                                            />
-                                                                                        </div>
-                                                                                    }.into_any()
-                                                                                }
-                                                                                attachment_editor::ComponentDraft::Component { template_id } => {
-                                                                                    let count = templates_for_summary.with_value(|ts| ts.iter().find(|t| t.id == *template_id).map(|t| t.led_count)).unwrap_or(0);
-                                                                                    view! {
-                                                                                        <span class="text-[10px] font-mono tabular-nums shrink-0 px-1.5 py-0.5 rounded bg-surface-overlay/20"
-                                                                                              style="color: rgba(128, 255, 234, 0.5)">
-                                                                                            {count} " LEDs"
-                                                                                        </span>
-                                                                                    }.into_any()
-                                                                                }
-                                                                            }}
+                                                                                                });
+                                                                                            }
+                                                                                        }
+                                                                                    />
+                                                                                </div>
+                                                                            }.into_any(),
+                                                                            attachment_editor::ComponentDraft::Component { template_id } => {
+                                                                                let count = templates_for_summary.with_value(|ts| ts.iter().find(|t| t.id == *template_id).map(|t| t.led_count)).unwrap_or(0);
+                                                                                view! {
+                                                                                    <span class="text-[10px] font-mono tabular-nums shrink-0 px-1.5 py-0.5 rounded bg-surface-overlay/20"
+                                                                                          style="color: rgba(128, 255, 234, 0.5)">
+                                                                                        {count} " LEDs"
+                                                                                    </span>
+                                                                                }.into_any()
+                                                                            }
+                                                                        }}
 
-                                                                            // Identify
-                                                                            <button
-                                                                                class="w-5 h-5 flex items-center justify-center rounded shrink-0
-                                                                                       opacity-0 group-hover/row:opacity-100 transition-opacity
-                                                                                       text-fg-tertiary/40 hover:text-accent btn-press"
-                                                                                title="Identify component"
-                                                                                on:click=move |_| {
+                                                                        // Identify — only enabled once the row has been saved
+                                                                        // (and therefore has a real binding_index to target).
+                                                                        <button
+                                                                            class="w-5 h-5 flex items-center justify-center rounded shrink-0
+                                                                                   opacity-0 group-hover/row:opacity-100 transition-opacity
+                                                                                   text-fg-tertiary/40 hover:text-accent btn-press
+                                                                                   disabled:opacity-0 disabled:pointer-events-none"
+                                                                            title="Identify component"
+                                                                            disabled=move || persisted_sig.get().is_none()
+                                                                            on:click=move |_| {
+                                                                                if let Some(target) = persisted_sig.get_untracked() {
                                                                                     let d = did_c.clone();
                                                                                     let s = sid_c.clone();
-                                                                                    let binding_index = identify_target
-                                                                                        .map(|target| target.binding_index)
-                                                                                        .or(Some(i));
-                                                                                    let instance =
-                                                                                        identify_target.map(|target| target.instance);
                                                                                     spawn_identify(
                                                                                         "component",
-                                                                                        async move { api::identify_attachment(&d, &s, binding_index, instance).await },
+                                                                                        async move {
+                                                                                            api::identify_attachment(
+                                                                                                &d,
+                                                                                                &s,
+                                                                                                Some(target.binding_index),
+                                                                                                Some(target.instance),
+                                                                                            )
+                                                                                            .await
+                                                                                        },
                                                                                     );
                                                                                 }
-                                                                            >
-                                                                                <Icon icon=LuZap width="10px" height="10px" />
-                                                                            </button>
+                                                                            }
+                                                                        >
+                                                                            <Icon icon=LuZap width="10px" height="10px" />
+                                                                        </button>
 
-                                                                            // Delete
-                                                                            <button
-                                                                                class="w-5 h-5 flex items-center justify-center rounded shrink-0
-                                                                                       opacity-0 group-hover/row:opacity-100 transition-opacity
-                                                                                       text-fg-tertiary/40 hover:text-error-red btn-press"
-                                                                                on:click=move |_| { set_drafts.update(|rows| { if i < rows.len() { rows.remove(i); } }); }
-                                                                            >
-                                                                                <Icon icon=LuX width="10px" height="10px" />
-                                                                            </button>
-                                                                        </div>
-                                                                    }
-                                                                }).collect_view().into_any()
+                                                                        // Delete
+                                                                        <button
+                                                                            class="w-5 h-5 flex items-center justify-center rounded shrink-0
+                                                                                   opacity-0 group-hover/row:opacity-100 transition-opacity
+                                                                                   text-fg-tertiary/40 hover:text-error-red btn-press"
+                                                                            on:click=move |_| {
+                                                                                set_drafts.update(|rows| { rows.retain(|r| r.row_id != row_id); });
+                                                                            }
+                                                                        >
+                                                                            <Icon icon=LuX width="10px" height="10px" />
+                                                                        </button>
+                                                                    </div>
+                                                                }
                                                             }
-                                                        }}
+                                                        />
+                                                        <Show when=move || drafts.with(Vec::is_empty)>
+                                                            <div class="text-[10px] text-fg-tertiary/40 text-center py-2">"No components"</div>
+                                                        </Show>
 
                                                         // Add + save buttons
                                                         <div class="flex items-center justify-between pt-1">
@@ -559,8 +650,12 @@ pub fn WiringPanel(
                                                                 {move || {
                                                                     let s = summary.get();
                                                                     (s.overflow_leds > 0).then(|| view! {
-                                                                        <span class="text-[9px] font-mono" style="color: rgb(255, 99, 99)">
-                                                                            {s.overflow_leds} " over"
+                                                                        <span
+                                                                            class="text-[9px] font-mono"
+                                                                            style="color: rgb(255, 99, 99)"
+                                                                            title="This channel's hardware capacity is exceeded — reduce the component(s) or remove one."
+                                                                        >
+                                                                            {s.total_leds} "/" {s.available_leds} " LEDs"
                                                                         </span>
                                                                     })
                                                                 }}

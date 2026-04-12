@@ -46,6 +46,7 @@ pub fn ComponentRow(
     let initial_name = row.name.clone();
     let initial_kind = row.kind.clone();
     let persisted_target = row.persisted_target;
+    let row_id = row.row_id;
 
     // Local editing state
     let (name_value, set_name_value) = signal(initial_name.clone());
@@ -82,6 +83,7 @@ pub fn ComponentRow(
         on_update.run((
             index,
             DraftRow {
+                row_id,
                 kind,
                 name,
                 persisted_target,

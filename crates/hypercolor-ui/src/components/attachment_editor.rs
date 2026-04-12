@@ -31,17 +31,44 @@ pub(crate) struct PersistedAttachmentTarget {
     pub instance: u32,
 }
 
+/// Mint a process-unique row ID for use as a stable `<For>` key.
+///
+/// Row IDs are never sent over the wire — they're just a per-session identity
+/// that lets Leptos preserve input DOM (and therefore focus / cursor / scroll)
+/// when the drafts vector mutates.
+pub(crate) fn next_row_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
 /// A row in the channel component editor.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `row_id` is intentionally excluded from equality: two rows with the same
+/// content compare equal regardless of DOM identity, which is what the dirty
+/// check wants. Only content changes should count as dirty.
+#[derive(Debug, Clone)]
 pub(crate) struct DraftRow {
+    pub row_id: u64,
     pub kind: ComponentDraft,
     pub name: String,
     pub persisted_target: Option<PersistedAttachmentTarget>,
 }
 
+impl PartialEq for DraftRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.name == other.name
+            && self.persisted_target == other.persisted_target
+    }
+}
+
+impl Eq for DraftRow {}
+
 impl DraftRow {
     pub(crate) fn new_strip(led_count: u32) -> Self {
         Self {
+            row_id: next_row_id(),
             kind: ComponentDraft::Strip { led_count },
             name: String::new(),
             persisted_target: None,
@@ -50,6 +77,7 @@ impl DraftRow {
 
     pub(crate) fn new_matrix(cols: u32, rows: u32) -> Self {
         Self {
+            row_id: next_row_id(),
             kind: ComponentDraft::Matrix { cols, rows },
             name: String::new(),
             persisted_target: None,
@@ -58,6 +86,7 @@ impl DraftRow {
 
     pub(crate) fn from_component(template_id: String, name: String) -> Self {
         Self {
+            row_id: next_row_id(),
             kind: ComponentDraft::Component { template_id },
             name,
             persisted_target: None,
@@ -164,6 +193,7 @@ pub(crate) fn expand_bindings_to_drafts(
                         let total = binding.effective_led_count;
                         let side = (total as f32).sqrt().ceil() as u32;
                         rows.push(DraftRow {
+                            row_id: next_row_id(),
                             kind: ComponentDraft::Matrix {
                                 cols: side,
                                 rows: total.div_ceil(side).max(1),
@@ -177,6 +207,7 @@ pub(crate) fn expand_bindings_to_drafts(
                     }
                     _ => {
                         rows.push(DraftRow {
+                            row_id: next_row_id(),
                             kind: ComponentDraft::Strip {
                                 led_count: binding.effective_led_count,
                             },
