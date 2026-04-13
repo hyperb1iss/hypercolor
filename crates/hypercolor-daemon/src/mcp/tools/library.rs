@@ -3,7 +3,7 @@
 use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, default_output_schema};
-use crate::api::AppState;
+use crate::api::{AppState, save_runtime_session_snapshot};
 use hypercolor_types::event::{ChangeTrigger, HypercolorEvent};
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
@@ -88,6 +88,7 @@ pub(super) async fn handle_set_profile_with_state(
     let warnings = crate::api::profiles::apply_profile_snapshot(state, &profile)
         .await
         .map_err(ToolError::Internal)?;
+    save_runtime_session_snapshot(state).await;
     state.event_bus.publish(HypercolorEvent::ProfileLoaded {
         profile_id: profile.id.clone(),
         profile_name: profile.name.clone(),

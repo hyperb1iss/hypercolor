@@ -1,6 +1,6 @@
 //! Display overlay endpoints and runtime diagnostics — `/api/v1/displays/*`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -16,7 +16,7 @@ use hypercolor_types::overlay::{
     DisplayOverlayConfig, OverlayBlendMode, OverlayPosition, OverlaySlot, OverlaySlotId,
     OverlaySource,
 };
-use hypercolor_types::scene::{DisplayFaceTarget, RenderGroup, RenderGroupId};
+use hypercolor_types::scene::RenderGroup;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -820,58 +820,6 @@ async fn current_display_face_assignment(
         effect,
         group,
     })
-}
-
-pub(crate) fn upsert_display_face_group<'a>(
-    scene: &'a mut hypercolor_types::scene::Scene,
-    device_id: DeviceId,
-    device_name: &str,
-    surface: DisplaySurfaceInfo,
-    effect: &EffectMetadata,
-    controls: std::collections::HashMap<String, ControlValue>,
-) -> &'a RenderGroup {
-    let layout = display_face_layout(device_id, device_name, surface);
-    if let Some(index) = scene.groups.iter().position(|group| {
-        group
-            .display_target
-            .as_ref()
-            .is_some_and(|target| target.device_id == device_id)
-    }) {
-        let group = &mut scene.groups[index];
-        let effect_changed = group.effect_id != Some(effect.id);
-        group.effect_id = Some(effect.id);
-        group.controls = controls;
-        if effect_changed {
-            group.control_bindings.clear();
-        }
-        group.layout = layout;
-        group.display_target = Some(DisplayFaceTarget { device_id });
-        group.role = hypercolor_types::scene::RenderGroupRole::Display;
-        if group.name.trim().is_empty() {
-            group.name = format!("{device_name} Face");
-        }
-        return &scene.groups[index];
-    }
-
-    scene.groups.push(RenderGroup {
-        id: RenderGroupId::new(),
-        name: format!("{device_name} Face"),
-        description: Some(format!("Display face for {device_name}")),
-        effect_id: Some(effect.id),
-        controls,
-        control_bindings: HashMap::new(),
-        preset_id: None,
-        layout,
-        brightness: 1.0,
-        enabled: true,
-        color: None,
-        display_target: Some(DisplayFaceTarget { device_id }),
-        role: hypercolor_types::scene::RenderGroupRole::Display,
-    });
-    scene
-        .groups
-        .last()
-        .expect("display face group should exist after insertion")
 }
 
 pub(crate) fn display_face_layout(

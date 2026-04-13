@@ -3,8 +3,13 @@
 use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, default_output_schema};
-use crate::api::AppState;
+use crate::api::{
+    AppState, publish_active_scene_changed, save_runtime_session_snapshot,
+    save_scene_store_snapshot,
+};
 use hypercolor_core::scene::make_scene;
+use hypercolor_types::event::SceneChangeReason;
+use hypercolor_types::scene::SceneKind;
 use hypercolor_types::scene::TransitionSpec;
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
@@ -205,6 +210,7 @@ pub(super) async fn handle_activate_scene_with_state(
         .unwrap_or(1000);
 
     let mut scene_manager = state.scene_manager.write().await;
+    let previous_active_scene = scene_manager.active_scene_id().copied();
     let matched_scene = scene_manager
         .list()
         .into_iter()
@@ -228,6 +234,17 @@ pub(super) async fn handle_activate_scene_with_state(
     scene_manager
         .activate(&scene.id, transition_override)
         .map_err(|error| ToolError::Internal(format!("failed to activate scene: {error}")))?;
+    let current_active_scene = scene_manager.active_scene_id().copied();
+    drop(scene_manager);
+    save_runtime_session_snapshot(state).await;
+    if previous_active_scene != current_active_scene {
+        publish_active_scene_changed(
+            state,
+            previous_active_scene,
+            scene.id,
+            SceneChangeReason::UserActivate,
+        );
+    }
 
     Ok(json!({
         "activated": true,
@@ -253,6 +270,7 @@ pub(super) async fn handle_list_scenes_with_state(
     let scenes = scene_manager
         .list()
         .into_iter()
+        .filter(|scene| scene.kind != SceneKind::Ephemeral)
         .filter(|scene| !enabled_only || scene.enabled)
         .map(|scene| {
             json!({
@@ -327,6 +345,9 @@ pub(super) async fn handle_create_scene_with_state(
             .create(scene)
             .map_err(|error| ToolError::Internal(format!("failed to create scene: {error}")))?;
     }
+    save_scene_store_snapshot(state)
+        .await
+        .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
 
     Ok(json!({
         "scene_id": scene_id,

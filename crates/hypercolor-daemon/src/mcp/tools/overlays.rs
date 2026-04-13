@@ -6,15 +6,16 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, default_output_schema};
-use crate::api::AppState;
+use crate::api::{AppState, publish_render_group_changed, save_runtime_session_snapshot};
 use crate::api::displays::{
     CreateOverlaySlotRequest, OverlayRuntimeResponse, UpdateOverlaySlotRequest,
     current_overlay_config, display_surface_info, overlay_runtime_for_slot, persist_overlay_config,
-    upsert_display_face_group, validate_overlay_config,
+    validate_overlay_config,
 };
 use crate::api::effects::resolve_effect_metadata;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::effect::{ControlValue, EffectCategory};
+use hypercolor_types::event::RenderGroupChangeKind;
 use hypercolor_types::overlay::{DisplayOverlayConfig, OverlaySlot, OverlaySlotId};
 
 pub(super) fn build_list_display_overlays() -> ToolDefinition {
@@ -370,36 +371,37 @@ pub(super) async fn handle_set_display_face_with_state(
     let (device_id, info, surface) = resolve_display_device(state, raw_device).await?;
     let controls = parse_controls_map(params.get("controls"))?;
 
-    let mut scene_manager = state.scene_manager.write().await;
-    let Some(active_scene_id) = scene_manager.active_scene_id().copied() else {
-        return Err(ToolError::InvalidParam {
-            param: "device".into(),
-            reason: "no active scene to attach the display face to".into(),
-        });
-    };
-    let Some(mut active_scene) = scene_manager.get(&active_scene_id).cloned() else {
-        return Err(ToolError::Internal(format!(
-            "active scene disappeared: {active_scene_id}"
-        )));
-    };
-
     if clear {
-        let previous_len = active_scene.groups.len();
-        active_scene.groups.retain(|group| {
-            group
-                .display_target
-                .as_ref()
-                .is_none_or(|target| target.device_id != device_id)
-        });
-        if active_scene.groups.len() == previous_len {
-            return Err(ToolError::InvalidParam {
-                param: "device".into(),
-                reason: format!("no display face is assigned to {device_id}"),
-            });
+        let (active_scene_id, removed_group) = {
+            let mut scene_manager = state.scene_manager.write().await;
+            let active_scene_id = scene_manager
+                .active_scene_id()
+                .copied()
+                .ok_or_else(|| ToolError::Internal("no active scene available".into()))?;
+            let removed_group = scene_manager
+                .active_scene()
+                .and_then(|scene| scene.display_group_for(device_id))
+                .cloned();
+            let removed = scene_manager
+                .remove_display_group(device_id)
+                .map_err(|error| ToolError::Internal(error.to_string()))?;
+            if !removed {
+                return Err(ToolError::InvalidParam {
+                    param: "device".into(),
+                    reason: format!("no display face is assigned to {device_id}"),
+                });
+            }
+            (active_scene_id, removed_group)
+        };
+        if let Some(removed_group) = removed_group.as_ref() {
+            publish_render_group_changed(
+                state,
+                active_scene_id,
+                removed_group,
+                RenderGroupChangeKind::Removed,
+            );
         }
-        scene_manager
-            .update(active_scene)
-            .map_err(|error| ToolError::Internal(error.to_string()))?;
+        save_runtime_session_snapshot(state).await;
         return Ok(json!({
             "device": display_device_payload(&info, surface),
             "scene_id": active_scene_id.to_string(),
@@ -437,18 +439,35 @@ pub(super) async fn handle_set_display_face_with_state(
         effect
     };
 
-    let group = upsert_display_face_group(
-        &mut active_scene,
-        device_id,
-        info.name.as_str(),
-        surface,
-        &effect,
-        controls,
-    )
-    .clone();
-    scene_manager
-        .update(active_scene)
-        .map_err(|error| ToolError::Internal(error.to_string()))?;
+    let (active_scene_id, group, change_kind) = {
+        let mut scene_manager = state.scene_manager.write().await;
+        let active_scene_id = scene_manager
+            .active_scene_id()
+            .copied()
+            .ok_or_else(|| ToolError::Internal("no active scene available".into()))?;
+        let change_kind = if scene_manager
+            .active_scene()
+            .and_then(|scene| scene.display_group_for(device_id))
+            .is_some()
+        {
+            RenderGroupChangeKind::Updated
+        } else {
+            RenderGroupChangeKind::Created
+        };
+        let group = scene_manager
+            .upsert_display_group(
+                device_id,
+                info.name.as_str(),
+                &effect,
+                controls,
+                crate::api::displays::display_face_layout(device_id, info.name.as_str(), surface),
+            )
+            .map_err(|error| ToolError::Internal(error.to_string()))?
+            .clone();
+        (active_scene_id, group, change_kind)
+    };
+    publish_render_group_changed(state, active_scene_id, &group, change_kind);
+    save_runtime_session_snapshot(state).await;
 
     Ok(json!({
         "device": display_device_payload(&info, surface),

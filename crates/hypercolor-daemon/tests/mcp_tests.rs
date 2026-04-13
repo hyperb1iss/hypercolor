@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
@@ -18,19 +19,23 @@ use hypercolor_daemon::mcp::resources::{
 use hypercolor_daemon::mcp::tools::{
     ToolError, build_tool_definitions, execute_tool, execute_tool_with_state,
 };
+use hypercolor_daemon::profile_store::Profile;
+use hypercolor_daemon::runtime_state;
+use hypercolor_daemon::scene_store::SceneStore;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::config::{CURRENT_SCHEMA_VERSION, McpConfig};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
+use hypercolor_types::event::{
+    ChangeTrigger, EffectStopReason, HypercolorEvent, RenderGroupChangeKind, SceneChangeReason,
+};
 use hypercolor_types::effect::{
-    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
+    ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
+    EffectMetadata, EffectSource,
 };
-use hypercolor_types::scene::{
-    ColorInterpolation, EasingFunction, Scene, SceneId, ScenePriority, SceneScope, TransitionSpec,
-    UnassignedBehavior,
-};
+use hypercolor_types::scene::SceneId;
 use reqwest::{Client, Response};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -76,6 +81,13 @@ fn isolated_state_with_tempdir() -> (AppState, TempDir) {
     let state = AppState::new();
     ConfigManager::set_data_dir_override(None);
     (state, tempdir)
+}
+
+fn fresh_app_state() -> AppState {
+    let _lock = DATA_DIR_LOCK
+        .lock()
+        .expect("data dir lock should not be poisoned");
+    AppState::new()
 }
 
 async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> DeviceId {
@@ -180,33 +192,80 @@ async fn insert_test_display_face_effect(state: &Arc<AppState>, name: &str) -> E
     metadata
 }
 
-async fn activate_empty_test_scene(state: &Arc<AppState>, name: &str) -> SceneId {
-    let scene = Scene {
-        id: SceneId::new(),
+async fn insert_test_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
+    let metadata = EffectMetadata {
+        id: EffectId::new(Uuid::now_v7()),
         name: name.to_owned(),
-        description: None,
-        scope: SceneScope::Full,
-        zone_assignments: Vec::new(),
-        groups: Vec::new(),
-        transition: TransitionSpec {
-            duration_ms: 0,
-            easing: EasingFunction::Linear,
-            color_interpolation: ColorInterpolation::Oklab,
+        author: "test".to_owned(),
+        version: "0.1.0".to_owned(),
+        description: format!("{name} ambient effect"),
+        category: EffectCategory::Ambient,
+        tags: vec!["test".to_owned()],
+        controls: vec![ControlDefinition {
+            id: "speed".to_owned(),
+            name: "Speed".to_owned(),
+            kind: ControlKind::Number,
+            control_type: ControlType::Slider,
+            default_value: ControlValue::Float(5.0),
+            min: Some(0.0),
+            max: Some(100.0),
+            step: Some(0.5),
+            labels: Vec::new(),
+            group: Some("General".to_owned()),
+            tooltip: Some("Animation speed".to_owned()),
+            aspect_lock: None,
+            preview_source: None,
+            binding: None,
+        }],
+        presets: Vec::new(),
+        audio_reactive: false,
+        screen_reactive: false,
+        source: EffectSource::Native {
+            path: format!("builtin/{name}").into(),
         },
-        priority: ScenePriority::USER,
-        enabled: true,
-        metadata: HashMap::new(),
-        unassigned_behavior: UnassignedBehavior::Off,
+        license: None,
     };
+    let entry = hypercolor_core::effect::EffectEntry {
+        metadata: metadata.clone(),
+        source_path: format!("/tmp/{name}.rs").into(),
+        modified: std::time::SystemTime::now(),
+        state: hypercolor_types::effect::EffectState::Loading,
+    };
+    let mut registry = state.effect_registry.write().await;
+    let _ = registry.register(entry);
+    metadata
+}
 
-    let mut manager = state.scene_manager.write().await;
-    manager
-        .create(scene.clone())
-        .expect("test scene should be created");
-    manager
-        .activate(&scene.id, None)
-        .expect("test scene should activate");
-    scene.id
+async fn insert_test_profile(
+    state: &Arc<AppState>,
+    id: &str,
+    name: &str,
+    effect: Option<&EffectMetadata>,
+) {
+    let mut profiles = state.profiles.write().await;
+    let mut controls = HashMap::new();
+    if effect.is_some() {
+        controls.insert("speed".to_owned(), ControlValue::Float(12.0));
+    }
+    profiles.insert(Profile {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        description: Some(format!("{name} profile")),
+        brightness: Some(75),
+        effect_id: effect.map(|metadata| metadata.id.to_string()),
+        effect_name: effect.map(|metadata| metadata.name.clone()),
+        active_preset_id: None,
+        controls,
+        layout_id: None,
+    });
+}
+
+fn scenes_path(state: &AppState) -> PathBuf {
+    state
+        .runtime_state_path
+        .parent()
+        .expect("runtime-state.json should live under a data dir")
+        .join("scenes.json")
 }
 
 async fn post_raw(client: &Client, url: &str, body: &str, session_id: Option<&str>) -> Response {
@@ -268,7 +327,7 @@ fn extract_jsonrpc_payload(body: &str) -> Value {
 
 #[tokio::test]
 async fn mcp_http_initialize_returns_json_in_stateless_mode() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(fresh_app_state());
     let router = mcp::build_router(Arc::clone(&state), &stateless_mcp_config()).with_state(state);
     let (client, base_url) = spawn_router(router).await;
 
@@ -295,7 +354,7 @@ async fn mcp_http_initialize_returns_json_in_stateless_mode() {
 
 #[tokio::test]
 async fn mcp_http_tools_list_and_call_return_structured_results() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(fresh_app_state());
     let router = mcp::build_router(Arc::clone(&state), &stateless_mcp_config()).with_state(state);
     let (client, base_url) = spawn_router(router).await;
     let mcp_url = format!("{base_url}/mcp");
@@ -377,7 +436,7 @@ async fn mcp_http_tools_list_and_call_return_structured_results() {
 
 #[tokio::test]
 async fn mcp_http_resources_and_prompts_roundtrip() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(fresh_app_state());
     let router = mcp::build_router(Arc::clone(&state), &stateless_mcp_config()).with_state(state);
     let (client, base_url) = spawn_router(router).await;
     let mcp_url = format!("{base_url}/mcp");
@@ -475,7 +534,7 @@ async fn mcp_http_stateful_mode_uses_session_headers_and_sse() {
         json_response: true,
         ..McpConfig::default()
     };
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(fresh_app_state());
     let router = mcp::build_router(Arc::clone(&state), &config).with_state(state);
     let (client, base_url) = spawn_router(router).await;
     let mcp_url = format!("{base_url}/mcp");
@@ -542,7 +601,7 @@ async fn api_router_mounts_mcp_when_enabled_in_config() {
     .expect("write config file");
 
     let manager = Arc::new(ConfigManager::new(config_path).expect("load config manager"));
-    let mut state = AppState::new();
+    let mut state = fresh_app_state();
     state.config_manager = Some(manager);
 
     let router = api::build_router(Arc::new(state), None);
@@ -636,13 +695,93 @@ async fn stateful_overlay_tools_manage_display_configs() {
 }
 
 #[tokio::test]
+async fn stateful_scene_tools_persist_named_scenes_and_activation_state() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_profile(&state, "focus-profile", "Focus Profile", None).await;
+
+    let create_result = execute_tool_with_state(
+        "create_scene",
+        &json!({
+            "name": "Focus",
+            "description": "Deep work lighting",
+            "profile_id": "focus-profile",
+            "trigger": {
+                "type": "schedule"
+            }
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("scene creation should succeed");
+    let scene_id = create_result["scene_id"]
+        .as_str()
+        .expect("scene id should be returned")
+        .to_owned();
+
+    let list_result = execute_tool_with_state("list_scenes", &json!({}), state.as_ref())
+        .await
+        .expect("scene list should succeed");
+    assert_eq!(list_result["total"], 1);
+    assert_eq!(list_result["scenes"][0]["name"], "Focus");
+    assert_eq!(list_result["scenes"][0]["active"], false);
+
+    let store = SceneStore::load(&scenes_path(state.as_ref())).expect("scene store should load");
+    assert_eq!(store.len(), 1);
+    let stored_scene = store.list().next().expect("named scene should persist");
+    assert_eq!(
+        stored_scene.metadata.get("profile_id"),
+        Some(&"focus-profile".to_owned())
+    );
+    assert_eq!(
+        stored_scene.metadata.get("trigger_type"),
+        Some(&"schedule".to_owned())
+    );
+
+    let mut events = state.event_bus.subscribe_all();
+    let activate_result = execute_tool_with_state(
+        "activate_scene",
+        &json!({
+            "name": "Focus",
+            "transition_ms": 250
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("scene activation should succeed");
+    assert_eq!(activate_result["activated"], true);
+    assert_eq!(activate_result["scene"]["id"], scene_id);
+
+    let snapshot = runtime_state::load(&state.runtime_state_path)
+        .expect("runtime snapshot should load")
+        .expect("runtime snapshot should exist");
+    assert_eq!(snapshot.active_scene_id, Some(scene_id.clone()));
+
+    let mut saw_active_scene_event = false;
+    while let Ok(timestamped) = events.try_recv() {
+        if let HypercolorEvent::ActiveSceneChanged {
+            previous,
+            current,
+            reason,
+        } = timestamped.event
+        {
+            assert_eq!(previous, Some(SceneId::DEFAULT));
+            assert_eq!(current.to_string(), scene_id);
+            assert_eq!(reason, SceneChangeReason::UserActivate);
+            saw_active_scene_event = true;
+        }
+    }
+    assert!(saw_active_scene_event, "expected active-scene MCP event");
+}
+
+#[tokio::test]
 async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
     let face = insert_test_display_face_effect(&state, "System Monitor").await;
-    let scene_id = activate_empty_test_scene(&state, "Desk Scene").await;
 
+    let mut assign_events = state.event_bus.subscribe_all();
     let assign_result = execute_tool_with_state(
         "set_display_face",
         &json!({
@@ -656,7 +795,7 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
     )
     .await
     .expect("display face assignment should succeed");
-    assert_eq!(assign_result["scene_id"], scene_id.to_string());
+    assert_eq!(assign_result["scene_id"], SceneId::DEFAULT.to_string());
     assert_eq!(assign_result["effect"]["id"], face.id.to_string());
     assert_eq!(
         assign_result["group"]["display_target"]["device_id"],
@@ -665,6 +804,30 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
     assert_eq!(assign_result["group"]["layout"]["canvas_width"], 320);
     assert_eq!(assign_result["group"]["controls"]["title"]["text"], "CPU");
 
+    let assign_snapshot = runtime_state::load(&state.runtime_state_path)
+        .expect("runtime snapshot should load")
+        .expect("runtime snapshot should exist");
+    assert_eq!(assign_snapshot.active_scene_id, Some(SceneId::DEFAULT.to_string()));
+    assert_eq!(assign_snapshot.default_scene_groups.len(), 1);
+
+    let mut saw_assign_event = false;
+    while let Ok(timestamped) = assign_events.try_recv() {
+        if let HypercolorEvent::RenderGroupChanged {
+            scene_id,
+            kind,
+            role,
+            ..
+        } = timestamped.event
+        {
+            assert_eq!(scene_id, SceneId::DEFAULT);
+            assert_eq!(role, hypercolor_types::scene::RenderGroupRole::Display);
+            assert_eq!(kind, RenderGroupChangeKind::Created);
+            saw_assign_event = true;
+        }
+    }
+    assert!(saw_assign_event, "expected display-face assign event");
+
+    let mut clear_events = state.event_bus.subscribe_all();
     let clear_result = execute_tool_with_state(
         "set_display_face",
         &json!({
@@ -675,8 +838,30 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
     )
     .await
     .expect("display face clear should succeed");
-    assert_eq!(clear_result["scene_id"], scene_id.to_string());
+    assert_eq!(clear_result["scene_id"], SceneId::DEFAULT.to_string());
     assert_eq!(clear_result["cleared"], true);
+
+    let clear_snapshot = runtime_state::load(&state.runtime_state_path)
+        .expect("runtime snapshot should load")
+        .expect("runtime snapshot should exist");
+    assert!(clear_snapshot.default_scene_groups.is_empty());
+
+    let mut saw_clear_event = false;
+    while let Ok(timestamped) = clear_events.try_recv() {
+        if let HypercolorEvent::RenderGroupChanged {
+            scene_id,
+            kind,
+            role,
+            ..
+        } = timestamped.event
+        {
+            assert_eq!(scene_id, SceneId::DEFAULT);
+            assert_eq!(role, hypercolor_types::scene::RenderGroupRole::Display);
+            assert_eq!(kind, RenderGroupChangeKind::Removed);
+            saw_clear_event = true;
+        }
+    }
+    assert!(saw_clear_event, "expected display-face clear event");
 }
 
 #[tokio::test]
@@ -696,6 +881,198 @@ async fn stateful_set_effect_rejects_display_faces() {
     .expect_err("display faces should not be applied as LED effects");
 
     assert!(format!("{error}").contains("display face"));
+}
+
+#[tokio::test]
+async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let effect = insert_test_effect(&state, "Aurora").await;
+
+    let mut start_events = state.event_bus.subscribe_all();
+    let apply_result = execute_tool_with_state(
+        "set_effect",
+        &json!({
+            "query": "aurora",
+            "controls": {
+                "speed": 7.5
+            }
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("set_effect should succeed");
+    assert_eq!(apply_result["applied"], true);
+    assert_eq!(apply_result["matched_effect"]["id"], effect.id.to_string());
+    assert_eq!(apply_result["applied_controls"]["speed"]["float"], json!(7.5));
+    assert_eq!(apply_result["rejected_controls"], json!([]));
+
+    let (scene_id, active_group) = {
+        let manager = state.scene_manager.read().await;
+        (
+            manager
+                .active_scene_id()
+                .copied()
+                .expect("default scene should stay active"),
+            manager
+                .active_scene()
+                .and_then(|scene| scene.primary_group())
+                .cloned()
+                .expect("primary group should exist after MCP set_effect"),
+        )
+    };
+    assert_eq!(active_group.effect_id, Some(effect.id));
+    assert_eq!(
+        active_group.controls.get("speed"),
+        Some(&ControlValue::Float(7.5))
+    );
+
+    let active_snapshot = runtime_state::load(&state.runtime_state_path)
+        .expect("runtime snapshot should load")
+        .expect("runtime snapshot should exist");
+    assert_eq!(active_snapshot.active_effect_id, Some(effect.id.to_string()));
+    assert_eq!(
+        active_snapshot.control_values.get("speed"),
+        Some(&ControlValue::Float(7.5))
+    );
+
+    let mut saw_started_event = false;
+    let mut saw_group_event = false;
+    while let Ok(timestamped) = start_events.try_recv() {
+        match timestamped.event {
+            HypercolorEvent::EffectStarted {
+                effect: started,
+                trigger,
+                ..
+            } => {
+                assert_eq!(started.id, effect.id.to_string());
+                assert_eq!(trigger, ChangeTrigger::Mcp);
+                saw_started_event = true;
+            }
+            HypercolorEvent::RenderGroupChanged {
+                scene_id: event_scene_id,
+                kind,
+                role,
+                ..
+            } => {
+                assert_eq!(event_scene_id, scene_id);
+                assert_eq!(role, hypercolor_types::scene::RenderGroupRole::Primary);
+                assert_eq!(kind, RenderGroupChangeKind::Created);
+                saw_group_event = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_started_event, "expected MCP effect-start event");
+    assert!(saw_group_event, "expected MCP render-group event");
+
+    let mut stop_events = state.event_bus.subscribe_all();
+    let stop_result = execute_tool_with_state("stop_effect", &json!({}), state.as_ref())
+        .await
+        .expect("stop_effect should succeed");
+    assert_eq!(stop_result["stopped"], true);
+    assert_eq!(stop_result["effect"]["id"], effect.id.to_string());
+
+    let stopped_snapshot = runtime_state::load(&state.runtime_state_path)
+        .expect("runtime snapshot should load")
+        .expect("runtime snapshot should exist");
+    assert_eq!(stopped_snapshot.active_effect_id, None);
+    assert!(stopped_snapshot.control_values.is_empty());
+
+    let cleared_group = {
+        let manager = state.scene_manager.read().await;
+        manager
+            .active_scene()
+            .and_then(|scene| scene.primary_group())
+            .cloned()
+            .expect("primary group should remain present after stop")
+    };
+    assert_eq!(cleared_group.effect_id, None);
+    assert!(cleared_group.controls.is_empty());
+
+    let mut saw_stopped_event = false;
+    let mut saw_updated_group = false;
+    while let Ok(timestamped) = stop_events.try_recv() {
+        match timestamped.event {
+            HypercolorEvent::EffectStopped { effect: stopped, reason } => {
+                assert_eq!(stopped.id, effect.id.to_string());
+                assert_eq!(reason, EffectStopReason::Stopped);
+                saw_stopped_event = true;
+            }
+            HypercolorEvent::RenderGroupChanged { kind, role, .. } => {
+                assert_eq!(role, hypercolor_types::scene::RenderGroupRole::Primary);
+                assert_eq!(kind, RenderGroupChangeKind::Updated);
+                saw_updated_group = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_stopped_event, "expected MCP effect-stop event");
+    assert!(saw_updated_group, "expected MCP group-clear event");
+}
+
+#[tokio::test]
+async fn stateful_set_color_syncs_scene_runtime_state() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let solid_effect = insert_test_effect(&state, "Solid Color").await;
+
+    let result = execute_tool_with_state(
+        "set_color",
+        &json!({
+            "color": "#ff6ac1",
+            "brightness": 50
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("set_color should succeed");
+    assert_eq!(result["applied"], true);
+    assert_eq!(result["resolved_color"]["hex"], "#ff6ac1");
+
+    let snapshot = runtime_state::load(&state.runtime_state_path)
+        .expect("runtime snapshot should load")
+        .expect("runtime snapshot should exist");
+    assert_eq!(snapshot.active_effect_id, Some(solid_effect.id.to_string()));
+    assert_eq!(
+        snapshot.control_values.get("brightness"),
+        Some(&ControlValue::Float(0.5))
+    );
+    match snapshot.control_values.get("color") {
+        Some(ControlValue::Color([r, g, b, a])) => {
+            assert_eq!((*r, *g, *b, *a), (1.0, 106.0 / 255.0, 193.0 / 255.0, 1.0));
+        }
+        other => panic!("expected RGBA control value, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn stateful_set_profile_persists_runtime_snapshot() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let effect = insert_test_effect(&state, "Movie Night").await;
+    insert_test_profile(&state, "movie-profile", "Movie Profile", Some(&effect)).await;
+
+    let result = execute_tool_with_state(
+        "set_profile",
+        &json!({
+            "query": "movie profile"
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("set_profile should succeed");
+    assert_eq!(result["applied"], true);
+    assert_eq!(result["profile"]["id"], "movie-profile");
+
+    let snapshot = runtime_state::load(&state.runtime_state_path)
+        .expect("runtime snapshot should load")
+        .expect("runtime snapshot should exist");
+    assert_eq!(snapshot.active_effect_id, Some(effect.id.to_string()));
+    assert_eq!(
+        snapshot.control_values.get("speed"),
+        Some(&ControlValue::Float(12.0))
+    );
 }
 
 #[tokio::test]

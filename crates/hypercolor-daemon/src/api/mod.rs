@@ -232,6 +232,7 @@ pub struct AppState {
     pub security_state: security::SecurityState,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn configured_render_acceleration_mode(
     config_manager: Option<&Arc<ConfigManager>>,
 ) -> RenderAccelerationMode {
@@ -240,6 +241,7 @@ pub(crate) fn configured_render_acceleration_mode(
     })
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const fn effect_renderer_acceleration_mode(
     requested_mode: RenderAccelerationMode,
 ) -> RenderAccelerationMode {
@@ -249,6 +251,7 @@ pub(crate) const fn effect_renderer_acceleration_mode(
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn configured_effect_renderer_acceleration_mode(
     config_manager: Option<&Arc<ConfigManager>>,
 ) -> RenderAccelerationMode {
@@ -674,7 +677,7 @@ pub(crate) async fn persist_layout_auto_exclusions(state: &Arc<AppState>) {
 }
 
 /// Persist the current runtime session snapshot (active effect/preset/controls/layout).
-pub(crate) async fn persist_runtime_session(state: &Arc<AppState>) {
+pub(crate) async fn save_runtime_session_snapshot(state: &AppState) {
     let mut snapshot = {
         let scene_manager = state.scene_manager.read().await;
         runtime_state::snapshot_from_scene_manager(&scene_manager)
@@ -690,7 +693,7 @@ pub(crate) async fn persist_runtime_session(state: &Arc<AppState>) {
     snapshot.wled_probe_targets =
         runtime_state::collect_wled_probe_targets(&state.device_registry).await;
 
-    if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
+    if let Err(error) = save_scene_store_snapshot(state).await {
         warn!(%error, "Failed to persist scene store before runtime snapshot save");
     }
 
@@ -701,6 +704,10 @@ pub(crate) async fn persist_runtime_session(state: &Arc<AppState>) {
             "Failed to persist runtime session snapshot"
         );
     }
+}
+
+pub(crate) async fn persist_runtime_session(state: &Arc<AppState>) {
+    save_runtime_session_snapshot(state.as_ref()).await;
 }
 
 pub(crate) fn discovery_runtime(state: &AppState) -> crate::discovery::DiscoveryRuntime {

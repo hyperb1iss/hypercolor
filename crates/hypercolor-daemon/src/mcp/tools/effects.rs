@@ -1,16 +1,19 @@
 //! Effect-related MCP tools: `set_effect`, `list_effects`, `stop_effect`, `set_color`.
 
 use std::cmp::min;
+use std::collections::HashMap;
 
 use serde_json::{Value, json};
 
-use super::{
-    ToolDefinition, ToolError, apply_controls, default_output_schema, find_effect_metadata,
+use super::{ToolDefinition, ToolError, default_output_schema, find_effect_metadata};
+use crate::api::{AppState, publish_render_group_changed, save_runtime_session_snapshot};
+use crate::api::effects::{
+    active_primary_effect, apply_associated_layout, effect_ref, normalize_control_payload,
 };
-use crate::api::AppState;
-use hypercolor_core::effect::create_renderer_for_metadata_with_mode;
 use hypercolor_types::effect::{ControlValue, EffectCategory};
-use hypercolor_types::event::{ChangeTrigger, EffectRef, EffectStopReason, HypercolorEvent};
+use hypercolor_types::event::{
+    ChangeTrigger, EffectStopReason, HypercolorEvent, RenderGroupChangeKind,
+};
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
 
@@ -310,42 +313,56 @@ pub(super) async fn handle_set_effect_with_state(
         });
     }
 
-    let previous_effect = {
-        let requested_mode =
-            crate::api::configured_effect_renderer_acceleration_mode(state.config_manager.as_ref());
-        let renderer = create_renderer_for_metadata_with_mode(&best_match.effect, requested_mode)
+    let controls = params
+        .get("controls")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let (normalized_controls, rejected_controls) =
+        normalize_control_payload(&best_match.effect, &controls);
+    let previous_effect = active_primary_effect(state)
+        .await
+        .map(|(_, effect)| effect_ref(&effect));
+    let full_scope_layout = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().as_ref().clone()
+    };
+    let (scene_id, group, change_kind) = {
+        let mut scene_manager = state.scene_manager.write().await;
+        let scene_id = scene_manager
+            .active_scene_id()
+            .copied()
+            .ok_or_else(|| ToolError::Internal("no active scene available".into()))?;
+        let change_kind = if scene_manager
+            .active_scene()
+            .and_then(|scene| scene.primary_group())
+            .is_some()
+        {
+            RenderGroupChangeKind::Updated
+        } else {
+            RenderGroupChangeKind::Created
+        };
+        let group = scene_manager
+            .upsert_primary_group(&best_match.effect, normalized_controls.clone(), None, full_scope_layout)
             .map_err(|error| {
-            ToolError::Internal(format!("failed to prepare effect: {error}"))
-        })?;
-        let mut engine = state.effect_engine.lock().await;
-        let previous = engine.active_metadata().map(|m| EffectRef {
-            id: m.id.to_string(),
-            name: m.name.clone(),
-            engine: "servo".into(),
-        });
-        engine
-            .activate(renderer, best_match.effect.clone())
-            .map_err(|error| ToolError::Internal(format!("failed to activate effect: {error}")))?;
-
-        if let Some(controls) = params.get("controls").and_then(Value::as_object) {
-            apply_controls(&mut engine, controls);
-        }
-        previous
+                ToolError::Internal(format!("failed to update active scene primary group: {error}"))
+            })?
+            .clone();
+        (scene_id, group, change_kind)
     };
     let warnings =
         crate::api::displays::auto_disable_html_overlays_for_effect(state, &best_match.effect)
             .await;
 
     state.event_bus.publish(HypercolorEvent::EffectStarted {
-        effect: EffectRef {
-            id: best_match.effect.id.to_string(),
-            name: best_match.effect.name.clone(),
-            engine: "servo".into(),
-        },
-        trigger: ChangeTrigger::Api,
+        effect: effect_ref(&best_match.effect),
+        trigger: ChangeTrigger::Mcp,
         previous: previous_effect,
         transition: None,
     });
+    publish_render_group_changed(state, scene_id, &group, change_kind);
+    let applied_layout = apply_associated_layout(state, &best_match.effect.id.to_string()).await;
+    save_runtime_session_snapshot(state).await;
 
     Ok(json!({
         "matched_effect": {
@@ -361,8 +378,11 @@ pub(super) async fn handle_set_effect_with_state(
             "score": candidate.score
         })).collect::<Vec<_>>(),
         "applied": true,
+        "applied_controls": normalized_controls,
+        "rejected_controls": rejected_controls,
         "transition_ms": transition_ms,
-        "warnings": warnings
+        "warnings": warnings,
+        "layout": applied_layout
     }))
 }
 
@@ -476,31 +496,45 @@ pub(super) async fn handle_stop_effect_with_state(
         .and_then(Value::as_u64)
         .unwrap_or(300);
 
-    let stopped_effect = {
-        let mut engine = state.effect_engine.lock().await;
-        let previous = engine.active_metadata().cloned();
-        engine.deactivate();
-        previous
+    let Some((group, metadata)) = active_primary_effect(state).await else {
+        return Ok(json!({
+            "stopped": false,
+            "transition_ms": transition_ms,
+            "effect": null
+        }));
+    };
+    let (scene_id, cleared_group) = {
+        let mut scene_manager = state.scene_manager.write().await;
+        let scene_id = scene_manager
+            .active_scene_id()
+            .copied()
+            .ok_or_else(|| ToolError::Internal("no active scene available".into()))?;
+        let cleared_group = scene_manager
+            .clear_group_effect(group.id)
+            .cloned()
+            .ok_or_else(|| ToolError::Internal("active primary group disappeared".into()))?;
+        (scene_id, cleared_group)
     };
 
-    if let Some(ref metadata) = stopped_effect {
-        state.event_bus.publish(HypercolorEvent::EffectStopped {
-            effect: EffectRef {
-                id: metadata.id.to_string(),
-                name: metadata.name.clone(),
-                engine: "servo".into(),
-            },
-            reason: EffectStopReason::Stopped,
-        });
-    }
+    state.event_bus.publish(HypercolorEvent::EffectStopped {
+        effect: effect_ref(&metadata),
+        reason: EffectStopReason::Stopped,
+    });
+    publish_render_group_changed(
+        state,
+        scene_id,
+        &cleared_group,
+        RenderGroupChangeKind::Updated,
+    );
+    save_runtime_session_snapshot(state).await;
 
     Ok(json!({
-        "stopped": stopped_effect.is_some(),
+        "stopped": true,
         "transition_ms": transition_ms,
-        "effect": stopped_effect.map(|metadata| json!({
+        "effect": {
             "id": metadata.id.to_string(),
             "name": metadata.name
-        }))
+        }
     }))
 }
 
@@ -523,58 +557,73 @@ pub(super) async fn handle_set_color_with_state(
         .await
         .ok_or_else(|| ToolError::Internal("solid color effect is not registered".into()))?;
 
-    let previous_effect = {
-        let requested_mode =
-            crate::api::configured_effect_renderer_acceleration_mode(state.config_manager.as_ref());
-        let renderer = create_renderer_for_metadata_with_mode(&solid_effect, requested_mode)
-            .map_err(|error| {
-                ToolError::Internal(format!("failed to prepare solid color: {error}"))
-            })?;
-        let mut engine = state.effect_engine.lock().await;
-        let previous = engine.active_metadata().map(|m| EffectRef {
-            id: m.id.to_string(),
-            name: m.name.clone(),
-            engine: "servo".into(),
-        });
-        engine
-            .activate(renderer, solid_effect.clone())
-            .map_err(|error| {
-                ToolError::Internal(format!("failed to activate solid color: {error}"))
-            })?;
-        engine.set_control(
-            "color",
-            &ControlValue::Color([
-                f32::from(resolved.r) / 255.0,
-                f32::from(resolved.g) / 255.0,
-                f32::from(resolved.b) / 255.0,
-                1.0,
-            ]),
-        );
-
-        if let Some(brightness_u64) = params.get("brightness").and_then(Value::as_u64) {
-            if brightness_u64 > 100 {
-                return Err(ToolError::InvalidParam {
-                    param: "brightness".into(),
-                    reason: "must be between 0 and 100".into(),
-                });
-            }
-            let brightness_u16 = u16::try_from(brightness_u64).unwrap_or(100);
-            let brightness = f32::from(brightness_u16) / 100.0;
-            engine.set_control("brightness", &ControlValue::Float(brightness));
+    let brightness = if let Some(brightness_u64) = params.get("brightness").and_then(Value::as_u64)
+    {
+        if brightness_u64 > 100 {
+            return Err(ToolError::InvalidParam {
+                param: "brightness".into(),
+                reason: "must be between 0 and 100".into(),
+            });
         }
-        previous
+        let brightness_u16 = u16::try_from(brightness_u64).unwrap_or(100);
+        Some(f32::from(brightness_u16) / 100.0)
+    } else {
+        None
     };
+    let previous_effect = active_primary_effect(state)
+        .await
+        .map(|(_, effect)| effect_ref(&effect));
+    let mut controls = HashMap::from([(
+        "color".to_owned(),
+        ControlValue::Color([
+            f32::from(resolved.r) / 255.0,
+            f32::from(resolved.g) / 255.0,
+            f32::from(resolved.b) / 255.0,
+            1.0,
+        ]),
+    )]);
+    if let Some(brightness) = brightness {
+        controls.insert("brightness".to_owned(), ControlValue::Float(brightness));
+    }
+    let full_scope_layout = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().as_ref().clone()
+    };
+    let (scene_id, group, change_kind) = {
+        let mut scene_manager = state.scene_manager.write().await;
+        let scene_id = scene_manager
+            .active_scene_id()
+            .copied()
+            .ok_or_else(|| ToolError::Internal("no active scene available".into()))?;
+        let change_kind = if scene_manager
+            .active_scene()
+            .and_then(|scene| scene.primary_group())
+            .is_some()
+        {
+            RenderGroupChangeKind::Updated
+        } else {
+            RenderGroupChangeKind::Created
+        };
+        let group = scene_manager
+            .upsert_primary_group(&solid_effect, controls.clone(), None, full_scope_layout)
+            .map_err(|error| {
+                ToolError::Internal(format!("failed to update active scene primary group: {error}"))
+            })?
+            .clone();
+        (scene_id, group, change_kind)
+    };
+    let warnings =
+        crate::api::displays::auto_disable_html_overlays_for_effect(state, &solid_effect).await;
 
     state.event_bus.publish(HypercolorEvent::EffectStarted {
-        effect: EffectRef {
-            id: solid_effect.id.to_string(),
-            name: solid_effect.name.clone(),
-            engine: "servo".into(),
-        },
-        trigger: ChangeTrigger::Api,
+        effect: effect_ref(&solid_effect),
+        trigger: ChangeTrigger::Mcp,
         previous: previous_effect,
         transition: None,
     });
+    publish_render_group_changed(state, scene_id, &group, change_kind);
+    let applied_layout = apply_associated_layout(state, &solid_effect.id.to_string()).await;
+    save_runtime_session_snapshot(state).await;
 
     let device_count = state.device_registry.len().await;
     Ok(json!({
@@ -588,6 +637,9 @@ pub(super) async fn handle_set_color_with_state(
             }
         },
         "applied": true,
-        "device_count": device_count
+        "applied_controls": controls,
+        "device_count": device_count,
+        "warnings": warnings,
+        "layout": applied_layout
     }))
 }

@@ -426,7 +426,7 @@ pub async fn apply_effect(
         transition: None,
     });
     publish_render_group_changed(state.as_ref(), scene_id, &group, change_kind);
-    let applied_layout = apply_associated_layout(&state, &metadata.id.to_string()).await;
+    let applied_layout = apply_associated_layout(state.as_ref(), &metadata.id.to_string()).await;
     super::persist_runtime_session(&state).await;
 
     ApiResponse::ok(serde_json::json!({
@@ -1003,7 +1003,7 @@ fn log_effect_apply_completion(
     }
 }
 
-fn effect_ref(metadata: &EffectMetadata) -> EffectRef {
+pub(crate) fn effect_ref(metadata: &EffectMetadata) -> EffectRef {
     EffectRef {
         id: metadata.id.to_string(),
         name: metadata.name.clone(),
@@ -1071,8 +1071,8 @@ fn save_effect_layout_links(
         .map_err(|error| format!("{} ({})", error, state.effect_layout_links_path.display()))
 }
 
-async fn apply_associated_layout(
-    state: &Arc<AppState>,
+pub(crate) async fn apply_associated_layout(
+    state: &AppState,
     effect_id: &str,
 ) -> Option<EffectLayoutApplyResult> {
     let associated_layout_id = {

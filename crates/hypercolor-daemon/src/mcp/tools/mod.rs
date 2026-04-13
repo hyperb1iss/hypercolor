@@ -4,10 +4,9 @@
 //! is handled by `execute_tool`, which dispatches to the appropriate handler in
 //! a per-cluster submodule.
 
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use crate::api::AppState;
-use hypercolor_types::effect::ControlValue;
 
 mod devices;
 mod effects;
@@ -172,17 +171,6 @@ pub(super) async fn find_effect_metadata(
         })
 }
 
-pub(super) fn apply_controls(
-    engine: &mut hypercolor_core::effect::EffectEngine,
-    controls: &Map<String, Value>,
-) {
-    for (name, value) in controls {
-        if let Some(control_value) = control_value_from_json(value) {
-            engine.set_control(name, &control_value);
-        }
-    }
-}
-
 /// Convert a 0.0–1.0 brightness float to a 0–100 percentage.
 pub(crate) fn brightness_percent(brightness: f32) -> u8 {
     let scaled = (brightness.clamp(0.0, 1.0) * 100.0).round();
@@ -215,45 +203,4 @@ pub(crate) fn capped_fps(stats: &hypercolor_core::engine::RenderLoopStats) -> f3
     #[expect(clippy::cast_precision_loss, clippy::as_conversions)]
     let target = stats.tier.fps() as f32;
     throughput.min(target)
-}
-
-fn control_value_from_json(value: &Value) -> Option<ControlValue> {
-    if let Some(flag) = value.as_bool() {
-        return Some(ControlValue::Boolean(flag));
-    }
-
-    if let Some(integer_value) = value.as_i64() {
-        let coerced = i32::try_from(integer_value).ok()?;
-        return Some(ControlValue::Integer(coerced));
-    }
-
-    if let Some(float_value) = value.as_f64() {
-        let finite = if float_value.is_finite() {
-            float_value
-        } else {
-            return None;
-        };
-        #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
-        let coerced = finite as f32;
-        return Some(ControlValue::Float(coerced));
-    }
-
-    if let Some(text) = value.as_str() {
-        return Some(ControlValue::Text(text.to_owned()));
-    }
-
-    if let Some(array) = value.as_array()
-        && array.len() == 4
-    {
-        let mut rgba = [0.0_f32; 4];
-        for (idx, component) in array.iter().enumerate() {
-            let number = component.as_f64()?;
-            #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
-            let number = number as f32;
-            rgba[idx] = number;
-        }
-        return Some(ControlValue::Color(rgba));
-    }
-
-    None
 }
