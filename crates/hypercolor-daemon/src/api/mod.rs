@@ -57,7 +57,7 @@ use hypercolor_network::DriverRegistry;
 use hypercolor_types::config::{HypercolorConfig, McpConfig, RenderAccelerationMode};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::{HypercolorEvent, RenderGroupChangeKind, SceneChangeReason};
-use hypercolor_types::scene::{RenderGroup, SceneId};
+use hypercolor_types::scene::{RenderGroup, Scene, SceneId};
 use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
 
@@ -705,14 +705,18 @@ pub(crate) async fn prune_scene_display_groups_for_device(
 pub(crate) fn publish_active_scene_changed(
     state: &AppState,
     previous: Option<SceneId>,
-    current: SceneId,
+    current_scene: &Scene,
     reason: SceneChangeReason,
 ) {
     state
         .event_bus
         .publish(HypercolorEvent::ActiveSceneChanged {
             previous,
-            current,
+            current: current_scene.id,
+            current_name: current_scene.name.clone(),
+            current_kind: current_scene.kind,
+            current_mutation_mode: current_scene.mutation_mode,
+            current_snapshot_locked: current_scene.blocks_runtime_mutation(),
             reason,
         });
 }

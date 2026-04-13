@@ -1,5 +1,6 @@
 //! JSON and binary message handlers for the daemon WebSocket protocol.
 
+use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 use leptos::prelude::*;
 use serde::Deserialize;
 
@@ -255,6 +256,10 @@ pub struct DeviceEventHint {
 pub struct SceneEventHint {
     pub event_type: String,
     pub scene_id: Option<String>,
+    pub scene_name: Option<String>,
+    pub scene_kind: Option<SceneKind>,
+    pub scene_mutation_mode: Option<SceneMutationMode>,
+    pub scene_snapshot_locked: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -475,17 +480,35 @@ pub(super) fn handle_json_message(
                         });
                     }
                 } else if SCENE_EVENTS.contains(&event_type) {
+                    let scene_data = msg.get("data").unwrap_or(&serde_json::Value::Null);
                     set_last_scene_event.set(Some(SceneEventHint {
                         event_type: event_type.to_owned(),
-                        scene_id: msg
-                            .get("data")
-                            .and_then(|data| {
-                                data.get("current")
-                                    .or_else(|| data.get("scene_id"))
-                                    .or_else(|| data.get("id"))
-                            })
+                        scene_id: scene_data
+                            .get("current")
+                            .or_else(|| scene_data.get("scene_id"))
+                            .or_else(|| scene_data.get("id"))
                             .and_then(serde_json::Value::as_str)
                             .map(ToOwned::to_owned),
+                        scene_name: scene_data
+                            .get("current_name")
+                            .or_else(|| scene_data.get("scene_name"))
+                            .or_else(|| scene_data.get("name"))
+                            .and_then(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned),
+                        scene_kind: scene_data
+                            .get("current_kind")
+                            .or_else(|| scene_data.get("kind"))
+                            .cloned()
+                            .and_then(|value| serde_json::from_value(value).ok()),
+                        scene_mutation_mode: scene_data
+                            .get("current_mutation_mode")
+                            .or_else(|| scene_data.get("mutation_mode"))
+                            .cloned()
+                            .and_then(|value| serde_json::from_value(value).ok()),
+                        scene_snapshot_locked: scene_data
+                            .get("current_snapshot_locked")
+                            .or_else(|| scene_data.get("snapshot_locked"))
+                            .and_then(serde_json::Value::as_bool),
                     }));
                 } else if DEVICE_LIFECYCLE_EVENTS.contains(&event_type)
                     && let Some(hint) = extract_device_event_hint(event_type, msg.get("data"))

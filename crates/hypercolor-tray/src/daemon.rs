@@ -292,16 +292,36 @@ impl DaemonClient {
         }
 
         let update = match msg.event.as_str() {
-            "active_scene_changed" => match self.fetch_status().await {
-                Ok(status) => Some(StateUpdate::SceneChanged {
-                    name: status.active_scene,
-                    snapshot_locked: status.active_scene_snapshot_locked,
-                }),
-                Err(error) => {
-                    debug!("Failed to refresh tray scene state: {error}");
-                    None
+            "active_scene_changed" => {
+                let scene_name = msg
+                    .data
+                    .get("current_name")
+                    .or_else(|| msg.data.get("scene_name"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned);
+                let snapshot_locked = msg
+                    .data
+                    .get("current_snapshot_locked")
+                    .or_else(|| msg.data.get("snapshot_locked"))
+                    .and_then(serde_json::Value::as_bool);
+
+                match (scene_name, snapshot_locked) {
+                    (Some(name), Some(snapshot_locked)) => Some(StateUpdate::SceneChanged {
+                        name: Some(name),
+                        snapshot_locked,
+                    }),
+                    _ => match self.fetch_status().await {
+                        Ok(status) => Some(StateUpdate::SceneChanged {
+                            name: status.active_scene,
+                            snapshot_locked: status.active_scene_snapshot_locked,
+                        }),
+                        Err(error) => {
+                            debug!("Failed to refresh tray scene state: {error}");
+                            None
+                        }
+                    },
                 }
-            },
+            }
             "effect_started" => {
                 let effect_data = &msg.data["effect"];
                 let id = effect_data["id"].as_str().unwrap_or_default().to_owned();

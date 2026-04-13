@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::scene::{RenderGroupId, RenderGroupRole, SceneId};
+use crate::scene::{RenderGroupId, RenderGroupRole, SceneId, SceneKind, SceneMutationMode};
 use crate::session::SessionEvent;
 
 // ── Supporting Types ────────────────────────────────────────────────────
@@ -542,6 +542,10 @@ pub enum HypercolorEvent {
     ActiveSceneChanged {
         previous: Option<SceneId>,
         current: SceneId,
+        current_name: String,
+        current_kind: SceneKind,
+        current_mutation_mode: SceneMutationMode,
+        current_snapshot_locked: bool,
         reason: SceneChangeReason,
     },
 

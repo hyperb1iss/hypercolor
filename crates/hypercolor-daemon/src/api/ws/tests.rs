@@ -489,6 +489,10 @@ fn event_message_parts_serializes_active_scene_changed() {
     let event = HypercolorEvent::ActiveSceneChanged {
         previous: Some(SceneId::DEFAULT),
         current,
+        current_name: "Movie Night".to_owned(),
+        current_kind: hypercolor_types::scene::SceneKind::Named,
+        current_mutation_mode: hypercolor_types::scene::SceneMutationMode::Snapshot,
+        current_snapshot_locked: true,
         reason: hypercolor_types::event::SceneChangeReason::UserActivate,
     };
 
@@ -496,6 +500,10 @@ fn event_message_parts_serializes_active_scene_changed() {
     assert_eq!(event_name, "active_scene_changed");
     assert_eq!(event_data["previous"], SceneId::DEFAULT.to_string());
     assert_eq!(event_data["current"], current.to_string());
+    assert_eq!(event_data["current_name"], "Movie Night");
+    assert_eq!(event_data["current_kind"], "named");
+    assert_eq!(event_data["current_mutation_mode"], "snapshot");
+    assert_eq!(event_data["current_snapshot_locked"], true);
     assert_eq!(event_data["reason"], "user_activate");
 }
 

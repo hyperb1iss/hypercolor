@@ -744,11 +744,16 @@ async fn stateful_scene_tools_persist_named_scenes_and_activation_state() {
         if let HypercolorEvent::ActiveSceneChanged {
             previous,
             current,
+            current_name,
+            current_snapshot_locked,
             reason,
+            ..
         } = timestamped.event
         {
             assert_eq!(previous, Some(SceneId::DEFAULT));
             assert_eq!(current.to_string(), scene_id);
+            assert_eq!(current_name, "Focus");
+            assert!(!current_snapshot_locked);
             assert_eq!(reason, SceneChangeReason::UserActivate);
             saw_active_scene_event = true;
         }

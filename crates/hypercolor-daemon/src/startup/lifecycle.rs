@@ -387,12 +387,16 @@ impl DaemonState {
                 }
             }
         }
-        if let Some(current_active_scene) =
-            self.scene_manager.read().await.active_scene_id().copied()
+        if let Some(current_active_scene) = self.scene_manager.read().await.active_scene().cloned()
         {
+            let current_snapshot_locked = current_active_scene.blocks_runtime_mutation();
             self.event_bus.publish(HypercolorEvent::ActiveSceneChanged {
                 previous: None,
-                current: current_active_scene,
+                current: current_active_scene.id,
+                current_name: current_active_scene.name,
+                current_kind: current_active_scene.kind,
+                current_mutation_mode: current_active_scene.mutation_mode,
+                current_snapshot_locked,
                 reason: SceneChangeReason::DaemonStart,
             });
         }

@@ -6,7 +6,9 @@ use hypercolor_types::event::{
     InputEvent, RenderGroupChangeKind, SceneChangeReason, Severity, TransitionRef, ZoneColors,
     ZoneRef,
 };
-use hypercolor_types::scene::{RenderGroupId, RenderGroupRole, SceneId};
+use hypercolor_types::scene::{
+    RenderGroupId, RenderGroupRole, SceneId, SceneKind, SceneMutationMode,
+};
 use hypercolor_types::session::SessionEvent;
 
 // ── Category Tests ──────────────────────────────────────────────────────
@@ -157,6 +159,10 @@ fn scene_events_have_scene_category() {
         HypercolorEvent::ActiveSceneChanged {
             previous: None,
             current: SceneId::DEFAULT,
+            current_name: "Default".into(),
+            current_kind: SceneKind::Ephemeral,
+            current_mutation_mode: SceneMutationMode::Live,
+            current_snapshot_locked: false,
             reason: SceneChangeReason::DaemonStart,
         },
     ];
@@ -708,6 +714,10 @@ fn serialize_active_scene_changed_roundtrip() {
     let event = HypercolorEvent::ActiveSceneChanged {
         previous: Some(previous),
         current: SceneId::DEFAULT,
+        current_name: "Default".into(),
+        current_kind: SceneKind::Ephemeral,
+        current_mutation_mode: SceneMutationMode::Live,
+        current_snapshot_locked: false,
         reason: SceneChangeReason::UserDeactivate,
     };
 
@@ -717,11 +727,19 @@ fn serialize_active_scene_changed_roundtrip() {
     if let HypercolorEvent::ActiveSceneChanged {
         previous: restored_previous,
         current,
+        current_name,
+        current_kind,
+        current_mutation_mode,
+        current_snapshot_locked,
         reason,
     } = deserialized
     {
         assert_eq!(restored_previous, Some(previous));
         assert_eq!(current, SceneId::DEFAULT);
+        assert_eq!(current_name, "Default");
+        assert_eq!(current_kind, SceneKind::Ephemeral);
+        assert_eq!(current_mutation_mode, SceneMutationMode::Live);
+        assert!(!current_snapshot_locked);
         assert_eq!(reason, SceneChangeReason::UserDeactivate);
     } else {
         panic!("Expected ActiveSceneChanged variant");

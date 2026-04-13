@@ -20,8 +20,9 @@ struct TestState {
 
 #[tokio::test]
 async fn active_scene_event_refreshes_daemon_status() {
+    let status_calls = Arc::new(AtomicUsize::new(0));
     let state = TestState {
-        status_calls: Arc::new(AtomicUsize::new(0)),
+        status_calls: Arc::clone(&status_calls),
     };
 
     let router = Router::new()
@@ -69,6 +70,7 @@ async fn active_scene_event_refreshes_daemon_status() {
 
     assert_eq!(updated.0.as_deref(), Some("Movie Night"));
     assert!(updated.1);
+    assert_eq!(status_calls.load(Ordering::SeqCst), 1);
 
     cancel.cancel();
     bridge.await.expect("bridge task should join");
@@ -166,6 +168,8 @@ async fn ws_handler(ws: WebSocketUpgrade) -> Response {
             "data": {
                 "previous": "default",
                 "current": "scene_movie_night",
+                "current_name": "Movie Night",
+                "current_snapshot_locked": true,
                 "reason": "user_activate"
             }
         });

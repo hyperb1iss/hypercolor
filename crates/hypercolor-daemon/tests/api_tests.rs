@@ -2190,10 +2190,19 @@ async fn scene_activate_and_deactivate_publish_active_scene_events() {
                     if let HypercolorEvent::ActiveSceneChanged {
                         previous,
                         current,
+                        current_name,
+                        current_snapshot_locked,
                         reason,
+                        ..
                     } = timestamped.event
                     {
-                        break (previous, current, reason);
+                        break (
+                            previous,
+                            current,
+                            current_name,
+                            current_snapshot_locked,
+                            reason,
+                        );
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
@@ -2208,7 +2217,9 @@ async fn scene_activate_and_deactivate_publish_active_scene_events() {
 
     assert_eq!(activated.0, Some(SceneId::DEFAULT));
     assert_eq!(activated.1, scene_id);
-    assert_eq!(activated.2, SceneChangeReason::UserActivate);
+    assert_eq!(activated.2, "Studio");
+    assert!(!activated.3);
+    assert_eq!(activated.4, SceneChangeReason::UserActivate);
 
     let deactivate_response = app
         .oneshot(
@@ -2229,10 +2240,19 @@ async fn scene_activate_and_deactivate_publish_active_scene_events() {
                     if let HypercolorEvent::ActiveSceneChanged {
                         previous,
                         current,
+                        current_name,
+                        current_snapshot_locked,
                         reason,
+                        ..
                     } = timestamped.event
                     {
-                        break (previous, current, reason);
+                        break (
+                            previous,
+                            current,
+                            current_name,
+                            current_snapshot_locked,
+                            reason,
+                        );
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
@@ -2247,7 +2267,9 @@ async fn scene_activate_and_deactivate_publish_active_scene_events() {
 
     assert_eq!(deactivated.0, Some(scene_id));
     assert_eq!(deactivated.1, SceneId::DEFAULT);
-    assert_eq!(deactivated.2, SceneChangeReason::UserDeactivate);
+    assert_eq!(deactivated.2, "Default");
+    assert!(!deactivated.3);
+    assert_eq!(deactivated.4, SceneChangeReason::UserDeactivate);
 }
 
 #[tokio::test]

@@ -252,15 +252,15 @@ pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<Str
     if let Err(e) = manager.delete(&scene_id) {
         return ApiError::not_found(format!("Scene not found: {e}"));
     }
-    let current_active_scene = manager.active_scene_id().copied();
+    let current_active_scene = manager.active_scene().cloned();
     drop(manager);
 
     if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
         return ApiError::internal(format!("Failed to persist scenes: {error}"));
     }
     persist_runtime_session(&state).await;
-    if previous_active_scene != current_active_scene
-        && let Some(current_active_scene) = current_active_scene
+    if previous_active_scene != current_active_scene.as_ref().map(|scene| scene.id)
+        && let Some(current_active_scene) = current_active_scene.as_ref()
     {
         publish_active_scene_changed(
             state.as_ref(),
@@ -295,12 +295,12 @@ pub async fn activate_scene(
     if let Err(e) = manager.activate(&scene_id, None) {
         return ApiError::internal(format!("Failed to activate scene: {e}"));
     }
-    let current_active_scene = manager.active_scene_id().copied();
+    let current_active_scene = manager.active_scene().cloned();
     drop(manager);
 
     persist_runtime_session(&state).await;
-    if previous_active_scene != current_active_scene
-        && let Some(current_active_scene) = current_active_scene
+    if previous_active_scene != current_active_scene.as_ref().map(|scene| scene.id)
+        && let Some(current_active_scene) = current_active_scene.as_ref()
     {
         publish_active_scene_changed(
             state.as_ref(),
@@ -332,7 +332,8 @@ pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
         mutation_mode: scene.mutation_mode,
     });
     manager.deactivate_current();
-    let current_active_scene_id = manager.active_scene_id().copied();
+    let current_active_scene = manager.active_scene().cloned();
+    let current_active_scene_id = current_active_scene.as_ref().map(|scene| scene.id);
     let current_scene = manager.active_scene().map(|scene| SceneSummary {
         id: scene.id.to_string(),
         name: scene.name.clone(),
@@ -345,12 +346,12 @@ pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
 
     persist_runtime_session(&state).await;
     if previous_active_scene_id != current_active_scene_id
-        && let Some(current_active_scene_id) = current_active_scene_id
+        && let Some(current_active_scene) = current_active_scene.as_ref()
     {
         publish_active_scene_changed(
             state.as_ref(),
             previous_active_scene_id,
-            current_active_scene_id,
+            current_active_scene,
             hypercolor_types::event::SceneChangeReason::UserDeactivate,
         );
     }

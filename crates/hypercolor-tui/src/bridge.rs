@@ -170,11 +170,17 @@ async fn refresh_for_event(
             *latest_daemon_state = Some(refresh_status(client, action_tx).await?);
             refresh_effects(client, action_tx).await;
         }
-        name if name.starts_with("profile_")
-            || name.starts_with("scene_")
-            || name == "active_scene_changed"
-            || name == "session_changed" =>
-        {
+        "active_scene_changed" => {
+            if let Some(next_state) =
+                merge_active_scene_into_daemon_state(latest_daemon_state.as_ref(), event)
+            {
+                *latest_daemon_state = Some(next_state.clone());
+                let _ = action_tx.send(Action::DaemonStateUpdated(Box::new(next_state)));
+            } else {
+                *latest_daemon_state = Some(refresh_status(client, action_tx).await?);
+            }
+        }
+        name if name.starts_with("profile_") || name == "session_changed" => {
             *latest_daemon_state = Some(refresh_status(client, action_tx).await?);
         }
         _ => {}
@@ -272,6 +278,40 @@ fn merge_metrics_into_daemon_state(
         .and_then(serde_json::Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(next.total_leds);
+
+    Some(next)
+}
+
+fn merge_active_scene_into_daemon_state(
+    current: Option<&DaemonState>,
+    event: &serde_json::Value,
+) -> Option<DaemonState> {
+    let data = event.get("data").unwrap_or(event);
+    let scene_name = data
+        .get("current_name")
+        .or_else(|| data.get("scene_name"))
+        .and_then(serde_json::Value::as_str)?
+        .to_owned();
+    let snapshot_locked = data
+        .get("current_snapshot_locked")
+        .or_else(|| data.get("snapshot_locked"))
+        .and_then(serde_json::Value::as_bool)?;
+
+    let mut next = current.cloned().unwrap_or(DaemonState {
+        running: true,
+        brightness: 100,
+        fps_target: 0.0,
+        fps_actual: 0.0,
+        effect_name: None,
+        effect_id: None,
+        scene_name: None,
+        scene_snapshot_locked: false,
+        profile_name: None,
+        device_count: 0,
+        total_leds: 0,
+    });
+    next.scene_name = Some(scene_name);
+    next.scene_snapshot_locked = snapshot_locked;
 
     Some(next)
 }

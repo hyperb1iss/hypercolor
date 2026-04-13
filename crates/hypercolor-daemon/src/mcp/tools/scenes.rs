@@ -245,16 +245,22 @@ pub(super) async fn handle_activate_scene_with_state(
     scene_manager
         .activate(&scene.id, transition_override)
         .map_err(|error| ToolError::Internal(format!("failed to activate scene: {error}")))?;
-    let current_active_scene = scene_manager.active_scene_id().copied();
+    let current_active_scene = scene_manager.active_scene().cloned();
     drop(scene_manager);
     save_runtime_session_snapshot(state).await;
-    if previous_active_scene != current_active_scene {
-        publish_active_scene_changed(
-            state,
-            previous_active_scene,
-            scene.id,
-            SceneChangeReason::UserActivate,
-        );
+    if previous_active_scene
+        != current_active_scene
+            .as_ref()
+            .map(|active_scene| active_scene.id)
+    {
+        if let Some(current_active_scene) = current_active_scene.as_ref() {
+            publish_active_scene_changed(
+                state,
+                previous_active_scene,
+                current_active_scene,
+                SceneChangeReason::UserActivate,
+            );
+        }
     }
 
     Ok(json!({
