@@ -11,6 +11,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint};
 use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, EffectSource};
+use hypercolor_types::event::RenderGroupChangeKind;
 use hypercolor_types::overlay::{
     DisplayOverlayConfig, OverlayBlendMode, OverlayPosition, OverlaySlot, OverlaySlotId,
     OverlaySource,
@@ -24,6 +25,7 @@ use crate::api::AppState;
 use crate::api::devices;
 use crate::api::effects::resolve_effect_metadata;
 use crate::api::envelope::{ApiError, ApiResponse, iso8601_system_time};
+use crate::api::publish_render_group_changed;
 use crate::display_frames::DisplayFrameSnapshot;
 use crate::display_overlays::{OverlaySlotRuntime, OverlaySlotStatus};
 
@@ -273,10 +275,19 @@ pub async fn set_display_face(
         effect
     };
 
-    let response = {
+    let (scene_id, response, change_kind) = {
         let mut scene_manager = state.scene_manager.write().await;
         let Some(active_scene_id) = scene_manager.active_scene_id().copied() else {
             return ApiError::internal("No active scene available");
+        };
+        let change_kind = if scene_manager
+            .active_scene()
+            .and_then(|scene| scene.display_group_for(device_id))
+            .is_some()
+        {
+            RenderGroupChangeKind::Updated
+        } else {
+            RenderGroupChangeKind::Created
         };
         let group = match scene_manager.upsert_display_group(
             device_id,
@@ -291,14 +302,19 @@ pub async fn set_display_face(
             }
         };
 
-        DisplayFaceResponse {
-            device_id: device_id.to_string(),
-            scene_id: active_scene_id.to_string(),
-            effect,
-            group,
-        }
+        (
+            active_scene_id,
+            DisplayFaceResponse {
+                device_id: device_id.to_string(),
+                scene_id: active_scene_id.to_string(),
+                effect,
+                group,
+            },
+            change_kind,
+        )
     };
 
+    publish_render_group_changed(state.as_ref(), scene_id, &response.group, change_kind);
     crate::api::persist_runtime_session(&state).await;
 
     ApiResponse::ok(response)
@@ -314,22 +330,34 @@ pub async fn delete_display_face(
         Err(response) => return response,
     };
 
-    let deleted = {
+    let (scene_id, removed_group) = {
         let mut scene_manager = state.scene_manager.write().await;
         let Some(active_scene_id) = scene_manager.active_scene_id().copied() else {
             return ApiError::internal("No active scene available");
         };
+        let removed_group = scene_manager
+            .active_scene()
+            .and_then(|scene| scene.display_group_for(device_id))
+            .cloned();
         if let Err(error) = scene_manager.remove_display_group(device_id) {
             return ApiError::internal(format!("Failed to update active scene: {error}"));
         }
-        active_scene_id
+        (active_scene_id, removed_group)
     };
 
+    if let Some(removed_group) = removed_group.as_ref() {
+        publish_render_group_changed(
+            state.as_ref(),
+            scene_id,
+            removed_group,
+            RenderGroupChangeKind::Removed,
+        );
+    }
     crate::api::persist_runtime_session(&state).await;
 
     ApiResponse::ok(serde_json::json!({
         "device_id": device_id.to_string(),
-        "scene_id": deleted.to_string(),
+        "scene_id": scene_id.to_string(),
         "deleted": true,
     }))
 }
@@ -365,7 +393,7 @@ pub async fn patch_display_face_controls(
     }
 
     let mut rejected: Vec<String> = Vec::new();
-    let (response, effect_name) = {
+    let (scene_id, response, effect_name) = {
         let (active_scene_id, group, effect) =
             match current_display_face_assignment(state.as_ref(), device_id).await {
                 Ok(response) => {
@@ -396,6 +424,10 @@ pub async fn patch_display_face_controls(
         };
 
         (
+            active_scene_id
+                .parse::<uuid::Uuid>()
+                .map(hypercolor_types::scene::SceneId)
+                .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT),
             DisplayFaceResponse {
                 device_id: device_id.to_string(),
                 scene_id: active_scene_id,
@@ -414,6 +446,12 @@ pub async fn patch_display_face_controls(
         );
     }
 
+    publish_render_group_changed(
+        state.as_ref(),
+        scene_id,
+        &response.group,
+        RenderGroupChangeKind::ControlsPatched,
+    );
     crate::api::persist_runtime_session(&state).await;
 
     ApiResponse::ok(response)

@@ -16,7 +16,9 @@ use hypercolor_types::scene::{
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
-use crate::api::{persist_runtime_session, save_scene_store_snapshot};
+use crate::api::{
+    persist_runtime_session, publish_active_scene_changed, save_scene_store_snapshot,
+};
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -218,16 +220,28 @@ pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<Str
     let Some(scene_id) = resolve_scene_id(&manager, &id) else {
         return ApiError::not_found(format!("Scene not found: {id}"));
     };
+    let previous_active_scene = manager.active_scene_id().copied();
 
     if let Err(e) = manager.delete(&scene_id) {
         return ApiError::not_found(format!("Scene not found: {e}"));
     }
+    let current_active_scene = manager.active_scene_id().copied();
     drop(manager);
 
     if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
         return ApiError::internal(format!("Failed to persist scenes: {error}"));
     }
     persist_runtime_session(&state).await;
+    if previous_active_scene != current_active_scene
+        && let Some(current_active_scene) = current_active_scene
+    {
+        publish_active_scene_changed(
+            state.as_ref(),
+            previous_active_scene,
+            current_active_scene,
+            hypercolor_types::event::SceneChangeReason::UserDeactivate,
+        );
+    }
 
     ApiResponse::ok(serde_json::json!({
         "id": id,
@@ -244,6 +258,7 @@ pub async fn activate_scene(
     let Some(scene_id) = resolve_scene_id(&manager, &id) else {
         return ApiError::not_found(format!("Scene not found: {id}"));
     };
+    let previous_active_scene = manager.active_scene_id().copied();
 
     let scene_name = match manager.get(&scene_id) {
         Some(s) => s.name.clone(),
@@ -253,9 +268,20 @@ pub async fn activate_scene(
     if let Err(e) = manager.activate(&scene_id, None) {
         return ApiError::internal(format!("Failed to activate scene: {e}"));
     }
+    let current_active_scene = manager.active_scene_id().copied();
     drop(manager);
 
     persist_runtime_session(&state).await;
+    if previous_active_scene != current_active_scene
+        && let Some(current_active_scene) = current_active_scene
+    {
+        publish_active_scene_changed(
+            state.as_ref(),
+            previous_active_scene,
+            current_active_scene,
+            hypercolor_types::event::SceneChangeReason::UserActivate,
+        );
+    }
 
     ApiResponse::ok(serde_json::json!({
         "scene": {
@@ -269,6 +295,7 @@ pub async fn activate_scene(
 /// `POST /api/v1/scenes/deactivate` — Return to the synthesized default scene.
 pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
     let mut manager = state.scene_manager.write().await;
+    let previous_active_scene_id = manager.active_scene_id().copied();
     let previous_scene = manager.active_scene().map(|scene| SceneSummary {
         id: scene.id.to_string(),
         name: scene.name.clone(),
@@ -277,6 +304,7 @@ pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
         priority: scene.priority.0,
     });
     manager.deactivate_current();
+    let current_active_scene_id = manager.active_scene_id().copied();
     let current_scene = manager.active_scene().map(|scene| SceneSummary {
         id: scene.id.to_string(),
         name: scene.name.clone(),
@@ -287,6 +315,16 @@ pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
     drop(manager);
 
     persist_runtime_session(&state).await;
+    if previous_active_scene_id != current_active_scene_id
+        && let Some(current_active_scene_id) = current_active_scene_id
+    {
+        publish_active_scene_changed(
+            state.as_ref(),
+            previous_active_scene_id,
+            current_active_scene_id,
+            hypercolor_types::event::SceneChangeReason::UserDeactivate,
+        );
+    }
 
     ApiResponse::ok(serde_json::json!({
         "deactivated": true,

@@ -37,6 +37,7 @@ pub const DISPLAY_PREVIEW_FRAME_HEADER: u8 = 0x07;
 pub const EFFECT_STARTED_EVENTS: &[&str] =
     &["effect_started", "effect_activated", "effect_changed"];
 pub const EFFECT_STOPPED_EVENTS: &[&str] = &["effect_stopped", "effect_deactivated"];
+pub const SCENE_EVENTS: &[&str] = &["active_scene_changed", "render_group_changed"];
 pub const DEVICE_LIFECYCLE_EVENTS: &[&str] = &[
     "device_connected",
     "device_discovered",
@@ -466,6 +467,8 @@ pub(super) fn handle_json_message(
                             beat: data.get("beat").and_then(|v| v.as_bool()).unwrap_or(false),
                         });
                     }
+                } else if SCENE_EVENTS.contains(&event_type) {
+                    // Recognized for future scene-aware UI; no-op for now.
                 } else if DEVICE_LIFECYCLE_EVENTS.contains(&event_type)
                     && let Some(hint) = extract_device_event_hint(event_type, msg.get("data"))
                 {

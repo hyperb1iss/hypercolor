@@ -10,6 +10,7 @@ use hypercolor_core::effect::{EffectRegistry, EffectWatchEvent, EffectWatcher};
 use hypercolor_core::engine::FpsTier;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::effect::{EffectId, EffectMetadata};
+use hypercolor_types::event::{HypercolorEvent, SceneChangeReason};
 use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole, SceneId};
 
 use crate::discovery::{self, DiscoveryBackend};
@@ -397,6 +398,15 @@ impl DaemonState {
                     );
                 }
             }
+        }
+        if let Some(current_active_scene) =
+            self.scene_manager.read().await.active_scene_id().copied()
+        {
+            self.event_bus.publish(HypercolorEvent::ActiveSceneChanged {
+                previous: None,
+                current: current_active_scene,
+                reason: SceneChangeReason::DaemonStart,
+            });
         }
 
         if !snapshot.default_scene_groups.is_empty() {

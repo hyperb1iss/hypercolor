@@ -3,8 +3,10 @@ use std::collections::HashMap;
 use hypercolor_types::event::{
     ChangeTrigger, ContextType, DisconnectReason, EffectRef, EffectStopReason, EventCategory,
     EventControlValue, EventPriority, FrameData, FrameTiming, HypercolorEvent, InputButtonState,
-    InputEvent, Severity, TransitionRef, ZoneColors, ZoneRef,
+    InputEvent, RenderGroupChangeKind, SceneChangeReason, Severity, TransitionRef, ZoneColors,
+    ZoneRef,
 };
+use hypercolor_types::scene::{RenderGroupId, RenderGroupRole, SceneId};
 use hypercolor_types::session::SessionEvent;
 
 // ── Category Tests ──────────────────────────────────────────────────────
@@ -145,6 +147,17 @@ fn scene_events_have_scene_category() {
         HypercolorEvent::SceneEnabled {
             scene_id: "s1".into(),
             enabled: true,
+        },
+        HypercolorEvent::RenderGroupChanged {
+            scene_id: SceneId::DEFAULT,
+            group_id: RenderGroupId::new(),
+            role: RenderGroupRole::Primary,
+            kind: RenderGroupChangeKind::Updated,
+        },
+        HypercolorEvent::ActiveSceneChanged {
+            previous: None,
+            current: SceneId::DEFAULT,
+            reason: SceneChangeReason::DaemonStart,
         },
     ];
 
@@ -686,6 +699,32 @@ fn serialize_effect_started_with_transition() {
         assert_eq!(t.duration_ms, 1000);
     } else {
         panic!("Expected EffectStarted variant");
+    }
+}
+
+#[test]
+fn serialize_active_scene_changed_roundtrip() {
+    let previous = SceneId::new();
+    let event = HypercolorEvent::ActiveSceneChanged {
+        previous: Some(previous),
+        current: SceneId::DEFAULT,
+        reason: SceneChangeReason::UserDeactivate,
+    };
+
+    let json = serde_json::to_string(&event).expect("serialize");
+    let deserialized: HypercolorEvent = serde_json::from_str(&json).expect("deserialize");
+
+    if let HypercolorEvent::ActiveSceneChanged {
+        previous: restored_previous,
+        current,
+        reason,
+    } = deserialized
+    {
+        assert_eq!(restored_previous, Some(previous));
+        assert_eq!(current, SceneId::DEFAULT);
+        assert_eq!(reason, SceneChangeReason::UserDeactivate);
+    } else {
+        panic!("Expected ActiveSceneChanged variant");
     }
 }
 

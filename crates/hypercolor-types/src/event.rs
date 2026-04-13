@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::scene::{RenderGroupId, RenderGroupRole, SceneId};
 use crate::session::SessionEvent;
 
 // ── Supporting Types ────────────────────────────────────────────────────
@@ -92,6 +93,26 @@ pub enum EffectStopReason {
     Paused,
     /// Daemon is shutting down.
     Shutdown,
+}
+
+/// How a render group changed inside the active scene.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderGroupChangeKind {
+    Created,
+    Updated,
+    Removed,
+    ControlsPatched,
+}
+
+/// Why the active scene changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SceneChangeReason {
+    UserActivate,
+    UserDeactivate,
+    EffectApplied,
+    DaemonStart,
 }
 
 /// Error severity levels.
@@ -509,6 +530,21 @@ pub enum HypercolorEvent {
     /// A scene was enabled or disabled.
     SceneEnabled { scene_id: String, enabled: bool },
 
+    /// A render group in a scene changed.
+    RenderGroupChanged {
+        scene_id: SceneId,
+        group_id: RenderGroupId,
+        role: RenderGroupRole,
+        kind: RenderGroupChangeKind,
+    },
+
+    /// The active scene changed.
+    ActiveSceneChanged {
+        previous: Option<SceneId>,
+        current: SceneId,
+        reason: SceneChangeReason,
+    },
+
     // ── Audio Events ────────────────────────────────────────────────
     /// The audio input source changed.
     AudioSourceChanged {
@@ -762,7 +798,9 @@ impl HypercolorEvent {
             Self::SceneActivated { .. }
             | Self::SceneTransitionStarted { .. }
             | Self::SceneTransitionComplete { .. }
-            | Self::SceneEnabled { .. } => EventCategory::Scene,
+            | Self::SceneEnabled { .. }
+            | Self::RenderGroupChanged { .. }
+            | Self::ActiveSceneChanged { .. } => EventCategory::Scene,
 
             Self::AudioSourceChanged { .. }
             | Self::BeatDetected { .. }

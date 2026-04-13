@@ -56,6 +56,8 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_network::DriverRegistry;
 use hypercolor_types::config::{HypercolorConfig, McpConfig, RenderAccelerationMode};
 use hypercolor_types::device::DeviceId;
+use hypercolor_types::event::{HypercolorEvent, RenderGroupChangeKind, SceneChangeReason};
+use hypercolor_types::scene::{RenderGroup, SceneId};
 use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
 
@@ -624,6 +626,37 @@ pub(crate) async fn save_scene_store_snapshot(state: &AppState) -> anyhow::Resul
     let mut store = state.scene_store.write().await;
     store.replace_named_scenes(scenes);
     store.save()
+}
+
+pub(crate) fn publish_render_group_changed(
+    state: &AppState,
+    scene_id: SceneId,
+    group: &RenderGroup,
+    kind: RenderGroupChangeKind,
+) {
+    state
+        .event_bus
+        .publish(HypercolorEvent::RenderGroupChanged {
+            scene_id,
+            group_id: group.id,
+            role: group.role,
+            kind,
+        });
+}
+
+pub(crate) fn publish_active_scene_changed(
+    state: &AppState,
+    previous: Option<SceneId>,
+    current: SceneId,
+    reason: SceneChangeReason,
+) {
+    state
+        .event_bus
+        .publish(HypercolorEvent::ActiveSceneChanged {
+            previous,
+            current,
+            reason,
+        });
 }
 
 /// Persist layout-specific discovery auto-sync exclusions to disk.

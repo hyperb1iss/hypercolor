@@ -14,13 +14,17 @@ use hypercolor_types::effect::{
     ControlBinding, ControlDefinition, ControlValue, EffectCategory, EffectId, EffectMetadata,
     EffectSource, PresetTemplate,
 };
-use hypercolor_types::event::{ChangeTrigger, EffectRef, EffectStopReason, HypercolorEvent};
+use hypercolor_types::event::{
+    ChangeTrigger, EffectRef, EffectStopReason, EventControlValue, HypercolorEvent,
+    RenderGroupChangeKind,
+};
 use hypercolor_types::scene::RenderGroup;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
 use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::publish_render_group_changed;
 use crate::effect_layouts;
 use crate::scene_transactions::apply_layout_update;
 
@@ -376,16 +380,36 @@ pub async fn apply_effect(
         .map(|(_, effect)| effect_ref(&effect));
     let layout = resolve_full_scope_layout(state.as_ref()).await;
 
-    {
+    let (scene_id, group, change_kind) = {
         let mut scene_manager = state.scene_manager.write().await;
-        if let Err(error) =
-            scene_manager.upsert_primary_group(&metadata, normalized_controls, None, layout)
+        let scene_id = match scene_manager.active_scene_id().copied() {
+            Some(scene_id) => scene_id,
+            None => return ApiError::internal("No active scene available"),
+        };
+        let change_kind = if scene_manager
+            .active_scene()
+            .and_then(|scene| scene.primary_group())
+            .is_some()
         {
-            return ApiError::internal(format!(
-                "Failed to update active scene primary group: {error}"
-            ));
-        }
-    }
+            RenderGroupChangeKind::Updated
+        } else {
+            RenderGroupChangeKind::Created
+        };
+        let group = match scene_manager.upsert_primary_group(
+            &metadata,
+            normalized_controls,
+            None,
+            layout,
+        ) {
+            Ok(group) => group.clone(),
+            Err(error) => {
+                return ApiError::internal(format!(
+                    "Failed to update active scene primary group: {error}"
+                ));
+            }
+        };
+        (scene_id, group, change_kind)
+    };
     let warnings =
         super::displays::auto_disable_html_overlays_for_effect(state.as_ref(), &metadata).await;
 
@@ -401,6 +425,7 @@ pub async fn apply_effect(
         previous: previous_effect,
         transition: None,
     });
+    publish_render_group_changed(state.as_ref(), scene_id, &group, change_kind);
     let applied_layout = apply_associated_layout(&state, &metadata.id.to_string()).await;
     super::persist_runtime_session(&state).await;
 
@@ -442,16 +467,27 @@ pub async fn stop_effect(State(state): State<Arc<AppState>>) -> Response {
         return ApiError::not_found("No effect is currently active");
     };
 
-    {
+    let (scene_id, cleared_group) = {
         let mut scene_manager = state.scene_manager.write().await;
-        if scene_manager.clear_group_effect(group.id).is_none() {
+        let scene_id = match scene_manager.active_scene_id().copied() {
+            Some(scene_id) => scene_id,
+            None => return ApiError::internal("No active scene available"),
+        };
+        let Some(cleared_group) = scene_manager.clear_group_effect(group.id).cloned() else {
             return ApiError::not_found("No effect is currently active");
-        }
-    }
+        };
+        (scene_id, cleared_group)
+    };
     state.event_bus.publish(HypercolorEvent::EffectStopped {
         effect: effect_ref(&previous_effect),
         reason: EffectStopReason::Stopped,
     });
+    publish_render_group_changed(
+        state.as_ref(),
+        scene_id,
+        &cleared_group,
+        RenderGroupChangeKind::Updated,
+    );
     super::persist_runtime_session(&state).await;
 
     ApiResponse::ok(serde_json::json!({
@@ -485,15 +521,21 @@ pub async fn update_current_controls(
     let (normalized, invalid) = normalize_control_payload(&active_meta, &controls);
     rejected.extend(invalid);
     applied.extend(normalized.clone());
-    {
+    let previous_values = resolved_control_values(&active_meta, &group);
+    let (scene_id, updated_group) = {
         let mut scene_manager = state.scene_manager.write().await;
-        if scene_manager
+        let scene_id = match scene_manager.active_scene_id().copied() {
+            Some(scene_id) => scene_id,
+            None => return ApiError::internal("No active scene available"),
+        };
+        let Some(updated_group) = scene_manager
             .patch_group_controls(group.id, normalized)
-            .is_none()
-        {
+            .cloned()
+        else {
             return ApiError::not_found("No effect is currently active");
-        }
-    }
+        };
+        (scene_id, updated_group)
+    };
 
     if !rejected.is_empty() {
         warn!(
@@ -502,6 +544,20 @@ pub async fn update_current_controls(
             "Rejected one or more control updates"
         );
     }
+    publish_render_group_changed(
+        state.as_ref(),
+        scene_id,
+        &updated_group,
+        RenderGroupChangeKind::ControlsPatched,
+    );
+    publish_primary_control_changed_events(
+        state.as_ref(),
+        &active_meta,
+        &previous_values,
+        &resolved_control_values(&active_meta, &updated_group),
+        applied.keys().map(String::as_str),
+        ChangeTrigger::Api,
+    );
     super::persist_runtime_session(&state).await;
 
     ApiResponse::ok(serde_json::json!({
@@ -531,16 +587,27 @@ pub async fn set_current_control_binding(
         Ok(normalized) => normalized,
         Err(error) => return ApiError::validation(error),
     };
-    {
+    let (scene_id, updated_group) = {
         let mut scene_manager = state.scene_manager.write().await;
-        if scene_manager
+        let scene_id = match scene_manager.active_scene_id().copied() {
+            Some(scene_id) => scene_id,
+            None => return ApiError::internal("No active scene available"),
+        };
+        let Some(updated_group) = scene_manager
             .set_group_control_binding(group.id, control_id.clone(), normalized.clone())
-            .is_none()
-        {
+            .cloned()
+        else {
             return ApiError::not_found("No effect is currently active");
-        }
-    }
+        };
+        (scene_id, updated_group)
+    };
 
+    publish_render_group_changed(
+        state.as_ref(),
+        scene_id,
+        &updated_group,
+        RenderGroupChangeKind::Updated,
+    );
     super::persist_runtime_session(&state).await;
 
     ApiResponse::ok(serde_json::json!({
@@ -559,15 +626,40 @@ pub async fn reset_controls(State(state): State<Arc<AppState>>) -> Response {
     let Some((group, meta)) = active_primary_effect(state.as_ref()).await else {
         return ApiError::not_found("No effect is currently active");
     };
-    {
+    let previous_values = resolved_control_values(&meta, &group);
+    let (scene_id, updated_group) = {
         let mut scene_manager = state.scene_manager.write().await;
-        if scene_manager
+        let scene_id = match scene_manager.active_scene_id().copied() {
+            Some(scene_id) => scene_id,
+            None => return ApiError::internal("No active scene available"),
+        };
+        let Some(updated_group) = scene_manager
             .reset_group_controls(group.id, default_control_values(&meta))
-            .is_none()
-        {
+            .cloned()
+        else {
             return ApiError::not_found("No effect is currently active");
-        }
-    }
+        };
+        (scene_id, updated_group)
+    };
+    publish_render_group_changed(
+        state.as_ref(),
+        scene_id,
+        &updated_group,
+        RenderGroupChangeKind::ControlsPatched,
+    );
+    let control_ids = meta
+        .controls
+        .iter()
+        .map(|control| control.control_id().to_owned())
+        .collect::<Vec<_>>();
+    publish_primary_control_changed_events(
+        state.as_ref(),
+        &meta,
+        &previous_values,
+        &resolved_control_values(&meta, &updated_group),
+        control_ids.iter().map(String::as_str),
+        ChangeTrigger::Api,
+    );
     super::persist_runtime_session(&state).await;
 
     info!(effect = %meta.name, "Controls reset to defaults");
@@ -630,6 +722,54 @@ pub(crate) fn resolve_effect_metadata(
         .iter()
         .find(|(_, entry)| entry.metadata.matches_lookup(id_or_name))
         .map(|(_, entry)| entry.metadata.clone())
+}
+
+fn publish_primary_control_changed_events<'a>(
+    state: &AppState,
+    metadata: &EffectMetadata,
+    previous_values: &HashMap<String, ControlValue>,
+    next_values: &HashMap<String, ControlValue>,
+    changed_control_ids: impl IntoIterator<Item = &'a str>,
+    trigger: ChangeTrigger,
+) {
+    for control_id in changed_control_ids {
+        let Some(previous) = previous_values.get(control_id) else {
+            continue;
+        };
+        let Some(next) = next_values.get(control_id) else {
+            continue;
+        };
+        if previous == next {
+            continue;
+        }
+        let (Some(old_value), Some(new_value)) =
+            (event_control_value(previous), event_control_value(next))
+        else {
+            continue;
+        };
+        state
+            .event_bus
+            .publish(HypercolorEvent::EffectControlChanged {
+                effect_id: metadata.id.to_string(),
+                control_id: control_id.to_owned(),
+                old_value,
+                new_value,
+                trigger: trigger.clone(),
+            });
+    }
+}
+
+fn event_control_value(value: &ControlValue) -> Option<EventControlValue> {
+    match value {
+        ControlValue::Float(_) | ControlValue::Integer(_) => {
+            value.as_f32().map(EventControlValue::Number)
+        }
+        ControlValue::Boolean(value) => Some(EventControlValue::Boolean(*value)),
+        ControlValue::Enum(value) | ControlValue::Text(value) => {
+            Some(EventControlValue::String(value.clone()))
+        }
+        ControlValue::Color(_) | ControlValue::Rect(_) | ControlValue::Gradient(_) => None,
+    }
 }
 
 fn extract_request_controls(

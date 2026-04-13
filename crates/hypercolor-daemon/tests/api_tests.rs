@@ -41,7 +41,9 @@ use hypercolor_types::effect::{
     ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
     EffectId, EffectMetadata, EffectSource, EffectState,
 };
-use hypercolor_types::event::{ChangeTrigger, EffectStopReason, HypercolorEvent};
+use hypercolor_types::event::{
+    ChangeTrigger, EffectStopReason, HypercolorEvent, RenderGroupChangeKind, SceneChangeReason,
+};
 use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceTarget, EasingFunction, RenderGroup, RenderGroupRole, Scene,
     SceneId, SceneKind, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
@@ -1941,6 +1943,192 @@ async fn rest_effect_lifecycle_publishes_started_and_stopped_events() {
 
     assert_eq!(stopped.0.name, "solid_color");
     assert_eq!(stopped.1, EffectStopReason::Stopped);
+}
+
+#[tokio::test]
+async fn scene_activate_and_deactivate_publish_active_scene_events() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+    let mut events = state.event_bus.subscribe_all();
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name": "Studio"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    let create_json = body_json(create_response).await;
+    let scene_id = create_json["data"]["id"]
+        .as_str()
+        .expect("scene id should be present")
+        .parse::<uuid::Uuid>()
+        .map(SceneId)
+        .expect("scene id should parse");
+
+    let activate_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/scenes/{scene_id}/activate"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(activate_response.status(), StatusCode::OK);
+
+    let activated = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::ActiveSceneChanged {
+                        previous,
+                        current,
+                        reason,
+                    } = timestamped.event
+                    {
+                        break (previous, current, reason);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before scene activation event arrived");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for scene activation event");
+
+    assert_eq!(activated.0, Some(SceneId::DEFAULT));
+    assert_eq!(activated.1, scene_id);
+    assert_eq!(activated.2, SceneChangeReason::UserActivate);
+
+    let deactivate_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes/deactivate")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(deactivate_response.status(), StatusCode::OK);
+
+    let deactivated = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::ActiveSceneChanged {
+                        previous,
+                        current,
+                        reason,
+                    } = timestamped.event
+                    {
+                        break (previous, current, reason);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before scene deactivation event arrived");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for scene deactivation event");
+
+    assert_eq!(deactivated.0, Some(scene_id));
+    assert_eq!(deactivated.1, SceneId::DEFAULT);
+    assert_eq!(deactivated.2, SceneChangeReason::UserDeactivate);
+}
+
+#[tokio::test]
+async fn patch_current_controls_publishes_render_group_and_control_events() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+    let mut events = state.event_bus.subscribe_all();
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let patch_response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/effects/current/controls")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"speed":7.5}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(patch_response.status(), StatusCode::OK);
+
+    let mut saw_render_group_change = false;
+    let mut saw_control_change = false;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !saw_render_group_change || !saw_control_change {
+            match events.recv().await {
+                Ok(timestamped) => match timestamped.event {
+                    HypercolorEvent::RenderGroupChanged {
+                        scene_id,
+                        role,
+                        kind,
+                        ..
+                    } => {
+                        if scene_id == SceneId::DEFAULT
+                            && role == RenderGroupRole::Primary
+                            && kind == RenderGroupChangeKind::ControlsPatched
+                        {
+                            saw_render_group_change = true;
+                        }
+                    }
+                    HypercolorEvent::EffectControlChanged {
+                        control_id,
+                        old_value,
+                        new_value,
+                        trigger,
+                        ..
+                    } => {
+                        if control_id == "speed"
+                            && old_value == hypercolor_types::event::EventControlValue::Number(5.0)
+                            && new_value == hypercolor_types::event::EventControlValue::Number(7.5)
+                            && trigger == ChangeTrigger::Api
+                        {
+                            saw_control_change = true;
+                        }
+                    }
+                    _ => {}
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before control change events arrived");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for control patch events");
 }
 
 // ── Library ──────────────────────────────────────────────────────────────
