@@ -734,6 +734,27 @@ async fn wait_for_next_canvas_frame(
     .expect("expected the next canvas frame within 2 seconds")
 }
 
+async fn wait_for_render_loop_frame_number(
+    state: &RenderThreadState,
+    minimum_frame_number: u64,
+) -> u64 {
+    let start = std::time::Instant::now();
+    loop {
+        let frame_number = {
+            let render_loop = state.render_loop.read().await;
+            render_loop.frame_number()
+        };
+        if frame_number >= minimum_frame_number {
+            return frame_number;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "expected render loop frame_number to reach {minimum_frame_number} within 2 seconds, got {frame_number}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 fn make_render_state(
     active_effect: ActiveEffectSeed,
     spatial_engine: SpatialEngine,
@@ -2650,6 +2671,99 @@ async fn pipeline_gpu_retained_screen_preview_advances_frame_watch_when_input_st
     assert_eq!(initial_right, [0, 255, 0]);
     assert_eq!(retained_left, [255, 0, 0]);
     assert_eq!(retained_right, [0, 255, 0]);
+}
+
+#[cfg(feature = "wgpu")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "fresh GPU deferred-sampling coverage needs full render-thread setup"
+)]
+#[tokio::test]
+async fn pipeline_gpu_fresh_screen_preview_hold_keeps_frame_watch_quiet() {
+    let layout = test_layout(vec![
+        point_zone("zone_left", "mock:left", 0.25, 0.5),
+        point_zone("zone_right", "mock:right", 0.75, 0.5),
+    ]);
+
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(layout),
+        BackendManager::new(),
+    );
+    state.screen_capture_configured = true;
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+
+    let mut preview_canvas = Canvas::new(320, 200);
+    for y in 0..200 {
+        for x in 0..320 {
+            let color = if x < 160 {
+                Rgba::new(255, 0, 0, 255)
+            } else {
+                Rgba::new(0, 255, 0, 255)
+            };
+            preview_canvas.set_pixel(x, y, color);
+        }
+    }
+    let source_surface = PublishedSurface::from_owned_canvas(preview_canvas, 23, 41);
+    let screen_data = ScreenData {
+        zone_colors: Vec::new(),
+        grid_width: 0,
+        grid_height: 0,
+        canvas_downscale: Some(source_surface),
+        source_width: 320,
+        source_height: 200,
+    };
+
+    {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager.add_source(Box::new(MockScreenPreviewSource::new(screen_data)));
+        input_manager
+            .start_all()
+            .expect("input manager should start");
+    }
+
+    let mut frame_rx = state.event_bus.frame_receiver();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
+        .await
+        .expect("expected initial sampled GPU frame within 2 seconds")
+        .expect("frame sender should remain connected");
+
+    let initial_frame = frame_rx.borrow().clone();
+    let loop_frame_number = wait_for_render_loop_frame_number(&state, 2).await;
+
+    assert_eq!(
+        frame_rx.borrow().frame_number,
+        initial_frame.frame_number,
+        "expected fresh deferred GPU sampling to hold the published frame while render_loop.frame_number advanced to {loop_frame_number}"
+    );
+    assert!(
+        !frame_rx
+            .has_changed()
+            .expect("frame sender should remain connected"),
+        "expected fresh deferred GPU sampling to keep frame watch quiet while reusing published zones"
+    );
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    let (deadline_tx, mut deadline_rx) = oneshot::channel();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(2));
+        let _ = deadline_tx.send(());
+    });
+    tokio::select! {
+        shutdown = rt.shutdown() => shutdown.expect("shutdown"),
+        _ = &mut deadline_rx => panic!("render thread should stop within 2 seconds"),
+    }
 }
 
 #[tokio::test]

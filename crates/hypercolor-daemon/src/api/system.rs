@@ -67,6 +67,8 @@ pub struct LatestFrameStatus {
     pub frame_token: u64,
     pub compositor_backend: String,
     pub gpu_zone_sampling: bool,
+    pub gpu_sample_deferred: bool,
+    pub gpu_sample_retry_hit: bool,
     pub gpu_sample_wait_blocked: bool,
     pub cpu_readback_skipped: bool,
     pub total_ms: f64,
@@ -359,6 +361,8 @@ fn latest_frame_status(frame: LatestFrameMetrics, render_elapsed_ms: f64) -> Lat
         frame_token: frame.timeline.frame_token,
         compositor_backend: frame.compositor_backend.as_str().to_owned(),
         gpu_zone_sampling: frame.gpu_zone_sampling,
+        gpu_sample_deferred: frame.gpu_sample_deferred,
+        gpu_sample_retry_hit: frame.gpu_sample_retry_hit,
         gpu_sample_wait_blocked: frame.gpu_sample_wait_blocked,
         cpu_readback_skipped: frame.cpu_readback_skipped,
         total_ms: round_2(us_to_ms(frame.total_us)),
@@ -500,6 +504,8 @@ mod tests {
                 retained_screen: false,
                 composition_bypassed: false,
                 gpu_zone_sampling: true,
+                gpu_sample_deferred: true,
+                gpu_sample_retry_hit: true,
                 gpu_sample_wait_blocked: true,
                 cpu_readback_skipped: true,
                 compositor_backend: CompositorBackendKind::GpuFallback,
@@ -545,6 +551,8 @@ mod tests {
             "gpu_fallback"
         );
         assert_eq!(json["data"]["latest_frame"]["gpu_zone_sampling"], true);
+        assert_eq!(json["data"]["latest_frame"]["gpu_sample_deferred"], true);
+        assert_eq!(json["data"]["latest_frame"]["gpu_sample_retry_hit"], true);
         assert_eq!(
             json["data"]["latest_frame"]["gpu_sample_wait_blocked"],
             true

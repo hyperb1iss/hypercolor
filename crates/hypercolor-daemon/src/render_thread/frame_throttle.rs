@@ -232,6 +232,8 @@ pub(crate) async fn maybe_sleep_throttle(
             retained_screen: false,
             composition_bypassed: false,
             gpu_zone_sampling: false,
+            gpu_sample_deferred: false,
+            gpu_sample_retry_hit: false,
             gpu_sample_wait_blocked: false,
             cpu_readback_skipped: false,
             compositor_backend: CompositorBackendKind::Cpu,

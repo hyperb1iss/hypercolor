@@ -686,6 +686,15 @@ impl GpuSparkleFlinger {
         Ok(true)
     }
 
+    pub(crate) fn pending_zone_sampling_matches_current_work(
+        &self,
+        pending: &PendingGpuZoneSampling,
+        prepared_zones: &[PreparedZonePlan],
+    ) -> bool {
+        pending.output_generation == self.output_generation
+            && pending.sampling_plan == GpuSamplingPlan::key(prepared_zones)
+    }
+
     pub(crate) fn take_last_sample_readback_wait_blocked(&mut self) -> bool {
         self.spatial_sampler.take_last_readback_wait_blocked()
     }

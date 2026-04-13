@@ -341,6 +341,22 @@ impl SparkleFlinger {
         }
     }
 
+    pub(crate) fn pending_zone_sampling_matches_current_work(
+        &self,
+        pending: &PendingZoneSampling,
+        _prepared_zones: &[PreparedZonePlan],
+    ) -> bool {
+        match (&self.backend, pending) {
+            (SparkleFlingerBackend::Cpu(_), _) => false,
+            #[cfg(feature = "wgpu")]
+            (SparkleFlingerBackend::Gpu { gpu, .. }, PendingZoneSampling::Gpu(pending)) => {
+                gpu.pending_zone_sampling_matches_current_work(pending, _prepared_zones)
+            }
+            #[allow(unreachable_patterns)]
+            _ => false,
+        }
+    }
+
     pub fn can_sample_zone_plan(&self, _prepared_zones: &[PreparedZonePlan]) -> bool {
         match &self.backend {
             SparkleFlingerBackend::Cpu(_) => false,

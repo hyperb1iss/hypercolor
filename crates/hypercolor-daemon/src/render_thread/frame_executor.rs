@@ -34,28 +34,41 @@ fn can_reuse_published_frame_for_deferred_sampling(
     render_stage: &super::frame_composer::RenderStageStats,
     layout: &SpatialLayout,
     published_frame: &FrameData,
-    has_deferred_sampling: bool,
 ) -> bool {
     render_stage.screen_retained
-        && can_hold_published_frame_for_deferred_sampling(
-            layout,
-            published_frame,
-            has_deferred_sampling,
-        )
+        && can_hold_published_frame_for_deferred_sampling(layout, published_frame)
 }
 
 fn can_hold_published_frame_for_deferred_sampling(
     layout: &SpatialLayout,
     published_frame: &FrameData,
-    has_deferred_sampling: bool,
 ) -> bool {
-    !has_deferred_sampling
-        && published_frame.zones.len() == layout.zones.len()
+    published_frame.zones.len() == layout.zones.len()
         && published_frame
             .zones
             .iter()
             .zip(&layout.zones)
             .all(|(zone_colors, layout_zone)| zone_colors.zone_id == layout_zone.id)
+}
+
+fn try_finish_deferred_zone_sampling(
+    render: &mut super::pipeline_runtime::RenderCaches,
+    error_message: &'static str,
+) {
+    if let Some(mut deferred_sampling) = render.deferred_zone_sampling.take() {
+        match render.sparkleflinger.try_finish_pending_zone_sampling(
+            &mut deferred_sampling,
+            &mut render.deferred_zone_sampling_scratch,
+        ) {
+            Ok(true) => {}
+            Ok(false) => {
+                render.deferred_zone_sampling = Some(deferred_sampling);
+            }
+            Err(error) => {
+                warn!(%error, "{error_message}");
+            }
+        }
+    }
 }
 
 #[expect(
@@ -163,6 +176,7 @@ pub(crate) async fn execute_frame(
     let input_done_at = Instant::now();
     let input_us = micros_between(input_start, input_done_at);
     let input_done_us = micros_between(frame_start, input_done_at);
+    let mut stale_deferred_sampling = None;
     if let Some(mut deferred_sampling) = render.deferred_zone_sampling.take() {
         match render.sparkleflinger.try_finish_pending_zone_sampling(
             &mut deferred_sampling,
@@ -170,7 +184,7 @@ pub(crate) async fn execute_frame(
         ) {
             Ok(true) => {}
             Ok(false) => {
-                render.deferred_zone_sampling = Some(deferred_sampling);
+                stale_deferred_sampling = Some(deferred_sampling);
             }
             Err(error) => {
                 warn!(%error, "Deferred GPU spatial sampling finalize failed; dropping deferred sample result");
@@ -216,9 +230,13 @@ pub(crate) async fn execute_frame(
     let render_us = render_stage.total_us;
 
     let mut gpu_zone_sampling = false;
+    let mut gpu_sample_deferred = false;
+    let mut gpu_sample_retry_hit = false;
     let mut gpu_sample_wait_blocked = false;
     let mut refresh_reused_frame_metadata = false;
     let mut pending_gpu_zone_sampling = None;
+    let mut can_reuse_published_frame = false;
+    let mut can_hold_published_frame = false;
     let used_pre_sampled_scene_zones = render_stage.sampled_layout.is_some();
     let layout = if let Some(sampled_layout) = render_stage.sampled_layout.take() {
         if let Some(sampled_zones) = render_stage.sampled_zones.take() {
@@ -227,55 +245,94 @@ pub(crate) async fn execute_frame(
         sampled_layout
     } else {
         render_stage.sampled_us = 0;
-        gpu_zone_sampling = if matches!(
-            render_stage.composed_frame.backend,
-            crate::performance::CompositorBackendKind::Gpu
-        ) {
-            let gpu_sample_start = Instant::now();
-            match render.sparkleflinger.begin_sample_zone_plan_into(
-                scene_snapshot.spatial_engine.sampling_plan().as_ref(),
-                &mut render.recycled_frame.zones,
-            ) {
-                Ok(ZoneSamplingDispatch::Unsupported) => false,
-                Ok(ZoneSamplingDispatch::Ready) => {
-                    render_stage.sampled_us = render_stage
-                        .sampled_us
-                        .saturating_add(micros_between(gpu_sample_start, Instant::now()));
-                    true
-                }
-                Ok(ZoneSamplingDispatch::Pending(pending)) => {
-                    render_stage.sampled_us = render_stage
-                        .sampled_us
-                        .saturating_add(micros_between(gpu_sample_start, Instant::now()));
-                    pending_gpu_zone_sampling = Some(pending);
-                    true
-                }
-                Err(error) => {
-                    warn!(%error, "GPU spatial sampling failed; falling back to CPU");
-                    false
-                }
-            }
-        } else {
-            false
+        let prepared_zones = scene_snapshot.spatial_engine.sampling_plan();
+        let layout = scene_snapshot.spatial_engine.layout();
+        (can_reuse_published_frame, can_hold_published_frame) = {
+            let published_frame = state.event_bus.frame_sender().borrow();
+            (
+                can_reuse_published_frame_for_deferred_sampling(
+                    &render_stage,
+                    layout.as_ref(),
+                    &published_frame,
+                ),
+                can_hold_published_frame_for_deferred_sampling(layout.as_ref(), &published_frame),
+            )
         };
-        scene_snapshot.spatial_engine.layout()
-    };
-    let can_reuse_published_frame = {
-        let published_frame = state.event_bus.frame_sender().borrow();
-        can_reuse_published_frame_for_deferred_sampling(
-            &render_stage,
-            layout.as_ref(),
-            &published_frame,
-            render.deferred_zone_sampling.is_some(),
-        )
-    };
-    let can_hold_published_frame = {
-        let published_frame = state.event_bus.frame_sender().borrow();
-        can_hold_published_frame_for_deferred_sampling(
-            layout.as_ref(),
-            &published_frame,
-            render.deferred_zone_sampling.is_some(),
-        )
+        let mut stale_sampling_matches_current = false;
+        if let Some(mut pending) = stale_deferred_sampling.take() {
+            if render
+                .sparkleflinger
+                .pending_zone_sampling_matches_current_work(&pending, prepared_zones.as_ref())
+            {
+                stale_sampling_matches_current = true;
+                let stale_sample_finish = Instant::now();
+                match render.sparkleflinger.try_finish_pending_zone_sampling(
+                    &mut pending,
+                    &mut render.recycled_frame.zones,
+                ) {
+                    Ok(true) => {
+                        gpu_zone_sampling = true;
+                        gpu_sample_retry_hit = true;
+                        gpu_sample_wait_blocked = render
+                            .sparkleflinger
+                            .take_last_sample_readback_wait_blocked();
+                        render_stage.sampled_us = render_stage
+                            .sampled_us
+                            .saturating_add(micros_between(stale_sample_finish, Instant::now()));
+                    }
+                    Ok(false) => {
+                        render_stage.sampled_us = render_stage
+                            .sampled_us
+                            .saturating_add(micros_between(stale_sample_finish, Instant::now()));
+                        stale_deferred_sampling = Some(pending);
+                    }
+                    Err(error) => {
+                        warn!(%error, "Deferred GPU spatial sampling retry failed; resampling current frame");
+                    }
+                }
+            } else {
+                stale_deferred_sampling = Some(pending);
+            }
+        }
+        if !gpu_zone_sampling && stale_sampling_matches_current && can_hold_published_frame {
+            render.deferred_zone_sampling = stale_deferred_sampling.take();
+            gpu_sample_deferred = true;
+            render_stage.reuse_published_frame = true;
+            refresh_reused_frame_metadata = render_stage.screen_retained;
+        } else if !gpu_zone_sampling {
+            gpu_zone_sampling = if matches!(
+                render_stage.composed_frame.backend,
+                crate::performance::CompositorBackendKind::Gpu
+            ) {
+                let gpu_sample_start = Instant::now();
+                match render.sparkleflinger.begin_sample_zone_plan_into(
+                    prepared_zones.as_ref(),
+                    &mut render.recycled_frame.zones,
+                ) {
+                    Ok(ZoneSamplingDispatch::Unsupported) => false,
+                    Ok(ZoneSamplingDispatch::Ready) => {
+                        render_stage.sampled_us = render_stage
+                            .sampled_us
+                            .saturating_add(micros_between(gpu_sample_start, Instant::now()));
+                        true
+                    }
+                    Ok(ZoneSamplingDispatch::Pending(pending)) => {
+                        render_stage.sampled_us = render_stage
+                            .sampled_us
+                            .saturating_add(micros_between(gpu_sample_start, Instant::now()));
+                        pending_gpu_zone_sampling = Some(pending);
+                        true
+                    }
+                    Err(error) => {
+                        warn!(%error, "GPU spatial sampling failed; falling back to CPU");
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+        }
+        layout
     };
 
     if should_advance_gpu_preview(&render_stage)
@@ -312,6 +369,7 @@ pub(crate) async fn execute_frame(
                 Ok(false) => {
                     render.deferred_zone_sampling = Some(pending);
                     gpu_zone_sampling = false;
+                    gpu_sample_deferred = true;
                     render_stage.reuse_published_frame = true;
                     refresh_reused_frame_metadata = true;
                 }
@@ -325,6 +383,7 @@ pub(crate) async fn execute_frame(
         } else if can_hold_published_frame {
             render.deferred_zone_sampling = Some(pending);
             gpu_zone_sampling = false;
+            gpu_sample_deferred = true;
             render_stage.reuse_published_frame = true;
         } else {
             if let Err(error) = render
@@ -343,6 +402,7 @@ pub(crate) async fn execute_frame(
             .sampled_us
             .saturating_add(micros_between(gpu_sample_finish, Instant::now()));
     }
+    let _ = stale_deferred_sampling;
     if !gpu_zone_sampling && !used_pre_sampled_scene_zones && !render_stage.reuse_published_frame {
         let cpu_sample_start = Instant::now();
         scene_snapshot.spatial_engine.sample_into(
@@ -395,6 +455,10 @@ pub(crate) async fn execute_frame(
     if let Some(runtime) = &state.discovery_runtime {
         handle_async_write_failures(runtime, async_failures).await;
     }
+    try_finish_deferred_zone_sampling(
+        render,
+        "Deferred GPU spatial sampling late finalize failed; dropping deferred sample result",
+    );
 
     let postprocess_start = Instant::now();
     let mut full_frame_copy_count = 0_u32;
@@ -519,6 +583,8 @@ pub(crate) async fn execute_frame(
             retained_screen: render_stage.screen_retained,
             composition_bypassed: render_stage.composition_bypassed,
             gpu_zone_sampling,
+            gpu_sample_deferred,
+            gpu_sample_retry_hit,
             gpu_sample_wait_blocked,
             cpu_readback_skipped,
             compositor_backend,
@@ -746,27 +812,18 @@ mod tests {
         assert!(can_reuse_published_frame_for_deferred_sampling(
             &render_stage,
             &layout,
-            &retained_frame,
-            false
+            &retained_frame
         ));
         assert!(!can_reuse_published_frame_for_deferred_sampling(
             &render_stage,
             &layout,
-            &retained_frame,
-            true
-        ));
-        assert!(!can_reuse_published_frame_for_deferred_sampling(
-            &render_stage,
-            &layout,
-            &published_frame(&["left", "other"]),
-            false
+            &published_frame(&["left", "other"])
         ));
         render_stage.screen_retained = false;
         assert!(!can_reuse_published_frame_for_deferred_sampling(
             &render_stage,
             &layout,
-            &retained_frame,
-            false
+            &retained_frame
         ));
     }
 
@@ -777,18 +834,11 @@ mod tests {
 
         assert!(can_hold_published_frame_for_deferred_sampling(
             &layout,
-            &retained_frame,
-            false
+            &retained_frame
         ));
         assert!(!can_hold_published_frame_for_deferred_sampling(
             &layout,
-            &retained_frame,
-            true
-        ));
-        assert!(!can_hold_published_frame_for_deferred_sampling(
-            &layout,
-            &published_frame(&["left", "other"]),
-            false
+            &published_frame(&["left", "other"])
         ));
     }
 }

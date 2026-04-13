@@ -752,6 +752,8 @@ pub(super) struct MetricsTimeline {
     pub(super) frame_token: u64,
     pub(super) compositor_backend: String,
     pub(super) gpu_zone_sampling: bool,
+    pub(super) gpu_sample_deferred: bool,
+    pub(super) gpu_sample_retry_hit: bool,
     pub(super) gpu_sample_wait_blocked: bool,
     pub(super) cpu_readback_skipped: bool,
     pub(super) budget_ms: f64,

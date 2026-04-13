@@ -1065,6 +1065,8 @@ pub(super) async fn build_metrics_message(
                 frame_token: latest_frame.timeline.frame_token,
                 compositor_backend: latest_frame.compositor_backend.as_str().to_owned(),
                 gpu_zone_sampling: latest_frame.gpu_zone_sampling,
+                gpu_sample_deferred: latest_frame.gpu_sample_deferred,
+                gpu_sample_retry_hit: latest_frame.gpu_sample_retry_hit,
                 gpu_sample_wait_blocked: latest_frame.gpu_sample_wait_blocked,
                 cpu_readback_skipped: latest_frame.cpu_readback_skipped,
                 budget_ms: round_2(us_to_ms(latest_frame.timeline.budget_us)),

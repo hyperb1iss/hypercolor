@@ -77,6 +77,8 @@ pub(crate) struct LatestFrameMetrics {
     pub retained_screen: bool,
     pub composition_bypassed: bool,
     pub gpu_zone_sampling: bool,
+    pub gpu_sample_deferred: bool,
+    pub gpu_sample_retry_hit: bool,
     pub gpu_sample_wait_blocked: bool,
     pub cpu_readback_skipped: bool,
     pub compositor_backend: CompositorBackendKind,
