@@ -21,6 +21,7 @@ const COMPOSE_WORKGROUP_WIDTH: u32 = 8;
 const COMPOSE_WORKGROUP_HEIGHT: u32 = 8;
 const COMPOSE_PARAM_BYTES: usize = 48;
 const PREVIEW_SCALE_PARAM_BYTES: usize = 16;
+const MAX_CACHED_PREVIEW_SURFACES: usize = 3;
 
 #[derive(Debug, Clone)]
 pub(crate) struct GpuCompositorProbe {
@@ -44,7 +45,7 @@ pub(crate) struct GpuSparkleFlinger {
     current_output: Option<GpuCompositorOutputSurface>,
     cached_composition_key: Option<CachedReadbackKey>,
     cached_readback_surface: Option<CachedReadbackSurface>,
-    cached_preview_surface: Option<CachedPreviewSurface>,
+    cached_preview_surfaces: Vec<CachedPreviewSurface>,
     pending_output_submission: Option<wgpu::CommandEncoder>,
     pending_preview_readback: Option<PendingPreviewReadback>,
     pending_preview_submission: Option<wgpu::SubmissionIndex>,
@@ -256,7 +257,7 @@ impl GpuSparkleFlinger {
             current_output: None,
             cached_composition_key: None,
             cached_readback_surface: None,
-            cached_preview_surface: None,
+            cached_preview_surfaces: Vec::with_capacity(MAX_CACHED_PREVIEW_SURFACES),
             pending_output_submission: None,
             pending_preview_readback: None,
             pending_preview_submission: None,
@@ -278,6 +279,41 @@ impl GpuSparkleFlinger {
 
     pub(crate) fn can_sample_zone_plan(&self, prepared_zones: &[PreparedZonePlan]) -> bool {
         GpuSamplingPlan::supports_prepared_zones(prepared_zones)
+    }
+
+    fn cached_preview_surface(
+        &self,
+        key: &CachedPreviewSurfaceKey,
+    ) -> Option<PublishedSurface> {
+        self.cached_preview_surfaces
+            .iter()
+            .find(|cached| &cached.key == key)
+            .map(|cached| cached.surface.clone())
+    }
+
+    fn store_cached_preview_surface(
+        &mut self,
+        key: CachedPreviewSurfaceKey,
+        surface: PublishedSurface,
+    ) {
+        if let Some(index) = self
+            .cached_preview_surfaces
+            .iter()
+            .position(|cached| cached.key == key)
+        {
+            self.cached_preview_surfaces.remove(index);
+        }
+        self.cached_preview_surfaces.insert(
+            0,
+            CachedPreviewSurface {
+                key,
+                surface,
+            },
+        );
+        if self.cached_preview_surfaces.len() > MAX_CACHED_PREVIEW_SURFACES {
+            self.cached_preview_surfaces
+                .truncate(MAX_CACHED_PREVIEW_SURFACES);
+        }
     }
 
     pub(crate) fn compose(
@@ -317,15 +353,13 @@ impl GpuSparkleFlinger {
             if !requires_cpu_sampling_canvas
                 && let Some(request) = preview_surface_request
                 && !preview_request_matches_plan(Some(request), plan.width, plan.height)
-                && let Some(cached) = self.cached_preview_surface.as_ref()
-                && cached.key
-                    == (CachedPreviewSurfaceKey {
-                        composition: key.clone(),
-                        request,
-                    })
+                && let Some(cached) = self.cached_preview_surface(&CachedPreviewSurfaceKey {
+                    composition: key.clone(),
+                    request,
+                })
             {
                 self.pending_output_submission = None;
-                return Ok(gpu_composed_with_preview_surface(cached.surface.clone()));
+                return Ok(gpu_composed_with_preview_surface(cached));
             }
             if let Some(cached) = self.cached_readback_surface.as_ref()
                 && cached.key.as_ref() == Some(key)
@@ -538,13 +572,13 @@ impl GpuSparkleFlinger {
                                 surface: preview_surface.clone(),
                             });
                         } else {
-                            self.cached_preview_surface = Some(CachedPreviewSurface {
-                                key: CachedPreviewSurfaceKey {
+                            self.store_cached_preview_surface(
+                                CachedPreviewSurfaceKey {
                                     composition: key,
                                     request,
                                 },
-                                surface: preview_surface.clone(),
-                            });
+                                preview_surface.clone(),
+                            );
                         }
                     }
                 }
@@ -624,7 +658,7 @@ impl GpuSparkleFlinger {
         self.current_output = None;
         self.cached_composition_key = None;
         self.cached_readback_surface = None;
-        self.cached_preview_surface = None;
+        self.cached_preview_surfaces.clear();
         self.pending_output_submission = None;
         self.pending_preview_readback = None;
         self.pending_preview_submission = None;
@@ -670,14 +704,12 @@ impl GpuSparkleFlinger {
                 && let Some(request) = preview_surface_request
                 && !preview_request_matches_plan(Some(request), plan.width, plan.height)
                 && let Some(key) = readback_key.as_ref()
-                && let Some(cached) = self.cached_preview_surface.as_ref()
-                && cached.key
-                    == (CachedPreviewSurfaceKey {
-                        composition: key.clone(),
-                        request,
-                    })
+                && let Some(cached) = self.cached_preview_surface(&CachedPreviewSurfaceKey {
+                    composition: key.clone(),
+                    request,
+                })
             {
-                return gpu_composed_with_preview_surface(cached.surface.clone());
+                return gpu_composed_with_preview_surface(cached);
             }
             if let Some(cached) = self.cached_readback_surface.as_ref()
                 && preview_request_matches_plan(preview_surface_request, plan.width, plan.height)
@@ -873,15 +905,13 @@ impl GpuSparkleFlinger {
     ) -> Result<ComposedFrameSet> {
         if !cache_as_full_size
             && let Some(key) = readback_key.as_ref()
-            && let Some(cached) = self.cached_preview_surface.as_ref()
-            && cached.key
-                == (CachedPreviewSurfaceKey {
-                    composition: key.clone(),
-                    request,
-                })
+            && let Some(cached) = self.cached_preview_surface(&CachedPreviewSurfaceKey {
+                composition: key.clone(),
+                request,
+            })
         {
             self.pending_output_submission = None;
-            return Ok(gpu_composed_with_preview_surface(cached.surface.clone()));
+            return Ok(gpu_composed_with_preview_surface(cached));
         }
 
         self.ensure_preview_surface_size(request.width, request.height)?;
@@ -998,13 +1028,13 @@ impl GpuSparkleFlinger {
                             surface: preview_surface.clone(),
                         });
                     } else {
-                        self.cached_preview_surface = Some(CachedPreviewSurface {
-                            key: CachedPreviewSurfaceKey {
+                        self.store_cached_preview_surface(
+                            CachedPreviewSurfaceKey {
                                 composition: key,
                                 request,
                             },
-                            surface: preview_surface.clone(),
-                        });
+                            preview_surface.clone(),
+                        );
                     }
                 }
                 Ok(preview_surface)
@@ -2317,7 +2347,7 @@ mod tests {
         assert_eq!(preview_surface.width(), 4);
         assert_eq!(preview_surface.height(), 4);
         assert!(compositor.cached_readback_surface.is_some());
-        assert!(compositor.cached_preview_surface.is_none());
+        assert!(compositor.cached_preview_surfaces.is_empty());
     }
 
     #[test]
@@ -2447,6 +2477,63 @@ mod tests {
             .expect("restored scaled preview finalize should succeed")
             .expect("restored scaled preview should publish a preview surface");
         assert_eq!(compositor.preview_surface_allocation_count, 1);
+    }
+
+    #[test]
+    fn gpu_scaled_preview_reuses_cached_surface_across_size_flips() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Surface(slot_surface(Rgba::new(
+                    255, 32, 0, 255,
+                )))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Surface(slot_surface(Rgba::new(32, 64, 255, 255))),
+                    0.35,
+                ),
+            ],
+        );
+        let large_request = PreviewSurfaceRequest {
+            width: 3,
+            height: 3,
+        };
+        let small_request = PreviewSurfaceRequest {
+            width: 2,
+            height: 2,
+        };
+
+        compositor
+            .compose(&plan, false, Some(large_request))
+            .expect("large scaled preview compose should succeed");
+        compositor
+            .resolve_preview_surface()
+            .expect("large scaled preview finalize should succeed")
+            .expect("large scaled preview should publish a preview surface");
+
+        compositor
+            .compose(&plan, false, Some(small_request))
+            .expect("small scaled preview compose should succeed");
+        compositor
+            .resolve_preview_surface()
+            .expect("small scaled preview finalize should succeed")
+            .expect("small scaled preview should publish a preview surface");
+
+        let composed = compositor
+            .compose(&plan, false, Some(large_request))
+            .expect("restored scaled preview compose should succeed");
+        let preview_surface = composed
+            .preview_surface
+            .expect("cached large scaled preview should be returned immediately");
+        assert_eq!(preview_surface.width(), 3);
+        assert_eq!(preview_surface.height(), 3);
+        assert!(compositor.pending_preview_readback.is_none());
+        assert!(compositor.pending_output_submission.is_none());
+        assert!(compositor.cached_preview_surfaces.len() >= 2);
     }
 
     #[test]
