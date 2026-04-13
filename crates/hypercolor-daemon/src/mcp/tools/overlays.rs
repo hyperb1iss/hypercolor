@@ -374,10 +374,8 @@ pub(super) async fn handle_set_display_face_with_state(
     if clear {
         let (active_scene_id, removed_group) = {
             let mut scene_manager = state.scene_manager.write().await;
-            let active_scene_id = scene_manager
-                .active_scene_id()
-                .copied()
-                .ok_or_else(|| ToolError::Internal("no active scene available".into()))?;
+            let active_scene_id = crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
+                .map_err(|error| ToolError::Conflict(error.message("removing a display face")))?;
             let removed_group = scene_manager
                 .active_scene()
                 .and_then(|scene| scene.display_group_for(device_id))
@@ -441,10 +439,8 @@ pub(super) async fn handle_set_display_face_with_state(
 
     let (active_scene_id, group, change_kind) = {
         let mut scene_manager = state.scene_manager.write().await;
-        let active_scene_id = scene_manager
-            .active_scene_id()
-            .copied()
-            .ok_or_else(|| ToolError::Internal("no active scene available".into()))?;
+        let active_scene_id = crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
+            .map_err(|error| ToolError::Conflict(error.message("assigning a display face")))?;
         let change_kind = if scene_manager
             .active_scene()
             .and_then(|scene| scene.display_group_for(device_id))

@@ -9,7 +9,7 @@ use crate::api::{
 };
 use hypercolor_core::scene::make_scene;
 use hypercolor_types::event::SceneChangeReason;
-use hypercolor_types::scene::SceneKind;
+use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 use hypercolor_types::scene::TransitionSpec;
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
@@ -112,6 +112,12 @@ pub(super) fn build_create_scene() -> ToolDefinition {
                     "type": "boolean",
                     "description": "Whether the scene is active immediately",
                     "default": true
+                },
+                "mutation_mode": {
+                    "type": "string",
+                    "enum": ["live", "snapshot"],
+                    "description": "Whether runtime effect and display-face actions are allowed to rewrite the scene",
+                    "default": "live"
                 }
             },
             "required": ["name", "profile_id", "trigger"]
@@ -183,13 +189,18 @@ pub(super) fn handle_create_scene(params: &Value) -> Result<Value, ToolError> {
         .get("enabled")
         .and_then(Value::as_bool)
         .unwrap_or(true);
+    let mutation_mode = params
+        .get("mutation_mode")
+        .and_then(Value::as_str)
+        .unwrap_or("live");
 
     let scene_id = uuid::Uuid::now_v7().to_string();
 
     Ok(json!({
         "scene_id": scene_id,
         "name": name,
-        "enabled": enabled
+        "enabled": enabled,
+        "mutation_mode": mutation_mode
     }))
 }
 
@@ -278,6 +289,7 @@ pub(super) async fn handle_list_scenes_with_state(
                 "name": scene.name,
                 "description": scene.description,
                 "enabled": scene.enabled,
+                "mutation_mode": scene.mutation_mode,
                 "active": Some(scene.id) == active_scene_id
             })
         })
@@ -324,6 +336,16 @@ pub(super) async fn handle_create_scene_with_state(
         .get("enabled")
         .and_then(Value::as_bool)
         .unwrap_or(true);
+    let mutation_mode = match params.get("mutation_mode").and_then(Value::as_str) {
+        Some("snapshot") => SceneMutationMode::Snapshot,
+        Some("live") | None => SceneMutationMode::Live,
+        Some(other) => {
+            return Err(ToolError::InvalidParam {
+                param: "mutation_mode".into(),
+                reason: format!("unsupported mutation mode: {other}"),
+            });
+        }
+    };
 
     let mut scene = make_scene(name);
     scene.description = params
@@ -331,6 +353,7 @@ pub(super) async fn handle_create_scene_with_state(
         .and_then(Value::as_str)
         .map(ToOwned::to_owned);
     scene.enabled = enabled;
+    scene.mutation_mode = mutation_mode;
     scene
         .metadata
         .insert("profile_id".to_owned(), profile_id.to_owned());
@@ -352,6 +375,7 @@ pub(super) async fn handle_create_scene_with_state(
     Ok(json!({
         "scene_id": scene_id,
         "name": name,
-        "enabled": enabled
+        "enabled": enabled,
+        "mutation_mode": mutation_mode
     }))
 }

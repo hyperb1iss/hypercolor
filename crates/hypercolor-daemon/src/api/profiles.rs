@@ -73,6 +73,20 @@ struct PreparedProfileDisplay {
     layout: SpatialLayout,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum ProfileApplyError {
+    Conflict(String),
+    Internal(String),
+}
+
+impl std::fmt::Display for ProfileApplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Conflict(error) | Self::Internal(error) => f.write_str(error),
+        }
+    }
+}
+
 // ── Handlers ─────────────────────────────────────────────────────────────
 
 /// `GET /api/v1/profiles` — List all profiles.
@@ -255,7 +269,8 @@ pub async fn apply_profile(
 
     let warnings = match apply_profile_snapshot(&state, &profile).await {
         Ok(warnings) => warnings,
-        Err(error) => return ApiError::internal(error),
+        Err(ProfileApplyError::Conflict(error)) => return ApiError::conflict(error),
+        Err(ProfileApplyError::Internal(error)) => return ApiError::internal(error),
     };
 
     state
@@ -277,7 +292,13 @@ pub async fn apply_profile(
 pub(crate) async fn apply_profile_snapshot(
     state: &AppState,
     profile: &Profile,
-) -> Result<Vec<crate::api::displays::OverlayCompatibilityWarning>, String> {
+) -> Result<Vec<crate::api::displays::OverlayCompatibilityWarning>, ProfileApplyError> {
+    {
+        let scene_manager = state.scene_manager.read().await;
+        crate::api::active_scene_id_for_runtime_mutation(&scene_manager).map_err(|error| {
+            ProfileApplyError::Conflict(error.message("applying a profile"))
+        })?;
+    }
     let brightness = profile.brightness.map(|value| f32::from(value) / 100.0);
     let layout = if let Some(layout_id) = profile.layout_id.as_deref() {
         let layouts = state.layouts.read().await;
@@ -285,7 +306,9 @@ pub(crate) async fn apply_profile_snapshot(
             layouts
                 .get(layout_id)
                 .cloned()
-                .ok_or_else(|| format!("profile layout not found: {layout_id}"))?,
+                .ok_or_else(|| {
+                    ProfileApplyError::Internal(format!("profile layout not found: {layout_id}"))
+                })?,
         )
     } else {
         None
@@ -317,10 +340,10 @@ pub(crate) async fn apply_profile_snapshot(
                     active_layout,
                 )
                 .map_err(|error| {
-                    format!(
+                    ProfileApplyError::Internal(format!(
                         "failed to activate profile effect '{}': {error}",
                         prepared_primary.metadata.name
-                    )
+                    ))
                 })?;
         }
 
@@ -368,10 +391,10 @@ pub(crate) async fn apply_profile_snapshot(
                     prepared_display.layout,
                 )
                 .map_err(|error| {
-                    format!(
+                    ProfileApplyError::Internal(format!(
                         "failed to assign profile display face '{}' to {}: {error}",
                         prepared_display.metadata.name, prepared_display.device_id
-                    )
+                    ))
                 })?;
 
             if !rejected_controls.is_empty() {
@@ -405,7 +428,11 @@ pub(crate) async fn apply_profile_snapshot(
         settings.set_global_brightness(normalized);
         settings
             .save()
-            .map_err(|error| format!("failed to persist global brightness: {error}"))?;
+            .map_err(|error| {
+                ProfileApplyError::Internal(format!(
+                    "failed to persist global brightness: {error}"
+                ))
+            })?;
         drop(settings);
         set_global_brightness(&state.power_state, normalized);
     }

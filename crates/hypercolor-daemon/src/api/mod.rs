@@ -62,6 +62,7 @@ use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::attachment_profiles::AttachmentProfileStore;
+use crate::api::envelope::ApiError;
 use crate::device_settings::DeviceSettingsStore;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_overlays::{DisplayOverlayRegistry, DisplayOverlayRuntimeRegistry};
@@ -637,6 +638,45 @@ pub(crate) fn publish_render_group_changed(
             role: group.role,
             kind,
         });
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ActiveSceneMutationError {
+    NoActiveScene,
+    SnapshotLocked { scene_name: String },
+}
+
+impl ActiveSceneMutationError {
+    #[must_use]
+    pub(crate) fn message(&self, action: &str) -> String {
+        match self {
+            Self::NoActiveScene => "No active scene available".to_owned(),
+            Self::SnapshotLocked { scene_name } => format!(
+                "Active scene '{scene_name}' is in snapshot mode; return to Default or deactivate it before {action}"
+            ),
+        }
+    }
+
+    pub(crate) fn api_response(&self, action: &str) -> axum::response::Response {
+        match self {
+            Self::NoActiveScene => ApiError::internal(self.message(action)),
+            Self::SnapshotLocked { .. } => ApiError::conflict(self.message(action)),
+        }
+    }
+}
+
+pub(crate) fn active_scene_id_for_runtime_mutation(
+    scene_manager: &SceneManager,
+) -> Result<SceneId, ActiveSceneMutationError> {
+    let active_scene = scene_manager
+        .active_scene()
+        .ok_or(ActiveSceneMutationError::NoActiveScene)?;
+    if active_scene.blocks_runtime_mutation() {
+        return Err(ActiveSceneMutationError::SnapshotLocked {
+            scene_name: active_scene.name.clone(),
+        });
+    }
+    Ok(active_scene.id)
 }
 
 pub(crate) async fn prune_scene_display_groups_for_device(

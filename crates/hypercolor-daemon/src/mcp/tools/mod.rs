@@ -140,6 +140,9 @@ pub enum ToolError {
         /// What was wrong with it.
         reason: String,
     },
+    /// Current daemon state rejects the requested mutation.
+    #[error("operation conflict: {0}")]
+    Conflict(String),
     /// Internal execution error.
     #[error("execution error: {0}")]
     Internal(String),
@@ -151,6 +154,7 @@ impl ToolError {
         match self {
             Self::NotFound(_) => -32601, // Method not found
             Self::MissingParam(_) | Self::InvalidParam { .. } => -32602, // Invalid params
+            Self::Conflict(_) => -32000, // Server error / state conflict
             Self::Internal(_) => -32603, // Internal error
         }
     }

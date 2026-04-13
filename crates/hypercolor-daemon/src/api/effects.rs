@@ -24,7 +24,7 @@ use hypercolor_types::spatial::SpatialLayout;
 use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
 use crate::api::envelope::{ApiError, ApiResponse};
-use crate::api::publish_render_group_changed;
+use crate::api::{active_scene_id_for_runtime_mutation, publish_render_group_changed};
 use crate::effect_layouts;
 use crate::scene_transactions::apply_layout_update;
 
@@ -396,9 +396,9 @@ pub async fn apply_effect(
 
     let (scene_id, group, change_kind) = {
         let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = match scene_manager.active_scene_id().copied() {
-            Some(scene_id) => scene_id,
-            None => return ApiError::internal("No active scene available"),
+        let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
+            Ok(scene_id) => scene_id,
+            Err(error) => return error.api_response("applying an effect"),
         };
         let change_kind = if scene_manager
             .active_scene()
@@ -483,9 +483,9 @@ pub async fn stop_effect(State(state): State<Arc<AppState>>) -> Response {
 
     let (scene_id, cleared_group) = {
         let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = match scene_manager.active_scene_id().copied() {
-            Some(scene_id) => scene_id,
-            None => return ApiError::internal("No active scene available"),
+        let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
+            Ok(scene_id) => scene_id,
+            Err(error) => return error.api_response("stopping the active effect"),
         };
         let Some(cleared_group) = scene_manager.clear_group_effect(group.id).cloned() else {
             return ApiError::not_found("No effect is currently active");
@@ -538,9 +538,9 @@ pub async fn update_current_controls(
     let previous_values = resolved_control_values(&active_meta, &group);
     let (scene_id, updated_group) = {
         let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = match scene_manager.active_scene_id().copied() {
-            Some(scene_id) => scene_id,
-            None => return ApiError::internal("No active scene available"),
+        let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
+            Ok(scene_id) => scene_id,
+            Err(error) => return error.api_response("updating active effect controls"),
         };
         let Some(updated_group) = scene_manager
             .patch_group_controls(group.id, normalized)
@@ -603,9 +603,11 @@ pub async fn set_current_control_binding(
     };
     let (scene_id, updated_group) = {
         let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = match scene_manager.active_scene_id().copied() {
-            Some(scene_id) => scene_id,
-            None => return ApiError::internal("No active scene available"),
+        let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
+            Ok(scene_id) => scene_id,
+            Err(error) => {
+                return error.api_response("updating an active effect control binding");
+            }
         };
         let Some(updated_group) = scene_manager
             .set_group_control_binding(group.id, control_id.clone(), normalized.clone())
@@ -643,9 +645,9 @@ pub async fn reset_controls(State(state): State<Arc<AppState>>) -> Response {
     let previous_values = resolved_control_values(&meta, &group);
     let (scene_id, updated_group) = {
         let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = match scene_manager.active_scene_id().copied() {
-            Some(scene_id) => scene_id,
-            None => return ApiError::internal("No active scene available"),
+        let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
+            Ok(scene_id) => scene_id,
+            Err(error) => return error.api_response("resetting active effect controls"),
         };
         let Some(updated_group) = scene_manager
             .reset_group_controls(group.id, default_control_values(&meta))

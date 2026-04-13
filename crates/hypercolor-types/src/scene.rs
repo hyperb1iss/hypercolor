@@ -259,6 +259,9 @@ pub struct Scene {
 
     /// Whether this scene is daemon-managed or user-visible.
     pub kind: SceneKind,
+
+    /// Whether live runtime actions are allowed to rewrite this scene.
+    pub mutation_mode: SceneMutationMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -267,6 +270,14 @@ pub enum SceneKind {
     #[default]
     Named,
     Ephemeral,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SceneMutationMode {
+    #[default]
+    Live,
+    Snapshot,
 }
 
 impl Scene {
@@ -342,6 +353,11 @@ impl Scene {
                     .as_ref()
                     .is_some_and(|target| target.device_id == device_id)
         })
+    }
+
+    #[must_use]
+    pub fn blocks_runtime_mutation(&self) -> bool {
+        self.kind == SceneKind::Named && self.mutation_mode == SceneMutationMode::Snapshot
     }
 
     /// Ensure no zone is claimed by multiple render groups.

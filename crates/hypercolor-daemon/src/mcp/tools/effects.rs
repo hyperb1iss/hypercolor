@@ -329,10 +329,8 @@ pub(super) async fn handle_set_effect_with_state(
     };
     let (scene_id, group, change_kind) = {
         let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = scene_manager
-            .active_scene_id()
-            .copied()
-            .ok_or_else(|| ToolError::Internal("no active scene available".into()))?;
+        let scene_id = crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
+            .map_err(|error| ToolError::Conflict(error.message("applying an effect")))?;
         let change_kind = if scene_manager
             .active_scene()
             .and_then(|scene| scene.primary_group())
@@ -512,10 +510,8 @@ pub(super) async fn handle_stop_effect_with_state(
     };
     let (scene_id, cleared_group) = {
         let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = scene_manager
-            .active_scene_id()
-            .copied()
-            .ok_or_else(|| ToolError::Internal("no active scene available".into()))?;
+        let scene_id = crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
+            .map_err(|error| ToolError::Conflict(error.message("stopping the active effect")))?;
         let cleared_group = scene_manager
             .clear_group_effect(group.id)
             .cloned()
@@ -598,10 +594,8 @@ pub(super) async fn handle_set_color_with_state(
     };
     let (scene_id, group, change_kind) = {
         let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = scene_manager
-            .active_scene_id()
-            .copied()
-            .ok_or_else(|| ToolError::Internal("no active scene available".into()))?;
+        let scene_id = crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
+            .map_err(|error| ToolError::Conflict(error.message("applying an effect")))?;
         let change_kind = if scene_manager
             .active_scene()
             .and_then(|scene| scene.primary_group())

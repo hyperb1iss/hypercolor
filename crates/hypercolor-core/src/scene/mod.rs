@@ -29,7 +29,8 @@ use crate::types::effect::{ControlBinding, ControlValue, EffectMetadata};
 use crate::types::library::PresetId;
 use crate::types::scene::{
     ColorInterpolation, DisplayFaceTarget, EasingFunction, RenderGroup, RenderGroupId,
-    RenderGroupRole, Scene, SceneId, SceneKind, ScenePriority, TransitionSpec,
+    RenderGroupRole, Scene, SceneId, SceneKind, SceneMutationMode, ScenePriority,
+    TransitionSpec,
 };
 use crate::types::spatial::SpatialLayout;
 
@@ -105,6 +106,7 @@ impl SceneManager {
             metadata: HashMap::new(),
             unassigned_behavior: crate::types::scene::UnassignedBehavior::Off,
             kind: SceneKind::Ephemeral,
+            mutation_mode: SceneMutationMode::Live,
         };
         self.scenes.insert(default.id, default);
         self.priority_stack
@@ -614,5 +616,6 @@ pub fn make_scene(name: &str) -> Scene {
         metadata: HashMap::new(),
         unassigned_behavior: crate::types::scene::UnassignedBehavior::Off,
         kind: SceneKind::Named,
+        mutation_mode: SceneMutationMode::Live,
     }
 }

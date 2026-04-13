@@ -87,7 +87,10 @@ pub(super) async fn handle_set_profile_with_state(
 
     let warnings = crate::api::profiles::apply_profile_snapshot(state, &profile)
         .await
-        .map_err(ToolError::Internal)?;
+        .map_err(|error| match error {
+            crate::api::profiles::ProfileApplyError::Conflict(error) => ToolError::Conflict(error),
+            crate::api::profiles::ProfileApplyError::Internal(error) => ToolError::Internal(error),
+        })?;
     save_runtime_session_snapshot(state).await;
     state.event_bus.publish(HypercolorEvent::ProfileLoaded {
         profile_id: profile.id.clone(),

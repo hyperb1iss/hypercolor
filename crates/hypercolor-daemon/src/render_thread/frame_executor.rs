@@ -37,7 +37,19 @@ fn can_reuse_published_frame_for_deferred_sampling(
     has_deferred_sampling: bool,
 ) -> bool {
     render_stage.screen_retained
-        && !has_deferred_sampling
+        && can_hold_published_frame_for_deferred_sampling(
+            layout,
+            published_frame,
+            has_deferred_sampling,
+        )
+}
+
+fn can_hold_published_frame_for_deferred_sampling(
+    layout: &SpatialLayout,
+    published_frame: &FrameData,
+    has_deferred_sampling: bool,
+) -> bool {
+    !has_deferred_sampling
         && published_frame.zones.len() == layout.zones.len()
         && published_frame
             .zones
@@ -257,6 +269,14 @@ pub(crate) async fn execute_frame(
             render.deferred_zone_sampling.is_some(),
         )
     };
+    let can_hold_published_frame = {
+        let published_frame = state.event_bus.frame_sender().borrow();
+        can_hold_published_frame_for_deferred_sampling(
+            layout.as_ref(),
+            &published_frame,
+            render.deferred_zone_sampling.is_some(),
+        )
+    };
 
     if should_advance_gpu_preview(&render_stage)
         && let Err(error) = render.sparkleflinger.submit_pending_preview_work()
@@ -302,6 +322,10 @@ pub(crate) async fn execute_frame(
                     refresh_reused_frame_metadata = true;
                 }
             }
+        } else if can_hold_published_frame {
+            render.deferred_zone_sampling = Some(pending);
+            gpu_zone_sampling = false;
+            render_stage.reuse_published_frame = true;
         } else {
             if let Err(error) = render
                 .sparkleflinger
@@ -594,7 +618,10 @@ mod tests {
         DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     };
 
-    use super::{can_reuse_published_frame_for_deferred_sampling, should_advance_gpu_preview};
+    use super::{
+        can_hold_published_frame_for_deferred_sampling,
+        can_reuse_published_frame_for_deferred_sampling, should_advance_gpu_preview,
+    };
     use crate::performance::CompositorBackendKind;
     use crate::render_thread::frame_composer::RenderStageStats;
     use crate::render_thread::sparkleflinger::ComposedFrameSet;
@@ -739,6 +766,28 @@ mod tests {
             &render_stage,
             &layout,
             &retained_frame,
+            false
+        ));
+    }
+
+    #[test]
+    fn gpu_zone_sampling_can_hold_previous_frame_when_layout_matches_without_backlog() {
+        let layout = sample_layout(&["left", "right"]);
+        let retained_frame = published_frame(&["left", "right"]);
+
+        assert!(can_hold_published_frame_for_deferred_sampling(
+            &layout,
+            &retained_frame,
+            false
+        ));
+        assert!(!can_hold_published_frame_for_deferred_sampling(
+            &layout,
+            &retained_frame,
+            true
+        ));
+        assert!(!can_hold_published_frame_for_deferred_sampling(
+            &layout,
+            &published_frame(&["left", "other"]),
             false
         ));
     }

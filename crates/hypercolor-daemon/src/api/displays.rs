@@ -25,7 +25,7 @@ use crate::api::AppState;
 use crate::api::devices;
 use crate::api::effects::resolve_effect_metadata;
 use crate::api::envelope::{ApiError, ApiResponse, iso8601_system_time};
-use crate::api::publish_render_group_changed;
+use crate::api::{active_scene_id_for_runtime_mutation, publish_render_group_changed};
 use crate::display_frames::DisplayFrameSnapshot;
 use crate::display_overlays::{OverlaySlotRuntime, OverlaySlotStatus};
 
@@ -288,8 +288,9 @@ pub async fn set_display_face(
 
     let (scene_id, response, change_kind) = {
         let mut scene_manager = state.scene_manager.write().await;
-        let Some(active_scene_id) = scene_manager.active_scene_id().copied() else {
-            return ApiError::internal("No active scene available");
+        let active_scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
+            Ok(scene_id) => scene_id,
+            Err(error) => return error.api_response("assigning a display face"),
         };
         let change_kind = if scene_manager
             .active_scene()
@@ -343,8 +344,9 @@ pub async fn delete_display_face(
 
     let (scene_id, removed_group) = {
         let mut scene_manager = state.scene_manager.write().await;
-        let Some(active_scene_id) = scene_manager.active_scene_id().copied() else {
-            return ApiError::internal("No active scene available");
+        let active_scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
+            Ok(scene_id) => scene_id,
+            Err(error) => return error.api_response("removing a display face"),
         };
         let removed_group = scene_manager
             .active_scene()
@@ -418,6 +420,9 @@ pub async fn patch_display_face_controls(
         rejected.extend(invalid);
         {
             let mut scene_manager = state.scene_manager.write().await;
+            if let Err(error) = active_scene_id_for_runtime_mutation(&scene_manager) {
+                return error.api_response("updating display face controls");
+            }
             if scene_manager
                 .patch_group_controls(group.id, normalized_controls)
                 .is_none()

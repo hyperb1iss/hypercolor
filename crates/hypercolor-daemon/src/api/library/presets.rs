@@ -230,6 +230,9 @@ pub async fn apply_preset(State(state): State<Arc<AppState>>, Path(id): Path<Str
         };
         {
             let mut scene_manager = state.scene_manager.write().await;
+            if let Err(error) = crate::api::active_scene_id_for_runtime_mutation(&scene_manager) {
+                return ApiError::conflict(error.message("applying a preset"));
+            }
             if scene_manager
                 .reset_group_controls(
                     group.id,
@@ -263,6 +266,9 @@ pub async fn apply_preset(State(state): State<Arc<AppState>>, Path(id): Path<Str
     } else {
         // Different effect — full activation path
         match activate_effect_with_controls(&state, &metadata, &preset.controls).await {
+            Err(ActivateEffectError::Conflict(error)) => {
+                return ApiError::conflict(error);
+            }
             Ok(activation) => {
                 if let Some((group, _)) =
                     crate::api::effects::active_primary_effect(state.as_ref()).await

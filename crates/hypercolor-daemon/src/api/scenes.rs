@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{
-    ColorInterpolation, EasingFunction, RenderGroup, Scene, SceneId, SceneKind, ScenePriority,
-    SceneScope, TransitionSpec, UnassignedBehavior,
+    ColorInterpolation, EasingFunction, RenderGroup, Scene, SceneId, SceneKind,
+    SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
 };
 
 use crate::api::AppState;
@@ -27,6 +27,7 @@ pub struct CreateSceneRequest {
     pub name: String,
     pub description: Option<String>,
     pub enabled: Option<bool>,
+    pub mutation_mode: Option<SceneMutationMode>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,6 +35,7 @@ pub struct UpdateSceneRequest {
     pub name: String,
     pub description: Option<String>,
     pub enabled: Option<bool>,
+    pub mutation_mode: Option<SceneMutationMode>,
 }
 
 #[derive(Debug, Serialize)]
@@ -49,6 +51,7 @@ pub struct SceneSummary {
     pub description: Option<String>,
     pub enabled: bool,
     pub priority: u8,
+    pub mutation_mode: SceneMutationMode,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +62,7 @@ pub struct ActiveSceneResponse {
     pub enabled: bool,
     pub priority: u8,
     pub kind: SceneKind,
+    pub mutation_mode: SceneMutationMode,
     pub groups: Vec<RenderGroup>,
 }
 
@@ -78,6 +82,7 @@ pub async fn list_scenes(State(state): State<Arc<AppState>>) -> Response {
             description: s.description.clone(),
             enabled: s.enabled,
             priority: s.priority.0,
+            mutation_mode: s.mutation_mode,
         })
         .collect();
 
@@ -110,6 +115,7 @@ pub async fn get_scene(State(state): State<Arc<AppState>>, Path(id): Path<String
         description: scene.description.clone(),
         enabled: scene.enabled,
         priority: scene.priority.0,
+        mutation_mode: scene.mutation_mode,
     })
 }
 
@@ -127,6 +133,7 @@ pub async fn get_active_scene(State(state): State<Arc<AppState>>) -> Response {
         enabled: scene.enabled,
         priority: scene.priority.0,
         kind: scene.kind,
+        mutation_mode: scene.mutation_mode,
         groups: scene.groups.clone(),
     })
 }
@@ -155,6 +162,7 @@ pub async fn create_scene(
         metadata: HashMap::new(),
         unassigned_behavior: UnassignedBehavior::Off,
         kind: SceneKind::Named,
+        mutation_mode: body.mutation_mode.unwrap_or(SceneMutationMode::Live),
     };
 
     let summary = SceneSummary {
@@ -163,6 +171,7 @@ pub async fn create_scene(
         description: scene.description.clone(),
         enabled: scene.enabled,
         priority: scene.priority.0,
+        mutation_mode: scene.mutation_mode,
     };
 
     if let Err(e) = manager.create(scene) {
@@ -205,6 +214,7 @@ pub async fn update_scene(
         metadata: existing.metadata,
         unassigned_behavior: existing.unassigned_behavior,
         kind: existing.kind,
+        mutation_mode: body.mutation_mode.unwrap_or(existing.mutation_mode),
     };
 
     let summary = SceneSummary {
@@ -213,6 +223,7 @@ pub async fn update_scene(
         description: updated.description.clone(),
         enabled: updated.enabled,
         priority: updated.priority.0,
+        mutation_mode: updated.mutation_mode,
     };
 
     if let Err(e) = manager.update(updated) {
@@ -318,6 +329,7 @@ pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
         description: scene.description.clone(),
         enabled: scene.enabled,
         priority: scene.priority.0,
+        mutation_mode: scene.mutation_mode,
     });
     manager.deactivate_current();
     let current_active_scene_id = manager.active_scene_id().copied();
@@ -327,6 +339,7 @@ pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
         description: scene.description.clone(),
         enabled: scene.enabled,
         priority: scene.priority.0,
+        mutation_mode: scene.mutation_mode,
     });
     drop(manager);
 

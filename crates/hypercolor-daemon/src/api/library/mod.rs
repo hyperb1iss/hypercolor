@@ -27,13 +27,14 @@ pub(crate) struct ActivationResult {
 }
 
 pub(crate) enum ActivateEffectError {
+    Conflict(String),
     Activation(String),
 }
 
 impl std::fmt::Display for ActivateEffectError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Activation(error) => f.write_str(error),
+            Self::Conflict(error) | Self::Activation(error) => f.write_str(error),
         }
     }
 }
@@ -80,6 +81,9 @@ pub(crate) async fn activate_effect_with_controls(
 
     {
         let mut scene_manager = state.scene_manager.write().await;
+        crate::api::active_scene_id_for_runtime_mutation(&scene_manager).map_err(|error| {
+            ActivateEffectError::Conflict(error.message("applying an effect"))
+        })?;
         scene_manager
             .upsert_primary_group(metadata, controls.clone(), None, layout)
             .map_err(|error| ActivateEffectError::Activation(error.to_string()))?;
