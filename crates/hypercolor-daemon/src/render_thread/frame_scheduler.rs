@@ -91,7 +91,7 @@ impl FrameScheduler {
 mod tests {
     use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_types::effect::EffectId;
-    use hypercolor_types::scene::{RenderGroup, RenderGroupId};
+    use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole};
     use hypercolor_types::spatial::{
         DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
         StripDirection,
@@ -127,6 +127,7 @@ mod tests {
             description: None,
             effect_id: Some(EffectId::from(Uuid::now_v7())),
             controls: std::collections::HashMap::new(),
+            control_bindings: std::collections::HashMap::new(),
             preset_id: None,
             layout: SpatialLayout {
                 id: "group-layout".into(),
@@ -166,6 +167,7 @@ mod tests {
             enabled: true,
             color: None,
             display_target: None,
+            role: RenderGroupRole::Custom,
         }
     }
 

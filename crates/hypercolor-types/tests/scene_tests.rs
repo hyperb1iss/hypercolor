@@ -2,8 +2,8 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::scene::{
     ActionKind, AutomationRule, ColorInterpolation, DisplayFaceTarget, EasingFunction, RenderGroup,
-    RenderGroupId, Scene, SceneId, ScenePriority, SceneScope, TransitionSpec, TriggerSource,
-    UnassignedBehavior, ZoneAssignment,
+    RenderGroupId, RenderGroupRole, Scene, SceneId, SceneKind, ScenePriority, SceneScope,
+    TransitionSpec, TriggerSource, UnassignedBehavior, ZoneAssignment,
 };
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -40,6 +40,7 @@ fn sample_scene() -> Scene {
         enabled: true,
         metadata: HashMap::from([("author".into(), "test".into())]),
         unassigned_behavior: UnassignedBehavior::Off,
+        kind: SceneKind::Named,
     }
 }
 
@@ -87,12 +88,14 @@ fn sample_group(name: &str, zone_id: &str, effect_id: EffectId) -> RenderGroup {
         description: None,
         effect_id: Some(effect_id),
         controls: HashMap::from([("speed".into(), ControlValue::Float(0.5))]),
+        control_bindings: HashMap::new(),
         preset_id: None,
         layout: sample_layout(zone_id),
         brightness: 0.8,
         enabled: true,
         color: Some("#e135ff".into()),
         display_target: None,
+        role: RenderGroupRole::Custom,
     }
 }
 
@@ -159,6 +162,7 @@ fn scene_with_no_assignments() {
         enabled: false,
         metadata: HashMap::new(),
         unassigned_behavior: UnassignedBehavior::Off,
+        kind: SceneKind::Named,
     };
     assert!(scene.zone_assignments.is_empty());
     assert!(!scene.enabled);

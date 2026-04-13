@@ -24,7 +24,14 @@ use std::sync::Arc;
 
 use anyhow::{Result, bail};
 
-use crate::types::scene::{RenderGroup, Scene, SceneId, ScenePriority, TransitionSpec};
+use crate::types::device::DeviceId;
+use crate::types::effect::{ControlBinding, ControlValue, EffectMetadata};
+use crate::types::library::PresetId;
+use crate::types::scene::{
+    ColorInterpolation, DisplayFaceTarget, EasingFunction, RenderGroup, RenderGroupId,
+    RenderGroupRole, Scene, SceneId, SceneKind, ScenePriority, TransitionSpec,
+};
+use crate::types::spatial::SpatialLayout;
 
 // ── SceneManager ────────────────────────────────────────────────────────
 
@@ -69,6 +76,42 @@ impl SceneManager {
         }
     }
 
+    #[must_use]
+    pub fn with_default() -> Self {
+        let mut manager = Self::new();
+        manager.install_default_scene();
+        manager
+    }
+
+    fn install_default_scene(&mut self) {
+        if self.scenes.contains_key(&SceneId::DEFAULT) {
+            return;
+        }
+
+        let default = Scene {
+            id: SceneId::DEFAULT,
+            name: "Default".to_owned(),
+            description: Some("Auto-managed default scene.".to_owned()),
+            scope: crate::types::scene::SceneScope::Full,
+            zone_assignments: Vec::new(),
+            groups: Vec::new(),
+            transition: TransitionSpec {
+                duration_ms: 1_000,
+                easing: EasingFunction::Linear,
+                color_interpolation: ColorInterpolation::Oklab,
+            },
+            priority: ScenePriority::AMBIENT,
+            enabled: true,
+            metadata: HashMap::new(),
+            unassigned_behavior: crate::types::scene::UnassignedBehavior::Off,
+            kind: SceneKind::Ephemeral,
+        };
+        self.scenes.insert(default.id, default);
+        self.priority_stack
+            .push(SceneId::DEFAULT, ScenePriority::AMBIENT);
+        self.refresh_active_render_groups();
+    }
+
     // ── CRUD ────────────────────────────────────────────────────────
 
     /// Register a new scene. Returns an error if a scene with the same
@@ -77,12 +120,8 @@ impl SceneManager {
         if self.scenes.contains_key(&scene.id) {
             bail!("scene already exists: {}", scene.id);
         }
-        if let Err(conflicts) = scene.validate_group_exclusivity() {
-            bail!(
-                "scene '{}' has overlapping render groups: {}",
-                scene.name,
-                conflicts.join("; ")
-            );
+        if let Err(errors) = scene.validate() {
+            bail!("scene '{}' is invalid: {}", scene.name, errors.join("; "));
         }
         self.scenes.insert(scene.id, scene);
         Ok(())
@@ -103,15 +142,17 @@ impl SceneManager {
     /// Update an existing scene in-place. Returns an error if the scene
     /// does not exist.
     pub fn update(&mut self, scene: Scene) -> Result<()> {
-        if !self.scenes.contains_key(&scene.id) {
+        let Some(existing) = self.scenes.get(&scene.id) else {
             bail!("scene not found: {}", scene.id);
+        };
+        if existing.kind != scene.kind {
+            bail!("scene kind cannot be changed");
         }
-        if let Err(conflicts) = scene.validate_group_exclusivity() {
-            bail!(
-                "scene '{}' has overlapping render groups: {}",
-                scene.name,
-                conflicts.join("; ")
-            );
+        if scene.id.is_default() && scene.name != existing.name {
+            bail!("default scene cannot be renamed");
+        }
+        if let Err(errors) = scene.validate() {
+            bail!("scene '{}' is invalid: {}", scene.name, errors.join("; "));
         }
         let scene_id = scene.id;
         let active_scene_id = self.active_scene_id().copied();
@@ -125,6 +166,10 @@ impl SceneManager {
     /// Delete a scene by ID. Also removes it from the priority stack
     /// if it was active. Returns an error if the scene does not exist.
     pub fn delete(&mut self, id: &SceneId) -> Result<Scene> {
+        if id.is_default() {
+            bail!("cannot delete default scene");
+        }
+
         let scene = self
             .scenes
             .remove(id)
@@ -207,6 +252,11 @@ impl SceneManager {
     ///
     /// If there is no active scene, this is a no-op.
     pub fn deactivate_current(&mut self) {
+        if self.priority_stack.len() == 1 && self.active_scene_id().is_some_and(SceneId::is_default)
+        {
+            return;
+        }
+
         let popped = self.priority_stack.pop();
         if let Some(entry) = popped {
             // If there was a previous scene in history, try to restore it.
@@ -292,6 +342,197 @@ impl SceneManager {
         &self.activation_history
     }
 
+    pub fn upsert_primary_group(
+        &mut self,
+        effect: &EffectMetadata,
+        controls: HashMap<String, ControlValue>,
+        active_preset_id: Option<PresetId>,
+        full_scope_layout: SpatialLayout,
+    ) -> Result<&RenderGroup> {
+        let scene = self
+            .active_scene_mut()
+            .ok_or_else(|| anyhow::anyhow!("no active scene"))?;
+
+        if let Some(group) = scene.primary_group_mut() {
+            let effect_changed = group.effect_id != Some(effect.id);
+            group.effect_id = Some(effect.id);
+            group.controls = controls;
+            if effect_changed {
+                group.control_bindings.clear();
+            }
+            group.preset_id = active_preset_id;
+            group.layout = full_scope_layout;
+            group.enabled = true;
+            group.display_target = None;
+            group.role = RenderGroupRole::Primary;
+        } else {
+            scene.groups.push(RenderGroup {
+                id: RenderGroupId::new(),
+                name: "Primary".to_owned(),
+                description: Some("Primary full-scene render group.".to_owned()),
+                effect_id: Some(effect.id),
+                controls,
+                control_bindings: HashMap::new(),
+                preset_id: active_preset_id,
+                layout: full_scope_layout,
+                brightness: 1.0,
+                enabled: true,
+                color: None,
+                display_target: None,
+                role: RenderGroupRole::Primary,
+            });
+        }
+
+        self.refresh_active_render_groups();
+        Ok(self
+            .active_scene()
+            .and_then(Scene::primary_group)
+            .expect("primary group should exist after upsert"))
+    }
+
+    pub fn upsert_display_group(
+        &mut self,
+        device_id: DeviceId,
+        device_name: &str,
+        effect: &EffectMetadata,
+        controls: HashMap<String, ControlValue>,
+        layout: SpatialLayout,
+    ) -> Result<&RenderGroup> {
+        let scene = self
+            .active_scene_mut()
+            .ok_or_else(|| anyhow::anyhow!("no active scene"))?;
+
+        if let Some(group) = scene.display_group_for_mut(device_id) {
+            let effect_changed = group.effect_id != Some(effect.id);
+            group.effect_id = Some(effect.id);
+            group.controls = controls;
+            if effect_changed {
+                group.control_bindings.clear();
+            }
+            group.layout = layout;
+            group.display_target = Some(DisplayFaceTarget { device_id });
+            group.enabled = true;
+            group.role = RenderGroupRole::Display;
+            if group.name.trim().is_empty() {
+                group.name = format!("{device_name} Face");
+            }
+        } else {
+            scene.groups.push(RenderGroup {
+                id: RenderGroupId::new(),
+                name: format!("{device_name} Face"),
+                description: Some(format!("Display face for {device_name}")),
+                effect_id: Some(effect.id),
+                controls,
+                control_bindings: HashMap::new(),
+                preset_id: None,
+                layout,
+                brightness: 1.0,
+                enabled: true,
+                color: None,
+                display_target: Some(DisplayFaceTarget { device_id }),
+                role: RenderGroupRole::Display,
+            });
+        }
+
+        self.refresh_active_render_groups();
+        Ok(self
+            .active_scene()
+            .and_then(|scene| scene.display_group_for(device_id))
+            .expect("display group should exist after upsert"))
+    }
+
+    pub fn remove_display_group(&mut self, device_id: DeviceId) -> Result<bool> {
+        let Some(scene) = self.active_scene_mut() else {
+            bail!("no active scene");
+        };
+        let previous_len = scene.groups.len();
+        scene.groups.retain(|group| {
+            group.role != RenderGroupRole::Display
+                || group
+                    .display_target
+                    .as_ref()
+                    .is_none_or(|target| target.device_id != device_id)
+        });
+        let removed = scene.groups.len() != previous_len;
+        if removed {
+            self.refresh_active_render_groups();
+        }
+        Ok(removed)
+    }
+
+    pub fn patch_group_controls(
+        &mut self,
+        group_id: RenderGroupId,
+        updates: HashMap<String, ControlValue>,
+    ) -> Option<&RenderGroup> {
+        let scene = self.active_scene_mut()?;
+        let group = scene.groups.iter_mut().find(|group| group.id == group_id)?;
+        group.controls.extend(updates);
+        group.preset_id = None;
+        self.refresh_active_render_groups();
+        self.active_scene()
+            .and_then(|active| active.groups.iter().find(|group| group.id == group_id))
+    }
+
+    pub fn reset_group_controls(
+        &mut self,
+        group_id: RenderGroupId,
+        defaults: HashMap<String, ControlValue>,
+    ) -> Option<&RenderGroup> {
+        let scene = self.active_scene_mut()?;
+        let group = scene.groups.iter_mut().find(|group| group.id == group_id)?;
+        group.controls = defaults;
+        group.preset_id = None;
+        self.refresh_active_render_groups();
+        self.active_scene()
+            .and_then(|active| active.groups.iter().find(|group| group.id == group_id))
+    }
+
+    pub fn clear_group_effect(&mut self, group_id: RenderGroupId) -> Option<&RenderGroup> {
+        let scene = self.active_scene_mut()?;
+        let group = scene.groups.iter_mut().find(|group| group.id == group_id)?;
+        group.effect_id = None;
+        group.controls.clear();
+        group.control_bindings.clear();
+        group.preset_id = None;
+        self.refresh_active_render_groups();
+        self.active_scene()
+            .and_then(|active| active.groups.iter().find(|group| group.id == group_id))
+    }
+
+    pub fn set_group_control_binding(
+        &mut self,
+        group_id: RenderGroupId,
+        control_id: String,
+        binding: ControlBinding,
+    ) -> Option<&RenderGroup> {
+        let scene = self.active_scene_mut()?;
+        let group = scene.groups.iter_mut().find(|group| group.id == group_id)?;
+        group.control_bindings.insert(control_id, binding);
+        group.preset_id = None;
+        self.refresh_active_render_groups();
+        self.active_scene()
+            .and_then(|active| active.groups.iter().find(|group| group.id == group_id))
+    }
+
+    pub fn set_group_preset_id(
+        &mut self,
+        group_id: RenderGroupId,
+        preset_id: Option<PresetId>,
+    ) -> Option<&RenderGroup> {
+        let scene = self.active_scene_mut()?;
+        let group = scene.groups.iter_mut().find(|group| group.id == group_id)?;
+        group.preset_id = preset_id;
+        self.refresh_active_render_groups();
+        self.active_scene()
+            .and_then(|active| active.groups.iter().find(|group| group.id == group_id))
+    }
+
+    fn active_scene_mut(&mut self) -> Option<&mut Scene> {
+        let scene_id = *self.active_scene_id()?;
+        self.scenes.get_mut(&scene_id)
+    }
+
     fn refresh_active_render_groups(&mut self) {
         let next_groups = self
             .active_scene()
@@ -337,5 +578,6 @@ pub fn make_scene(name: &str) -> Scene {
         enabled: true,
         metadata: HashMap::new(),
         unassigned_behavior: crate::types::scene::UnassignedBehavior::Off,
+        kind: SceneKind::Named,
     }
 }

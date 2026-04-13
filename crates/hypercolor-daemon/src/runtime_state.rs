@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use hypercolor_core::device::DeviceRegistry;
 use hypercolor_core::device::wled::WledKnownTarget;
 use hypercolor_core::effect::EffectEngine;
+use hypercolor_core::scene::SceneManager;
 use hypercolor_types::device::{DeviceColorFormat, DeviceFamily};
 use hypercolor_types::effect::{ControlBinding, ControlValue};
 
@@ -114,6 +115,30 @@ pub fn snapshot_from_engine(engine: &EffectEngine) -> RuntimeSessionSnapshot {
             })
             .unwrap_or_default(),
         active_layout_id: None, // Populated by the caller with spatial engine state.
+        global_brightness: 1.0,
+        wled_probe_ips: Vec::new(),
+        wled_probe_targets: Vec::new(),
+    }
+}
+
+#[must_use]
+pub fn snapshot_from_scene_manager(manager: &SceneManager) -> RuntimeSessionSnapshot {
+    let Some(group) = manager
+        .active_scene()
+        .and_then(|scene| scene.primary_group())
+    else {
+        return RuntimeSessionSnapshot::default();
+    };
+    let Some(effect_id) = group.effect_id else {
+        return RuntimeSessionSnapshot::default();
+    };
+
+    RuntimeSessionSnapshot {
+        active_effect_id: Some(effect_id.to_string()),
+        active_preset_id: group.preset_id.map(|preset| preset.to_string()),
+        control_values: group.controls.clone(),
+        control_bindings: group.control_bindings.clone(),
+        active_layout_id: None,
         global_brightness: 1.0,
         wled_probe_ips: Vec::new(),
         wled_probe_targets: Vec::new(),

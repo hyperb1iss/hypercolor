@@ -482,6 +482,7 @@ mod tests {
     use hypercolor_types::audio::AudioData;
     use hypercolor_types::canvas::Rgba;
     use hypercolor_types::effect::{ControlValue, EffectId};
+    use hypercolor_types::scene::RenderGroupRole;
     use hypercolor_types::spatial::{DeviceZone, LedTopology, NormalizedPosition, StripDirection};
     use uuid::Uuid;
 
@@ -494,6 +495,7 @@ mod tests {
             description: None,
             effect_id: Some(EffectId::from(Uuid::now_v7())),
             controls: HashMap::new(),
+            control_bindings: HashMap::new(),
             preset_id: None,
             layout: SpatialLayout {
                 id: "preview-group".into(),
@@ -511,6 +513,7 @@ mod tests {
             enabled: true,
             color: None,
             display_target: None,
+            role: RenderGroupRole::Custom,
         }
     }
 
@@ -614,6 +617,7 @@ mod tests {
             description: None,
             effect_id: Some(solid_id),
             controls: HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+            control_bindings: HashMap::new(),
             preset_id: None,
             layout: SpatialLayout {
                 id: "direct-group".into(),
@@ -631,6 +635,7 @@ mod tests {
             enabled: true,
             color: None,
             display_target: None,
+            role: RenderGroupRole::Custom,
         };
         let mut zones = Vec::new();
 
@@ -676,6 +681,7 @@ mod tests {
             description: None,
             effect_id: Some(solid_id),
             controls: HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+            control_bindings: HashMap::new(),
             preset_id: None,
             layout: SpatialLayout {
                 id: "display-group".into(),
@@ -695,6 +701,7 @@ mod tests {
             display_target: Some(hypercolor_types::scene::DisplayFaceTarget {
                 device_id: hypercolor_types::device::DeviceId::new(),
             }),
+            role: RenderGroupRole::Display,
         };
         let mut zones = Vec::new();
 

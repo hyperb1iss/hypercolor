@@ -87,11 +87,7 @@ fn snapshot_scene_runtime(manager: &SceneManager) -> SceneRuntimeSnapshot {
     let active_render_group_count = u32::try_from(
         active_render_groups
             .iter()
-            .filter(|group| {
-                group.enabled
-                    && group.effect_id.is_some()
-                    && (group.display_target.is_some() || !group.layout.zones.is_empty())
-            })
+            .filter(|group| group.enabled && group.effect_id.is_some())
             .count(),
     )
     .unwrap_or(u32::MAX);
@@ -167,7 +163,7 @@ async fn current_render_group_effect_scene_snapshot(
     let mut screen_capture_active = false;
 
     for group in scene_runtime.active_render_groups.iter() {
-        if !group.enabled || (group.layout.zones.is_empty() && group.display_target.is_none()) {
+        if !group.enabled {
             continue;
         }
 

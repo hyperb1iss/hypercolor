@@ -211,36 +211,42 @@ pub async fn apply_preset(State(state): State<Arc<AppState>>, Path(id): Path<Str
     };
 
     // Check if the same effect is already running — if so, skip full re-activation
-    let same_effect = {
-        let engine = state.effect_engine.lock().await;
-        engine
-            .active_metadata()
-            .is_some_and(|active| active.id == metadata.id)
-    };
+    let same_effect = crate::api::effects::active_primary_effect(state.as_ref())
+        .await
+        .is_some_and(|(_, active)| active.id == metadata.id);
 
     let activation = if same_effect {
         // Hot-swap: reset to defaults, apply preset controls, set preset ID
-        let mut engine = state.effect_engine.lock().await;
-        if let Err(e) = engine.reset_to_defaults() {
-            return ApiError::internal(format!(
-                "Failed to reset controls for preset '{}': {e}",
-                preset.name
-            ));
-        }
-
         let (controls, migrated_controls) =
-            crate::library::migration::migrate_effect_controls_for_load(&metadata, &preset.controls);
-        let mut applied: HashMap<String, ControlValue> = HashMap::new();
-        let mut rejected: Vec<String> = Vec::new();
-        for (name, value) in &controls {
-            match engine.set_control_checked(name, value) {
-                Ok(normalized) => {
-                    applied.insert(name.clone(), normalized);
-                }
-                Err(error) => rejected.push(format!("{name} ({error})")),
+            crate::library::migration::migrate_effect_controls_for_load(
+                &metadata,
+                &preset.controls,
+            );
+        let (applied, rejected) =
+            crate::api::effects::normalize_control_values(&metadata, &controls);
+        let Some((group, _)) = crate::api::effects::active_primary_effect(state.as_ref()).await
+        else {
+            return ApiError::not_found("No effect is currently active");
+        };
+        {
+            let mut scene_manager = state.scene_manager.write().await;
+            if scene_manager
+                .reset_group_controls(
+                    group.id,
+                    crate::api::effects::default_control_values(&metadata),
+                )
+                .is_none()
+            {
+                return ApiError::not_found("No effect is currently active");
             }
+            if scene_manager
+                .patch_group_controls(group.id, applied.clone())
+                .is_none()
+            {
+                return ApiError::not_found("No effect is currently active");
+            }
+            let _ = scene_manager.set_group_preset_id(group.id, Some(preset.id));
         }
-        engine.set_active_preset_id(preset.id.to_string());
         if migrated_controls {
             info!(
                 preset_id = %preset.id,
@@ -258,15 +264,13 @@ pub async fn apply_preset(State(state): State<Arc<AppState>>, Path(id): Path<Str
         // Different effect — full activation path
         match activate_effect_with_controls(&state, &metadata, &preset.controls).await {
             Ok(activation) => {
-                let mut engine = state.effect_engine.lock().await;
-                engine.set_active_preset_id(preset.id.to_string());
+                if let Some((group, _)) =
+                    crate::api::effects::active_primary_effect(state.as_ref()).await
+                {
+                    let mut scene_manager = state.scene_manager.write().await;
+                    let _ = scene_manager.set_group_preset_id(group.id, Some(preset.id));
+                }
                 activation
-            }
-            Err(ActivateEffectError::Renderer(error)) => {
-                return ApiError::bad_request(format!(
-                    "Failed to prepare renderer for preset '{}': {error}",
-                    preset.name
-                ));
             }
             Err(ActivateEffectError::Activation(error)) => {
                 return ApiError::internal(format!(

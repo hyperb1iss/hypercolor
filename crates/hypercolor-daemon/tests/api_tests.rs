@@ -43,8 +43,8 @@ use hypercolor_types::effect::{
 };
 use hypercolor_types::event::{ChangeTrigger, EffectStopReason, HypercolorEvent};
 use hypercolor_types::scene::{
-    ColorInterpolation, DisplayFaceTarget, EasingFunction, RenderGroup, Scene, SceneId,
-    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
+    ColorInterpolation, DisplayFaceTarget, EasingFunction, RenderGroup, RenderGroupRole, Scene,
+    SceneId, SceneKind, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
 };
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -1008,6 +1008,7 @@ async fn activate_empty_test_scene(state: &Arc<AppState>, name: &str) -> SceneId
         enabled: true,
         metadata: HashMap::new(),
         unassigned_behavior: UnassignedBehavior::Off,
+        kind: SceneKind::Named,
     };
 
     let mut manager = state.scene_manager.write().await;
@@ -1038,6 +1039,7 @@ async fn activate_display_face_test_scene(
             description: None,
             effect_id: Some(effect_id),
             controls: HashMap::new(),
+            control_bindings: HashMap::new(),
             preset_id: None,
             layout: SpatialLayout {
                 id: "display-face-layout".to_owned(),
@@ -1055,6 +1057,7 @@ async fn activate_display_face_test_scene(
             enabled: true,
             color: None,
             display_target: Some(DisplayFaceTarget { device_id }),
+            role: RenderGroupRole::Display,
         }],
         transition: TransitionSpec {
             duration_ms: 0,
@@ -1065,6 +1068,7 @@ async fn activate_display_face_test_scene(
         enabled: true,
         metadata: HashMap::new(),
         unassigned_behavior: UnassignedBehavior::Off,
+        kind: SceneKind::Named,
     };
 
     let mut manager = state.scene_manager.write().await;
@@ -4238,7 +4242,7 @@ async fn display_face_endpoints_assign_get_and_delete_face() {
 }
 
 #[tokio::test]
-async fn display_face_endpoint_requires_active_scene() {
+async fn display_face_endpoint_assigns_to_default_scene_from_cold_start() {
     let state = Arc::new(isolated_state());
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
     let face = insert_test_display_face_effect(&state, "System Monitor").await;
@@ -4256,9 +4260,13 @@ async fn display_face_endpoint_requires_active_scene() {
         .await
         .expect("failed to execute request");
 
-    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "conflict");
+    assert_eq!(
+        json["data"]["scene_id"],
+        hypercolor_types::scene::SceneId::DEFAULT.to_string()
+    );
+    assert_eq!(json["data"]["effect"]["id"], face.id.to_string());
 }
 
 #[tokio::test]

@@ -12,7 +12,8 @@ use hypercolor_types::canvas::RgbaF32;
 use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::scene::{
     ActionKind, AutomationRule, ColorInterpolation, EasingFunction, RenderGroup, RenderGroupId,
-    SceneId, ScenePriority, TransitionSpec, TriggerSource, UnassignedBehavior, ZoneAssignment,
+    RenderGroupRole, SceneId, ScenePriority, TransitionSpec, TriggerSource, UnassignedBehavior,
+    ZoneAssignment,
 };
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -104,12 +105,14 @@ fn grouped_scene(name: &str, zone_id: &str, effect_id: EffectId) -> hypercolor_t
         description: None,
         effect_id: Some(effect_id),
         controls: HashMap::from([("speed".into(), ControlValue::Float(0.5))]),
+        control_bindings: HashMap::new(),
         preset_id: None,
         layout: sample_layout(zone_id),
         brightness: 0.8,
         enabled: true,
         color: None,
         display_target: None,
+        role: RenderGroupRole::Custom,
     }];
     scene.unassigned_behavior = UnassignedBehavior::Off;
     scene
@@ -153,12 +156,14 @@ fn scene_manager_create_rejects_overlapping_render_groups() {
             description: None,
             effect_id: Some(EffectId::from(Uuid::now_v7())),
             controls: HashMap::new(),
+            control_bindings: HashMap::new(),
             preset_id: None,
             layout: sample_layout("shared:zone"),
             brightness: 1.0,
             enabled: true,
             color: None,
             display_target: None,
+            role: RenderGroupRole::Custom,
         },
         RenderGroup {
             id: RenderGroupId::new(),
@@ -166,12 +171,14 @@ fn scene_manager_create_rejects_overlapping_render_groups() {
             description: None,
             effect_id: Some(EffectId::from(Uuid::now_v7())),
             controls: HashMap::new(),
+            control_bindings: HashMap::new(),
             preset_id: None,
             layout: sample_layout("shared:zone"),
             brightness: 1.0,
             enabled: true,
             color: None,
             display_target: None,
+            role: RenderGroupRole::Custom,
         },
     ];
 

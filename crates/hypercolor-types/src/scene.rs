@@ -8,10 +8,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
-use uuid::Uuid;
+use uuid::{Uuid, uuid};
 
 use crate::device::DeviceId;
-use crate::effect::{ControlValue, EffectId};
+use crate::effect::{ControlBinding, ControlValue, EffectId};
 use crate::library::PresetId;
 use crate::spatial::SpatialLayout;
 
@@ -22,10 +22,17 @@ use crate::spatial::SpatialLayout;
 pub struct SceneId(pub Uuid);
 
 impl SceneId {
+    pub const DEFAULT: Self = Self(uuid!("00000000-0000-0000-0000-000000000000"));
+
     /// Create a new random scene identifier (UUID v7).
     #[must_use]
     pub fn new() -> Self {
         Self(Uuid::now_v7())
+    }
+
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::DEFAULT
     }
 }
 
@@ -86,6 +93,10 @@ pub struct RenderGroup {
     #[serde(default)]
     pub controls: HashMap<String, ControlValue>,
 
+    /// Live sensor bindings applied to controls in this group.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub control_bindings: HashMap<String, ControlBinding>,
+
     /// Optional preset applied to the group.
     pub preset_id: Option<PresetId>,
 
@@ -106,6 +117,19 @@ pub struct RenderGroup {
     /// Direct display target for face-style render groups.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_target: Option<DisplayFaceTarget>,
+
+    /// Semantic role inside the scene.
+    #[serde(default)]
+    pub role: RenderGroupRole,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderGroupRole {
+    #[default]
+    Custom,
+    Primary,
+    Display,
 }
 
 /// Direct LCD target for a display-face render group.
@@ -233,6 +257,18 @@ pub struct Scene {
     /// Policy for zones not claimed by any render group.
     #[serde(default, skip_serializing_if = "is_default_unassigned_behavior")]
     pub unassigned_behavior: UnassignedBehavior,
+
+    /// Whether this scene is daemon-managed or user-visible.
+    #[serde(default)]
+    pub kind: SceneKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SceneKind {
+    #[default]
+    Named,
+    Ephemeral,
 }
 
 impl Scene {
@@ -276,6 +312,40 @@ impl Scene {
             .collect()
     }
 
+    #[must_use]
+    pub fn primary_group(&self) -> Option<&RenderGroup> {
+        self.groups
+            .iter()
+            .find(|group| group.role == RenderGroupRole::Primary)
+    }
+
+    pub fn primary_group_mut(&mut self) -> Option<&mut RenderGroup> {
+        self.groups
+            .iter_mut()
+            .find(|group| group.role == RenderGroupRole::Primary)
+    }
+
+    #[must_use]
+    pub fn display_group_for(&self, device_id: DeviceId) -> Option<&RenderGroup> {
+        self.groups.iter().find(|group| {
+            group.role == RenderGroupRole::Display
+                && group
+                    .display_target
+                    .as_ref()
+                    .is_some_and(|target| target.device_id == device_id)
+        })
+    }
+
+    pub fn display_group_for_mut(&mut self, device_id: DeviceId) -> Option<&mut RenderGroup> {
+        self.groups.iter_mut().find(|group| {
+            group.role == RenderGroupRole::Display
+                && group
+                    .display_target
+                    .as_ref()
+                    .is_some_and(|target| target.device_id == device_id)
+        })
+    }
+
     /// Ensure no zone is claimed by multiple render groups.
     pub fn validate_group_exclusivity(&self) -> Result<(), Vec<String>> {
         if !self.has_render_groups() {
@@ -300,6 +370,59 @@ impl Scene {
             Ok(())
         } else {
             Err(conflicts)
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        if let Err(mut conflicts) = self.validate_group_exclusivity() {
+            errors.append(&mut conflicts);
+        }
+
+        let primary_count = self
+            .groups
+            .iter()
+            .filter(|group| group.role == RenderGroupRole::Primary)
+            .count();
+        if primary_count > 1 {
+            errors.push("scene has more than one primary render group".to_owned());
+        }
+
+        let mut display_targets = HashMap::<DeviceId, RenderGroupId>::new();
+        for group in &self.groups {
+            match (&group.role, &group.display_target) {
+                (RenderGroupRole::Display, None) => errors.push(format!(
+                    "display render group '{}' is missing a display target",
+                    group.name
+                )),
+                (RenderGroupRole::Custom | RenderGroupRole::Primary, Some(_)) => {
+                    errors.push(format!(
+                        "render group '{}' has a display target but role '{}'",
+                        group.name,
+                        match group.role {
+                            RenderGroupRole::Custom => "custom",
+                            RenderGroupRole::Primary => "primary",
+                            RenderGroupRole::Display => "display",
+                        }
+                    ));
+                }
+                (RenderGroupRole::Display, Some(target)) => {
+                    if let Some(existing) = display_targets.insert(target.device_id, group.id) {
+                        errors.push(format!(
+                            "duplicate display render groups for device {} ({} and {})",
+                            target.device_id, existing, group.id
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
         }
     }
 }

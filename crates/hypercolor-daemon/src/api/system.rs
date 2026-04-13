@@ -142,10 +142,9 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     let subscribers = state.event_bus.subscriber_count();
 
     // Query the live effect engine for the active effect name.
-    let active_effect = {
-        let engine = state.effect_engine.lock().await;
-        engine.active_metadata().map(|m| m.name.clone())
-    };
+    let active_effect = crate::api::effects::active_primary_effect(state.as_ref())
+        .await
+        .map(|(_, effect)| effect.name);
 
     // Query the live render loop for timing data.
     let render_loop_status = {

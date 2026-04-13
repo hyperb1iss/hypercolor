@@ -8,7 +8,6 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::Response;
-use hypercolor_core::effect::create_renderer_for_metadata_with_mode;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -275,44 +274,43 @@ pub(crate) async fn apply_profile_snapshot(
                 .ok_or_else(|| format!("profile effect not found: {effect_id}"))?
         };
 
-        let render_acceleration_mode =
-            crate::api::configured_effect_renderer_acceleration_mode(state.config_manager.as_ref());
-        let renderer = create_renderer_for_metadata_with_mode(&metadata, render_acceleration_mode)
-            .map_err(|error| {
-                format!(
-                    "failed to prepare renderer for profile effect '{}': {error}",
-                    metadata.name
-                )
-            })?;
-
-        Some((metadata, renderer))
+        Some(metadata)
     } else {
         None
     };
     let mut warnings = Vec::new();
+    let current_layout = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().as_ref().clone()
+    };
 
-    if let Some((metadata, renderer)) = prepared_effect {
-        let mut engine = state.effect_engine.lock().await;
-        engine
-            .activate(renderer, metadata.clone())
-            .map_err(|error| {
-                format!(
-                    "failed to activate profile effect '{}': {error}",
-                    metadata.name
-                )
-            })?;
-
+    if let Some(metadata) = prepared_effect {
         let (controls, migrated_controls) =
-            crate::library::migration::migrate_effect_controls_for_load(&metadata, &profile.controls);
-        let mut rejected_controls = Vec::new();
-        for (name, value) in &controls {
-            if let Err(error) = engine.set_control_checked(name, value) {
-                rejected_controls.push(format!("{name} ({error})"));
-            }
-        }
-
-        if let Some(active_preset_id) = &profile.active_preset_id {
-            engine.set_active_preset_id(active_preset_id.clone());
+            crate::library::migration::migrate_effect_controls_for_load(
+                &metadata,
+                &profile.controls,
+            );
+        let (controls, rejected_controls) =
+            crate::api::effects::normalize_control_values(&metadata, &controls);
+        let active_layout = layout.clone().unwrap_or_else(|| current_layout.clone());
+        {
+            let mut scene_manager = state.scene_manager.write().await;
+            scene_manager
+                .upsert_primary_group(
+                    &metadata,
+                    controls,
+                    profile
+                        .active_preset_id
+                        .clone()
+                        .and_then(|id| id.parse::<hypercolor_types::library::PresetId>().ok()),
+                    active_layout,
+                )
+                .map_err(|error| {
+                    format!(
+                        "failed to activate profile effect '{}': {error}",
+                        metadata.name
+                    )
+                })?;
         }
 
         if !rejected_controls.is_empty() {
@@ -329,7 +327,6 @@ pub(crate) async fn apply_profile_snapshot(
                 "Migrated legacy screencast profile controls to the viewport rect"
             );
         }
-        drop(engine);
         warnings =
             crate::api::displays::auto_disable_html_overlays_for_effect(state, &metadata).await;
     }
@@ -374,15 +371,18 @@ async fn snapshot_profile(
         let spatial = state.spatial_engine.read().await;
         Some(spatial.layout().id.clone())
     };
-    let (effect_id, effect_name, active_preset_id, controls) = {
-        let engine = state.effect_engine.lock().await;
-        (
-            engine.active_metadata().map(|meta| meta.id.to_string()),
-            engine.active_metadata().map(|meta| meta.name.clone()),
-            engine.active_preset_id().map(ToOwned::to_owned),
-            engine.active_controls().clone(),
-        )
-    };
+    let (effect_id, effect_name, active_preset_id, controls) =
+        if let Some((group, effect)) = effects::active_primary_effect(state.as_ref()).await {
+            let controls = effects::resolved_control_values(&effect, &group);
+            (
+                Some(effect.id.to_string()),
+                Some(effect.name.clone()),
+                group.preset_id.map(|preset| preset.to_string()),
+                controls,
+            )
+        } else {
+            (None, None, None, Default::default())
+        };
 
     Ok(Profile {
         id,

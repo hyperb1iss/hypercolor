@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{
-    ColorInterpolation, EasingFunction, Scene, SceneId, ScenePriority, SceneScope, TransitionSpec,
-    UnassignedBehavior,
+    ColorInterpolation, EasingFunction, Scene, SceneId, SceneKind, ScenePriority, SceneScope,
+    TransitionSpec, UnassignedBehavior,
 };
 
 use crate::api::AppState;
@@ -57,6 +57,7 @@ pub async fn list_scenes(State(state): State<Arc<AppState>>) -> Response {
 
     let items: Vec<SceneSummary> = scenes
         .iter()
+        .filter(|scene| scene.kind != SceneKind::Ephemeral)
         .map(|s| SceneSummary {
             id: s.id.to_string(),
             name: s.name.clone(),
@@ -121,6 +122,7 @@ pub async fn create_scene(
         enabled: body.enabled.unwrap_or(true),
         metadata: HashMap::new(),
         unassigned_behavior: UnassignedBehavior::Off,
+        kind: SceneKind::Named,
     };
 
     let summary = SceneSummary {
@@ -165,6 +167,7 @@ pub async fn update_scene(
         enabled: body.enabled.unwrap_or(existing.enabled),
         metadata: existing.metadata,
         unassigned_behavior: existing.unassigned_behavior,
+        kind: existing.kind,
     };
 
     let summary = SceneSummary {

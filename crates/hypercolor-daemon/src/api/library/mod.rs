@@ -11,7 +11,6 @@ pub use presets::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use hypercolor_core::effect::create_renderer_for_metadata_with_mode;
 use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
 use hypercolor_types::library::PresetId;
 use tracing::info;
@@ -28,14 +27,13 @@ pub(crate) struct ActivationResult {
 }
 
 pub(crate) enum ActivateEffectError {
-    Renderer(String),
     Activation(String),
 }
 
 impl std::fmt::Display for ActivateEffectError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Renderer(error) | Self::Activation(error) => f.write_str(error),
+            Self::Activation(error) => f.write_str(error),
         }
     }
 }
@@ -72,29 +70,20 @@ pub(crate) async fn activate_effect_with_controls(
     metadata: &EffectMetadata,
     controls: &HashMap<String, ControlValue>,
 ) -> Result<ActivationResult, ActivateEffectError> {
-    let render_acceleration_mode =
-        crate::api::configured_effect_renderer_acceleration_mode(state.config_manager.as_ref());
-    let renderer = create_renderer_for_metadata_with_mode(metadata, render_acceleration_mode)
-        .map_err(|error| ActivateEffectError::Renderer(error.to_string()))?;
     let (controls, migrated_controls) =
         crate::library::migration::migrate_effect_controls_for_load(metadata, controls);
+    let (controls, rejected) = crate::api::effects::normalize_control_values(metadata, &controls);
+    let layout = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().as_ref().clone()
+    };
 
-    let mut applied: HashMap<String, ControlValue> = HashMap::new();
-    let mut rejected: Vec<String> = Vec::new();
-    let mut engine = state.effect_engine.lock().await;
-    engine
-        .activate(renderer, metadata.clone())
-        .map_err(|error| ActivateEffectError::Activation(error.to_string()))?;
-
-    for (name, value) in &controls {
-        match engine.set_control_checked(name, value) {
-            Ok(normalized) => {
-                applied.insert(name.clone(), normalized);
-            }
-            Err(error) => rejected.push(format!("{name} ({error})")),
-        }
+    {
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .upsert_primary_group(metadata, controls.clone(), None, layout)
+            .map_err(|error| ActivateEffectError::Activation(error.to_string()))?;
     }
-    drop(engine);
     if migrated_controls {
         info!(
             effect_id = %metadata.id,
@@ -107,7 +96,7 @@ pub(crate) async fn activate_effect_with_controls(
     crate::api::persist_runtime_session(state).await;
 
     Ok(ActivationResult {
-        applied,
+        applied: controls,
         rejected,
         warnings,
     })

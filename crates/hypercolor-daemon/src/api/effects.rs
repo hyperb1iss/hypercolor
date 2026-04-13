@@ -9,12 +9,13 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use hypercolor_core::effect::{EffectRegistry, create_renderer_for_metadata_with_mode};
+use hypercolor_core::effect::EffectRegistry;
 use hypercolor_types::effect::{
     ControlBinding, ControlDefinition, ControlValue, EffectCategory, EffectId, EffectMetadata,
     EffectSource, PresetTemplate,
 };
 use hypercolor_types::event::{ChangeTrigger, EffectRef, EffectStopReason, HypercolorEvent};
+use hypercolor_types::scene::RenderGroup;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::AppState;
@@ -72,6 +73,8 @@ pub struct ActiveEffectResponse {
     pub controls: Vec<ControlDefinition>,
     pub control_values: HashMap<String, ControlValue>,
     pub active_preset_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub render_group_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,12 +180,17 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
     };
     drop(registry);
 
-    let active_control_values = {
-        let engine = state.effect_engine.lock().await;
-        engine
-            .active_metadata()
-            .filter(|active| active.id == meta.id)
-            .map(|_| engine.active_controls().clone())
+    let (controls, active_control_values) = if let Some(group) =
+        active_primary_group(state.as_ref())
+            .await
+            .filter(|group| group.effect_id == Some(meta.id))
+    {
+        (
+            controls_with_group_bindings(&meta, &group),
+            Some(resolved_control_values(&meta, &group)),
+        )
+    } else {
+        (meta.controls.clone(), None)
     };
 
     ApiResponse::ok(EffectDetailResponse {
@@ -196,7 +204,7 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         tags: meta.tags,
         version: meta.version,
         audio_reactive: meta.audio_reactive,
-        controls: meta.controls,
+        controls,
         presets: meta.presets,
         active_control_values,
     })
@@ -361,54 +369,21 @@ pub async fn apply_effect(
         Err(error) => return ApiError::bad_request(error),
     };
 
-    let render_acceleration_mode =
-        crate::api::configured_effect_renderer_acceleration_mode(state.config_manager.as_ref());
-    let renderer = match create_renderer_for_metadata_with_mode(&metadata, render_acceleration_mode)
-    {
-        Ok(renderer) => renderer,
-        Err(error) => {
-            warn!(
-                effect_id = %metadata.id,
-                effect = %metadata.name,
-                requested_mode = ?render_acceleration_mode,
-                %error,
-                "Failed to prepare effect renderer"
-            );
-            return ApiError::bad_request(format!(
-                "Failed to prepare renderer for effect '{}': {error}",
-                metadata.name
-            ));
-        }
-    };
-
     let controls = extract_request_controls(body.as_ref());
-    let mut dropped_controls = Vec::new();
-    let previous_effect: Option<EffectRef>;
+    let (normalized_controls, dropped_controls) = normalize_control_payload(&metadata, &controls);
+    let previous_effect = active_primary_effect(state.as_ref())
+        .await
+        .map(|(_, effect)| effect_ref(&effect));
+    let layout = resolve_full_scope_layout(state.as_ref()).await;
 
     {
-        let mut engine = state.effect_engine.lock().await;
-        previous_effect = engine.active_metadata().map(effect_ref);
-        if let Err(e) = engine.activate(renderer, metadata.clone()) {
-            warn!(
-                effect_id = %metadata.id,
-                effect = %metadata.name,
-                %e,
-                "Effect activation failed"
-            );
+        let mut scene_manager = state.scene_manager.write().await;
+        if let Err(error) =
+            scene_manager.upsert_primary_group(&metadata, normalized_controls, None, layout)
+        {
             return ApiError::internal(format!(
-                "Failed to activate effect '{}': {e}",
-                metadata.name
+                "Failed to update active scene primary group: {error}"
             ));
-        }
-
-        for (name, value) in &controls {
-            if let Some(control_value) = json_to_control_value(value) {
-                if let Err(error) = engine.set_control_checked(name, &control_value) {
-                    dropped_controls.push(format!("{name} ({error})"));
-                }
-            } else {
-                dropped_controls.push(name.clone());
-            }
         }
     }
     let warnings =
@@ -446,32 +421,33 @@ pub async fn apply_effect(
 
 /// `GET /api/v1/effects/active` — Get the currently active effect.
 pub async fn get_active_effect(State(state): State<Arc<AppState>>) -> Response {
-    let engine = state.effect_engine.lock().await;
-
-    let Some(meta) = engine.active_metadata() else {
+    let Some((group, meta)) = active_primary_effect(state.as_ref()).await else {
         return ApiError::not_found("No effect is currently active");
     };
 
     ApiResponse::ok(ActiveEffectResponse {
         id: meta.id.to_string(),
         name: meta.name.clone(),
-        state: format!("{:?}", engine.state()).to_lowercase(),
-        controls: meta.controls.clone(),
-        control_values: engine.active_controls().clone(),
-        active_preset_id: engine.active_preset_id().map(String::from),
+        state: "running".to_owned(),
+        controls: controls_with_group_bindings(&meta, &group),
+        control_values: resolved_control_values(&meta, &group),
+        active_preset_id: group.preset_id.map(|preset| preset.to_string()),
+        render_group_id: Some(group.id.to_string()),
     })
 }
 
 /// `POST /api/v1/effects/stop` — Stop the currently active effect.
 pub async fn stop_effect(State(state): State<Arc<AppState>>) -> Response {
-    let mut engine = state.effect_engine.lock().await;
-
-    let Some(previous_effect) = engine.active_metadata().cloned() else {
+    let Some((group, previous_effect)) = active_primary_effect(state.as_ref()).await else {
         return ApiError::not_found("No effect is currently active");
     };
 
-    engine.deactivate();
-    drop(engine);
+    {
+        let mut scene_manager = state.scene_manager.write().await;
+        if scene_manager.clear_group_effect(group.id).is_none() {
+            return ApiError::not_found("No effect is currently active");
+        }
+    }
     state.event_bus.publish(HypercolorEvent::EffectStopped {
         effect: effect_ref(&previous_effect),
         reason: EffectStopReason::Stopped,
@@ -502,26 +478,20 @@ pub async fn update_current_controls(
 
     let mut rejected: Vec<String> = Vec::new();
     let mut applied: HashMap<String, ControlValue> = HashMap::new();
-    let effect_name: String;
+    let Some((group, active_meta)) = active_primary_effect(state.as_ref()).await else {
+        return ApiError::not_found("No effect is currently active");
+    };
+    let effect_name = active_meta.name.clone();
+    let (normalized, invalid) = normalize_control_payload(&active_meta, &controls);
+    rejected.extend(invalid);
+    applied.extend(normalized.clone());
     {
-        let mut engine = state.effect_engine.lock().await;
-        let Some(active_meta) = engine.active_metadata() else {
+        let mut scene_manager = state.scene_manager.write().await;
+        if scene_manager
+            .patch_group_controls(group.id, normalized)
+            .is_none()
+        {
             return ApiError::not_found("No effect is currently active");
-        };
-        effect_name = active_meta.name.clone();
-
-        for (name, value) in &controls {
-            let Some(control_value) = json_to_control_value(value) else {
-                rejected.push(format!("{name} (unsupported JSON shape)"));
-                continue;
-            };
-
-            match engine.set_control_checked(name, &control_value) {
-                Ok(normalized) => {
-                    applied.insert(name.clone(), normalized);
-                }
-                Err(error) => rejected.push(format!("{name} ({error})")),
-            }
         }
     }
 
@@ -548,26 +518,27 @@ pub async fn set_current_control_binding(
     Path(name): Path<String>,
     Json(binding): Json<ControlBinding>,
 ) -> Response {
-    let normalized: ControlBinding;
-    let effect_id: String;
-    let effect_name: String;
-    let control_id: String;
+    let Some((group, active_meta)) = active_primary_effect(state.as_ref()).await else {
+        return ApiError::not_found("No effect is currently active");
+    };
+    let effect_id = active_meta.id.to_string();
+    let effect_name = active_meta.name.clone();
+    let Some(control) = active_meta.control_by_id(&name) else {
+        return ApiError::not_found(format!("Control not found on active effect: {name}"));
+    };
+    let control_id = control.control_id().to_owned();
+    let normalized = match validate_control_binding_request(&active_meta, &name, binding) {
+        Ok(normalized) => normalized,
+        Err(error) => return ApiError::validation(error),
+    };
     {
-        let mut engine = state.effect_engine.lock().await;
-        let Some(active_meta) = engine.active_metadata().cloned() else {
+        let mut scene_manager = state.scene_manager.write().await;
+        if scene_manager
+            .set_group_control_binding(group.id, control_id.clone(), normalized.clone())
+            .is_none()
+        {
             return ApiError::not_found("No effect is currently active");
-        };
-        let Some(control) = active_meta.control_by_id(&name) else {
-            return ApiError::not_found(format!("Control not found on active effect: {name}"));
-        };
-
-        effect_id = active_meta.id.to_string();
-        effect_name = active_meta.name.clone();
-        control_id = control.control_id().to_owned();
-        normalized = match engine.set_control_binding(&name, binding) {
-            Ok(normalized) => normalized,
-            Err(error) => return ApiError::validation(error.to_string()),
-        };
+        }
     }
 
     super::persist_runtime_session(&state).await;
@@ -585,16 +556,18 @@ pub async fn set_current_control_binding(
 /// `POST /api/v1/effects/current/reset` — Reset all controls on the active
 /// effect back to their metadata-defined defaults.
 pub async fn reset_controls(State(state): State<Arc<AppState>>) -> Response {
-    let mut engine = state.effect_engine.lock().await;
-
-    let Some(meta) = engine.active_metadata().cloned() else {
+    let Some((group, meta)) = active_primary_effect(state.as_ref()).await else {
         return ApiError::not_found("No effect is currently active");
     };
-
-    if let Err(e) = engine.reset_to_defaults() {
-        return ApiError::internal(format!("Failed to reset controls: {e}"));
+    {
+        let mut scene_manager = state.scene_manager.write().await;
+        if scene_manager
+            .reset_group_controls(group.id, default_control_values(&meta))
+            .is_none()
+        {
+            return ApiError::not_found("No effect is currently active");
+        }
     }
-    drop(engine);
     super::persist_runtime_session(&state).await;
 
     info!(effect = %meta.name, "Controls reset to defaults");
@@ -666,6 +639,165 @@ fn extract_request_controls(
         .and_then(serde_json::Value::as_object)
         .cloned()
         .unwrap_or_default()
+}
+
+pub(crate) async fn active_primary_group(state: &AppState) -> Option<RenderGroup> {
+    let scene_manager = state.scene_manager.read().await;
+    scene_manager.active_scene()?.primary_group().cloned()
+}
+
+pub(crate) async fn active_primary_effect(
+    state: &AppState,
+) -> Option<(RenderGroup, EffectMetadata)> {
+    let group = active_primary_group(state).await?;
+    let effect_id = group.effect_id?;
+    let registry = state.effect_registry.read().await;
+    let metadata = registry.get(&effect_id)?.metadata.clone();
+    Some((group, metadata))
+}
+
+fn controls_with_group_bindings(
+    metadata: &EffectMetadata,
+    group: &RenderGroup,
+) -> Vec<ControlDefinition> {
+    metadata
+        .controls
+        .iter()
+        .cloned()
+        .map(|mut control| {
+            control.binding = group.control_bindings.get(control.control_id()).cloned();
+            control
+        })
+        .collect()
+}
+
+pub(crate) fn normalize_control_payload(
+    metadata: &EffectMetadata,
+    raw_controls: &serde_json::Map<String, serde_json::Value>,
+) -> (HashMap<String, ControlValue>, Vec<String>) {
+    let mut normalized = HashMap::new();
+    let mut rejected = Vec::new();
+
+    for (name, value) in raw_controls {
+        let Some(parsed) = json_to_control_value(value) else {
+            rejected.push(format!("{name} (unsupported JSON shape)"));
+            continue;
+        };
+
+        let result = metadata.control_by_id(name).map_or_else(
+            || Ok(parsed.clone()),
+            |control| control.validate_value(&parsed),
+        );
+        match result {
+            Ok(control_value) => {
+                normalized.insert(name.clone(), control_value);
+            }
+            Err(error) => rejected.push(format!("{name} ({error})")),
+        }
+    }
+
+    (normalized, rejected)
+}
+
+pub(crate) fn normalize_control_values(
+    metadata: &EffectMetadata,
+    control_values: &HashMap<String, ControlValue>,
+) -> (HashMap<String, ControlValue>, Vec<String>) {
+    let mut normalized = HashMap::new();
+    let mut rejected = Vec::new();
+
+    for (name, value) in control_values {
+        let result = metadata.control_by_id(name).map_or_else(
+            || Ok(value.clone()),
+            |control| control.validate_value(value),
+        );
+        match result {
+            Ok(control_value) => {
+                normalized.insert(name.clone(), control_value);
+            }
+            Err(error) => rejected.push(format!("{name} ({error})")),
+        }
+    }
+
+    (normalized, rejected)
+}
+
+pub(crate) fn default_control_values(metadata: &EffectMetadata) -> HashMap<String, ControlValue> {
+    metadata
+        .controls
+        .iter()
+        .map(|control| {
+            (
+                control.control_id().to_owned(),
+                control.default_value.clone(),
+            )
+        })
+        .collect()
+}
+
+pub(crate) fn resolved_control_values(
+    metadata: &EffectMetadata,
+    group: &RenderGroup,
+) -> HashMap<String, ControlValue> {
+    let mut resolved = default_control_values(metadata);
+    resolved.extend(group.controls.clone());
+    resolved
+}
+
+fn validate_control_binding_request(
+    metadata: &EffectMetadata,
+    name: &str,
+    binding: ControlBinding,
+) -> Result<ControlBinding, String> {
+    let normalized = binding.normalized();
+    let Some(control) = metadata.control_by_id(name) else {
+        return Err(format!("Control not found on active effect: {name}"));
+    };
+
+    if normalized.sensor.is_empty() {
+        return Err(format!(
+            "Control '{}' requires a non-empty sensor label",
+            control.control_id()
+        ));
+    }
+
+    if !matches!(
+        control.kind,
+        hypercolor_types::effect::ControlKind::Number
+            | hypercolor_types::effect::ControlKind::Boolean
+            | hypercolor_types::effect::ControlKind::Hue
+            | hypercolor_types::effect::ControlKind::Area
+    ) {
+        return Err(format!(
+            "Control '{}' does not support sensor bindings",
+            control.control_id()
+        ));
+    }
+
+    if !normalized.sensor_min.is_finite()
+        || !normalized.sensor_max.is_finite()
+        || !normalized.target_min.is_finite()
+        || !normalized.target_max.is_finite()
+    {
+        return Err(format!(
+            "Control '{}' binding range values must be finite",
+            control.control_id()
+        ));
+    }
+
+    if (normalized.sensor_max - normalized.sensor_min).abs() < f32::EPSILON {
+        return Err(format!(
+            "Control '{}' binding sensor range must not be zero",
+            control.control_id()
+        ));
+    }
+
+    Ok(normalized)
+}
+
+async fn resolve_full_scope_layout(state: &AppState) -> SpatialLayout {
+    let spatial = state.spatial_engine.read().await;
+    spatial.layout().as_ref().clone()
 }
 
 fn validate_transition_request(

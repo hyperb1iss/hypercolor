@@ -6,7 +6,7 @@ use hypercolor_core::input::InteractionData;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::effect::{ControlValue, EffectId};
-use hypercolor_types::scene::{RenderGroup, RenderGroupId};
+use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -72,12 +72,14 @@ fn render_group(id: RenderGroupId, effect_id: EffectId) -> RenderGroup {
         description: None,
         effect_id: Some(effect_id),
         controls: HashMap::new(),
+        control_bindings: HashMap::new(),
         preset_id: None,
         layout: sample_layout(),
         brightness: 1.0,
         enabled: true,
         color: None,
         display_target: None,
+        role: RenderGroupRole::Custom,
     }
 }
 

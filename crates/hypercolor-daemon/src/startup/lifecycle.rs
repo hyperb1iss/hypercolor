@@ -6,9 +6,7 @@ use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 
 use hypercolor_core::device::{UsbHotplugEvent, UsbHotplugMonitor};
-use hypercolor_core::effect::{
-    EffectRegistry, EffectWatchEvent, EffectWatcher, create_renderer_for_metadata_with_mode,
-};
+use hypercolor_core::effect::{EffectRegistry, EffectWatchEvent, EffectWatcher};
 use hypercolor_core::engine::FpsTier;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::effect::{EffectId, EffectMetadata};
@@ -260,8 +258,8 @@ impl DaemonState {
 
     async fn persist_runtime_session_snapshot(&self) {
         let mut snapshot = {
-            let engine = self.effect_engine.lock().await;
-            runtime_state::snapshot_from_engine(&engine)
+            let scene_manager = self.scene_manager.read().await;
+            runtime_state::snapshot_from_scene_manager(&scene_manager)
         };
 
         {
@@ -359,43 +357,37 @@ impl DaemonState {
             anyhow::bail!("saved effect is no longer available: {active_effect_id}");
         };
 
-        let renderer = create_renderer_for_metadata_with_mode(
-            &metadata,
-            crate::api::effect_renderer_acceleration_mode(
-                self.config_manager
-                    .get()
-                    .effect_engine
-                    .render_acceleration_mode,
-            ),
-        )
-        .with_context(|| format!("failed to create renderer for '{}'", metadata.name))?;
-
-        let (controls, migrated_controls) = crate::library::migration::migrate_effect_controls_for_load(
-            &metadata,
-            &snapshot.control_values,
-        );
-        let mut rejected_controls: Vec<String> = Vec::new();
+        let (controls, migrated_controls) =
+            crate::library::migration::migrate_effect_controls_for_load(
+                &metadata,
+                &snapshot.control_values,
+            );
+        let rejected_controls: Vec<String> = Vec::new();
         let mut rejected_bindings: Vec<String> = Vec::new();
+        let active_preset_id = snapshot
+            .active_preset_id
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(|error| anyhow::anyhow!("invalid saved preset id: {error}"))?;
         {
-            let mut engine = self.effect_engine.lock().await;
-            engine
-                .activate(renderer, metadata.clone())
-                .with_context(|| format!("failed to activate '{}'", metadata.name))?;
-
-            for (name, value) in &controls {
-                if let Err(error) = engine.set_control_checked(name, value) {
-                    rejected_controls.push(format!("{name} ({error})"));
-                }
-            }
+            let layout = {
+                let spatial = self.spatial_engine.read().await;
+                spatial.layout().as_ref().clone()
+            };
+            let mut scene_manager = self.scene_manager.write().await;
+            let primary_group = scene_manager
+                .upsert_primary_group(&metadata, controls.clone(), active_preset_id, layout)
+                .with_context(|| format!("failed to restore '{}'", metadata.name))?
+                .clone();
 
             for (name, binding) in &snapshot.control_bindings {
-                if let Err(error) = engine.set_control_binding(name, binding.clone()) {
-                    rejected_bindings.push(format!("{name} ({error})"));
+                if scene_manager
+                    .set_group_control_binding(primary_group.id, name.clone(), binding.clone())
+                    .is_none()
+                {
+                    rejected_bindings.push(format!("{name} (group missing)"));
                 }
-            }
-
-            if let Some(preset_id) = snapshot.active_preset_id {
-                engine.set_active_preset_id(preset_id);
             }
         }
 

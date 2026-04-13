@@ -152,7 +152,7 @@ impl DaemonState {
         );
 
         // ── Scene Manager ───────────────────────────────────────────────
-        let scene_manager = Arc::new(RwLock::new(SceneManager::new()));
+        let scene_manager = Arc::new(RwLock::new(SceneManager::with_default()));
         info!("Scene manager created");
 
         // ── Render Loop ─────────────────────────────────────────────────

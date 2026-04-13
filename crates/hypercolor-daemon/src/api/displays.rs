@@ -1,6 +1,6 @@
 //! Display overlay endpoints and runtime diagnostics — `/api/v1/displays/*`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -276,26 +276,20 @@ pub async fn set_display_face(
     let response = {
         let mut scene_manager = state.scene_manager.write().await;
         let Some(active_scene_id) = scene_manager.active_scene_id().copied() else {
-            return ApiError::conflict(
-                "No active scene to attach a display face to. Activate a scene first.".to_owned(),
-            );
+            return ApiError::internal("No active scene available");
         };
-        let Some(mut active_scene) = scene_manager.get(&active_scene_id).cloned() else {
-            return ApiError::not_found(format!("Active scene not found: {active_scene_id}"));
-        };
-
-        let group = upsert_display_face_group(
-            &mut active_scene,
+        let group = match scene_manager.upsert_display_group(
             device_id,
             tracked.info.name.as_str(),
-            surface,
             &effect,
             body.controls,
-        )
-        .clone();
-        if let Err(error) = scene_manager.update(active_scene) {
-            return ApiError::internal(format!("Failed to update active scene: {error}"));
-        }
+            display_face_layout(device_id, tracked.info.name.as_str(), surface),
+        ) {
+            Ok(group) => group.clone(),
+            Err(error) => {
+                return ApiError::internal(format!("Failed to update active scene: {error}"));
+            }
+        };
 
         DisplayFaceResponse {
             device_id: device_id.to_string(),
@@ -304,6 +298,8 @@ pub async fn set_display_face(
             group,
         }
     };
+
+    crate::api::persist_runtime_session(&state).await;
 
     ApiResponse::ok(response)
 }
@@ -321,30 +317,15 @@ pub async fn delete_display_face(
     let deleted = {
         let mut scene_manager = state.scene_manager.write().await;
         let Some(active_scene_id) = scene_manager.active_scene_id().copied() else {
-            return ApiError::conflict(
-                "No active scene to remove a display face from. Activate a scene first.".to_owned(),
-            );
+            return ApiError::internal("No active scene available");
         };
-        let Some(mut active_scene) = scene_manager.get(&active_scene_id).cloned() else {
-            return ApiError::not_found(format!("Active scene not found: {active_scene_id}"));
-        };
-        let previous_len = active_scene.groups.len();
-        active_scene.groups.retain(|group| {
-            group
-                .display_target
-                .as_ref()
-                .is_none_or(|target| target.device_id != device_id)
-        });
-        if active_scene.groups.len() == previous_len {
-            return ApiError::not_found(format!(
-                "No display face is assigned to device {device_id}"
-            ));
-        }
-        if let Err(error) = scene_manager.update(active_scene) {
+        if let Err(error) = scene_manager.remove_display_group(device_id) {
             return ApiError::internal(format!("Failed to update active scene: {error}"));
         }
         active_scene_id
     };
+
+    crate::api::persist_runtime_session(&state).await;
 
     ApiResponse::ok(serde_json::json!({
         "device_id": device_id.to_string(),
@@ -385,71 +366,41 @@ pub async fn patch_display_face_controls(
 
     let mut rejected: Vec<String> = Vec::new();
     let (response, effect_name) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let Some(active_scene_id) = scene_manager.active_scene_id().copied() else {
-            return ApiError::conflict(
-                "No active scene to update display face controls for. Activate a scene first."
-                    .to_owned(),
-            );
-        };
-        let Some(mut active_scene) = scene_manager.get(&active_scene_id).cloned() else {
-            return ApiError::not_found(format!("Active scene not found: {active_scene_id}"));
-        };
-
-        // Locate the render group bound to this display.
-        let Some(group_index) = active_scene.groups.iter().position(|group| {
-            group
-                .display_target
-                .as_ref()
-                .is_some_and(|target| target.device_id == device_id)
-        }) else {
-            return ApiError::not_found(format!(
-                "No display face is assigned to device {device_id}"
-            ));
-        };
-
-        // Merge (don't replace) so clients can PATCH a single control
-        // without round-tripping the whole map. Raw JSON → ControlValue
-        // conversion uses the same helper as the effects patch path.
-        for (key, value) in &controls_object {
-            let Some(control_value) = super::control_values::json_to_control_value(value) else {
-                rejected.push(format!("{key} (unsupported JSON shape)"));
-                continue;
+        let (active_scene_id, group, effect) =
+            match current_display_face_assignment(state.as_ref(), device_id).await {
+                Ok(response) => {
+                    let scene_id = response.scene_id.clone();
+                    (scene_id, response.group, response.effect)
+                }
+                Err(response) => return response,
             };
-            active_scene.groups[group_index]
-                .controls
-                .insert(key.clone(), control_value);
-        }
-        let group = active_scene.groups[group_index].clone();
-
-        let Some(effect_id) = group.effect_id else {
-            return ApiError::conflict(format!(
-                "Display face group {} has no assigned effect",
-                group.id
-            ));
-        };
-
-        if let Err(error) = scene_manager.update(active_scene) {
-            return ApiError::internal(format!("Failed to update active scene: {error}"));
-        }
-
-        let effect = {
-            let registry = state.effect_registry.read().await;
-            let Some(entry) = registry.get(&effect_id) else {
+        let (normalized_controls, invalid) =
+            crate::api::effects::normalize_control_payload(&effect, &controls_object);
+        rejected.extend(invalid);
+        {
+            let mut scene_manager = state.scene_manager.write().await;
+            if scene_manager
+                .patch_group_controls(group.id, normalized_controls)
+                .is_none()
+            {
                 return ApiError::not_found(format!(
-                    "Assigned display face effect not found: {effect_id}"
+                    "No display face is assigned to device {device_id}"
                 ));
-            };
-            entry.metadata.clone()
-        };
+            }
+        }
         let effect_name = effect.name.clone();
+        let refreshed_group = match current_display_face_assignment(state.as_ref(), device_id).await
+        {
+            Ok(response) => response.group,
+            Err(response) => return response,
+        };
 
         (
             DisplayFaceResponse {
                 device_id: device_id.to_string(),
-                scene_id: active_scene_id.to_string(),
+                scene_id: active_scene_id,
                 effect,
-                group,
+                group: refreshed_group,
             },
             effect_name,
         )
@@ -462,6 +413,8 @@ pub async fn patch_display_face_controls(
             "Rejected one or more display face control updates"
         );
     }
+
+    crate::api::persist_runtime_session(&state).await;
 
     ApiResponse::ok(response)
 }
@@ -789,7 +742,7 @@ async fn resolve_display_device_id_or_response(
 }
 
 async fn current_display_face_assignment(
-    state: &Arc<AppState>,
+    state: &AppState,
     device_id: DeviceId,
 ) -> Result<DisplayFaceResponse, Response> {
     let (scene_id, group) = {
@@ -799,17 +752,7 @@ async fn current_display_face_assignment(
                 "No active scene has a display face assignment".to_owned(),
             ));
         };
-        let Some(group) = active_scene
-            .groups
-            .iter()
-            .find(|group| {
-                group
-                    .display_target
-                    .as_ref()
-                    .is_some_and(|target| target.device_id == device_id)
-            })
-            .cloned()
-        else {
+        let Some(group) = active_scene.display_group_for(device_id).cloned() else {
             return Err(ApiError::not_found(format!(
                 "No display face is assigned to device {device_id}"
             )));
@@ -857,10 +800,15 @@ pub(crate) fn upsert_display_face_group<'a>(
             .is_some_and(|target| target.device_id == device_id)
     }) {
         let group = &mut scene.groups[index];
+        let effect_changed = group.effect_id != Some(effect.id);
         group.effect_id = Some(effect.id);
         group.controls = controls;
+        if effect_changed {
+            group.control_bindings.clear();
+        }
         group.layout = layout;
         group.display_target = Some(DisplayFaceTarget { device_id });
+        group.role = hypercolor_types::scene::RenderGroupRole::Display;
         if group.name.trim().is_empty() {
             group.name = format!("{device_name} Face");
         }
@@ -873,12 +821,14 @@ pub(crate) fn upsert_display_face_group<'a>(
         description: Some(format!("Display face for {device_name}")),
         effect_id: Some(effect.id),
         controls,
+        control_bindings: HashMap::new(),
         preset_id: None,
         layout,
         brightness: 1.0,
         enabled: true,
         color: None,
         display_target: Some(DisplayFaceTarget { device_id }),
+        role: hypercolor_types::scene::RenderGroupRole::Display,
     });
     scene
         .groups

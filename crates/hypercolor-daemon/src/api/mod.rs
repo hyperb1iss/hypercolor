@@ -368,7 +368,7 @@ impl AppState {
         let device_registry = DeviceRegistry::new();
         let effect_registry = Arc::new(RwLock::new(EffectRegistry::default()));
         let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
-        let scene_manager = Arc::new(RwLock::new(SceneManager::new()));
+        let scene_manager = Arc::new(RwLock::new(SceneManager::with_default()));
         let event_bus = Arc::new(HypercolorBus::new());
         let preview_runtime = Arc::new(PreviewRuntime::new(Arc::clone(&event_bus)));
         let render_loop = Arc::new(RwLock::new(RenderLoop::new(60)));
@@ -610,8 +610,8 @@ pub(crate) async fn persist_layout_auto_exclusions(state: &Arc<AppState>) {
 /// Persist the current runtime session snapshot (active effect/preset/controls/layout).
 pub(crate) async fn persist_runtime_session(state: &Arc<AppState>) {
     let mut snapshot = {
-        let engine = state.effect_engine.lock().await;
-        runtime_state::snapshot_from_engine(&engine)
+        let scene_manager = state.scene_manager.read().await;
+        runtime_state::snapshot_from_scene_manager(&scene_manager)
     };
 
     // Capture active layout ID from the spatial engine.

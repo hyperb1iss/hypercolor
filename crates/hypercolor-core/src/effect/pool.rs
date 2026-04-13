@@ -4,7 +4,9 @@ use anyhow::{Result, anyhow};
 
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
-use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
+use hypercolor_types::effect::{
+    ControlDefinition, ControlKind, ControlValue, EffectId, EffectMetadata,
+};
 use hypercolor_types::scene::{RenderGroup, RenderGroupId};
 use hypercolor_types::sensor::SystemSnapshot;
 
@@ -47,18 +49,13 @@ impl EffectPool {
                 .is_none_or(|slot| slot.effect_id != effect_id);
             if needs_rebuild {
                 let metadata = lookup_effect_metadata(registry, effect_id)?;
-                let slot = EffectSlot::build(
-                    metadata,
-                    &group.controls,
-                    group.layout.canvas_width,
-                    group.layout.canvas_height,
-                )?;
+                let slot = EffectSlot::build(metadata, group)?;
                 self.slots.insert(group.id, slot);
                 continue;
             }
 
             if let Some(slot) = self.slots.get_mut(&group.id) {
-                slot.sync_controls(&group.controls);
+                slot.sync_group_state(group);
             }
         }
 
@@ -116,44 +113,51 @@ struct EffectSlot {
     metadata: EffectMetadata,
     renderer: Box<dyn EffectRenderer>,
     controls: HashMap<String, ControlValue>,
+    binding_state: HashMap<String, ActiveBindingState>,
     elapsed_secs: f32,
     frame_number: u64,
 }
 
 impl EffectSlot {
-    fn build(
-        metadata: EffectMetadata,
-        group_controls: &HashMap<String, ControlValue>,
-        canvas_width: u32,
-        canvas_height: u32,
-    ) -> Result<Self> {
+    fn build(metadata: EffectMetadata, group: &RenderGroup) -> Result<Self> {
         let mut renderer = create_renderer_for_metadata(&metadata)?;
-        renderer.init_with_canvas_size(&metadata, canvas_width, canvas_height)?;
+        renderer.init_with_canvas_size(
+            &metadata,
+            group.layout.canvas_width,
+            group.layout.canvas_height,
+        )?;
 
         let mut slot = Self {
             effect_id: metadata.id,
             metadata,
             renderer,
             controls: HashMap::new(),
+            binding_state: HashMap::new(),
             elapsed_secs: 0.0,
             frame_number: 0,
         };
-        slot.sync_controls(group_controls);
+        slot.sync_group_state(group);
         Ok(slot)
     }
 
-    fn sync_controls(&mut self, group_controls: &HashMap<String, ControlValue>) {
+    fn sync_group_state(&mut self, group: &RenderGroup) {
         let mut desired = HashMap::new();
 
-        for definition in &self.metadata.controls {
-            let value = group_controls
+        for definition in &mut self.metadata.controls {
+            let next_binding = group.control_bindings.get(definition.control_id()).cloned();
+            if definition.binding != next_binding {
+                definition.binding = next_binding;
+                self.binding_state.remove(definition.control_id());
+            }
+            let value = group
+                .controls
                 .get(definition.control_id())
                 .cloned()
                 .unwrap_or_else(|| definition.default_value.clone());
             desired.insert(definition.control_id().to_owned(), value);
         }
 
-        for (name, value) in group_controls {
+        for (name, value) in &group.controls {
             desired.entry(name.clone()).or_insert_with(|| value.clone());
         }
 
@@ -182,6 +186,13 @@ impl EffectSlot {
         target: &mut Canvas,
     ) -> Result<()> {
         self.elapsed_secs += delta_secs;
+        apply_sensor_bindings(
+            self.renderer.as_mut(),
+            &self.metadata,
+            &self.controls,
+            &mut self.binding_state,
+            sensors,
+        );
         let input = FrameInput {
             time_secs: self.elapsed_secs,
             delta_secs,
@@ -207,4 +218,117 @@ fn lookup_effect_metadata(
         .get(&effect_id)
         .map(|entry| entry.metadata.clone())
         .ok_or_else(|| anyhow!("effect '{effect_id}' is not registered"))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ActiveBindingState {
+    sensor_value: Option<f32>,
+    control_value: ControlValue,
+}
+
+fn apply_sensor_bindings(
+    renderer: &mut dyn EffectRenderer,
+    metadata: &EffectMetadata,
+    controls: &HashMap<String, ControlValue>,
+    binding_state: &mut HashMap<String, ActiveBindingState>,
+    sensors: &SystemSnapshot,
+) {
+    for control in &metadata.controls {
+        let control_id = control.control_id();
+        let Some(binding) = control.binding.as_ref() else {
+            if binding_state.remove(control_id).is_some()
+                && let Some(base_value) = controls.get(control_id)
+            {
+                renderer.set_control(control_id, base_value);
+            }
+            continue;
+        };
+
+        let Some(base_value) = controls.get(control_id) else {
+            continue;
+        };
+
+        let next_state = sensors
+            .reading(&binding.sensor)
+            .and_then(|reading| {
+                evaluate_sensor_binding(
+                    control,
+                    reading.value,
+                    binding.target_min,
+                    binding.target_max,
+                    binding.sensor_min,
+                    binding.sensor_max,
+                    binding.deadband,
+                    binding.smoothing,
+                    binding_state.get(control_id),
+                )
+                .map(|value| ActiveBindingState {
+                    sensor_value: Some(reading.value),
+                    control_value: value,
+                })
+            })
+            .unwrap_or_else(|| ActiveBindingState {
+                sensor_value: None,
+                control_value: base_value.clone(),
+            });
+
+        if binding_state.get(control_id) != Some(&next_state) {
+            renderer.set_control(control_id, &next_state.control_value);
+        }
+        binding_state.insert(control_id.to_owned(), next_state);
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "binding evaluation works on normalized scalar ranges plus previous state"
+)]
+fn evaluate_sensor_binding(
+    control: &ControlDefinition,
+    sensor_value: f32,
+    target_min: f32,
+    target_max: f32,
+    sensor_min: f32,
+    sensor_max: f32,
+    deadband: f32,
+    smoothing: f32,
+    previous: Option<&ActiveBindingState>,
+) -> Option<ControlValue> {
+    let source_span = sensor_max - sensor_min;
+    if !source_span.is_finite()
+        || source_span.abs() < f32::EPSILON
+        || !target_min.is_finite()
+        || !target_max.is_finite()
+    {
+        return None;
+    }
+
+    if let Some(previous) = previous
+        && let Some(previous_sensor) = previous.sensor_value
+        && (sensor_value - previous_sensor).abs() <= deadband
+    {
+        return Some(previous.control_value.clone());
+    }
+
+    let normalized = ((sensor_value - sensor_min) / source_span).clamp(0.0, 1.0);
+    let mapped = target_min + normalized * (target_max - target_min);
+    let smoothed = previous
+        .and_then(|state| state.control_value.as_f32())
+        .map_or(mapped, |previous_value| {
+            let alpha = 1.0 - smoothing;
+            previous_value + (mapped - previous_value) * alpha
+        });
+
+    match control.kind {
+        ControlKind::Number | ControlKind::Hue | ControlKind::Area => {
+            control.validate_value(&ControlValue::Float(smoothed)).ok()
+        }
+        ControlKind::Boolean => {
+            let midpoint = target_min + (target_max - target_min) * 0.5;
+            control
+                .validate_value(&ControlValue::Boolean(smoothed >= midpoint))
+                .ok()
+        }
+        _ => None,
+    }
 }

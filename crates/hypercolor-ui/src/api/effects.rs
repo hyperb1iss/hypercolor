@@ -43,6 +43,8 @@ pub struct ActiveEffectResponse {
     pub control_values: HashMap<String, ControlValue>,
     #[serde(default)]
     pub active_preset_id: Option<String>,
+    #[serde(default)]
+    pub render_group_id: Option<String>,
 }
 
 /// Detailed effect payload from `GET /api/v1/effects/:id`.
