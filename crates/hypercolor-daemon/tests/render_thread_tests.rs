@@ -2754,7 +2754,7 @@ async fn pipeline_gpu_retained_screen_preview_advances_frame_watch_when_input_st
     reason = "fresh GPU deferred-sampling coverage needs full render-thread setup"
 )]
 #[tokio::test]
-async fn pipeline_gpu_fresh_screen_preview_hold_keeps_frame_watch_quiet() {
+async fn pipeline_gpu_fresh_screen_preview_does_not_publish_stale_colors_while_sampling_defers() {
     let layout = test_layout(vec![
         point_zone("zone_left", "mock:left", 0.25, 0.5),
         point_zone("zone_right", "mock:right", 0.75, 0.5),
@@ -2813,17 +2813,38 @@ async fn pipeline_gpu_fresh_screen_preview_hold_keeps_frame_watch_quiet() {
 
     let initial_frame = frame_rx.borrow().clone();
     let loop_frame_number = wait_for_render_loop_frame_number(&state, 2).await;
+    let current_frame = frame_rx.borrow().clone();
 
+    if current_frame.frame_number == initial_frame.frame_number {
+        assert!(
+            !frame_rx
+                .has_changed()
+                .expect("frame sender should remain connected"),
+            "expected fresh deferred GPU sampling to keep frame watch quiet while render_loop.frame_number advanced to {loop_frame_number}"
+        );
+    }
+
+    let current_left = current_frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_left")
+        .and_then(|zone| zone.colors.first().copied())
+        .expect("current left sample should exist");
+    let current_right = current_frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_right")
+        .and_then(|zone| zone.colors.first().copied())
+        .expect("current right sample should exist");
     assert_eq!(
-        frame_rx.borrow().frame_number,
-        initial_frame.frame_number,
-        "expected fresh deferred GPU sampling to hold the published frame while render_loop.frame_number advanced to {loop_frame_number}"
+        current_left,
+        [255, 0, 0],
+        "expected deferred GPU sampling to avoid publishing a stale left-zone color while render_loop.frame_number advanced to {loop_frame_number}"
     );
-    assert!(
-        !frame_rx
-            .has_changed()
-            .expect("frame sender should remain connected"),
-        "expected fresh deferred GPU sampling to keep frame watch quiet while reusing published zones"
+    assert_eq!(
+        current_right,
+        [0, 255, 0],
+        "expected deferred GPU sampling to avoid publishing a stale right-zone color while render_loop.frame_number advanced to {loop_frame_number}"
     );
 
     {
@@ -2893,6 +2914,8 @@ async fn pipeline_gpu_fresh_screen_preview_publishes_latest_colors_after_deferre
 
     let initial_frame = frame_rx.borrow().clone();
     wait_for_render_loop_frame_number(&state, 3).await;
+    let expected_left = [0, 255, 255];
+    let expected_right = [255, 0, 255];
 
     let latest_frame = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -2906,8 +2929,14 @@ async fn pipeline_gpu_fresh_screen_preview_publishes_latest_colors_after_deferre
                 .iter()
                 .find(|zone| zone.zone_id == "zone_left")
                 .and_then(|zone| zone.colors.first().copied());
+            let right = frame
+                .zones
+                .iter()
+                .find(|zone| zone.zone_id == "zone_right")
+                .and_then(|zone| zone.colors.first().copied());
             if frame.frame_number > initial_frame.frame_number
-                && left.is_some_and(|color| color != [255, 0, 0])
+                && left == Some(expected_left)
+                && right == Some(expected_right)
             {
                 break frame;
             }
@@ -2926,7 +2955,7 @@ async fn pipeline_gpu_fresh_screen_preview_publishes_latest_colors_after_deferre
             .unwrap_or_else(|_| "unavailable".to_owned());
         let last_frame = frame_rx.borrow().clone();
         panic!(
-            "expected a deferred GPU sample color change within 2 seconds: render_loop.frame_number={} last_watch_frame_number={} last_watch_zone_count={} performance={}",
+            "expected deferred GPU sampling to publish the newest screen colors within 2 seconds: render_loop.frame_number={} last_watch_frame_number={} last_watch_zone_count={} performance={}",
             loop_frame_number,
             last_frame.frame_number,
             last_frame.zones.len(),

@@ -1890,18 +1890,12 @@ fn upload_frame_into_cached_texture(
 
 fn cached_source_upload(frame: &ProducerFrame) -> Option<CachedSourceUpload> {
     match frame {
-        ProducerFrame::Surface(surface) => {
-            if surface.generation() == 0 {
-                return None;
-            }
-
-            Some(CachedSourceUpload {
-                storage: surface.storage_identity(),
-                generation: surface.generation(),
-                width: surface.width(),
-                height: surface.height(),
-            })
-        }
+        ProducerFrame::Surface(surface) => Some(CachedSourceUpload {
+            storage: surface.storage_identity(),
+            generation: surface.generation(),
+            width: surface.width(),
+            height: surface.height(),
+        }),
         ProducerFrame::Canvas(canvas) if canvas.is_shared() => Some(CachedSourceUpload {
             storage: canvas.storage_identity(),
             generation: 0,
