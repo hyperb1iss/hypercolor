@@ -91,6 +91,8 @@ async fn get_effects_enriches_summaries_with_detail_controls() {
                     labels: Vec::new(),
                     group: None,
                     tooltip: None,
+                    aspect_lock: None,
+                    preview_source: None,
                     binding: Some(ControlBinding {
                         sensor: "cpu_temp".to_string(),
                         sensor_min: 30.0,

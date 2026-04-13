@@ -125,6 +125,8 @@ function newApiToControls(def: NewApiDef): ControlDef[] {
         if (ctrl.spec.meta.max != null) base.max = ctrl.spec.meta.max as number
         if (ctrl.spec.meta.step != null) base.step = ctrl.spec.meta.step as number
         if (ctrl.spec.meta.values) base.values = ctrl.spec.meta.values as string[]
+        if (ctrl.spec.meta.aspectLock != null) base.aspectLock = ctrl.spec.meta.aspectLock as number
+        if (ctrl.spec.meta.preview) base.preview = ctrl.spec.meta.preview as 'screen' | 'web' | 'canvas'
         return base
     })
 }

@@ -402,6 +402,7 @@ fn map_control_type(control_type: &ApiControlType) -> String {
         ApiControlType::GradientEditor => "gradient",
         ApiControlType::Dropdown => "dropdown",
         ApiControlType::TextInput => "text",
+        ApiControlType::Rect => "rect",
     }
     .to_string()
 }
@@ -416,6 +417,10 @@ fn map_control_value(value: &ApiControlValue) -> ControlValue {
         ApiControlValue::Gradient(stops) => {
             ControlValue::Text(format!("{} gradient stops", stops.len()))
         }
+        ApiControlValue::Rect(rect) => ControlValue::Text(format!(
+            "{:.2},{:.2} {:.2}×{:.2}",
+            rect.x, rect.y, rect.width, rect.height,
+        )),
     }
 }
 

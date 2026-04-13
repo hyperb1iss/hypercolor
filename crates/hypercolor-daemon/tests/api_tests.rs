@@ -922,6 +922,8 @@ async fn insert_test_effect(state: &Arc<AppState>, name: &str) {
             labels: Vec::new(),
             group: Some("General".to_owned()),
             tooltip: Some("Animation speed".to_owned()),
+            aspect_lock: None,
+            preview_source: None,
             binding: None,
         }],
         presets: Vec::new(),

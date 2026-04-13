@@ -1097,7 +1097,7 @@ mod tests {
         let mut controls = HashMap::new();
         controls.insert("speed".to_owned(), ControlValue::Float(0.5));
 
-        runtime.push_frame_scripts(&mut scripts, &audio, &sensors, &controls, true);
+        runtime.push_frame_scripts(&mut scripts, &audio, None, &sensors, &controls, true, false);
         assert_eq!(
             scripts
                 .iter()
@@ -1112,7 +1112,7 @@ mod tests {
         );
 
         scripts.clear();
-        runtime.push_frame_scripts(&mut scripts, &audio, &sensors, &controls, true);
+        runtime.push_frame_scripts(&mut scripts, &audio, None, &sensors, &controls, true, false);
         assert!(
             scripts
                 .iter()
@@ -1121,7 +1121,7 @@ mod tests {
 
         controls.insert("speed".to_owned(), ControlValue::Float(0.8));
         scripts.clear();
-        runtime.push_frame_scripts(&mut scripts, &audio, &sensors, &controls, true);
+        runtime.push_frame_scripts(&mut scripts, &audio, None, &sensors, &controls, true, false);
         assert_eq!(
             scripts
                 .iter()
@@ -1138,7 +1138,7 @@ mod tests {
         let sensors = SystemSnapshot::empty();
         let mut scripts = Vec::new();
 
-        runtime.push_frame_scripts(&mut scripts, &audio, &sensors, &HashMap::new(), false);
+        runtime.push_frame_scripts(&mut scripts, &audio, None, &sensors, &HashMap::new(), false, false);
         assert!(
             scripts
                 .iter()

@@ -8,9 +8,10 @@
 use std::collections::HashSet;
 
 use hypercolor_types::spatial::SpatialLayout;
+use serde::{Deserialize, Serialize};
 
 /// Current depth within the compound hierarchy.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub(crate) enum CompoundDepth {
     /// Top level — clicking a zone selects all zones from its device.
     #[default]

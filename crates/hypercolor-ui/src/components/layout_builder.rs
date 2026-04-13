@@ -17,6 +17,7 @@ use crate::components::layout_zone_properties::LayoutZoneProperties;
 use crate::components::page_header::PageHeader;
 use crate::icons::*;
 use crate::layout_geometry;
+use crate::layout_page_state::{LayoutPageState, PerLayoutState};
 use crate::toasts;
 use hypercolor_types::spatial::SpatialLayout;
 
@@ -111,6 +112,12 @@ pub(crate) struct LayoutEditorContext {
 pub fn LayoutBuilder() -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
 
+    // Load any UI state persisted from a previous visit so the page
+    // comes back exactly the way the user left it.
+    let initial_state = LayoutPageState::load();
+    let remembered_layout_id = StoredValue::new(initial_state.selected_layout_id.clone());
+    let per_layout_map = StoredValue::new(initial_state.per_layout);
+
     let (selected_layout_id, set_selected_layout_id) = signal(None::<String>);
     let (layout, set_layout) = signal(None::<SpatialLayout>);
     let (saved_layout, set_saved_layout) = signal(None::<SpatialLayout>);
@@ -123,7 +130,7 @@ pub fn LayoutBuilder() -> impl IntoView {
     let (renaming, set_renaming) = signal(false);
     let (rename_value, set_rename_value) = signal(String::new());
     let (initialized, set_initialized) = signal(false);
-    let (keep_aspect_ratio, set_keep_aspect_ratio) = signal(true);
+    let (keep_aspect_ratio, set_keep_aspect_ratio) = signal(initial_state.keep_aspect_ratio);
     let (hidden_zones, set_hidden_zones) = signal(std::collections::HashSet::<String>::new());
 
     let (removed_zone_cache, set_removed_zone_cache) =
@@ -271,6 +278,14 @@ pub fn LayoutBuilder() -> impl IntoView {
         };
         set_initialized.set(true);
 
+        // Prefer the layout the user was editing last, if it still exists.
+        if let Some(id) = remembered_layout_id.get_value()
+            && layouts.iter().any(|entry| entry.id == id)
+        {
+            set_selected_layout_id.set(Some(id));
+            return;
+        }
+
         if layouts.is_empty() {
             // No layouts exist — create a default one
             let layouts_resource = ctx.layouts_resource;
@@ -301,14 +316,34 @@ pub fn LayoutBuilder() -> impl IntoView {
         }
     });
 
-    // Load layout when selection changes
-    Effect::new(move |_| {
+    // Load layout when selection changes. The `prev` param tracks the
+    // outgoing layout id so we can flush its current zone/hidden/depth
+    // state before loading the new selection — this avoids dropping
+    // in-flight edits during rapid layout switches.
+    Effect::new(move |prev_id: Option<Option<String>>| {
         let id = selected_layout_id.get();
-        if let Some(id) = id {
+
+        if let Some(Some(prev)) = prev_id.as_ref()
+            && Some(prev) != id.as_ref()
+            && initialized.get_untracked()
+        {
+            per_layout_map.update_value(|map| {
+                map.insert(
+                    prev.clone(),
+                    PerLayoutState {
+                        selected_zone_ids: selected_zone_ids.get_untracked(),
+                        hidden_zones: hidden_zones.get_untracked(),
+                        compound_depth: compound_depth.get_untracked(),
+                    },
+                );
+            });
+        }
+
+        if let Some(fetch_id) = id.clone() {
             let set_layout = set_layout;
             let set_saved = set_saved_layout;
             leptos::task::spawn_local(async move {
-                if let Ok(l) = api::fetch_layout(&id).await {
+                if let Ok(l) = api::fetch_layout(&fetch_id).await {
                     let mut repaired_layout = l.clone();
                     let repaired_legacy_lcd =
                         layout_geometry::repair_legacy_lcd_defaults(&mut repaired_layout);
@@ -326,8 +361,66 @@ pub fn LayoutBuilder() -> impl IntoView {
             set_layout.set(None);
             set_saved_layout.set(None);
         }
-        set_selected_zone_ids.set(std::collections::HashSet::new());
-        set_compound_depth.set(crate::compound_selection::CompoundDepth::Root);
+
+        // Restore (or clear) per-layout UI state for this selection.
+        let loaded = id
+            .as_deref()
+            .and_then(|id| per_layout_map.with_value(|map| map.get(id).cloned()))
+            .unwrap_or_default();
+        set_selected_zone_ids.set(loaded.selected_zone_ids);
+        set_hidden_zones.set(loaded.hidden_zones);
+        set_compound_depth.set(loaded.compound_depth);
+
+        id
+    });
+
+    // Persist selected layout + global UI prefs whenever they change.
+    // Gated on `initialized` so we don't stomp on the remembered id
+    // before the init effect has had a chance to restore it.
+    Effect::new(move |_| {
+        let layout_id = selected_layout_id.get();
+        let keep_ar = keep_aspect_ratio.get();
+        if !initialized.get_untracked() {
+            return;
+        }
+        LayoutPageState {
+            selected_layout_id: layout_id,
+            keep_aspect_ratio: keep_ar,
+            per_layout: per_layout_map.get_value(),
+        }
+        .save();
+    });
+
+    // Persist per-layout UI state (selection, hidden zones, compound
+    // depth) under the current layout's id. `selected_layout_id` is
+    // read untracked so this effect doesn't re-fire on layout changes —
+    // that path flushes state via the `prev_id` branch above.
+    Effect::new(move |_| {
+        let zones = selected_zone_ids.get();
+        let hidden = hidden_zones.get();
+        let depth = compound_depth.get();
+        if !initialized.get_untracked() {
+            return;
+        }
+        let Some(layout_id) = selected_layout_id.get_untracked() else {
+            return;
+        };
+        per_layout_map.update_value(|map| {
+            map.insert(
+                layout_id,
+                PerLayoutState {
+                    selected_zone_ids: zones,
+                    hidden_zones: hidden,
+                    compound_depth: depth,
+                },
+            );
+        });
+        LayoutPageState {
+            selected_layout_id: selected_layout_id.get_untracked(),
+            keep_aspect_ratio: keep_aspect_ratio.get_untracked(),
+            per_layout: per_layout_map.get_value(),
+        }
+        .save();
     });
 
     // Push live preview to spatial engine whenever the layout changes (debounced).

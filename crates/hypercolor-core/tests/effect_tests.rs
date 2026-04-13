@@ -136,6 +136,8 @@ fn sample_controlled_metadata() -> EffectMetadata {
             labels: Vec::new(),
             group: Some("General".to_owned()),
             tooltip: None,
+            aspect_lock: None,
+            preview_source: None,
             binding: None,
         },
         ControlDefinition {
@@ -150,6 +152,8 @@ fn sample_controlled_metadata() -> EffectMetadata {
             labels: vec!["normal".to_owned(), "sparkle".to_owned()],
             group: Some("General".to_owned()),
             tooltip: None,
+            aspect_lock: None,
+            preview_source: None,
             binding: None,
         },
     ];
