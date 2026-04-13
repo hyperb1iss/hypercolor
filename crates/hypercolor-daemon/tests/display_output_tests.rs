@@ -1068,7 +1068,7 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
 }
 
 #[tokio::test]
-async fn automatic_display_output_prefers_direct_face_canvas_over_global_preview() {
+async fn display_group_canvas_routes_to_device_worker() {
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));

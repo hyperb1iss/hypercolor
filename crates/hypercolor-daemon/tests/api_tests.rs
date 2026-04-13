@@ -1684,6 +1684,86 @@ async fn get_active_effect_returns_idle_payload_when_none() {
 }
 
 #[tokio::test]
+async fn apply_effect_upserts_primary_group() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let manager = state.scene_manager.read().await;
+    let primary = manager
+        .active_scene()
+        .and_then(Scene::primary_group)
+        .expect("active scene should contain a primary group");
+    assert_eq!(primary.role, RenderGroupRole::Primary);
+    assert!(primary.effect_id.is_some());
+}
+
+#[tokio::test]
+async fn get_active_effect_returns_primary_group_info() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let primary_group_id = {
+        let manager = state.scene_manager.read().await;
+        manager
+            .active_scene()
+            .and_then(Scene::primary_group)
+            .map(|group| (group.id.to_string(), group.effect_id))
+            .expect("active scene should expose a primary group")
+    };
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(
+        json["data"]["id"],
+        primary_group_id
+            .1
+            .expect("primary group should have an effect id")
+            .to_string()
+    );
+    assert_eq!(json["data"]["name"], "solid_color");
+    assert_eq!(json["data"]["state"], "running");
+    assert_eq!(json["data"]["render_group_id"], primary_group_id.0);
+}
+
+#[tokio::test]
 async fn stop_effect_returns_not_found_when_none() {
     let app = test_app();
 
@@ -1699,6 +1779,47 @@ async fn stop_effect_returns_not_found_when_none() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn stop_current_clears_primary_effect_id_but_keeps_scene() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let stop_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/stop")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(stop_response.status(), StatusCode::OK);
+
+    let manager = state.scene_manager.read().await;
+    let active_scene = manager.active_scene().expect("active scene should remain");
+    assert_eq!(active_scene.id, SceneId::DEFAULT);
+    let primary = active_scene
+        .primary_group()
+        .expect("primary group shell should remain after stop");
+    assert!(primary.effect_id.is_none());
 }
 
 #[tokio::test]
@@ -1721,7 +1842,7 @@ async fn update_current_controls_requires_active_effect() {
 }
 
 #[tokio::test]
-async fn update_current_controls_updates_active_effect() {
+async fn patch_controls_updates_primary_group_controls() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -1767,6 +1888,57 @@ async fn update_current_controls_updates_active_effect() {
     assert_eq!(active_response.status(), StatusCode::OK);
     let active_json = body_json(active_response).await;
     assert_eq!(active_json["data"]["control_values"]["speed"]["float"], 7.5);
+}
+
+#[tokio::test]
+async fn apply_effect_swap_replaces_primary_effect_id() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "Aurora").await;
+    insert_test_effect(&state, "Sunset").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let first_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/Aurora/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(first_response.status(), StatusCode::OK);
+    let first_primary_effect_id = {
+        let manager = state.scene_manager.read().await;
+        manager
+            .active_scene()
+            .and_then(Scene::primary_group)
+            .and_then(|group| group.effect_id)
+            .expect("first effect apply should populate the primary group")
+    };
+
+    let second_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/Sunset/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(second_response.status(), StatusCode::OK);
+
+    let manager = state.scene_manager.read().await;
+    let active_scene = manager.active_scene().expect("active scene should remain");
+    assert_eq!(active_scene.groups.len(), 1);
+    let primary = active_scene
+        .primary_group()
+        .expect("primary group should exist after effect swap");
+    assert_ne!(primary.effect_id, Some(first_primary_effect_id));
+    assert!(primary.effect_id.is_some());
 }
 
 #[tokio::test]
@@ -3097,7 +3269,7 @@ async fn list_scenes_excludes_default_scene() {
 }
 
 #[tokio::test]
-async fn delete_default_scene_returns_conflict() {
+async fn delete_default_returns_409_or_422() {
     let state = Arc::new(isolated_state());
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -3467,7 +3639,7 @@ async fn profile_crud_lifecycle() {
 }
 
 #[tokio::test]
-async fn app_state_loads_and_rewrites_legacy_profile_snapshots() {
+async fn legacy_profile_migrates_to_new_shape() {
     let _lock = DATA_DIR_LOCK
         .lock()
         .expect("data dir lock should not be poisoned");
@@ -4357,7 +4529,7 @@ async fn apply_effect_rejects_display_face_effects() {
 }
 
 #[tokio::test]
-async fn apply_effect_mutates_named_active_scene_not_default_scene() {
+async fn apply_effect_mutates_active_scene_not_default_if_named_active() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "Aurora").await;
     insert_test_effect(&state, "Sunset").await;
@@ -4473,6 +4645,42 @@ async fn apply_effect_mutates_named_active_scene_not_default_scene() {
         active_default_json["data"]["render_group_id"],
         named_primary_group_id
     );
+}
+
+#[tokio::test]
+async fn activating_named_scene_then_applying_effect_mutates_named_scene() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "Sunset").await;
+    let app = test_app_with_state(Arc::clone(&state));
+    let named_scene_id = activate_empty_test_scene(&state, "Focus").await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/Sunset/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let manager = state.scene_manager.read().await;
+    let default_scene = manager
+        .get(&SceneId::DEFAULT)
+        .expect("default scene should still exist");
+    assert!(
+        default_scene.primary_group().is_none(),
+        "default scene should not be mutated while a named scene is active"
+    );
+
+    let active_scene = manager.active_scene().expect("named scene should stay active");
+    assert_eq!(active_scene.id, named_scene_id);
+    assert!(active_scene
+        .primary_group()
+        .and_then(|group| group.effect_id)
+        .is_some());
 }
 
 // ── Error Envelope Format ────────────────────────────────────────────────
@@ -4802,6 +5010,125 @@ async fn list_displays_only_returns_display_capable_devices() {
 }
 
 #[tokio::test]
+async fn delete_face_idempotent_when_no_group_present() {
+    let state = Arc::new(isolated_state());
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    for _ in 0..2 {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/v1/displays/{display_id}/face"))
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["data"]["device_id"], display_id.to_string());
+        assert_eq!(json["data"]["deleted"], true);
+    }
+}
+
+#[tokio::test]
+async fn get_face_returns_null_when_no_display_group() {
+    let state = Arc::new(isolated_state());
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert!(json["data"].is_null());
+}
+
+#[tokio::test]
+async fn patch_face_controls_updates_display_group() {
+    let state = Arc::new(isolated_state());
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let mut face = test_display_face_effect_metadata("System Monitor");
+    face.controls = vec![ControlDefinition {
+        id: "label".to_owned(),
+        name: "Label".to_owned(),
+        kind: ControlKind::Text,
+        control_type: ControlType::TextInput,
+        default_value: ControlValue::Text("cpu".to_owned()),
+        min: None,
+        max: None,
+        step: None,
+        labels: Vec::new(),
+        group: Some("General".to_owned()),
+        tooltip: None,
+        aspect_lock: None,
+        preview_source: None,
+        binding: None,
+    }];
+    {
+        let mut registry = state.effect_registry.write().await;
+        let _ = registry.register(EffectEntry {
+            metadata: face.clone(),
+            source_path: format!("/tmp/{}.html", face.name).into(),
+            modified: SystemTime::now(),
+            state: EffectState::Loading,
+        });
+    }
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let assign_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"effect_id":"{}"}}"#, face.id)))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(assign_response.status(), StatusCode::OK);
+
+    let patch_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/displays/{display_id}/face/controls"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"label":"gpu"}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(patch_response.status(), StatusCode::OK);
+    let patch_json = body_json(patch_response).await;
+    assert_eq!(patch_json["data"]["group"]["controls"]["label"]["text"], "gpu");
+
+    let manager = state.scene_manager.read().await;
+    let display_group = manager
+        .active_scene()
+        .and_then(|scene| scene.display_group_for(display_id))
+        .expect("display face should remain assigned");
+    assert_eq!(
+        display_group.controls.get("label"),
+        Some(&ControlValue::Text("gpu".to_owned()))
+    );
+}
+
+#[tokio::test]
 async fn display_face_endpoints_assign_get_and_delete_face() {
     let state = Arc::new(isolated_state());
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
@@ -4899,7 +5226,7 @@ async fn display_face_endpoints_assign_get_and_delete_face() {
 }
 
 #[tokio::test]
-async fn display_face_survives_primary_effect_swap() {
+async fn face_survives_effect_swap() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "Aurora").await;
     insert_test_effect(&state, "Sunset").await;
@@ -4989,7 +5316,7 @@ async fn display_face_survives_primary_effect_swap() {
 }
 
 #[tokio::test]
-async fn display_face_endpoint_assigns_to_default_scene_from_cold_start() {
+async fn put_face_from_cold_start_succeeds_no_409() {
     let state = Arc::new(isolated_state());
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
     let face = insert_test_display_face_effect(&state, "System Monitor").await;

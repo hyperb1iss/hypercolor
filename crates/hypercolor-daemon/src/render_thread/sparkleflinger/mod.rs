@@ -348,6 +348,14 @@ impl SparkleFlinger {
             SparkleFlingerBackend::Gpu { gpu, .. } => gpu.submit_pending_preview_work(),
         }
     }
+
+    pub(crate) fn take_last_sample_readback_wait_blocked(&mut self) -> bool {
+        match &mut self.backend {
+            SparkleFlingerBackend::Cpu(_) => false,
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.take_last_sample_readback_wait_blocked(),
+        }
+    }
 }
 
 #[cfg(feature = "wgpu")]

@@ -645,6 +645,44 @@ async fn wait_for_next_frame(
     .expect("expected the next frame within 2 seconds")
 }
 
+async fn wait_for_frame_where<F>(rx: &mut watch::Receiver<FrameData>, predicate: F) -> FrameData
+where
+    F: Fn(&FrameData) -> bool,
+{
+    let mut last_frame = None;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            rx.changed()
+                .await
+                .expect("frame sender should remain connected");
+            let frame = rx.borrow().clone();
+            last_frame = Some(frame.clone());
+            if predicate(&frame) {
+                break frame;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        let details = last_frame.as_ref().map_or_else(
+            || "no frame observed".to_owned(),
+            |frame| {
+                let zone_ids = frame
+                    .zones
+                    .iter()
+                    .map(|zone| zone.zone_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "last frame_number={} zone_ids=[{}]",
+                    frame.frame_number, zone_ids
+                )
+            },
+        );
+        panic!("expected a matching frame within 2 seconds: {details}");
+    })
+}
+
 async fn wait_for_next_canvas_frame(
     rx: &mut watch::Receiver<CanvasFrame>,
     previous_frame_number: u32,
@@ -1248,10 +1286,11 @@ async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
 
     let mut rt = RenderThread::spawn(state.clone());
 
-    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
-        .await
-        .expect("expected grouped frame within 2 seconds")
-        .expect("frame sender should remain connected");
+    let frame = wait_for_frame_where(&mut frame_rx, |frame| {
+        frame.zones.iter().any(|zone| zone.zone_id == "zone_left")
+            && frame.zones.iter().any(|zone| zone.zone_id == "zone_right")
+    })
+    .await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -1259,7 +1298,6 @@ async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
     }
     rt.shutdown().await.expect("shutdown");
 
-    let frame = frame_rx.borrow().clone();
     let left_zone = frame
         .zones
         .iter()
@@ -1420,7 +1458,7 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
 }
 
 #[tokio::test]
-async fn render_thread_gates_audio_capture_to_audio_reactive_scene_groups() {
+async fn audio_capture_enabled_when_any_active_group_is_reactive() {
     let state = make_render_state(
         idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
@@ -1738,7 +1776,7 @@ async fn pipeline_publishes_canvas_data_via_preview_runtime() {
 }
 
 #[tokio::test]
-async fn pipeline_renders_active_effect_to_devices() {
+async fn effect_engine_removal_does_not_break_single_group_fast_path() {
     // Set up a mock device.
     let device_id = DeviceId::new();
     let mock_config = MockDeviceConfig {
@@ -1805,7 +1843,7 @@ async fn pipeline_renders_active_effect_to_devices() {
 }
 
 #[tokio::test]
-async fn pipeline_publishes_slot_backed_canvas_for_active_effects() {
+async fn primary_group_canvas_published_to_global_channel() {
     let state = make_render_state(
         active_builtin_effect("solid_color", solid_color_controls(255, 0, 0)),
         SpatialEngine::new(test_layout(Vec::new())),

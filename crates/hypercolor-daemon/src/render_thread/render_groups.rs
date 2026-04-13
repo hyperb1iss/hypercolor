@@ -732,4 +732,93 @@ mod tests {
         );
         assert_eq!(preview_surface.generation(), group_surface.generation());
     }
+
+    #[test]
+    fn multiple_custom_groups_render_distinct_zone_colors() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let registry = builtin_registry();
+        let solid_id = builtin_effect_id(&registry, "solid_color");
+        let groups = vec![
+            RenderGroup {
+                id: RenderGroupId::new(),
+                name: "Left".into(),
+                description: None,
+                effect_id: Some(solid_id),
+                controls: HashMap::from([(
+                    "color".into(),
+                    ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
+                )]),
+                control_bindings: HashMap::new(),
+                preset_id: None,
+                layout: SpatialLayout {
+                    id: "left-group".into(),
+                    name: "Left Group".into(),
+                    description: None,
+                    canvas_width: 4,
+                    canvas_height: 4,
+                    zones: vec![point_zone("zone_left")],
+                    default_sampling_mode: SamplingMode::Bilinear,
+                    default_edge_behavior: EdgeBehavior::Clamp,
+                    spaces: None,
+                    version: 1,
+                },
+                brightness: 1.0,
+                enabled: true,
+                color: None,
+                display_target: None,
+                role: RenderGroupRole::Custom,
+            },
+            RenderGroup {
+                id: RenderGroupId::new(),
+                name: "Right".into(),
+                description: None,
+                effect_id: Some(solid_id),
+                controls: HashMap::from([(
+                    "color".into(),
+                    ControlValue::Color([0.0, 0.0, 1.0, 1.0]),
+                )]),
+                control_bindings: HashMap::new(),
+                preset_id: None,
+                layout: SpatialLayout {
+                    id: "right-group".into(),
+                    name: "Right Group".into(),
+                    description: None,
+                    canvas_width: 4,
+                    canvas_height: 4,
+                    zones: vec![point_zone("zone_right")],
+                    default_sampling_mode: SamplingMode::Bilinear,
+                    default_edge_behavior: EdgeBehavior::Clamp,
+                    spaces: None,
+                    version: 1,
+                },
+                brightness: 1.0,
+                enabled: true,
+                color: None,
+                display_target: None,
+                role: RenderGroupRole::Custom,
+            },
+        ];
+        let mut zones = Vec::new();
+
+        let result = runtime
+            .render_scene(
+                &groups,
+                1,
+                &registry,
+                1.0 / 60.0,
+                &AudioData::silence(),
+                &InteractionData::default(),
+                None,
+                &SystemSnapshot::empty(),
+                &mut zones,
+            )
+            .expect("multiple groups should render");
+
+        assert_eq!(result.logical_layer_count, 2);
+        assert_eq!(zones.len(), 2);
+        assert_eq!(zones[0].zone_id, "zone_left");
+        assert_eq!(zones[0].colors.first().copied(), Some([255, 0, 0]));
+        assert_eq!(zones[1].zone_id, "zone_right");
+        assert_eq!(zones[1].colors.first().copied(), Some([0, 0, 255]));
+    }
 }

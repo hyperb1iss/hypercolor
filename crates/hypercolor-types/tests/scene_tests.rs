@@ -255,6 +255,104 @@ fn scene_validate_group_exclusivity_rejects_duplicates() {
     assert!(conflicts[0].contains("shared:zone"));
 }
 
+#[test]
+fn scene_validate_rejects_two_primary_groups() {
+    let scene = Scene {
+        groups: vec![
+            RenderGroup {
+                role: RenderGroupRole::Primary,
+                ..sample_group("Desk", "desk:main", EffectId::from(Uuid::now_v7()))
+            },
+            RenderGroup {
+                role: RenderGroupRole::Primary,
+                ..sample_group("Room", "room:main", EffectId::from(Uuid::now_v7()))
+            },
+        ],
+        ..sample_scene()
+    };
+
+    let errors = scene
+        .validate()
+        .expect_err("multiple primary groups should be rejected");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("more than one primary")),
+        "expected primary-group validation error, got {errors:?}"
+    );
+}
+
+#[test]
+fn scene_validate_rejects_display_without_target() {
+    let scene = Scene {
+        groups: vec![RenderGroup {
+            role: RenderGroupRole::Display,
+            ..sample_group("Display", "desk:display", EffectId::from(Uuid::now_v7()))
+        }],
+        ..sample_scene()
+    };
+
+    let errors = scene
+        .validate()
+        .expect_err("display groups without a target should be rejected");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("missing a display target")),
+        "expected display-target validation error, got {errors:?}"
+    );
+}
+
+#[test]
+fn scene_validate_rejects_duplicate_display_device_ids() {
+    let device_id = DeviceId::new();
+    let scene = Scene {
+        groups: vec![
+            RenderGroup {
+                role: RenderGroupRole::Display,
+                display_target: Some(DisplayFaceTarget { device_id }),
+                ..sample_group("Display A", "desk:display_a", EffectId::from(Uuid::now_v7()))
+            },
+            RenderGroup {
+                role: RenderGroupRole::Display,
+                display_target: Some(DisplayFaceTarget { device_id }),
+                ..sample_group("Display B", "desk:display_b", EffectId::from(Uuid::now_v7()))
+            },
+        ],
+        ..sample_scene()
+    };
+
+    let errors = scene
+        .validate()
+        .expect_err("duplicate display devices should be rejected");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("duplicate display render groups")),
+        "expected duplicate-display validation error, got {errors:?}"
+    );
+}
+
+#[test]
+fn legacy_scenes_with_no_role_field_deserialize_with_custom_default() {
+    let mut value = serde_json::to_value(Scene {
+        groups: vec![sample_group(
+            "Desk",
+            "desk:main",
+            EffectId::from(Uuid::now_v7()),
+        )],
+        ..sample_scene()
+    })
+    .expect("scene should serialize");
+    value["groups"][0]
+        .as_object_mut()
+        .expect("group should serialize as an object")
+        .remove("role");
+
+    let restored: Scene = serde_json::from_value(value).expect("legacy scene should deserialize");
+    assert_eq!(restored.groups[0].role, RenderGroupRole::Custom);
+}
+
 // ── SceneScope ───────────────────────────────────────────────────────────
 
 #[test]

@@ -240,7 +240,7 @@ async fn daemon_double_shutdown_is_safe() {
 }
 
 #[tokio::test]
-async fn daemon_start_restores_last_runtime_session() {
+async fn legacy_runtime_state_migrates_default_scene_groups() {
     let _guard = TestDataDirGuard::new().await;
     let mut config = default_config();
     config.daemon.start_profile = "last".to_owned();

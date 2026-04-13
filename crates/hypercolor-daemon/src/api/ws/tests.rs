@@ -167,6 +167,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
             retained_screen: false,
             composition_bypassed: false,
             gpu_zone_sampling: true,
+            gpu_sample_wait_blocked: true,
             cpu_readback_skipped: true,
             compositor_backend: CompositorBackendKind::Gpu,
             logical_layer_count: 2,
@@ -204,6 +205,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["timeline"]["frame_token"], 77);
     assert_eq!(json["timeline"]["compositor_backend"], "gpu");
     assert_eq!(json["timeline"]["gpu_zone_sampling"], true);
+    assert_eq!(json["timeline"]["gpu_sample_wait_blocked"], true);
     assert_eq!(json["timeline"]["cpu_readback_skipped"], true);
     assert_eq!(json["timeline"]["budget_ms"], 16.67);
     assert_eq!(json["timeline"]["wake_late_ms"], 0.22);

@@ -501,7 +501,7 @@ async fn daemon_state_scene_manager_starts_with_default_scene() {
 }
 
 #[tokio::test]
-async fn daemon_state_loads_named_scenes_from_store() {
+async fn named_scenes_persist_across_restart() {
     let guard = TestDataDirGuard::new().await;
     let mut store = SceneStore::new(guard.scenes_path());
     let named_scene = hypercolor_core::scene::make_scene("Movie Night");
@@ -670,7 +670,7 @@ async fn daemon_initialize_inserts_missing_default_layout_into_store() {
 }
 
 #[tokio::test]
-async fn daemon_shutdown_persists_active_runtime_session() {
+async fn runtime_state_captures_default_scene_groups() {
     let guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
@@ -813,6 +813,79 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
         .get(&SceneId::DEFAULT)
         .expect("default scene should exist");
     assert_eq!(default_scene.groups, vec![default_group]);
+    drop(scenes);
+
+    state.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
+async fn default_scene_contents_restore_on_restart() {
+    let guard = TestDataDirGuard::new().await;
+    runtime_state::save(
+        &guard.runtime_state_path(),
+        &runtime_state::RuntimeSessionSnapshot {
+            active_scene_id: Some(SceneId::DEFAULT.to_string()),
+            default_scene_groups: vec![RenderGroup {
+                id: RenderGroupId::new(),
+                name: "Saved Default Group".to_owned(),
+                description: Some("Restored from runtime snapshot".to_owned()),
+                effect_id: None,
+                controls: std::collections::HashMap::from([(
+                    "speed".to_owned(),
+                    hypercolor_types::effect::ControlValue::Float(4.5),
+                )]),
+                control_bindings: std::collections::HashMap::new(),
+                preset_id: None,
+                layout: SpatialLayout {
+                    id: "default_saved".to_owned(),
+                    name: "Saved Default Layout".to_owned(),
+                    description: None,
+                    canvas_width: 320,
+                    canvas_height: 200,
+                    zones: Vec::new(),
+                    default_sampling_mode: SamplingMode::Bilinear,
+                    default_edge_behavior: EdgeBehavior::Clamp,
+                    spaces: None,
+                    version: 1,
+                },
+                brightness: 0.75,
+                enabled: true,
+                color: None,
+                display_target: None,
+                role: RenderGroupRole::Primary,
+            }],
+            active_effect_id: None,
+            active_preset_id: None,
+            control_values: std::collections::HashMap::new(),
+            control_bindings: std::collections::HashMap::new(),
+            active_layout_id: None,
+            global_brightness: 1.0,
+            wled_probe_ips: Vec::new(),
+            wled_probe_targets: Vec::new(),
+        },
+    )
+    .expect("runtime state should save");
+
+    let mut config = default_config();
+    config.daemon.start_profile = "last".into();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
+        .expect("initialization should succeed");
+
+    state.start().await.expect("start should succeed");
+
+    let scenes = state.scene_manager.read().await;
+    assert_eq!(scenes.active_scene_id(), Some(&SceneId::DEFAULT));
+    let default_scene = scenes
+        .get(&SceneId::DEFAULT)
+        .expect("default scene should exist");
+    assert_eq!(default_scene.groups.len(), 1);
+    assert_eq!(default_scene.groups[0].name, "Saved Default Group");
+    assert_eq!(
+        default_scene.groups[0].controls.get("speed"),
+        Some(&hypercolor_types::effect::ControlValue::Float(4.5))
+    );
+    assert_eq!(default_scene.groups[0].brightness, 0.75);
     drop(scenes);
 
     state.shutdown().await.expect("shutdown should succeed");

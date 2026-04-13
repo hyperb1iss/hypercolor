@@ -173,7 +173,9 @@ pub(crate) async fn execute_frame(
     let render_us = render_stage.total_us;
 
     let mut gpu_zone_sampling = false;
+    let mut gpu_sample_wait_blocked = false;
     let mut pending_gpu_zone_sampling = None;
+    let used_pre_sampled_scene_zones = render_stage.sampled_layout.is_some();
     let layout = if let Some(sampled_layout) = render_stage.sampled_layout.take() {
         if let Some(sampled_zones) = render_stage.sampled_zones.take() {
             render.recycled_frame.zones = sampled_zones;
@@ -242,12 +244,15 @@ pub(crate) async fn execute_frame(
             warn!(%error, "GPU spatial sampling finalize failed; falling back to CPU");
             gpu_zone_sampling = false;
         } else {
+            gpu_sample_wait_blocked = render
+                .sparkleflinger
+                .take_last_sample_readback_wait_blocked();
             render_stage.sampled_us = render_stage
                 .sampled_us
                 .saturating_add(micros_between(gpu_sample_finish, Instant::now()));
         }
     }
-    if !gpu_zone_sampling && render_stage.sampled_layout.is_none() {
+    if !gpu_zone_sampling && !used_pre_sampled_scene_zones {
         let cpu_sample_start = Instant::now();
         scene_snapshot.spatial_engine.sample_into(
             render_stage
@@ -418,6 +423,7 @@ pub(crate) async fn execute_frame(
             retained_screen: render_stage.screen_retained,
             composition_bypassed: render_stage.composition_bypassed,
             gpu_zone_sampling,
+            gpu_sample_wait_blocked,
             cpu_readback_skipped,
             compositor_backend,
             logical_layer_count: render_stage.logical_layer_count,
@@ -465,6 +471,7 @@ pub(crate) async fn execute_frame(
         render_groups = render_stage.render_group_count,
         scene_active = render_stage.scene_active,
         scene_transition_active = render_stage.scene_transition_active,
+        gpu_sample_wait_blocked,
         sample_us,
         push_us,
         postprocess_us,
