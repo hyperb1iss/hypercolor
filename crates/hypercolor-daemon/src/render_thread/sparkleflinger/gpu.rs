@@ -1,5 +1,6 @@
 use std::fmt;
 use std::sync::mpsc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use hypercolor_core::spatial::PreparedZonePlan;
@@ -55,6 +56,8 @@ pub(crate) struct GpuSparkleFlinger {
     cached_sample_result: Option<CachedSampleResult>,
     #[cfg(test)]
     preview_surface_allocation_count: usize,
+    #[cfg(test)]
+    defer_preview_resolve_once: bool,
 }
 
 struct GpuCompositorPipeline {
@@ -279,6 +282,8 @@ impl GpuSparkleFlinger {
             cached_sample_result: None,
             #[cfg(test)]
             preview_surface_allocation_count: 0,
+            #[cfg(test)]
+            defer_preview_resolve_once: false,
         })
     }
 
@@ -631,6 +636,10 @@ impl GpuSparkleFlinger {
         let Some(submission_index) = self.pending_preview_submission.take() else {
             return Ok(None);
         };
+        if !self.preview_submission_ready(submission_index.clone())? {
+            self.pending_preview_submission = Some(submission_index);
+            return Ok(None);
+        }
         let Some(pending_preview_readback) = self.pending_preview_readback.take() else {
             return Ok(None);
         };
@@ -647,6 +656,25 @@ impl GpuSparkleFlinger {
         };
         self.pending_preview_submission = Some(self.queue.submit(Some(encoder.finish())));
         Ok(())
+    }
+
+    fn preview_submission_ready(
+        &mut self,
+        submission_index: wgpu::SubmissionIndex,
+    ) -> Result<bool> {
+        #[cfg(test)]
+        if std::mem::take(&mut self.defer_preview_resolve_once) {
+            return Ok(false);
+        }
+
+        match self.device.poll(wgpu::PollType::Wait {
+            submission_index: Some(submission_index),
+            timeout: Some(Duration::ZERO),
+        }) {
+            Ok(_) => Ok(true),
+            Err(wgpu::PollError::Timeout) => Ok(false),
+            Err(error) => Err(error).context("GPU preview readiness poll failed"),
+        }
     }
 
     pub(crate) fn ensure_surface_size(&mut self, width: u32, height: u32) {
@@ -683,6 +711,11 @@ impl GpuSparkleFlinger {
         self.surfaces
             .as_ref()
             .map(GpuCompositorSurfaceSet::snapshot)
+    }
+
+    #[cfg(test)]
+    fn defer_next_preview_resolve(&mut self) {
+        self.defer_preview_resolve_once = true;
     }
 
     fn compose_bypass_layer(
@@ -2037,6 +2070,31 @@ mod tests {
         })
     }
 
+    fn resolve_preview_surface_blocking(
+        compositor: &mut GpuSparkleFlinger,
+    ) -> PublishedSurface {
+        loop {
+            if let Some(surface) = compositor
+                .resolve_preview_surface()
+                .expect("GPU preview finalize should succeed")
+            {
+                return surface;
+            }
+
+            let submission_index = compositor
+                .pending_preview_submission
+                .clone()
+                .expect("pending preview submission should remain available");
+            compositor
+                .device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: Some(submission_index),
+                    timeout: None,
+                })
+                .expect("GPU preview wait should succeed");
+        }
+    }
+
     fn sampling_layout(mode: SamplingMode) -> SpatialLayout {
         sampling_layout_with_led_count(mode, 4)
     }
@@ -2375,10 +2433,7 @@ mod tests {
         assert!(composed.sampling_canvas.is_none());
         assert!(composed.sampling_surface.is_none());
         assert!(composed.preview_surface.is_none());
-        let preview_surface = compositor
-            .resolve_preview_surface()
-            .expect("GPU preview finalize should succeed")
-            .expect("scaled preview requests should resolve a preview surface");
+        let preview_surface = resolve_preview_surface_blocking(&mut compositor);
         assert_eq!(preview_surface.width(), 2);
         assert_eq!(preview_surface.height(), 2);
     }
@@ -2424,10 +2479,7 @@ mod tests {
             }) if pending_request == request
         ));
 
-        let preview_surface = compositor
-            .resolve_preview_surface()
-            .expect("GPU preview finalize should succeed")
-            .expect("full-size preview requests should resolve a preview surface");
+        let preview_surface = resolve_preview_surface_blocking(&mut compositor);
         assert_eq!(preview_surface.width(), 4);
         assert_eq!(preview_surface.height(), 4);
         assert!(compositor.cached_readback_surface.is_some());
@@ -2470,10 +2522,7 @@ mod tests {
         compositor
             .compose(&first_plan, false, Some(request))
             .expect("first scaled preview compose should succeed");
-        compositor
-            .resolve_preview_surface()
-            .expect("first preview finalize should succeed")
-            .expect("first compose should publish a preview surface");
+        let _ = resolve_preview_surface_blocking(&mut compositor);
         {
             let preview_surfaces = compositor
                 .preview_surfaces
@@ -2486,10 +2535,7 @@ mod tests {
         compositor
             .compose(&second_plan, false, Some(request))
             .expect("second scaled preview compose should succeed");
-        compositor
-            .resolve_preview_surface()
-            .expect("second preview finalize should succeed")
-            .expect("second compose should publish a preview surface");
+        let _ = resolve_preview_surface_blocking(&mut compositor);
 
         let preview_surfaces = compositor
             .preview_surfaces
@@ -2528,19 +2574,13 @@ mod tests {
         compositor
             .compose(&plan, false, Some(large_request))
             .expect("large scaled preview compose should succeed");
-        compositor
-            .resolve_preview_surface()
-            .expect("large scaled preview finalize should succeed")
-            .expect("large scaled preview should publish a preview surface");
+        let _ = resolve_preview_surface_blocking(&mut compositor);
         assert_eq!(compositor.preview_surface_allocation_count, 1);
 
         compositor
             .compose(&plan, false, Some(small_request))
             .expect("small scaled preview compose should succeed");
-        compositor
-            .resolve_preview_surface()
-            .expect("small scaled preview finalize should succeed")
-            .expect("small scaled preview should publish a preview surface");
+        let _ = resolve_preview_surface_blocking(&mut compositor);
 
         let preview_surfaces = compositor
             .preview_surfaces
@@ -2557,10 +2597,7 @@ mod tests {
         compositor
             .compose(&plan, false, Some(large_request))
             .expect("restored scaled preview compose should succeed");
-        compositor
-            .resolve_preview_surface()
-            .expect("restored scaled preview finalize should succeed")
-            .expect("restored scaled preview should publish a preview surface");
+        let _ = resolve_preview_surface_blocking(&mut compositor);
         assert_eq!(compositor.preview_surface_allocation_count, 1);
     }
 
@@ -2615,26 +2652,17 @@ mod tests {
         compositor
             .compose(&first_plan, false, Some(large_request))
             .expect("first scaled preview compose should succeed");
-        compositor
-            .resolve_preview_surface()
-            .expect("first scaled preview finalize should succeed")
-            .expect("first scaled preview should publish a preview surface");
+        let _ = resolve_preview_surface_blocking(&mut compositor);
 
         compositor
             .compose(&second_plan, false, Some(small_request))
             .expect("second scaled preview compose should succeed");
-        compositor
-            .resolve_preview_surface()
-            .expect("second scaled preview finalize should succeed")
-            .expect("second scaled preview should publish a preview surface");
+        let _ = resolve_preview_surface_blocking(&mut compositor);
 
         compositor
             .compose(&third_plan, false, Some(large_request))
             .expect("third scaled preview compose should succeed");
-        compositor
-            .resolve_preview_surface()
-            .expect("third scaled preview finalize should succeed")
-            .expect("third scaled preview should publish a preview surface");
+        let _ = resolve_preview_surface_blocking(&mut compositor);
 
         let preview_surfaces = compositor
             .preview_surfaces
@@ -2674,18 +2702,12 @@ mod tests {
         compositor
             .compose(&plan, false, Some(large_request))
             .expect("large scaled preview compose should succeed");
-        compositor
-            .resolve_preview_surface()
-            .expect("large scaled preview finalize should succeed")
-            .expect("large scaled preview should publish a preview surface");
+        let _ = resolve_preview_surface_blocking(&mut compositor);
 
         compositor
             .compose(&plan, false, Some(small_request))
             .expect("small scaled preview compose should succeed");
-        compositor
-            .resolve_preview_surface()
-            .expect("small scaled preview finalize should succeed")
-            .expect("small scaled preview should publish a preview surface");
+        let _ = resolve_preview_surface_blocking(&mut compositor);
 
         let composed = compositor
             .compose(&plan, false, Some(large_request))
@@ -2737,13 +2759,70 @@ mod tests {
         assert!(compositor.pending_preview_submission.is_some());
         assert!(compositor.pending_output_submission.is_none());
 
-        let preview_surface = compositor
-            .resolve_preview_surface()
-            .expect("GPU preview finalize should succeed")
-            .expect("submitted preview work should finalize into a surface");
+        let preview_surface = resolve_preview_surface_blocking(&mut compositor);
         assert_eq!(preview_surface.width(), 2);
         assert_eq!(preview_surface.height(), 2);
         assert!(compositor.pending_preview_submission.is_none());
+    }
+
+    #[test]
+    fn gpu_preview_finalize_can_defer_without_blocking() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(patterned_canvas(96)),
+                    0.35,
+                ),
+            ],
+        );
+
+        compositor
+            .compose(
+                &plan,
+                false,
+                Some(PreviewSurfaceRequest {
+                    width: 2,
+                    height: 2,
+                }),
+            )
+            .expect("GPU composition should stage a scaled preview surface");
+        compositor
+            .submit_pending_preview_work()
+            .expect("GPU preview submit should succeed");
+        compositor.defer_next_preview_resolve();
+
+        assert!(
+            compositor
+                .resolve_preview_surface()
+                .expect("deferred preview finalize should not fail")
+                .is_none()
+        );
+        let submission_index = compositor
+            .pending_preview_submission
+            .clone()
+            .expect("deferred preview should keep its submission pending");
+        assert!(compositor.pending_preview_readback.is_some());
+
+        compositor
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission_index),
+                timeout: None,
+            })
+            .expect("GPU preview wait should succeed");
+
+        let preview_surface = resolve_preview_surface_blocking(&mut compositor);
+        assert_eq!(preview_surface.width(), 2);
+        assert_eq!(preview_surface.height(), 2);
+        assert!(compositor.pending_preview_submission.is_none());
+        assert!(compositor.pending_preview_readback.is_none());
     }
 
     #[test]
@@ -2784,10 +2863,7 @@ mod tests {
                 .expect("GPU zone sampling should succeed")
         );
 
-        let preview_surface = compositor
-            .resolve_preview_surface()
-            .expect("GPU preview finalize should succeed")
-            .expect("sampling should resolve the staged preview surface");
+        let preview_surface = resolve_preview_surface_blocking(&mut compositor);
         assert_eq!(preview_surface.width(), 2);
         assert_eq!(preview_surface.height(), 2);
     }
