@@ -2,8 +2,8 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::scene::{
     ActionKind, AutomationRule, ColorInterpolation, DisplayFaceTarget, EasingFunction, RenderGroup,
-    RenderGroupId, RenderGroupRole, Scene, SceneId, SceneKind, ScenePriority, SceneScope,
-    TransitionSpec, TriggerSource, UnassignedBehavior, ZoneAssignment,
+    RenderGroupId, RenderGroupRole, Scene, SceneId, SceneKind, SceneMutationMode, ScenePriority,
+    SceneScope, TransitionSpec, TriggerSource, UnassignedBehavior, ZoneAssignment,
 };
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -41,6 +41,7 @@ fn sample_scene() -> Scene {
         metadata: HashMap::from([("author".into(), "test".into())]),
         unassigned_behavior: UnassignedBehavior::Off,
         kind: SceneKind::Named,
+        mutation_mode: SceneMutationMode::Live,
     }
 }
 
@@ -163,6 +164,7 @@ fn scene_with_no_assignments() {
         metadata: HashMap::new(),
         unassigned_behavior: UnassignedBehavior::Off,
         kind: SceneKind::Named,
+        mutation_mode: SceneMutationMode::Live,
     };
     assert!(scene.zone_assignments.is_empty());
     assert!(!scene.enabled);
@@ -265,7 +267,8 @@ fn scene_json_requires_group_role() {
         "enabled": true,
         "metadata": {},
         "unassigned_behavior": "off",
-        "kind": "named"
+        "kind": "named",
+        "mutation_mode": "live"
     });
 
     let error = serde_json::from_value::<Scene>(json).expect_err("missing role should fail");
@@ -290,6 +293,28 @@ fn scene_json_requires_scene_kind() {
     assert!(
         error.to_string().contains("kind"),
         "expected kind parse error, got {error}"
+    );
+}
+
+#[test]
+fn scene_json_requires_mutation_mode() {
+    let mut json = serde_json::to_value(Scene {
+        groups: vec![RenderGroup {
+            role: RenderGroupRole::Primary,
+            ..sample_group("Primary", "desk:main", EffectId::from(Uuid::now_v7()))
+        }],
+        ..sample_scene()
+    })
+    .expect("scene should serialize");
+    json.as_object_mut()
+        .expect("scene should serialize as an object")
+        .remove("mutation_mode");
+
+    let error =
+        serde_json::from_value::<Scene>(json).expect_err("missing mutation_mode should fail");
+    assert!(
+        error.to_string().contains("mutation_mode"),
+        "expected mutation_mode parse error, got {error}"
     );
 }
 

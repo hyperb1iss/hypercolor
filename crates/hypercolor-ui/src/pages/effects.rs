@@ -16,7 +16,7 @@ use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::toasts;
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
-use hypercolor_types::scene::SceneKind;
+use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 
 use crate::style_utils::{category_accent_rgb, filter_chips};
 
@@ -193,9 +193,12 @@ pub fn EffectsPage() -> impl IntoView {
     let has_active = Memo::new(move |_| fx.active_effect_id.get().is_some());
     let named_scene_warning = Memo::new(move |_| {
         (fx.active_scene_kind.get() == Some(SceneKind::Named)).then(|| {
-            fx.active_scene_name
-                .get()
-                .unwrap_or_else(|| "Active scene".to_owned())
+            (
+                fx.active_scene_name
+                    .get()
+                    .unwrap_or_else(|| "Active scene".to_owned()),
+                fx.active_scene_mutation_mode.get() == Some(SceneMutationMode::Snapshot),
+            )
         })
     });
     let (returning_to_default, set_returning_to_default) = signal(false);
@@ -600,7 +603,7 @@ pub fn EffectsPage() -> impl IntoView {
                     </div>
                 </div>
 
-                {move || named_scene_warning.get().map(|scene_name| view! {
+                {move || named_scene_warning.get().map(|(scene_name, snapshot_locked)| view! {
                     <div class="px-6 pb-4">
                         <div class="rounded-xl border border-[rgba(241,250,140,0.24)] bg-[rgba(241,250,140,0.08)] px-4 py-3 shadow-[0_0_24px_rgba(241,250,140,0.08)]">
                             <div class="flex items-start gap-3">
@@ -609,11 +612,15 @@ pub fn EffectsPage() -> impl IntoView {
                                 </div>
                                 <div class="min-w-0 flex-1">
                                     <div class="text-[11px] font-semibold uppercase tracking-[0.16em] text-[rgba(241,250,140,0.82)]">
-                                        "Named Scene Active"
+                                        {if snapshot_locked { "Snapshot Scene Locked" } else { "Named Scene Active" }}
                                     </div>
                                     <div class="mt-1 text-sm leading-5 text-fg-secondary">
                                         <span class="text-fg-primary">{scene_name.clone()}</span>
-                                        " is active. Applying an effect here rewrites that scene’s primary effect."
+                                        {if snapshot_locked {
+                                            " is snapshot-locked. Return to Default before applying an effect or changing its controls."
+                                        } else {
+                                            " is active. Applying an effect here rewrites that scene’s primary effect."
+                                        }}
                                     </div>
                                 </div>
                                 <button

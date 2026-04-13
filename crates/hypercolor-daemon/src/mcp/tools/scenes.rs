@@ -9,8 +9,8 @@ use crate::api::{
 };
 use hypercolor_core::scene::make_scene;
 use hypercolor_types::event::SceneChangeReason;
-use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 use hypercolor_types::scene::TransitionSpec;
+use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
 

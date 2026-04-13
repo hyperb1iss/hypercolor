@@ -441,6 +441,7 @@ async fn activate_display_face_scene(
         metadata: HashMap::new(),
         unassigned_behavior: UnassignedBehavior::Off,
         kind: hypercolor_types::scene::SceneKind::Named,
+        mutation_mode: hypercolor_types::scene::SceneMutationMode::Live,
     };
 
     let mut manager = scene_manager.write().await;

@@ -81,9 +81,8 @@ pub(crate) async fn activate_effect_with_controls(
 
     {
         let mut scene_manager = state.scene_manager.write().await;
-        crate::api::active_scene_id_for_runtime_mutation(&scene_manager).map_err(|error| {
-            ActivateEffectError::Conflict(error.message("applying an effect"))
-        })?;
+        crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
+            .map_err(|error| ActivateEffectError::Conflict(error.message("applying an effect")))?;
         scene_manager
             .upsert_primary_group(metadata, controls.clone(), None, layout)
             .map_err(|error| ActivateEffectError::Activation(error.to_string()))?;

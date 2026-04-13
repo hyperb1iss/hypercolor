@@ -61,8 +61,8 @@ use hypercolor_types::scene::{RenderGroup, SceneId};
 use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
 
-use crate::attachment_profiles::AttachmentProfileStore;
 use crate::api::envelope::ApiError;
+use crate::attachment_profiles::AttachmentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_overlays::{DisplayOverlayRegistry, DisplayOverlayRuntimeRegistry};

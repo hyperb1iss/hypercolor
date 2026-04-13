@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use hypercolor_types::scene::SceneKind;
+use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 
 use super::client;
 
@@ -9,6 +9,7 @@ pub struct ActiveSceneResponse {
     pub id: String,
     pub name: String,
     pub kind: SceneKind,
+    pub mutation_mode: SceneMutationMode,
 }
 
 pub async fn fetch_active_scene() -> Result<Option<ActiveSceneResponse>, String> {

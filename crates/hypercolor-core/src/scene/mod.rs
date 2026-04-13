@@ -29,8 +29,7 @@ use crate::types::effect::{ControlBinding, ControlValue, EffectMetadata};
 use crate::types::library::PresetId;
 use crate::types::scene::{
     ColorInterpolation, DisplayFaceTarget, EasingFunction, RenderGroup, RenderGroupId,
-    RenderGroupRole, Scene, SceneId, SceneKind, SceneMutationMode, ScenePriority,
-    TransitionSpec,
+    RenderGroupRole, Scene, SceneId, SceneKind, SceneMutationMode, ScenePriority, TransitionSpec,
 };
 use crate::types::spatial::SpatialLayout;
 

@@ -6,7 +6,7 @@ use leptos_router::components::{Route, Router, Routes};
 use leptos_router::path;
 
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
-use hypercolor_types::scene::SceneKind;
+use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 
 use crate::api;
 use crate::components::preset_matching::controls_to_json;
@@ -134,6 +134,8 @@ pub struct EffectsContext {
     pub set_active_scene_name: WriteSignal<Option<String>>,
     pub active_scene_kind: ReadSignal<Option<SceneKind>>,
     pub set_active_scene_kind: WriteSignal<Option<SceneKind>>,
+    pub active_scene_mutation_mode: ReadSignal<Option<SceneMutationMode>>,
+    pub set_active_scene_mutation_mode: WriteSignal<Option<SceneMutationMode>>,
     pub is_playing: ReadSignal<bool>,
     pub set_is_playing: WriteSignal<bool>,
     pub favorite_ids: ReadSignal<HashSet<String>>,
@@ -435,11 +437,14 @@ fn clear_active_effect_state(ctx: &EffectsContext) {
 fn apply_active_scene_snapshot(ctx: &EffectsContext, active_scene: api::ActiveSceneResponse) {
     ctx.set_active_scene_name.set(Some(active_scene.name));
     ctx.set_active_scene_kind.set(Some(active_scene.kind));
+    ctx.set_active_scene_mutation_mode
+        .set(Some(active_scene.mutation_mode));
 }
 
 fn clear_active_scene_state(ctx: &EffectsContext) {
     ctx.set_active_scene_name.set(None);
     ctx.set_active_scene_kind.set(None);
+    ctx.set_active_scene_mutation_mode.set(None);
 }
 
 fn capture_active_effect_state(ctx: &EffectsContext) -> ActiveEffectSnapshot {
@@ -533,6 +538,8 @@ pub fn App() -> impl IntoView {
     let (active_preset_id, set_active_preset_id) = signal(None::<String>);
     let (active_scene_name, set_active_scene_name) = signal(None::<String>);
     let (active_scene_kind, set_active_scene_kind) = signal(None::<SceneKind>);
+    let (active_scene_mutation_mode, set_active_scene_mutation_mode) =
+        signal(None::<SceneMutationMode>);
     let (is_playing, set_is_playing) = signal(false);
     let (favorite_ids, set_favorite_ids) = signal(HashSet::<String>::new());
 
@@ -563,6 +570,8 @@ pub fn App() -> impl IntoView {
         set_active_scene_name,
         active_scene_kind,
         set_active_scene_kind,
+        active_scene_mutation_mode,
+        set_active_scene_mutation_mode,
         is_playing,
         set_is_playing,
         favorite_ids,

@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{
-    ColorInterpolation, EasingFunction, RenderGroup, Scene, SceneId, SceneKind,
-    SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
+    ColorInterpolation, EasingFunction, RenderGroup, Scene, SceneId, SceneKind, SceneMutationMode,
+    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
 };
 
 use crate::api::AppState;

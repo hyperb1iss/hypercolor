@@ -869,6 +869,58 @@ async fn stateful_set_effect_rejects_display_faces() {
 }
 
 #[tokio::test]
+async fn stateful_set_effect_conflicts_when_snapshot_scene_is_active() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_profile(&state, "focus-profile", "Focus Profile", None).await;
+    insert_test_effect(&state, "Aurora").await;
+
+    let create_result = execute_tool_with_state(
+        "create_scene",
+        &json!({
+            "name": "Focus",
+            "profile_id": "focus-profile",
+            "trigger": {
+                "type": "schedule"
+            },
+            "mutation_mode": "snapshot"
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("scene creation should succeed");
+    assert_eq!(create_result["mutation_mode"], "snapshot");
+
+    execute_tool_with_state(
+        "activate_scene",
+        &json!({
+            "name": "Focus"
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("scene activation should succeed");
+
+    let error = execute_tool_with_state(
+        "set_effect",
+        &json!({
+            "query": "aurora",
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect_err("snapshot scenes should reject MCP effect mutation");
+
+    match error {
+        ToolError::Conflict(message) => {
+            assert!(message.contains("snapshot mode"));
+            assert_eq!(ToolError::Conflict(message).error_code(), -32000);
+        }
+        other => panic!("expected snapshot conflict, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);

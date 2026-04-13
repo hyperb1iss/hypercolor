@@ -295,26 +295,24 @@ pub(crate) async fn apply_profile_snapshot(
 ) -> Result<Vec<crate::api::displays::OverlayCompatibilityWarning>, ProfileApplyError> {
     {
         let scene_manager = state.scene_manager.read().await;
-        crate::api::active_scene_id_for_runtime_mutation(&scene_manager).map_err(|error| {
-            ProfileApplyError::Conflict(error.message("applying a profile"))
-        })?;
+        crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
+            .map_err(|error| ProfileApplyError::Conflict(error.message("applying a profile")))?;
     }
     let brightness = profile.brightness.map(|value| f32::from(value) / 100.0);
     let layout = if let Some(layout_id) = profile.layout_id.as_deref() {
         let layouts = state.layouts.read().await;
-        Some(
-            layouts
-                .get(layout_id)
-                .cloned()
-                .ok_or_else(|| {
-                    ProfileApplyError::Internal(format!("profile layout not found: {layout_id}"))
-                })?,
-        )
+        Some(layouts.get(layout_id).cloned().ok_or_else(|| {
+            ProfileApplyError::Internal(format!("profile layout not found: {layout_id}"))
+        })?)
     } else {
         None
     };
-    let prepared_primary = prepare_profile_primary(state, profile.primary.as_ref()).await?;
-    let prepared_displays = prepare_profile_displays(state, &profile.displays).await?;
+    let prepared_primary = prepare_profile_primary(state, profile.primary.as_ref())
+        .await
+        .map_err(ProfileApplyError::Internal)?;
+    let prepared_displays = prepare_profile_displays(state, &profile.displays)
+        .await
+        .map_err(ProfileApplyError::Internal)?;
     let mut warnings = Vec::new();
     let current_layout = {
         let spatial = state.spatial_engine.read().await;
@@ -426,13 +424,9 @@ pub(crate) async fn apply_profile_snapshot(
     if let Some(normalized) = brightness {
         let mut settings = state.device_settings.write().await;
         settings.set_global_brightness(normalized);
-        settings
-            .save()
-            .map_err(|error| {
-                ProfileApplyError::Internal(format!(
-                    "failed to persist global brightness: {error}"
-                ))
-            })?;
+        settings.save().map_err(|error| {
+            ProfileApplyError::Internal(format!("failed to persist global brightness: {error}"))
+        })?;
         drop(settings);
         set_global_brightness(&state.power_state, normalized);
     }

@@ -46,7 +46,8 @@ use hypercolor_types::event::{
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceTarget, EasingFunction, RenderGroup, RenderGroupRole, Scene,
-    SceneId, SceneKind, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
+    SceneId, SceneKind, SceneMutationMode, ScenePriority, SceneScope, TransitionSpec,
+    UnassignedBehavior,
 };
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -992,6 +993,14 @@ async fn insert_test_display_face_effect(state: &Arc<AppState>, name: &str) -> E
 }
 
 async fn activate_empty_test_scene(state: &Arc<AppState>, name: &str) -> SceneId {
+    activate_empty_test_scene_with_mode(state, name, SceneMutationMode::Live).await
+}
+
+async fn activate_empty_test_scene_with_mode(
+    state: &Arc<AppState>,
+    name: &str,
+    mutation_mode: SceneMutationMode,
+) -> SceneId {
     let scene = Scene {
         id: SceneId::new(),
         name: name.to_owned(),
@@ -1009,6 +1018,7 @@ async fn activate_empty_test_scene(state: &Arc<AppState>, name: &str) -> SceneId
         metadata: HashMap::new(),
         unassigned_behavior: UnassignedBehavior::Off,
         kind: SceneKind::Named,
+        mutation_mode,
     };
 
     let mut manager = state.scene_manager.write().await;
@@ -1069,6 +1079,7 @@ async fn activate_display_face_test_scene(
         metadata: HashMap::new(),
         unassigned_behavior: UnassignedBehavior::Off,
         kind: SceneKind::Named,
+        mutation_mode: SceneMutationMode::Live,
     };
 
     let mut manager = state.scene_manager.write().await;
@@ -3823,6 +3834,40 @@ async fn apply_profile_rejects_unimplemented_transition_requests() {
 }
 
 #[tokio::test]
+async fn apply_profile_conflicts_when_snapshot_scene_is_active() {
+    let state = Arc::new(isolated_state());
+    {
+        let mut profiles = state.profiles.write().await;
+        let mut profile = Profile::named("prof_evening", "Evening");
+        profile.brightness = Some(40);
+        profiles.insert(profile);
+    }
+    activate_empty_test_scene_with_mode(&state, "Focus", SceneMutationMode::Snapshot).await;
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/profiles/prof_evening/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "conflict");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("message should be a string")
+            .contains("snapshot mode"),
+    );
+}
+
+#[tokio::test]
 async fn failed_profile_apply_does_not_mutate_layout_or_brightness() {
     let state = Arc::new(isolated_state());
     let current_layout = SpatialLayout {
@@ -4668,6 +4713,44 @@ async fn activating_named_scene_then_applying_effect_mutates_named_scene() {
     );
 }
 
+#[tokio::test]
+async fn apply_effect_conflicts_when_snapshot_scene_is_active() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "Aurora").await;
+    activate_empty_test_scene_with_mode(&state, "Focus", SceneMutationMode::Snapshot).await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/Aurora/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "conflict");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("message should be a string")
+            .contains("snapshot mode"),
+    );
+
+    let manager = state.scene_manager.read().await;
+    assert!(
+        manager
+            .active_scene()
+            .and_then(Scene::primary_group)
+            .is_none(),
+        "snapshot scene should not be rewritten by effect apply",
+    );
+}
+
 // ── Error Envelope Format ────────────────────────────────────────────────
 
 #[tokio::test]
@@ -5113,6 +5196,46 @@ async fn patch_face_controls_updates_display_group() {
     assert_eq!(
         display_group.controls.get("label"),
         Some(&ControlValue::Text("gpu".to_owned()))
+    );
+}
+
+#[tokio::test]
+async fn put_face_conflicts_when_snapshot_scene_is_active() {
+    let state = Arc::new(isolated_state());
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    activate_empty_test_scene_with_mode(&state, "Focus", SceneMutationMode::Snapshot).await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"effect_id":"{}"}}"#, face.id)))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "conflict");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("message should be a string")
+            .contains("snapshot mode"),
+    );
+
+    let manager = state.scene_manager.read().await;
+    assert!(
+        manager
+            .active_scene()
+            .and_then(|scene| scene.display_group_for(display_id))
+            .is_none(),
+        "snapshot scene should not be rewritten by face assignment",
     );
 }
 
