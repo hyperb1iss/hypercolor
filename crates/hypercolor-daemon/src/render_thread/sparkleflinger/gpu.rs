@@ -87,6 +87,8 @@ struct GpuCompositorSurfaceSet {
     compose_dispatch_count: usize,
     #[cfg(test)]
     compose_param_write_count: usize,
+    #[cfg(test)]
+    last_readback_bytes: u64,
 }
 
 struct GpuPreviewSurfaceSet {
@@ -104,6 +106,8 @@ struct GpuPreviewSurfaceSet {
     scale_param_write_count: usize,
     #[cfg(test)]
     preview_bind_group_count: usize,
+    #[cfg(test)]
+    last_readback_bytes: u64,
 }
 
 struct GpuCompositorTexture {
@@ -840,11 +844,14 @@ impl GpuSparkleFlinger {
         let sampling_surface = read_back_texture_into_surface(
             &self.device,
             readback_buffer,
+            u64::from(surfaces.padded_bytes_per_row) * u64::from(height),
             width,
             height,
             surfaces.padded_bytes_per_row,
             self.queue.submit(Some(encoder.finish())),
             readback_surfaces,
+            #[cfg(test)]
+            &mut surfaces.last_readback_bytes,
         )?;
         if let Some(key) = readback_key {
             self.cached_readback_surface = Some(CachedReadbackSurface {
@@ -989,11 +996,14 @@ impl GpuSparkleFlinger {
                 let preview_surface = read_back_texture_into_surface(
                     &self.device,
                     &surfaces.readback,
+                    u64::from(surfaces.padded_bytes_per_row) * u64::from(height),
                     width,
                     height,
                     surfaces.padded_bytes_per_row,
                     submission_index,
                     &mut surfaces.readback_surfaces,
+                    #[cfg(test)]
+                    &mut surfaces.last_readback_bytes,
                 )?;
                 if let Some(key) = readback_key {
                     self.cached_readback_surface = Some(CachedReadbackSurface {
@@ -1015,11 +1025,14 @@ impl GpuSparkleFlinger {
                 let preview_surface = read_back_texture_into_surface(
                     &self.device,
                     &preview_surfaces.readback,
+                    u64::from(preview_surfaces.padded_bytes_per_row) * u64::from(request.height),
                     request.width,
                     request.height,
                     preview_surfaces.padded_bytes_per_row,
                     submission_index,
                     &mut preview_surfaces.readback_surfaces,
+                    #[cfg(test)]
+                    &mut preview_surfaces.last_readback_bytes,
                 )?;
                 if let Some(key) = readback_key {
                     if cache_as_full_size {
@@ -1243,6 +1256,8 @@ impl GpuCompositorSurfaceSet {
             compose_dispatch_count: 0,
             #[cfg(test)]
             compose_param_write_count: 0,
+            #[cfg(test)]
+            last_readback_bytes: 0,
         }
     }
 
@@ -1302,6 +1317,8 @@ impl GpuPreviewSurfaceSet {
             scale_param_write_count: 0,
             #[cfg(test)]
             preview_bind_group_count: 2,
+            #[cfg(test)]
+            last_readback_bytes: 0,
         }
     }
 
@@ -1711,13 +1728,19 @@ fn set_texture_contents(
 fn read_back_texture_into_surface(
     device: &wgpu::Device,
     buffer: &wgpu::Buffer,
+    used_bytes: u64,
     width: u32,
     height: u32,
     padded_bytes_per_row: u32,
     submission_index: wgpu::SubmissionIndex,
     surfaces: &mut RenderSurfacePool,
+    #[cfg(test)] last_readback_bytes: &mut u64,
 ) -> Result<PublishedSurface> {
-    let slice = buffer.slice(..);
+    #[cfg(test)]
+    {
+        *last_readback_bytes = used_bytes;
+    }
+    let slice = buffer.slice(..used_bytes);
     let (sender, receiver) = mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = sender.send(result);
@@ -2467,6 +2490,7 @@ mod tests {
         assert_eq!(preview_surfaces.capacity_width, 3);
         assert_eq!(preview_surfaces.capacity_height, 3);
         assert_eq!(preview_surfaces.preview_bind_group_count, 2);
+        assert_eq!(preview_surfaces.last_readback_bytes, 16);
         assert_eq!(compositor.preview_surface_allocation_count, 1);
 
         compositor
