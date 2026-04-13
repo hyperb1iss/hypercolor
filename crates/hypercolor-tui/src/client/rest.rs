@@ -60,6 +60,8 @@ impl DaemonClient {
                 .map(|effect| effect.name.clone())
                 .or(status.active_effect),
             effect_id: active_effect.map(|effect| effect.id),
+            scene_name: status.active_scene,
+            scene_snapshot_locked: status.active_scene_snapshot_locked,
             profile_name: None,
             device_count,
             total_leds: 0,
@@ -322,6 +324,9 @@ struct SystemStatusResponse {
     global_brightness: u8,
     device_count: usize,
     active_effect: Option<String>,
+    active_scene: Option<String>,
+    #[serde(default)]
+    active_scene_snapshot_locked: bool,
 }
 
 #[derive(Debug, Deserialize)]

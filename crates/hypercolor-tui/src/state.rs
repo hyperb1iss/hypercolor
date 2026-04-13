@@ -46,6 +46,9 @@ pub struct DaemonState {
     pub fps_actual: f32,
     pub effect_name: Option<String>,
     pub effect_id: Option<String>,
+    pub scene_name: Option<String>,
+    #[serde(default)]
+    pub scene_snapshot_locked: bool,
     pub profile_name: Option<String>,
     pub device_count: u32,
     pub total_leds: u32,

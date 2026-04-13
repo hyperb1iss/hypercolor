@@ -348,6 +348,14 @@ async fn status_returns_200_with_envelope() {
         json["data"]["global_brightness"].as_u64().is_some(),
         "global_brightness should be an integer percentage"
     );
+    assert!(
+        json["data"]["active_scene"].is_string(),
+        "active_scene should be a string"
+    );
+    assert!(
+        json["data"]["active_scene_snapshot_locked"].is_boolean(),
+        "active_scene_snapshot_locked should be a bool"
+    );
     assert!(json["meta"]["api_version"].is_string());
     assert!(json["meta"]["request_id"].is_string());
     assert!(json["meta"]["timestamp"].is_string());

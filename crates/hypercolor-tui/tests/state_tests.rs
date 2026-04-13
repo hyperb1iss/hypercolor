@@ -90,6 +90,8 @@ fn daemon_state_serde_roundtrip() {
         fps_actual: 29.5,
         effect_name: Some("Aurora".to_string()),
         effect_id: Some("aurora-1".to_string()),
+        scene_name: Some("Focus".to_string()),
+        scene_snapshot_locked: true,
         profile_name: Some("Gaming".to_string()),
         device_count: 3,
         total_leds: 150,
@@ -100,6 +102,8 @@ fn daemon_state_serde_roundtrip() {
     assert_eq!(parsed.brightness, 75);
     assert_eq!(parsed.device_count, 3);
     assert_eq!(parsed.effect_name.as_deref(), Some("Aurora"));
+    assert_eq!(parsed.scene_name.as_deref(), Some("Focus"));
+    assert!(parsed.scene_snapshot_locked);
 }
 
 #[test]

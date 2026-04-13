@@ -70,6 +70,23 @@ fn build_left(state: &AppState) -> Vec<Span<'static>> {
 
     // Separator + device count.
     if let Some(ref daemon) = state.daemon {
+        if let Some(scene_name) = daemon.scene_name.as_ref() {
+            spans.push(Span::styled(" \u{2500} ", Style::default().fg(muted)));
+            spans.push(Span::styled(
+                scene_name.clone(),
+                Style::default().fg(theme::accent_secondary()),
+            ));
+            if daemon.scene_snapshot_locked {
+                spans.push(Span::styled(" ", Style::default().fg(muted)));
+                spans.push(Span::styled(
+                    "[snap]",
+                    Style::default()
+                        .fg(theme::warning())
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+        }
+
         spans.push(Span::styled(" \u{2500} ", Style::default().fg(muted)));
         spans.push(Span::styled(
             format!("{} devices", daemon.device_count),

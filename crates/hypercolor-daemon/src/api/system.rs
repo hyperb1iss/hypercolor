@@ -40,6 +40,8 @@ pub struct SystemStatus {
     pub effect_count: usize,
     pub scene_count: usize,
     pub active_effect: Option<String>,
+    pub active_scene: Option<String>,
+    pub active_scene_snapshot_locked: bool,
     pub global_brightness: u8,
     pub audio_available: bool,
     pub capture_available: bool,
@@ -146,6 +148,12 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     let active_effect = crate::api::effects::active_primary_effect(state.as_ref())
         .await
         .map(|(_, effect)| effect.name);
+    let (active_scene, active_scene_snapshot_locked) = {
+        let scene_manager = state.scene_manager.read().await;
+        scene_manager.active_scene().map_or((None, false), |scene| {
+            (Some(scene.name.clone()), scene.blocks_runtime_mutation())
+        })
+    };
 
     // Query the live render loop for timing data.
     let render_loop_status = {
@@ -188,6 +196,8 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         effect_count,
         scene_count,
         active_effect,
+        active_scene,
+        active_scene_snapshot_locked,
         global_brightness: brightness_percent(current_global_brightness(&state.power_state)),
         audio_available: settings::audio_input_available(),
         capture_available: settings::capture_input_available(),

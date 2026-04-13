@@ -241,6 +241,8 @@ fn merge_metrics_into_daemon_state(
         fps_actual: 0.0,
         effect_name: None,
         effect_id: None,
+        scene_name: None,
+        scene_snapshot_locked: false,
         profile_name: None,
         device_count: 0,
         total_leds: 0,
@@ -318,6 +320,16 @@ fn parse_hello_state(hello: &serde_json::Value) -> Option<DaemonState> {
             .and_then(|e| e.get("id"))
             .and_then(serde_json::Value::as_str)
             .map(String::from),
+        scene_name: state
+            .get("scene")
+            .and_then(|s| s.get("name"))
+            .and_then(serde_json::Value::as_str)
+            .map(String::from),
+        scene_snapshot_locked: state
+            .get("scene")
+            .and_then(|s| s.get("snapshot_locked"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
         profile_name: state
             .get("profile")
             .and_then(|p| p.get("name"))

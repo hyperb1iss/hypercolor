@@ -154,7 +154,9 @@ async fn get_status_maps_system_and_active_effect_responses() {
                         "running": true,
                         "global_brightness": 42,
                         "device_count": 3,
-                        "active_effect": "Rainbow Wave"
+                        "active_effect": "Rainbow Wave",
+                        "active_scene": "Focus",
+                        "active_scene_snapshot_locked": true
                     }
                 }))
             }),
@@ -182,6 +184,8 @@ async fn get_status_maps_system_and_active_effect_responses() {
     assert_eq!(status.brightness, 42);
     assert_eq!(status.effect_id.as_deref(), Some("rainbow"));
     assert_eq!(status.effect_name.as_deref(), Some("Rainbow Wave"));
+    assert_eq!(status.scene_name.as_deref(), Some("Focus"));
+    assert!(status.scene_snapshot_locked);
     assert_eq!(status.device_count, 3);
 }
 
