@@ -64,7 +64,12 @@ impl PresenterState {
         }
     }
 
-    fn ensure_runtime(&mut self, canvas: &web_sys::HtmlCanvasElement, frame: &CanvasFrame) -> bool {
+    fn ensure_runtime(
+        &mut self,
+        canvas: &web_sys::HtmlCanvasElement,
+        frame: &CanvasFrame,
+        smooth_scaling: bool,
+    ) -> bool {
         let Some(webgl_unavailable_streak) = self.retry_state(frame.frame_number) else {
             return matches!(self, Self::Ready { .. });
         };
@@ -73,6 +78,7 @@ impl PresenterState {
             canvas,
             frame,
             webgl_unavailable_streak >= CANVAS2D_FALLBACK_THRESHOLD,
+            smooth_scaling,
         ) {
             Ok(runtime) => {
                 let ready_streak = if runtime.preserves_webgl_unavailable_streak() {
@@ -129,6 +135,7 @@ pub fn CanvasPreview(
     #[prop(default = "Preview".to_string())] fps_label: String,
     #[prop(into)] fps_target: Signal<u32>,
     #[prop(default = "100%".to_string())] max_width: String,
+    #[prop(default = "pixelated".to_string())] image_rendering: String,
     #[prop(optional)] aspect_ratio: Option<String>,
     #[prop(default = false)] report_presenter_telemetry: bool,
     #[prop(optional)] consumer_count: Option<WriteSignal<u32>>,
@@ -149,6 +156,7 @@ pub fn CanvasPreview(
     let preview_telemetry = use_context::<PreviewTelemetryContext>()
         .filter(|_| report_presenter_telemetry)
         .map(|context| context.set_presenter);
+    let smooth_scaling = image_rendering != "pixelated";
     let preview_registered = Arc::new(AtomicBool::new(false));
     let consumer_count = consumer_count.or_else(|| ws.map(|ws| ws.set_preview_consumers));
 
@@ -188,6 +196,7 @@ pub fn CanvasPreview(
             let last_presented_at = Rc::clone(&last_presented_at);
             let skipped_frames = Rc::clone(&skipped_frames);
             let canvas_handle = canvas.clone();
+            let smooth_scaling = smooth_scaling;
 
             let callback = Closure::<dyn FnMut(f64)>::new(move |raf_time_ms| {
                 animation_frame_id_handle.borrow_mut().take();
@@ -211,7 +220,7 @@ pub fn CanvasPreview(
                     && Some(frame.frame_number) != *last_presented_frame.borrow()
                 {
                     let mut presenter_state = presenter_handle.borrow_mut();
-                    if presenter_state.ensure_runtime(&canvas_handle, &frame) {
+                    if presenter_state.ensure_runtime(&canvas_handle, frame, smooth_scaling) {
                         let mode = presenter_state.mode_label();
                         runtime_mode.set(mode);
                         if let PresenterState::Ready {
@@ -450,7 +459,7 @@ pub fn CanvasPreview(
         UseEventListenerOptions::default(),
     );
 
-    let canvas_style = format!("max-width: {max_width}; image-rendering: pixelated;");
+    let canvas_style = format!("max-width: {max_width}; image-rendering: {image_rendering};");
     let resolved_aspect_ratio = Memo::new(move |_| {
         aspect_ratio.clone().unwrap_or_else(|| {
             frame.with(|frame| {

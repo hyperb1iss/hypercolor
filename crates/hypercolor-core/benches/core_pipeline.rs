@@ -16,9 +16,7 @@ use hypercolor_core::effect::builtin::{
     ColorWaveRenderer, GradientRenderer, RainbowRenderer, SolidColorRenderer,
     register_builtin_effects,
 };
-use hypercolor_core::effect::{
-    EffectPool, EffectRegistry, EffectRenderer, FrameInput,
-};
+use hypercolor_core::effect::{EffectPool, EffectRegistry, EffectRenderer, FrameInput};
 use hypercolor_core::input::InputSource;
 use hypercolor_core::input::InteractionData;
 use hypercolor_core::input::audio::AudioInput;

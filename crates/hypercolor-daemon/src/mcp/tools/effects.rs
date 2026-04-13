@@ -6,10 +6,10 @@ use std::collections::HashMap;
 use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, default_output_schema, find_effect_metadata};
-use crate::api::{AppState, publish_render_group_changed, save_runtime_session_snapshot};
 use crate::api::effects::{
     active_primary_effect, apply_associated_layout, effect_ref, normalize_control_payload,
 };
+use crate::api::{AppState, publish_render_group_changed, save_runtime_session_snapshot};
 use hypercolor_types::effect::{ControlValue, EffectCategory};
 use hypercolor_types::event::{
     ChangeTrigger, EffectStopReason, HypercolorEvent, RenderGroupChangeKind,
@@ -343,9 +343,16 @@ pub(super) async fn handle_set_effect_with_state(
             RenderGroupChangeKind::Created
         };
         let group = scene_manager
-            .upsert_primary_group(&best_match.effect, normalized_controls.clone(), None, full_scope_layout)
+            .upsert_primary_group(
+                &best_match.effect,
+                normalized_controls.clone(),
+                None,
+                full_scope_layout,
+            )
             .map_err(|error| {
-                ToolError::Internal(format!("failed to update active scene primary group: {error}"))
+                ToolError::Internal(format!(
+                    "failed to update active scene primary group: {error}"
+                ))
             })?
             .clone();
         (scene_id, group, change_kind)
@@ -607,7 +614,9 @@ pub(super) async fn handle_set_color_with_state(
         let group = scene_manager
             .upsert_primary_group(&solid_effect, controls.clone(), None, full_scope_layout)
             .map_err(|error| {
-                ToolError::Internal(format!("failed to update active scene primary group: {error}"))
+                ToolError::Internal(format!(
+                    "failed to update active scene primary group: {error}"
+                ))
             })?
             .clone();
         (scene_id, group, change_kind)

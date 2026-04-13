@@ -62,10 +62,14 @@ pub(super) struct WebGlPreviewRuntime {
     vertex_buffer: WebGlBuffer,
     texture: WebGlTexture,
     texture_shape: Option<TextureShape>,
+    smooth_scaling: bool,
 }
 
 impl WebGlPreviewRuntime {
-    pub(super) fn new(canvas: &HtmlCanvasElement) -> Result<Self, WebGlInitError> {
+    pub(super) fn new(
+        canvas: &HtmlCanvasElement,
+        smooth_scaling: bool,
+    ) -> Result<Self, WebGlInitError> {
         let gl = canvas
             .get_context("webgl")
             .ok()
@@ -112,8 +116,9 @@ impl WebGlPreviewRuntime {
         gl.pixel_storei(Gl::UNPACK_ALIGNMENT, 1);
         gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_WRAP_S, Gl::CLAMP_TO_EDGE as i32);
         gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_WRAP_T, Gl::CLAMP_TO_EDGE as i32);
-        gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_MIN_FILTER, Gl::NEAREST as i32);
-        gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_MAG_FILTER, Gl::NEAREST as i32);
+        let texture_filter = if smooth_scaling { Gl::LINEAR } else { Gl::NEAREST };
+        gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_MIN_FILTER, texture_filter as i32);
+        gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_MAG_FILTER, texture_filter as i32);
 
         if let Some(location) = gl.get_uniform_location(&program, "u_texture") {
             gl.uniform1i(Some(&location), 0);
@@ -125,6 +130,7 @@ impl WebGlPreviewRuntime {
             vertex_buffer,
             texture,
             texture_shape: None,
+            smooth_scaling,
         })
     }
 
@@ -141,7 +147,7 @@ impl WebGlPreviewRuntime {
             canvas.set_height(height);
         }
 
-        let Ok(replacement) = Self::new(canvas) else {
+        let Ok(replacement) = Self::new(canvas, self.smooth_scaling) else {
             return false;
         };
         *self = replacement;

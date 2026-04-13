@@ -43,6 +43,7 @@ use hypercolor_types::effect::{
 use hypercolor_types::event::{
     ChangeTrigger, EffectStopReason, HypercolorEvent, RenderGroupChangeKind, SceneChangeReason,
 };
+use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceTarget, EasingFunction, RenderGroup, RenderGroupRole, Scene,
     SceneId, SceneKind, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
@@ -3021,6 +3022,111 @@ async fn scene_deactivate_returns_to_default_scene() {
     assert_eq!(json["data"]["name"], "Default");
 }
 
+#[tokio::test]
+async fn list_scenes_excludes_default_scene() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/scenes")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["pagination"]["total"], 0);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name": "Movie Night"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/scenes")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["pagination"]["total"], 1);
+    let items = json["data"]["items"]
+        .as_array()
+        .expect("scene list should serialize as an array");
+    assert_eq!(items[0]["name"], "Movie Night");
+    assert!(
+        items.iter().all(|item| item["name"] != "Default"),
+        "default scene must stay hidden from the scenes list"
+    );
+}
+
+#[tokio::test]
+async fn delete_default_scene_returns_conflict() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/scenes/default")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "conflict");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("message should be a string")
+            .contains("cannot be deleted"),
+    );
+}
+
+#[tokio::test]
+async fn scene_deactivate_on_default_is_noop() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes/deactivate")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["deactivated"], true);
+    assert_eq!(json["data"]["scene"]["name"], "Default");
+    assert_eq!(json["data"]["previous_scene"]["name"], "Default");
+}
+
 // ── Profiles ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -3339,6 +3445,75 @@ async fn profile_crud_lifecycle() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn app_state_loads_and_rewrites_legacy_profile_snapshots() {
+    let _lock = DATA_DIR_LOCK
+        .lock()
+        .expect("data dir lock should not be poisoned");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let data_dir = tempdir.path().join("data");
+    fs::create_dir_all(&data_dir).expect("temp data dir should be created");
+
+    let effect_id = EffectId::new(Uuid::now_v7());
+    let preset_id = PresetId(Uuid::now_v7());
+    let profiles_path = data_dir.join("profiles.json");
+    fs::write(
+        &profiles_path,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "prof_evening": {
+                "id": "prof_evening",
+                "name": "Evening",
+                "effect_id": effect_id,
+                "effect_name": "solid_color",
+                "active_preset_id": preset_id,
+                "controls": {
+                    "speed": { "float": 12.5 }
+                }
+            }
+        }))
+        .expect("legacy profile json should serialize"),
+    )
+    .expect("legacy profile json should be written");
+
+    ConfigManager::set_data_dir_override(Some(data_dir.clone()));
+    let state = AppState::new();
+    ConfigManager::set_data_dir_override(None);
+
+    {
+        let profiles = state.profiles.read().await;
+        let profile = profiles
+            .get("prof_evening")
+            .expect("legacy profile should load");
+        let primary = profile
+            .primary
+            .as_ref()
+            .expect("legacy primary snapshot should migrate");
+        assert_eq!(primary.effect_id, effect_id);
+        assert_eq!(primary.active_preset_id, Some(preset_id));
+        assert_eq!(
+            primary.controls.get("speed"),
+            Some(&ControlValue::Float(12.5))
+        );
+    }
+
+    {
+        let profiles = state.profiles.read().await;
+        profiles.save().expect("migrated profiles should save");
+    }
+
+    let saved: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&profiles_path).expect("saved profile json should be readable"),
+    )
+    .expect("saved profile json should parse");
+    assert_eq!(
+        saved["prof_evening"]["primary"]["effect_id"],
+        effect_id.to_string()
+    );
+    assert!(saved["prof_evening"].get("effect_id").is_none());
+    assert!(saved["prof_evening"].get("effect_name").is_none());
+    assert!(saved["prof_evening"].get("active_preset_id").is_none());
 }
 
 #[tokio::test]

@@ -6,8 +6,8 @@ use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::overlay::OverlayBlendMode;
 
 use super::{
-    ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan,
-    PreviewSurfaceRequest, publish_composed_frame,
+    ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, PreviewSurfaceRequest,
+    publish_composed_frame,
 };
 use crate::render_thread::producer_queue::ProducerFrame;
 
@@ -58,12 +58,10 @@ impl CpuSparkleFlinger {
             mut layers,
             cpu_replay_cacheable,
         } = plan;
-        let requires_full_size_preview = preview_request_matches_plan(
-            preview_surface_request,
-            width,
-            height,
-        );
-        let requires_published_surface = preview_surface_request.is_some() && requires_full_size_preview;
+        let requires_full_size_preview =
+            preview_request_matches_plan(preview_surface_request, width, height);
+        let requires_published_surface =
+            preview_surface_request.is_some() && requires_full_size_preview;
 
         if layers.len() == 1
             && let Some(layer) = layers.pop()

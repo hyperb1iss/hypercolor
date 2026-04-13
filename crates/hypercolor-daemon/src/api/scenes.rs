@@ -220,6 +220,9 @@ pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<Str
     let Some(scene_id) = resolve_scene_id(&manager, &id) else {
         return ApiError::not_found(format!("Scene not found: {id}"));
     };
+    if scene_id.is_default() {
+        return ApiError::conflict("Default scene cannot be deleted".to_owned());
+    }
     let previous_active_scene = manager.active_scene_id().copied();
 
     if let Err(e) = manager.delete(&scene_id) {

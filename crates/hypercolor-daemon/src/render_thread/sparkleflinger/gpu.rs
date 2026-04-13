@@ -1,5 +1,5 @@
 use std::fmt;
-use std::sync::mpsc;
+use std::sync::mpsc::{self, TryRecvError};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -10,11 +10,13 @@ use hypercolor_core::types::canvas::{
 };
 use hypercolor_types::event::ZoneColors;
 
-use super::{ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, PreviewSurfaceRequest};
+use super::{
+    ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, PreviewSurfaceRequest,
+};
 use crate::performance::CompositorBackendKind;
 use crate::render_thread::producer_queue::ProducerFrame;
 use crate::render_thread::sparkleflinger::gpu_sampling::{
-    GpuSamplingPlan, GpuSamplingPlanKey, GpuSpatialSampler, GpuSurfaceReadback,
+    GpuSamplingPlan, GpuSamplingPlanKey, GpuSpatialSampler,
 };
 
 const COMPOSITOR_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -24,6 +26,7 @@ const COMPOSE_PARAM_BYTES: usize = 48;
 const PREVIEW_SCALE_PARAM_BYTES: usize = 16;
 const MAX_CACHED_PREVIEW_SURFACES: usize = 3;
 const MAX_CACHED_PREVIEW_READBACK_POOLS: usize = 3;
+const PREVIEW_READBACK_SLOT_COUNT: usize = 2;
 
 #[derive(Debug, Clone)]
 pub(crate) struct GpuCompositorProbe {
@@ -51,6 +54,7 @@ pub(crate) struct GpuSparkleFlinger {
     pending_output_submission: Option<wgpu::CommandEncoder>,
     pending_preview_readback: Option<PendingPreviewReadback>,
     pending_preview_submission: Option<wgpu::SubmissionIndex>,
+    pending_preview_map: Option<PendingPreviewMap>,
     ready_preview_surface: Option<PublishedSurface>,
     output_generation: u64,
     cached_sample_result: Option<CachedSampleResult>,
@@ -58,6 +62,8 @@ pub(crate) struct GpuSparkleFlinger {
     preview_surface_allocation_count: usize,
     #[cfg(test)]
     defer_preview_resolve_once: bool,
+    #[cfg(test)]
+    defer_preview_map_resolve_once: bool,
 }
 
 struct GpuCompositorPipeline {
@@ -102,8 +108,9 @@ struct GpuPreviewSurfaceSet {
     capacity_height: u32,
     padded_bytes_per_row: u32,
     output_buffer: wgpu::Buffer,
+    readbacks: [wgpu::Buffer; PREVIEW_READBACK_SLOT_COUNT],
+    next_readback_slot: usize,
     bind_groups: GpuPreviewScaleBindGroups,
-    readback: wgpu::Buffer,
     readback_surfaces: RenderSurfacePool,
     cached_readback_surfaces: Vec<CachedPreviewReadbackSurfaces>,
     cached_scale_params: Option<[u8; PREVIEW_SCALE_PARAM_BYTES]>,
@@ -173,16 +180,30 @@ struct CachedPreviewReadbackSurfaces {
 
 #[derive(Debug, Clone)]
 enum PendingPreviewReadback {
-    CompositorSurface {
-        width: u32,
-        height: u32,
-        readback_key: Option<CachedReadbackKey>,
-    },
     PreviewBuffer {
         request: PreviewSurfaceRequest,
         readback_key: Option<CachedReadbackKey>,
         cache_as_full_size: bool,
+        slot: usize,
     },
+}
+
+struct PendingPreviewMap {
+    readback: PendingPreviewReadback,
+    used_bytes: u64,
+    receiver: mpsc::Receiver<std::result::Result<(), wgpu::BufferAsyncError>>,
+}
+
+impl PendingPreviewReadback {
+    fn matches_request(&self, request: PreviewSurfaceRequest) -> bool {
+        matches!(
+            self,
+            Self::PreviewBuffer {
+                request: pending_request,
+                ..
+            } if *pending_request == request
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -277,6 +298,7 @@ impl GpuSparkleFlinger {
             pending_output_submission: None,
             pending_preview_readback: None,
             pending_preview_submission: None,
+            pending_preview_map: None,
             ready_preview_surface: None,
             output_generation: 0,
             cached_sample_result: None,
@@ -284,6 +306,8 @@ impl GpuSparkleFlinger {
             preview_surface_allocation_count: 0,
             #[cfg(test)]
             defer_preview_resolve_once: false,
+            #[cfg(test)]
+            defer_preview_map_resolve_once: false,
         })
     }
 
@@ -299,10 +323,7 @@ impl GpuSparkleFlinger {
         GpuSamplingPlan::supports_prepared_zones(prepared_zones)
     }
 
-    fn cached_preview_surface(
-        &self,
-        key: &CachedPreviewSurfaceKey,
-    ) -> Option<PublishedSurface> {
+    fn cached_preview_surface(&self, key: &CachedPreviewSurfaceKey) -> Option<PublishedSurface> {
         self.cached_preview_surfaces
             .iter()
             .find(|cached| &cached.key == key)
@@ -321,13 +342,8 @@ impl GpuSparkleFlinger {
         {
             self.cached_preview_surfaces.remove(index);
         }
-        self.cached_preview_surfaces.insert(
-            0,
-            CachedPreviewSurface {
-                key,
-                surface,
-            },
-        );
+        self.cached_preview_surfaces
+            .insert(0, CachedPreviewSurface { key, surface });
         if self.cached_preview_surfaces.len() > MAX_CACHED_PREVIEW_SURFACES {
             self.cached_preview_surfaces
                 .truncate(MAX_CACHED_PREVIEW_SURFACES);
@@ -347,19 +363,25 @@ impl GpuSparkleFlinger {
             && layer.is_bypass_candidate()
             && preview_request_matches_plan(preview_surface_request, plan.width, plan.height)
         {
-            self.pending_output_submission = None;
-            self.pending_preview_readback = None;
-            self.pending_preview_submission = None;
-            self.ready_preview_surface = None;
-            return Ok(self.compose_bypass_layer(
+            return self.compose_bypass_layer(
                 plan,
                 readback_key,
                 layer,
                 requires_cpu_sampling_canvas,
                 preview_surface_request,
-            ));
+            );
         }
 
+        if matches!(
+            self.surfaces,
+            Some(GpuCompositorSurfaceSet {
+                width: current_width,
+                height: current_height,
+                ..
+            }) if current_width != plan.width || current_height != plan.height
+        ) {
+            self.discard_superseded_preview_work();
+        }
         self.ensure_surface_size(plan.width, plan.height);
         if let Some(key) = readback_key.as_ref()
             && self.current_output.is_some()
@@ -376,20 +398,40 @@ impl GpuSparkleFlinger {
                     request,
                 })
             {
-                self.pending_output_submission = None;
+                self.discard_superseded_preview_work();
                 return Ok(gpu_composed_with_preview_surface(cached));
             }
-            if let Some(cached) = self.cached_readback_surface.as_ref()
-                && cached.key.as_ref() == Some(key)
-                && preview_request_matches_plan(preview_surface_request, plan.width, plan.height)
+            if let Some(surface) = self
+                .cached_readback_surface
+                .as_ref()
+                .filter(|cached| {
+                    cached.key.as_ref() == Some(key)
+                        && preview_request_matches_plan(
+                            preview_surface_request,
+                            plan.width,
+                            plan.height,
+                        )
+                })
+                .map(|cached| cached.surface.clone())
             {
-                self.pending_output_submission = None;
+                self.discard_superseded_preview_work();
                 return Ok(gpu_composed_from_surface(
-                    cached.surface.clone(),
+                    surface,
                     requires_cpu_sampling_canvas,
                 ));
             }
+            if !requires_cpu_sampling_canvas
+                && let Some(request) = preview_surface_request
+                && self.has_pending_or_ready_preview_for(request)
+            {
+                return Ok(gpu_composed_without_surfaces());
+            }
             let pending_output_submission = self.pending_output_submission.take();
+            if preview_surface_request.is_some() && !requires_cpu_sampling_canvas {
+                self.clear_superseded_preview_outputs();
+            } else {
+                self.discard_ready_and_pending_preview_surface();
+            }
             return self.read_back_current_output_surface(
                 plan.width,
                 plan.height,
@@ -399,10 +441,11 @@ impl GpuSparkleFlinger {
                 pending_output_submission,
             );
         }
-        self.pending_output_submission = None;
-        self.pending_preview_readback = None;
-        self.pending_preview_submission = None;
-        self.ready_preview_surface = None;
+        if preview_surface_request.is_some() && !requires_cpu_sampling_canvas {
+            self.clear_superseded_preview_outputs();
+        } else {
+            self.discard_superseded_preview_work();
+        }
 
         let surfaces = self
             .surfaces
@@ -525,39 +568,7 @@ impl GpuSparkleFlinger {
             (source_view, surfaces.width, surfaces.height)
         };
         let pending_preview_readback = self.pending_preview_readback.take();
-        let extra_surface_readback = match pending_preview_readback.as_ref() {
-            Some(PendingPreviewReadback::CompositorSurface { width, height, .. }) => {
-                let surfaces = self
-                    .surfaces
-                    .as_mut()
-                    .context("GPU preview finalize requested before compositor surfaces existed")?;
-                Some(GpuSurfaceReadback {
-                    buffer: &surfaces.readback,
-                    used_bytes: u64::from(surfaces.padded_bytes_per_row) * u64::from(*height),
-                    width: *width,
-                    height: *height,
-                    padded_bytes_per_row: surfaces.padded_bytes_per_row,
-                    surfaces: &mut surfaces.readback_surfaces,
-                })
-            }
-            Some(PendingPreviewReadback::PreviewBuffer { request, .. }) => {
-                let preview_surfaces = self
-                    .preview_surfaces
-                    .as_mut()
-                    .context("GPU scaled preview finalize requested before preview surfaces existed")?;
-                Some(GpuSurfaceReadback {
-                    buffer: &preview_surfaces.readback,
-                    used_bytes: u64::from(preview_surfaces.padded_bytes_per_row)
-                        * u64::from(request.height),
-                    width: request.width,
-                    height: request.height,
-                    padded_bytes_per_row: preview_surfaces.padded_bytes_per_row,
-                    surfaces: &mut preview_surfaces.readback_surfaces,
-                })
-            }
-            None => None,
-        };
-        let (sampled, submission_index, preview_surface) = self.spatial_sampler.sample_texture_into(
+        let sampling_dispatch = self.spatial_sampler.sample_texture_into(
             &self.device,
             &self.queue,
             &source_view,
@@ -566,50 +577,25 @@ impl GpuSparkleFlinger {
             prepared_zones,
             zones,
             pending_output_submission,
-            extra_surface_readback,
         )?;
-        if let Some(preview_surface) = preview_surface {
-            match pending_preview_readback {
-                Some(PendingPreviewReadback::CompositorSurface { readback_key, .. }) => {
-                    if let Some(key) = readback_key {
-                        self.cached_readback_surface = Some(CachedReadbackSurface {
-                            key: Some(key),
-                            surface: preview_surface.clone(),
-                        });
-                    }
+        if let Some(pending_preview_readback) = pending_preview_readback {
+            if sampling_dispatch.submission_index.is_some() {
+                if self.pending_preview_map.is_some() {
+                    self.discard_pending_preview_map();
                 }
-                Some(PendingPreviewReadback::PreviewBuffer {
-                    request,
-                    readback_key,
-                    cache_as_full_size,
-                }) => {
-                    if let Some(key) = readback_key {
-                        if cache_as_full_size {
-                            self.cached_readback_surface = Some(CachedReadbackSurface {
-                                key: Some(key),
-                                surface: preview_surface.clone(),
-                            });
-                        } else {
-                            self.store_cached_preview_surface(
-                                CachedPreviewSurfaceKey {
-                                    composition: key,
-                                    request,
-                                },
-                                preview_surface.clone(),
-                            );
-                        }
-                    }
-                }
-                None => {}
-            }
-            self.ready_preview_surface = Some(preview_surface);
-        } else if let Some(submission_index) = submission_index {
-            self.pending_preview_readback = pending_preview_readback;
-            if self.pending_preview_readback.is_some() {
-                self.pending_preview_submission = Some(submission_index);
+                self.begin_pending_preview_map(pending_preview_readback)?;
+                self.pending_preview_submission = None;
+            } else {
+                self.pending_preview_readback = Some(pending_preview_readback);
             }
         }
-        if sampled && let Some(sampling_plan) = sampling_plan {
+        if let Some(pending_readback) = sampling_dispatch.pending_readback {
+            self.spatial_sampler
+                .finish_pending_readback(&self.device, pending_readback, zones)?;
+        }
+        if sampling_dispatch.sampled
+            && let Some(sampling_plan) = sampling_plan
+        {
             let mut cached_zones = self
                 .cached_sample_result
                 .take()
@@ -623,28 +609,48 @@ impl GpuSparkleFlinger {
                 zones: cached_zones,
             });
         }
-        Ok(sampled)
+        Ok(sampling_dispatch.sampled)
     }
 
     pub(crate) fn resolve_preview_surface(&mut self) -> Result<Option<PublishedSurface>> {
+        self.submit_pending_preview_work()?;
+
+        if self.pending_preview_map.is_some() {
+            if let Some(surface) = self.try_finish_pending_preview_map()? {
+                self.pending_preview_submission = None;
+                self.pending_preview_readback = None;
+                return Ok(Some(surface));
+            }
+            if let Some(submission_index) = self.pending_preview_submission.clone()
+                && self.preview_submission_ready(submission_index)?
+            {
+                self.pending_preview_submission = None;
+            }
+            return Ok(None);
+        }
+
+        if self.pending_preview_submission.is_some() || self.pending_preview_readback.is_some() {
+            let Some(submission_index) = self.pending_preview_submission.take() else {
+                return Ok(None);
+            };
+            if !self.preview_submission_ready(submission_index.clone())? {
+                self.pending_preview_submission = Some(submission_index);
+                return Ok(None);
+            }
+            let Some(pending_preview_readback) = self.pending_preview_readback.take() else {
+                return Ok(None);
+            };
+            if self.pending_preview_map.is_some() {
+                self.discard_pending_preview_map();
+            }
+            self.begin_pending_preview_map(pending_preview_readback)?;
+            return self.try_finish_pending_preview_map();
+        }
+
         if let Some(surface) = self.ready_preview_surface.take() {
             return Ok(Some(surface));
         }
-
-        self.submit_pending_preview_work()?;
-
-        let Some(submission_index) = self.pending_preview_submission.take() else {
-            return Ok(None);
-        };
-        if !self.preview_submission_ready(submission_index.clone())? {
-            self.pending_preview_submission = Some(submission_index);
-            return Ok(None);
-        }
-        let Some(pending_preview_readback) = self.pending_preview_readback.take() else {
-            return Ok(None);
-        };
-        self.finish_pending_preview_readback(pending_preview_readback, submission_index)
-            .map(Some)
+        self.try_finish_pending_preview_map()
     }
 
     pub(crate) fn submit_pending_preview_work(&mut self) -> Result<()> {
@@ -654,8 +660,36 @@ impl GpuSparkleFlinger {
         let Some(encoder) = self.pending_output_submission.take() else {
             return Ok(());
         };
-        self.pending_preview_submission = Some(self.queue.submit(Some(encoder.finish())));
+        if self.pending_preview_map.is_some() {
+            self.discard_pending_preview_map();
+        }
+        let submission_index = self.queue.submit(Some(encoder.finish()));
+        let pending_preview_readback = self
+            .pending_preview_readback
+            .take()
+            .expect("pending preview readback should exist before GPU preview submit");
+        self.begin_pending_preview_map(pending_preview_readback)?;
+        self.pending_preview_submission = Some(submission_index);
         Ok(())
+    }
+
+    fn discard_ready_and_pending_preview_surface(&mut self) {
+        self.pending_preview_readback = None;
+        self.pending_preview_submission = None;
+        self.discard_pending_preview_map();
+        self.ready_preview_surface = None;
+    }
+
+    fn clear_superseded_preview_outputs(&mut self) {
+        self.pending_output_submission = None;
+        self.pending_preview_readback = None;
+        self.pending_preview_submission = None;
+        self.ready_preview_surface = None;
+    }
+
+    fn discard_superseded_preview_work(&mut self) {
+        self.clear_superseded_preview_outputs();
+        self.discard_pending_preview_map();
     }
 
     fn preview_submission_ready(
@@ -689,6 +723,7 @@ impl GpuSparkleFlinger {
             return;
         }
 
+        self.discard_pending_preview_map();
         self.surfaces = Some(GpuCompositorSurfaceSet::new(
             &self.device,
             &self.pipeline,
@@ -703,6 +738,7 @@ impl GpuSparkleFlinger {
         self.pending_output_submission = None;
         self.pending_preview_readback = None;
         self.pending_preview_submission = None;
+        self.pending_preview_map = None;
         self.ready_preview_surface = None;
         self.cached_sample_result = None;
     }
@@ -718,6 +754,97 @@ impl GpuSparkleFlinger {
         self.defer_preview_resolve_once = true;
     }
 
+    #[cfg(test)]
+    fn defer_next_preview_map_resolve(&mut self) {
+        self.defer_preview_map_resolve_once = true;
+    }
+
+    fn begin_pending_preview_map(
+        &mut self,
+        pending_preview_readback: PendingPreviewReadback,
+    ) -> Result<()> {
+        let PendingPreviewReadback::PreviewBuffer { request, slot, .. } = &pending_preview_readback;
+        let preview_surfaces = self
+            .preview_surfaces
+            .as_ref()
+            .context("GPU scaled preview map requested before preview surfaces existed")?;
+        let used_bytes =
+            u64::from(preview_surfaces.padded_bytes_per_row) * u64::from(request.height);
+        let slice = preview_surfaces.readback(*slot).slice(..used_bytes);
+        let (sender, receiver) = mpsc::channel::<std::result::Result<(), wgpu::BufferAsyncError>>();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        self.pending_preview_map = Some(PendingPreviewMap {
+            readback: pending_preview_readback,
+            used_bytes,
+            receiver,
+        });
+        Ok(())
+    }
+
+    fn try_finish_pending_preview_map(&mut self) -> Result<Option<PublishedSurface>> {
+        let Some(pending_preview_map) = self.pending_preview_map.as_ref() else {
+            return Ok(None);
+        };
+
+        self.device
+            .poll(wgpu::PollType::Poll)
+            .context("GPU preview map poll failed")?;
+
+        #[cfg(test)]
+        if std::mem::take(&mut self.defer_preview_map_resolve_once) {
+            return Ok(None);
+        }
+
+        match pending_preview_map.receiver.try_recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                self.pending_preview_map = None;
+                return Err(error).context("GPU preview buffer mapping failed");
+            }
+            Err(TryRecvError::Empty) => return Ok(None),
+            Err(TryRecvError::Disconnected) => {
+                self.pending_preview_map = None;
+                anyhow::bail!("GPU preview channel closed before map completion");
+            }
+        }
+
+        let pending_preview_map = self
+            .pending_preview_map
+            .take()
+            .expect("GPU preview map should remain pending until completion");
+        self.finish_mapped_preview_surface(
+            pending_preview_map.readback,
+            pending_preview_map.used_bytes,
+        )
+        .map(Some)
+    }
+
+    fn has_pending_or_ready_preview_for(&self, request: PreviewSurfaceRequest) -> bool {
+        self.ready_preview_surface.as_ref().is_some_and(|surface| {
+            surface.width() == request.width && surface.height() == request.height
+        }) || self
+            .pending_preview_readback
+            .as_ref()
+            .is_some_and(|pending| pending.matches_request(request))
+            || self
+                .pending_preview_map
+                .as_ref()
+                .is_some_and(|pending| pending.readback.matches_request(request))
+    }
+
+    fn discard_pending_preview_map(&mut self) {
+        let Some(pending_preview_map) = self.pending_preview_map.take() else {
+            return;
+        };
+
+        let PendingPreviewReadback::PreviewBuffer { slot, .. } = pending_preview_map.readback;
+        if let Some(preview_surfaces) = self.preview_surfaces.as_ref() {
+            preview_surfaces.readback(slot).unmap();
+        }
+    }
+
     fn compose_bypass_layer(
         &mut self,
         plan: &CompositionPlan,
@@ -725,7 +852,7 @@ impl GpuSparkleFlinger {
         layer: &CompositionLayer,
         requires_cpu_sampling_canvas: bool,
         preview_surface_request: Option<PreviewSurfaceRequest>,
-    ) -> ComposedFrameSet {
+    ) -> Result<ComposedFrameSet> {
         let requires_preview_surface = preview_surface_request.is_some();
         let same_surface_canvas = match &layer.frame {
             ProducerFrame::Canvas(canvas) => {
@@ -744,7 +871,7 @@ impl GpuSparkleFlinger {
         }) || same_surface_canvas;
         if same_output {
             if !requires_cpu_sampling_canvas && !requires_preview_surface {
-                return gpu_bypassed_without_surfaces();
+                return Ok(gpu_bypassed_without_surfaces());
             }
             if !requires_cpu_sampling_canvas
                 && let Some(request) = preview_surface_request
@@ -755,19 +882,27 @@ impl GpuSparkleFlinger {
                     request,
                 })
             {
-                return gpu_composed_with_preview_surface(cached);
+                self.discard_superseded_preview_work();
+                return Ok(gpu_composed_with_preview_surface(cached));
             }
-            if let Some(cached) = self.cached_readback_surface.as_ref()
-                && preview_request_matches_plan(preview_surface_request, plan.width, plan.height)
+            if let Some(surface) = self
+                .cached_readback_surface
+                .as_ref()
+                .filter(|_| {
+                    preview_request_matches_plan(preview_surface_request, plan.width, plan.height)
+                })
+                .map(|cached| cached.surface.clone())
             {
-                return gpu_bypassed_surface_frame(
-                    &cached.surface,
+                self.discard_superseded_preview_work();
+                return Ok(gpu_bypassed_surface_frame(
+                    &surface,
                     requires_cpu_sampling_canvas,
                     requires_preview_surface,
-                );
+                ));
             }
         }
 
+        self.discard_superseded_preview_work();
         self.ensure_surface_size(plan.width, plan.height);
         if let Some(surfaces) = self.surfaces.as_mut() {
             upload_frame_into_cached_texture(
@@ -810,7 +945,8 @@ impl GpuSparkleFlinger {
             surface,
         });
         composed.backend = CompositorBackendKind::Gpu;
-        composed
+        self.ready_preview_surface = None;
+        Ok(composed)
     }
 
     fn read_back_current_output_surface(
@@ -825,9 +961,7 @@ impl GpuSparkleFlinger {
         let Some(current_output) = self.current_output else {
             anyhow::bail!("GPU readback requested without a composed output surface");
         };
-        if !requires_cpu_sampling_canvas
-            && let Some(request) = preview_surface_request
-        {
+        if !requires_cpu_sampling_canvas && let Some(request) = preview_surface_request {
             return self.stage_preview_surface_readback(
                 current_output,
                 width,
@@ -870,15 +1004,7 @@ impl GpuSparkleFlinger {
             texture_extent(width, height),
         );
         if !requires_cpu_sampling_canvas {
-            self.pending_output_submission = Some(encoder);
-            self.pending_preview_readback = Some(PendingPreviewReadback::CompositorSurface {
-                width,
-                height,
-                readback_key,
-            });
-            self.pending_preview_submission = None;
-            self.ready_preview_surface = None;
-            return Ok(gpu_composed_without_surfaces());
+            anyhow::bail!("GPU preview readback requires an explicit preview surface request");
         }
 
         let readback_buffer = &surfaces.readback;
@@ -908,10 +1034,19 @@ impl GpuSparkleFlinger {
     }
 
     fn ensure_preview_surface_size(&mut self, width: u32, height: u32) -> Result<()> {
+        if self
+            .preview_surfaces
+            .as_ref()
+            .is_some_and(|preview_surfaces| {
+                preview_surfaces.width == width && preview_surfaces.height == height
+            })
+        {
+            return Ok(());
+        }
+        if self.preview_surfaces.is_some() {
+            self.discard_pending_preview_map();
+        }
         if let Some(preview_surfaces) = self.preview_surfaces.as_mut() {
-            if preview_surfaces.width == width && preview_surfaces.height == height {
-                return Ok(());
-            }
             if preview_surfaces.fits_request(width, height) {
                 preview_surfaces.reconfigure(width, height);
                 return Ok(());
@@ -919,10 +1054,9 @@ impl GpuSparkleFlinger {
         }
 
         let (front_view, back_view) = {
-            let surfaces = self
-                .surfaces
-                .as_ref()
-                .context("GPU preview surfaces requested before compositor surfaces were allocated")?;
+            let surfaces = self.surfaces.as_ref().context(
+                "GPU preview surfaces requested before compositor surfaces were allocated",
+            )?;
             (surfaces.front.view.clone(), surfaces.back.view.clone())
         };
 
@@ -964,10 +1098,17 @@ impl GpuSparkleFlinger {
         }
 
         self.ensure_preview_surface_size(request.width, request.height)?;
+        let mapped_readback_slot = self
+            .pending_preview_map
+            .as_ref()
+            .map(|pending| match &pending.readback {
+                PendingPreviewReadback::PreviewBuffer { slot, .. } => *slot,
+            });
         let preview_surfaces = self
             .preview_surfaces
             .as_mut()
             .expect("preview surfaces should exist after allocation");
+        let readback_slot = preview_surfaces.select_readback_slot(mapped_readback_slot);
         let bind_group = match current_output {
             GpuCompositorOutputSurface::Front => &preview_surfaces.bind_groups.front_to_preview,
             GpuCompositorOutputSurface::Back => &preview_surfaces.bind_groups.back_to_preview,
@@ -1005,7 +1146,7 @@ impl GpuSparkleFlinger {
         encoder.copy_buffer_to_buffer(
             &preview_surfaces.output_buffer,
             0,
-            &preview_surfaces.readback,
+            preview_surfaces.readback(readback_slot),
             0,
             u64::from(preview_surfaces.padded_bytes_per_row) * u64::from(request.height),
         );
@@ -1014,87 +1155,55 @@ impl GpuSparkleFlinger {
             request,
             readback_key,
             cache_as_full_size,
+            slot: readback_slot,
         });
         self.pending_preview_submission = None;
-        self.ready_preview_surface = None;
         Ok(gpu_composed_without_surfaces())
     }
 
-    fn finish_pending_preview_readback(
+    fn finish_mapped_preview_surface(
         &mut self,
         pending_preview_readback: PendingPreviewReadback,
-        submission_index: wgpu::SubmissionIndex,
+        used_bytes: u64,
     ) -> Result<PublishedSurface> {
-        match pending_preview_readback {
-            PendingPreviewReadback::CompositorSurface {
-                width,
-                height,
-                readback_key,
-            } => {
-                let surfaces = self
-                    .surfaces
-                    .as_mut()
-                    .context("GPU preview finalize requested before compositor surfaces existed")?;
-                let preview_surface = read_back_texture_into_surface(
-                    &self.device,
-                    &surfaces.readback,
-                    u64::from(surfaces.padded_bytes_per_row) * u64::from(height),
-                    width,
-                    height,
-                    surfaces.padded_bytes_per_row,
-                    submission_index,
-                    &mut surfaces.readback_surfaces,
-                    #[cfg(test)]
-                    &mut surfaces.last_readback_bytes,
-                )?;
-                if let Some(key) = readback_key {
-                    self.cached_readback_surface = Some(CachedReadbackSurface {
-                        key: Some(key),
-                        surface: preview_surface.clone(),
-                    });
-                }
-                Ok(preview_surface)
-            }
-            PendingPreviewReadback::PreviewBuffer {
-                request,
-                readback_key,
-                cache_as_full_size,
-            } => {
-                let preview_surfaces = self
-                    .preview_surfaces
-                    .as_mut()
-                    .context("GPU scaled preview finalize requested before preview surfaces existed")?;
-                let preview_surface = read_back_texture_into_surface(
-                    &self.device,
-                    &preview_surfaces.readback,
-                    u64::from(preview_surfaces.padded_bytes_per_row) * u64::from(request.height),
-                    request.width,
-                    request.height,
-                    preview_surfaces.padded_bytes_per_row,
-                    submission_index,
-                    &mut preview_surfaces.readback_surfaces,
-                    #[cfg(test)]
-                    &mut preview_surfaces.last_readback_bytes,
-                )?;
-                if let Some(key) = readback_key {
-                    if cache_as_full_size {
-                        self.cached_readback_surface = Some(CachedReadbackSurface {
-                            key: Some(key),
-                            surface: preview_surface.clone(),
-                        });
-                    } else {
-                        self.store_cached_preview_surface(
-                            CachedPreviewSurfaceKey {
-                                composition: key,
-                                request,
-                            },
-                            preview_surface.clone(),
-                        );
-                    }
-                }
-                Ok(preview_surface)
+        let PendingPreviewReadback::PreviewBuffer {
+            request,
+            readback_key,
+            cache_as_full_size,
+            slot,
+        } = pending_preview_readback;
+        let preview_surfaces = self
+            .preview_surfaces
+            .as_mut()
+            .context("GPU scaled preview finalize requested before preview surfaces existed")?;
+        let readback = preview_surfaces.readback(slot).clone();
+        let preview_surface = copy_mapped_readback_buffer_into_surface(
+            &readback,
+            used_bytes,
+            request.width,
+            request.height,
+            preview_surfaces.padded_bytes_per_row,
+            &mut preview_surfaces.readback_surfaces,
+            #[cfg(test)]
+            &mut preview_surfaces.last_readback_bytes,
+        )?;
+        if let Some(key) = readback_key {
+            if cache_as_full_size {
+                self.cached_readback_surface = Some(CachedReadbackSurface {
+                    key: Some(key),
+                    surface: preview_surface.clone(),
+                });
+            } else {
+                self.store_cached_preview_surface(
+                    CachedPreviewSurfaceKey {
+                        composition: key,
+                        request,
+                    },
+                    preview_surface.clone(),
+                );
             }
         }
+        Ok(preview_surface)
     }
 }
 
@@ -1330,13 +1439,19 @@ impl GpuPreviewSurfaceSet {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("SparkleFlinger GPU preview readback"),
-            size: u64::from(width)
-                .saturating_mul(u64::from(height))
-                .saturating_mul(BYTES_PER_PIXEL as u64),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
+        let readbacks = std::array::from_fn(|slot| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(match slot {
+                    0 => "SparkleFlinger GPU preview readback A",
+                    1 => "SparkleFlinger GPU preview readback B",
+                    _ => "SparkleFlinger GPU preview readback",
+                }),
+                size: u64::from(width)
+                    .saturating_mul(u64::from(height))
+                    .saturating_mul(BYTES_PER_PIXEL as u64),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            })
         });
         Self {
             width,
@@ -1344,6 +1459,8 @@ impl GpuPreviewSurfaceSet {
             capacity_width: width,
             capacity_height: height,
             padded_bytes_per_row,
+            readbacks,
+            next_readback_slot: 0,
             bind_groups: GpuPreviewScaleBindGroups::new(
                 device,
                 pipeline,
@@ -1352,7 +1469,6 @@ impl GpuPreviewSurfaceSet {
                 &output_buffer,
             ),
             output_buffer,
-            readback,
             readback_surfaces: RenderSurfacePool::new(SurfaceDescriptor::rgba8888(width, height)),
             cached_readback_surfaces: Vec::with_capacity(MAX_CACHED_PREVIEW_READBACK_POOLS),
             cached_scale_params: None,
@@ -1398,6 +1514,23 @@ impl GpuPreviewSurfaceSet {
         self.padded_bytes_per_row = width * BYTES_PER_PIXEL as u32;
     }
 
+    fn select_readback_slot(&mut self, mapped_slot: Option<usize>) -> usize {
+        for offset in 0..PREVIEW_READBACK_SLOT_COUNT {
+            let slot = (self.next_readback_slot + offset) % PREVIEW_READBACK_SLOT_COUNT;
+            if Some(slot) != mapped_slot {
+                self.next_readback_slot = (slot + 1) % PREVIEW_READBACK_SLOT_COUNT;
+                return slot;
+            }
+        }
+        mapped_slot
+            .map(|slot| (slot + 1) % PREVIEW_READBACK_SLOT_COUNT)
+            .unwrap_or(0)
+    }
+
+    fn readback(&self, slot: usize) -> &wgpu::Buffer {
+        &self.readbacks[slot]
+    }
+
     fn take_cached_readback_surfaces(
         &mut self,
         request: PreviewSurfaceRequest,
@@ -1420,10 +1553,8 @@ impl GpuPreviewSurfaceSet {
         {
             self.cached_readback_surfaces.remove(index);
         }
-        self.cached_readback_surfaces.insert(
-            0,
-            CachedPreviewReadbackSurfaces { request, surfaces },
-        );
+        self.cached_readback_surfaces
+            .insert(0, CachedPreviewReadbackSurfaces { request, surfaces });
         if self.cached_readback_surfaces.len() > MAX_CACHED_PREVIEW_READBACK_POOLS {
             self.cached_readback_surfaces
                 .truncate(MAX_CACHED_PREVIEW_READBACK_POOLS);
@@ -1850,6 +1981,32 @@ fn read_back_texture_into_surface(
         .context("GPU readback channel closed before map completion")?
         .context("GPU readback buffer mapping failed")?;
 
+    copy_mapped_readback_buffer_into_surface(
+        buffer,
+        used_bytes,
+        width,
+        height,
+        padded_bytes_per_row,
+        surfaces,
+        #[cfg(test)]
+        last_readback_bytes,
+    )
+}
+
+fn copy_mapped_readback_buffer_into_surface(
+    buffer: &wgpu::Buffer,
+    used_bytes: u64,
+    width: u32,
+    height: u32,
+    padded_bytes_per_row: u32,
+    surfaces: &mut RenderSurfacePool,
+    #[cfg(test)] last_readback_bytes: &mut u64,
+) -> Result<PublishedSurface> {
+    #[cfg(test)]
+    {
+        *last_readback_bytes = used_bytes;
+    }
+    let slice = buffer.slice(..used_bytes);
     let mapped = slice.get_mapped_range();
     let unpadded_bytes_per_row = width * BYTES_PER_PIXEL as u32;
     let mut lease = surfaces
@@ -2014,6 +2171,8 @@ enum ComposeShaderMode {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+
     use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_core::types::canvas::{
         Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
@@ -2024,7 +2183,7 @@ mod tests {
         StripDirection,
     };
 
-    use super::{GpuSparkleFlinger, PendingPreviewReadback};
+    use super::{GpuSparkleFlinger, PendingPreviewMap, PendingPreviewReadback};
     use crate::render_thread::producer_queue::ProducerFrame;
     use crate::render_thread::sparkleflinger::{
         CompositionLayer, CompositionPlan, PreviewSurfaceRequest, cpu::CpuSparkleFlinger,
@@ -2032,6 +2191,12 @@ mod tests {
 
     fn solid_canvas(color: Rgba) -> Canvas {
         let mut canvas = Canvas::new(4, 4);
+        canvas.fill(color);
+        canvas
+    }
+
+    fn solid_canvas_with_size(width: u32, height: u32, color: Rgba) -> Canvas {
+        let mut canvas = Canvas::new(width, height);
         canvas.fill(color);
         canvas
     }
@@ -2044,12 +2209,7 @@ mod tests {
                 canvas.set_pixel(
                     x,
                     y,
-                    Rgba::new(
-                        base,
-                        base.wrapping_add(53),
-                        base.wrapping_add(101),
-                        255,
-                    ),
+                    Rgba::new(base, base.wrapping_add(53), base.wrapping_add(101), 255),
                 );
             }
         }
@@ -2070,9 +2230,7 @@ mod tests {
         })
     }
 
-    fn resolve_preview_surface_blocking(
-        compositor: &mut GpuSparkleFlinger,
-    ) -> PublishedSurface {
+    fn resolve_preview_surface_blocking(compositor: &mut GpuSparkleFlinger) -> PublishedSurface {
         loop {
             if let Some(surface) = compositor
                 .resolve_preview_surface()
@@ -2081,17 +2239,24 @@ mod tests {
                 return surface;
             }
 
-            let submission_index = compositor
-                .pending_preview_submission
-                .clone()
-                .expect("pending preview submission should remain available");
-            compositor
-                .device
-                .poll(wgpu::PollType::Wait {
-                    submission_index: Some(submission_index),
-                    timeout: None,
-                })
-                .expect("GPU preview wait should succeed");
+            if let Some(submission_index) = compositor.pending_preview_submission.clone() {
+                compositor
+                    .device
+                    .poll(wgpu::PollType::Wait {
+                        submission_index: Some(submission_index),
+                        timeout: None,
+                    })
+                    .expect("GPU preview wait should succeed");
+            } else {
+                assert!(
+                    compositor.pending_preview_map.is_some(),
+                    "pending preview work should remain available",
+                );
+                compositor
+                    .device
+                    .poll(wgpu::PollType::Poll)
+                    .expect("GPU preview map poll should succeed");
+            }
         }
     }
 
@@ -2201,6 +2366,24 @@ mod tests {
     }
 
     #[test]
+    fn gpu_resize_clears_ready_preview_surface() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+
+        compositor.ready_preview_surface = Some(PublishedSurface::from_owned_canvas(
+            solid_canvas_with_size(4, 4, Rgba::new(12, 34, 56, 255)),
+            0,
+            0,
+        ));
+
+        compositor.ensure_surface_size(8, 8);
+
+        assert!(compositor.ready_preview_surface.is_none());
+    }
+
+    #[test]
     fn gpu_compositor_matches_cpu_alpha_composition() {
         let mut compositor = match GpuSparkleFlinger::new() {
             Ok(compositor) => compositor,
@@ -2220,7 +2403,8 @@ mod tests {
                 ),
             ],
         );
-        let expected = CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+        let expected =
+            CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
         let composed = compositor
             .compose(&plan, true, full_preview_request(&plan))
             .expect("GPU composition should succeed for replace + alpha plans");
@@ -2259,7 +2443,8 @@ mod tests {
                 ),
             ],
         );
-        let expected = CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+        let expected =
+            CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
         let composed = compositor
             .compose(&plan, true, full_preview_request(&plan))
             .expect("GPU composition should succeed for add plans");
@@ -2298,7 +2483,8 @@ mod tests {
                 ),
             ],
         );
-        let expected = CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+        let expected =
+            CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
         let composed = compositor
             .compose(&plan, true, full_preview_request(&plan))
             .expect("GPU composition should succeed for screen plans");
@@ -2501,10 +2687,7 @@ mod tests {
             4,
             vec![
                 CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
-                CompositionLayer::alpha(
-                    ProducerFrame::Canvas(patterned_canvas(96)),
-                    0.35,
-                ),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
             ],
         );
         let second_plan = CompositionPlan::with_layers(
@@ -2512,10 +2695,7 @@ mod tests {
             4,
             vec![
                 CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(33))),
-                CompositionLayer::alpha(
-                    ProducerFrame::Canvas(patterned_canvas(144)),
-                    0.35,
-                ),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(144)), 0.35),
             ],
         );
 
@@ -2555,9 +2735,11 @@ mod tests {
             4,
             4,
             vec![
-                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+                CompositionLayer::replace(ProducerFrame::Surface(slot_surface(Rgba::new(
+                    255, 32, 0, 255,
+                )))),
                 CompositionLayer::alpha(
-                    ProducerFrame::Canvas(patterned_canvas(96)),
+                    ProducerFrame::Surface(slot_surface(Rgba::new(32, 64, 255, 255))),
                     0.35,
                 ),
             ],
@@ -2594,10 +2776,12 @@ mod tests {
         assert_eq!(preview_surfaces.last_readback_bytes, 16);
         assert_eq!(compositor.preview_surface_allocation_count, 1);
 
-        compositor
+        let composed = compositor
             .compose(&plan, false, Some(large_request))
             .expect("restored scaled preview compose should succeed");
-        let _ = resolve_preview_surface_blocking(&mut compositor);
+        let _ = composed
+            .preview_surface
+            .unwrap_or_else(|| resolve_preview_surface_blocking(&mut compositor));
         assert_eq!(compositor.preview_surface_allocation_count, 1);
     }
 
@@ -2612,10 +2796,7 @@ mod tests {
             4,
             vec![
                 CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
-                CompositionLayer::alpha(
-                    ProducerFrame::Canvas(patterned_canvas(96)),
-                    0.35,
-                ),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
             ],
         );
         let second_plan = CompositionPlan::with_layers(
@@ -2623,10 +2804,7 @@ mod tests {
             4,
             vec![
                 CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(24))),
-                CompositionLayer::alpha(
-                    ProducerFrame::Canvas(patterned_canvas(144)),
-                    0.35,
-                ),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(144)), 0.35),
             ],
         );
         let third_plan = CompositionPlan::with_layers(
@@ -2634,10 +2812,7 @@ mod tests {
             4,
             vec![
                 CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(48))),
-                CompositionLayer::alpha(
-                    ProducerFrame::Canvas(patterned_canvas(192)),
-                    0.35,
-                ),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(192)), 0.35),
             ],
         );
         let large_request = PreviewSurfaceRequest {
@@ -2733,10 +2908,7 @@ mod tests {
             4,
             vec![
                 CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
-                CompositionLayer::alpha(
-                    ProducerFrame::Canvas(patterned_canvas(96)),
-                    0.35,
-                ),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
             ],
         );
 
@@ -2757,12 +2929,56 @@ mod tests {
             .submit_pending_preview_work()
             .expect("GPU preview submit should succeed");
         assert!(compositor.pending_preview_submission.is_some());
+        assert!(compositor.pending_preview_readback.is_none());
+        assert!(compositor.pending_preview_map.is_some());
         assert!(compositor.pending_output_submission.is_none());
 
         let preview_surface = resolve_preview_surface_blocking(&mut compositor);
         assert_eq!(preview_surface.width(), 2);
         assert_eq!(preview_surface.height(), 2);
         assert!(compositor.pending_preview_submission.is_none());
+    }
+
+    #[test]
+    fn gpu_matching_pending_preview_submission_is_reused_on_identical_compose() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let base = slot_surface(Rgba::new(24, 96, 160, 255));
+        let overlay = slot_surface(Rgba::new(200, 48, 96, 255));
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Surface(base.clone())),
+                CompositionLayer::alpha(ProducerFrame::Surface(overlay.clone()), 0.35),
+            ],
+        );
+        let request = PreviewSurfaceRequest {
+            width: 2,
+            height: 2,
+        };
+
+        compositor
+            .compose(&plan, false, Some(request))
+            .expect("first compose should stage a scaled preview surface");
+        compositor
+            .submit_pending_preview_work()
+            .expect("GPU preview submit should succeed");
+
+        let composed = compositor
+            .compose(&plan, false, Some(request))
+            .expect("identical compose should reuse the pending preview map");
+        assert!(composed.preview_surface.is_none());
+        assert!(compositor.pending_preview_submission.is_some());
+        assert!(compositor.pending_preview_readback.is_none());
+        assert!(compositor.pending_preview_map.is_some());
+        assert!(compositor.pending_output_submission.is_none());
+
+        let preview_surface = resolve_preview_surface_blocking(&mut compositor);
+        assert_eq!(preview_surface.width(), 2);
+        assert_eq!(preview_surface.height(), 2);
     }
 
     #[test]
@@ -2776,10 +2992,7 @@ mod tests {
             4,
             vec![
                 CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
-                CompositionLayer::alpha(
-                    ProducerFrame::Canvas(patterned_canvas(96)),
-                    0.35,
-                ),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
             ],
         );
 
@@ -2808,7 +3021,8 @@ mod tests {
             .pending_preview_submission
             .clone()
             .expect("deferred preview should keep its submission pending");
-        assert!(compositor.pending_preview_readback.is_some());
+        assert!(compositor.pending_preview_readback.is_none());
+        assert!(compositor.pending_preview_map.is_some());
 
         compositor
             .device
@@ -2817,16 +3031,384 @@ mod tests {
                 timeout: None,
             })
             .expect("GPU preview wait should succeed");
+        compositor.defer_next_preview_map_resolve();
+
+        assert!(
+            compositor
+                .resolve_preview_surface()
+                .expect("deferred preview map finalize should not fail")
+                .is_none()
+        );
+        assert!(compositor.pending_preview_submission.is_none());
+        assert!(compositor.pending_preview_readback.is_none());
+        assert!(compositor.pending_preview_map.is_some());
 
         let preview_surface = resolve_preview_surface_blocking(&mut compositor);
         assert_eq!(preview_surface.width(), 2);
         assert_eq!(preview_surface.height(), 2);
         assert!(compositor.pending_preview_submission.is_none());
         assert!(compositor.pending_preview_readback.is_none());
+        assert!(compositor.pending_preview_map.is_none());
     }
 
     #[test]
-    fn gpu_sampler_resolves_pending_preview_surface_after_sampling() {
+    fn gpu_matching_pending_preview_map_is_reused_on_identical_compose() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let base = slot_surface(Rgba::new(24, 96, 160, 255));
+        let overlay = slot_surface(Rgba::new(200, 48, 96, 255));
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Surface(base.clone())),
+                CompositionLayer::alpha(ProducerFrame::Surface(overlay.clone()), 0.35),
+            ],
+        );
+        let request = PreviewSurfaceRequest {
+            width: 2,
+            height: 2,
+        };
+
+        compositor
+            .compose(&plan, false, Some(request))
+            .expect("first compose should stage a scaled preview surface");
+        compositor
+            .submit_pending_preview_work()
+            .expect("GPU preview submit should succeed");
+        compositor.defer_next_preview_resolve();
+        assert!(
+            compositor
+                .resolve_preview_surface()
+                .expect("deferred preview finalize should not fail")
+                .is_none()
+        );
+        let submission_index = compositor
+            .pending_preview_submission
+            .clone()
+            .expect("deferred preview should keep its submission pending");
+        compositor
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission_index),
+                timeout: None,
+            })
+            .expect("GPU preview wait should succeed");
+        compositor.defer_next_preview_map_resolve();
+        assert!(
+            compositor
+                .resolve_preview_surface()
+                .expect("deferred preview map finalize should not fail")
+                .is_none()
+        );
+
+        let composed = compositor
+            .compose(&plan, false, Some(request))
+            .expect("identical compose should reuse the pending preview map");
+        assert!(composed.preview_surface.is_none());
+        assert!(compositor.pending_preview_submission.is_none());
+        assert!(compositor.pending_preview_readback.is_none());
+        assert!(compositor.pending_preview_map.is_some());
+        assert!(compositor.pending_output_submission.is_none());
+
+        let preview_surface = resolve_preview_surface_blocking(&mut compositor);
+        assert_eq!(preview_surface.width(), 2);
+        assert_eq!(preview_surface.height(), 2);
+    }
+
+    #[test]
+    fn gpu_deferred_preview_is_superseded_by_next_compose() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let first_plan = CompositionPlan::single(
+            4,
+            4,
+            CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                255, 32, 0, 255,
+            )))),
+        );
+        let second_plan = CompositionPlan::single(
+            4,
+            4,
+            CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                32, 64, 255, 255,
+            )))),
+        );
+        let request = PreviewSurfaceRequest {
+            width: 2,
+            height: 2,
+        };
+
+        compositor
+            .compose(&first_plan, false, Some(request))
+            .expect("first compose should stage a preview surface");
+        compositor
+            .submit_pending_preview_work()
+            .expect("first preview submit should succeed");
+        compositor.defer_next_preview_resolve();
+        assert!(
+            compositor
+                .resolve_preview_surface()
+                .expect("deferred first preview finalize should not fail")
+                .is_none()
+        );
+
+        compositor
+            .compose(&second_plan, false, Some(request))
+            .expect("second compose should supersede the first deferred preview");
+        assert!(compositor.ready_preview_surface.is_none());
+        assert!(compositor.pending_preview_readback.is_some());
+
+        let preview = resolve_preview_surface_blocking(&mut compositor);
+        assert_eq!(&preview.rgba_bytes()[0..4], &[32, 64, 255, 255]);
+        assert!(
+            compositor
+                .resolve_preview_surface()
+                .expect("superseded preview resolve should not fail")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn gpu_fresh_preview_restage_uses_alternate_readback_slot() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let first_plan = CompositionPlan::single(
+            4,
+            4,
+            CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                255, 32, 0, 255,
+            )))),
+        );
+        let second_plan = CompositionPlan::single(
+            4,
+            4,
+            CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                32, 64, 255, 255,
+            )))),
+        );
+        let request = PreviewSurfaceRequest {
+            width: 2,
+            height: 2,
+        };
+
+        compositor
+            .compose(&first_plan, false, Some(request))
+            .expect("first compose should stage a preview surface");
+        compositor
+            .submit_pending_preview_work()
+            .expect("first preview submit should succeed");
+        compositor.defer_next_preview_resolve();
+        assert!(
+            compositor
+                .resolve_preview_surface()
+                .expect("deferred first preview finalize should not fail")
+                .is_none()
+        );
+        let first_submission = compositor
+            .pending_preview_submission
+            .clone()
+            .expect("first preview should keep its submission pending");
+        compositor
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(first_submission),
+                timeout: None,
+            })
+            .expect("first preview wait should succeed");
+        compositor.defer_next_preview_map_resolve();
+        assert!(
+            compositor
+                .resolve_preview_surface()
+                .expect("deferred first preview map finalize should not fail")
+                .is_none()
+        );
+
+        let first_slot = match compositor.pending_preview_map.as_ref() {
+            Some(PendingPreviewMap {
+                readback: PendingPreviewReadback::PreviewBuffer { slot, .. },
+                ..
+            }) => *slot,
+            _ => panic!("first preview should be waiting on a preview-buffer map"),
+        };
+
+        compositor
+            .compose(&second_plan, false, Some(request))
+            .expect("second compose should stage a newer preview surface");
+        let second_slot = match compositor.pending_preview_readback.as_ref() {
+            Some(PendingPreviewReadback::PreviewBuffer { slot, .. }) => *slot,
+            _ => panic!("second preview should keep a staged preview-buffer readback"),
+        };
+        assert_ne!(first_slot, second_slot);
+
+        compositor
+            .submit_pending_preview_work()
+            .expect("second preview submit should succeed");
+        let second_submission = compositor
+            .pending_preview_submission
+            .clone()
+            .expect("second preview should keep its submission pending");
+        compositor
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(second_submission),
+                timeout: None,
+            })
+            .expect("second preview wait should succeed");
+        compositor.defer_next_preview_map_resolve();
+        assert!(
+            compositor
+                .resolve_preview_surface()
+                .expect("second preview handoff should not fail")
+                .is_none()
+        );
+
+        let replaced_slot = match compositor.pending_preview_map.as_ref() {
+            Some(PendingPreviewMap {
+                readback: PendingPreviewReadback::PreviewBuffer { slot, .. },
+                ..
+            }) => *slot,
+            _ => panic!("second preview should replace the stale mapped preview"),
+        };
+        assert_eq!(replaced_slot, second_slot);
+
+        let preview = resolve_preview_surface_blocking(&mut compositor);
+        assert_eq!(&preview.rgba_bytes()[0..4], &[32, 64, 255, 255]);
+    }
+
+    #[test]
+    fn gpu_deferred_preview_is_superseded_by_non_bypass_resize_compose() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let first_plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas_with_size(
+                    4,
+                    4,
+                    Rgba::new(255, 32, 0, 255),
+                ))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(solid_canvas_with_size(
+                        4,
+                        4,
+                        Rgba::new(32, 64, 255, 255),
+                    )),
+                    0.35,
+                ),
+            ],
+        );
+        let second_plan = CompositionPlan::with_layers(
+            2,
+            2,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas_with_size(
+                    2,
+                    2,
+                    Rgba::new(16, 220, 32, 255),
+                ))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(solid_canvas_with_size(
+                        2,
+                        2,
+                        Rgba::new(255, 255, 255, 255),
+                    )),
+                    0.25,
+                ),
+            ],
+        );
+
+        compositor
+            .compose(&first_plan, false, full_preview_request(&first_plan))
+            .expect("first compose should stage a full-size preview");
+        compositor
+            .submit_pending_preview_work()
+            .expect("first preview submit should succeed");
+        compositor.defer_next_preview_resolve();
+        assert!(
+            compositor
+                .resolve_preview_surface()
+                .expect("deferred first preview finalize should not fail")
+                .is_none()
+        );
+
+        compositor
+            .compose(&second_plan, false, full_preview_request(&second_plan))
+            .expect("resize compose should supersede the older deferred preview");
+
+        let preview = resolve_preview_surface_blocking(&mut compositor);
+        assert_eq!(preview.width(), 2);
+        assert_eq!(preview.height(), 2);
+        assert!(
+            compositor
+                .resolve_preview_surface()
+                .expect("superseded resize preview resolve should not fail")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn gpu_discard_superseded_preview_work_clears_preview_state() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+
+        compositor.pending_output_submission = Some(compositor.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor {
+                label: Some("stale cached preview test"),
+            },
+        ));
+        compositor.pending_preview_readback = Some(PendingPreviewReadback::PreviewBuffer {
+            request: PreviewSurfaceRequest {
+                width: 2,
+                height: 2,
+            },
+            readback_key: None,
+            cache_as_full_size: false,
+            slot: 0,
+        });
+        let (_sender, receiver) =
+            mpsc::channel::<std::result::Result<(), wgpu::BufferAsyncError>>();
+        compositor.pending_preview_map = Some(PendingPreviewMap {
+            readback: PendingPreviewReadback::PreviewBuffer {
+                request: PreviewSurfaceRequest {
+                    width: 2,
+                    height: 2,
+                },
+                readback_key: None,
+                cache_as_full_size: false,
+                slot: 1,
+            },
+            used_bytes: 16,
+            receiver,
+        });
+        compositor.ready_preview_surface = Some(PublishedSurface::from_owned_canvas(
+            solid_canvas(Rgba::new(8, 16, 24, 255)),
+            0,
+            0,
+        ));
+
+        compositor.discard_superseded_preview_work();
+
+        assert!(compositor.pending_output_submission.is_none());
+        assert!(compositor.pending_preview_readback.is_none());
+        assert!(compositor.pending_preview_submission.is_none());
+        assert!(compositor.pending_preview_map.is_none());
+        assert!(compositor.ready_preview_surface.is_none());
+    }
+
+    #[test]
+    fn gpu_sampler_arms_preview_map_after_sampling_completion() {
         let mut compositor = match GpuSparkleFlinger::new() {
             Ok(compositor) => compositor,
             Err(_) => return,
@@ -2837,10 +3419,7 @@ mod tests {
             4,
             vec![
                 CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
-                CompositionLayer::alpha(
-                    ProducerFrame::Canvas(patterned_canvas(96)),
-                    0.35,
-                ),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
             ],
         );
 
@@ -2862,6 +3441,57 @@ mod tests {
                 .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
                 .expect("GPU zone sampling should succeed")
         );
+        assert!(compositor.ready_preview_surface.is_none());
+        assert!(compositor.pending_preview_readback.is_none());
+        assert!(compositor.pending_preview_submission.is_none());
+        assert!(compositor.pending_preview_map.is_some());
+
+        let preview_surface = resolve_preview_surface_blocking(&mut compositor);
+        assert_eq!(preview_surface.width(), 2);
+        assert_eq!(preview_surface.height(), 2);
+        assert!(compositor.pending_preview_readback.is_none());
+        assert!(compositor.pending_preview_submission.is_none());
+        assert!(compositor.pending_preview_map.is_none());
+    }
+
+    #[test]
+    fn gpu_zero_sample_plan_keeps_pending_preview_work() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(sampling_layout_with_led_count(SamplingMode::Bilinear, 0));
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
+            ],
+        );
+
+        let composed = compositor
+            .compose(
+                &plan,
+                false,
+                Some(PreviewSurfaceRequest {
+                    width: 2,
+                    height: 2,
+                }),
+            )
+            .expect("GPU composition should stage a scaled preview surface");
+        assert!(composed.preview_surface.is_none());
+
+        let mut sampled = Vec::new();
+        assert!(
+            compositor
+                .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
+                .expect("GPU zone sampling should succeed for empty plans")
+        );
+        assert!(sampled.is_empty());
+        assert!(compositor.pending_preview_readback.is_none());
+        assert!(compositor.pending_preview_submission.is_none());
+        assert!(compositor.pending_preview_map.is_some());
 
         let preview_surface = resolve_preview_surface_blocking(&mut compositor);
         assert_eq!(preview_surface.width(), 2);
@@ -3056,7 +3686,8 @@ mod tests {
         assert_eq!(first_compose_dispatch_count, 1);
         assert_eq!(second_compose_dispatch_count, first_compose_dispatch_count);
 
-        let expected = CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+        let expected =
+            CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
         let mut sampled = Vec::new();
         assert!(
             compositor
@@ -3085,10 +3716,7 @@ mod tests {
             4,
             vec![
                 CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
-                CompositionLayer::alpha(
-                    ProducerFrame::Canvas(patterned_canvas(96)),
-                    0.35,
-                ),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
             ],
         );
         let second_plan = CompositionPlan::with_layers(
@@ -3096,10 +3724,7 @@ mod tests {
             4,
             vec![
                 CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(44))),
-                CompositionLayer::alpha(
-                    ProducerFrame::Canvas(patterned_canvas(180)),
-                    0.35,
-                ),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(180)), 0.35),
             ],
         );
 
@@ -3181,7 +3806,8 @@ mod tests {
                 ),
             ],
         );
-        let expected = CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+        let expected =
+            CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
         let expected_zones = engine.sample(
             expected
                 .sampling_canvas
@@ -3221,7 +3847,8 @@ mod tests {
                 ),
             ],
         );
-        let expected = CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+        let expected =
+            CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
         let expected_zones = engine.sample(
             expected
                 .sampling_canvas
@@ -3262,7 +3889,8 @@ mod tests {
                 ),
             ],
         );
-        let expected = CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+        let expected =
+            CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
         compositor
             .compose(&plan, false, None)
             .expect("GPU composition should succeed before output reuse testing");
@@ -3348,10 +3976,7 @@ mod tests {
             4,
             vec![
                 CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
-                CompositionLayer::alpha(
-                    ProducerFrame::Canvas(patterned_canvas(96)),
-                    0.35,
-                ),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
             ],
         );
         let second_plan = CompositionPlan::with_layers(
@@ -3359,10 +3984,7 @@ mod tests {
             4,
             vec![
                 CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(44))),
-                CompositionLayer::alpha(
-                    ProducerFrame::Canvas(patterned_canvas(180)),
-                    0.35,
-                ),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(180)), 0.35),
             ],
         );
 
@@ -3396,26 +4018,20 @@ mod tests {
             Ok(compositor) => compositor,
             Err(_) => return,
         };
-        let large_engine = SpatialEngine::new(sampling_layout_with_led_count(
-            SamplingMode::Bilinear,
-            16,
-        ));
-        let small_engine = SpatialEngine::new(sampling_layout_with_led_count(
-            SamplingMode::Bilinear,
-            4,
-        ));
+        let large_engine =
+            SpatialEngine::new(sampling_layout_with_led_count(SamplingMode::Bilinear, 16));
+        let small_engine =
+            SpatialEngine::new(sampling_layout_with_led_count(SamplingMode::Bilinear, 4));
         let plan = CompositionPlan::with_layers(
             4,
             4,
             vec![
                 CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
-                CompositionLayer::alpha(
-                    ProducerFrame::Canvas(patterned_canvas(96)),
-                    0.35,
-                ),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
             ],
         );
-        let expected = CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+        let expected =
+            CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
 
         compositor
             .compose(&plan, false, None)
@@ -3462,13 +4078,11 @@ mod tests {
             4,
             vec![
                 CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
-                CompositionLayer::screen(
-                    ProducerFrame::Canvas(patterned_canvas(96)),
-                    0.6,
-                ),
+                CompositionLayer::screen(ProducerFrame::Canvas(patterned_canvas(96)), 0.6),
             ],
         );
-        let expected = CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+        let expected =
+            CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
         let expected_zones = engine.sample(
             expected
                 .sampling_canvas

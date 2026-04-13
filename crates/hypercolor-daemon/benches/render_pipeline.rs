@@ -18,11 +18,11 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::display_output::overlay::{
     OverlayComposer, OverlayRendererBinding, OverlayRendererFactory, PremulStaging,
 };
+#[cfg(feature = "wgpu")]
+use hypercolor_daemon::render_thread::sparkleflinger::PreviewSurfaceRequest;
 use hypercolor_daemon::render_thread::sparkleflinger::{
     CompositionLayer, CompositionPlan, SparkleFlinger,
 };
-#[cfg(feature = "wgpu")]
-use hypercolor_daemon::render_thread::sparkleflinger::PreviewSurfaceRequest;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
@@ -810,31 +810,32 @@ fn bench_sparkleflinger(c: &mut Criterion) {
         });
         let mut scaled_preview_plan_index = 0_usize;
         group.throughput(Throughput::Bytes(
-            u64::from(scaled_preview_request.width)
-                * u64::from(scaled_preview_request.height)
-                * 4,
+            u64::from(scaled_preview_request.width) * u64::from(scaled_preview_request.height) * 4,
         ));
-        group.bench_function("gpu_alpha_two_layer_compose_640x480_scaled_preview_320x240", |b| {
-            b.iter(|| {
-                let composed = preview_sparkleflinger.compose_for_outputs(
-                    black_box(
-                        preview_fresh_plans[scaled_preview_plan_index]
-                            .clone()
-                            .with_cpu_replay_cacheable(false),
-                    ),
-                    false,
-                    Some(scaled_preview_request),
-                );
-                scaled_preview_plan_index =
-                    (scaled_preview_plan_index + 1) % preview_fresh_plans.len();
-                black_box(composed.bypassed);
-                let preview_surface = preview_sparkleflinger
-                    .resolve_preview_surface()
-                    .expect("GPU scaled preview bench should finalize preview readback")
-                    .expect("GPU scaled preview bench should publish a preview surface");
-                black_box(preview_surface.rgba_bytes()[0]);
-            });
-        });
+        group.bench_function(
+            "gpu_alpha_two_layer_compose_640x480_scaled_preview_320x240",
+            |b| {
+                b.iter(|| {
+                    let composed = preview_sparkleflinger.compose_for_outputs(
+                        black_box(
+                            preview_fresh_plans[scaled_preview_plan_index]
+                                .clone()
+                                .with_cpu_replay_cacheable(false),
+                        ),
+                        false,
+                        Some(scaled_preview_request),
+                    );
+                    scaled_preview_plan_index =
+                        (scaled_preview_plan_index + 1) % preview_fresh_plans.len();
+                    black_box(composed.bypassed);
+                    let preview_surface = preview_sparkleflinger
+                        .resolve_preview_surface()
+                        .expect("GPU scaled preview bench should finalize preview readback")
+                        .expect("GPU scaled preview bench should publish a preview surface");
+                    black_box(preview_surface.rgba_bytes()[0]);
+                });
+            },
+        );
         let mut gpu_bypass_sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Gpu)
             .expect("GPU SparkleFlinger should initialize for bypass sampling");
         group.bench_function(

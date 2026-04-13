@@ -340,7 +340,9 @@ impl EffectEngine {
 
     #[must_use]
     pub fn preview_canvas(&self) -> Option<Canvas> {
-        self.renderer.as_ref().and_then(|renderer| renderer.preview_canvas())
+        self.renderer
+            .as_ref()
+            .and_then(|renderer| renderer.preview_canvas())
     }
 
     /// Attach or replace a live sensor binding for an active control.

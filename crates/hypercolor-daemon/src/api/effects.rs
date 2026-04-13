@@ -797,7 +797,9 @@ pub(crate) async fn active_primary_effect(
 }
 
 pub(crate) async fn active_effect_metadata(state: &AppState) -> Option<EffectMetadata> {
-    active_primary_effect(state).await.map(|(_, metadata)| metadata)
+    active_primary_effect(state)
+        .await
+        .map(|(_, metadata)| metadata)
 }
 
 fn controls_with_group_bindings(

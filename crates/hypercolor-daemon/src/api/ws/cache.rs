@@ -21,6 +21,7 @@ use hypercolor_types::canvas::{
 };
 
 use super::preview_encode::{PreviewJpegEncoder, encode_canvas_jpeg_payload_scaled_stateless};
+use super::preview_scale::{PreviewScaleFormat, scale_rgba_bilinear};
 use super::protocol::{ActiveFramesConfig, CanvasFormat, FrameFormat, FrameZoneSelection};
 use crate::api::AppState;
 
@@ -678,7 +679,6 @@ fn encode_canvas_body(
     let height = usize::from(height_u16);
     let px_count = width.saturating_mul(height);
     let source_width = usize::try_from(canvas.width).unwrap_or(0);
-    let source_height = usize::try_from(canvas.height).unwrap_or(0);
 
     let bpp = match format {
         CanvasFormat::Rgb => 3_usize,
@@ -703,20 +703,23 @@ fn encode_canvas_body(
                 {
                     out.copy_from_slice(&pixel[..3]);
                 }
+            } else if output_size.width != canvas.width || output_size.height != canvas.height {
+                scale_rgba_bilinear(
+                    rgba,
+                    canvas.width,
+                    canvas.height,
+                    output_size.width,
+                    output_size.height,
+                    scale_lut.as_deref(),
+                    PreviewScaleFormat::Rgb,
+                    &mut body,
+                );
             } else {
                 for y in 0..height {
-                    let source_y = y
-                        .saturating_mul(source_height)
-                        .checked_div(height.max(1))
-                        .unwrap_or(0);
                     for x in 0..width {
-                        let source_x = x
+                        let source_offset = y
                             .saturating_mul(source_width)
-                            .checked_div(width.max(1))
-                            .unwrap_or(0);
-                        let source_offset = source_y
-                            .saturating_mul(source_width)
-                            .saturating_add(source_x)
+                            .saturating_add(x)
                             .saturating_mul(4);
                         let out_offset =
                             y.saturating_mul(width).saturating_add(x).saturating_mul(3);
@@ -738,20 +741,23 @@ fn encode_canvas_body(
                 && output_size.height == canvas.height
             {
                 body.copy_from_slice(&rgba[..payload_len]);
+            } else if output_size.width != canvas.width || output_size.height != canvas.height {
+                scale_rgba_bilinear(
+                    rgba,
+                    canvas.width,
+                    canvas.height,
+                    output_size.width,
+                    output_size.height,
+                    scale_lut.as_deref(),
+                    PreviewScaleFormat::Rgba,
+                    &mut body,
+                );
             } else {
                 for y in 0..height {
-                    let source_y = y
-                        .saturating_mul(source_height)
-                        .checked_div(height.max(1))
-                        .unwrap_or(0);
                     for x in 0..width {
-                        let source_x = x
+                        let source_offset = y
                             .saturating_mul(source_width)
-                            .checked_div(width.max(1))
-                            .unwrap_or(0);
-                        let source_offset = source_y
-                            .saturating_mul(source_width)
-                            .saturating_add(source_x)
+                            .saturating_add(x)
                             .saturating_mul(4);
                         let out_offset =
                             y.saturating_mul(width).saturating_add(x).saturating_mul(4);

@@ -8,9 +8,7 @@ use std::time::SystemTime;
 #[path = "support/effect_engine.rs"]
 mod effect_engine;
 
-use hypercolor_core::effect::{
-    EffectEntry, EffectRegistry, EffectRenderer, FrameInput,
-};
+use hypercolor_core::effect::{EffectEntry, EffectRegistry, EffectRenderer, FrameInput};
 use hypercolor_core::input::InteractionData;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};

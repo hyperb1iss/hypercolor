@@ -185,26 +185,28 @@ fn preview_runtime_demand_summary_stays_coherent_during_concurrent_updates() {
     let reader = thread::spawn(move || {
         while !reader_stop.load(Ordering::Relaxed) {
             let summary = reader_runtime.canvas_demand();
-            let is_rgba_state = summary == hypercolor_daemon::preview_runtime::PreviewDemandSummary {
-                subscribers: 1,
-                max_fps: 30,
-                max_width: 1280,
-                max_height: 720,
-                any_full_resolution: false,
-                any_rgb: false,
-                any_rgba: true,
-                any_jpeg: false,
-            };
-            let is_jpeg_state = summary == hypercolor_daemon::preview_runtime::PreviewDemandSummary {
-                subscribers: 1,
-                max_fps: 15,
-                max_width: 640,
-                max_height: 360,
-                any_full_resolution: false,
-                any_rgb: false,
-                any_rgba: false,
-                any_jpeg: true,
-            };
+            let is_rgba_state = summary
+                == hypercolor_daemon::preview_runtime::PreviewDemandSummary {
+                    subscribers: 1,
+                    max_fps: 30,
+                    max_width: 1280,
+                    max_height: 720,
+                    any_full_resolution: false,
+                    any_rgb: false,
+                    any_rgba: true,
+                    any_jpeg: false,
+                };
+            let is_jpeg_state = summary
+                == hypercolor_daemon::preview_runtime::PreviewDemandSummary {
+                    subscribers: 1,
+                    max_fps: 15,
+                    max_width: 640,
+                    max_height: 360,
+                    any_full_resolution: false,
+                    any_rgb: false,
+                    any_rgba: false,
+                    any_jpeg: true,
+                };
             assert!(
                 is_rgba_state || is_jpeg_state,
                 "saw torn preview summary: {summary:?}"

@@ -297,13 +297,7 @@ impl ChannelConfig {
                 }
             }
             if let Some(fps) = display_preview.fps {
-                validate_range(
-                    fps,
-                    1,
-                    30,
-                    "config.display_preview.fps",
-                    "expected 1..=30",
-                )?;
+                validate_range(fps, 1, 30, "config.display_preview.fps", "expected 1..=30")?;
                 self.display_preview.fps = fps;
             }
         }

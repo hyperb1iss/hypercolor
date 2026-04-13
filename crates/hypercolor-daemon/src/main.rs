@@ -223,13 +223,20 @@ fn spawn_watchdog() {}
 
 fn default_env_filter(log_level: &str) -> String {
     let normalized = log_level.trim().to_ascii_lowercase();
+
+    // mdns_sd's internal parser logs ERROR for every malformed mDNS response on
+    // the network (Apple devices with curly-quote hostnames, truncated packets,
+    // etc.). These are unactionable noise; our own mDNS code in
+    // hypercolor_core::device::net::mdns still logs normally.
+    const MDNS_SQUELCH: &str = "mdns_sd::service_daemon=off";
+
     if normalized == "debug" {
-        // Keep third-party crates quiet in debug mode, while still surfacing
-        // detailed logs from Hypercolor crates.
-        return "warn,hypercolor=debug,hypercolor_daemon=debug,hypercolor_core=debug,hypercolor_hal=debug,hypercolor_types=debug".to_owned();
+        return format!(
+            "warn,hypercolor=debug,hypercolor_daemon=debug,hypercolor_core=debug,hypercolor_hal=debug,hypercolor_types=debug,{MDNS_SQUELCH}"
+        );
     }
 
-    normalized
+    format!("{normalized},{MDNS_SQUELCH}")
 }
 
 fn resolve_log_level(cli_log_level: Option<&str>, config: &HypercolorConfig) -> String {
@@ -311,10 +318,20 @@ mod tests {
 
     #[test]
     fn default_env_filter_scopes_hypercolor_debug_logs() {
-        assert_eq!(
-            default_env_filter("debug"),
-            "warn,hypercolor=debug,hypercolor_daemon=debug,hypercolor_core=debug,hypercolor_hal=debug,hypercolor_types=debug"
-        );
+        let filter = default_env_filter("debug");
+        assert!(filter.starts_with("warn,hypercolor=debug,"));
+        assert!(filter.contains("mdns_sd::service_daemon=off"));
+    }
+
+    #[test]
+    fn default_env_filter_squelches_mdns_at_all_levels() {
+        for level in ["info", "warn", "error", "trace"] {
+            let filter = default_env_filter(level);
+            assert!(
+                filter.contains("mdns_sd::service_daemon=off"),
+                "level {level} should squelch mdns_sd"
+            );
+        }
     }
 
     #[test]

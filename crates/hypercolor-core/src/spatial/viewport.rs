@@ -18,16 +18,12 @@ pub fn sample_viewport(
 
 #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
 fn blit_stretch(canvas: &mut Canvas, source: &Canvas, crop: PixelRect, brightness: f32) {
-    let out_width = canvas.width().max(1) as f32;
-    let out_height = canvas.height().max(1) as f32;
     for y in 0..canvas.height() {
-        let ny = (y as f32 + 0.5) / out_height;
         for x in 0..canvas.width() {
-            let nx = (x as f32 + 0.5) / out_width;
             let pixel = sample_source(
                 source,
-                crop.x as f32 + nx * crop.width.max(1) as f32,
-                crop.y as f32 + ny * crop.height.max(1) as f32,
+                sample_axis(x, canvas.width(), crop.x, crop.width),
+                sample_axis(y, canvas.height(), crop.y, crop.height),
                 brightness,
             );
             canvas.set_pixel(x, y, pixel);
@@ -64,8 +60,8 @@ fn blit_contain(canvas: &mut Canvas, source: &Canvas, crop: PixelRect, brightnes
             let nx = ((xf - offset_x) / draw_width).clamp(0.0, 1.0);
             let pixel = sample_source(
                 source,
-                crop.x as f32 + nx * crop.width.max(1) as f32,
-                crop.y as f32 + ny * crop.height.max(1) as f32,
+                sample_axis_normalized(nx, crop.x, crop.width),
+                sample_axis_normalized(ny, crop.y, crop.height),
                 brightness,
             );
             canvas.set_pixel(x, y, pixel);
@@ -81,10 +77,14 @@ fn blit_cover(canvas: &mut Canvas, source: &Canvas, crop: PixelRect, brightness:
 
     if out_aspect > crop_aspect {
         fitted.height = ((crop.width.max(1) as f32) / out_aspect).max(1.0).round() as u32;
-        fitted.y = fitted.y.saturating_add(crop.height.saturating_sub(fitted.height) / 2);
+        fitted.y = fitted
+            .y
+            .saturating_add(crop.height.saturating_sub(fitted.height) / 2);
     } else if out_aspect < crop_aspect {
         fitted.width = ((crop.height.max(1) as f32) * out_aspect).max(1.0).round() as u32;
-        fitted.x = fitted.x.saturating_add(crop.width.saturating_sub(fitted.width) / 2);
+        fitted.x = fitted
+            .x
+            .saturating_add(crop.width.saturating_sub(fitted.width) / 2);
     }
 
     blit_stretch(canvas, source, fitted, brightness);
@@ -97,13 +97,23 @@ fn blit_cover(canvas: &mut Canvas, source: &Canvas, crop: PixelRect, brightness:
     clippy::as_conversions
 )]
 fn sample_source(source: &Canvas, x: f32, y: f32, brightness: f32) -> Rgba {
-    let src_x = x
-        .floor()
-        .clamp(0.0, source.width().saturating_sub(1) as f32) as u32;
-    let src_y = y
-        .floor()
-        .clamp(0.0, source.height().saturating_sub(1) as f32) as u32;
-    let pixel = source.get_pixel(src_x, src_y).to_linear_f32();
+    let max_x = source.width().saturating_sub(1);
+    let max_y = source.height().saturating_sub(1);
+    let clamped_x = x.clamp(0.0, max_x as f32);
+    let clamped_y = y.clamp(0.0, max_y as f32);
+    let x0 = clamped_x.floor() as u32;
+    let y0 = clamped_y.floor() as u32;
+    let x1 = x0.saturating_add(1).min(max_x);
+    let y1 = y0.saturating_add(1).min(max_y);
+    let tx = clamped_x - x0 as f32;
+    let ty = clamped_y - y0 as f32;
+    let p00 = source.get_pixel(x0, y0).to_linear_f32();
+    let p10 = source.get_pixel(x1, y0).to_linear_f32();
+    let p01 = source.get_pixel(x0, y1).to_linear_f32();
+    let p11 = source.get_pixel(x1, y1).to_linear_f32();
+    let top = RgbaF32::lerp(&p00, &p10, tx);
+    let bottom = RgbaF32::lerp(&p01, &p11, tx);
+    let pixel = RgbaF32::lerp(&top, &bottom, ty);
     let scaled = RgbaF32::new(
         pixel.r * brightness,
         pixel.g * brightness,
@@ -111,4 +121,20 @@ fn sample_source(source: &Canvas, x: f32, y: f32, brightness: f32) -> Rgba {
         pixel.a,
     );
     scaled.to_srgba()
+}
+
+#[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+fn sample_axis(
+    target_index: u32,
+    target_extent: u32,
+    source_origin: u32,
+    source_extent: u32,
+) -> f32 {
+    let normalized = (target_index as f32 + 0.5) / target_extent.max(1) as f32;
+    sample_axis_normalized(normalized, source_origin, source_extent)
+}
+
+#[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+fn sample_axis_normalized(normalized: f32, source_origin: u32, source_extent: u32) -> f32 {
+    source_origin as f32 + normalized * source_extent.max(1) as f32 - 0.5
 }

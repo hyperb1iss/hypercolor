@@ -525,10 +525,9 @@ fn display_preview_patch_tri_state_distinguishes_missing_null_and_value() {
     let absent_display = absent.display_preview.expect("display_preview present");
     assert!(absent_display.device_id.is_none(), "missing key → None");
 
-    let null_value: ChannelConfigPatch = serde_json::from_value(
-        serde_json::json!({ "display_preview": { "device_id": null } }),
-    )
-    .expect("null device_id should deserialize");
+    let null_value: ChannelConfigPatch =
+        serde_json::from_value(serde_json::json!({ "display_preview": { "device_id": null } }))
+            .expect("null device_id should deserialize");
     let null_display = null_value.display_preview.expect("display_preview present");
     assert_eq!(
         null_display.device_id,
@@ -558,7 +557,10 @@ fn display_preview_patch_applies_tri_state_to_config() {
     }))
     .expect("valid set patch");
     config.apply_patch(set_patch).expect("set applied");
-    assert_eq!(config.display_preview.device_id.as_deref(), Some("device-abc"));
+    assert_eq!(
+        config.display_preview.device_id.as_deref(),
+        Some("device-abc")
+    );
     assert_eq!(config.display_preview.fps, 20);
 
     // Missing key leaves device_id as-is but updates fps.
@@ -566,7 +568,10 @@ fn display_preview_patch_applies_tri_state_to_config() {
         serde_json::from_value(serde_json::json!({ "display_preview": { "fps": 15 } }))
             .expect("valid fps-only patch");
     config.apply_patch(leave_patch).expect("fps-only applied");
-    assert_eq!(config.display_preview.device_id.as_deref(), Some("device-abc"));
+    assert_eq!(
+        config.display_preview.device_id.as_deref(),
+        Some("device-abc")
+    );
     assert_eq!(config.display_preview.fps, 15);
 
     // null explicitly clears the target.

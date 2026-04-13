@@ -43,6 +43,7 @@ impl PreviewRuntime {
         canvas: &HtmlCanvasElement,
         frame: &CanvasFrame,
         allow_canvas2d_fallback: bool,
+        smooth_scaling: bool,
     ) -> Result<Self, PreviewRuntimeInitError> {
         prepare_canvas(canvas, frame);
 
@@ -54,7 +55,7 @@ impl PreviewRuntime {
             return Err(PreviewRuntimeInitError::WebGlUnavailable);
         }
 
-        match WebGlPreviewRuntime::new(canvas) {
+        match WebGlPreviewRuntime::new(canvas, smooth_scaling) {
             Ok(runtime) => Ok(Self(PreviewRuntimeBackend::WebGl(runtime))),
             Err(WebGlInitError::InitializationFailed) => {
                 Err(PreviewRuntimeInitError::WebGlInitializationFailed)

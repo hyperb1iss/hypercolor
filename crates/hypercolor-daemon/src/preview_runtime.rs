@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use arc_swap::ArcSwap;
+use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use tokio::sync::watch;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -355,7 +355,8 @@ impl PreviewRuntime {
 
     #[must_use]
     pub fn web_viewport_canvas_demand(&self) -> PreviewDemandSummary {
-        self.demand_state.summary(PreviewStreamKind::WebViewportCanvas)
+        self.demand_state
+            .summary(PreviewStreamKind::WebViewportCanvas)
     }
 }
 
@@ -448,10 +449,7 @@ fn summarize_preview_demands(entries: &[(u64, PreviewStreamDemand)]) -> PreviewD
     summary
 }
 
-fn store_preview_demand_summary(
-    state: &PreviewDemandSummaryState,
-    summary: PreviewDemandSummary,
-) {
+fn store_preview_demand_summary(state: &PreviewDemandSummaryState, summary: PreviewDemandSummary) {
     state.snapshot.store(Arc::new(summary));
 }
 

@@ -8,20 +8,20 @@
 //! lives in [`super::worker`]; the client state machine in
 //! [`super::worker_client`]; this file is the orchestration layer.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
 use anyhow::{Result, bail};
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
 use hypercolor_types::effect::{ControlValue, EffectMetadata, EffectSource};
 use hypercolor_types::sensor::SystemSnapshot;
+use std::collections::HashMap;
+use std::path::PathBuf;
 use tracing::{debug, info, warn};
 
+use super::session::DrainPendingRenderError;
 use super::worker::{
     RENDER_RESPONSE_TIMEOUT, effect_is_audio_reactive, poison_shared_servo_worker,
     prepare_runtime_html_source, servo_worker_is_fatal_error,
 };
-use super::session::DrainPendingRenderError;
-use super::{SessionConfig, ServoSessionHandle, note_servo_session_error};
+use super::{ServoSessionHandle, SessionConfig, note_servo_session_error};
 use crate::effect::lightscript::LightscriptRuntime;
 use crate::effect::paths::resolve_html_source_path;
 use crate::effect::traits::{EffectRenderer, FrameInput};
@@ -340,7 +340,10 @@ impl ServoRenderer {
             }
             Ok(None) => {}
             Err(DrainPendingRenderError::Worker(error)) => {
-                note_servo_session_error("Servo frame render failed while draining effect teardown", &error);
+                note_servo_session_error(
+                    "Servo frame render failed while draining effect teardown",
+                    &error,
+                );
                 if servo_worker_is_fatal_error(&error) {
                     self.session = None;
                 }
@@ -408,7 +411,10 @@ impl EffectRenderer for ServoRenderer {
         self.drain_in_flight_render();
         if let Some(session) = self.session.take() {
             if let Err(error) = session.close() {
-                note_servo_session_error("Failed to destroy Servo effect session during destroy", &error);
+                note_servo_session_error(
+                    "Failed to destroy Servo effect session during destroy",
+                    &error,
+                );
                 warn!(%error, "Failed to destroy Servo effect session during destroy");
             }
         }
@@ -542,7 +548,7 @@ mod tests {
     use std::sync::LazyLock;
     use std::sync::atomic::Ordering;
     use std::thread;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     use uuid::Uuid;
 
     static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);

@@ -18,6 +18,15 @@ use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
 use crate::performance::{FrameTimeline, LatestFrameMetrics};
 
+fn should_advance_gpu_preview(render_stage: &super::frame_composer::RenderStageStats) -> bool {
+    render_stage.preview_requested
+        && render_stage.composed_frame.preview_surface.is_none()
+        && matches!(
+            render_stage.composed_frame.backend,
+            crate::performance::CompositorBackendKind::Gpu
+        )
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "frame execution intentionally keeps the full pipeline in one ordered async function"
@@ -202,14 +211,23 @@ pub(crate) async fn execute_frame(
     let sample_done_at = Instant::now();
     let sample_done_us = micros_between(frame_start, sample_done_at);
 
-    if render_stage.composed_frame.preview_surface.is_none()
-        && matches!(
-            render_stage.composed_frame.backend,
-            crate::performance::CompositorBackendKind::Gpu
-        )
+    if should_advance_gpu_preview(&render_stage)
         && let Err(error) = render.sparkleflinger.submit_pending_preview_work()
     {
         warn!(%error, "GPU preview submit failed; continuing without an overlapped preview finalize");
+    }
+    if should_advance_gpu_preview(&render_stage)
+        && render_stage.composed_frame.preview_surface.is_none()
+    {
+        match render.sparkleflinger.resolve_preview_surface() {
+            Ok(Some(preview_surface)) => {
+                render_stage.composed_frame.preview_surface = Some(preview_surface);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                warn!(%error, "GPU preview early finalize failed; continuing without an early preview surface");
+            }
+        }
     }
 
     let push_start = Instant::now();
@@ -241,11 +259,8 @@ pub(crate) async fn execute_frame(
         render_stage.composed_frame.backend,
         crate::performance::CompositorBackendKind::Gpu
     ) && render_stage.composed_frame.sampling_canvas.is_none();
-    if render_stage.composed_frame.preview_surface.is_none()
-        && matches!(
-            render_stage.composed_frame.backend,
-            crate::performance::CompositorBackendKind::Gpu
-        )
+    if should_advance_gpu_preview(&render_stage)
+        && render_stage.composed_frame.preview_surface.is_none()
     {
         match render.sparkleflinger.resolve_preview_surface() {
             Ok(Some(preview_surface)) => {
@@ -445,5 +460,74 @@ pub(crate) async fn execute_frame(
     FrameExecution {
         next_wake,
         next_skip_decision,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+
+    use super::should_advance_gpu_preview;
+    use crate::performance::CompositorBackendKind;
+    use crate::render_thread::frame_composer::RenderStageStats;
+    use crate::render_thread::sparkleflinger::ComposedFrameSet;
+
+    fn render_stage(
+        backend: CompositorBackendKind,
+        preview_requested: bool,
+        preview_surface_present: bool,
+    ) -> RenderStageStats {
+        let mut composed_frame = ComposedFrameSet {
+            sampling_canvas: None,
+            sampling_surface: None,
+            preview_surface: None,
+            bypassed: false,
+            backend,
+        };
+        if preview_surface_present {
+            composed_frame.preview_surface =
+                Some(PublishedSurface::from_owned_canvas(Canvas::new(1, 1), 0, 0));
+        }
+        RenderStageStats {
+            composed_frame,
+            preview_requested,
+            web_viewport_preview: None,
+            group_canvases: Vec::new(),
+            active_group_canvas_ids: Vec::new(),
+            sampled_layout: None,
+            sampled_zones: None,
+            reuse_published_frame: false,
+            sampled_us: 0,
+            producer_us: 0,
+            producer_done_us: 0,
+            composition_us: 0,
+            composition_done_us: 0,
+            total_us: 0,
+            logical_layer_count: 0,
+            render_group_count: 0,
+            scene_active: false,
+            scene_transition_active: false,
+            effect_retained: false,
+            screen_retained: false,
+            composition_bypassed: false,
+        }
+    }
+
+    #[test]
+    fn gpu_preview_advances_only_when_requested() {
+        let render_stage = render_stage(CompositorBackendKind::Gpu, false, false);
+        assert!(!should_advance_gpu_preview(&render_stage));
+    }
+
+    #[test]
+    fn gpu_preview_does_not_advance_when_surface_is_ready() {
+        let render_stage = render_stage(CompositorBackendKind::Gpu, true, true);
+        assert!(!should_advance_gpu_preview(&render_stage));
+    }
+
+    #[test]
+    fn gpu_preview_advances_when_requested_and_unresolved() {
+        let render_stage = render_stage(CompositorBackendKind::Gpu, true, false);
+        assert!(should_advance_gpu_preview(&render_stage));
     }
 }

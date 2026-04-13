@@ -95,7 +95,9 @@ impl ServoSessionHandle {
             Err(TryRecvError::Empty) => Ok(None),
             Err(TryRecvError::Disconnected) => {
                 self.pending_render = None;
-                Err(anyhow!("Servo worker disconnected before returning a frame"))
+                Err(anyhow!(
+                    "Servo worker disconnected before returning a frame"
+                ))
             }
         }
     }

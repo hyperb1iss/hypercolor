@@ -21,8 +21,7 @@ use super::cache::{
     FrameRelayMessage, WS_CANVAS_BYTES_PER_PIXEL_RGBA, WS_CANVAS_PAYLOAD_BUILD_COUNT,
     WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT, WS_CLIENT_COUNT, WS_FRAME_PAYLOAD_BUILD_COUNT,
     WS_FRAME_PAYLOAD_CACHE_HIT_COUNT, WS_SCREEN_CANVAS_HEADER, WS_TOTAL_BYTES_SENT,
-    WS_WEB_VIEWPORT_CANVAS_HEADER,
-    cached_frame_payload, cached_spectrum_payload,
+    WS_WEB_VIEWPORT_CANVAS_HEADER, cached_frame_payload, cached_spectrum_payload,
     try_encode_cached_canvas_binary_with_header_scaled, try_encode_cached_canvas_preview_binary,
 };
 use super::protocol::{

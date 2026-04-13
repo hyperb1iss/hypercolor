@@ -68,10 +68,7 @@ impl ProducerQueue {
     }
 
     pub(crate) fn submit_latest(&mut self, frame: ProducerFrame) -> Option<ProducerFrame> {
-        self.replace_latest(ProducerSubmission {
-            frame,
-            fresh: true,
-        })
+        self.replace_latest(ProducerSubmission { frame, fresh: true })
     }
 
     pub(crate) fn latch_latest(&mut self) -> Option<LatchedProducerFrame> {
@@ -132,9 +129,7 @@ mod tests {
         let fresh = queue.latch_latest().expect("fresh frame should latch");
         assert_eq!(fresh.state, ProducerFrameState::Fresh);
 
-        let retained = queue
-            .latch_latest()
-            .expect("latched frame should retain");
+        let retained = queue.latch_latest().expect("latched frame should retain");
         assert_eq!(retained.state, ProducerFrameState::Retained);
     }
 

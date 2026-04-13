@@ -21,9 +21,7 @@ use hypercolor_core::device::{
     UsbProtocolConfigStore,
 };
 use hypercolor_core::effect::builtin::register_builtin_effects;
-use hypercolor_core::effect::{
-    EffectRegistry, default_effect_search_paths, register_html_effects,
-};
+use hypercolor_core::effect::{EffectRegistry, default_effect_search_paths, register_html_effects};
 use hypercolor_core::engine::RenderLoop;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::EvdevKeyboardInput;

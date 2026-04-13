@@ -57,7 +57,13 @@ impl EffectRenderer for ScreenCastRenderer {
         };
         let source = Canvas::from_published_surface(source_surface);
 
-        sample_viewport(canvas, &source, self.viewport, self.fit_mode, self.brightness);
+        sample_viewport(
+            canvas,
+            &source,
+            self.viewport,
+            self.fit_mode,
+            self.brightness,
+        );
 
         Ok(())
     }

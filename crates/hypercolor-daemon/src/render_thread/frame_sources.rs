@@ -1,5 +1,5 @@
-use hypercolor_core::types::canvas::{Canvas, PublishedSurface, Rgba};
 use super::pipeline_runtime::{CachedStaticSurface, StaticSurfaceKey};
+use hypercolor_core::types::canvas::{Canvas, PublishedSurface, Rgba};
 
 fn static_hold_canvas(width: u32, height: u32, color: [u8; 3]) -> Canvas {
     let mut canvas = Canvas::new(width, height);

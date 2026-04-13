@@ -1,6 +1,8 @@
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use anyhow::bail;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PreviewSource,
@@ -10,7 +12,7 @@ use hypercolor_types::viewport::{FitMode, ViewportRect};
 use super::common::{
     builtin_effect_id, dropdown_control, rect_control, slider_control, text_control,
 };
-use crate::effect::servo::{SessionConfig, ServoSessionHandle, note_servo_session_error};
+use crate::effect::servo::{ServoSessionHandle, SessionConfig, note_servo_session_error};
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 use crate::spatial::sample_viewport;
 
@@ -62,8 +64,13 @@ impl WebViewportRenderer {
         let Some(session) = self.session.as_mut() else {
             return Ok(());
         };
-        session.load_url(&self.url)?;
-        self.loaded_url = Some(self.url.clone());
+        let url = normalize_web_url_input(&self.url);
+        if url.is_empty() {
+            bail!("web viewport URL is empty");
+        }
+        session.load_url(&url)?;
+        self.url = url.clone();
+        self.loaded_url = Some(url);
         self.url_dirty_at = None;
         Ok(())
     }
@@ -111,12 +118,17 @@ impl EffectRenderer for WebViewportRenderer {
     ) -> anyhow::Result<()> {
         self.destroy();
         let mut session = ServoSessionHandle::new_shared(self.session_config())?;
-        if let Err(error) = session.load_url(&self.url) {
+        let url = normalize_web_url_input(&self.url);
+        if url.is_empty() {
+            bail!("web viewport URL is empty");
+        }
+        if let Err(error) = session.load_url(&url) {
             note_servo_session_error("web viewport initial URL load failed", &error);
             return Err(error);
         }
         session.request_render(Vec::new())?;
-        self.loaded_url = Some(self.url.clone());
+        self.url = url.clone();
+        self.loaded_url = Some(url);
         self.last_refresh_time_secs = Some(0.0);
         self.session = Some(session);
         Ok(())
@@ -159,7 +171,13 @@ impl EffectRenderer for WebViewportRenderer {
         }
 
         if let Some(source) = latest_source.as_ref() {
-            sample_viewport(canvas, source, self.viewport, self.fit_mode, self.brightness);
+            sample_viewport(
+                canvas,
+                source,
+                self.viewport,
+                self.fit_mode,
+                self.brightness,
+            );
         }
 
         if let Some(session) = self.session.as_mut()
@@ -175,11 +193,13 @@ impl EffectRenderer for WebViewportRenderer {
     fn set_control(&mut self, name: &str, value: &ControlValue) {
         match name {
             "url" => {
-                if let ControlValue::Text(url) | ControlValue::Enum(url) = value
-                    && *url != self.url
-                {
-                    self.url = url.clone();
-                    self.url_dirty_at = Some(Instant::now());
+                if let ControlValue::Text(url) | ControlValue::Enum(url) = value {
+                    let normalized = normalize_web_url_input(url);
+                    if normalized != self.url {
+                        self.url = normalized;
+                        self.loaded_url = None;
+                        self.url_dirty_at = Some(Instant::now());
+                    }
                 }
             }
             "viewport" => {
@@ -243,6 +263,73 @@ fn parse_fit_mode(value: &str) -> FitMode {
         "contain" => FitMode::Contain,
         "stretch" => FitMode::Stretch,
         _ => FitMode::Cover,
+    }
+}
+
+fn normalize_web_url_input(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || has_url_scheme(trimmed) {
+        return trimmed.to_owned();
+    }
+
+    if looks_like_host_input(trimmed) {
+        format!("{}://{trimmed}", default_scheme_for_host_input(trimmed))
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+fn has_url_scheme(value: &str) -> bool {
+    value.contains("://")
+        || value.starts_with("file:")
+        || value.starts_with("about:")
+        || value.starts_with("data:")
+}
+
+fn looks_like_host_input(value: &str) -> bool {
+    if value.contains(char::is_whitespace) || value.starts_with('/') || value.starts_with('#') {
+        return false;
+    }
+
+    let host = value.split('/').next().unwrap_or(value);
+    let host = host
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(host);
+    let host_without_port = host.rsplit_once(':').map_or(host, |(left, right)| {
+        if right.chars().all(|ch| ch.is_ascii_digit()) {
+            left
+        } else {
+            host
+        }
+    });
+
+    host_without_port.eq_ignore_ascii_case("localhost")
+        || host_without_port.contains('.')
+        || host_without_port.parse::<IpAddr>().is_ok()
+}
+
+fn default_scheme_for_host_input(value: &str) -> &'static str {
+    let host = value.split('/').next().unwrap_or(value);
+    let host = host
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(host);
+    let host_without_port = host.rsplit_once(':').map_or(host, |(left, right)| {
+        if right.chars().all(|ch| ch.is_ascii_digit()) {
+            left
+        } else {
+            host
+        }
+    });
+
+    if host_without_port.eq_ignore_ascii_case("localhost")
+        || host_without_port.ends_with(".local")
+        || host_without_port.parse::<IpAddr>().is_ok()
+    {
+        "http"
+    } else {
+        "https"
     }
 }
 
@@ -321,7 +408,9 @@ pub(super) fn metadata() -> EffectMetadata {
         name: "Web Viewport".into(),
         author: "Hypercolor".into(),
         version: "0.1.0".into(),
-        description: "Loads a webpage in Servo and samples a draggable viewport from the rendered page.".into(),
+        description:
+            "Loads a webpage in Servo and samples a draggable viewport from the rendered page."
+                .into(),
         category: EffectCategory::Source,
         tags: vec![
             "web".into(),
@@ -338,5 +427,54 @@ pub(super) fn metadata() -> EffectMetadata {
             path: PathBuf::from("builtin/web_viewport"),
         },
         license: Some("Apache-2.0".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_scheme_for_host_input, looks_like_host_input, normalize_web_url_input};
+
+    #[test]
+    fn normalize_web_url_input_trims_and_preserves_schemed_urls() {
+        assert_eq!(
+            normalize_web_url_input("  https://example.com/path  "),
+            "https://example.com/path"
+        );
+        assert_eq!(
+            normalize_web_url_input("file:///tmp/demo.html"),
+            "file:///tmp/demo.html"
+        );
+    }
+
+    #[test]
+    fn normalize_web_url_input_prepends_https_for_bare_hosts() {
+        assert_eq!(
+            normalize_web_url_input("example.com/widgets"),
+            "https://example.com/widgets"
+        );
+        assert_eq!(
+            normalize_web_url_input("localhost:9430"),
+            "http://localhost:9430"
+        );
+        assert_eq!(
+            normalize_web_url_input("192.168.1.8:8080"),
+            "http://192.168.1.8:8080"
+        );
+    }
+
+    #[test]
+    fn host_detection_skips_relative_and_fragment_inputs() {
+        assert!(looks_like_host_input("127.0.0.1:8080"));
+        assert!(!looks_like_host_input("/dashboard"));
+        assert!(!looks_like_host_input("#anchor"));
+        assert!(!looks_like_host_input("example path"));
+    }
+
+    #[test]
+    fn local_hosts_default_to_http() {
+        assert_eq!(default_scheme_for_host_input("localhost:3000"), "http");
+        assert_eq!(default_scheme_for_host_input("127.0.0.1"), "http");
+        assert_eq!(default_scheme_for_host_input("printer.local"), "http");
+        assert_eq!(default_scheme_for_host_input("example.com"), "https");
     }
 }

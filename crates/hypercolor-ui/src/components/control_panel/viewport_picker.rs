@@ -91,6 +91,16 @@ pub(super) fn ViewportPicker(
     } else {
         "Drag the crop box or pull its corners to aim the viewport."
     };
+    let preview_image_rendering = if url_input.is_some() {
+        "auto".to_string()
+    } else {
+        "pixelated".to_string()
+    };
+    let preview_shell_class = if url_input.is_some() {
+        "mx-auto w-full max-w-[420px]"
+    } else {
+        "mx-auto w-full max-w-[280px]"
+    };
 
     let initial_url = url_input
         .as_ref()
@@ -207,6 +217,7 @@ pub(super) fn ViewportPicker(
                 fps=Signal::derive(|| 0.0_f32)
                 fps_target=Signal::derive(|| 0_u32)
                 max_width="100%".to_string()
+                image_rendering=preview_image_rendering.clone()
                 aspect_ratio=aspect_ratio
                 consumer_count=consumer_count
             />
@@ -218,6 +229,7 @@ pub(super) fn ViewportPicker(
                 fps=Signal::derive(|| 0.0_f32)
                 fps_target=Signal::derive(|| 0_u32)
                 max_width="100%".to_string()
+                image_rendering=preview_image_rendering.clone()
                 aspect_ratio=aspect_ratio
             />
         }
@@ -228,6 +240,7 @@ pub(super) fn ViewportPicker(
                 fps=Signal::derive(|| 0.0_f32)
                 fps_target=Signal::derive(|| 0_u32)
                 max_width="100%".to_string()
+                image_rendering=preview_image_rendering.clone()
                 consumer_count=consumer_count
             />
         }
@@ -238,6 +251,7 @@ pub(super) fn ViewportPicker(
                 fps=Signal::derive(|| 0.0_f32)
                 fps_target=Signal::derive(|| 0_u32)
                 max_width="100%".to_string()
+                image_rendering=preview_image_rendering
             />
         }
         .into_any(),
@@ -274,7 +288,7 @@ pub(super) fn ViewportPicker(
                         }}
                     </span>
                 </div>
-                <div class="mx-auto w-full max-w-[280px]">
+                <div class=preview_shell_class>
                     <div
                         node_ref=viewport_ref
                         class="relative overflow-hidden rounded-[1.25rem] border border-white/[0.08] shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] select-none"

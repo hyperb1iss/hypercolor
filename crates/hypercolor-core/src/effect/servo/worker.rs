@@ -39,6 +39,7 @@ use super::worker_client::{
 use crate::effect::servo_bootstrap::bootstrap_software_rendering_context;
 
 pub(super) const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
+const URL_LOAD_TIMEOUT: Duration = Duration::from_secs(15);
 const SCRIPT_TIMEOUT: Duration = Duration::from_millis(250);
 pub(super) const RENDER_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
 pub(super) const RECENT_CONSOLE_SAMPLE_SIZE: usize = 6;
@@ -971,7 +972,7 @@ impl ServoWorkerRuntime {
         self.session_mut(session_id)?.loaded_html_path = None;
         debug!(url = %parsed_url, "Loading Servo URL");
         if had_loaded_content {
-            self.replace_webview(session_id, parsed_url.clone(), LOAD_TIMEOUT)
+            self.replace_webview(session_id, parsed_url.clone(), URL_LOAD_TIMEOUT)
                 .context("failed to replace previous Servo page before loading URL")?;
         } else {
             self.session(session_id)?.delegate.reset_navigation_state();
@@ -979,7 +980,7 @@ impl ServoWorkerRuntime {
                 let webview = self.active_webview(session_id)?;
                 webview.load(parsed_url.clone());
             }
-            self.wait_for_load_completion(session_id, LOAD_TIMEOUT, Some(parsed_url.as_str()))?;
+            self.wait_for_load_completion(session_id, URL_LOAD_TIMEOUT, Some(parsed_url.as_str()))?;
         }
         let recent_console = summarize_console_messages(
             &self
@@ -1170,7 +1171,7 @@ impl ServoWorkerRuntime {
             let delegate = self.session(session_id)?.delegate.clone();
             let loaded = delegate.is_page_loaded();
             let last_url = delegate.last_url();
-            let url_matches = expected_url.is_none_or(|url| last_url.as_deref() == Some(url));
+            let url_matches = load_completion_url_matches(expected_url, last_url.as_deref());
             if loaded && url_matches {
                 delegate.take_page_loaded();
                 debug!("Servo page load completed");
@@ -1195,6 +1196,24 @@ impl ServoWorkerRuntime {
             std::thread::sleep(Duration::from_millis(1));
         }
     }
+}
+
+fn load_completion_url_matches(expected_url: Option<&str>, current_url: Option<&str>) -> bool {
+    let Some(expected_url) = expected_url else {
+        return true;
+    };
+    let Some(current_url) = current_url else {
+        return false;
+    };
+    if current_url == expected_url {
+        return true;
+    }
+
+    // Arbitrary webpages often redirect to canonical hosts, locale paths, or
+    // consent/login URLs. Once the fresh webview reports a completed load on a
+    // non-blank document, treat it as success instead of timing out forever on
+    // an exact-URL mismatch.
+    !current_url.eq_ignore_ascii_case("about:blank")
 }
 
 #[cfg(test)]
@@ -1287,6 +1306,7 @@ pub(super) mod test_support {
                     WorkerCommand::CreateSession { response_tx, .. }
                     | WorkerCommand::Unload { response_tx, .. }
                     | WorkerCommand::Load { response_tx, .. }
+                    | WorkerCommand::LoadUrl { response_tx, .. }
                     | WorkerCommand::DestroySession { response_tx, .. } => {
                         let _ = response_tx.send(Ok(()));
                     }
@@ -1368,6 +1388,9 @@ pub(super) mod test_support {
                     WorkerCommand::Load { response_tx, .. } => {
                         let _ = response_tx.send(Ok(()));
                     }
+                    WorkerCommand::LoadUrl { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
                 }
             }
         });
@@ -1411,6 +1434,9 @@ pub(super) mod test_support {
                         let _ = response_tx.send(Ok(()));
                     }
                     WorkerCommand::Load { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    WorkerCommand::LoadUrl { response_tx, .. } => {
                         let _ = response_tx.send(Ok(()));
                     }
                     WorkerCommand::Unload { response_tx, .. }
@@ -1658,5 +1684,33 @@ mod tests {
         shutdown_shared_servo_worker().expect("shutdown should clear poisoned state");
 
         assert!(shared_worker_is_vacant());
+    }
+
+    #[test]
+    fn load_completion_url_matches_exact_expected_url() {
+        assert!(load_completion_url_matches(
+            Some("https://example.com"),
+            Some("https://example.com")
+        ));
+    }
+
+    #[test]
+    fn load_completion_url_matches_redirected_url() {
+        assert!(load_completion_url_matches(
+            Some("https://example.com"),
+            Some("https://www.example.com/en")
+        ));
+    }
+
+    #[test]
+    fn load_completion_url_rejects_blank_page() {
+        assert!(!load_completion_url_matches(
+            Some("https://example.com"),
+            Some("about:blank")
+        ));
+        assert!(!load_completion_url_matches(
+            Some("https://example.com"),
+            None
+        ));
     }
 }

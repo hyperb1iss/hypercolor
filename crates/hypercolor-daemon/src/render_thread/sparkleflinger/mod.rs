@@ -207,11 +207,7 @@ impl SparkleFlinger {
             width: plan.width,
             height: plan.height,
         });
-        self.compose_for_outputs(
-            plan,
-            true,
-            preview_surface_request,
-        )
+        self.compose_for_outputs(plan, true, preview_surface_request)
     }
 
     pub fn compose_for_outputs(
@@ -222,20 +218,13 @@ impl SparkleFlinger {
     ) -> ComposedFrameSet {
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(backend) => {
-                backend.compose(
-                    plan,
-                    requires_cpu_sampling_canvas,
-                    preview_surface_request,
-                )
+                backend.compose(plan, requires_cpu_sampling_canvas, preview_surface_request)
             }
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, cpu_fallback } => {
                 if gpu.supports_plan(&plan)
-                    && let Ok(composed) = gpu.compose(
-                        &plan,
-                        requires_cpu_sampling_canvas,
-                        preview_surface_request,
-                    )
+                    && let Ok(composed) =
+                        gpu.compose(&plan, requires_cpu_sampling_canvas, preview_surface_request)
                 {
                     return composed;
                 }

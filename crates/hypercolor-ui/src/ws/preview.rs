@@ -64,6 +64,10 @@ fn preview_canvas_request_dimensions(requested_fps: u32) -> (u32, u32) {
     preview_canvas_request_dimensions_for_host(preview_hostname().as_str(), requested_fps)
 }
 
+fn web_viewport_preview_request_dimensions() -> (u32, u32) {
+    (0, 0)
+}
+
 pub(super) fn request_preview_subscription(
     ws: &web_sys::WebSocket,
     requested_preview_fps: StoredValue<u32>,
@@ -138,7 +142,7 @@ pub(super) fn request_web_viewport_preview_subscription(
     }
 
     requested_preview_fps.set_value(desired_fps);
-    let (preview_width, preview_height) = preview_canvas_request_dimensions(desired_fps);
+    let (preview_width, preview_height) = web_viewport_preview_request_dimensions();
 
     let subscribe_msg = serde_json::json!({
         "type": "subscribe",
@@ -286,6 +290,7 @@ mod tests {
     use super::{
         REMOTE_PREVIEW_WIDTH_LOW, REMOTE_PREVIEW_WIDTH_MEDIUM,
         preview_canvas_request_dimensions_for_host, remote_preview_width_for_fps,
+        web_viewport_preview_request_dimensions,
     };
 
     #[test]
@@ -327,5 +332,10 @@ mod tests {
             preview_canvas_request_dimensions_for_host("remote.example", 6),
             (REMOTE_PREVIEW_WIDTH_LOW, 0)
         );
+    }
+
+    #[test]
+    fn web_viewport_preview_stays_full_resolution() {
+        assert_eq!(web_viewport_preview_request_dimensions(), (0, 0));
     }
 }

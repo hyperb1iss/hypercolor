@@ -2,7 +2,6 @@ use std::sync::mpsc;
 
 use anyhow::{Context, Result};
 use hypercolor_core::spatial::{PreparedZonePlan, PreparedZoneSamples};
-use hypercolor_core::types::canvas::{BYTES_PER_PIXEL, PublishedSurface, RenderSurfacePool};
 use hypercolor_types::canvas::SamplingMethod;
 use hypercolor_types::event::ZoneColors;
 
@@ -86,13 +85,17 @@ struct CachedGpuSamplingBindGroup {
     bind_group: wgpu::BindGroup,
 }
 
-pub(super) struct GpuSurfaceReadback<'a> {
-    pub(super) buffer: &'a wgpu::Buffer,
-    pub(super) used_bytes: u64,
-    pub(super) width: u32,
-    pub(super) height: u32,
-    pub(super) padded_bytes_per_row: u32,
-    pub(super) surfaces: &'a mut RenderSurfacePool,
+pub(super) struct GpuSamplingDispatch {
+    pub(super) sampled: bool,
+    pub(super) submission_index: Option<wgpu::SubmissionIndex>,
+    pub(super) pending_readback: Option<PendingGpuSampleReadback>,
+}
+
+pub(super) struct PendingGpuSampleReadback {
+    submission_index: wgpu::SubmissionIndex,
+    used_bytes: u64,
+    buffer: wgpu::Buffer,
+    receiver: mpsc::Receiver<std::result::Result<(), wgpu::BufferAsyncError>>,
 }
 
 impl GpuSamplingPlan {
@@ -124,43 +127,40 @@ impl GpuSamplingPlan {
             let start = points.len();
             match (&zone.sampling_method, &zone.prepared_samples) {
                 (SamplingMethod::Nearest, PreparedZoneSamples::Nearest(samples)) => {
-                    points.extend(
-                        zone.sample_positions
-                            .iter()
-                            .zip(samples)
-                            .map(|(position, sample)| gpu_sample_point(
+                    points.extend(zone.sample_positions.iter().zip(samples).map(
+                        |(position, sample)| {
+                            gpu_sample_point(
                                 position,
                                 GpuSampleMethod::Nearest,
                                 sample.attenuation,
                                 0,
-                            )),
-                    );
+                            )
+                        },
+                    ));
                 }
                 (SamplingMethod::Bilinear, PreparedZoneSamples::Bilinear(samples)) => {
-                    points.extend(
-                        zone.sample_positions
-                            .iter()
-                            .zip(samples)
-                            .map(|(position, sample)| gpu_sample_point(
+                    points.extend(zone.sample_positions.iter().zip(samples).map(
+                        |(position, sample)| {
+                            gpu_sample_point(
                                 position,
                                 GpuSampleMethod::Bilinear,
                                 sample.attenuation,
                                 0,
-                            )),
-                    );
+                            )
+                        },
+                    ));
                 }
                 (SamplingMethod::Area { .. }, PreparedZoneSamples::Area(samples)) => {
-                    points.extend(
-                        zone.sample_positions
-                            .iter()
-                            .zip(samples)
-                            .map(|(position, sample)| gpu_sample_point(
+                    points.extend(zone.sample_positions.iter().zip(samples).map(
+                        |(position, sample)| {
+                            gpu_sample_point(
                                 position,
                                 GpuSampleMethod::Area,
                                 sample.attenuation,
                                 u32::try_from(sample.radius.max(0)).unwrap_or_default(),
-                            )),
-                    );
+                            )
+                        },
+                    ));
                 }
                 _ => return None,
             }
@@ -302,10 +302,13 @@ impl GpuSpatialSampler {
         prepared_zones: &[PreparedZonePlan],
         zones: &mut Vec<ZoneColors>,
         encoder: Option<wgpu::CommandEncoder>,
-        extra_surface_readback: Option<GpuSurfaceReadback<'_>>,
-    ) -> Result<(bool, Option<wgpu::SubmissionIndex>, Option<PublishedSurface>)> {
+    ) -> Result<GpuSamplingDispatch> {
         if !self.ensure_plan(prepared_zones) {
-            return Ok((false, None, None));
+            return Ok(GpuSamplingDispatch {
+                sampled: false,
+                submission_index: None,
+                pending_readback: None,
+            });
         }
 
         let sample_count = self
@@ -315,15 +318,27 @@ impl GpuSpatialSampler {
         self.ensure_capacity(device, sample_count);
         let Some(points_buffer) = self.points_buffer.clone() else {
             zones.clear();
-            return Ok((true, None, None));
+            return Ok(GpuSamplingDispatch {
+                sampled: true,
+                submission_index: encoder.map(|encoder| queue.submit(Some(encoder.finish()))),
+                pending_readback: None,
+            });
         };
         let Some(output_buffer) = self.output_buffer.clone() else {
             zones.clear();
-            return Ok((true, None, None));
+            return Ok(GpuSamplingDispatch {
+                sampled: true,
+                submission_index: encoder.map(|encoder| queue.submit(Some(encoder.finish()))),
+                pending_readback: None,
+            });
         };
         let Some(readback_buffer) = self.readback_buffer.clone() else {
             zones.clear();
-            return Ok((true, None, None));
+            return Ok(GpuSamplingDispatch {
+                sampled: true,
+                submission_index: encoder.map(|encoder| queue.submit(Some(encoder.finish()))),
+                pending_readback: None,
+            });
         };
 
         self.ensure_points_uploaded(queue, &points_buffer);
@@ -375,29 +390,37 @@ impl GpuSpatialSampler {
         let submission_index = queue.submit(Some(encoder.finish()));
         if output_bytes == 0 {
             zones.clear();
-            let preview_surface = if let Some(surface_readback) = extra_surface_readback {
-                Some(read_back_surface_into(
-                    device,
-                    surface_readback,
-                    submission_index.clone(),
-                )?)
-            } else {
-                None
-            };
-            return Ok((true, Some(submission_index), preview_surface));
+            return Ok(GpuSamplingDispatch {
+                sampled: true,
+                submission_index: Some(submission_index),
+                pending_readback: None,
+            });
         }
-        let preview_surface = readback_zone_colors_into(
+        Ok(GpuSamplingDispatch {
+            sampled: true,
+            submission_index: Some(submission_index.clone()),
+            pending_readback: Some(begin_zone_color_readback(
+                &readback_buffer,
+                output_bytes,
+                submission_index,
+            )),
+        })
+    }
+
+    pub(super) fn finish_pending_readback(
+        &self,
+        device: &wgpu::Device,
+        pending_readback: PendingGpuSampleReadback,
+        zones: &mut Vec<ZoneColors>,
+    ) -> Result<()> {
+        finish_zone_color_readback(
             device,
-            &readback_buffer,
-            output_bytes,
+            &pending_readback,
             self.cached_plan
                 .as_ref()
                 .expect("GPU sampling plan should remain cached after sampling"),
-            submission_index.clone(),
             zones,
-            extra_surface_readback,
-        )?;
-        Ok((true, Some(submission_index), preview_surface))
+        )
     }
 
     fn ensure_capacity(&mut self, device: &wgpu::Device, sample_count: usize) {
@@ -574,142 +597,48 @@ fn sample_output_bytes(sample_count: usize) -> u64 {
         .saturating_mul(4)
 }
 
-fn readback_zone_colors_into(
-    device: &wgpu::Device,
+fn begin_zone_color_readback(
     buffer: &wgpu::Buffer,
     used_bytes: u64,
-    cached_plan: &CachedGpuSamplingPlan,
     submission_index: wgpu::SubmissionIndex,
-    zones: &mut Vec<ZoneColors>,
-    extra_surface_readback: Option<GpuSurfaceReadback<'_>>,
-) -> Result<Option<PublishedSurface>> {
+) -> PendingGpuSampleReadback {
     let slice = buffer.slice(..used_bytes);
-    let (sender, receiver) =
-        mpsc::channel::<std::result::Result<(), wgpu::BufferAsyncError>>();
+    let (sender, receiver) = mpsc::channel::<std::result::Result<(), wgpu::BufferAsyncError>>();
     slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = sender.send(result);
     });
-    let preview_slice = extra_surface_readback
-        .as_ref()
-        .map(|surface_readback| surface_readback.buffer.slice(..surface_readback.used_bytes));
-    let preview_receiver = if let Some(preview_slice) = preview_slice.as_ref() {
-        let (sender, receiver) =
-            mpsc::channel::<std::result::Result<(), wgpu::BufferAsyncError>>();
-        preview_slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
-        });
-        Some(receiver)
-    } else {
-        None
-    };
+    PendingGpuSampleReadback {
+        submission_index,
+        used_bytes,
+        buffer: buffer.clone(),
+        receiver,
+    }
+}
+
+fn finish_zone_color_readback(
+    device: &wgpu::Device,
+    pending_readback: &PendingGpuSampleReadback,
+    cached_plan: &CachedGpuSamplingPlan,
+    zones: &mut Vec<ZoneColors>,
+) -> Result<()> {
     device
         .poll(wgpu::PollType::Wait {
-            submission_index: Some(submission_index),
+            submission_index: Some(pending_readback.submission_index.clone()),
             timeout: None,
         })
         .context("GPU sample poll failed")?;
-    receiver
+    pending_readback
+        .receiver
         .recv()
         .context("GPU sample channel closed before map completion")?
         .context("GPU sample buffer mapping failed")?;
-    if let Some(preview_receiver) = preview_receiver {
-        preview_receiver
-            .recv()
-            .context("GPU preview channel closed before map completion")?
-            .context("GPU preview buffer mapping failed")?;
-    }
 
+    let slice = pending_readback.buffer.slice(..pending_readback.used_bytes);
     let mapped = slice.get_mapped_range();
     rebuild_zone_colors_from_mapped_bytes(&cached_plan.plan, &mapped, zones);
     drop(mapped);
-    buffer.unmap();
-    let preview_surface = if let (Some(preview_slice), Some(surface_readback)) =
-        (preview_slice, extra_surface_readback)
-    {
-        let mapped = preview_slice.get_mapped_range();
-        let surface = copy_mapped_surface_into_pool(
-            &mapped,
-            surface_readback.width,
-            surface_readback.height,
-            surface_readback.padded_bytes_per_row,
-            surface_readback.surfaces,
-        )?;
-        drop(mapped);
-        surface_readback.buffer.unmap();
-        Some(surface)
-    } else {
-        None
-    };
-    Ok(preview_surface)
-}
-
-fn read_back_surface_into(
-    device: &wgpu::Device,
-    surface_readback: GpuSurfaceReadback<'_>,
-    submission_index: wgpu::SubmissionIndex,
-) -> Result<PublishedSurface> {
-    let slice = surface_readback.buffer.slice(..surface_readback.used_bytes);
-    let (sender, receiver) =
-        mpsc::channel::<std::result::Result<(), wgpu::BufferAsyncError>>();
-    slice.map_async(wgpu::MapMode::Read, move |result| {
-        let _ = sender.send(result);
-    });
-    device
-        .poll(wgpu::PollType::Wait {
-            submission_index: Some(submission_index),
-            timeout: None,
-        })
-        .context("GPU preview poll failed")?;
-    receiver
-        .recv()
-        .context("GPU preview channel closed before map completion")?
-        .context("GPU preview buffer mapping failed")?;
-
-    let mapped = slice.get_mapped_range();
-    let surface = copy_mapped_surface_into_pool(
-        &mapped,
-        surface_readback.width,
-        surface_readback.height,
-        surface_readback.padded_bytes_per_row,
-        surface_readback.surfaces,
-    )?;
-    drop(mapped);
-    surface_readback.buffer.unmap();
-    Ok(surface)
-}
-
-fn copy_mapped_surface_into_pool(
-    mapped: &[u8],
-    width: u32,
-    height: u32,
-    padded_bytes_per_row: u32,
-    surfaces: &mut RenderSurfacePool,
-) -> Result<PublishedSurface> {
-    let unpadded_bytes_per_row = width * BYTES_PER_PIXEL as u32;
-    let mut lease = surfaces
-        .dequeue()
-        .context("GPU readback surface pool should provide a reusable slot")?;
-    let target = lease.canvas_mut().as_rgba_bytes_mut();
-    if padded_bytes_per_row == unpadded_bytes_per_row {
-        target.copy_from_slice(
-            &mapped[..usize::try_from(unpadded_bytes_per_row)
-                .expect("row width should fit in usize")
-                .saturating_mul(height as usize)],
-        );
-    } else {
-        let row_width = usize::try_from(unpadded_bytes_per_row).expect("row width should fit");
-        for (target_row, row) in target
-            .chunks_exact_mut(row_width)
-            .zip(mapped.chunks(usize::try_from(padded_bytes_per_row).expect(
-                "row pitch should fit in usize",
-            )))
-            .take(height as usize)
-        {
-            target_row.copy_from_slice(&row[..row_width]);
-        }
-    }
-
-    Ok(lease.submit(0, 0))
+    pending_readback.buffer.unmap();
+    Ok(())
 }
 
 fn rebuild_zone_colors_from_mapped_bytes(

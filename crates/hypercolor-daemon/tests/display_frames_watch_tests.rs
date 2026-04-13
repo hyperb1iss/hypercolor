@@ -90,7 +90,9 @@ async fn dropped_receivers_let_sender_clean_up() {
     runtime.set_frame(device, snapshot(99));
     let rx = runtime.subscribe(device);
     let Some(frame) = rx.borrow().clone() else {
-        panic!("new subscribers should receive the latest snapshot even after prior receivers dropped");
+        panic!(
+            "new subscribers should receive the latest snapshot even after prior receivers dropped"
+        );
     };
     assert_eq!(frame.frame_number, 99);
 }

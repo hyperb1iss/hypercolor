@@ -19,9 +19,7 @@ use hypercolor_core::device::{
     DeviceRegistry, DiscoveredDevice, DiscoveryConnectBehavior, DiscoveryOrchestrator,
     TransportScanner,
 };
-use hypercolor_core::effect::{
-    EffectEntry, EffectRegistry, EffectRenderer, FrameInput,
-};
+use hypercolor_core::effect::{EffectEntry, EffectRegistry, EffectRenderer, FrameInput};
 use hypercolor_core::engine::{
     FpsController, FpsTier, RenderLoop, RenderLoopState, TierTransitionConfig,
 };

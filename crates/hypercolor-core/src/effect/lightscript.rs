@@ -622,7 +622,10 @@ impl LightscriptRuntime {
         );
         let _ = writeln!(script, "  window.engine.zone.width = {grid_width};");
         let _ = writeln!(script, "  window.engine.zone.height = {grid_height};");
-        let _ = writeln!(script, "  window.engine.zone.hue = new Int16Array([{hue_csv}]);");
+        let _ = writeln!(
+            script,
+            "  window.engine.zone.hue = new Int16Array([{hue_csv}]);"
+        );
         let _ = writeln!(
             script,
             "  window.engine.zone.saturation = new Int8Array([{saturation_csv}]);"
@@ -831,7 +834,11 @@ fn screen_payload(screen: Option<&ScreenData>) -> (u32, u32, String, String, Str
     )
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::as_conversions)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions
+)]
 fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (i16, i8, i8) {
     let rf = f32::from(r) / 255.0;
     let gf = f32::from(g) / 255.0;
@@ -1138,7 +1145,15 @@ mod tests {
         let sensors = SystemSnapshot::empty();
         let mut scripts = Vec::new();
 
-        runtime.push_frame_scripts(&mut scripts, &audio, None, &sensors, &HashMap::new(), false, false);
+        runtime.push_frame_scripts(
+            &mut scripts,
+            &audio,
+            None,
+            &sensors,
+            &HashMap::new(),
+            false,
+            false,
+        );
         assert!(
             scripts
                 .iter()

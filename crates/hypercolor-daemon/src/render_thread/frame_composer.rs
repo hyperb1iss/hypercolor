@@ -25,6 +25,7 @@ use crate::preview_runtime::PreviewDemandSummary;
 )]
 pub(crate) struct RenderStageStats {
     pub(crate) composed_frame: ComposedFrameSet,
+    pub(crate) preview_requested: bool,
     pub(crate) web_viewport_preview: Option<Canvas>,
     pub(crate) group_canvases: Vec<(RenderGroupId, GroupCanvasFrame)>,
     pub(crate) active_group_canvas_ids: Vec<RenderGroupId>,
@@ -104,7 +105,12 @@ impl ComposeContext<'_> {
     }
 
     async fn compose_render_group_frame_set(&mut self, stage_start: Instant) -> RenderStageStats {
-        if self.scene_snapshot.scene_runtime.active_render_group_count() == 0 {
+        if self
+            .scene_snapshot
+            .scene_runtime
+            .active_render_group_count()
+            == 0
+        {
             return self.compose_idle_frame_set(stage_start);
         }
 
@@ -234,12 +240,13 @@ impl ComposeContext<'_> {
             source_frame_opaque,
         );
         let producer_retained = producer_state.is_some_and(ProducerFrameState::is_retained);
+        let preview_request = self.preview_surface_request();
         let composed = self.render.sparkleflinger.compose_for_outputs(
             compiled_plan.plan.with_cpu_replay_cacheable(
                 producer_retained && !compiled_plan.metadata.transition_active,
             ),
             self.requires_cpu_sampling_canvas(),
-            self.preview_surface_request(),
+            preview_request,
         );
         let composition_done_at = Instant::now();
         let composition_us = micros_between(composition_start, composition_done_at);
@@ -248,6 +255,7 @@ impl ComposeContext<'_> {
         RenderStageStats {
             composition_bypassed: composed.bypassed,
             composed_frame: composed,
+            preview_requested: preview_request.is_some(),
             web_viewport_preview: None,
             group_canvases: Vec::new(),
             active_group_canvas_ids: Vec::new(),
@@ -288,12 +296,13 @@ impl ComposeContext<'_> {
                     render_group_result.preview_frame,
                     true,
                 );
+                let preview_request = self.preview_surface_request();
                 let composed = self.render.sparkleflinger.compose_for_outputs(
                     compiled_plan.plan.with_cpu_replay_cacheable(
                         effect_retained && !compiled_plan.metadata.transition_active,
                     ),
                     self.requires_cpu_sampling_canvas(),
-                    self.preview_surface_request(),
+                    preview_request,
                 );
                 let composition_bypassed = composed.bypassed;
                 let composition_done_at = Instant::now();
@@ -302,6 +311,7 @@ impl ComposeContext<'_> {
 
                 RenderStageStats {
                     composed_frame: composed,
+                    preview_requested: preview_request.is_some(),
                     web_viewport_preview: None,
                     group_canvases: render_group_result.group_canvases,
                     active_group_canvas_ids: render_group_result.active_group_canvas_ids,
@@ -342,10 +352,11 @@ impl ComposeContext<'_> {
                     source_frame,
                     true,
                 );
+                let preview_request = self.preview_surface_request();
                 let composed = self.render.sparkleflinger.compose_for_outputs(
                     compiled_plan.plan.with_cpu_replay_cacheable(false),
                     self.requires_cpu_sampling_canvas(),
-                    self.preview_surface_request(),
+                    preview_request,
                 );
                 let composition_bypassed = composed.bypassed;
                 let composition_done_at = Instant::now();
@@ -354,6 +365,7 @@ impl ComposeContext<'_> {
 
                 RenderStageStats {
                     composed_frame: composed,
+                    preview_requested: preview_request.is_some(),
                     web_viewport_preview: None,
                     group_canvases: Vec::new(),
                     active_group_canvas_ids: Vec::new(),
@@ -482,8 +494,7 @@ fn preview_surface_request(
     }
 
     if (publish_canvas_preview && canvas_receivers > tracked_canvas_receivers)
-        || (wants_screen_passthrough
-            && screen_canvas_receivers > tracked_screen_canvas_receivers)
+        || (wants_screen_passthrough && screen_canvas_receivers > tracked_screen_canvas_receivers)
     {
         return Some(PreviewSurfaceRequest {
             width: canvas_width,

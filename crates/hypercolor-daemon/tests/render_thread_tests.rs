@@ -994,12 +994,7 @@ async fn render_thread_gates_audio_capture_to_audio_reactive_effects() {
         };
         let mut scene_manager = state.scene_manager.write().await;
         scene_manager
-            .upsert_primary_group(
-                &metadata,
-                HashMap::new(),
-                None,
-                test_layout(Vec::new()),
-            )
+            .upsert_primary_group(&metadata, HashMap::new(), None, test_layout(Vec::new()))
             .expect("activate audio-reactive primary group");
     }
 

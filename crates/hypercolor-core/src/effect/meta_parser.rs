@@ -471,10 +471,7 @@ fn parse_csv_attr(attrs: &HashMap<String, String>, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn parse_preview_source_attr(
-    attrs: &HashMap<String, String>,
-    key: &str,
-) -> Option<PreviewSource> {
+fn parse_preview_source_attr(attrs: &HashMap<String, String>, key: &str) -> Option<PreviewSource> {
     match attr_value(attrs, key)?.trim().to_ascii_lowercase().as_str() {
         "screen" | "screen_capture" => Some(PreviewSource::ScreenCapture),
         "web" | "web_viewport" => Some(PreviewSource::WebViewport),

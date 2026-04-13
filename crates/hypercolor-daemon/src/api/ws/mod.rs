@@ -8,6 +8,7 @@
 mod cache;
 mod command;
 mod preview_encode;
+mod preview_scale;
 mod protocol;
 mod relays;
 mod session;

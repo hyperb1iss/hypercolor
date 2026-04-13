@@ -8,6 +8,8 @@ use turbojpeg::{
 use hypercolor_core::bus::CanvasFrame;
 use hypercolor_types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
 
+use super::preview_scale::{PreviewScaleFormat, scale_rgba_bilinear};
+
 const CANVAS_HEADER_LEN: usize = 14;
 const PREVIEW_JPEG_QUALITY: u8 = 80;
 const PREVIEW_JPEG_SUBSAMP: TurboJpegSubsamp = TurboJpegSubsamp::Sub2x2;
@@ -149,43 +151,17 @@ impl PreviewJpegEncoder {
         target_height: u32,
         brightness: f32,
     ) {
-        let width = usize::try_from(target_width).unwrap_or(0);
-        let height = usize::try_from(target_height).unwrap_or(0);
-        let pixel_count = width.saturating_mul(height);
-        let required_len = pixel_count.saturating_mul(TurboJpegPixelFormat::RGBA.size());
-        if self.rgba_buffer.len() != required_len {
-            self.rgba_buffer.resize(required_len, 0);
-        }
-        let rgba = frame.rgba_bytes();
-        let source_width = usize::try_from(frame.width).unwrap_or(0);
-        let source_height = usize::try_from(frame.height).unwrap_or(0);
-        let source_brightness_full = brightness >= 0.999;
-        for y in 0..height {
-            let source_y = y
-                .saturating_mul(source_height)
-                .checked_div(height.max(1))
-                .unwrap_or(0);
-            for x in 0..width {
-                let source_x = x
-                    .saturating_mul(source_width)
-                    .checked_div(width.max(1))
-                    .unwrap_or(0);
-                let source_offset = source_y
-                    .saturating_mul(source_width)
-                    .saturating_add(source_x)
-                    .saturating_mul(4);
-                let out_offset = y.saturating_mul(width).saturating_add(x).saturating_mul(4);
-                let pixel = &rgba[source_offset..source_offset + 4];
-                if source_brightness_full {
-                    self.rgba_buffer[out_offset..out_offset + 4].copy_from_slice(pixel);
-                } else {
-                    self.rgba_buffer[out_offset] = self.brightness_lut[usize::from(pixel[0])];
-                    self.rgba_buffer[out_offset + 1] = self.brightness_lut[usize::from(pixel[1])];
-                    self.rgba_buffer[out_offset + 2] = self.brightness_lut[usize::from(pixel[2])];
-                    self.rgba_buffer[out_offset + 3] = pixel[3];
-                }
-            }
-        }
+        let brightness_lut = (brightness < 0.999).then_some(&self.brightness_lut);
+        scale_rgba_bilinear(
+            frame.rgba_bytes(),
+            frame.width,
+            frame.height,
+            target_width,
+            target_height,
+            brightness_lut,
+            PreviewScaleFormat::Rgba,
+            &mut self.rgba_buffer,
+        );
     }
 
     fn refresh_brightness_lut(&mut self, brightness: f32) {
