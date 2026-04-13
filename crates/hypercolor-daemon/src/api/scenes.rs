@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{
-    ColorInterpolation, EasingFunction, Scene, SceneId, SceneKind, ScenePriority, SceneScope,
-    TransitionSpec, UnassignedBehavior,
+    ColorInterpolation, EasingFunction, RenderGroup, Scene, SceneId, SceneKind, ScenePriority,
+    SceneScope, TransitionSpec, UnassignedBehavior,
 };
 
 use crate::api::AppState;
@@ -49,6 +49,17 @@ pub struct SceneSummary {
     pub description: Option<String>,
     pub enabled: bool,
     pub priority: u8,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ActiveSceneResponse {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub enabled: bool,
+    pub priority: u8,
+    pub kind: SceneKind,
+    pub groups: Vec<RenderGroup>,
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────
@@ -109,7 +120,15 @@ pub async fn get_active_scene(State(state): State<Arc<AppState>>) -> Response {
         return ApiError::not_found("No active scene".to_owned());
     };
 
-    ApiResponse::ok(scene.clone())
+    ApiResponse::ok(ActiveSceneResponse {
+        id: scene.id.to_string(),
+        name: scene.name.clone(),
+        description: scene.description.clone(),
+        enabled: scene.enabled,
+        priority: scene.priority.0,
+        kind: scene.kind,
+        groups: scene.groups.clone(),
+    })
 }
 
 /// `POST /api/v1/scenes` — Create a new scene.

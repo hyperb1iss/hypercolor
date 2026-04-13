@@ -148,6 +148,16 @@ pub(crate) async fn execute_frame(
         state.preview_runtime.screen_canvas_receiver_count(),
         state.preview_runtime.screen_canvas_demand().max_fps,
     );
+    let manager_lock = state.backend_manager.lock();
+    tokio::pin!(manager_lock);
+    let primed_backend_manager_lock = poll_fn(|cx| match manager_lock.as_mut().poll(cx) {
+        Poll::Ready(manager) => {
+            drop(manager);
+            Poll::Ready(false)
+        }
+        Poll::Pending => Poll::Ready(true),
+    })
+    .await;
 
     let mut render_stage = compose_frame(ComposeRequest {
         state,
@@ -161,16 +171,6 @@ pub(crate) async fn execute_frame(
     })
     .await;
     let render_us = render_stage.total_us;
-    let manager_lock = state.backend_manager.lock();
-    tokio::pin!(manager_lock);
-    let primed_backend_manager_lock = poll_fn(|cx| match manager_lock.as_mut().poll(cx) {
-        Poll::Ready(manager) => {
-            drop(manager);
-            Poll::Ready(false)
-        }
-        Poll::Pending => Poll::Ready(true),
-    })
-    .await;
 
     let mut gpu_zone_sampling = false;
     let mut pending_gpu_zone_sampling = None;

@@ -4356,6 +4356,125 @@ async fn apply_effect_rejects_display_face_effects() {
     assert_eq!(json["error"]["code"], "validation_error");
 }
 
+#[tokio::test]
+async fn apply_effect_mutates_named_active_scene_not_default_scene() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "Aurora").await;
+    insert_test_effect(&state, "Sunset").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let default_apply = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/Aurora/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(default_apply.status(), StatusCode::OK);
+
+    let default_effect_id = {
+        let manager = state.scene_manager.read().await;
+        manager
+            .get(&SceneId::DEFAULT)
+            .and_then(Scene::primary_group)
+            .and_then(|group| group.effect_id)
+            .expect("default scene should retain its primary effect")
+            .to_string()
+    };
+
+    let named_scene_id = activate_empty_test_scene(&state, "Focus").await;
+
+    let named_apply = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/Sunset/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(named_apply.status(), StatusCode::OK);
+
+    let named_primary_group_id = {
+        let manager = state.scene_manager.read().await;
+        let default_scene = manager
+            .get(&SceneId::DEFAULT)
+            .expect("default scene should still exist");
+        assert_eq!(
+            default_scene
+                .primary_group()
+                .and_then(|group| group.effect_id)
+                .map(|effect_id| effect_id.to_string()),
+            Some(default_effect_id.clone())
+        );
+
+        let active_scene = manager.active_scene().expect("named scene should stay active");
+        assert_eq!(active_scene.id, named_scene_id);
+        let primary = active_scene
+            .primary_group()
+            .expect("named scene should gain a primary group");
+        assert_ne!(
+            primary.effect_id.map(|effect_id| effect_id.to_string()),
+            Some(default_effect_id.clone())
+        );
+        primary.id.to_string()
+    };
+
+    let active_named = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_named.status(), StatusCode::OK);
+    let active_named_json = body_json(active_named).await;
+    assert_eq!(active_named_json["data"]["name"], "Sunset");
+    assert_eq!(
+        active_named_json["data"]["render_group_id"],
+        named_primary_group_id
+    );
+
+    let deactivate = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes/deactivate")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(deactivate.status(), StatusCode::OK);
+
+    let active_default = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_default.status(), StatusCode::OK);
+    let active_default_json = body_json(active_default).await;
+    assert_eq!(active_default_json["data"]["name"], "Aurora");
+    assert_ne!(
+        active_default_json["data"]["render_group_id"],
+        named_primary_group_id
+    );
+}
+
 // ── Error Envelope Format ────────────────────────────────────────────────
 
 #[tokio::test]
@@ -4777,6 +4896,96 @@ async fn display_face_endpoints_assign_get_and_delete_face() {
     let manager = state.scene_manager.read().await;
     let active_scene = manager.active_scene().expect("scene should remain active");
     assert!(active_scene.groups.is_empty());
+}
+
+#[tokio::test]
+async fn display_face_survives_primary_effect_swap() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "Aurora").await;
+    insert_test_effect(&state, "Sunset").await;
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    let scene_id = activate_empty_test_scene(&state, "Desk Scene").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let assign_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"effect_id":"{}"}}"#, face.id)))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(assign_response.status(), StatusCode::OK);
+    let assign_json = body_json(assign_response).await;
+    let face_group_id = assign_json["data"]["group"]["id"]
+        .as_str()
+        .expect("face group id should be present")
+        .to_owned();
+
+    for effect_name in ["Aurora", "Sunset"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/effects/{effect_name}/apply"))
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let active_effect = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_effect.status(), StatusCode::OK);
+    let active_effect_json = body_json(active_effect).await;
+    assert_eq!(active_effect_json["data"]["name"], "Sunset");
+    assert_ne!(active_effect_json["data"]["render_group_id"], face_group_id);
+
+    let face_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(face_response.status(), StatusCode::OK);
+    let face_json = body_json(face_response).await;
+    assert_eq!(face_json["data"]["scene_id"], scene_id.to_string());
+    assert_eq!(face_json["data"]["effect"]["id"], face.id.to_string());
+    assert_eq!(face_json["data"]["group"]["id"], face_group_id);
+
+    let manager = state.scene_manager.read().await;
+    let active_scene = manager.active_scene().expect("scene should remain active");
+    assert_eq!(active_scene.id, scene_id);
+    assert_eq!(active_scene.groups.len(), 2);
+    let primary = active_scene
+        .primary_group()
+        .expect("primary group should exist after effect apply");
+    let display_group = active_scene
+        .display_group_for(display_id)
+        .expect("display face should remain assigned");
+    assert_eq!(display_group.id.to_string(), face_group_id);
+    assert_eq!(display_group.effect_id, Some(face.id));
+    assert_ne!(primary.id, display_group.id);
 }
 
 #[tokio::test]
