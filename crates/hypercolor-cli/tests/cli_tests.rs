@@ -620,6 +620,8 @@ fn parse_scenes_create() {
             "Warm scene",
             "--mutation-mode",
             "snapshot",
+            "--enabled",
+            "false",
         ])
         .expect("scenes create should parse");
     let (_, sub) = matches.subcommand().expect("should have subcommand");
@@ -637,6 +639,10 @@ fn parse_scenes_create() {
             .get_one::<String>("mutation_mode")
             .map(String::as_str),
         Some("snapshot")
+    );
+    assert_eq!(
+        create.get_one::<String>("enabled").map(String::as_str),
+        Some("false")
     );
 }
 

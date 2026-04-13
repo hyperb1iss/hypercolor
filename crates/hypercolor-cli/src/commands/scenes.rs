@@ -1,7 +1,7 @@
 //! `hyper scenes` -- scene management and automation.
 
 use anyhow::Result;
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{ArgAction, Args, Subcommand, ValueEnum};
 
 use crate::client::DaemonClient;
 use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
@@ -57,7 +57,7 @@ pub struct SceneCreateArgs {
     pub description: Option<String>,
 
     /// Start enabled.
-    #[arg(long, default_value = "true")]
+    #[arg(long, default_value_t = true, action = ArgAction::Set)]
     pub enabled: bool,
 
     /// Whether live runtime actions can rewrite this scene.

@@ -136,6 +136,104 @@ async fn profiles_apply_sends_requested_transition_body() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn scenes_create_serializes_mutation_mode_and_enabled() -> Result<()> {
+    let captured_body: SharedBody = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route("/api/v1/scenes", post(capture_scene_create))
+        .with_state(Arc::clone(&captured_body));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let cli_result = run_hyper(
+        port,
+        &[
+            "scenes",
+            "create",
+            "movie-night",
+            "--description",
+            "Cozy lights",
+            "--mutation-mode",
+            "snapshot",
+            "--enabled",
+            "false",
+        ],
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    cli_result?;
+
+    let body = captured_body
+        .lock()
+        .await
+        .clone()
+        .context("server did not capture scene create request body")?;
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "name": "movie-night",
+            "description": "Cozy lights",
+            "enabled": false,
+            "mutation_mode": "snapshot",
+        })
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn scenes_activate_sends_transition_ms_body() -> Result<()> {
+    let captured_body: SharedBody = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route("/api/v1/scenes/{scene}/activate", post(capture_scene_activate))
+        .with_state(Arc::clone(&captured_body));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let cli_result = run_hyper(
+        port,
+        &["scenes", "activate", "movie-night", "--transition", "250"],
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    cli_result?;
+
+    let body = captured_body
+        .lock()
+        .await
+        .clone()
+        .context("server did not capture scene activate request body")?;
+    assert_eq!(body, serde_json::json!({ "transition_ms": 250 }));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn scenes_deactivate_sends_empty_object_body() -> Result<()> {
+    let captured_body: SharedBody = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route("/api/v1/scenes/deactivate", post(capture_scene_deactivate))
+        .with_state(Arc::clone(&captured_body));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let cli_result = run_hyper(port, &["scenes", "deactivate"]).await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    cli_result?;
+
+    let body = captured_body
+        .lock()
+        .await
+        .clone()
+        .context("server did not capture scene deactivate request body")?;
+    assert_eq!(body, serde_json::json!({}));
+
+    Ok(())
+}
+
 async fn capture_effect_apply(
     Path(effect): Path<String>,
     State(captured_body): State<SharedBody>,
@@ -148,6 +246,46 @@ async fn capture_effect_apply(
                 "id": effect,
                 "name": "Demo Effect",
             },
+        },
+    }))
+}
+
+async fn capture_scene_create(
+    State(captured_body): State<SharedBody>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    *captured_body.lock().await = Some(body);
+    Json(serde_json::json!({
+        "data": {
+            "id": "scene_movie_night",
+            "name": "Movie Night",
+        },
+    }))
+}
+
+async fn capture_scene_activate(
+    Path(scene): Path<String>,
+    State(captured_body): State<SharedBody>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    *captured_body.lock().await = Some(body);
+    Json(serde_json::json!({
+        "data": {
+            "activated": true,
+            "scene": scene,
+        },
+    }))
+}
+
+async fn capture_scene_deactivate(
+    State(captured_body): State<SharedBody>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    *captured_body.lock().await = Some(body);
+    Json(serde_json::json!({
+        "data": {
+            "activated": true,
+            "scene": "Default",
         },
     }))
 }
