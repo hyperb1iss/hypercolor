@@ -22,6 +22,7 @@ const COMPOSE_WORKGROUP_HEIGHT: u32 = 8;
 const COMPOSE_PARAM_BYTES: usize = 48;
 const PREVIEW_SCALE_PARAM_BYTES: usize = 16;
 const MAX_CACHED_PREVIEW_SURFACES: usize = 3;
+const MAX_CACHED_PREVIEW_READBACK_POOLS: usize = 3;
 
 #[derive(Debug, Clone)]
 pub(crate) struct GpuCompositorProbe {
@@ -101,6 +102,7 @@ struct GpuPreviewSurfaceSet {
     bind_groups: GpuPreviewScaleBindGroups,
     readback: wgpu::Buffer,
     readback_surfaces: RenderSurfacePool,
+    cached_readback_surfaces: Vec<CachedPreviewReadbackSurfaces>,
     cached_scale_params: Option<[u8; PREVIEW_SCALE_PARAM_BYTES]>,
     #[cfg(test)]
     scale_param_write_count: usize,
@@ -108,6 +110,8 @@ struct GpuPreviewSurfaceSet {
     preview_bind_group_count: usize,
     #[cfg(test)]
     last_readback_bytes: u64,
+    #[cfg(test)]
+    readback_surface_pool_allocation_count: usize,
 }
 
 struct GpuCompositorTexture {
@@ -157,6 +161,11 @@ struct CachedReadbackSurface {
 struct CachedPreviewSurface {
     key: CachedPreviewSurfaceKey,
     surface: PublishedSurface,
+}
+
+struct CachedPreviewReadbackSurfaces {
+    request: PreviewSurfaceRequest,
+    surfaces: RenderSurfacePool,
 }
 
 #[derive(Debug, Clone)]
@@ -1312,6 +1321,7 @@ impl GpuPreviewSurfaceSet {
             output_buffer,
             readback,
             readback_surfaces: RenderSurfacePool::new(SurfaceDescriptor::rgba8888(width, height)),
+            cached_readback_surfaces: Vec::with_capacity(MAX_CACHED_PREVIEW_READBACK_POOLS),
             cached_scale_params: None,
             #[cfg(test)]
             scale_param_write_count: 0,
@@ -1319,6 +1329,8 @@ impl GpuPreviewSurfaceSet {
             preview_bind_group_count: 2,
             #[cfg(test)]
             last_readback_bytes: 0,
+            #[cfg(test)]
+            readback_surface_pool_allocation_count: 1,
         }
     }
 
@@ -1330,10 +1342,59 @@ impl GpuPreviewSurfaceSet {
         if self.width == width && self.height == height {
             return;
         }
+        let next_request = PreviewSurfaceRequest { width, height };
+        let next_surfaces = self
+            .take_cached_readback_surfaces(next_request)
+            .unwrap_or_else(|| {
+                #[cfg(test)]
+                {
+                    self.readback_surface_pool_allocation_count = self
+                        .readback_surface_pool_allocation_count
+                        .saturating_add(1);
+                }
+                RenderSurfacePool::new(SurfaceDescriptor::rgba8888(width, height))
+            });
+        let current_request = PreviewSurfaceRequest {
+            width: self.width,
+            height: self.height,
+        };
+        let current_surfaces = std::mem::replace(&mut self.readback_surfaces, next_surfaces);
+        self.store_cached_readback_surfaces(current_request, current_surfaces);
         self.width = width;
         self.height = height;
         self.padded_bytes_per_row = width * BYTES_PER_PIXEL as u32;
-        self.readback_surfaces = RenderSurfacePool::new(SurfaceDescriptor::rgba8888(width, height));
+    }
+
+    fn take_cached_readback_surfaces(
+        &mut self,
+        request: PreviewSurfaceRequest,
+    ) -> Option<RenderSurfacePool> {
+        self.cached_readback_surfaces
+            .iter()
+            .position(|cached| cached.request == request)
+            .map(|index| self.cached_readback_surfaces.remove(index).surfaces)
+    }
+
+    fn store_cached_readback_surfaces(
+        &mut self,
+        request: PreviewSurfaceRequest,
+        surfaces: RenderSurfacePool,
+    ) {
+        if let Some(index) = self
+            .cached_readback_surfaces
+            .iter()
+            .position(|cached| cached.request == request)
+        {
+            self.cached_readback_surfaces.remove(index);
+        }
+        self.cached_readback_surfaces.insert(
+            0,
+            CachedPreviewReadbackSurfaces { request, surfaces },
+        );
+        if self.cached_readback_surfaces.len() > MAX_CACHED_PREVIEW_READBACK_POOLS {
+            self.cached_readback_surfaces
+                .truncate(MAX_CACHED_PREVIEW_READBACK_POOLS);
+        }
     }
 }
 
@@ -2501,6 +2562,85 @@ mod tests {
             .expect("restored scaled preview finalize should succeed")
             .expect("restored scaled preview should publish a preview surface");
         assert_eq!(compositor.preview_surface_allocation_count, 1);
+    }
+
+    #[test]
+    fn gpu_scaled_preview_reuses_readback_surface_pools_across_size_flips() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let first_plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(patterned_canvas(96)),
+                    0.35,
+                ),
+            ],
+        );
+        let second_plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(24))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(patterned_canvas(144)),
+                    0.35,
+                ),
+            ],
+        );
+        let third_plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(48))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(patterned_canvas(192)),
+                    0.35,
+                ),
+            ],
+        );
+        let large_request = PreviewSurfaceRequest {
+            width: 3,
+            height: 3,
+        };
+        let small_request = PreviewSurfaceRequest {
+            width: 2,
+            height: 2,
+        };
+
+        compositor
+            .compose(&first_plan, false, Some(large_request))
+            .expect("first scaled preview compose should succeed");
+        compositor
+            .resolve_preview_surface()
+            .expect("first scaled preview finalize should succeed")
+            .expect("first scaled preview should publish a preview surface");
+
+        compositor
+            .compose(&second_plan, false, Some(small_request))
+            .expect("second scaled preview compose should succeed");
+        compositor
+            .resolve_preview_surface()
+            .expect("second scaled preview finalize should succeed")
+            .expect("second scaled preview should publish a preview surface");
+
+        compositor
+            .compose(&third_plan, false, Some(large_request))
+            .expect("third scaled preview compose should succeed");
+        compositor
+            .resolve_preview_surface()
+            .expect("third scaled preview finalize should succeed")
+            .expect("third scaled preview should publish a preview surface");
+
+        let preview_surfaces = compositor
+            .preview_surfaces
+            .as_ref()
+            .expect("scaled preview should keep preview surfaces allocated");
+        assert_eq!(preview_surfaces.readback_surface_pool_allocation_count, 2);
     }
 
     #[test]
