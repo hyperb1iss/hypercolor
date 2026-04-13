@@ -9,6 +9,6 @@ mod preview;
 pub use connection::WsManager;
 pub use messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, CanvasPixelFormat, ConnectionState,
-    DeviceEventHint, PerformanceMetrics,
+    DeviceEventHint, PerformanceMetrics, SceneEventHint,
 };
 pub use preview::DEFAULT_PREVIEW_FPS_CAP;

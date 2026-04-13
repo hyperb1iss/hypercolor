@@ -33,8 +33,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
     let (group_rot_offset, set_group_rot_offset) = signal(0.0f32);
     let (group_scale_factor, set_group_scale_factor) = signal(1.0f32);
     // Track the previous selection set to detect changes
-    let (prev_selection, set_prev_selection) =
-        signal(std::collections::HashSet::<String>::new());
+    let (prev_selection, set_prev_selection) = signal(std::collections::HashSet::<String>::new());
 
     // Derive selected zone snapshot for display (single-selection only for Phase 1)
     let zone_snapshot = Signal::derive(move || {

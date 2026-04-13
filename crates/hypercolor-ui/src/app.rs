@@ -6,6 +6,7 @@ use leptos_router::components::{Route, Router, Routes};
 use leptos_router::path;
 
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
+use hypercolor_types::scene::SceneKind;
 
 use crate::api;
 use crate::components::preset_matching::controls_to_json;
@@ -21,7 +22,7 @@ use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContex
 use crate::thumbnails::{self, ThumbnailStore};
 use crate::ws::{
     AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, DeviceEventHint,
-    PerformanceMetrics, WsManager,
+    PerformanceMetrics, SceneEventHint, WsManager,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -107,6 +108,7 @@ pub struct WsContext {
     pub backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     pub active_effect: ReadSignal<Option<String>>,
     pub last_device_event: ReadSignal<Option<DeviceEventHint>>,
+    pub last_scene_event: ReadSignal<Option<SceneEventHint>>,
     pub audio_level: ReadSignal<AudioLevel>,
     pub audio_enabled: ReadSignal<bool>,
     pub set_audio_enabled: WriteSignal<bool>,
@@ -128,6 +130,10 @@ pub struct EffectsContext {
     pub set_active_control_values: WriteSignal<HashMap<String, ControlValue>>,
     pub active_preset_id: ReadSignal<Option<String>>,
     pub set_active_preset_id: WriteSignal<Option<String>>,
+    pub active_scene_name: ReadSignal<Option<String>>,
+    pub set_active_scene_name: WriteSignal<Option<String>>,
+    pub active_scene_kind: ReadSignal<Option<SceneKind>>,
+    pub set_active_scene_kind: WriteSignal<Option<SceneKind>>,
     pub is_playing: ReadSignal<bool>,
     pub set_is_playing: WriteSignal<bool>,
     pub favorite_ids: ReadSignal<HashSet<String>>,
@@ -179,7 +185,18 @@ impl EffectsContext {
                         active.active_preset_id,
                     );
                 }
-                Ok(None) => ctx.set_is_playing.set(false),
+                Ok(None) => clear_active_effect_state(&ctx),
+                Err(_) => {}
+            }
+        });
+    }
+
+    pub fn refresh_active_scene(&self) {
+        let ctx = *self;
+        leptos::task::spawn_local(async move {
+            match api::fetch_active_scene().await {
+                Ok(Some(active_scene)) => apply_active_scene_snapshot(&ctx, active_scene),
+                Ok(None) => clear_active_scene_state(&ctx),
                 Err(_) => {}
             }
         });
@@ -415,6 +432,16 @@ fn clear_active_effect_state(ctx: &EffectsContext) {
     ctx.set_is_playing.set(false);
 }
 
+fn apply_active_scene_snapshot(ctx: &EffectsContext, active_scene: api::ActiveSceneResponse) {
+    ctx.set_active_scene_name.set(Some(active_scene.name));
+    ctx.set_active_scene_kind.set(Some(active_scene.kind));
+}
+
+fn clear_active_scene_state(ctx: &EffectsContext) {
+    ctx.set_active_scene_name.set(None);
+    ctx.set_active_scene_kind.set(None);
+}
+
 fn capture_active_effect_state(ctx: &EffectsContext) -> ActiveEffectSnapshot {
     ActiveEffectSnapshot {
         id: ctx.active_effect_id.get_untracked(),
@@ -474,6 +501,7 @@ pub fn App() -> impl IntoView {
         backpressure_notice: ws.backpressure_notice,
         active_effect: ws.active_effect,
         last_device_event: ws.last_device_event,
+        last_scene_event: ws.last_scene_event,
         audio_level: ws.audio_level,
         audio_enabled,
         set_audio_enabled,
@@ -494,6 +522,7 @@ pub fn App() -> impl IntoView {
             .unwrap_or_default()
     });
     let active_resource = LocalResource::new(api::fetch_active_effect);
+    let active_scene_resource = LocalResource::new(api::fetch_active_scene);
     let favorites_resource = LocalResource::new(api::fetch_favorites);
     let (active_effect_id, set_active_effect_id) = signal(None::<String>);
     let (active_effect_name, set_active_effect_name) = signal(None::<String>);
@@ -502,6 +531,8 @@ pub fn App() -> impl IntoView {
     let (active_control_values, set_active_control_values) =
         signal(HashMap::<String, ControlValue>::new());
     let (active_preset_id, set_active_preset_id) = signal(None::<String>);
+    let (active_scene_name, set_active_scene_name) = signal(None::<String>);
+    let (active_scene_kind, set_active_scene_kind) = signal(None::<SceneKind>);
     let (is_playing, set_is_playing) = signal(false);
     let (favorite_ids, set_favorite_ids) = signal(HashSet::<String>::new());
 
@@ -528,6 +559,10 @@ pub fn App() -> impl IntoView {
         set_active_control_values,
         active_preset_id,
         set_active_preset_id,
+        active_scene_name,
+        set_active_scene_name,
+        active_scene_kind,
+        set_active_scene_kind,
         is_playing,
         set_is_playing,
         favorite_ids,
@@ -621,6 +656,14 @@ pub fn App() -> impl IntoView {
         }
     });
 
+    Effect::new(move |_| {
+        if let Some(Ok(Some(active_scene))) = active_scene_resource.get() {
+            apply_active_scene_snapshot(&effects_ctx, active_scene);
+        } else if let Some(Ok(None)) = active_scene_resource.get() {
+            clear_active_scene_state(&effects_ctx);
+        }
+    });
+
     // Keep the detailed active effect state aligned with daemon WS lifecycle
     // events, including externally triggered effect switches/stops.
     Effect::new(move |previous_effect_name: Option<Option<String>>| {
@@ -629,14 +672,24 @@ pub fn App() -> impl IntoView {
             return current_effect_name;
         }
 
-        if current_effect_name.is_some() {
-            effects_ctx.refresh_active_effect();
-        } else {
-            effects_ctx.set_is_playing.set(false);
-        }
+        effects_ctx.refresh_active_effect();
 
         current_effect_name
     });
+
+    Effect::new(
+        move |previous_scene_event: Option<Option<SceneEventHint>>| {
+            let current_scene_event = ws_ctx.last_scene_event.get();
+            if previous_scene_event.as_ref() == Some(&current_scene_event) {
+                return current_scene_event;
+            }
+
+            effects_ctx.refresh_active_scene();
+            effects_ctx.refresh_active_effect();
+
+            current_scene_event
+        },
+    );
 
     view! {
         <Meta charset="UTF-8" />

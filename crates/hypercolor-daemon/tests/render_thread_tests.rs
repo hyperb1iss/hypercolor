@@ -10,7 +10,7 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use tokio::sync::{Mutex, RwLock, watch};
+use tokio::sync::{Mutex, RwLock, oneshot, watch};
 
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
@@ -643,6 +643,38 @@ async fn wait_for_next_frame(
     })
     .await
     .expect("expected the next frame within 2 seconds")
+}
+
+async fn wait_for_next_frame_with_watchdog<F>(
+    rx: &mut watch::Receiver<FrameData>,
+    previous_frame_number: u32,
+    on_timeout: F,
+) -> FrameData
+where
+    F: Fn(&FrameData) -> String,
+{
+    let (deadline_tx, mut deadline_rx) = oneshot::channel();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(2));
+        let _ = deadline_tx.send(());
+    });
+
+    let mut latest_frame = rx.borrow().clone();
+    loop {
+        tokio::select! {
+            changed = rx.changed() => {
+                changed.expect("frame sender should remain connected");
+                let frame = rx.borrow().clone();
+                latest_frame = frame.clone();
+                if frame.frame_number > previous_frame_number {
+                    return frame;
+                }
+            }
+            _ = &mut deadline_rx => {
+                panic!("{}", on_timeout(&latest_frame));
+            }
+        }
+    }
 }
 
 async fn wait_for_frame_where<F>(rx: &mut watch::Receiver<FrameData>, predicate: F) -> FrameData
@@ -2490,6 +2522,134 @@ async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
     );
     assert!(preview_snapshot.latest_canvas_frame_number > initial_canvas.frame_number);
     assert!(preview_snapshot.latest_screen_canvas_frame_number > initial_screen.frame_number);
+}
+
+#[cfg(feature = "wgpu")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "GPU retained-screen coverage needs full render-thread setup"
+)]
+#[tokio::test]
+async fn pipeline_gpu_retained_screen_preview_advances_frame_watch_when_input_stalls() {
+    let layout = test_layout(vec![
+        point_zone("zone_left", "mock:left", 0.25, 0.5),
+        point_zone("zone_right", "mock:right", 0.75, 0.5),
+    ]);
+
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(layout),
+        BackendManager::new(),
+    );
+    state.screen_capture_configured = true;
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+
+    let mut preview_canvas = Canvas::new(320, 200);
+    for y in 0..200 {
+        for x in 0..320 {
+            let color = if x < 160 {
+                Rgba::new(255, 0, 0, 255)
+            } else {
+                Rgba::new(0, 255, 0, 255)
+            };
+            preview_canvas.set_pixel(x, y, color);
+        }
+    }
+    let source_surface = PublishedSurface::from_owned_canvas(preview_canvas, 19, 31);
+    let screen_data = ScreenData {
+        zone_colors: Vec::new(),
+        grid_width: 0,
+        grid_height: 0,
+        canvas_downscale: Some(source_surface),
+        source_width: 320,
+        source_height: 200,
+    };
+
+    {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager.add_source(Box::new(BurstyScreenPreviewSource::new(screen_data)));
+        input_manager
+            .start_all()
+            .expect("input manager should start");
+    }
+
+    let mut frame_rx = state.event_bus.frame_receiver();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
+        .await
+        .expect("expected initial sampled GPU frame within 2 seconds")
+        .expect("frame sender should remain connected");
+
+    let initial_frame = frame_rx.borrow().clone();
+    let retained_frame = wait_for_next_frame_with_watchdog(
+        &mut frame_rx,
+        initial_frame.frame_number,
+        |latest_frame| {
+        let loop_frame_number = state
+            .render_loop
+            .try_read()
+            .map_or(u64::MAX, |render_loop| render_loop.frame_number());
+            format!(
+            "expected the next GPU retained frame within 2 seconds: render_loop.frame_number={} latest_watch_frame_number={} latest_watch_zone_count={}",
+            loop_frame_number,
+            latest_frame.frame_number,
+            latest_frame.zones.len()
+        )
+        },
+    )
+    .await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    let (deadline_tx, mut deadline_rx) = oneshot::channel();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(2));
+        let _ = deadline_tx.send(());
+    });
+    tokio::select! {
+        shutdown = rt.shutdown() => shutdown.expect("shutdown"),
+        _ = &mut deadline_rx => panic!("render thread should stop within 2 seconds"),
+    }
+
+    let initial_left = initial_frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_left")
+        .and_then(|zone| zone.colors.first().copied())
+        .expect("initial left sample should exist");
+    let initial_right = initial_frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_right")
+        .and_then(|zone| zone.colors.first().copied())
+        .expect("initial right sample should exist");
+    let retained_left = retained_frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_left")
+        .and_then(|zone| zone.colors.first().copied())
+        .expect("retained left sample should exist");
+    let retained_right = retained_frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_right")
+        .and_then(|zone| zone.colors.first().copied())
+        .expect("retained right sample should exist");
+
+    assert!(retained_frame.frame_number > initial_frame.frame_number);
+    assert_eq!(initial_left, [255, 0, 0]);
+    assert_eq!(initial_right, [0, 255, 0]);
+    assert_eq!(retained_left, [255, 0, 0]);
+    assert_eq!(retained_right, [0, 255, 0]);
 }
 
 #[tokio::test]

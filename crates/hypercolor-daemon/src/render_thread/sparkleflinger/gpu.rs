@@ -623,7 +623,9 @@ impl GpuSparkleFlinger {
                 pending_readback,
             }));
         }
-        if sampling_dispatch.sampled && let Some(sampling_plan) = sampling_plan {
+        if sampling_dispatch.sampled
+            && let Some(sampling_plan) = sampling_plan
+        {
             let mut cached_zones = self
                 .cached_sample_result
                 .take()
@@ -650,8 +652,11 @@ impl GpuSparkleFlinger {
         zones: &mut Vec<ZoneColors>,
     ) -> Result<()> {
         if !self.try_finish_pending_zone_sampling(&mut pending, zones)? {
-            self.spatial_sampler
-                .finish_pending_readback(&self.device, pending.pending_readback, zones)?;
+            self.spatial_sampler.finish_pending_readback(
+                &self.device,
+                pending.pending_readback,
+                zones,
+            )?;
             self.cache_finished_zone_sampling(
                 pending.output_generation,
                 pending.sampling_plan,
@@ -4436,8 +4441,11 @@ mod tests {
                 CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(180)), 0.5),
             ],
         );
-        let first_expected =
-            CpuSparkleFlinger::new().compose(first_plan.clone(), true, full_preview_request(&first_plan));
+        let first_expected = CpuSparkleFlinger::new().compose(
+            first_plan.clone(),
+            true,
+            full_preview_request(&first_plan),
+        );
         let second_expected = CpuSparkleFlinger::new().compose(
             second_plan.clone(),
             true,

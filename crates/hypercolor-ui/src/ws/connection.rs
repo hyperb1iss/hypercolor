@@ -9,14 +9,14 @@ use web_sys::MessageEvent;
 
 use super::messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, DeviceEventHint,
-    PerformanceMetrics, PreviewFrameChannel, decode_preview_frame, handle_json_message,
+    PerformanceMetrics, PreviewFrameChannel, SceneEventHint, decode_preview_frame,
+    handle_json_message,
 };
 use super::preview::{
     DEFAULT_PREVIEW_FPS_CAP, clear_preview_subscription, clear_screen_preview_subscription,
     clear_web_viewport_preview_subscription, request_preview_subscription,
     request_screen_preview_subscription, request_web_viewport_preview_subscription,
-    send_canvas_unsubscribe, send_screen_canvas_unsubscribe,
-    send_web_viewport_canvas_unsubscribe,
+    send_canvas_unsubscribe, send_screen_canvas_unsubscribe, send_web_viewport_canvas_unsubscribe,
 };
 
 /// Reconnection delay bounds (milliseconds).
@@ -44,6 +44,7 @@ pub struct WsManager {
     pub backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     pub active_effect: ReadSignal<Option<String>>,
     pub last_device_event: ReadSignal<Option<DeviceEventHint>>,
+    pub last_scene_event: ReadSignal<Option<SceneEventHint>>,
     pub audio_level: ReadSignal<AudioLevel>,
     pub preview_target_fps: ReadSignal<u32>,
     pub set_preview_cap: WriteSignal<u32>,
@@ -70,14 +71,14 @@ impl WsManager {
         let (backpressure_notice, set_backpressure_notice) = signal(None::<BackpressureNotice>);
         let (active_effect, set_active_effect) = signal(None::<String>);
         let (last_device_event, set_last_device_event) = signal(None::<DeviceEventHint>);
+        let (last_scene_event, set_last_scene_event) = signal(None::<SceneEventHint>);
         let (audio_level, set_audio_level) = signal(AudioLevel::default());
         let (preview_target_fps, set_preview_target_fps) = signal(0_u32);
         let (engine_preview_target, set_engine_preview_target) = signal(0_u32);
         let (preview_page_cap, set_preview_cap) = signal(DEFAULT_PREVIEW_FPS_CAP);
         let (preview_consumers, set_preview_consumers) = signal(0_u32);
         let (screen_preview_consumers, set_screen_preview_consumers) = signal(0_u32);
-        let (web_viewport_preview_consumers, set_web_viewport_preview_consumers) =
-            signal(0_u32);
+        let (web_viewport_preview_consumers, set_web_viewport_preview_consumers) = signal(0_u32);
         let (preview_transport_cap, set_preview_transport_cap) = signal(DEFAULT_PREVIEW_FPS_CAP);
         let (page_visible, set_page_visible) = signal(document_is_visible());
 
@@ -254,6 +255,7 @@ impl WsManager {
                         backpressure_notice,
                         &set_backpressure_notice,
                         &set_last_device_event,
+                        &set_last_scene_event,
                         &set_audio_level,
                         &set_engine_preview_target,
                         &set_preview_target_fps,
@@ -401,6 +403,7 @@ impl WsManager {
             backpressure_notice,
             active_effect,
             last_device_event,
+            last_scene_event,
             audio_level,
             preview_target_fps,
             set_preview_cap,

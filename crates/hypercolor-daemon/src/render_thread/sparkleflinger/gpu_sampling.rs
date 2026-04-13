@@ -446,8 +446,7 @@ impl GpuSpatialSampler {
             self.last_readback_wait_blocked = true;
             #[cfg(test)]
             {
-                self.sample_readback_wait_count =
-                    self.sample_readback_wait_count.saturating_add(1);
+                self.sample_readback_wait_count = self.sample_readback_wait_count.saturating_add(1);
             }
             wait_for_zone_color_readback(device, &mut pending_readback)?;
             finish_zone_color_readback(&pending_readback, zones)?;
@@ -717,7 +716,7 @@ fn poll_zone_color_readback_ready(
 fn wait_for_zone_color_readback(
     device: &wgpu::Device,
     pending_readback: &mut PendingGpuSampleReadback,
- ) -> Result<()> {
+) -> Result<()> {
     if pending_readback.map_ready {
         return Ok(());
     }

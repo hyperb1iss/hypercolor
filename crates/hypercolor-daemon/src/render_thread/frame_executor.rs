@@ -319,7 +319,7 @@ pub(crate) async fn execute_frame(
             .sampled_us
             .saturating_add(micros_between(gpu_sample_finish, Instant::now()));
     }
-    if !gpu_zone_sampling && !used_pre_sampled_scene_zones {
+    if !gpu_zone_sampling && !used_pre_sampled_scene_zones && !render_stage.reuse_published_frame {
         let cpu_sample_start = Instant::now();
         scene_snapshot.spatial_engine.sample_into(
             render_stage
@@ -331,14 +331,6 @@ pub(crate) async fn execute_frame(
         );
         render_stage.sampled_us = micros_between(cpu_sample_start, Instant::now());
     }
-    let retained_frame = render_stage
-        .reuse_published_frame
-        .then(|| state.event_bus.frame_sender().borrow());
-    let zone_colors = retained_frame
-        .as_ref()
-        .map_or(render.recycled_frame.zones.as_slice(), |frame| {
-            frame.zones.as_slice()
-        });
     let sample_us = render_stage.sampled_us;
     let sample_done_at = Instant::now();
     let sample_done_us = micros_between(frame_start, sample_done_at);
@@ -349,14 +341,26 @@ pub(crate) async fn execute_frame(
         } else {
             state.backend_manager.lock().await
         };
-        let write_stats = manager
-            .write_frame_with_brightness(
-                zone_colors,
-                layout.as_ref(),
-                output_power.effective_brightness(),
-                None,
-            )
-            .await;
+        let write_stats = if render_stage.reuse_published_frame {
+            let published_frame = state.event_bus.frame_sender().borrow();
+            manager
+                .write_frame_with_brightness(
+                    &published_frame.zones,
+                    layout.as_ref(),
+                    output_power.effective_brightness(),
+                    None,
+                )
+                .await
+        } else {
+            manager
+                .write_frame_with_brightness(
+                    &render.recycled_frame.zones,
+                    layout.as_ref(),
+                    output_power.effective_brightness(),
+                    None,
+                )
+                .await
+        };
         let async_failures = manager.async_write_failures();
         (write_stats, async_failures)
     };

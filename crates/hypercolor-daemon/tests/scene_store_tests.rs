@@ -97,27 +97,28 @@ fn scene_store_load_rejects_groups_missing_role() {
     let tempdir = TempDir::new().expect("tempdir");
     let path = tempdir.path().join("scenes.json");
     let mut scene = make_scene("Strict Display");
-    scene.groups = vec![serde_json::from_value(serde_json::json!({
-        "id": RenderGroupId::new(),
-        "name": "Face",
-        "description": null,
-        "effect_id": EffectId::from(Uuid::now_v7()),
-        "controls": {},
-        "control_bindings": {},
-        "preset_id": null,
-        "layout": sample_layout("desk:display"),
-        "brightness": 1.0,
-        "enabled": true,
-        "color": null,
-        "display_target": {
-            "device_id": DeviceId::new()
-        },
-        "role": "display"
-    }))
-    .expect("group should deserialize")];
-    let mut payload =
-        serde_json::to_value(std::collections::HashMap::from([(scene.id, scene)]))
-            .expect("scene payload should serialize");
+    scene.groups = vec![
+        serde_json::from_value(serde_json::json!({
+            "id": RenderGroupId::new(),
+            "name": "Face",
+            "description": null,
+            "effect_id": EffectId::from(Uuid::now_v7()),
+            "controls": {},
+            "control_bindings": {},
+            "preset_id": null,
+            "layout": sample_layout("desk:display"),
+            "brightness": 1.0,
+            "enabled": true,
+            "color": null,
+            "display_target": {
+                "device_id": DeviceId::new()
+            },
+            "role": "display"
+        }))
+        .expect("group should deserialize"),
+    ];
+    let mut payload = serde_json::to_value(std::collections::HashMap::from([(scene.id, scene)]))
+        .expect("scene payload should serialize");
     payload
         .as_object_mut()
         .and_then(|scenes| scenes.values_mut().next())
@@ -145,25 +146,26 @@ fn scene_store_load_rejects_scenes_missing_kind() {
     let tempdir = TempDir::new().expect("tempdir");
     let path = tempdir.path().join("scenes.json");
     let mut scene = make_scene("Strict Primary");
-    scene.groups = vec![serde_json::from_value(serde_json::json!({
-        "id": RenderGroupId::new(),
-        "name": "Primary",
-        "description": null,
-        "effect_id": EffectId::from(Uuid::now_v7()),
-        "controls": {},
-        "control_bindings": {},
-        "preset_id": null,
-        "layout": sample_layout("desk:main"),
-        "brightness": 1.0,
-        "enabled": true,
-        "color": null,
-        "display_target": null,
-        "role": "primary"
-    }))
-    .expect("group should deserialize")];
-    let mut payload =
-        serde_json::to_value(std::collections::HashMap::from([(scene.id, scene)]))
-            .expect("scene payload should serialize");
+    scene.groups = vec![
+        serde_json::from_value(serde_json::json!({
+            "id": RenderGroupId::new(),
+            "name": "Primary",
+            "description": null,
+            "effect_id": EffectId::from(Uuid::now_v7()),
+            "controls": {},
+            "control_bindings": {},
+            "preset_id": null,
+            "layout": sample_layout("desk:main"),
+            "brightness": 1.0,
+            "enabled": true,
+            "color": null,
+            "display_target": null,
+            "role": "primary"
+        }))
+        .expect("group should deserialize"),
+    ];
+    let mut payload = serde_json::to_value(std::collections::HashMap::from([(scene.id, scene)]))
+        .expect("scene payload should serialize");
     payload
         .as_object_mut()
         .and_then(|scenes| scenes.values_mut().next())

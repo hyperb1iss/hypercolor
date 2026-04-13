@@ -12,9 +12,7 @@ use display_utils::{
     display_preview_shell_url, hex_to_rgba, is_simulator_display, json_to_face_control_value,
     parse_simulator_dimension,
 };
-use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlType, ControlValue,
-};
+use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, ControlValue};
 use style_utils::category_style;
 
 fn dropdown_control(id: &str) -> ControlDefinition {
@@ -238,7 +236,9 @@ fn json_to_face_control_value_rejects_malformed_input() {
     let controls: Vec<ControlDefinition> = Vec::new();
     assert!(json_to_face_control_value(&controls, "x", &serde_json::json!(null)).is_none());
     assert!(json_to_face_control_value(&controls, "x", &serde_json::json!([1, 2])).is_none());
-    assert!(json_to_face_control_value(&controls, "x", &serde_json::json!(f64::INFINITY)).is_none());
+    assert!(
+        json_to_face_control_value(&controls, "x", &serde_json::json!(f64::INFINITY)).is_none()
+    );
     assert!(json_to_face_control_value(&controls, "x", &serde_json::json!(f64::NAN)).is_none());
 }
 

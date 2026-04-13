@@ -460,6 +460,41 @@ impl SceneManager {
         Ok(removed)
     }
 
+    #[must_use]
+    pub fn remove_display_groups_for_device(
+        &mut self,
+        device_id: DeviceId,
+    ) -> Vec<(SceneId, RenderGroup)> {
+        let active_scene_id = self.active_scene_id().copied();
+        let mut removed_groups = Vec::new();
+
+        for scene in self.scenes.values_mut() {
+            let mut index = 0;
+            while index < scene.groups.len() {
+                let matches_device = scene.groups[index].role == RenderGroupRole::Display
+                    && scene.groups[index]
+                        .display_target
+                        .as_ref()
+                        .is_some_and(|target| target.device_id == device_id);
+                if matches_device {
+                    removed_groups.push((scene.id, scene.groups.remove(index)));
+                } else {
+                    index += 1;
+                }
+            }
+        }
+
+        if active_scene_id.is_some_and(|scene_id| {
+            removed_groups
+                .iter()
+                .any(|(removed_scene_id, _)| *removed_scene_id == scene_id)
+        }) {
+            self.refresh_active_render_groups();
+        }
+
+        removed_groups
+    }
+
     pub fn patch_group_controls(
         &mut self,
         group_id: RenderGroupId,

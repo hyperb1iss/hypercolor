@@ -290,7 +290,10 @@ mod tests {
         assert_eq!(profile.description.as_deref(), Some("Cozy lights"));
         assert_eq!(profile.brightness, Some(100));
         assert_eq!(
-            profile.primary.as_ref().and_then(|primary| primary.active_preset_id),
+            profile
+                .primary
+                .as_ref()
+                .and_then(|primary| primary.active_preset_id),
             Some(preset_id)
         );
         assert_eq!(profile.displays.len(), 1);

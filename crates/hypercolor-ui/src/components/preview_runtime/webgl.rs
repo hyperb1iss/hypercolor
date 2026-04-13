@@ -116,9 +116,21 @@ impl WebGlPreviewRuntime {
         gl.pixel_storei(Gl::UNPACK_ALIGNMENT, 1);
         gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_WRAP_S, Gl::CLAMP_TO_EDGE as i32);
         gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_WRAP_T, Gl::CLAMP_TO_EDGE as i32);
-        let texture_filter = if smooth_scaling { Gl::LINEAR } else { Gl::NEAREST };
-        gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_MIN_FILTER, texture_filter as i32);
-        gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_MAG_FILTER, texture_filter as i32);
+        let texture_filter = if smooth_scaling {
+            Gl::LINEAR
+        } else {
+            Gl::NEAREST
+        };
+        gl.tex_parameteri(
+            Gl::TEXTURE_2D,
+            Gl::TEXTURE_MIN_FILTER,
+            texture_filter as i32,
+        );
+        gl.tex_parameteri(
+            Gl::TEXTURE_2D,
+            Gl::TEXTURE_MAG_FILTER,
+            texture_filter as i32,
+        );
 
         if let Some(location) = gl.get_uniform_location(&program, "u_texture") {
             gl.uniform1i(Some(&location), 0);

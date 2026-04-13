@@ -145,7 +145,11 @@ pub fn DisplaysPage() -> impl IntoView {
     Effect::new(move |_| {
         crate::storage::set(
             LS_KEY_OVERLAYS_EXPANDED,
-            if overlays_expanded.get() { "true" } else { "false" },
+            if overlays_expanded.get() {
+                "true"
+            } else {
+                "false"
+            },
         );
     });
 
@@ -1197,9 +1201,7 @@ fn DisplayWorkspace(
         Some(Ok(None)) => "No face assigned".to_owned(),
         Some(Err(_)) => "Face unavailable".to_owned(),
     });
-    let has_face = Signal::derive(move || {
-        matches!(display_face.get(), Some(Ok(Some(_))))
-    });
+    let has_face = Signal::derive(move || matches!(display_face.get(), Some(Ok(Some(_)))));
 
     view! {
         <section class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-edge-subtle bg-surface-raised/80 edge-glow-accent accent-coral">
@@ -1441,17 +1443,17 @@ fn FaceAssignmentCard(
         Some(Ok(Some(face))) => Some(face.effect.author),
         _ => None,
     });
-    let face_description = Signal::derive(move || match display_face.get() {
+    let face_description = Signal::derive(move || {
+        match display_face.get() {
         Some(Ok(Some(face))) => face.effect.description,
         Some(Err(error)) => error,
         _ => {
             "Display faces render full-screen HTML at the panel's native resolution. Pick one to get started."
                 .to_owned()
         }
+    }
     });
-    let has_face = Signal::derive(move || {
-        matches!(display_face.get(), Some(Ok(Some(_))))
-    });
+    let has_face = Signal::derive(move || matches!(display_face.get(), Some(Ok(Some(_)))));
 
     view! {
         <div class="rounded-xl border border-t-2 border-edge-subtle border-t-coral/25 bg-surface-raised/80 p-3 edge-glow">
@@ -1558,8 +1560,10 @@ fn FaceControlsSection(
     // the whole map on the server round-trip. Instead we seed it from the
     // server response and locally update on user input; the debounced
     // PATCH reconciles via set_display_face → Effect below.
-    let (face_control_values, set_face_control_values) =
-        signal(std::collections::HashMap::<String, hypercolor_types::effect::ControlValue>::new());
+    let (face_control_values, set_face_control_values) = signal(std::collections::HashMap::<
+        String,
+        hypercolor_types::effect::ControlValue,
+    >::new());
 
     // Keep the local signal in sync when the face changes. We compare the
     // map before setting to avoid re-firing downstream effects on identical
@@ -1579,9 +1583,8 @@ fn FaceControlsSection(
     // Pending-updates buffer keyed by control name. Each user input
     // overwrites the prior pending value for that control, so a slider
     // drag only sends the final position when the debounce fires.
-    let pending_updates: StoredValue<
-        std::collections::HashMap<String, serde_json::Value>,
-    > = StoredValue::new(std::collections::HashMap::new());
+    let pending_updates: StoredValue<std::collections::HashMap<String, serde_json::Value>> =
+        StoredValue::new(std::collections::HashMap::new());
 
     let flush_updates = use_debounce_fn(
         move || {
@@ -1656,16 +1659,14 @@ fn FaceControlsSection(
                 }
             });
 
-            let controls_json = crate::components::preset_matching::bundled_preset_to_json(
-                &preset_controls,
-            );
+            let controls_json =
+                crate::components::preset_matching::bundled_preset_to_json(&preset_controls);
             let display_id = display.id;
             spawn_local(async move {
                 match api::update_display_face_controls(&display_id, &controls_json).await {
                     Ok(face) => {
                         set_display_face.set(Some(Ok(Some(face))));
-                        set_face_refresh_tick
-                            .update(|value| *value = value.wrapping_add(1));
+                        set_face_refresh_tick.update(|value| *value = value.wrapping_add(1));
                     }
                     Err(error) => {
                         // Restore pre-apply state so the "Assigned" pill
@@ -1709,7 +1710,6 @@ fn FaceControlsSection(
         </Show>
     }
 }
-
 
 /// Collapsible overlay stack section — wraps `OverlayStackPanel` in a header
 /// that toggles expansion. Collapsed state persists via localStorage so the
@@ -1928,9 +1928,7 @@ fn render_face_gallery_card(
     let thumbnail = Signal::derive({
         let effect_id = effect_id.clone();
         let effect_version = effect_version.clone();
-        move || {
-            thumbnails.and_then(|store| store.get(&effect_id, &effect_version))
-        }
+        move || thumbnails.and_then(|store| store.get(&effect_id, &effect_version))
     });
 
     // Deterministic gradient fallback derived from the effect name so

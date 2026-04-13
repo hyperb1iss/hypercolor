@@ -143,6 +143,7 @@ impl DaemonState {
             warn!(
                 path = %scenes_path.display(),
                 %error,
+                cause = %error.root_cause(),
                 "Failed to load scenes; starting with empty store"
             );
             SceneStore::new(scenes_path.clone())

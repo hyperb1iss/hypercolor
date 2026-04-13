@@ -535,7 +535,10 @@ mod tests {
             "gpu_fallback"
         );
         assert_eq!(json["data"]["latest_frame"]["gpu_zone_sampling"], true);
-        assert_eq!(json["data"]["latest_frame"]["gpu_sample_wait_blocked"], true);
+        assert_eq!(
+            json["data"]["latest_frame"]["gpu_sample_wait_blocked"],
+            true
+        );
         assert_eq!(json["data"]["latest_frame"]["cpu_readback_skipped"], true);
         assert_eq!(
             json["data"]["latest_frame"]["render_surfaces"]["slot_count"],

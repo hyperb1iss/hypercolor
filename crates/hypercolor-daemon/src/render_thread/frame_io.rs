@@ -606,7 +606,12 @@ mod tests {
 
     use super::update_published_frame;
 
-    fn sample_frame(zone_id: &str, color: [u8; 3], frame_number: u32, timestamp_ms: u32) -> FrameData {
+    fn sample_frame(
+        zone_id: &str,
+        color: [u8; 3],
+        frame_number: u32,
+        timestamp_ms: u32,
+    ) -> FrameData {
         FrameData::new(
             vec![ZoneColors {
                 zone_id: zone_id.to_owned(),
@@ -624,7 +629,11 @@ mod tests {
 
         update_published_frame(&sender, &mut recycled_frame, 2, 20, true, true);
 
-        assert!(receiver.has_changed().expect("receiver should remain connected"));
+        assert!(
+            receiver
+                .has_changed()
+                .expect("receiver should remain connected")
+        );
         let frame = receiver.borrow_and_update().clone();
         assert_eq!(frame.frame_number, 2);
         assert_eq!(frame.timestamp_ms, 20);
@@ -641,7 +650,11 @@ mod tests {
 
         update_published_frame(&sender, &mut recycled_frame, 2, 20, true, false);
 
-        assert!(!receiver.has_changed().expect("receiver should remain connected"));
+        assert!(
+            !receiver
+                .has_changed()
+                .expect("receiver should remain connected")
+        );
         let frame = receiver.borrow().clone();
         assert_eq!(frame.frame_number, 1);
         assert_eq!(frame.timestamp_ms, 10);

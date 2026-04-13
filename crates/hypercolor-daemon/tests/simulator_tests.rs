@@ -1,18 +1,24 @@
+use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::SystemTime;
 
 use axum::body::Body;
 use http::{Method, Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
+use hypercolor_core::scene::make_scene;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::display_frames::DisplayFrameSnapshot;
+use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_transactions::apply_layout_update;
 use hypercolor_daemon::simulators::{
     SimulatedDisplayConfig, SimulatedDisplayStore, activate_simulated_displays,
     default_layout_device_id, logical_device_ids_for_simulator,
 };
 use hypercolor_types::device::{DeviceId, DeviceState};
-use hypercolor_types::spatial::{DeviceZone, LedTopology, NormalizedPosition};
+use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
+use hypercolor_types::spatial::{
+    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -26,6 +32,41 @@ fn simulator_config(enabled: bool) -> SimulatedDisplayConfig {
         height: 480,
         circular: true,
         enabled,
+    }
+}
+
+fn simulated_display_face_effect(name: &str) -> EffectMetadata {
+    EffectMetadata {
+        id: EffectId::from(Uuid::now_v7()),
+        name: name.to_owned(),
+        author: "test".to_owned(),
+        version: "0.1.0".to_owned(),
+        description: format!("{name} face"),
+        category: EffectCategory::Display,
+        tags: Vec::new(),
+        controls: Vec::new(),
+        presets: Vec::new(),
+        audio_reactive: false,
+        screen_reactive: false,
+        source: EffectSource::Html {
+            path: format!("/tmp/{name}.html").into(),
+        },
+        license: None,
+    }
+}
+
+fn simulated_display_face_layout(id: &str) -> SpatialLayout {
+    SpatialLayout {
+        id: format!("display-face-layout-{id}"),
+        name: format!("Display Face Layout {id}"),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 240,
+        zones: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
     }
 }
 
@@ -463,6 +504,127 @@ async fn simulated_display_crud_routes_update_runtime_state() {
             .zones
             .iter()
             .all(|zone| zone.id != zone_id)
+    );
+}
+
+#[tokio::test]
+async fn deleting_simulated_display_prunes_scene_display_groups_and_persists_cleanup() {
+    let (state, _tempdir) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    let created = body_json(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/simulators/displays")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "name": "Desk Preview",
+                            "width": 320,
+                            "height": 240,
+                            "enabled": true
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed"),
+    )
+    .await;
+    let device_id: DeviceId = created["data"]["id"]
+        .as_str()
+        .expect("created simulator should include an id")
+        .parse()
+        .expect("created simulator id should parse");
+
+    let face = simulated_display_face_effect("Desk Clock");
+    let named_scene_id = {
+        let mut manager = state.scene_manager.write().await;
+        manager
+            .upsert_display_group(
+                device_id,
+                "Desk Preview",
+                &face,
+                HashMap::new(),
+                simulated_display_face_layout("default"),
+            )
+            .expect("default simulator face should be assigned");
+
+        let named_scene = make_scene("Display Scene");
+        let named_scene_id = named_scene.id;
+        manager
+            .create(named_scene)
+            .expect("named scene should be created");
+        manager
+            .activate(&named_scene_id, None)
+            .expect("named scene should activate");
+        manager
+            .upsert_display_group(
+                device_id,
+                "Desk Preview",
+                &face,
+                HashMap::new(),
+                simulated_display_face_layout("named"),
+            )
+            .expect("named simulator face should be assigned");
+        manager.deactivate_current();
+        named_scene_id
+    };
+
+    let deleted = body_json(
+        app.oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri(format!("/api/v1/simulators/displays/{device_id}"))
+                .body(Body::empty())
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed"),
+    )
+    .await;
+    assert_eq!(deleted["data"]["deleted"], true);
+
+    {
+        let manager = state.scene_manager.read().await;
+        let default_scene = manager
+            .active_scene()
+            .expect("default scene should remain active");
+        assert!(default_scene.display_group_for(device_id).is_none());
+        let named_scene = manager
+            .get(&named_scene_id)
+            .expect("named scene should remain present");
+        assert!(named_scene.display_group_for(device_id).is_none());
+    }
+
+    let persisted =
+        runtime_state::load(&state.runtime_state_path).expect("runtime state should load");
+    let persisted = persisted.expect("runtime state should exist");
+    assert!(
+        persisted.default_scene_groups.iter().all(|group| {
+            group
+                .display_target
+                .as_ref()
+                .is_none_or(|target| target.device_id != device_id)
+        }),
+        "deleted simulator should not survive in the persisted default scene"
+    );
+
+    let scene_store = state.scene_store.read().await;
+    let named_scene = scene_store
+        .list()
+        .find(|scene| scene.id == named_scene_id)
+        .expect("named scene should be persisted");
+    assert!(
+        named_scene.groups.iter().all(|group| {
+            group
+                .display_target
+                .as_ref()
+                .is_none_or(|target| target.device_id != device_id)
+        }),
+        "deleted simulator should not survive in persisted named scenes"
     );
 }
 

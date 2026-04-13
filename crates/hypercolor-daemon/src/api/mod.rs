@@ -332,6 +332,7 @@ impl AppState {
             warn!(
                 path = %profiles_path.display(),
                 %error,
+                cause = %error.root_cause(),
                 "Failed to load profiles; starting with empty store"
             );
             ProfileStore::new(profiles_path)
@@ -373,6 +374,7 @@ impl AppState {
             warn!(
                 path = %scenes_path.display(),
                 %error,
+                cause = %error.root_cause(),
                 "Failed to load scenes; starting with empty store"
             );
             SceneStore::new(scenes_path)
@@ -528,6 +530,7 @@ impl AppState {
             warn!(
                 path = %profiles_path.display(),
                 %error,
+                cause = %error.root_cause(),
                 "Failed to load profiles; starting with empty store"
             );
             ProfileStore::new(profiles_path)
@@ -634,6 +637,29 @@ pub(crate) fn publish_render_group_changed(
             role: group.role,
             kind,
         });
+}
+
+pub(crate) async fn prune_scene_display_groups_for_device(
+    state: &Arc<AppState>,
+    device_id: DeviceId,
+) {
+    let removed_groups = {
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager.remove_display_groups_for_device(device_id)
+    };
+    if removed_groups.is_empty() {
+        return;
+    }
+
+    for (scene_id, group) in &removed_groups {
+        publish_render_group_changed(
+            state.as_ref(),
+            *scene_id,
+            group,
+            RenderGroupChangeKind::Removed,
+        );
+    }
+    persist_runtime_session(state).await;
 }
 
 pub(crate) fn publish_active_scene_changed(

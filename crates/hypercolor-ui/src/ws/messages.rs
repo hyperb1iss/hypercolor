@@ -251,6 +251,12 @@ pub struct DeviceEventHint {
     pub found_count: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneEventHint {
+    pub event_type: String,
+    pub scene_id: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct MetricsMessage {
     data: PerformanceMetrics,
@@ -366,6 +372,7 @@ pub(super) fn handle_json_message(
     backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     set_backpressure_notice: &WriteSignal<Option<BackpressureNotice>>,
     set_last_device_event: &WriteSignal<Option<DeviceEventHint>>,
+    set_last_scene_event: &WriteSignal<Option<SceneEventHint>>,
     set_audio_level: &WriteSignal<AudioLevel>,
     set_engine_preview_target: &WriteSignal<u32>,
     set_preview_target_fps: &WriteSignal<u32>,
@@ -468,7 +475,18 @@ pub(super) fn handle_json_message(
                         });
                     }
                 } else if SCENE_EVENTS.contains(&event_type) {
-                    // Recognized for future scene-aware UI; no-op for now.
+                    set_last_scene_event.set(Some(SceneEventHint {
+                        event_type: event_type.to_owned(),
+                        scene_id: msg
+                            .get("data")
+                            .and_then(|data| {
+                                data.get("current")
+                                    .or_else(|| data.get("scene_id"))
+                                    .or_else(|| data.get("id"))
+                            })
+                            .and_then(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned),
+                    }));
                 } else if DEVICE_LIFECYCLE_EVENTS.contains(&event_type)
                     && let Some(hint) = extract_device_event_hint(event_type, msg.get("data"))
                 {

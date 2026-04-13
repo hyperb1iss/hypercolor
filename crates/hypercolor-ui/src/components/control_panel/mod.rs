@@ -86,7 +86,9 @@ fn control_icon(kind: &ControlKind, control_type: &ControlType) -> icondata::Ico
     }
 }
 
-fn paired_rect_url_controls(items: &[(ControlDefinition, String)]) -> HashMap<String, ControlDefinition> {
+fn paired_rect_url_controls(
+    items: &[(ControlDefinition, String)],
+) -> HashMap<String, ControlDefinition> {
     let url_control = items.iter().find_map(|(definition, _)| {
         (matches!(definition.control_type, ControlType::TextInput)
             && definition.control_id().eq_ignore_ascii_case("url"))
@@ -96,11 +98,12 @@ fn paired_rect_url_controls(items: &[(ControlDefinition, String)]) -> HashMap<St
         return HashMap::new();
     };
 
-    items.iter()
+    items
+        .iter()
         .filter_map(|(definition, _)| {
             (matches!(definition.control_type, ControlType::Rect)
                 && definition.preview_source == Some(PreviewSource::WebViewport))
-                .then(|| (definition.control_id().to_owned(), url_control.clone()))
+            .then(|| (definition.control_id().to_owned(), url_control.clone()))
         })
         .collect()
 }

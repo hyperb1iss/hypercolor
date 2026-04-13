@@ -924,7 +924,9 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
         Some(effect.id)
     );
     assert_eq!(
-        active_snapshot.default_scene_groups[0].controls.get("speed"),
+        active_snapshot.default_scene_groups[0]
+            .controls
+            .get("speed"),
         Some(&ControlValue::Float(7.5))
     );
 
@@ -1042,7 +1044,10 @@ async fn stateful_set_color_syncs_scene_runtime_state() {
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
     assert_eq!(snapshot.default_scene_groups.len(), 1);
-    assert_eq!(snapshot.default_scene_groups[0].effect_id, Some(solid_effect.id));
+    assert_eq!(
+        snapshot.default_scene_groups[0].effect_id,
+        Some(solid_effect.id)
+    );
     assert_eq!(
         snapshot.default_scene_groups[0].controls.get("brightness"),
         Some(&ControlValue::Float(0.5))

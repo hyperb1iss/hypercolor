@@ -6226,6 +6226,128 @@ async fn delete_device_by_name_returns_canonical_id() {
     assert_eq!(json["data"]["id"], device_id.to_string());
 }
 
+#[tokio::test]
+async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanup() {
+    let state = Arc::new(isolated_state());
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    {
+        let mut manager = state.scene_manager.write().await;
+        manager
+            .upsert_display_group(
+                display_id,
+                "Pump LCD",
+                &face,
+                HashMap::new(),
+                SpatialLayout {
+                    id: "default-display-layout".to_owned(),
+                    name: "Default Display Layout".to_owned(),
+                    description: None,
+                    canvas_width: 320,
+                    canvas_height: 320,
+                    zones: Vec::new(),
+                    default_sampling_mode: SamplingMode::Bilinear,
+                    default_edge_behavior: EdgeBehavior::Clamp,
+                    spaces: None,
+                    version: 1,
+                },
+            )
+            .expect("default scene face should be assigned");
+    }
+    let named_scene_id =
+        activate_display_face_test_scene(&state, "Desk Scene", face.id, display_id).await;
+    {
+        let mut manager = state.scene_manager.write().await;
+        manager.deactivate_current();
+    }
+
+    let mut events = state.event_bus.subscribe_all();
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/devices/{display_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["id"], display_id.to_string());
+    assert!(state.device_registry.get(&display_id).await.is_none());
+
+    let mut removed_scene_ids = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while removed_scene_ids.len() < 2 {
+            match events.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::RenderGroupChanged {
+                        scene_id,
+                        role,
+                        kind,
+                        ..
+                    } = timestamped.event
+                        && role == RenderGroupRole::Display
+                        && kind == RenderGroupChangeKind::Removed
+                    {
+                        removed_scene_ids.push(scene_id);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before display-group removal events arrived");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for display-group removal events");
+    assert!(removed_scene_ids.contains(&SceneId::DEFAULT));
+    assert!(removed_scene_ids.contains(&named_scene_id));
+
+    {
+        let manager = state.scene_manager.read().await;
+        let default_scene = manager
+            .active_scene()
+            .expect("default scene should remain active");
+        assert!(default_scene.display_group_for(display_id).is_none());
+        let named_scene = manager
+            .get(&named_scene_id)
+            .expect("named scene should remain present");
+        assert!(named_scene.display_group_for(display_id).is_none());
+    }
+
+    let persisted =
+        runtime_state::load(&state.runtime_state_path).expect("runtime state should load");
+    let persisted = persisted.expect("runtime state should exist");
+    assert!(
+        persisted.default_scene_groups.iter().all(|group| {
+            group
+                .display_target
+                .as_ref()
+                .is_none_or(|target| target.device_id != display_id)
+        }),
+        "deleted device should not survive in the persisted default scene"
+    );
+
+    let scene_store = state.scene_store.read().await;
+    let named_scene = scene_store
+        .list()
+        .find(|scene| scene.id == named_scene_id)
+        .expect("named scene should be persisted");
+    assert!(
+        named_scene.groups.iter().all(|group| {
+            group
+                .display_target
+                .as_ref()
+                .is_none_or(|target| target.device_id != display_id)
+        }),
+        "deleted device should not survive in persisted named scenes"
+    );
+}
+
 fn test_state_with_temp_logical_store() -> (Arc<AppState>, tempfile::TempDir) {
     let mut state = isolated_state();
     let dir = tempfile::tempdir().expect("tempdir should be created");

@@ -405,6 +405,7 @@ pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<St
     if state.device_registry.remove(&device_id).await.is_none() {
         return ApiError::not_found(format!("Device not found: {id}"));
     }
+    crate::api::prune_scene_display_groups_for_device(&state, device_id).await;
 
     ApiResponse::ok(serde_json::json!({
         "id": device_id.to_string(),

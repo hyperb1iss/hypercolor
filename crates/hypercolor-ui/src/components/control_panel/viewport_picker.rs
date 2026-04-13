@@ -449,7 +449,9 @@ fn resize_viewport_rect(
         FrameHandle::Move => 0.0,
     };
 
-    let min_width = MIN_VIEWPORT_EDGE.max(MIN_VIEWPORT_EDGE * aspect_lock).min(1.0);
+    let min_width = MIN_VIEWPORT_EDGE
+        .max(MIN_VIEWPORT_EDGE * aspect_lock)
+        .min(1.0);
     let min_height = (min_width / aspect_lock).max(MIN_VIEWPORT_EDGE).min(1.0);
     let use_width = width_delta.abs() >= height_delta.abs();
     let mut width = (start.width + width_delta).max(min_width);
@@ -473,9 +475,12 @@ fn resize_viewport_rect(
     height *= scale;
 
     let rect = match handle {
-        FrameHandle::NorthWest => {
-            FrameRect::new(start.right() - width, start.bottom() - height, width, height)
-        }
+        FrameHandle::NorthWest => FrameRect::new(
+            start.right() - width,
+            start.bottom() - height,
+            width,
+            height,
+        ),
         FrameHandle::NorthEast => FrameRect::new(start.x, start.bottom() - height, width, height),
         FrameHandle::SouthWest => FrameRect::new(start.right() - width, start.y, width, height),
         FrameHandle::SouthEast => FrameRect::new(start.x, start.y, width, height),

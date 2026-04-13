@@ -14,9 +14,7 @@ use hypercolor_types::event::ZoneColors;
 
 use crate::performance::CompositorBackendKind;
 #[cfg(feature = "wgpu")]
-use crate::render_thread::sparkleflinger::gpu::{
-    GpuZoneSamplingDispatch, PendingGpuZoneSampling,
-};
+use crate::render_thread::sparkleflinger::gpu::{GpuZoneSamplingDispatch, PendingGpuZoneSampling};
 
 use super::producer_queue::ProducerFrame;
 
@@ -292,15 +290,15 @@ impl SparkleFlinger {
                 Ok(ZoneSamplingDispatch::Unsupported)
             }
             #[cfg(feature = "wgpu")]
-            SparkleFlingerBackend::Gpu { gpu, .. } => {
-                Ok(match gpu.begin_sample_zone_plan_into(prepared_zones, zones)? {
+            SparkleFlingerBackend::Gpu { gpu, .. } => Ok(
+                match gpu.begin_sample_zone_plan_into(prepared_zones, zones)? {
                     GpuZoneSamplingDispatch::Unsupported => ZoneSamplingDispatch::Unsupported,
                     GpuZoneSamplingDispatch::Ready => ZoneSamplingDispatch::Ready,
                     GpuZoneSamplingDispatch::Pending(pending) => {
                         ZoneSamplingDispatch::Pending(PendingZoneSampling::Gpu(pending))
                     }
-                })
-            }
+                },
+            ),
         }
     }
 

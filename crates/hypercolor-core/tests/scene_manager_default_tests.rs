@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use hypercolor_core::scene::SceneManager;
+use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{
     ControlBinding, ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
-use hypercolor_types::scene::{RenderGroupId, RenderGroupRole, SceneId, SceneKind};
+use hypercolor_types::scene::{
+    DisplayFaceTarget, RenderGroup, RenderGroupId, RenderGroupRole, SceneId, SceneKind,
+};
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
@@ -258,6 +260,92 @@ fn remove_display_group_is_idempotent() {
             .remove_display_group(device_id)
             .expect("second removal should succeed"),
         false
+    );
+}
+
+#[test]
+fn remove_display_groups_for_device_prunes_named_scenes_too() {
+    let mut manager = SceneManager::with_default();
+    let device_id = DeviceId::new();
+    let other_device_id = DeviceId::new();
+    let effect = sample_effect("Monitor");
+    manager
+        .upsert_display_group(
+            device_id,
+            "Pump LCD",
+            &effect,
+            HashMap::new(),
+            sample_layout("default-display"),
+        )
+        .expect("default display group should be created");
+
+    let mut named_scene = make_scene("Desk");
+    named_scene.groups = vec![
+        RenderGroup {
+            id: RenderGroupId::new(),
+            name: "Desk Face".to_owned(),
+            description: None,
+            effect_id: Some(effect.id),
+            controls: HashMap::new(),
+            control_bindings: HashMap::new(),
+            preset_id: None,
+            layout: sample_layout("named-display"),
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+            display_target: Some(DisplayFaceTarget { device_id }),
+            role: RenderGroupRole::Display,
+        },
+        RenderGroup {
+            id: RenderGroupId::new(),
+            name: "Other Face".to_owned(),
+            description: None,
+            effect_id: Some(effect.id),
+            controls: HashMap::new(),
+            control_bindings: HashMap::new(),
+            preset_id: None,
+            layout: sample_layout("other-display"),
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+            display_target: Some(DisplayFaceTarget {
+                device_id: other_device_id,
+            }),
+            role: RenderGroupRole::Display,
+        },
+    ];
+    let named_scene_id = named_scene.id;
+    manager
+        .create(named_scene)
+        .expect("named scene should be created");
+
+    let removed_groups = manager.remove_display_groups_for_device(device_id);
+    assert_eq!(removed_groups.len(), 2);
+    assert!(
+        removed_groups
+            .iter()
+            .any(|(scene_id, _)| *scene_id == SceneId::DEFAULT),
+        "default scene display group should be removed"
+    );
+    assert!(
+        removed_groups
+            .iter()
+            .any(|(scene_id, _)| *scene_id == named_scene_id),
+        "named scene display group should be removed"
+    );
+
+    let default_scene = manager
+        .active_scene()
+        .expect("default scene should stay active");
+    assert!(default_scene.display_group_for(device_id).is_none());
+
+    let named_scene = manager
+        .get(&named_scene_id)
+        .expect("named scene should still exist");
+    assert!(named_scene.display_group_for(device_id).is_none());
+    assert!(
+        named_scene.display_group_for(other_device_id).is_some(),
+        "unrelated display group should be preserved"
     );
 }
 

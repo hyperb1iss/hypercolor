@@ -16,6 +16,7 @@ use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::toasts;
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
+use hypercolor_types::scene::SceneKind;
 
 use crate::style_utils::{category_accent_rgb, filter_chips};
 
@@ -190,6 +191,14 @@ pub fn EffectsPage() -> impl IntoView {
     });
 
     let has_active = Memo::new(move |_| fx.active_effect_id.get().is_some());
+    let named_scene_warning = Memo::new(move |_| {
+        (fx.active_scene_kind.get() == Some(SceneKind::Named)).then(|| {
+            fx.active_scene_name
+                .get()
+                .unwrap_or_else(|| "Active scene".to_owned())
+        })
+    });
+    let (returning_to_default, set_returning_to_default) = signal(false);
 
     // Filter effects
     let filtered_effects = Memo::new(move |_| {
@@ -253,6 +262,25 @@ pub fn EffectsPage() -> impl IntoView {
             return;
         }
         fx.apply_effect(id);
+    });
+
+    let on_return_to_default = Callback::new(move |_| {
+        if returning_to_default.get_untracked() {
+            return;
+        }
+
+        set_returning_to_default.set(true);
+        let ctx = fx;
+        leptos::task::spawn_local(async move {
+            if api::deactivate_scene().await.is_ok() {
+                ctx.refresh_active_scene();
+                ctx.refresh_active_effect();
+                toasts::toast_success("Returned to Default scene.");
+            } else {
+                toasts::toast_error("Couldn't return to Default scene.");
+            }
+            set_returning_to_default.set(false);
+        });
     });
 
     // Toggle favorite handler
@@ -571,6 +599,38 @@ pub fn EffectsPage() -> impl IntoView {
                         })}
                     </div>
                 </div>
+
+                {move || named_scene_warning.get().map(|scene_name| view! {
+                    <div class="px-6 pb-4">
+                        <div class="rounded-xl border border-[rgba(241,250,140,0.24)] bg-[rgba(241,250,140,0.08)] px-4 py-3 shadow-[0_0_24px_rgba(241,250,140,0.08)]">
+                            <div class="flex items-start gap-3">
+                                <div class="mt-0.5 shrink-0 text-[rgba(241,250,140,0.9)]">
+                                    <Icon icon=LuTriangleAlert width="14px" height="14px" />
+                                </div>
+                                <div class="min-w-0 flex-1">
+                                    <div class="text-[11px] font-semibold uppercase tracking-[0.16em] text-[rgba(241,250,140,0.82)]">
+                                        "Named Scene Active"
+                                    </div>
+                                    <div class="mt-1 text-sm leading-5 text-fg-secondary">
+                                        <span class="text-fg-primary">{scene_name.clone()}</span>
+                                        " is active. Applying an effect here rewrites that scene’s primary effect."
+                                    </div>
+                                </div>
+                                <button
+                                    class="shrink-0 rounded-lg border border-[rgba(241,250,140,0.28)] px-3 py-1.5 text-[11px] font-medium text-[rgba(241,250,140,0.92)] transition-all duration-200 hover:bg-[rgba(241,250,140,0.08)] disabled:cursor-wait disabled:opacity-60"
+                                    disabled=move || returning_to_default.get()
+                                    on:click=move |_| on_return_to_default.run(())
+                                >
+                                    {move || if returning_to_default.get() {
+                                        "Returning..."
+                                    } else {
+                                        "Return to Default"
+                                    }}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                })}
             </div>
 
             <div class="flex-1 min-h-0 px-6 pb-6 pt-4 flex">

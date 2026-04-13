@@ -135,8 +135,11 @@ pub(super) fn request_web_viewport_preview_subscription(
     engine_target_fps: u32,
     page_visible: bool,
 ) {
-    let desired_fps =
-        desired_preview_fps(engine_target_fps, WEB_VIEWPORT_PREVIEW_FPS_CAP, page_visible);
+    let desired_fps = desired_preview_fps(
+        engine_target_fps,
+        WEB_VIEWPORT_PREVIEW_FPS_CAP,
+        page_visible,
+    );
     if desired_fps == requested_preview_fps.get_value() {
         return;
     }
@@ -215,11 +218,7 @@ pub(super) fn send_web_viewport_canvas_unsubscribe(ws: &web_sys::WebSocket) {
 /// requested fps. Sending a fresh subscribe for a different `device_id`
 /// retargets the server-side relay without an explicit unsubscribe, so
 /// the UI can switch displays with a single message.
-pub(super) fn send_display_preview_subscribe(
-    ws: &web_sys::WebSocket,
-    device_id: &str,
-    fps: u32,
-) {
+pub(super) fn send_display_preview_subscribe(ws: &web_sys::WebSocket, device_id: &str, fps: u32) {
     let subscribe_msg = serde_json::json!({
         "type": "subscribe",
         "channels": ["display_preview"],

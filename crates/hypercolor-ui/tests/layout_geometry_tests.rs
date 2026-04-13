@@ -731,8 +731,7 @@ fn translate_group_moves_centroid_preserving_relative_positions() {
         plain_zone("b", "dev", 0.5, 0.4, 0.1, 0.1),
     ]);
 
-    let ids: std::collections::HashSet<String> =
-        ["a", "b"].iter().map(|s| s.to_string()).collect();
+    let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
 
     // Centroid is (0.4, 0.4). Move it to (0.6, 0.6).
     layout_geometry::translate_group(&mut layout, &ids, NormalizedPosition::new(0.6, 0.6));
@@ -758,8 +757,7 @@ fn rotate_group_90_degrees_orbits_and_rotates_zones() {
         plain_zone("b", "dev", 0.6, 0.5, 0.1, 0.1),
     ]);
 
-    let ids: std::collections::HashSet<String> =
-        ["a", "b"].iter().map(|s| s.to_string()).collect();
+    let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
 
     // Centroid is (0.5, 0.5). Rotate 90 degrees.
     let delta = std::f32::consts::FRAC_PI_2;
@@ -807,8 +805,7 @@ fn rotate_group_zero_delta_returns_false() {
         plain_zone("a", "dev", 0.3, 0.4, 0.1, 0.1),
         plain_zone("b", "dev", 0.5, 0.4, 0.1, 0.1),
     ]);
-    let ids: std::collections::HashSet<String> =
-        ["a", "b"].iter().map(|s| s.to_string()).collect();
+    let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
 
     assert!(!layout_geometry::rotate_group(&mut layout, &ids, 0.0));
 }
@@ -822,8 +819,7 @@ fn scale_group_doubles_spread_and_zone_scales() {
         plain_zone("b", "dev", 0.6, 0.5, 0.1, 0.1),
     ]);
 
-    let ids: std::collections::HashSet<String> =
-        ["a", "b"].iter().map(|s| s.to_string()).collect();
+    let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
 
     // Centroid is (0.5, 0.5). Scale 2x.
     layout_geometry::scale_group(&mut layout, &ids, 2.0);
@@ -866,8 +862,7 @@ fn scale_group_identity_returns_false() {
         plain_zone("a", "dev", 0.3, 0.4, 0.1, 0.1),
         plain_zone("b", "dev", 0.5, 0.4, 0.1, 0.1),
     ]);
-    let ids: std::collections::HashSet<String> =
-        ["a", "b"].iter().map(|s| s.to_string()).collect();
+    let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
 
     assert!(!layout_geometry::scale_group(&mut layout, &ids, 1.0));
 }
