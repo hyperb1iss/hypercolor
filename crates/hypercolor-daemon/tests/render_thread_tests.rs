@@ -20,7 +20,7 @@ use hypercolor_core::device::{
     BackendManager, DeviceBackend, DeviceLifecycleManager, DeviceRegistry, ReconnectPolicy,
     UsbProtocolConfigStore,
 };
-use hypercolor_core::effect::{EffectEngine, EffectRegistry, builtin::register_builtin_effects};
+use hypercolor_core::effect::{EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData};
 use hypercolor_core::scene::{SceneManager, make_scene};
@@ -35,6 +35,7 @@ use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
 use hypercolor_types::event::{
     FrameData, HypercolorEvent, InputButtonState, InputEvent, ZoneColors,
 };
+use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
     DisplayFaceTarget, RenderGroup, RenderGroupId, RenderGroupRole, UnassignedBehavior,
 };
@@ -143,17 +144,29 @@ fn builtin_effect_metadata(registry: &EffectRegistry, stem: &str) -> EffectMetad
         .expect("builtin effect should exist")
 }
 
-fn active_builtin_effect(stem: &str, controls: HashMap<String, ControlValue>) -> EffectEngine {
+#[derive(Clone)]
+struct ActiveEffectSeed {
+    metadata: Option<EffectMetadata>,
+    controls: HashMap<String, ControlValue>,
+    preset_id: Option<PresetId>,
+}
+
+fn idle_effect() -> ActiveEffectSeed {
+    ActiveEffectSeed {
+        metadata: None,
+        controls: HashMap::new(),
+        preset_id: None,
+    }
+}
+
+fn active_builtin_effect(stem: &str, controls: HashMap<String, ControlValue>) -> ActiveEffectSeed {
     let registry = builtin_effect_registry();
     let metadata = builtin_effect_metadata(&registry, stem);
-    let mut engine = EffectEngine::new();
-    engine
-        .activate_metadata(metadata)
-        .expect("builtin effect should activate");
-    for (name, value) in controls {
-        engine.set_control(&name, &value);
+    ActiveEffectSeed {
+        metadata: Some(metadata),
+        controls,
+        preset_id: None,
     }
-    engine
 }
 
 fn solid_color_controls(r: u8, g: u8, b: u8) -> HashMap<String, ControlValue> {
@@ -652,19 +665,19 @@ async fn wait_for_next_canvas_frame(
 }
 
 fn make_render_state(
-    effect_engine: EffectEngine,
+    active_effect: ActiveEffectSeed,
     spatial_engine: SpatialEngine,
     backend_manager: BackendManager,
 ) -> RenderThreadState {
     let (_, power_state) = watch::channel(OutputPowerState::default());
     let event_bus = Arc::new(HypercolorBus::new());
     let mut scene_manager = SceneManager::with_default();
-    if let Some(metadata) = effect_engine.active_metadata().cloned() {
+    if let Some(metadata) = active_effect.metadata.as_ref() {
         scene_manager
             .upsert_primary_group(
-                &metadata,
-                effect_engine.active_controls().clone(),
-                effect_engine.active_preset_id().and_then(|id| id.parse().ok()),
+                metadata,
+                active_effect.controls.clone(),
+                active_effect.preset_id,
                 spatial_engine.layout().as_ref().clone(),
             )
             .expect("test render state should seed a default primary group");
@@ -723,7 +736,7 @@ async fn wait_for_device_state(
 #[tokio::test]
 async fn render_thread_exits_when_loop_not_started() {
     let state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -741,7 +754,7 @@ async fn render_thread_exits_when_loop_not_started() {
 #[tokio::test]
 async fn render_thread_try_spawn_rejects_explicit_gpu_without_feature() {
     let mut state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -756,7 +769,7 @@ async fn render_thread_try_spawn_rejects_explicit_gpu_without_feature() {
 #[tokio::test]
 async fn render_thread_exits_on_stop() {
     let state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -784,7 +797,7 @@ async fn render_thread_exits_on_stop() {
 #[tokio::test]
 async fn render_thread_publishes_discrete_input_events() {
     let state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -1028,7 +1041,7 @@ async fn render_thread_gates_audio_capture_to_audio_reactive_effects() {
 #[tokio::test]
 async fn pipeline_publishes_frame_events() {
     let state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -1070,7 +1083,7 @@ async fn pipeline_publishes_frame_events() {
 #[tokio::test]
 async fn render_thread_advances_active_scene_transitions() {
     let state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(vec![strip_zone("zone_0", "mock:strip", 8)])),
         BackendManager::new(),
     );
@@ -1121,7 +1134,7 @@ async fn render_thread_advances_active_scene_transitions() {
 #[tokio::test]
 async fn render_thread_crossfades_scene_transition_between_effect_frames() {
     let state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(vec![strip_zone("zone_0", "mock:strip", 8)])),
         BackendManager::new(),
     );
@@ -1195,7 +1208,7 @@ async fn render_thread_crossfades_scene_transition_between_effect_frames() {
 #[tokio::test]
 async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
     let state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -1270,7 +1283,7 @@ async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
 #[tokio::test]
 async fn late_group_canvas_subscribers_see_last_display_face_frame() {
     let state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -1331,7 +1344,7 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
 #[tokio::test]
 async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change() {
     let state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -1414,7 +1427,7 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
 #[tokio::test]
 async fn render_thread_gates_audio_capture_to_audio_reactive_scene_groups() {
     let state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -1504,7 +1517,7 @@ async fn render_thread_gates_audio_capture_to_audio_reactive_scene_groups() {
 #[tokio::test]
 async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
     let state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -1601,7 +1614,7 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
 #[tokio::test]
 async fn pipeline_publishes_frame_data_via_watch() {
     let state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -1669,7 +1682,7 @@ async fn pipeline_keeps_latest_frame_hot_for_late_subscribers() {
 #[tokio::test]
 async fn pipeline_publishes_canvas_data_via_watch() {
     let state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -1699,7 +1712,7 @@ async fn pipeline_publishes_canvas_data_via_watch() {
 #[tokio::test]
 async fn pipeline_publishes_canvas_data_via_preview_runtime() {
     let state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -2019,17 +2032,17 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         task_spawner: tokio::runtime::Handle::current(),
     };
 
-    let effect_engine = active_builtin_effect("solid_color", solid_color_controls(255, 0, 0));
+    let effect_seed = active_builtin_effect("solid_color", solid_color_controls(255, 0, 0));
     let mut scene_manager = SceneManager::with_default();
-    let metadata = effect_engine
-        .active_metadata()
-        .cloned()
+    let metadata = effect_seed
+        .metadata
+        .clone()
         .expect("builtin effect should expose metadata");
     scene_manager
         .upsert_primary_group(
             &metadata,
-            effect_engine.active_controls().clone(),
-            effect_engine.active_preset_id().and_then(|id| id.parse().ok()),
+            effect_seed.controls.clone(),
+            effect_seed.preset_id,
             layout.clone(),
         )
         .expect("failing-device test should seed a primary group");
@@ -2111,7 +2124,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
 #[tokio::test]
 async fn pipeline_with_no_effect_produces_black_canvas() {
     let state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -2136,8 +2149,7 @@ async fn pipeline_with_no_effect_produces_black_canvas() {
     }
     rt.shutdown().await.expect("shutdown");
 
-    // With no effect active, EffectEngine returns a black canvas.
-    // With no zones, frame data has empty zone list.
+    // With no active groups and no zones, the idle pipeline stays black.
     let frame_data = frame_rx.borrow().clone();
     assert!(frame_data.zones.is_empty());
 }
@@ -2150,7 +2162,7 @@ async fn pipeline_uses_screen_input_canvas_when_available() {
     ]);
 
     let mut state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(layout),
         BackendManager::new(),
     );
@@ -2214,7 +2226,7 @@ async fn pipeline_reuses_screen_preview_surface_for_canvas_and_screen_watch() {
     ]);
 
     let mut state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(layout),
         BackendManager::new(),
     );
@@ -2316,7 +2328,7 @@ async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
     ]);
 
     let mut state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(layout),
         BackendManager::new(),
     );
@@ -2450,7 +2462,7 @@ async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
 #[tokio::test]
 async fn pipeline_applies_queued_layout_changes_on_the_next_frame() {
     let mut state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(vec![point_zone(
             "zone_sample",
             "mock:sample",
@@ -2540,7 +2552,7 @@ async fn pipeline_applies_queued_layout_changes_on_the_next_frame() {
 #[tokio::test]
 async fn idle_pipeline_throttles_even_with_watch_receivers() {
     let state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -2596,7 +2608,7 @@ async fn idle_pipeline_skips_spectrum_publication_without_receivers() {
     }
 
     let state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -2710,7 +2722,7 @@ async fn render_thread_reuses_published_spectrum_bins_between_frames() {
 #[tokio::test]
 async fn idle_pipeline_does_not_republish_empty_screen_canvas_frames() {
     let state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -2850,7 +2862,7 @@ async fn pipeline_throttles_canvas_preview_publication_to_tracked_receiver_fps()
 #[test]
 fn preview_runtime_receivers_share_event_bus_canvas_channel() {
     let state = make_render_state(
-        EffectEngine::new(),
+        idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -2870,17 +2882,17 @@ fn preview_runtime_receivers_share_event_bus_canvas_channel() {
 #[tokio::test]
 async fn release_sleep_clears_published_frame_and_canvas_once() {
     let layout = test_layout(vec![strip_zone("zone_0", "mock:strip", 8)]);
-    let effect_engine = active_builtin_effect("solid_color", solid_color_controls(255, 0, 0));
+    let effect_seed = active_builtin_effect("solid_color", solid_color_controls(255, 0, 0));
     let mut scene_manager = SceneManager::with_default();
-    let metadata = effect_engine
-        .active_metadata()
-        .cloned()
+    let metadata = effect_seed
+        .metadata
+        .clone()
         .expect("builtin effect should expose metadata");
     scene_manager
         .upsert_primary_group(
             &metadata,
-            effect_engine.active_controls().clone(),
-            effect_engine.active_preset_id().and_then(|id| id.parse().ok()),
+            effect_seed.controls.clone(),
+            effect_seed.preset_id,
             layout.clone(),
         )
         .expect("release-sleep test should seed a primary group");

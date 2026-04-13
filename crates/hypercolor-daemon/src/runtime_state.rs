@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 
 use hypercolor_core::device::DeviceRegistry;
 use hypercolor_core::device::wled::WledKnownTarget;
-use hypercolor_core::effect::EffectEngine;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::device::{DeviceColorFormat, DeviceFamily};
 use hypercolor_types::effect::{ControlBinding, ControlValue};
@@ -92,42 +91,6 @@ pub enum RuntimeSessionError {
         #[source]
         source: std::io::Error,
     },
-}
-
-/// Build a snapshot from the current effect engine state.
-#[must_use]
-pub fn snapshot_from_engine(engine: &EffectEngine) -> RuntimeSessionSnapshot {
-    let active_effect_id = engine.active_metadata().map(|meta| meta.id.to_string());
-    if active_effect_id.is_none() {
-        return RuntimeSessionSnapshot::default();
-    }
-
-    RuntimeSessionSnapshot {
-        active_scene_id: None,
-        default_scene_groups: Vec::new(),
-        active_effect_id,
-        active_preset_id: engine.active_preset_id().map(ToOwned::to_owned),
-        control_values: engine.active_controls().clone(),
-        control_bindings: engine
-            .active_metadata()
-            .map(|metadata| {
-                metadata
-                    .controls
-                    .iter()
-                    .filter_map(|control| {
-                        control
-                            .binding
-                            .clone()
-                            .map(|binding| (control.control_id().to_owned(), binding))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
-        active_layout_id: None, // Populated by the caller with spatial engine state.
-        global_brightness: 1.0,
-        wled_probe_ips: Vec::new(),
-        wled_probe_targets: Vec::new(),
-    }
 }
 
 #[must_use]
