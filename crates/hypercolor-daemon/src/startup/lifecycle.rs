@@ -60,7 +60,6 @@ impl DaemonState {
         self.session_controller = Some(SessionController::start(
             Arc::clone(&self.config_manager),
             Arc::clone(&self.event_bus),
-            Arc::clone(&self.effect_engine),
             self.power_state.clone(),
             self.discovery_runtime(),
             Arc::clone(&self.driver_host),

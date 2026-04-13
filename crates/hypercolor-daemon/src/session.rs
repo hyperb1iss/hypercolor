@@ -4,13 +4,12 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use tokio::sync::{Mutex, watch};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::effect::EffectEngine;
 use hypercolor_core::session::{SessionWatcher, SleepPolicy};
 use hypercolor_network::DriverRegistry;
 use hypercolor_types::event::HypercolorEvent;
@@ -60,7 +59,6 @@ pub struct SessionController {
 struct SessionRuntime {
     config_manager: Arc<ConfigManager>,
     event_bus: Arc<HypercolorBus>,
-    effect_engine: Arc<Mutex<EffectEngine>>,
     power_tx: watch::Sender<OutputPowerState>,
     discovery_runtime: DiscoveryRuntime,
     driver_host: Arc<DaemonDriverHost>,
@@ -72,7 +70,6 @@ impl SessionController {
     pub fn start(
         config_manager: Arc<ConfigManager>,
         event_bus: Arc<HypercolorBus>,
-        effect_engine: Arc<Mutex<EffectEngine>>,
         power_tx: watch::Sender<OutputPowerState>,
         discovery_runtime: DiscoveryRuntime,
         driver_host: Arc<DaemonDriverHost>,
@@ -84,7 +81,6 @@ impl SessionController {
         let runtime = SessionRuntime {
             config_manager,
             event_bus,
-            effect_engine,
             power_tx,
             discovery_runtime,
             driver_host,
@@ -205,11 +201,6 @@ fn spawn_wake_transition(
                     },
                 );
             }
-
-            {
-                let mut engine = runtime.effect_engine.lock().await;
-                engine.resume();
-            }
             fade_session_to(&runtime.power_tx, 1.0, fade_ms).await;
         })),
         WakeAction::Scene {
@@ -234,11 +225,6 @@ async fn ensure_awake(runtime: &SessionRuntime) {
 
     if current.off_output_behavior == OffOutputBehavior::Release {
         run_full_reconnect_scan(runtime).await;
-    }
-
-    {
-        let mut engine = runtime.effect_engine.lock().await;
-        engine.resume();
     }
     set_power_state(
         &runtime.power_tx,
@@ -338,11 +324,6 @@ async fn pause_output(
             off_output_color: static_color,
         },
     );
-
-    {
-        let mut engine = runtime.effect_engine.lock().await;
-        engine.pause();
-    }
 
     if output_behavior == OffOutputBehavior::Release {
         let released = discovery::release_renderable_devices(&runtime.discovery_runtime).await;

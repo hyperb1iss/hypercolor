@@ -1120,19 +1120,7 @@ async fn active_html_effect_name(state: &AppState) -> Option<String> {
             effect_source_is_html(&entry.metadata.source).then(|| entry.metadata.name.clone())
         })
     });
-    if active_scene_html.is_some() {
-        return active_scene_html;
-    }
-    drop(registry);
-
-    let effect_engine = state.effect_engine.lock().await;
-    if let Some(metadata) = effect_engine.active_metadata()
-        && effect_source_is_html(&metadata.source)
-    {
-        return Some(metadata.name.clone());
-    }
-
-    None
+    active_scene_html
 }
 
 fn overlay_warning(

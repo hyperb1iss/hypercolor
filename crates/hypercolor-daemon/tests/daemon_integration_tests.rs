@@ -252,7 +252,7 @@ async fn daemon_start_restores_last_runtime_session() {
 
     let requested_speed = ControlValue::Float(7.0);
     let preset_id = hypercolor_types::library::PresetId::new();
-    let (effect_id, expected_speed) = {
+    let effect_id = {
         let registry = state.effect_registry.read().await;
         let (_, entry) = registry
             .iter()
@@ -261,20 +261,14 @@ async fn daemon_start_restores_last_runtime_session() {
                     && entry.metadata.control_by_id("speed").is_some()
             })
             .expect("expected at least one native effect with a speed control in registry");
-        let expected_speed = entry
-            .metadata
-            .control_by_id("speed")
-            .expect("speed control should exist")
-            .validate_value(&requested_speed)
-            .expect("speed control should normalize persisted value");
-        (entry.metadata.id.to_string(), expected_speed)
+        entry.metadata.id.to_string()
     };
     let snapshot = RuntimeSessionSnapshot {
         active_scene_id: Some(hypercolor_types::scene::SceneId::DEFAULT.to_string()),
         default_scene_groups: Vec::new(),
         active_effect_id: Some(effect_id.clone()),
         active_preset_id: Some(preset_id.to_string()),
-        control_values: HashMap::from([("speed".to_owned(), requested_speed)]),
+        control_values: HashMap::from([("speed".to_owned(), requested_speed.clone())]),
         control_bindings: HashMap::from([(
             "speed".to_owned(),
             ControlBinding {
@@ -312,7 +306,7 @@ async fn daemon_start_restores_last_runtime_session() {
         primary_group.preset_id.map(|preset| preset.to_string()),
         Some(preset_id.to_string())
     );
-    assert_eq!(primary_group.controls.get("speed"), Some(&expected_speed));
+    assert_eq!(primary_group.controls.get("speed"), Some(&requested_speed));
     let binding = primary_group
         .control_bindings
         .get("speed")
@@ -493,10 +487,11 @@ async fn api_state_scene_manager_accessible_through_rwlock() {
     // Read lock: verify scene exists
     {
         let scenes = state.scene_manager.read().await;
-        assert_eq!(scenes.scene_count(), 1);
+        assert_eq!(scenes.scene_count(), 2);
         let listed = scenes.list();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].name, "Test Scene");
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().any(|scene| scene.id.is_default()));
+        assert!(listed.iter().any(|scene| scene.name == "Test Scene"));
     }
 }
 
