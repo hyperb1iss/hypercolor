@@ -235,6 +235,8 @@ interface ControlDef {
     max?: number
     values?: string[]
     step?: number
+    aspectLock?: number
+    preview?: 'screen' | 'web' | 'canvas'
 }
 
 function controlToMeta(ctrl: ControlDef): string {
@@ -246,10 +248,18 @@ function controlToMeta(ctrl: ControlDef): string {
     if (ctrl.min != null) attrs.push(`min="${ctrl.min}"`)
     if (ctrl.max != null) attrs.push(`max="${ctrl.max}"`)
     if (ctrl.step != null) attrs.push(`step="${ctrl.step}"`)
-    if (ctrl.default != null) attrs.push(`default="${escapeAttr(String(ctrl.default))}"`)
+    if (ctrl.default != null) {
+        const defaultValue =
+            ctrl.type === 'rect' && typeof ctrl.default === 'object'
+                ? rectDefaultAttr(ctrl.default as { x: number; y: number; width: number; height: number })
+                : String(ctrl.default)
+        attrs.push(`default="${escapeAttr(defaultValue)}"`)
+    }
     if (ctrl.values?.length) attrs.push(`values="${ctrl.values.map(escapeAttr).join(',')}"`)
     if (ctrl.tooltip) attrs.push(`tooltip="${escapeAttr(ctrl.tooltip)}"`)
     if (ctrl.group) attrs.push(`group="${escapeAttr(ctrl.group)}"`)
+    if (ctrl.aspectLock != null) attrs.push(`aspectLock="${ctrl.aspectLock}"`)
+    if (ctrl.preview) attrs.push(`preview="${ctrl.preview}"`)
 
     return `  <meta ${attrs.join(' ')}/>`
 }
@@ -263,6 +273,10 @@ function presetToMeta(preset: PresetDef): string {
 
 function escapeAttr(s: string): string {
     return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+}
+
+function rectDefaultAttr(rect: { x: number; y: number; width: number; height: number }): string {
+    return [rect.x, rect.y, rect.width, rect.height].join(',')
 }
 
 // ── Face HTML Template ─────────────────────────────────────────────────

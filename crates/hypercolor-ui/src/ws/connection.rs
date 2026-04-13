@@ -13,8 +13,10 @@ use super::messages::{
 };
 use super::preview::{
     DEFAULT_PREVIEW_FPS_CAP, clear_preview_subscription, clear_screen_preview_subscription,
-    request_preview_subscription, request_screen_preview_subscription, send_canvas_unsubscribe,
-    send_screen_canvas_unsubscribe,
+    clear_web_viewport_preview_subscription, request_preview_subscription,
+    request_screen_preview_subscription, request_web_viewport_preview_subscription,
+    send_canvas_unsubscribe, send_screen_canvas_unsubscribe,
+    send_web_viewport_canvas_unsubscribe,
 };
 
 /// Reconnection delay bounds (milliseconds).
@@ -30,6 +32,7 @@ const RECONNECT_MAX_MS: i32 = 15_000;
 pub struct WsManager {
     pub canvas_frame: ReadSignal<Option<CanvasFrame>>,
     pub screen_canvas_frame: ReadSignal<Option<CanvasFrame>>,
+    pub web_viewport_canvas_frame: ReadSignal<Option<CanvasFrame>>,
     /// Latest JPEG frame from the per-display `display_preview` WS
     /// channel. `None` until the UI selects a display and the first
     /// frame arrives; reset to `None` when the target changes or the
@@ -46,6 +49,7 @@ pub struct WsManager {
     pub set_preview_cap: WriteSignal<u32>,
     pub set_preview_consumers: WriteSignal<u32>,
     pub set_screen_preview_consumers: WriteSignal<u32>,
+    pub set_web_viewport_preview_consumers: WriteSignal<u32>,
     /// Set to `Some(device_id)` to subscribe the `display_preview`
     /// channel to that device, or `None` to unsubscribe. The subscription
     /// effect inside `WsManager` sends the actual WS messages.
@@ -56,6 +60,8 @@ impl WsManager {
     pub fn new() -> Self {
         let (canvas_frame, set_canvas_frame) = signal(None::<CanvasFrame>);
         let (screen_canvas_frame, set_screen_canvas_frame) = signal(None::<CanvasFrame>);
+        let (web_viewport_canvas_frame, set_web_viewport_canvas_frame) =
+            signal(None::<CanvasFrame>);
         let (display_preview_frame, set_display_preview_frame) = signal(None::<CanvasFrame>);
         let (display_preview_device, set_display_preview_device) = signal(None::<String>);
         let (connection_state, set_connection_state) = signal(ConnectionState::Disconnected);
@@ -70,6 +76,8 @@ impl WsManager {
         let (preview_page_cap, set_preview_cap) = signal(DEFAULT_PREVIEW_FPS_CAP);
         let (preview_consumers, set_preview_consumers) = signal(0_u32);
         let (screen_preview_consumers, set_screen_preview_consumers) = signal(0_u32);
+        let (web_viewport_preview_consumers, set_web_viewport_preview_consumers) =
+            signal(0_u32);
         let (preview_transport_cap, set_preview_transport_cap) = signal(DEFAULT_PREVIEW_FPS_CAP);
         let (page_visible, set_page_visible) = signal(document_is_visible());
 
@@ -79,6 +87,7 @@ impl WsManager {
         let smoothed_fps = StoredValue::new(0.0_f64);
         let requested_preview_fps = StoredValue::new(0_u32);
         let requested_screen_preview_fps = StoredValue::new(0_u32);
+        let requested_web_viewport_preview_fps = StoredValue::new(0_u32);
 
         // Shared WebSocket handle for preview subscription effect.
         let ws_handle: StoredValue<Option<web_sys::WebSocket>> = StoredValue::new(None);
@@ -155,6 +164,10 @@ impl WsManager {
                     requested_screen_preview_fps,
                     &set_screen_canvas_frame,
                 );
+                clear_web_viewport_preview_subscription(
+                    requested_web_viewport_preview_fps,
+                    &set_web_viewport_canvas_frame,
+                );
                 set_display_preview_frame.set(None);
                 schedule_reconnect(reconnect_attempts, reconnect_timeout_id, connect);
             });
@@ -217,6 +230,9 @@ impl WsManager {
                             }
                             PreviewFrameChannel::ScreenCanvas => {
                                 set_screen_canvas_frame.set(Some(frame));
+                            }
+                            PreviewFrameChannel::WebViewportCanvas => {
+                                set_web_viewport_canvas_frame.set(Some(frame));
                             }
                             PreviewFrameChannel::DisplayPreview => {
                                 set_display_preview_frame.set(Some(frame));
@@ -308,6 +324,31 @@ impl WsManager {
         });
 
         Effect::new(move |_| {
+            let engine_target = engine_preview_target.get();
+            let consumer_count = web_viewport_preview_consumers.get();
+            let is_visible = page_visible.get();
+            if engine_target == 0 || consumer_count == 0 {
+                if let Some(ws) = ws_handle.get_value() {
+                    clear_web_viewport_preview_subscription(
+                        requested_web_viewport_preview_fps,
+                        &set_web_viewport_canvas_frame,
+                    );
+                    send_web_viewport_canvas_unsubscribe(&ws);
+                }
+                return;
+            }
+
+            if let Some(ws) = ws_handle.get_value() {
+                request_web_viewport_preview_subscription(
+                    &ws,
+                    requested_web_viewport_preview_fps,
+                    engine_target,
+                    is_visible,
+                );
+            }
+        });
+
+        Effect::new(move |_| {
             set_preview_transport_cap.set(preview_page_cap.get());
         });
 
@@ -352,6 +393,7 @@ impl WsManager {
         Self {
             canvas_frame,
             screen_canvas_frame,
+            web_viewport_canvas_frame,
             display_preview_frame,
             connection_state,
             preview_fps,
@@ -364,6 +406,7 @@ impl WsManager {
             set_preview_cap,
             set_preview_consumers,
             set_screen_preview_consumers,
+            set_web_viewport_preview_consumers,
             set_display_preview_device,
         }
     }

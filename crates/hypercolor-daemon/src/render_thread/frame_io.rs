@@ -91,11 +91,13 @@ pub(crate) fn publish_frame_updates(
     frame_surface: Option<PublishedSurface>,
     preview_surface: Option<PublishedSurface>,
     screen_preview_surface: Option<PublishedSurface>,
+    web_viewport_preview_canvas: Option<Canvas>,
     frame_number: u32,
     elapsed_ms: u32,
     last_audio_level_update_ms: &mut Option<u32>,
     last_canvas_preview_publish_ms: &mut Option<u32>,
     last_screen_canvas_preview_publish_ms: &mut Option<u32>,
+    last_web_viewport_preview_publish_ms: &mut Option<u32>,
     reuse_existing_frame: bool,
     timing: FrameTiming,
 ) -> PublishFrameStats {
@@ -256,6 +258,51 @@ pub(crate) fn publish_frame_updates(
                 .preview_runtime
                 .record_screen_canvas_publication(frame_number, elapsed_ms);
             let _ = state.event_bus.screen_canvas_sender().send(screen_frame);
+        }
+    }
+    state
+        .preview_runtime
+        .note_web_viewport_canvas_frame(frame_number, elapsed_ms);
+    let web_viewport_canvas_receivers = state.event_bus.web_viewport_canvas_receiver_count();
+    if web_viewport_canvas_receivers > 0 {
+        let tracked_receivers = state.preview_runtime.web_viewport_canvas_receiver_count();
+        let publish_web_viewport = {
+            let current = state.event_bus.web_viewport_canvas_sender().borrow();
+            let changed = if let Some(canvas) = web_viewport_preview_canvas.as_ref() {
+                should_publish_canvas_storage(&current, canvas)
+            } else {
+                should_publish_canvas_frame(&current, &CanvasFrame::empty())
+            };
+            changed
+                && preview_publication_due(
+                    elapsed_ms,
+                    *last_web_viewport_preview_publish_ms,
+                    web_viewport_canvas_receivers,
+                    tracked_receivers,
+                    state.preview_runtime.web_viewport_canvas_demand().max_fps,
+                )
+        };
+        if publish_web_viewport {
+            let preview_frame = if let Some(canvas) = web_viewport_preview_canvas {
+                let canvas_rgba_len = usize_to_u32(canvas.rgba_len());
+                let (frame, copied) =
+                    CanvasFrame::from_owned_canvas_with_copy_info(canvas, frame_number, elapsed_ms);
+                if copied {
+                    full_frame_copy_count = full_frame_copy_count.saturating_add(1);
+                    full_frame_copy_bytes = full_frame_copy_bytes.saturating_add(canvas_rgba_len);
+                }
+                frame
+            } else {
+                CanvasFrame::empty()
+            };
+            *last_web_viewport_preview_publish_ms = Some(elapsed_ms);
+            state
+                .preview_runtime
+                .record_web_viewport_canvas_publication(frame_number, elapsed_ms);
+            let _ = state
+                .event_bus
+                .web_viewport_canvas_sender()
+                .send(preview_frame);
         }
     }
     if event_subscribers > 0 {

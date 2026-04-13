@@ -29,6 +29,7 @@ pub(super) const WS_BUFFER_SIZE: usize = 64;
 pub(super) const WS_CANVAS_BYTES_PER_PIXEL_RGBA: u64 = 4;
 pub(super) const WS_CANVAS_HEADER: u8 = 0x03;
 pub(super) const WS_SCREEN_CANVAS_HEADER: u8 = 0x05;
+pub(super) const WS_WEB_VIEWPORT_CANVAS_HEADER: u8 = 0x06;
 /// Binary header byte for per-display preview JPEG frames streamed by
 /// the `display_preview` channel. Body layout matches the canvas frame:
 /// `[frame_number:u32LE][timestamp:u32LE][width:u16LE][height:u16LE][format:u8=2 (JPEG)][jpeg_payload]`.

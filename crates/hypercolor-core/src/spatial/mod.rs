@@ -23,6 +23,7 @@
 mod plan;
 mod sampler;
 mod topology;
+mod viewport;
 
 pub use plan::{
     PreparedAreaSample, PreparedBilinearSample, PreparedNearestSample, PreparedZonePlan,
@@ -30,6 +31,7 @@ pub use plan::{
 };
 pub use sampler::{sample_led, sample_zone};
 pub use topology::generate_positions;
+pub use viewport::sample_viewport;
 
 use std::sync::Arc;
 

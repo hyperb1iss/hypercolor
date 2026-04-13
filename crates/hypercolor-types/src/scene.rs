@@ -162,6 +162,12 @@ fn control_value_parameter(value: &ControlValue) -> String {
         ControlValue::Boolean(value) => value.to_string(),
         ControlValue::Enum(value) | ControlValue::Text(value) => value.clone(),
         ControlValue::Color([r, g, b, a]) => format!("{r:.6},{g:.6},{b:.6},{a:.6}"),
+        ControlValue::Rect(value) => {
+            format!(
+                "{:.6},{:.6},{:.6},{:.6}",
+                value.x, value.y, value.width, value.height
+            )
+        }
         ControlValue::Gradient(_) => serde_json::to_string(value).unwrap_or_default(),
     }
 }

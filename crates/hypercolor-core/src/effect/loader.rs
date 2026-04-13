@@ -14,6 +14,7 @@ use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectId, EffectMetadata,
     EffectSource, EffectState, PresetTemplate,
 };
+use hypercolor_types::viewport::ViewportRect;
 
 use super::meta_parser::{
     HtmlControlKind, HtmlControlMetadata, HtmlPresetMetadata, parse_html_effect_metadata,
@@ -304,6 +305,11 @@ fn control_definition_from_html(raw: &HtmlControlMetadata) -> Option<ControlDefi
             ControlType::TextInput,
             text_default(raw.default.as_deref(), ""),
         ),
+        HtmlControlKind::Rect => (
+            ControlKind::Rect,
+            ControlType::Rect,
+            rect_default(raw.default.as_deref()),
+        ),
         HtmlControlKind::Other(ref raw_kind) => (
             ControlKind::Other(raw_kind.clone()),
             ControlType::TextInput,
@@ -330,6 +336,8 @@ fn control_definition_from_html(raw: &HtmlControlMetadata) -> Option<ControlDefi
             .tooltip
             .as_ref()
             .map(|tooltip| decode_html_entities(tooltip)),
+        aspect_lock: raw.aspect_lock,
+        preview_source: raw.preview_source,
         binding: None,
     })
 }
@@ -390,6 +398,12 @@ fn text_default(raw: Option<&str>, fallback: &str) -> ControlValue {
     ControlValue::Text(decoded)
 }
 
+fn rect_default(raw: Option<&str>) -> ControlValue {
+    parse_rect(raw.unwrap_or_default())
+        .map(ControlValue::Rect)
+        .unwrap_or_else(|| ControlValue::Rect(ViewportRect::full()))
+}
+
 /// Convert a parsed HTML preset into a typed `PresetTemplate`.
 ///
 /// Control values in the HTML preset are raw strings — this function resolves
@@ -439,10 +453,28 @@ fn parse_raw_control_value(kind: &ControlKind, raw: &str) -> Option<ControlValue
             }
         }
         ControlKind::Combobox => Some(ControlValue::Enum(raw.to_owned())),
+        ControlKind::Rect => parse_rect(raw).map(ControlValue::Rect),
         ControlKind::Sensor | ControlKind::Text | ControlKind::Other(_) => {
             Some(ControlValue::Text(raw.to_owned()))
         }
     }
+}
+
+fn parse_rect(raw: &str) -> Option<ViewportRect> {
+    let mut parts = raw
+        .split(',')
+        .map(str::trim)
+        .map(|part| part.parse::<f32>().ok());
+    let rect = ViewportRect::new(
+        parts.next()??,
+        parts.next()??,
+        parts.next()??,
+        parts.next()??,
+    );
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(rect.clamp())
 }
 
 fn decode_html_entities(input: &str) -> String {

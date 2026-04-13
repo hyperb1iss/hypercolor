@@ -5,37 +5,19 @@
 
 use std::path::PathBuf;
 
-use hypercolor_types::canvas::{Canvas, RgbaF32};
+use hypercolor_types::canvas::Canvas;
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource,
+    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PreviewSource,
 };
+use hypercolor_types::viewport::{FitMode, ViewportRect};
 
-use super::common::{builtin_effect_id, dropdown_control, slider_control};
+use super::common::{builtin_effect_id, dropdown_control, rect_control, slider_control};
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FitMode {
-    Contain,
-    Cover,
-    Stretch,
-}
-
-impl FitMode {
-    fn from_str(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "cover" => Self::Cover,
-            "stretch" => Self::Stretch,
-            _ => Self::Contain,
-        }
-    }
-}
+use crate::spatial::sample_viewport;
 
 /// Screen-reactive renderer backed by the current capture snapshot.
 pub struct ScreenCastRenderer {
-    frame_x: f32,
-    frame_y: f32,
-    frame_width: f32,
-    frame_height: f32,
+    viewport: ViewportRect,
     brightness: f32,
     fit_mode: FitMode,
 }
@@ -45,10 +27,7 @@ impl ScreenCastRenderer {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            frame_x: 0.0,
-            frame_y: 0.0,
-            frame_width: 1.0,
-            frame_height: 1.0,
+            viewport: ViewportRect::full(),
             brightness: 1.0,
             fit_mode: FitMode::Contain,
         }
@@ -78,44 +57,16 @@ impl EffectRenderer for ScreenCastRenderer {
         };
         let source = Canvas::from_published_surface(source_surface);
 
-        let crop = normalized_crop(
-            source.width(),
-            source.height(),
-            self.frame_x,
-            self.frame_y,
-            self.frame_width,
-            self.frame_height,
-        );
-
-        match self.fit_mode {
-            FitMode::Stretch => blit_stretch(canvas, &source, crop, self.brightness),
-            FitMode::Contain => blit_contain(canvas, &source, crop, self.brightness),
-            FitMode::Cover => blit_cover(canvas, &source, crop, self.brightness),
-        }
+        sample_viewport(canvas, &source, self.viewport, self.fit_mode, self.brightness);
 
         Ok(())
     }
 
     fn set_control(&mut self, name: &str, value: &ControlValue) {
         match name {
-            "frame_x" => {
-                if let Some(v) = value.as_f32() {
-                    self.frame_x = v.clamp(0.0, 1.0);
-                }
-            }
-            "frame_y" => {
-                if let Some(v) = value.as_f32() {
-                    self.frame_y = v.clamp(0.0, 1.0);
-                }
-            }
-            "frame_width" => {
-                if let Some(v) = value.as_f32() {
-                    self.frame_width = v.clamp(0.05, 1.0);
-                }
-            }
-            "frame_height" => {
-                if let Some(v) = value.as_f32() {
-                    self.frame_height = v.clamp(0.05, 1.0);
+            "viewport" => {
+                if let ControlValue::Rect(rect) = value {
+                    self.viewport = rect.clamp();
                 }
             }
             "brightness" => {
@@ -125,7 +76,7 @@ impl EffectRenderer for ScreenCastRenderer {
             }
             "fit_mode" => {
                 if let ControlValue::Enum(mode) | ControlValue::Text(mode) = value {
-                    self.fit_mode = FitMode::from_str(mode);
+                    self.fit_mode = parse_fit_mode(mode);
                 }
             }
             _ => {}
@@ -135,179 +86,24 @@ impl EffectRenderer for ScreenCastRenderer {
     fn destroy(&mut self) {}
 }
 
-#[derive(Debug, Clone, Copy)]
-struct SourceRect {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-}
-
-#[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-fn normalized_crop(
-    source_width: u32,
-    source_height: u32,
-    frame_x: f32,
-    frame_y: f32,
-    frame_width: f32,
-    frame_height: f32,
-) -> SourceRect {
-    let crop_width = frame_width.clamp(0.05, 1.0);
-    let crop_height = frame_height.clamp(0.05, 1.0);
-    let x = frame_x.clamp(0.0, (1.0 - crop_width).max(0.0));
-    let y = frame_y.clamp(0.0, (1.0 - crop_height).max(0.0));
-
-    SourceRect {
-        x: x * source_width.max(1) as f32,
-        y: y * source_height.max(1) as f32,
-        width: (crop_width * source_width.max(1) as f32).max(1.0),
-        height: (crop_height * source_height.max(1) as f32).max(1.0),
+fn parse_fit_mode(value: &str) -> FitMode {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "cover" => FitMode::Cover,
+        "stretch" => FitMode::Stretch,
+        _ => FitMode::Contain,
     }
-}
-
-#[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-fn blit_stretch(canvas: &mut Canvas, source: &Canvas, crop: SourceRect, brightness: f32) {
-    let out_width = canvas.width().max(1) as f32;
-    let out_height = canvas.height().max(1) as f32;
-    for y in 0..canvas.height() {
-        let ny = (y as f32 + 0.5) / out_height;
-        for x in 0..canvas.width() {
-            let nx = (x as f32 + 0.5) / out_width;
-            let pixel = sample_source(
-                source,
-                crop.x + nx * crop.width,
-                crop.y + ny * crop.height,
-                brightness,
-            );
-            canvas.set_pixel(x, y, pixel);
-        }
-    }
-}
-
-#[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-fn blit_contain(canvas: &mut Canvas, source: &Canvas, crop: SourceRect, brightness: f32) {
-    let crop_aspect = crop.width / crop.height.max(f32::EPSILON);
-    let out_width = canvas.width().max(1) as f32;
-    let out_height = canvas.height().max(1) as f32;
-    let out_aspect = out_width / out_height;
-
-    let (draw_width, draw_height) = if out_aspect > crop_aspect {
-        (out_height * crop_aspect, out_height)
-    } else {
-        (out_width, out_width / crop_aspect)
-    };
-    let offset_x = (out_width - draw_width) * 0.5;
-    let offset_y = (out_height - draw_height) * 0.5;
-
-    for y in 0..canvas.height() {
-        let yf = y as f32 + 0.5;
-        if yf < offset_y || yf > offset_y + draw_height {
-            continue;
-        }
-        let ny = ((yf - offset_y) / draw_height).clamp(0.0, 1.0);
-        for x in 0..canvas.width() {
-            let xf = x as f32 + 0.5;
-            if xf < offset_x || xf > offset_x + draw_width {
-                continue;
-            }
-            let nx = ((xf - offset_x) / draw_width).clamp(0.0, 1.0);
-            let pixel = sample_source(
-                source,
-                crop.x + nx * crop.width,
-                crop.y + ny * crop.height,
-                brightness,
-            );
-            canvas.set_pixel(x, y, pixel);
-        }
-    }
-}
-
-#[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-fn blit_cover(canvas: &mut Canvas, source: &Canvas, crop: SourceRect, brightness: f32) {
-    let out_aspect = canvas.width().max(1) as f32 / canvas.height().max(1) as f32;
-    let crop_aspect = crop.width / crop.height.max(f32::EPSILON);
-    let mut fitted = crop;
-
-    if out_aspect > crop_aspect {
-        fitted.height = (crop.width / out_aspect).max(1.0);
-        fitted.y += (crop.height - fitted.height).max(0.0) * 0.5;
-    } else if out_aspect < crop_aspect {
-        fitted.width = (crop.height * out_aspect).max(1.0);
-        fitted.x += (crop.width - fitted.width).max(0.0) * 0.5;
-    }
-
-    blit_stretch(canvas, source, fitted, brightness);
-}
-
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::as_conversions
-)]
-fn sample_source(
-    source: &Canvas,
-    x: f32,
-    y: f32,
-    brightness: f32,
-) -> hypercolor_types::canvas::Rgba {
-    let src_x = x
-        .floor()
-        .clamp(0.0, source.width().saturating_sub(1) as f32) as u32;
-    let src_y = y
-        .floor()
-        .clamp(0.0, source.height().saturating_sub(1) as f32) as u32;
-    let pixel = source.get_pixel(src_x, src_y).to_linear_f32();
-    let scaled = RgbaF32::new(
-        pixel.r * brightness,
-        pixel.g * brightness,
-        pixel.b * brightness,
-        pixel.a,
-    );
-    scaled.to_srgba()
 }
 
 fn controls() -> Vec<ControlDefinition> {
     vec![
-        slider_control(
-            "frame_x",
-            "Frame X",
-            0.0,
-            0.0,
-            1.0,
-            0.01,
+        rect_control(
+            "viewport",
+            "Viewport",
+            ViewportRect::full(),
             "Frame",
-            "Normalized left edge of the capture frame.",
-        ),
-        slider_control(
-            "frame_y",
-            "Frame Y",
-            0.0,
-            0.0,
-            1.0,
-            0.01,
-            "Frame",
-            "Normalized top edge of the capture frame.",
-        ),
-        slider_control(
-            "frame_width",
-            "Frame Width",
-            1.0,
-            0.05,
-            1.0,
-            0.01,
-            "Frame",
-            "Normalized width of the captured region.",
-        ),
-        slider_control(
-            "frame_height",
-            "Frame Height",
-            1.0,
-            0.05,
-            1.0,
-            0.01,
-            "Frame",
-            "Normalized height of the captured region.",
+            "Normalized crop region of the captured screen preview.",
+            PreviewSource::ScreenCapture,
+            None,
         ),
         dropdown_control(
             "fit_mode",

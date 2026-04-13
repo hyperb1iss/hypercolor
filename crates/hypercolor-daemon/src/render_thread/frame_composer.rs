@@ -30,6 +30,7 @@ use crate::preview_runtime::PreviewDemandSummary;
 )]
 pub(crate) struct RenderStageStats {
     pub(crate) composed_frame: ComposedFrameSet,
+    pub(crate) web_viewport_preview: Option<Canvas>,
     pub(crate) group_canvases: Vec<(RenderGroupId, GroupCanvasFrame)>,
     pub(crate) active_group_canvas_ids: Vec<RenderGroupId>,
     pub(crate) sampled_layout: Option<Arc<SpatialLayout>>,
@@ -63,6 +64,7 @@ pub(crate) struct ComposeRequest<'a> {
 
 struct ProducedFrame {
     frame: ProducerFrame,
+    web_viewport_preview: Option<Canvas>,
     opaque_hint: bool,
     producer_us: u32,
     state: Option<ProducerFrameState>,
@@ -111,6 +113,7 @@ impl ComposeContext<'_> {
 
         let ProducedFrame {
             frame: source_frame,
+            web_viewport_preview,
             opaque_hint: source_frame_opaque,
             producer_us,
             state: producer_state,
@@ -126,6 +129,7 @@ impl ComposeContext<'_> {
                         self.state.canvas_dims.height(),
                         [0, 0, 0],
                     )),
+                    web_viewport_preview: None,
                     opaque_hint: true,
                     producer_us: 0,
                     state: None,
@@ -139,6 +143,7 @@ impl ComposeContext<'_> {
             {
                 ProducedFrame {
                     frame: frame.frame,
+                    web_viewport_preview: None,
                     opaque_hint: true,
                     producer_us: 0,
                     state: Some(frame.state),
@@ -194,6 +199,7 @@ impl ComposeContext<'_> {
         RenderStageStats {
             composition_bypassed: composed.bypassed,
             composed_frame: composed,
+            web_viewport_preview,
             group_canvases: Vec::new(),
             active_group_canvas_ids: Vec::new(),
             sampled_layout: None,
@@ -334,6 +340,7 @@ impl ComposeContext<'_> {
 
                 RenderStageStats {
                     composed_frame: composed,
+                    web_viewport_preview: None,
                     group_canvases: render_group_result.group_canvases,
                     active_group_canvas_ids: render_group_result.active_group_canvas_ids,
                     sampled_layout: Some(render_group_result.layout),
@@ -385,6 +392,7 @@ impl ComposeContext<'_> {
 
                 RenderStageStats {
                     composed_frame: composed,
+                    web_viewport_preview: None,
                     group_canvases: Vec::new(),
                     active_group_canvas_ids: Vec::new(),
                     sampled_layout: None,
@@ -436,6 +444,7 @@ impl ComposeContext<'_> {
             .latch_latest()
             .map(|frame| ProducedFrame {
                 frame: frame.frame,
+                web_viewport_preview: None,
                 opaque_hint: false,
                 producer_us: 0,
                 state: Some(frame.state),
@@ -580,9 +589,10 @@ async fn render_effect_frame(
     };
 
     if let Some(mut lease) = lease {
+        let web_viewport_preview;
         {
             let target = lease.canvas_mut();
-            render_effect_into(
+            web_viewport_preview = render_effect_into(
                 state,
                 effect_generation,
                 delta_secs,
@@ -601,6 +611,7 @@ async fn render_effect_frame(
             .submit_for_generation(frame.clone(), effect_generation);
         return ProducedFrame {
             frame,
+            web_viewport_preview,
             opaque_hint: true,
             producer_us: micros_u32(render_start.elapsed()),
             state: Some(ProducerFrameState::Fresh),
@@ -620,7 +631,7 @@ async fn render_effect_frame(
                 && canvas.height() == state.canvas_dims.height()
         })
         .unwrap_or_else(|| Canvas::new(state.canvas_dims.width(), state.canvas_dims.height()));
-    render_effect_into(
+    let web_viewport_preview = render_effect_into(
         state,
         effect_generation,
         delta_secs,
@@ -647,6 +658,7 @@ async fn render_effect_frame(
     });
     ProducedFrame {
         frame,
+        web_viewport_preview,
         opaque_hint: true,
         producer_us: micros_u32(render_start.elapsed()),
         state: Some(ProducerFrameState::Fresh),

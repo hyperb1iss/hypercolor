@@ -21,17 +21,19 @@ pub(super) enum WsChannel {
     Events,
     Canvas,
     ScreenCanvas,
+    WebViewportCanvas,
     Metrics,
     DisplayPreview,
 }
 
 impl WsChannel {
-    pub(super) const SUPPORTED: [Self; 7] = [
+    pub(super) const SUPPORTED: [Self; 8] = [
         Self::Frames,
         Self::Spectrum,
         Self::Events,
         Self::Canvas,
         Self::ScreenCanvas,
+        Self::WebViewportCanvas,
         Self::Metrics,
         Self::DisplayPreview,
     ];
@@ -43,6 +45,7 @@ impl WsChannel {
             Self::Events => "events",
             Self::Canvas => "canvas",
             Self::ScreenCanvas => "screen_canvas",
+            Self::WebViewportCanvas => "web_viewport_canvas",
             Self::Metrics => "metrics",
             Self::DisplayPreview => "display_preview",
         }
@@ -55,6 +58,7 @@ impl WsChannel {
             "events" => Some(Self::Events),
             "canvas" => Some(Self::Canvas),
             "screen_canvas" => Some(Self::ScreenCanvas),
+            "web_viewport_canvas" => Some(Self::WebViewportCanvas),
             "metrics" => Some(Self::Metrics),
             "display_preview" => Some(Self::DisplayPreview),
             _ => None,
@@ -72,8 +76,9 @@ impl WsChannel {
             Self::Events => 1 << 2,
             Self::Canvas => 1 << 3,
             Self::ScreenCanvas => 1 << 4,
-            Self::Metrics => 1 << 5,
-            Self::DisplayPreview => 1 << 6,
+            Self::WebViewportCanvas => 1 << 5,
+            Self::Metrics => 1 << 6,
+            Self::DisplayPreview => 1 << 7,
         }
     }
 }
@@ -132,6 +137,7 @@ pub(super) struct ChannelConfig {
     pub(super) spectrum: SpectrumConfig,
     pub(super) canvas: CanvasConfig,
     pub(super) screen_canvas: CanvasConfig,
+    pub(super) web_viewport_canvas: CanvasConfig,
     pub(super) metrics: MetricsConfig,
     pub(super) display_preview: DisplayPreviewConfig,
 }
@@ -221,6 +227,42 @@ impl ChannelConfig {
             }
         }
 
+        if let Some(web_viewport_canvas) = patch.web_viewport_canvas {
+            if let Some(fps) = web_viewport_canvas.fps {
+                validate_range(
+                    fps,
+                    1,
+                    60,
+                    "config.web_viewport_canvas.fps",
+                    "expected 1..=60",
+                )?;
+                self.web_viewport_canvas.fps = fps;
+            }
+            if let Some(format) = web_viewport_canvas.format {
+                self.web_viewport_canvas.format = format;
+            }
+            if let Some(width) = web_viewport_canvas.width {
+                validate_range(
+                    width,
+                    0,
+                    4096,
+                    "config.web_viewport_canvas.width",
+                    "expected 0..=4096",
+                )?;
+                self.web_viewport_canvas.width = width;
+            }
+            if let Some(height) = web_viewport_canvas.height {
+                validate_range(
+                    height,
+                    0,
+                    4096,
+                    "config.web_viewport_canvas.height",
+                    "expected 0..=4096",
+                )?;
+                self.web_viewport_canvas.height = height;
+            }
+        }
+
         if let Some(metrics) = patch.metrics
             && let Some(interval_ms) = metrics.interval_ms
         {
@@ -278,6 +320,7 @@ impl ChannelConfig {
                 WsChannel::Spectrum => serde_json::to_value(&self.spectrum),
                 WsChannel::Canvas => serde_json::to_value(&self.canvas),
                 WsChannel::ScreenCanvas => serde_json::to_value(&self.screen_canvas),
+                WsChannel::WebViewportCanvas => serde_json::to_value(&self.web_viewport_canvas),
                 WsChannel::Metrics => serde_json::to_value(&self.metrics),
                 WsChannel::DisplayPreview => serde_json::to_value(&self.display_preview),
                 WsChannel::Events => continue,
@@ -474,6 +517,8 @@ pub(super) struct ChannelConfigPatch {
     pub(super) canvas: Option<CanvasConfigPatch>,
     #[serde(default)]
     pub(super) screen_canvas: Option<CanvasConfigPatch>,
+    #[serde(default)]
+    pub(super) web_viewport_canvas: Option<CanvasConfigPatch>,
     #[serde(default)]
     pub(super) metrics: Option<MetricsConfigPatch>,
     #[serde(default)]
@@ -732,12 +777,16 @@ pub(super) struct MetricsRenderSurfaces {
 pub(super) struct MetricsPreview {
     pub(super) canvas_receivers: u32,
     pub(super) screen_canvas_receivers: u32,
+    pub(super) web_viewport_canvas_receivers: u32,
     pub(super) canvas_frames_published: u64,
     pub(super) screen_canvas_frames_published: u64,
+    pub(super) web_viewport_canvas_frames_published: u64,
     pub(super) latest_canvas_frame_number: u32,
     pub(super) latest_screen_canvas_frame_number: u32,
+    pub(super) latest_web_viewport_canvas_frame_number: u32,
     pub(super) canvas_demand: MetricsPreviewDemand,
     pub(super) screen_canvas_demand: MetricsPreviewDemand,
+    pub(super) web_viewport_canvas_demand: MetricsPreviewDemand,
 }
 
 #[derive(Debug, Serialize)]

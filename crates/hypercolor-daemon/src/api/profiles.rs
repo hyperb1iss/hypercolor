@@ -10,7 +10,7 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use hypercolor_core::effect::create_renderer_for_metadata_with_mode;
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::api::AppState;
@@ -302,8 +302,10 @@ pub(crate) async fn apply_profile_snapshot(
                 )
             })?;
 
+        let (controls, migrated_controls) =
+            crate::library::migration::migrate_effect_controls_for_load(&metadata, &profile.controls);
         let mut rejected_controls = Vec::new();
-        for (name, value) in &profile.controls {
+        for (name, value) in &controls {
             if let Err(error) = engine.set_control_checked(name, value) {
                 rejected_controls.push(format!("{name} ({error})"));
             }
@@ -318,6 +320,13 @@ pub(crate) async fn apply_profile_snapshot(
                 profile_id = %profile.id,
                 rejected_controls = ?rejected_controls,
                 "Profile apply skipped one or more invalid control values"
+            );
+        }
+        if migrated_controls {
+            info!(
+                profile_id = %profile.id,
+                effect = %metadata.name,
+                "Migrated legacy screencast profile controls to the viewport rect"
             );
         }
         drop(engine);

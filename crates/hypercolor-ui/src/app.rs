@@ -86,6 +86,7 @@ fn effect_name_aliases(name: &str) -> Vec<String> {
 pub struct WsContext {
     pub canvas_frame: ReadSignal<Option<CanvasFrame>>,
     pub screen_canvas_frame: ReadSignal<Option<CanvasFrame>>,
+    pub web_viewport_canvas_frame: ReadSignal<Option<CanvasFrame>>,
     /// Latest per-display JPEG frame from the `display_preview` WS
     /// channel. Cleared when the selected display changes (handled by
     /// `set_display_preview_device`).
@@ -101,6 +102,7 @@ pub struct WsContext {
     pub set_preview_cap: WriteSignal<u32>,
     pub set_preview_consumers: WriteSignal<u32>,
     pub set_screen_preview_consumers: WriteSignal<u32>,
+    pub set_web_viewport_preview_consumers: WriteSignal<u32>,
     pub metrics: ReadSignal<Option<PerformanceMetrics>>,
     pub backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     pub active_effect: ReadSignal<Option<String>>,
@@ -458,6 +460,7 @@ pub fn App() -> impl IntoView {
     let ws_ctx = WsContext {
         canvas_frame: ws.canvas_frame,
         screen_canvas_frame: ws.screen_canvas_frame,
+        web_viewport_canvas_frame: ws.web_viewport_canvas_frame,
         display_preview_frame: ws.display_preview_frame,
         set_display_preview_device: ws.set_display_preview_device,
         connection_state: ws.connection_state,
@@ -466,6 +469,7 @@ pub fn App() -> impl IntoView {
         set_preview_cap: ws.set_preview_cap,
         set_preview_consumers: ws.set_preview_consumers,
         set_screen_preview_consumers: ws.set_screen_preview_consumers,
+        set_web_viewport_preview_consumers: ws.set_web_viewport_preview_consumers,
         metrics: ws.metrics,
         backpressure_notice: ws.backpressure_notice,
         active_effect: ws.active_effect,

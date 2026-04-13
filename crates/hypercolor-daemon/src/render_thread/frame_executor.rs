@@ -93,6 +93,7 @@ pub(crate) async fn execute_frame(
             &mut frame_loop.last_audio_level_update_ms,
             &mut frame_loop.last_canvas_preview_publish_ms,
             &mut frame_loop.last_screen_canvas_preview_publish_ms,
+            &mut frame_loop.last_web_viewport_preview_publish_ms,
         )
         .await
         {
@@ -302,11 +303,13 @@ pub(crate) async fn execute_frame(
         sampling_surface,
         preview_surface,
         screen_watch_surface,
+        render_stage.web_viewport_preview,
         frame_num_u32,
         scene_snapshot.elapsed_ms,
         &mut frame_loop.last_audio_level_update_ms,
         &mut frame_loop.last_canvas_preview_publish_ms,
         &mut frame_loop.last_screen_canvas_preview_publish_ms,
+        &mut frame_loop.last_web_viewport_preview_publish_ms,
         render_stage.reuse_published_frame,
         FrameTiming {
             producer_us: render_stage.producer_us,

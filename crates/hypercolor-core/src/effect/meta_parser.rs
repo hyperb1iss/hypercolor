@@ -7,7 +7,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::str::FromStr;
 
-use hypercolor_types::effect::EffectCategory;
+use hypercolor_types::effect::{EffectCategory, PreviewSource};
 
 /// Parsed control type from HTML `<meta property=... type=...>` declarations.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +20,7 @@ pub enum HtmlControlKind {
     Hue,
     Area,
     Text,
+    Rect,
     Other(String),
 }
 
@@ -35,6 +36,7 @@ impl HtmlControlKind {
             "hue" => Self::Hue,
             "area" => Self::Area,
             "textfield" | "text" | "input" => Self::Text,
+            "rect" => Self::Rect,
             _ => Self::Other(normalized),
         }
     }
@@ -53,6 +55,8 @@ pub struct HtmlControlMetadata {
     pub values: Vec<String>,
     pub tooltip: Option<String>,
     pub group: Option<String>,
+    pub aspect_lock: Option<f32>,
+    pub preview_source: Option<PreviewSource>,
 }
 
 /// Parsed preset from a `<meta preset="..." ...>` tag.
@@ -402,6 +406,8 @@ fn parse_control_metadata(attrs: &HashMap<String, String>) -> Option<HtmlControl
         values: parse_csv_attr(attrs, "values"),
         tooltip: attr_value(attrs, "tooltip").map(ToOwned::to_owned),
         group: attr_value(attrs, "group").map(ToOwned::to_owned),
+        aspect_lock: parse_f32_attr(attrs, "aspectlock"),
+        preview_source: parse_preview_source_attr(attrs, "preview"),
     })
 }
 
@@ -456,6 +462,18 @@ fn parse_csv_attr(attrs: &HashMap<String, String>, key: &str) -> Vec<String> {
                 .collect::<Vec<String>>()
         })
         .unwrap_or_default()
+}
+
+fn parse_preview_source_attr(
+    attrs: &HashMap<String, String>,
+    key: &str,
+) -> Option<PreviewSource> {
+    match attr_value(attrs, key)?.trim().to_ascii_lowercase().as_str() {
+        "screen" | "screen_capture" => Some(PreviewSource::ScreenCapture),
+        "web" | "web_viewport" => Some(PreviewSource::WebViewport),
+        "canvas" | "effect_canvas" => Some(PreviewSource::EffectCanvas),
+        _ => None,
+    }
 }
 
 /// Check for an explicit `<meta audio-reactive="true"/>` tag (emitted by the SDK build script).
@@ -655,6 +673,12 @@ fn build_tags(
         .any(|control| matches!(control.kind, HtmlControlKind::Sensor))
     {
         tags.insert("sensor-control".to_owned());
+    }
+    if controls
+        .iter()
+        .any(|control| matches!(control.kind, HtmlControlKind::Rect))
+    {
+        tags.insert("rect-control".to_owned());
     }
 
     tags.into_iter().collect()

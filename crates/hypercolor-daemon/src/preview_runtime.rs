@@ -9,24 +9,32 @@ use tokio::sync::watch;
 pub struct PreviewRuntimeSnapshot {
     pub canvas_receivers: u32,
     pub screen_canvas_receivers: u32,
+    pub web_viewport_canvas_receivers: u32,
     pub canvas_frames_published: u64,
     pub screen_canvas_frames_published: u64,
+    pub web_viewport_canvas_frames_published: u64,
     pub latest_canvas_frame_number: u32,
     pub latest_canvas_timestamp_ms: u32,
     pub latest_screen_canvas_frame_number: u32,
     pub latest_screen_canvas_timestamp_ms: u32,
+    pub latest_web_viewport_canvas_frame_number: u32,
+    pub latest_web_viewport_canvas_timestamp_ms: u32,
 }
 
 #[derive(Debug, Default)]
 struct PreviewRuntimeTelemetry {
     canvas_receivers: Arc<AtomicU32>,
     screen_canvas_receivers: Arc<AtomicU32>,
+    web_viewport_canvas_receivers: Arc<AtomicU32>,
     canvas_frames_published: AtomicU64,
     screen_canvas_frames_published: AtomicU64,
+    web_viewport_canvas_frames_published: AtomicU64,
     latest_canvas_frame_number: AtomicU32,
     latest_canvas_timestamp_ms: AtomicU32,
     latest_screen_canvas_frame_number: AtomicU32,
     latest_screen_canvas_timestamp_ms: AtomicU32,
+    latest_web_viewport_canvas_frame_number: AtomicU32,
+    latest_web_viewport_canvas_timestamp_ms: AtomicU32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -73,12 +81,14 @@ struct PreviewRuntimeDemandState {
     next_subscription_id: AtomicU64,
     canvas: Mutex<Vec<(u64, PreviewStreamDemand)>>,
     screen_canvas: Mutex<Vec<(u64, PreviewStreamDemand)>>,
+    web_viewport_canvas: Mutex<Vec<(u64, PreviewStreamDemand)>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PreviewStreamKind {
     Canvas,
     ScreenCanvas,
+    WebViewportCanvas,
 }
 
 #[derive(Debug)]
@@ -148,6 +158,7 @@ impl PreviewRuntime {
             telemetry: Arc::new(PreviewRuntimeTelemetry {
                 canvas_receivers: Arc::new(AtomicU32::new(0)),
                 screen_canvas_receivers: Arc::new(AtomicU32::new(0)),
+                web_viewport_canvas_receivers: Arc::new(AtomicU32::new(0)),
                 ..PreviewRuntimeTelemetry::default()
             }),
             demand_state: Arc::new(PreviewRuntimeDemandState::default()),
@@ -226,6 +237,44 @@ impl PreviewRuntime {
         .unwrap_or(usize::MAX)
     }
 
+    pub fn note_web_viewport_canvas_frame(&self, frame_number: u32, timestamp_ms: u32) {
+        self.telemetry
+            .latest_web_viewport_canvas_frame_number
+            .store(frame_number, Ordering::Relaxed);
+        self.telemetry
+            .latest_web_viewport_canvas_timestamp_ms
+            .store(timestamp_ms, Ordering::Relaxed);
+    }
+
+    pub fn record_web_viewport_canvas_publication(&self, frame_number: u32, timestamp_ms: u32) {
+        self.telemetry
+            .web_viewport_canvas_frames_published
+            .fetch_add(1, Ordering::Relaxed);
+        self.note_web_viewport_canvas_frame(frame_number, timestamp_ms);
+    }
+
+    #[must_use]
+    pub fn web_viewport_canvas_receiver(&self) -> PreviewFrameReceiver {
+        PreviewFrameReceiver::new(
+            self.event_bus.web_viewport_canvas_receiver(),
+            Arc::clone(&self.telemetry.web_viewport_canvas_receivers),
+            PreviewDemandRegistration::new(
+                Arc::clone(&self.demand_state),
+                PreviewStreamKind::WebViewportCanvas,
+            ),
+        )
+    }
+
+    #[must_use]
+    pub fn web_viewport_canvas_receiver_count(&self) -> usize {
+        usize::try_from(
+            self.telemetry
+                .web_viewport_canvas_receivers
+                .load(Ordering::Relaxed),
+        )
+        .unwrap_or(usize::MAX)
+    }
+
     #[must_use]
     pub fn snapshot(&self) -> PreviewRuntimeSnapshot {
         PreviewRuntimeSnapshot {
@@ -234,6 +283,10 @@ impl PreviewRuntime {
                 .telemetry
                 .screen_canvas_receivers
                 .load(Ordering::Relaxed),
+            web_viewport_canvas_receivers: self
+                .telemetry
+                .web_viewport_canvas_receivers
+                .load(Ordering::Relaxed),
             canvas_frames_published: self
                 .telemetry
                 .canvas_frames_published
@@ -241,6 +294,10 @@ impl PreviewRuntime {
             screen_canvas_frames_published: self
                 .telemetry
                 .screen_canvas_frames_published
+                .load(Ordering::Relaxed),
+            web_viewport_canvas_frames_published: self
+                .telemetry
+                .web_viewport_canvas_frames_published
                 .load(Ordering::Relaxed),
             latest_canvas_frame_number: self
                 .telemetry
@@ -258,6 +315,14 @@ impl PreviewRuntime {
                 .telemetry
                 .latest_screen_canvas_timestamp_ms
                 .load(Ordering::Relaxed),
+            latest_web_viewport_canvas_frame_number: self
+                .telemetry
+                .latest_web_viewport_canvas_frame_number
+                .load(Ordering::Relaxed),
+            latest_web_viewport_canvas_timestamp_ms: self
+                .telemetry
+                .latest_web_viewport_canvas_timestamp_ms
+                .load(Ordering::Relaxed),
         }
     }
 
@@ -269,6 +334,11 @@ impl PreviewRuntime {
     #[must_use]
     pub fn screen_canvas_demand(&self) -> PreviewDemandSummary {
         self.demand_state.summary(PreviewStreamKind::ScreenCanvas)
+    }
+
+    #[must_use]
+    pub fn web_viewport_canvas_demand(&self) -> PreviewDemandSummary {
+        self.demand_state.summary(PreviewStreamKind::WebViewportCanvas)
     }
 }
 
@@ -288,6 +358,7 @@ impl PreviewRuntimeDemandState {
         let entries = match kind {
             PreviewStreamKind::Canvas => &self.canvas,
             PreviewStreamKind::ScreenCanvas => &self.screen_canvas,
+            PreviewStreamKind::WebViewportCanvas => &self.web_viewport_canvas,
         };
         let mut entries = entries
             .lock()
@@ -300,6 +371,7 @@ impl PreviewRuntimeDemandState {
         let entries = match kind {
             PreviewStreamKind::Canvas => &self.canvas,
             PreviewStreamKind::ScreenCanvas => &self.screen_canvas,
+            PreviewStreamKind::WebViewportCanvas => &self.web_viewport_canvas,
         };
         let mut entries = entries
             .lock()
@@ -313,6 +385,7 @@ impl PreviewRuntimeDemandState {
         let entries = match kind {
             PreviewStreamKind::Canvas => &self.canvas,
             PreviewStreamKind::ScreenCanvas => &self.screen_canvas,
+            PreviewStreamKind::WebViewportCanvas => &self.web_viewport_canvas,
         };
         let mut entries = entries
             .lock()
@@ -324,6 +397,7 @@ impl PreviewRuntimeDemandState {
         let entries = match kind {
             PreviewStreamKind::Canvas => &self.canvas,
             PreviewStreamKind::ScreenCanvas => &self.screen_canvas,
+            PreviewStreamKind::WebViewportCanvas => &self.web_viewport_canvas,
         };
         let entries = entries
             .lock()

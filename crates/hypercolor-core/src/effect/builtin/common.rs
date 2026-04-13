@@ -7,7 +7,9 @@
 
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectId, PresetTemplate,
+    PreviewSource,
 };
+use hypercolor_types::viewport::ViewportRect;
 use uuid::Uuid;
 
 pub(super) fn color_control(
@@ -29,6 +31,8 @@ pub(super) fn color_control(
         labels: Vec::new(),
         group: Some(group.to_owned()),
         tooltip: Some(tooltip.to_owned()),
+        aspect_lock: None,
+        preview_source: None,
         binding: None,
     }
 }
@@ -59,6 +63,8 @@ pub(super) fn slider_control(
         labels: Vec::new(),
         group: Some(group.to_owned()),
         tooltip: Some(tooltip.to_owned()),
+        aspect_lock: None,
+        preview_source: None,
         binding: None,
     }
 }
@@ -82,6 +88,8 @@ pub(super) fn toggle_control(
         labels: Vec::new(),
         group: Some(group.to_owned()),
         tooltip: Some(tooltip.to_owned()),
+        aspect_lock: None,
+        preview_source: None,
         binding: None,
     }
 }
@@ -106,6 +114,61 @@ pub(super) fn dropdown_control(
         labels: labels.iter().map(|label| (*label).to_owned()).collect(),
         group: Some(group.to_owned()),
         tooltip: Some(tooltip.to_owned()),
+        aspect_lock: None,
+        preview_source: None,
+        binding: None,
+    }
+}
+
+#[cfg(feature = "servo")]
+pub(super) fn text_control(
+    id: &str,
+    name: &str,
+    default_value: &str,
+    group: &str,
+    tooltip: &str,
+) -> ControlDefinition {
+    ControlDefinition {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        kind: ControlKind::Text,
+        control_type: ControlType::TextInput,
+        default_value: ControlValue::Text(default_value.to_owned()),
+        min: None,
+        max: None,
+        step: None,
+        labels: Vec::new(),
+        group: Some(group.to_owned()),
+        tooltip: Some(tooltip.to_owned()),
+        aspect_lock: None,
+        preview_source: None,
+        binding: None,
+    }
+}
+
+pub(super) fn rect_control(
+    id: &str,
+    name: &str,
+    default_value: ViewportRect,
+    group: &str,
+    tooltip: &str,
+    preview_source: PreviewSource,
+    aspect_lock: Option<f32>,
+) -> ControlDefinition {
+    ControlDefinition {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        kind: ControlKind::Rect,
+        control_type: ControlType::Rect,
+        default_value: ControlValue::Rect(default_value),
+        min: None,
+        max: None,
+        step: None,
+        labels: Vec::new(),
+        group: Some(group.to_owned()),
+        tooltip: Some(tooltip.to_owned()),
+        aspect_lock,
+        preview_source: Some(preview_source),
         binding: None,
     }
 }

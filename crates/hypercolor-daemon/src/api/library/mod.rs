@@ -14,6 +14,7 @@ use std::sync::Arc;
 use hypercolor_core::effect::create_renderer_for_metadata_with_mode;
 use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
 use hypercolor_types::library::PresetId;
+use tracing::info;
 
 use crate::api::AppState;
 use crate::library::LibraryStoreError;
@@ -75,6 +76,8 @@ pub(crate) async fn activate_effect_with_controls(
         crate::api::configured_effect_renderer_acceleration_mode(state.config_manager.as_ref());
     let renderer = create_renderer_for_metadata_with_mode(metadata, render_acceleration_mode)
         .map_err(|error| ActivateEffectError::Renderer(error.to_string()))?;
+    let (controls, migrated_controls) =
+        crate::library::migration::migrate_effect_controls_for_load(metadata, controls);
 
     let mut applied: HashMap<String, ControlValue> = HashMap::new();
     let mut rejected: Vec<String> = Vec::new();
@@ -83,7 +86,7 @@ pub(crate) async fn activate_effect_with_controls(
         .activate(renderer, metadata.clone())
         .map_err(|error| ActivateEffectError::Activation(error.to_string()))?;
 
-    for (name, value) in controls {
+    for (name, value) in &controls {
         match engine.set_control_checked(name, value) {
             Ok(normalized) => {
                 applied.insert(name.clone(), normalized);
@@ -92,6 +95,13 @@ pub(crate) async fn activate_effect_with_controls(
         }
     }
     drop(engine);
+    if migrated_controls {
+        info!(
+            effect_id = %metadata.id,
+            effect = %metadata.name,
+            "Migrated legacy screencast controls to the viewport rect"
+        );
+    }
     let warnings =
         crate::api::displays::auto_disable_html_overlays_for_effect(state, metadata).await;
     crate::api::persist_runtime_session(state).await;

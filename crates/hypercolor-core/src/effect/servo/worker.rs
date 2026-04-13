@@ -737,6 +737,16 @@ impl ServoWorkerRuntime {
                     let result = self.load_effect(session_id, &html_path, width, height);
                     let _ = response_tx.send(result);
                 }
+                WorkerCommand::LoadUrl {
+                    session_id,
+                    url,
+                    width,
+                    height,
+                    response_tx,
+                } => {
+                    let result = self.load_url(session_id, &url, width, height);
+                    let _ = response_tx.send(result);
+                }
                 WorkerCommand::Unload {
                     session_id,
                     response_tx,
@@ -938,6 +948,51 @@ impl ServoWorkerRuntime {
             bail!(
                 "effect initialization failed: {}",
                 format_console_message(message, loaded_html_path.as_deref())
+            );
+        }
+        Ok(())
+    }
+
+    fn load_url(
+        &mut self,
+        session_id: ServoSessionId,
+        url: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        let had_loaded_content = self
+            .session(session_id)?
+            .delegate
+            .last_url()
+            .as_deref()
+            .is_some_and(|current| current != "about:blank");
+        self.resize_if_needed(session_id, width, height)?;
+        let parsed_url = Url::parse(url).with_context(|| format!("failed to parse URL '{url}'"))?;
+        self.session_mut(session_id)?.loaded_html_path = None;
+        debug!(url = %parsed_url, "Loading Servo URL");
+        if had_loaded_content {
+            self.replace_webview(session_id, parsed_url.clone(), LOAD_TIMEOUT)
+                .context("failed to replace previous Servo page before loading URL")?;
+        } else {
+            self.session(session_id)?.delegate.reset_navigation_state();
+            {
+                let webview = self.active_webview(session_id)?;
+                webview.load(parsed_url.clone());
+            }
+            self.wait_for_load_completion(session_id, LOAD_TIMEOUT, Some(parsed_url.as_str()))?;
+        }
+        let recent_console = summarize_console_messages(
+            &self
+                .session(session_id)?
+                .delegate
+                .recent_console_messages(RECENT_CONSOLE_SAMPLE_SIZE),
+            None,
+        );
+        if !recent_console.is_empty() {
+            debug!(
+                url = %parsed_url,
+                recent_console = ?recent_console,
+                "Recent console output while loading Servo URL"
             );
         }
         Ok(())

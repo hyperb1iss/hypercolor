@@ -8,6 +8,7 @@ use super::messages::CanvasFrame;
 pub const DEFAULT_PREVIEW_FPS_CAP: u32 = 30;
 pub(super) const HIDDEN_TAB_PREVIEW_FPS_CAP: u32 = 6;
 pub(super) const SCREEN_PREVIEW_FPS_CAP: u32 = 15;
+pub(super) const WEB_VIEWPORT_PREVIEW_FPS_CAP: u32 = 15;
 const REMOTE_PREVIEW_WIDTH_MEDIUM: u32 = 640;
 const REMOTE_PREVIEW_WIDTH_LOW: u32 = 480;
 
@@ -124,6 +125,36 @@ pub(super) fn request_screen_preview_subscription(
     let _ = ws.send_with_str(&subscribe_msg.to_string());
 }
 
+pub(super) fn request_web_viewport_preview_subscription(
+    ws: &web_sys::WebSocket,
+    requested_preview_fps: StoredValue<u32>,
+    engine_target_fps: u32,
+    page_visible: bool,
+) {
+    let desired_fps =
+        desired_preview_fps(engine_target_fps, WEB_VIEWPORT_PREVIEW_FPS_CAP, page_visible);
+    if desired_fps == requested_preview_fps.get_value() {
+        return;
+    }
+
+    requested_preview_fps.set_value(desired_fps);
+    let (preview_width, preview_height) = preview_canvas_request_dimensions(desired_fps);
+
+    let subscribe_msg = serde_json::json!({
+        "type": "subscribe",
+        "channels": ["web_viewport_canvas"],
+        "config": {
+            "web_viewport_canvas": {
+                "fps": desired_fps,
+                "format": preview_canvas_format(),
+                "width": preview_width,
+                "height": preview_height
+            }
+        }
+    });
+    let _ = ws.send_with_str(&subscribe_msg.to_string());
+}
+
 pub(super) fn clear_preview_subscription(
     requested_preview_fps: StoredValue<u32>,
     set_preview_target_fps: &WriteSignal<u32>,
@@ -144,6 +175,14 @@ pub(super) fn clear_screen_preview_subscription(
     set_screen_canvas_frame.set(None);
 }
 
+pub(super) fn clear_web_viewport_preview_subscription(
+    requested_preview_fps: StoredValue<u32>,
+    set_web_viewport_canvas_frame: &WriteSignal<Option<CanvasFrame>>,
+) {
+    requested_preview_fps.set_value(0);
+    set_web_viewport_canvas_frame.set(None);
+}
+
 pub(super) fn send_canvas_unsubscribe(ws: &web_sys::WebSocket) {
     let unsubscribe_msg = serde_json::json!({
         "type": "unsubscribe",
@@ -156,6 +195,14 @@ pub(super) fn send_screen_canvas_unsubscribe(ws: &web_sys::WebSocket) {
     let unsubscribe_msg = serde_json::json!({
         "type": "unsubscribe",
         "channels": ["screen_canvas"]
+    });
+    let _ = ws.send_with_str(&unsubscribe_msg.to_string());
+}
+
+pub(super) fn send_web_viewport_canvas_unsubscribe(ws: &web_sys::WebSocket) {
+    let unsubscribe_msg = serde_json::json!({
+        "type": "unsubscribe",
+        "channels": ["web_viewport_canvas"]
     });
     let _ = ws.send_with_str(&unsubscribe_msg.to_string());
 }

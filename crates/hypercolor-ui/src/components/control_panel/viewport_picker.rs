@@ -1,33 +1,27 @@
-//! Screen cast frame widget — crop-box picker for the screen source effect.
-
-use std::collections::HashMap;
+//! Shared viewport picker for rect-based effect controls.
 
 use leptos::ev;
 use leptos::prelude::*;
 use serde_json::json;
 
-use hypercolor_types::effect::{ControlDefinition, ControlValue};
+use hypercolor_types::viewport::{MIN_VIEWPORT_EDGE, ViewportRect};
 
-use crate::app::WsContext;
 use crate::components::canvas_preview::CanvasPreview;
 use crate::control_geometry::{
     FrameHandle, FrameRect, clamp_frame_rect, drag_frame_rect, resize_frame_rect,
 };
+use crate::ws::CanvasFrame;
 
-use super::SCREEN_CAST_FRAME_CONTROL_IDS;
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct ScreenCastFrameConfig {
-    min_width: f32,
-    min_height: f32,
-    x_step: f32,
-    y_step: f32,
-    width_step: f32,
-    height_step: f32,
+#[derive(Clone)]
+pub(super) struct UrlInputBinding {
+    pub label: String,
+    pub value: Signal<String>,
+    pub on_commit: Callback<String>,
+    pub placeholder: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct ScreenCastInteractionState {
+struct ViewportInteractionState {
     handle: FrameHandle,
     start_rect: FrameRect,
     start_client_x: f64,
@@ -35,24 +29,26 @@ struct ScreenCastInteractionState {
 }
 
 #[component]
-pub(super) fn ScreenCastFrameWidget(
-    #[prop(into)] control_values: Signal<HashMap<String, ControlValue>>,
-    accent_rgb: String,
+pub(super) fn ViewportPicker(
+    control_id: String,
+    label: String,
+    #[prop(into)] value: Signal<ViewportRect>,
     on_change: Callback<(String, serde_json::Value)>,
-    frame_config: ScreenCastFrameConfig,
+    #[prop(into)] preview_source: Signal<Option<CanvasFrame>>,
+    #[prop(optional_no_strip)] preview_consumer_count: Option<WriteSignal<u32>>,
+    accent_rgb: String,
+    #[prop(optional_no_strip)] aspect_lock: Option<f32>,
+    #[prop(optional_no_strip)] url_input: Option<UrlInputBinding>,
+    #[prop(optional_no_strip)] aspect_ratio: Option<String>,
 ) -> impl IntoView {
     let viewport_ref = NodeRef::<leptos::html::Div>::new();
-    let (interaction, set_interaction) = signal(None::<ScreenCastInteractionState>);
-    let ws = use_context::<WsContext>();
-
-    let frame_rect = Signal::derive(move || {
-        control_values.with(|values| screen_cast_frame_rect(values, frame_config))
-    });
-    let readout_rect = Signal::derive(move || frame_rect.get());
+    let (interaction, set_interaction) = signal(None::<ViewportInteractionState>);
+    let preview_rect = Signal::derive(move || frame_rect_from_viewport(value.get().clamp()));
+    let readout_rect = Signal::derive(move || preview_rect.get());
     let frame_style = Signal::derive({
         let accent_rgb = accent_rgb.clone();
         move || {
-            let frame = frame_rect.get();
+            let frame = preview_rect.get();
             format!(
                 "left: {:.2}%; top: {:.2}%; width: {:.2}%; height: {:.2}%; \
                  border-color: rgba({}, 0.86); \
@@ -90,8 +86,28 @@ pub(super) fn ScreenCastFrameWidget(
         "border-color: rgba({0}, 0.12); background: rgba({0}, 0.08); box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);",
         accent_rgb
     );
+    let description = if url_input.is_some() {
+        "Drag the frame over the live page render to choose what the effect samples."
+    } else {
+        "Drag the crop box or pull its corners to aim the viewport."
+    };
+
+    let initial_url = url_input
+        .as_ref()
+        .map(|binding| binding.value.get_untracked())
+        .unwrap_or_default();
+    let (url_text, set_url_text) = signal(initial_url);
+    if let Some(binding) = url_input.clone() {
+        Effect::new(move |_| {
+            let next = binding.value.get();
+            if url_text.get_untracked() != next {
+                set_url_text.set(next);
+            }
+        });
+    }
 
     let _drag_move = window_event_listener(ev::mousemove, {
+        let control_id = control_id.clone();
         move |ev| {
             let Some(state) = interaction.get_untracked() else {
                 return;
@@ -112,23 +128,19 @@ pub(super) fn ScreenCastFrameWidget(
                     state.start_rect,
                     delta_x as f32,
                     delta_y as f32,
-                    frame_config.min_width,
-                    frame_config.min_height,
+                    MIN_VIEWPORT_EDGE,
+                    MIN_VIEWPORT_EDGE,
                 ),
-                handle => resize_frame_rect(
+                handle => resize_viewport_rect(
                     state.start_rect,
                     handle,
                     delta_x as f32,
                     delta_y as f32,
-                    frame_config.min_width,
-                    frame_config.min_height,
+                    aspect_lock,
                 ),
             };
 
-            emit_screen_cast_frame_update(
-                &on_change,
-                snap_screen_cast_frame_rect(next_rect, frame_config),
-            );
+            emit_viewport_update(&on_change, &control_id, next_rect);
         }
     });
 
@@ -140,10 +152,10 @@ pub(super) fn ScreenCastFrameWidget(
 
     let start_interaction =
         Callback::new(move |(handle, ev): (FrameHandle, web_sys::MouseEvent)| {
-            let start_rect = frame_rect.get_untracked();
+            let start_rect = preview_rect.get_untracked();
             ev.prevent_default();
             ev.stop_propagation();
-            set_interaction.set(Some(ScreenCastInteractionState {
+            set_interaction.set(Some(ViewportInteractionState {
                 handle,
                 start_rect,
                 start_client_x: f64::from(ev.client_x()),
@@ -151,58 +163,127 @@ pub(super) fn ScreenCastFrameWidget(
             }));
         });
 
-    let reset_frame = {
-        move |_| {
-            emit_screen_cast_frame_update(&on_change, FrameRect::new(0.0, 0.0, 1.0, 1.0));
+    let reset_viewport = {
+        let control_id = control_id.clone();
+        move |_| emit_viewport_update(&on_change, &control_id, FrameRect::new(0.0, 0.0, 1.0, 1.0))
+    };
+
+    let url_section = url_input.clone().map(|binding| {
+        let commit = binding.on_commit;
+        let placeholder = binding.placeholder;
+        let label = binding.label;
+        view! {
+            <div class="space-y-1.5">
+                <div class="text-[9px] font-mono uppercase" style=label_style.clone()>{label}</div>
+                <input
+                    type="text"
+                    class="w-full bg-surface-sunken border border-edge-subtle rounded-xl px-3 py-2 text-xs text-fg-primary
+                           focus:outline-none focus:border-accent-muted glow-ring placeholder-fg-tertiary/40 transition-all duration-150"
+                    placeholder=placeholder
+                    prop:value=move || url_text.get()
+                    on:change=move |ev| {
+                        use wasm_bindgen::JsCast;
+                        let target = ev
+                            .target()
+                            .and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok());
+                        if let Some(input) = target {
+                            let next = input.value();
+                            set_url_text.set(next.clone());
+                            commit.run(next);
+                        }
+                    }
+                />
+            </div>
         }
+    });
+    let viewport_style = aspect_ratio
+        .as_ref()
+        .map(|ratio| format!("aspect-ratio: {ratio};"))
+        .unwrap_or_default();
+    let preview_canvas = match (aspect_ratio.clone(), preview_consumer_count) {
+        (Some(aspect_ratio), Some(consumer_count)) => view! {
+            <CanvasPreview
+                frame=preview_source
+                fps=Signal::derive(|| 0.0_f32)
+                fps_target=Signal::derive(|| 0_u32)
+                max_width="100%".to_string()
+                aspect_ratio=aspect_ratio
+                consumer_count=consumer_count
+            />
+        }
+        .into_any(),
+        (Some(aspect_ratio), None) => view! {
+            <CanvasPreview
+                frame=preview_source
+                fps=Signal::derive(|| 0.0_f32)
+                fps_target=Signal::derive(|| 0_u32)
+                max_width="100%".to_string()
+                aspect_ratio=aspect_ratio
+            />
+        }
+        .into_any(),
+        (None, Some(consumer_count)) => view! {
+            <CanvasPreview
+                frame=preview_source
+                fps=Signal::derive(|| 0.0_f32)
+                fps_target=Signal::derive(|| 0_u32)
+                max_width="100%".to_string()
+                consumer_count=consumer_count
+            />
+        }
+        .into_any(),
+        (None, None) => view! {
+            <CanvasPreview
+                frame=preview_source
+                fps=Signal::derive(|| 0.0_f32)
+                fps_target=Signal::derive(|| 0_u32)
+                max_width="100%".to_string()
+            />
+        }
+        .into_any(),
     };
 
     view! {
         <div class="mb-2 rounded-2xl border p-3 space-y-3" style=card_style>
-            <div class="flex items-center gap-2">
+            <div class="flex items-start gap-2">
                 <div>
-                    <div class="text-[9px] font-mono uppercase" style=label_style>"Screen Frame"</div>
-                    <div class="text-[11px] text-fg-tertiary/70 mt-1">
-                        "Drag the crop box or pull its corners to aim the cast."
-                    </div>
+                    <div class="text-[9px] font-mono uppercase" style=label_style.clone()>{label.clone()}</div>
+                    <div class="text-[11px] text-fg-tertiary/70 mt-1">{description}</div>
                 </div>
                 <div class="flex-1" />
                 <button
                     type="button"
                     class="rounded-lg border px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.12em] transition-all duration-150 hover:scale-[1.02]"
                     style=reset_button_style
-                    on:click=reset_frame
+                    on:click=reset_viewport
                 >
                     "Reset"
                 </button>
             </div>
 
+            {url_section}
+
             <div class="rounded-[1.5rem] border border-white/[0.06] bg-[#09070f]/90 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
                 <div class="flex items-center gap-2 text-[10px] text-fg-tertiary/55 font-mono uppercase tracking-[0.12em] mb-3">
                     <span class="inline-block h-1.5 w-1.5 rounded-full" style=move || format!("background: rgba({}, 0.85)", preview_dot_rgb) />
-                    <span>"Live crop preview"</span>
+                    <span>
+                        {if url_input.is_some() {
+                            "Live page preview"
+                        } else {
+                            "Live viewport preview"
+                        }}
+                    </span>
                 </div>
                 <div class="mx-auto w-full max-w-[280px]">
                     <div
                         node_ref=viewport_ref
                         class="relative overflow-hidden rounded-[1.25rem] border border-white/[0.08] shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] select-none"
-                        style="aspect-ratio: 16 / 9;"
+                        style=viewport_style
                     >
-                        <div class="absolute inset-0" style=preview_style />
-                        {ws.map(|ws| {
-                            view! {
-                                <div class="absolute inset-0">
-                                    <CanvasPreview
-                                        frame=Signal::derive(move || ws.screen_canvas_frame.get())
-                                        fps=Signal::derive(|| 0.0_f32)
-                                        fps_target=Signal::derive(|| 0_u32)
-                                        max_width="100%".to_string()
-                                        aspect_ratio="16 / 9".to_string()
-                                        consumer_count=ws.set_screen_preview_consumers
-                                    />
-                                </div>
-                            }
-                        })}
+                        <div class="absolute inset-0" style=preview_style.clone() />
+                        <div class="absolute inset-0">
+                            {preview_canvas}
+                        </div>
                         <div class="absolute inset-[7%] rounded-[1rem] border border-white/[0.05]" />
                         <div class="absolute left-1/2 top-0 bottom-0 w-px bg-white/[0.05] -translate-x-1/2" />
                         <div class="absolute top-1/2 left-0 right-0 h-px bg-white/[0.05] -translate-y-1/2" />
@@ -215,7 +296,7 @@ pub(super) fn ScreenCastFrameWidget(
                         >
                             <div class="absolute inset-0 rounded-[0.95rem] bg-white/[0.035] backdrop-blur-[1px]" />
                             <div class="absolute left-2 top-2 rounded-full bg-black/45 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-white/80">
-                                "Screen Cast"
+                                {label.clone()}
                             </div>
 
                             <FrameHandleGrip
@@ -290,89 +371,102 @@ fn FrameReadout(
     }
 }
 
-pub(super) fn is_screen_cast_frame_control(control_id: &str) -> bool {
-    SCREEN_CAST_FRAME_CONTROL_IDS.contains(&control_id)
+fn frame_rect_from_viewport(viewport: ViewportRect) -> FrameRect {
+    FrameRect::new(viewport.x, viewport.y, viewport.width, viewport.height)
 }
 
-pub(super) fn screen_cast_frame_config(
-    items: &[(ControlDefinition, String)],
-) -> Option<ScreenCastFrameConfig> {
-    let find = |control_id: &str| {
-        items
-            .iter()
-            .find_map(|(def, _)| (def.control_id() == control_id).then_some(def))
-    };
-
-    let frame_x = find("frame_x")?;
-    let frame_y = find("frame_y")?;
-    let frame_width = find("frame_width")?;
-    let frame_height = find("frame_height")?;
-
-    Some(ScreenCastFrameConfig {
-        min_width: frame_width.min.unwrap_or(0.05),
-        min_height: frame_height.min.unwrap_or(0.05),
-        x_step: frame_x.step.unwrap_or(0.01),
-        y_step: frame_y.step.unwrap_or(0.01),
-        width_step: frame_width.step.unwrap_or(0.01),
-        height_step: frame_height.step.unwrap_or(0.01),
-    })
+fn viewport_from_frame_rect(rect: FrameRect) -> ViewportRect {
+    ViewportRect::new(rect.x, rect.y, rect.width, rect.height).clamp()
 }
 
-fn screen_cast_frame_rect(
-    values: &HashMap<String, ControlValue>,
-    frame_config: ScreenCastFrameConfig,
-) -> FrameRect {
-    let x = values
-        .get("frame_x")
-        .and_then(ControlValue::as_f32)
-        .unwrap_or(0.0);
-    let y = values
-        .get("frame_y")
-        .and_then(ControlValue::as_f32)
-        .unwrap_or(0.0);
-    let width = values
-        .get("frame_width")
-        .and_then(ControlValue::as_f32)
-        .unwrap_or(1.0);
-    let height = values
-        .get("frame_height")
-        .and_then(ControlValue::as_f32)
-        .unwrap_or(1.0);
-
-    clamp_frame_rect(
-        FrameRect::new(x, y, width, height),
-        frame_config.min_width,
-        frame_config.min_height,
-    )
-}
-
-fn emit_screen_cast_frame_update(
+fn emit_viewport_update(
     on_change: &Callback<(String, serde_json::Value)>,
+    control_id: &str,
     rect: FrameRect,
 ) {
-    on_change.run(("frame_x".to_string(), json!(rect.x)));
-    on_change.run(("frame_y".to_string(), json!(rect.y)));
-    on_change.run(("frame_width".to_string(), json!(rect.width)));
-    on_change.run(("frame_height".to_string(), json!(rect.height)));
+    let viewport = viewport_from_frame_rect(rect);
+    on_change.run((
+        control_id.to_owned(),
+        json!({
+            "x": viewport.x,
+            "y": viewport.y,
+            "width": viewport.width,
+            "height": viewport.height,
+        }),
+    ));
 }
 
-fn snap_screen_cast_frame_rect(rect: FrameRect, frame_config: ScreenCastFrameConfig) -> FrameRect {
-    clamp_frame_rect(
-        FrameRect::new(
-            snap_to_step(rect.x, frame_config.x_step),
-            snap_to_step(rect.y, frame_config.y_step),
-            snap_to_step(rect.width, frame_config.width_step),
-            snap_to_step(rect.height, frame_config.height_step),
-        ),
-        frame_config.min_width,
-        frame_config.min_height,
-    )
-}
+fn resize_viewport_rect(
+    start: FrameRect,
+    handle: FrameHandle,
+    delta_x: f32,
+    delta_y: f32,
+    aspect_lock: Option<f32>,
+) -> FrameRect {
+    let Some(aspect_lock) = aspect_lock.filter(|aspect| aspect.is_finite() && *aspect > 0.0) else {
+        return resize_frame_rect(
+            start,
+            handle,
+            delta_x,
+            delta_y,
+            MIN_VIEWPORT_EDGE,
+            MIN_VIEWPORT_EDGE,
+        );
+    };
 
-fn snap_to_step(value: f32, step: f32) -> f32 {
-    if step <= f32::EPSILON {
-        value
-    } else {
-        (value / step).round() * step
+    if matches!(handle, FrameHandle::Move) {
+        return drag_frame_rect(
+            start,
+            delta_x,
+            delta_y,
+            MIN_VIEWPORT_EDGE,
+            MIN_VIEWPORT_EDGE,
+        );
     }
+
+    let width_delta = match handle {
+        FrameHandle::NorthWest | FrameHandle::SouthWest => -delta_x,
+        FrameHandle::NorthEast | FrameHandle::SouthEast => delta_x,
+        FrameHandle::Move => 0.0,
+    };
+    let height_delta = match handle {
+        FrameHandle::NorthWest | FrameHandle::NorthEast => -delta_y,
+        FrameHandle::SouthWest | FrameHandle::SouthEast => delta_y,
+        FrameHandle::Move => 0.0,
+    };
+
+    let min_width = MIN_VIEWPORT_EDGE.max(MIN_VIEWPORT_EDGE * aspect_lock).min(1.0);
+    let min_height = (min_width / aspect_lock).max(MIN_VIEWPORT_EDGE).min(1.0);
+    let use_width = width_delta.abs() >= height_delta.abs();
+    let mut width = (start.width + width_delta).max(min_width);
+    let mut height = (start.height + height_delta).max(min_height);
+
+    if use_width {
+        height = width / aspect_lock;
+    } else {
+        width = height * aspect_lock;
+    }
+
+    let (max_width, max_height) = match handle {
+        FrameHandle::NorthWest => (start.right(), start.bottom()),
+        FrameHandle::NorthEast => (1.0 - start.x, start.bottom()),
+        FrameHandle::SouthWest => (start.right(), 1.0 - start.y),
+        FrameHandle::SouthEast => (1.0 - start.x, 1.0 - start.y),
+        FrameHandle::Move => (1.0, 1.0),
+    };
+    let scale = (max_width / width).min(max_height / height).min(1.0);
+    width *= scale;
+    height *= scale;
+
+    let rect = match handle {
+        FrameHandle::NorthWest => {
+            FrameRect::new(start.right() - width, start.bottom() - height, width, height)
+        }
+        FrameHandle::NorthEast => FrameRect::new(start.x, start.bottom() - height, width, height),
+        FrameHandle::SouthWest => FrameRect::new(start.right() - width, start.y, width, height),
+        FrameHandle::SouthEast => FrameRect::new(start.x, start.y, width, height),
+        FrameHandle::Move => start,
+    };
+
+    clamp_frame_rect(rect, min_width.min(max_width), min_height.min(max_height))
 }

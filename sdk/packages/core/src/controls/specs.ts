@@ -6,7 +6,14 @@
  */
 
 /** Discriminated union tag for control types. */
-export type ControlTypeName = 'number' | 'combobox' | 'boolean' | 'color' | 'hue' | 'textfield' | 'sensor'
+export type ControlTypeName = 'number' | 'combobox' | 'boolean' | 'color' | 'hue' | 'textfield' | 'sensor' | 'rect'
+
+export interface RectValue {
+    x: number
+    y: number
+    width: number
+    height: number
+}
 
 /** Normalization hint applied to control values before use. */
 export type NormalizeHint = 'speed' | 'percentage' | 'none'
@@ -178,6 +185,27 @@ export interface SensorOptions {
  */
 export function sensor(label: string, defaultValue: string, opts?: SensorOptions): ControlSpec<'sensor'> {
     return spec('sensor', label, defaultValue, {}, opts)
+}
+
+export interface RectOptions {
+    tooltip?: string
+    group?: string
+    aspectLock?: number
+    preview?: 'screen' | 'web' | 'canvas'
+}
+
+/** Interactive viewport rectangle control. */
+export function rect(label: string, defaultValue: RectValue, opts?: RectOptions): ControlSpec<'rect'> {
+    return spec(
+        'rect',
+        label,
+        defaultValue,
+        {
+            aspectLock: opts?.aspectLock,
+            preview: opts?.preview,
+        },
+        opts,
+    )
 }
 
 export interface FontOptions {

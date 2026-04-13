@@ -134,6 +134,15 @@ pub trait EffectRenderer: Send {
     /// the next [`render_into`](Self::render_into) call.
     fn set_control(&mut self, name: &str, value: &ControlValue);
 
+    /// Optional auxiliary preview canvas for control-panel tooling.
+    ///
+    /// Most effects do not expose a secondary preview stream. Effects that
+    /// render a higher-resolution source image (for example a cropped webpage)
+    /// can return it here so the daemon can publish it on demand.
+    fn preview_canvas(&self) -> Option<Canvas> {
+        None
+    }
+
     /// Tear down the renderer and release all resources.
     ///
     /// Called when the effect transitions to `Destroying`. After this call,

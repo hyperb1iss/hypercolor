@@ -222,6 +222,9 @@ pub struct HypercolorBus {
     /// Latest screen-source canvas snapshot.
     screen_canvas: watch::Sender<CanvasFrame>,
 
+    /// Latest high-resolution web viewport source canvas snapshot.
+    web_viewport_canvas: watch::Sender<CanvasFrame>,
+
     /// Latest per-render-group canvases for direct display consumption.
     group_canvases: Arc<Mutex<HashMap<RenderGroupId, watch::Sender<CanvasFrame>>>>,
 
@@ -238,6 +241,7 @@ impl HypercolorBus {
         let (spectrum, _) = watch::channel(SpectrumData::empty());
         let (canvas, _) = watch::channel(CanvasFrame::empty());
         let (screen_canvas, _) = watch::channel(CanvasFrame::empty());
+        let (web_viewport_canvas, _) = watch::channel(CanvasFrame::empty());
 
         Self {
             events,
@@ -245,6 +249,7 @@ impl HypercolorBus {
             spectrum,
             canvas,
             screen_canvas,
+            web_viewport_canvas,
             group_canvases: Arc::new(Mutex::new(HashMap::new())),
             start_instant: Instant::now(),
         }
@@ -352,6 +357,24 @@ impl HypercolorBus {
     #[must_use]
     pub fn screen_canvas_receiver_count(&self) -> usize {
         self.screen_canvas.receiver_count()
+    }
+
+    /// Access the web-viewport preview watch sender.
+    #[must_use]
+    pub fn web_viewport_canvas_sender(&self) -> &watch::Sender<CanvasFrame> {
+        &self.web_viewport_canvas
+    }
+
+    /// Subscribe to web-viewport preview updates.
+    #[must_use]
+    pub fn web_viewport_canvas_receiver(&self) -> watch::Receiver<CanvasFrame> {
+        self.web_viewport_canvas.subscribe()
+    }
+
+    /// Number of active web-viewport preview receivers.
+    #[must_use]
+    pub fn web_viewport_canvas_receiver_count(&self) -> usize {
+        self.web_viewport_canvas.receiver_count()
     }
 
     /// Access or create the per-group canvas sender for a render group.

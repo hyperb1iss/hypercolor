@@ -55,6 +55,19 @@ export interface TextFieldControlDefinition extends ControlDefinition {
     default: string
 }
 
+/** Normalized viewport rectangle control. */
+export interface RectControlDefinition extends ControlDefinition {
+    type: 'rect'
+    default: {
+        x: number
+        y: number
+        width: number
+        height: number
+    }
+    aspectLock?: number
+    preview?: 'screen' | 'web' | 'canvas'
+}
+
 /** Union of all control definition types. */
 export type ControlDefinitionType =
     | NumberControlDefinition
@@ -62,6 +75,7 @@ export type ControlDefinitionType =
     | ComboboxControlDefinition
     | HueControlDefinition
     | ColorControlDefinition
+    | RectControlDefinition
     | TextFieldControlDefinition
 
 /** Runtime control values dictionary. */

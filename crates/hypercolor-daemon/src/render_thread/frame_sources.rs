@@ -52,7 +52,7 @@ pub(crate) async fn render_effect_into(
     screen: Option<&ScreenData>,
     sensors: &SystemSnapshot,
     target: &mut Canvas,
-) {
+) -> Option<Canvas> {
     let mut engine = state.effect_engine.lock().await;
     let actual_generation = engine.scene_generation();
 
@@ -68,7 +68,7 @@ pub(crate) async fn render_effect_into(
         } else {
             target.clear();
         }
-        return;
+        return None;
     }
 
     match engine.tick_with_inputs_and_sensors_into(
@@ -79,7 +79,13 @@ pub(crate) async fn render_effect_into(
         sensors,
         target,
     ) {
-        Ok(()) => {}
+        Ok(()) => {
+            if state.event_bus.web_viewport_canvas_receiver_count() > 0 {
+                engine.preview_canvas()
+            } else {
+                None
+            }
+        }
         Err(error) => {
             warn!(%error, "effect render failed, producing black canvas");
             if target.width() != state.canvas_dims.width()
@@ -89,6 +95,7 @@ pub(crate) async fn render_effect_into(
             } else {
                 target.clear();
             }
+            None
         }
     }
 }

@@ -33,6 +33,8 @@ mod gradient;
 mod rainbow;
 mod screen_cast;
 mod solid_color;
+#[cfg(feature = "servo")]
+mod web_viewport;
 
 use std::time::SystemTime;
 
@@ -47,6 +49,8 @@ pub use self::gradient::GradientRenderer;
 pub use self::rainbow::RainbowRenderer;
 pub use self::screen_cast::ScreenCastRenderer;
 pub use self::solid_color::SolidColorRenderer;
+#[cfg(feature = "servo")]
+pub use self::web_viewport::WebViewportRenderer;
 use super::registry::{EffectEntry, EffectRegistry};
 use super::traits::EffectRenderer;
 
@@ -61,6 +65,8 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
         color_wave::metadata(),
         color_zones::metadata(),
         screen_cast::metadata(),
+        #[cfg(feature = "servo")]
+        web_viewport::metadata(),
         calibration::metadata(),
     ]
 }
@@ -98,6 +104,8 @@ pub fn create_builtin_renderer(name: &str) -> Option<Box<dyn EffectRenderer>> {
         "color_wave" => Some(Box::new(ColorWaveRenderer::new())),
         "color_zones" => Some(Box::new(ColorZonesRenderer::new())),
         "screen_cast" => Some(Box::new(ScreenCastRenderer::new())),
+        #[cfg(feature = "servo")]
+        "web_viewport" => Some(Box::new(WebViewportRenderer::new())),
         "calibration" => Some(Box::new(CalibrationRenderer::new())),
         _ => None,
     }

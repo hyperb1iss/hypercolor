@@ -9,6 +9,7 @@ use strum::{Display, EnumString};
 use uuid::Uuid;
 
 use crate::canvas::srgb_to_linear;
+use crate::viewport::ViewportRect;
 
 // ── EffectId ──────────────────────────────────────────────────────────────────
 
@@ -175,6 +176,8 @@ pub enum ControlType {
     Dropdown,
     /// Free-form single-line text input.
     TextInput,
+    /// Interactive rectangular viewport picker.
+    Rect,
 }
 
 // ── ControlKind ───────────────────────────────────────────────────────────────
@@ -203,6 +206,8 @@ pub enum ControlKind {
     Area,
     /// Free-form text value.
     Text,
+    /// Normalized rectangular viewport value.
+    Rect,
     /// Unknown/unmapped kind from source metadata.
     Other(String),
 }
@@ -221,6 +226,7 @@ pub enum ControlKind {
 /// | `GradientEditor` | `Gradient(Vec<GradientStop>)` |
 /// | `Dropdown`       | `Enum(String)`             |
 /// | `TextInput`      | `Text(String)`             |
+/// | `Rect`           | `Rect(ViewportRect)`       |
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlValue {
@@ -238,6 +244,8 @@ pub enum ControlValue {
     Enum(String),
     /// Free-form text. Used by `TextInput` controls.
     Text(String),
+    /// Normalized rectangular viewport.
+    Rect(ViewportRect),
 }
 
 impl ControlValue {
@@ -294,6 +302,12 @@ impl ControlValue {
             Self::Enum(v) | Self::Text(v) => {
                 format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
             }
+            Self::Rect(rect) => {
+                format!(
+                    "{{x:{},y:{},width:{},height:{}}}",
+                    rect.x, rect.y, rect.width, rect.height
+                )
+            }
         }
     }
 }
@@ -309,6 +323,8 @@ pub enum ControlValidationError {
     ExpectedColorLike { control: String, got: &'static str },
     #[error("control '{control}': expected text value, got {got}")]
     ExpectedText { control: String, got: &'static str },
+    #[error("control '{control}': expected rect value, got {got}")]
+    ExpectedRect { control: String, got: &'static str },
     #[error("control '{control}': invalid option '{value}', valid options: {valid:?}")]
     InvalidOption {
         control: String,
@@ -326,6 +342,7 @@ fn control_value_kind(value: &ControlValue) -> &'static str {
         ControlValue::Gradient(_) => "gradient",
         ControlValue::Enum(_) => "enum",
         ControlValue::Text(_) => "text",
+        ControlValue::Rect(_) => "rect",
     }
 }
 
@@ -394,6 +411,15 @@ impl ControlBinding {
     }
 }
 
+/// Live preview stream a control should bind to in the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewSource {
+    ScreenCapture,
+    WebViewport,
+    EffectCanvas,
+}
+
 // ── ControlDefinition ─────────────────────────────────────────────────────────
 
 /// A single user-facing parameter declared by an effect.
@@ -432,6 +458,12 @@ pub struct ControlDefinition {
     /// Help text shown on hover/focus.
     #[serde(default)]
     pub tooltip: Option<String>,
+    /// Optional fixed aspect ratio (`width / height`) for rect controls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aspect_lock: Option<f32>,
+    /// Optional preview stream used by composite controls in the UI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_source: Option<PreviewSource>,
     /// Optional live sensor mapping for this control.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding: Option<ControlBinding>,
@@ -509,6 +541,13 @@ impl ControlDefinition {
                     })
                 }
             }
+            ControlKind::Rect => match value {
+                ControlValue::Rect(rect) => Ok(ControlValue::Rect(rect.clamp())),
+                _ => Err(ControlValidationError::ExpectedRect {
+                    control,
+                    got: control_value_kind(value),
+                }),
+            },
             ControlKind::Color => match value {
                 ControlValue::Color(color) => Ok(ControlValue::Color(*color)),
                 ControlValue::Text(text) | ControlValue::Enum(text) => {

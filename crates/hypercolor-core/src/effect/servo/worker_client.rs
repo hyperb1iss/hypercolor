@@ -91,6 +91,13 @@ pub(super) enum WorkerCommand {
         height: u32,
         response_tx: SyncSender<Result<()>>,
     },
+    LoadUrl {
+        session_id: ServoSessionId,
+        url: String,
+        width: u32,
+        height: u32,
+        response_tx: SyncSender<Result<()>>,
+    },
     #[expect(
         dead_code,
         reason = "explicit unload is kept in the worker protocol for future staged teardown paths"
@@ -195,7 +202,18 @@ impl ServoWorkerClient {
         Ok(session_id)
     }
 
-    fn create_session(&self, session_id: ServoSessionId, width: u32, height: u32) -> Result<()> {
+    pub(super) fn create_session_only(&self, width: u32, height: u32) -> Result<ServoSessionId> {
+        let session_id = ServoSessionId(self.shared.next_id.fetch_add(1, Ordering::AcqRel));
+        self.create_session(session_id, width, height)?;
+        Ok(session_id)
+    }
+
+    pub(super) fn create_session(
+        &self,
+        session_id: ServoSessionId,
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
         let inserted = self.with_sessions(|sessions| {
             sessions
                 .insert(session_id, ClientStateSlot::new())
@@ -236,7 +254,7 @@ impl ServoWorkerClient {
         }
     }
 
-    fn load_effect(
+    pub(super) fn load_effect(
         &self,
         session_id: ServoSessionId,
         html_path: &Path,
@@ -255,6 +273,50 @@ impl ServoWorkerClient {
         }) {
             self.transition_to(session_id, WorkerClientState::Idle)?;
             return Err(error).context("failed to send load command to Servo worker");
+        }
+
+        match response_rx.recv_timeout(WORKER_READY_TIMEOUT) {
+            Ok(Ok(())) => {
+                self.transition_to(session_id, WorkerClientState::Running)?;
+                Ok(())
+            }
+            Ok(Err(error)) => {
+                self.transition_to(session_id, WorkerClientState::Idle)?;
+                Err(error)
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.transition_to(session_id, WorkerClientState::Idle)?;
+                bail!(
+                    "timed out waiting for Servo page load after {}ms",
+                    WORKER_READY_TIMEOUT.as_millis()
+                )
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                self.transition_to(session_id, WorkerClientState::Idle)?;
+                bail!("Servo worker disconnected before confirming page load")
+            }
+        }
+    }
+
+    pub(super) fn load_url(
+        &self,
+        session_id: ServoSessionId,
+        url: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        self.transition_to(session_id, WorkerClientState::Loading)?;
+
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        if let Err(error) = self.command_tx.send(WorkerCommand::LoadUrl {
+            session_id,
+            url: url.to_owned(),
+            width,
+            height,
+            response_tx,
+        }) {
+            self.transition_to(session_id, WorkerClientState::Idle)?;
+            return Err(error).context("failed to send load-url command to Servo worker");
         }
 
         match response_rx.recv_timeout(WORKER_READY_TIMEOUT) {

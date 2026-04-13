@@ -20,6 +20,7 @@ use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
 use hypercolor_types::sensor::SystemSnapshot;
+use hypercolor_types::viewport::ViewportRect;
 use uuid::Uuid;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -883,8 +884,10 @@ fn screen_cast_renders_capture_frame() {
 fn screen_cast_frame_controls_crop_region() {
     let mut r = ScreenCastRenderer::new();
     r.init(&make_metadata("screen_cast")).expect("init");
-    r.set_control("frame_x", &ControlValue::Float(0.5));
-    r.set_control("frame_width", &ControlValue::Float(0.5));
+    r.set_control(
+        "viewport",
+        &ControlValue::Rect(ViewportRect::new(0.5, 0.0, 0.5, 1.0)),
+    );
     r.set_control("fit_mode", &ControlValue::Enum("Stretch".into()));
     let screen = make_screen_data();
 
@@ -1533,10 +1536,7 @@ fn screen_cast_metadata_exposes_frame_controls() {
         entry.metadata.screen_reactive,
         "screen cast should request screen input"
     );
-    assert!(ids.contains(&"frame_x"), "should expose frame_x");
-    assert!(ids.contains(&"frame_y"), "should expose frame_y");
-    assert!(ids.contains(&"frame_width"), "should expose frame_width");
-    assert!(ids.contains(&"frame_height"), "should expose frame_height");
+    assert!(ids.contains(&"viewport"), "should expose viewport");
     assert!(ids.contains(&"fit_mode"), "should expose fit_mode");
 }
 

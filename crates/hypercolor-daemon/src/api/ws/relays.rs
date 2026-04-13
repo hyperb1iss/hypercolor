@@ -21,6 +21,7 @@ use super::cache::{
     FrameRelayMessage, WS_CANVAS_BYTES_PER_PIXEL_RGBA, WS_CANVAS_PAYLOAD_BUILD_COUNT,
     WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT, WS_CLIENT_COUNT, WS_FRAME_PAYLOAD_BUILD_COUNT,
     WS_FRAME_PAYLOAD_CACHE_HIT_COUNT, WS_SCREEN_CANVAS_HEADER, WS_TOTAL_BYTES_SENT,
+    WS_WEB_VIEWPORT_CANVAS_HEADER,
     cached_frame_payload, cached_spectrum_payload,
     try_encode_cached_canvas_binary_with_header_scaled, try_encode_cached_canvas_preview_binary,
 };
@@ -465,6 +466,111 @@ pub(super) async fn relay_screen_canvas(
     }
 }
 
+pub(super) async fn relay_web_viewport_canvas(
+    preview_runtime: Arc<crate::preview_runtime::PreviewRuntime>,
+    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
+    binary_tx: tokio::sync::mpsc::Sender<Bytes>,
+    mut subscriptions: watch::Receiver<SubscriptionState>,
+) {
+    let mut canvas_rx = None::<crate::preview_runtime::PreviewFrameReceiver>;
+    let mut active_canvas_config = None::<CanvasConfig>;
+    let mut receiver_initialized = false;
+    let mut last_sent_surface = None::<PreviewSurfaceIdentity>;
+    let mut pending_send = false;
+    let mut active_fps = 15_u32;
+    let mut last_sent_at = preview_initial_last_sent();
+
+    loop {
+        if active_canvas_config.is_none() {
+            active_canvas_config = {
+                let subs = subscriptions.borrow();
+                if subs.channels.contains(WsChannel::WebViewportCanvas) {
+                    Some(subs.config.web_viewport_canvas.clone())
+                } else {
+                    None
+                }
+            };
+        }
+        sync_preview_receiver(&mut canvas_rx, active_canvas_config.is_some(), || {
+            preview_runtime.web_viewport_canvas_receiver()
+        });
+
+        let Some(canvas_config) = active_canvas_config.as_ref() else {
+            last_sent_surface = None;
+            receiver_initialized = false;
+            pending_send = false;
+            last_sent_at = preview_initial_last_sent();
+            if subscriptions.changed().await.is_err() {
+                break;
+            }
+            let _ = subscriptions.borrow_and_update();
+            active_canvas_config = None;
+            continue;
+        };
+        let canvas_rx = canvas_rx
+            .as_mut()
+            .expect("web viewport preview receiver should exist while subscribed");
+        canvas_rx.update_demand(preview_stream_demand(canvas_config));
+
+        if canvas_config.fps != active_fps {
+            active_fps = canvas_config.fps.max(1);
+        }
+        if !receiver_initialized {
+            let _ = canvas_rx.borrow_and_update();
+            receiver_initialized = true;
+            pending_send = true;
+        }
+
+        tokio::select! {
+            changed = canvas_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let _ = canvas_rx.borrow_and_update();
+                pending_send = true;
+            }
+            changed = subscriptions.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let _ = subscriptions.borrow_and_update();
+                active_canvas_config = None;
+            }
+            _ = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
+                let latest_canvas = canvas_rx.borrow();
+                let surface_identity = preview_surface_identity(&latest_canvas);
+                if last_sent_surface == Some(surface_identity) {
+                    pending_send = false;
+                    continue;
+                }
+
+                let payload = try_encode_cached_canvas_binary_with_header_scaled(
+                    &latest_canvas,
+                    canvas_config.format,
+                    WS_WEB_VIEWPORT_CANVAS_HEADER,
+                    canvas_config.width,
+                    canvas_config.height,
+                );
+
+                let Some(payload) = payload else {
+                    pending_send = false;
+                    continue;
+                };
+
+                if binary_tx.try_send(payload).is_err() {
+                    enqueue_backpressure_notice(&json_tx, "web_viewport_canvas", canvas_config.fps);
+                    debug!("Dropping binary web_viewport_canvas update for slow WebSocket consumer");
+                    continue;
+                }
+
+                last_sent_at = Instant::now();
+                last_sent_surface = Some(surface_identity);
+                pending_send = false;
+            }
+        }
+    }
+}
+
 pub(super) fn sync_preview_receiver(
     receiver: &mut Option<crate::preview_runtime::PreviewFrameReceiver>,
     subscribed: bool,
@@ -879,6 +985,7 @@ pub(super) async fn build_metrics_message(
     let preview_runtime = state.preview_runtime.snapshot();
     let canvas_demand = state.preview_runtime.canvas_demand();
     let screen_canvas_demand = state.preview_runtime.screen_canvas_demand();
+    let web_viewport_canvas_demand = state.preview_runtime.web_viewport_canvas_demand();
 
     ServerMessage::Metrics {
         timestamp: format_iso8601_now(),
@@ -952,13 +1059,19 @@ pub(super) async fn build_metrics_message(
             preview: MetricsPreview {
                 canvas_receivers: preview_runtime.canvas_receivers,
                 screen_canvas_receivers: preview_runtime.screen_canvas_receivers,
+                web_viewport_canvas_receivers: preview_runtime.web_viewport_canvas_receivers,
                 canvas_frames_published: preview_runtime.canvas_frames_published,
                 screen_canvas_frames_published: preview_runtime.screen_canvas_frames_published,
+                web_viewport_canvas_frames_published: preview_runtime
+                    .web_viewport_canvas_frames_published,
                 latest_canvas_frame_number: preview_runtime.latest_canvas_frame_number,
                 latest_screen_canvas_frame_number: preview_runtime
                     .latest_screen_canvas_frame_number,
+                latest_web_viewport_canvas_frame_number: preview_runtime
+                    .latest_web_viewport_canvas_frame_number,
                 canvas_demand: metrics_preview_demand(canvas_demand),
                 screen_canvas_demand: metrics_preview_demand(screen_canvas_demand),
+                web_viewport_canvas_demand: metrics_preview_demand(web_viewport_canvas_demand),
             },
             copies: MetricsCopies {
                 full_frame_count: latest_frame.full_frame_copy_count,

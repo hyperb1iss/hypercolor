@@ -6,22 +6,27 @@ use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
-use std::collections::{BTreeMap, HashMap};
+use serde_json::json;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use wasm_bindgen::prelude::*;
 
 use hypercolor_types::canvas::{linear_to_srgb, srgb_to_linear};
-use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, ControlValue};
+use hypercolor_types::effect::{
+    ControlDefinition, ControlKind, ControlType, ControlValue, PreviewSource,
+};
+use hypercolor_types::viewport::ViewportRect;
 
+use crate::app::WsContext;
 use crate::icons::*;
 
 mod boolean;
 mod color;
 mod enum_select;
 mod number;
-mod screen_cast;
 mod text;
+mod viewport_picker;
 
-use screen_cast::ScreenCastFrameWidget;
+use viewport_picker::{UrlInputBinding, ViewportPicker};
 
 // ── Palette / section colors ─────────────────────────────────────────
 
@@ -56,9 +61,6 @@ const SECTION_COLORS: &[&str] = &[
     "225, 53, 255",  // electric purple
 ];
 
-pub(super) const SCREEN_CAST_FRAME_CONTROL_IDS: [&str; 4] =
-    ["frame_x", "frame_y", "frame_width", "frame_height"];
-
 /// Map a control's semantic kind to a Lucide icon.
 fn control_icon(kind: &ControlKind, control_type: &ControlType) -> icondata::Icon {
     match kind {
@@ -66,6 +68,7 @@ fn control_icon(kind: &ControlKind, control_type: &ControlType) -> icondata::Ico
         ControlKind::Boolean => LuToggleLeft,
         ControlKind::Combobox => LuList,
         ControlKind::Sensor => LuCpu,
+        ControlKind::Rect => LuSquare,
         ControlKind::Area | ControlKind::Number => match control_type {
             ControlType::Slider => LuGauge,
             _ => LuSettings2,
@@ -78,8 +81,28 @@ fn control_icon(kind: &ControlKind, control_type: &ControlType) -> icondata::Ico
             ControlType::Dropdown => LuList,
             ControlType::TextInput => LuType,
             ControlType::GradientEditor => LuPalette,
+            ControlType::Rect => LuSquare,
         },
     }
+}
+
+fn paired_rect_url_controls(items: &[(ControlDefinition, String)]) -> HashMap<String, ControlDefinition> {
+    let url_control = items.iter().find_map(|(definition, _)| {
+        (matches!(definition.control_type, ControlType::TextInput)
+            && definition.control_id().eq_ignore_ascii_case("url"))
+        .then(|| definition.clone())
+    });
+    let Some(url_control) = url_control else {
+        return HashMap::new();
+    };
+
+    items.iter()
+        .filter_map(|(definition, _)| {
+            (matches!(definition.control_type, ControlType::Rect)
+                && definition.preview_source == Some(PreviewSource::WebViewport))
+                .then(|| (definition.control_id().to_owned(), url_control.clone()))
+        })
+        .collect()
 }
 
 /// Auto-generated control panel for the active effect.
@@ -138,12 +161,15 @@ pub fn ControlPanel(
                 } else {
                     let total_groups = groups.len();
                     groups.into_iter().map(|(group, section_rgb, items)| {
-                        let screen_cast_frame_config = screen_cast::screen_cast_frame_config(&items);
+                        let paired_url_controls = paired_rect_url_controls(&items);
+                        let hidden_control_ids: HashSet<String> = paired_url_controls
+                            .values()
+                            .map(|definition| definition.control_id().to_owned())
+                            .collect();
                         let visible_items = items
                             .into_iter()
                             .filter(|(def, _)| {
-                                screen_cast_frame_config.is_none()
-                                    || !screen_cast::is_screen_cast_frame_control(def.control_id())
+                                !hidden_control_ids.contains(def.control_id())
                             })
                             .collect::<Vec<_>>();
                         let show_header = total_groups > 1 && group != "General";
@@ -166,19 +192,12 @@ pub fn ControlPanel(
                                         </div>
                                     }
                                 })}
-                                {screen_cast_frame_config.map(|frame_config| {
-                                    view! {
-                                        <ScreenCastFrameWidget
-                                            control_values=control_values
-                                            accent_rgb=section_rgb.clone()
-                                            on_change=on_change
-                                            frame_config
-                                        />
-                                    }
-                                })}
                                 {visible_items.into_iter().enumerate().map(|(i, (def, rgb))| {
                                     let control_id = def.control_id().to_owned();
                                     let default_value = def.default_value.clone();
+                                    let paired_url_definition = paired_url_controls
+                                        .get(control_id.as_str())
+                                        .cloned();
                                     let value = Signal::derive({
                                         let control_id = control_id.clone();
                                         move || {
@@ -190,7 +209,16 @@ pub fn ControlPanel(
                                     let delay = format!("animation-delay: {}ms", i * 30);
                                     view! {
                                         <div class="animate-fade-in-up" style=delay>
-                                            <ControlWidget def=def value=value accent_rgb=rgb on_change=on_change expanded_picker_id=expanded_picker_id set_expanded_picker_id=set_expanded_picker_id />
+                                            <ControlWidget
+                                                def=def
+                                                value=value
+                                                control_values=control_values
+                                                paired_url_definition=paired_url_definition
+                                                accent_rgb=rgb
+                                                on_change=on_change
+                                                expanded_picker_id=expanded_picker_id
+                                                set_expanded_picker_id=set_expanded_picker_id
+                                            />
                                         </div>
                                     }
                                 }).collect_view()}
@@ -208,6 +236,8 @@ pub fn ControlPanel(
 fn ControlWidget(
     def: ControlDefinition,
     #[prop(into)] value: Signal<ControlValue>,
+    #[prop(into)] control_values: Signal<HashMap<String, ControlValue>>,
+    paired_url_definition: Option<ControlDefinition>,
     accent_rgb: String,
     on_change: Callback<(String, serde_json::Value)>,
     expanded_picker_id: ReadSignal<Option<String>>,
@@ -221,6 +251,7 @@ fn ControlWidget(
         "color: rgba({}, 0.6); overflow: visible; flex-shrink: 0",
         accent_rgb
     );
+    let ws = use_context::<WsContext>();
 
     match def.control_type {
         ControlType::Slider => number::render_slider(
@@ -285,6 +316,77 @@ fn ControlWidget(
             </div>
         }
         .into_any(),
+        ControlType::Rect => {
+            let rect_value = Signal::derive(move || match value.get() {
+                ControlValue::Rect(rect) => rect,
+                _ => ViewportRect::full(),
+            });
+            let preview_source = def.preview_source;
+            let preview_frame = Signal::derive(move || {
+                ws.and_then(|ctx| match preview_source {
+                    Some(PreviewSource::ScreenCapture) => ctx.screen_canvas_frame.get(),
+                    Some(PreviewSource::WebViewport) => ctx.web_viewport_canvas_frame.get(),
+                    Some(PreviewSource::EffectCanvas) => ctx.canvas_frame.get(),
+                    None => None,
+                })
+            });
+            let preview_consumer_count = ws.and_then(|ctx| match preview_source {
+                Some(PreviewSource::ScreenCapture) => Some(ctx.set_screen_preview_consumers),
+                Some(PreviewSource::WebViewport) => Some(ctx.set_web_viewport_preview_consumers),
+                Some(PreviewSource::EffectCanvas) => Some(ctx.set_preview_consumers),
+                None => None,
+            });
+            let url_input = paired_url_definition.map(|url_definition| {
+                let url_control_id = url_definition.control_id().to_owned();
+                let placeholder = match &url_definition.default_value {
+                    ControlValue::Text(text) | ControlValue::Enum(text) => text.clone(),
+                    _ => String::new(),
+                };
+                let value = Signal::derive({
+                    let url_control_id = url_control_id.clone();
+                    let placeholder = placeholder.clone();
+                    move || {
+                        control_values.with(|values| {
+                            values
+                                .get(&url_control_id)
+                                .and_then(|value| match value {
+                                    ControlValue::Text(text) | ControlValue::Enum(text) => {
+                                        Some(text.clone())
+                                    }
+                                    _ => None,
+                                })
+                                .unwrap_or_else(|| placeholder.clone())
+                        })
+                    }
+                });
+                UrlInputBinding {
+                    label: url_definition.name,
+                    value,
+                    placeholder,
+                    on_commit: Callback::new({
+                        let url_control_id = url_control_id.clone();
+                        move |next: String| {
+                            on_change.run((url_control_id.clone(), json!(next)));
+                        }
+                    }),
+                }
+            });
+
+            view! {
+                <ViewportPicker
+                    control_id=control_id
+                    label=name
+                    value=rect_value
+                    on_change=on_change
+                    preview_source=preview_frame
+                    preview_consumer_count=preview_consumer_count
+                    accent_rgb=accent_rgb
+                    aspect_lock=def.aspect_lock
+                    url_input=url_input
+                />
+            }
+            .into_any()
+        }
     }
 }
 

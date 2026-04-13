@@ -22,8 +22,10 @@
 mod circuit_breaker;
 mod delegate;
 mod renderer;
+mod session;
 mod worker;
 mod worker_client;
 
 pub use delegate::{ConsoleMessage, HypercolorWebViewDelegate};
 pub use renderer::ServoRenderer;
+pub use session::{SessionConfig, ServoSessionHandle, note_servo_session_error};

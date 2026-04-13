@@ -3,6 +3,8 @@
 //! The API uses [`LibraryStore`] so storage can move from in-memory to a
 //! database backend (e.g. Turso/libsql) without rewriting handlers.
 
+pub mod migration;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 

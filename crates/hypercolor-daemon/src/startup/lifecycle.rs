@@ -370,6 +370,10 @@ impl DaemonState {
         )
         .with_context(|| format!("failed to create renderer for '{}'", metadata.name))?;
 
+        let (controls, migrated_controls) = crate::library::migration::migrate_effect_controls_for_load(
+            &metadata,
+            &snapshot.control_values,
+        );
         let mut rejected_controls: Vec<String> = Vec::new();
         let mut rejected_bindings: Vec<String> = Vec::new();
         {
@@ -378,7 +382,7 @@ impl DaemonState {
                 .activate(renderer, metadata.clone())
                 .with_context(|| format!("failed to activate '{}'", metadata.name))?;
 
-            for (name, value) in &snapshot.control_values {
+            for (name, value) in &controls {
                 if let Err(error) = engine.set_control_checked(name, value) {
                     rejected_controls.push(format!("{name} ({error})"));
                 }
@@ -401,6 +405,13 @@ impl DaemonState {
                 effect = %metadata.name,
                 rejected_controls = ?rejected_controls,
                 "Some persisted control values were rejected during restore"
+            );
+        }
+        if migrated_controls {
+            info!(
+                effect_id = %metadata.id,
+                effect = %metadata.name,
+                "Migrated legacy screencast session controls to the viewport rect"
             );
         }
 

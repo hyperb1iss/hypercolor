@@ -25,7 +25,7 @@ import './runtime'
 export { getAudioData as audio } from './audio'
 export type { ControlMap, ControlShorthand, ControlSpec } from './controls'
 // Control factories (effects + faces)
-export { color, combo, font, hue, num, sensor, text, toggle } from './controls'
+export { color, combo, font, hue, num, rect, sensor, text, toggle } from './controls'
 export type { CanvasFnOptions, DrawFn, EffectFnOptions, FactoryFn, ShaderContext } from './effects'
 // Effect functions
 export { canvas, effect } from './effects'
@@ -46,6 +46,9 @@ export type {
     FontOptions,
     HueControlDefinition,
     NumberControlDefinition,
+    RectControlDefinition,
+    RectOptions,
+    RectValue,
     SensorOptions,
     TextFieldControlDefinition,
 } from './controls'

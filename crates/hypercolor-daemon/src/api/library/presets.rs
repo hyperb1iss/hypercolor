@@ -7,6 +7,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 use hypercolor_types::effect::ControlValue;
 use hypercolor_types::library::{EffectPreset, PresetId};
@@ -227,9 +228,11 @@ pub async fn apply_preset(State(state): State<Arc<AppState>>, Path(id): Path<Str
             ));
         }
 
+        let (controls, migrated_controls) =
+            crate::library::migration::migrate_effect_controls_for_load(&metadata, &preset.controls);
         let mut applied: HashMap<String, ControlValue> = HashMap::new();
         let mut rejected: Vec<String> = Vec::new();
-        for (name, value) in &preset.controls {
+        for (name, value) in &controls {
             match engine.set_control_checked(name, value) {
                 Ok(normalized) => {
                     applied.insert(name.clone(), normalized);
@@ -238,6 +241,13 @@ pub async fn apply_preset(State(state): State<Arc<AppState>>, Path(id): Path<Str
             }
         }
         engine.set_active_preset_id(preset.id.to_string());
+        if migrated_controls {
+            info!(
+                preset_id = %preset.id,
+                effect = %metadata.name,
+                "Migrated legacy screencast preset controls to the viewport rect"
+            );
+        }
 
         ActivationResult {
             applied,

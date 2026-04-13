@@ -24,7 +24,7 @@ use super::protocol::{
 };
 use super::relays::{
     publish_subscriptions, relay_canvas, relay_display_preview, relay_events, relay_frames,
-    relay_metrics, relay_screen_canvas, relay_spectrum,
+    relay_metrics, relay_screen_canvas, relay_spectrum, relay_web_viewport_canvas,
 };
 use crate::api::AppState;
 use crate::api::security::RequestAuthContext;
@@ -109,6 +109,12 @@ async fn handle_socket(
         subscriptions_rx.clone(),
     ));
     let screen_canvas_relay_handle = tokio::spawn(relay_screen_canvas(
+        Arc::clone(&state.preview_runtime),
+        json_tx.clone(),
+        binary_tx.clone(),
+        subscriptions_rx.clone(),
+    ));
+    let web_viewport_canvas_relay_handle = tokio::spawn(relay_web_viewport_canvas(
         Arc::clone(&state.preview_runtime),
         json_tx.clone(),
         binary_tx.clone(),
@@ -213,6 +219,7 @@ async fn handle_socket(
     spectrum_relay_handle.abort();
     canvas_relay_handle.abort();
     screen_canvas_relay_handle.abort();
+    web_viewport_canvas_relay_handle.abort();
     display_preview_relay_handle.abort();
     metrics_relay_handle.abort();
     debug!("WebSocket client disconnected");

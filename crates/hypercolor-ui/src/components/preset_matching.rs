@@ -38,6 +38,12 @@ pub(crate) fn control_value_to_json(value: &ControlValue) -> serde_json::Value {
             ))
         }
         ControlValue::Gradient(stops) => serde_json::json!(stops),
+        ControlValue::Rect(rect) => serde_json::json!({
+            "x": rect.x,
+            "y": rect.y,
+            "width": rect.width,
+            "height": rect.height,
+        }),
     }
 }
 

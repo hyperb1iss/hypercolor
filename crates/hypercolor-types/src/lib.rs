@@ -17,3 +17,4 @@ pub mod sensor;
 pub mod server;
 pub mod session;
 pub mod spatial;
+pub mod viewport;
