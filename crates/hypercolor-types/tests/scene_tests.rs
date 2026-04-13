@@ -311,12 +311,20 @@ fn scene_validate_rejects_duplicate_display_device_ids() {
             RenderGroup {
                 role: RenderGroupRole::Display,
                 display_target: Some(DisplayFaceTarget { device_id }),
-                ..sample_group("Display A", "desk:display_a", EffectId::from(Uuid::now_v7()))
+                ..sample_group(
+                    "Display A",
+                    "desk:display_a",
+                    EffectId::from(Uuid::now_v7()),
+                )
             },
             RenderGroup {
                 role: RenderGroupRole::Display,
                 display_target: Some(DisplayFaceTarget { device_id }),
-                ..sample_group("Display B", "desk:display_b", EffectId::from(Uuid::now_v7()))
+                ..sample_group(
+                    "Display B",
+                    "desk:display_b",
+                    EffectId::from(Uuid::now_v7()),
+                )
             },
         ],
         ..sample_scene()

@@ -96,6 +96,7 @@ pub(super) struct PendingGpuSampleReadback {
     submission_index: wgpu::SubmissionIndex,
     used_bytes: u64,
     buffer: wgpu::Buffer,
+    zones: Vec<GpuZoneRange>,
     receiver: mpsc::Receiver<std::result::Result<(), wgpu::BufferAsyncError>>,
     #[cfg(test)]
     slot: usize,
@@ -416,6 +417,10 @@ impl GpuSpatialSampler {
         };
         encoder.copy_buffer_to_buffer(&output_buffer, 0, &readback_buffer, 0, output_bytes);
         let submission_index = queue.submit(Some(encoder.finish()));
+        let zone_ranges = self
+            .cached_plan
+            .as_ref()
+            .map_or_else(Vec::new, |cached| cached.plan.zones.clone());
         Ok(GpuSamplingDispatch {
             sampled: true,
             submission_index: Some(submission_index.clone()),
@@ -423,6 +428,7 @@ impl GpuSpatialSampler {
                 &readback_buffer,
                 output_bytes,
                 submission_index,
+                zone_ranges,
                 readback_slot,
             )),
         })
@@ -435,10 +441,6 @@ impl GpuSpatialSampler {
         zones: &mut Vec<ZoneColors>,
     ) -> Result<()> {
         self.last_readback_wait_blocked = false;
-        let cached_plan = self
-            .cached_plan
-            .as_ref()
-            .expect("GPU sampling plan should remain cached after sampling");
         device
             .poll(wgpu::PollType::Poll)
             .context("GPU sample readiness poll failed")?;
@@ -461,7 +463,7 @@ impl GpuSpatialSampler {
             wait_for_zone_color_readback(device, &pending_readback)?;
         }
 
-        finish_zone_color_readback(&pending_readback, cached_plan, zones)
+        finish_zone_color_readback(&pending_readback, zones)
     }
 
     pub(super) fn take_last_readback_wait_blocked(&mut self) -> bool {
@@ -661,6 +663,7 @@ fn begin_zone_color_readback(
     buffer: &wgpu::Buffer,
     used_bytes: u64,
     submission_index: wgpu::SubmissionIndex,
+    zones: Vec<GpuZoneRange>,
     _slot: usize,
 ) -> PendingGpuSampleReadback {
     let slice = buffer.slice(..used_bytes);
@@ -672,6 +675,7 @@ fn begin_zone_color_readback(
         submission_index,
         used_bytes,
         buffer: buffer.clone(),
+        zones,
         receiver,
         #[cfg(test)]
         slot: _slot,
@@ -698,25 +702,24 @@ fn wait_for_zone_color_readback(
 
 fn finish_zone_color_readback(
     pending_readback: &PendingGpuSampleReadback,
-    cached_plan: &CachedGpuSamplingPlan,
     zones: &mut Vec<ZoneColors>,
 ) -> Result<()> {
     let slice = pending_readback.buffer.slice(..pending_readback.used_bytes);
     let mapped = slice.get_mapped_range();
-    rebuild_zone_colors_from_mapped_bytes(&cached_plan.plan, &mapped, zones);
+    rebuild_zone_colors_from_mapped_bytes(&pending_readback.zones, &mapped, zones);
     drop(mapped);
     pending_readback.buffer.unmap();
     Ok(())
 }
 
 fn rebuild_zone_colors_from_mapped_bytes(
-    plan: &GpuSamplingPlan,
+    zone_plans: &[GpuZoneRange],
     packed_bytes: &[u8],
     zones: &mut Vec<ZoneColors>,
 ) {
-    zones.reserve(plan.zones.len().saturating_sub(zones.len()));
+    zones.reserve(zone_plans.len().saturating_sub(zones.len()));
 
-    for (index, zone_plan) in plan.zones.iter().enumerate() {
+    for (index, zone_plan) in zone_plans.iter().enumerate() {
         if index == zones.len() {
             zones.push(ZoneColors {
                 zone_id: zone_plan.zone_id.clone(),
@@ -740,7 +743,7 @@ fn rebuild_zone_colors_from_mapped_bytes(
         }
     }
 
-    zones.truncate(plan.zones.len());
+    zones.truncate(zone_plans.len());
 }
 
 #[cfg(test)]

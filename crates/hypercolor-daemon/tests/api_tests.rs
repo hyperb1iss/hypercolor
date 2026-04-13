@@ -4586,7 +4586,9 @@ async fn apply_effect_mutates_active_scene_not_default_if_named_active() {
             Some(default_effect_id.clone())
         );
 
-        let active_scene = manager.active_scene().expect("named scene should stay active");
+        let active_scene = manager
+            .active_scene()
+            .expect("named scene should stay active");
         assert_eq!(active_scene.id, named_scene_id);
         let primary = active_scene
             .primary_group()
@@ -4675,12 +4677,16 @@ async fn activating_named_scene_then_applying_effect_mutates_named_scene() {
         "default scene should not be mutated while a named scene is active"
     );
 
-    let active_scene = manager.active_scene().expect("named scene should stay active");
+    let active_scene = manager
+        .active_scene()
+        .expect("named scene should stay active");
     assert_eq!(active_scene.id, named_scene_id);
-    assert!(active_scene
-        .primary_group()
-        .and_then(|group| group.effect_id)
-        .is_some());
+    assert!(
+        active_scene
+            .primary_group()
+            .and_then(|group| group.effect_id)
+            .is_some()
+    );
 }
 
 // ── Error Envelope Format ────────────────────────────────────────────────
@@ -5115,7 +5121,10 @@ async fn patch_face_controls_updates_display_group() {
         .expect("failed to execute request");
     assert_eq!(patch_response.status(), StatusCode::OK);
     let patch_json = body_json(patch_response).await;
-    assert_eq!(patch_json["data"]["group"]["controls"]["label"]["text"], "gpu");
+    assert_eq!(
+        patch_json["data"]["group"]["controls"]["label"]["text"],
+        "gpu"
+    );
 
     let manager = state.scene_manager.read().await;
     let display_group = manager

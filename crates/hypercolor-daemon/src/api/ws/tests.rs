@@ -10,6 +10,7 @@ use hypercolor_types::canvas::{
     Canvas, PublishedSurface, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
 };
 use hypercolor_types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData, ZoneColors};
+use hypercolor_types::scene::{RenderGroupId, RenderGroupRole, SceneId};
 
 use super::cache::{
     FrameRelayMessage, WS_CANVAS_BINARY_CACHE, WS_CANVAS_HEADER, WS_CANVAS_JPEG_BODY_BUILD_COUNT,
@@ -458,6 +459,40 @@ fn event_message_parts_defaults_to_empty_object_for_unit_events() {
     let (event_name, event_data) = event_message_parts(&HypercolorEvent::Resumed);
     assert_eq!(event_name, "resumed");
     assert_eq!(event_data, serde_json::json!({}));
+}
+
+#[test]
+fn event_message_parts_serializes_render_group_changed() {
+    let group_id = RenderGroupId::new();
+    let event = HypercolorEvent::RenderGroupChanged {
+        scene_id: SceneId::DEFAULT,
+        group_id,
+        role: RenderGroupRole::Display,
+        kind: hypercolor_types::event::RenderGroupChangeKind::ControlsPatched,
+    };
+
+    let (event_name, event_data) = event_message_parts(&event);
+    assert_eq!(event_name, "render_group_changed");
+    assert_eq!(event_data["scene_id"], SceneId::DEFAULT.to_string());
+    assert_eq!(event_data["group_id"], group_id.to_string());
+    assert_eq!(event_data["role"], "display");
+    assert_eq!(event_data["kind"], "controls_patched");
+}
+
+#[test]
+fn event_message_parts_serializes_active_scene_changed() {
+    let current = SceneId::new();
+    let event = HypercolorEvent::ActiveSceneChanged {
+        previous: Some(SceneId::DEFAULT),
+        current,
+        reason: hypercolor_types::event::SceneChangeReason::UserActivate,
+    };
+
+    let (event_name, event_data) = event_message_parts(&event);
+    assert_eq!(event_name, "active_scene_changed");
+    assert_eq!(event_data["previous"], SceneId::DEFAULT.to_string());
+    assert_eq!(event_data["current"], current.to_string());
+    assert_eq!(event_data["reason"], "user_activate");
 }
 
 #[test]

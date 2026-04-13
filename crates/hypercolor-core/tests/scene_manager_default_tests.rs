@@ -111,7 +111,12 @@ fn upsert_primary_group_creates_when_absent() {
     let controls = HashMap::from([("speed".to_owned(), ControlValue::Float(0.5))]);
 
     let group = manager
-        .upsert_primary_group(&effect, controls.clone(), None, sample_layout("zone_primary"))
+        .upsert_primary_group(
+            &effect,
+            controls.clone(),
+            None,
+            sample_layout("zone_primary"),
+        )
         .expect("primary upsert should succeed")
         .clone();
 

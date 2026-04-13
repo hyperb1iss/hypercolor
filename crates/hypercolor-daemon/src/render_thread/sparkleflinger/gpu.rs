@@ -231,6 +231,7 @@ pub(crate) enum GpuZoneSamplingDispatch {
 }
 
 pub(crate) struct PendingGpuZoneSampling {
+    output_generation: u64,
     sampling_plan: Option<GpuSamplingPlanKey>,
     pending_readback: PendingGpuSampleReadback,
 }
@@ -617,6 +618,7 @@ impl GpuSparkleFlinger {
         }
         if let Some(pending_readback) = sampling_dispatch.pending_readback {
             return Ok(GpuZoneSamplingDispatch::Pending(PendingGpuZoneSampling {
+                output_generation: self.output_generation,
                 sampling_plan,
                 pending_readback,
             }));
@@ -649,7 +651,9 @@ impl GpuSparkleFlinger {
     ) -> Result<()> {
         self.spatial_sampler
             .finish_pending_readback(&self.device, pending.pending_readback, zones)?;
-        if let Some(sampling_plan) = pending.sampling_plan {
+        if pending.output_generation == self.output_generation
+            && let Some(sampling_plan) = pending.sampling_plan
+        {
             let mut cached_zones = self
                 .cached_sample_result
                 .take()
@@ -4241,6 +4245,145 @@ mod tests {
             )
         );
         assert_eq!(second_sample, first_sample);
+    }
+
+    #[test]
+    fn gpu_sampler_decodes_overlapped_readbacks_with_distinct_sampling_plans() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let large_engine =
+            SpatialEngine::new(sampling_layout_with_led_count(SamplingMode::Nearest, 16));
+        let small_engine = SpatialEngine::new(sampling_layout(SamplingMode::Nearest));
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
+            ],
+        );
+        let expected =
+            CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+
+        compositor
+            .compose(&plan, false, None)
+            .expect("GPU composition should succeed before distinct overlapped sample dispatches");
+
+        let mut large_sample = Vec::new();
+        let large_pending = match compositor
+            .begin_sample_zone_plan_into(large_engine.sampling_plan().as_ref(), &mut large_sample)
+            .expect("large GPU sample dispatch should succeed")
+        {
+            GpuZoneSamplingDispatch::Pending(pending) => pending,
+            _ => panic!("large GPU sample dispatch should defer readback completion"),
+        };
+
+        let mut small_sample = Vec::new();
+        let small_pending = match compositor
+            .begin_sample_zone_plan_into(small_engine.sampling_plan().as_ref(), &mut small_sample)
+            .expect("small GPU sample dispatch should succeed")
+        {
+            GpuZoneSamplingDispatch::Pending(pending) => pending,
+            _ => panic!("small GPU sample dispatch should defer readback completion"),
+        };
+
+        compositor
+            .finish_pending_zone_sampling(large_pending, &mut large_sample)
+            .expect("large pending sample finalize should succeed");
+        compositor
+            .finish_pending_zone_sampling(small_pending, &mut small_sample)
+            .expect("small pending sample finalize should succeed");
+
+        let expected_canvas = expected
+            .sampling_canvas
+            .as_ref()
+            .expect("CPU compose should materialize a canvas");
+        assert_eq!(large_sample, large_engine.sample(expected_canvas));
+        assert_eq!(small_sample, small_engine.sample(expected_canvas));
+    }
+
+    #[test]
+    fn gpu_stale_pending_sample_finalize_does_not_poison_new_output_cache() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(sampling_layout(SamplingMode::Nearest));
+        let first_plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
+            ],
+        );
+        let second_plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(44))),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(180)), 0.5),
+            ],
+        );
+        let first_expected =
+            CpuSparkleFlinger::new().compose(first_plan.clone(), true, full_preview_request(&first_plan));
+        let second_expected = CpuSparkleFlinger::new().compose(
+            second_plan.clone(),
+            true,
+            full_preview_request(&second_plan),
+        );
+
+        compositor
+            .compose(&first_plan, false, None)
+            .expect("first GPU composition should succeed");
+        let mut stale_sample = Vec::new();
+        let stale_pending = match compositor
+            .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut stale_sample)
+            .expect("first GPU sample dispatch should succeed")
+        {
+            GpuZoneSamplingDispatch::Pending(pending) => pending,
+            _ => panic!("first GPU sample dispatch should defer readback completion"),
+        };
+
+        compositor
+            .compose(&second_plan, false, None)
+            .expect("second GPU composition should succeed");
+
+        compositor
+            .finish_pending_zone_sampling(stale_pending, &mut stale_sample)
+            .expect("stale pending sample finalize should still decode successfully");
+        assert_eq!(
+            stale_sample,
+            engine.sample(
+                first_expected
+                    .sampling_canvas
+                    .as_ref()
+                    .expect("first CPU compose should materialize a canvas"),
+            )
+        );
+
+        let dispatch_count_before = compositor.spatial_sampler.sample_dispatch_count();
+        let mut current_sample = Vec::new();
+        assert!(
+            compositor
+                .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut current_sample)
+                .expect("current GPU sample should succeed")
+        );
+        assert_eq!(
+            current_sample,
+            engine.sample(
+                second_expected
+                    .sampling_canvas
+                    .as_ref()
+                    .expect("second CPU compose should materialize a canvas"),
+            )
+        );
+        assert_eq!(
+            compositor.spatial_sampler.sample_dispatch_count(),
+            dispatch_count_before.saturating_add(1)
+        );
     }
 
     #[test]
