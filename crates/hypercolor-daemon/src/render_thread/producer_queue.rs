@@ -45,16 +45,9 @@ pub(crate) enum ProducerFrameState {
     Retained,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProducerGeneration {
-    Latest,
-    Tagged(u64),
-}
-
 #[derive(Debug, Clone)]
 struct ProducerSubmission {
     frame: ProducerFrame,
-    generation: ProducerGeneration,
     fresh: bool,
 }
 
@@ -74,41 +67,15 @@ impl ProducerQueue {
         Self { latest: None }
     }
 
-    pub(crate) fn clear(&mut self) {
-        self.latest = None;
-    }
-
     pub(crate) fn submit_latest(&mut self, frame: ProducerFrame) -> Option<ProducerFrame> {
         self.replace_latest(ProducerSubmission {
             frame,
-            generation: ProducerGeneration::Latest,
-            fresh: true,
-        })
-    }
-
-    pub(crate) fn submit_for_generation(
-        &mut self,
-        frame: ProducerFrame,
-        generation: u64,
-    ) -> Option<ProducerFrame> {
-        self.replace_latest(ProducerSubmission {
-            frame,
-            generation: ProducerGeneration::Tagged(generation),
             fresh: true,
         })
     }
 
     pub(crate) fn latch_latest(&mut self) -> Option<LatchedProducerFrame> {
         self.latch_matching(|_| true)
-    }
-
-    pub(crate) fn latch_for_generation(
-        &mut self,
-        expected_generation: u64,
-    ) -> Option<LatchedProducerFrame> {
-        self.latch_matching(|submission| {
-            submission.generation == ProducerGeneration::Tagged(expected_generation)
-        })
     }
 
     fn latch_matching(
@@ -153,36 +120,22 @@ impl ProducerFrameState {
 
 #[cfg(test)]
 mod tests {
-    use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+    use hypercolor_core::types::canvas::Canvas;
 
     use super::{ProducerFrame, ProducerFrameState, ProducerQueue};
 
     #[test]
     fn producer_queue_latches_fresh_then_retains() {
         let mut queue = ProducerQueue::new();
-        queue.submit_for_generation(ProducerFrame::Canvas(Canvas::new(4, 4)), 1);
+        queue.submit_latest(ProducerFrame::Canvas(Canvas::new(4, 4)));
 
-        let fresh = queue
-            .latch_for_generation(1)
-            .expect("fresh frame should latch");
+        let fresh = queue.latch_latest().expect("fresh frame should latch");
         assert_eq!(fresh.state, ProducerFrameState::Fresh);
 
         let retained = queue
-            .latch_for_generation(1)
+            .latch_latest()
             .expect("latched frame should retain");
         assert_eq!(retained.state, ProducerFrameState::Retained);
-    }
-
-    #[test]
-    fn producer_queue_discards_generation_mismatch() {
-        let mut queue = ProducerQueue::new();
-        queue.submit_for_generation(
-            ProducerFrame::Surface(PublishedSurface::from_owned_canvas(Canvas::new(2, 2), 1, 1)),
-            7,
-        );
-
-        assert!(queue.latch_for_generation(8).is_none());
-        assert!(queue.latch_for_generation(7).is_none());
     }
 
     #[test]
@@ -200,21 +153,13 @@ mod tests {
     }
 
     #[test]
-    fn producer_queue_latest_frames_do_not_alias_generation_zero() {
-        let mut queue = ProducerQueue::new();
-        queue.submit_latest(ProducerFrame::Canvas(Canvas::new(3, 5)));
-
-        assert!(queue.latch_for_generation(0).is_none());
-    }
-
-    #[test]
     fn producer_queue_submit_returns_replaced_frame() {
         let mut queue = ProducerQueue::new();
         let first = Canvas::new(3, 5);
         let second = Canvas::new(3, 5);
-        queue.submit_for_generation(ProducerFrame::Canvas(first.clone()), 1);
+        queue.submit_latest(ProducerFrame::Canvas(first.clone()));
 
-        let replaced = queue.submit_for_generation(ProducerFrame::Canvas(second), 1);
+        let replaced = queue.submit_latest(ProducerFrame::Canvas(second));
         let Some(ProducerFrame::Canvas(replaced)) = replaced else {
             panic!("expected replaced canvas frame");
         };

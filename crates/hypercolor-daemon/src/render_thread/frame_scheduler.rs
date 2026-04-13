@@ -29,10 +29,6 @@ pub(crate) struct SceneRuntimeSnapshot {
 }
 
 impl SceneRuntimeSnapshot {
-    pub(crate) fn has_active_render_groups(&self) -> bool {
-        self.active_render_group_count > 0
-    }
-
     pub(crate) fn active_render_group_count(&self) -> u32 {
         self.active_render_group_count
     }
@@ -45,7 +41,6 @@ pub(crate) struct FrameSceneSnapshot {
     pub budget_us: u32,
     pub output_power: OutputPowerState,
     pub effect_demand: EffectDemand,
-    pub effect_generation: u64,
     pub scene_runtime: SceneRuntimeSnapshot,
     pub spatial_engine: SpatialEngine,
 }
@@ -56,7 +51,6 @@ pub(crate) struct FrameSceneSnapshotInputs {
     pub budget_us: u32,
     pub output_power: OutputPowerState,
     pub effect_demand: EffectDemand,
-    pub effect_generation: u64,
     pub scene_runtime: SceneRuntimeSnapshot,
     pub spatial_engine: SpatialEngine,
 }
@@ -80,7 +74,6 @@ impl FrameScheduler {
             budget_us: inputs.budget_us,
             output_power: inputs.output_power,
             effect_demand: inputs.effect_demand,
-            effect_generation: inputs.effect_generation,
             scene_runtime: inputs.scene_runtime,
             spatial_engine: inputs.spatial_engine,
         }
@@ -185,7 +178,6 @@ mod tests {
                 audio_capture_active: false,
                 screen_capture_active: true,
             },
-            effect_generation: 7,
             scene_runtime: SceneRuntimeSnapshot {
                 active_scene_id: None,
                 active_transition: Some(SceneTransitionSnapshot {
@@ -204,7 +196,6 @@ mod tests {
         assert_eq!(snapshot.frame_token, 42);
         assert_eq!(snapshot.elapsed_ms, 123);
         assert_eq!(snapshot.budget_us, 16_666);
-        assert_eq!(snapshot.effect_generation, 7);
         assert!(snapshot.effect_demand.effect_running);
         assert!(snapshot.effect_demand.screen_capture_active);
         assert!(snapshot.scene_runtime.active_transition.is_some());

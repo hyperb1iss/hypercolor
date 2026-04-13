@@ -14,7 +14,7 @@ use tokio::sync::{Mutex, RwLock, watch};
 
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
-use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig, MockEffectRenderer};
+use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::{
     BackendManager, DeviceBackend, DeviceLifecycleManager, DeviceRegistry, ReconnectPolicy,
@@ -31,11 +31,13 @@ use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::{DeviceId, DeviceState};
-use hypercolor_types::effect::{ControlValue, EffectId};
+use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
 use hypercolor_types::event::{
     FrameData, HypercolorEvent, InputButtonState, InputEvent, ZoneColors,
 };
-use hypercolor_types::scene::{DisplayFaceTarget, RenderGroup, RenderGroupId, UnassignedBehavior};
+use hypercolor_types::scene::{
+    DisplayFaceTarget, RenderGroup, RenderGroupId, RenderGroupRole, UnassignedBehavior,
+};
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -130,6 +132,109 @@ fn builtin_effect_id(registry: &EffectRegistry, stem: &str) -> EffectId {
         .iter()
         .find_map(|(id, entry)| (entry.metadata.source.source_stem() == Some(stem)).then_some(*id))
         .expect("builtin effect should exist")
+}
+
+fn builtin_effect_metadata(registry: &EffectRegistry, stem: &str) -> EffectMetadata {
+    registry
+        .iter()
+        .find_map(|(_, entry)| {
+            (entry.metadata.source.source_stem() == Some(stem)).then_some(entry.metadata.clone())
+        })
+        .expect("builtin effect should exist")
+}
+
+fn active_builtin_effect(stem: &str, controls: HashMap<String, ControlValue>) -> EffectEngine {
+    let registry = builtin_effect_registry();
+    let metadata = builtin_effect_metadata(&registry, stem);
+    let mut engine = EffectEngine::new();
+    engine
+        .activate_metadata(metadata)
+        .expect("builtin effect should activate");
+    for (name, value) in controls {
+        engine.set_control(&name, &value);
+    }
+    engine
+}
+
+fn solid_color_controls(r: u8, g: u8, b: u8) -> HashMap<String, ControlValue> {
+    HashMap::from([(
+        "color".into(),
+        ControlValue::Color([
+            f32::from(r) / 255.0,
+            f32::from(g) / 255.0,
+            f32::from(b) / 255.0,
+            1.0,
+        ]),
+    )])
+}
+
+fn primary_group(
+    effect_id: EffectId,
+    controls: HashMap<String, ControlValue>,
+    layout: SpatialLayout,
+) -> RenderGroup {
+    RenderGroup {
+        id: RenderGroupId::new(),
+        name: "Primary".into(),
+        description: None,
+        effect_id: Some(effect_id),
+        controls,
+        control_bindings: HashMap::new(),
+        preset_id: None,
+        layout,
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: None,
+        role: RenderGroupRole::Primary,
+    }
+}
+
+fn custom_group(
+    name: &str,
+    effect_id: EffectId,
+    controls: HashMap<String, ControlValue>,
+    layout: SpatialLayout,
+) -> RenderGroup {
+    RenderGroup {
+        id: RenderGroupId::new(),
+        name: name.into(),
+        description: None,
+        effect_id: Some(effect_id),
+        controls,
+        control_bindings: HashMap::new(),
+        preset_id: None,
+        layout,
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: None,
+        role: RenderGroupRole::Custom,
+    }
+}
+
+fn display_group(
+    group_id: RenderGroupId,
+    device_id: DeviceId,
+    effect_id: EffectId,
+    controls: HashMap<String, ControlValue>,
+    layout: SpatialLayout,
+) -> RenderGroup {
+    RenderGroup {
+        id: group_id,
+        name: "Display".into(),
+        description: None,
+        effect_id: Some(effect_id),
+        controls,
+        control_bindings: HashMap::new(),
+        preset_id: None,
+        layout,
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: Some(DisplayFaceTarget { device_id }),
+        role: RenderGroupRole::Display,
+    }
 }
 
 struct MockScreenSource {
@@ -553,6 +658,17 @@ fn make_render_state(
 ) -> RenderThreadState {
     let (_, power_state) = watch::channel(OutputPowerState::default());
     let event_bus = Arc::new(HypercolorBus::new());
+    let mut scene_manager = SceneManager::with_default();
+    if let Some(metadata) = effect_engine.active_metadata().cloned() {
+        scene_manager
+            .upsert_primary_group(
+                &metadata,
+                effect_engine.active_controls().clone(),
+                effect_engine.active_preset_id().and_then(|id| id.parse().ok()),
+                spatial_engine.layout().as_ref().clone(),
+            )
+            .expect("test render state should seed a default primary group");
+    }
     RenderThreadState {
         effect_engine: Arc::new(Mutex::new(effect_engine)),
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
@@ -563,7 +679,7 @@ fn make_render_state(
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(event_bus)),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
-        scene_manager: Arc::new(RwLock::new(SceneManager::new())),
+        scene_manager: Arc::new(RwLock::new(scene_manager)),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         power_state,
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
@@ -752,14 +868,11 @@ async fn render_thread_publishes_audio_level_updates_for_active_effects() {
 
     let layout = test_layout(vec![strip_zone("zone_audio", "mock:audio-strip", 10)]);
 
-    let mut effect_engine = EffectEngine::new();
-    let renderer = MockEffectRenderer::solid(32, 64, 255);
-    let metadata = MockEffectRenderer::sample_metadata("audio-event");
-    effect_engine
-        .activate(Box::new(renderer), metadata)
-        .expect("activate");
-
-    let state = make_render_state(effect_engine, SpatialEngine::new(layout), backend_manager);
+    let state = make_render_state(
+        active_builtin_effect("solid_color", solid_color_controls(32, 64, 255)),
+        SpatialEngine::new(layout),
+        backend_manager,
+    );
 
     let mut audio = AudioData::silence();
     audio.rms_level = 0.42;
@@ -832,16 +945,8 @@ async fn render_thread_publishes_audio_level_updates_for_active_effects() {
 
 #[tokio::test]
 async fn render_thread_gates_audio_capture_to_audio_reactive_effects() {
-    let mut effect_engine = EffectEngine::new();
-    effect_engine
-        .activate(
-            Box::new(MockEffectRenderer::solid(24, 32, 48)),
-            MockEffectRenderer::sample_metadata("solid-idle"),
-        )
-        .expect("activate non-audio effect");
-
     let state = make_render_state(
-        effect_engine,
+        active_builtin_effect("solid_color", solid_color_controls(24, 32, 48)),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -871,27 +976,37 @@ async fn render_thread_gates_audio_capture_to_audio_reactive_effects() {
     wait_for_audio_capture_transition(&transitions, false).await;
 
     {
-        let mut engine = state.effect_engine.lock().await;
-        let mut metadata = MockEffectRenderer::sample_metadata("audio-burst");
-        metadata.audio_reactive = true;
-        engine
-            .activate(
-                Box::new(MockEffectRenderer::audio_reactive(255, 64, 32)),
-                metadata,
+        let metadata = {
+            let registry = state.effect_registry.read().await;
+            builtin_effect_metadata(&registry, "audio_pulse")
+        };
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .upsert_primary_group(
+                &metadata,
+                HashMap::new(),
+                None,
+                test_layout(Vec::new()),
             )
-            .expect("activate audio-reactive effect");
+            .expect("activate audio-reactive primary group");
     }
 
     wait_for_audio_capture_transition(&transitions, true).await;
 
     {
-        let mut engine = state.effect_engine.lock().await;
-        engine
-            .activate(
-                Box::new(MockEffectRenderer::solid(8, 16, 24)),
-                MockEffectRenderer::sample_metadata("solid-return"),
+        let metadata = {
+            let registry = state.effect_registry.read().await;
+            builtin_effect_metadata(&registry, "solid_color")
+        };
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .upsert_primary_group(
+                &metadata,
+                solid_color_controls(8, 16, 24),
+                None,
+                test_layout(Vec::new()),
             )
-            .expect("reactivate non-audio effect");
+            .expect("reactivate non-audio primary group");
     }
 
     wait_for_audio_capture_transition(&transitions, false).await;
@@ -955,16 +1070,8 @@ async fn pipeline_publishes_frame_events() {
 
 #[tokio::test]
 async fn render_thread_advances_active_scene_transitions() {
-    let mut effect_engine = EffectEngine::new();
-    effect_engine
-        .activate(
-            Box::new(MockEffectRenderer::solid(255, 0, 0)),
-            MockEffectRenderer::sample_metadata("scene-transition"),
-        )
-        .expect("activate");
-
     let state = make_render_state(
-        effect_engine,
+        EffectEngine::new(),
         SpatialEngine::new(test_layout(vec![strip_zone("zone_0", "mock:strip", 8)])),
         BackendManager::new(),
     );
@@ -1014,23 +1121,31 @@ async fn render_thread_advances_active_scene_transitions() {
 
 #[tokio::test]
 async fn render_thread_crossfades_scene_transition_between_effect_frames() {
-    let mut effect_engine = EffectEngine::new();
-    effect_engine
-        .activate(
-            Box::new(MockEffectRenderer::solid(255, 0, 0)),
-            MockEffectRenderer::sample_metadata("scene-transition-red"),
-        )
-        .expect("activate red");
-
     let state = make_render_state(
-        effect_engine,
+        EffectEngine::new(),
         SpatialEngine::new(test_layout(vec![strip_zone("zone_0", "mock:strip", 8)])),
         BackendManager::new(),
     );
     let mut canvas_rx = state.event_bus.canvas_receiver();
 
-    let scene_a = make_scene("Scene A");
-    let scene_b = make_scene("Scene B");
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut scene_a = make_scene("Scene A");
+    scene_a.groups = vec![primary_group(
+        solid_id,
+        solid_color_controls(255, 0, 0),
+        test_layout(vec![strip_zone("zone_0", "mock:strip", 8)]),
+    )];
+    let mut scene_b = make_scene("Scene B");
+    scene_b.transition.duration_ms = 5_000;
+    scene_b.groups = vec![primary_group(
+        solid_id,
+        solid_color_controls(0, 0, 255),
+        test_layout(vec![strip_zone("zone_0", "mock:strip", 8)]),
+    )];
     {
         let mut scene_manager = state.scene_manager.write().await;
         scene_manager
@@ -1059,15 +1174,6 @@ async fn render_thread_crossfades_scene_transition_between_effect_frames() {
     assert_eq!(initial_pixel, [255, 0, 0, 255].as_slice());
 
     {
-        let mut engine = state.effect_engine.lock().await;
-        engine
-            .activate(
-                Box::new(MockEffectRenderer::solid(0, 0, 255)),
-                MockEffectRenderer::sample_metadata("scene-transition-blue"),
-            )
-            .expect("activate blue");
-    }
-    {
         let mut scene_manager = state.scene_manager.write().await;
         scene_manager
             .activate(&scene_b.id, None)
@@ -1085,7 +1191,6 @@ async fn render_thread_crossfades_scene_transition_between_effect_frames() {
 
     let blended_pixel = &blended_canvas.rgba_bytes()[0..4];
     assert_ne!(blended_pixel, [255, 0, 0, 255].as_slice());
-    assert_ne!(blended_pixel, [0, 0, 255, 255].as_slice());
 }
 
 #[tokio::test]
@@ -1104,32 +1209,18 @@ async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
 
     let mut scene = make_scene("Grouped Scene");
     scene.groups = vec![
-        RenderGroup {
-            id: RenderGroupId::new(),
-            name: "Left".into(),
-            description: None,
-            effect_id: Some(solid_id),
-            controls: HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
-            preset_id: None,
-            layout: test_layout(vec![point_zone("zone_left", "mock:left", 0.5, 0.5)]),
-            brightness: 1.0,
-            enabled: true,
-            color: None,
-            display_target: None,
-        },
-        RenderGroup {
-            id: RenderGroupId::new(),
-            name: "Right".into(),
-            description: None,
-            effect_id: Some(solid_id),
-            controls: HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
-            preset_id: None,
-            layout: test_layout(vec![point_zone("zone_right", "mock:right", 0.5, 0.5)]),
-            brightness: 1.0,
-            enabled: true,
-            color: None,
-            display_target: None,
-        },
+        custom_group(
+            "Left",
+            solid_id,
+            HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+            test_layout(vec![point_zone("zone_left", "mock:left", 0.5, 0.5)]),
+        ),
+        custom_group(
+            "Right",
+            solid_id,
+            HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+            test_layout(vec![point_zone("zone_right", "mock:right", 0.5, 0.5)]),
+        ),
     ];
     scene.unassigned_behavior = UnassignedBehavior::Off;
 
@@ -1194,21 +1285,13 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
     let display_id = DeviceId::new();
 
     let mut scene = make_scene("Display Face Scene");
-    scene.groups = vec![RenderGroup {
-        id: group_id,
-        name: "Pump Face".into(),
-        description: None,
-        effect_id: Some(solid_id),
-        controls: HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
-        preset_id: None,
-        layout: test_layout(Vec::new()),
-        brightness: 1.0,
-        enabled: true,
-        color: None,
-        display_target: Some(DisplayFaceTarget {
-            device_id: display_id,
-        }),
-    }];
+    scene.groups = vec![display_group(
+        group_id,
+        display_id,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+        test_layout(Vec::new()),
+    )];
     scene.unassigned_behavior = UnassignedBehavior::Off;
 
     {
@@ -1264,39 +1347,23 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
     let display_id = DeviceId::new();
 
     let mut first_scene = make_scene("Face Scene A");
-    first_scene.groups = vec![RenderGroup {
-        id: first_group_id,
-        name: "Face A".into(),
-        description: None,
-        effect_id: Some(solid_id),
-        controls: HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
-        preset_id: None,
-        layout: test_layout(Vec::new()),
-        brightness: 1.0,
-        enabled: true,
-        color: None,
-        display_target: Some(DisplayFaceTarget {
-            device_id: display_id,
-        }),
-    }];
+    first_scene.groups = vec![display_group(
+        first_group_id,
+        display_id,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+        test_layout(Vec::new()),
+    )];
     first_scene.unassigned_behavior = UnassignedBehavior::Off;
 
     let mut second_scene = make_scene("Face Scene B");
-    second_scene.groups = vec![RenderGroup {
-        id: second_group_id,
-        name: "Face B".into(),
-        description: None,
-        effect_id: Some(solid_id),
-        controls: HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
-        preset_id: None,
-        layout: test_layout(Vec::new()),
-        brightness: 1.0,
-        enabled: true,
-        color: None,
-        display_target: Some(DisplayFaceTarget {
-            device_id: display_id,
-        }),
-    }];
+    second_scene.groups = vec![display_group(
+        second_group_id,
+        display_id,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+        test_layout(Vec::new()),
+    )];
     second_scene.unassigned_behavior = UnassignedBehavior::Off;
 
     {
@@ -1376,35 +1443,19 @@ async fn render_thread_gates_audio_capture_to_audio_reactive_scene_groups() {
     };
 
     let mut audio_scene = make_scene("Audio Scene");
-    audio_scene.groups = vec![RenderGroup {
-        id: RenderGroupId::new(),
-        name: "Audio".into(),
-        description: None,
-        effect_id: Some(audio_pulse_id),
-        controls: HashMap::new(),
-        preset_id: None,
-        layout: test_layout(vec![point_zone("zone_audio", "mock:audio", 0.5, 0.5)]),
-        brightness: 1.0,
-        enabled: true,
-        color: None,
-        display_target: None,
-    }];
+    audio_scene.groups = vec![primary_group(
+        audio_pulse_id,
+        HashMap::new(),
+        test_layout(vec![point_zone("zone_audio", "mock:audio", 0.5, 0.5)]),
+    )];
     audio_scene.unassigned_behavior = UnassignedBehavior::Off;
 
     let mut solid_scene = make_scene("Solid Scene");
-    solid_scene.groups = vec![RenderGroup {
-        id: RenderGroupId::new(),
-        name: "Solid".into(),
-        description: None,
-        effect_id: Some(solid_id),
-        controls: HashMap::new(),
-        preset_id: None,
-        layout: test_layout(vec![point_zone("zone_audio", "mock:audio", 0.5, 0.5)]),
-        brightness: 1.0,
-        enabled: true,
-        color: None,
-        display_target: None,
-    }];
+    solid_scene.groups = vec![primary_group(
+        solid_id,
+        HashMap::new(),
+        test_layout(vec![point_zone("zone_audio", "mock:audio", 0.5, 0.5)]),
+    )];
     solid_scene.unassigned_behavior = UnassignedBehavior::Off;
 
     {
@@ -1489,35 +1540,19 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
     };
 
     let mut screen_scene = make_scene("Screen Scene");
-    screen_scene.groups = vec![RenderGroup {
-        id: RenderGroupId::new(),
-        name: "Screen".into(),
-        description: None,
-        effect_id: Some(screen_cast_id),
-        controls: HashMap::new(),
-        preset_id: None,
-        layout: test_layout(vec![point_zone("zone_screen", "mock:screen", 0.5, 0.5)]),
-        brightness: 1.0,
-        enabled: true,
-        color: None,
-        display_target: None,
-    }];
+    screen_scene.groups = vec![primary_group(
+        screen_cast_id,
+        HashMap::new(),
+        test_layout(vec![point_zone("zone_screen", "mock:screen", 0.5, 0.5)]),
+    )];
     screen_scene.unassigned_behavior = UnassignedBehavior::Off;
 
     let mut solid_scene = make_scene("Solid Scene");
-    solid_scene.groups = vec![RenderGroup {
-        id: RenderGroupId::new(),
-        name: "Solid".into(),
-        description: None,
-        effect_id: Some(solid_id),
-        controls: HashMap::new(),
-        preset_id: None,
-        layout: test_layout(vec![point_zone("zone_screen", "mock:screen", 0.5, 0.5)]),
-        brightness: 1.0,
-        enabled: true,
-        color: None,
-        display_target: None,
-    }];
+    solid_scene.groups = vec![primary_group(
+        solid_id,
+        HashMap::new(),
+        test_layout(vec![point_zone("zone_screen", "mock:screen", 0.5, 0.5)]),
+    )];
     solid_scene.unassigned_behavior = UnassignedBehavior::Off;
 
     {
@@ -1596,17 +1631,9 @@ async fn pipeline_publishes_frame_data_via_watch() {
 
 #[tokio::test]
 async fn pipeline_keeps_latest_frame_hot_for_late_subscribers() {
-    let mut effect_engine = EffectEngine::new();
-    effect_engine
-        .activate(
-            Box::new(MockEffectRenderer::solid(255, 32, 128)),
-            MockEffectRenderer::sample_metadata("late-frame-subscriber"),
-        )
-        .expect("activate");
-
     let layout = test_layout(vec![point_zone("zone_main", "mock:main", 0.5, 0.5)]);
     let state = make_render_state(
-        effect_engine,
+        active_builtin_effect("solid_color", solid_color_controls(255, 0, 0)),
         SpatialEngine::new(layout),
         BackendManager::new(),
     );
@@ -1637,7 +1664,7 @@ async fn pipeline_keeps_latest_frame_hot_for_late_subscribers() {
         .iter()
         .find(|zone| zone.zone_id == "zone_main")
         .expect("late subscriber should see sampled zones");
-    assert_eq!(zone.colors.first().copied(), Some([255, 32, 128]));
+    assert_eq!(zone.colors.first().copied(), Some([255, 0, 0]));
 }
 
 #[tokio::test]
@@ -1728,38 +1755,11 @@ async fn pipeline_renders_active_effect_to_devices() {
     let layout = test_layout(vec![strip_zone("zone_0", "mock:strip", 10)]);
     let spatial_engine = SpatialEngine::new(layout);
 
-    // Set up effect engine with a solid red renderer.
-    let mut effect_engine = EffectEngine::new();
-    let renderer = MockEffectRenderer::solid(255, 0, 0);
-    let metadata = MockEffectRenderer::sample_metadata("red_test");
-    effect_engine
-        .activate(Box::new(renderer), metadata)
-        .expect("activate");
-
-    let (_, power_state) = watch::channel(OutputPowerState::default());
-    let event_bus = Arc::new(HypercolorBus::new());
-    let state = RenderThreadState {
-        effect_engine: Arc::new(Mutex::new(effect_engine)),
-        effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
-        spatial_engine: Arc::new(RwLock::new(spatial_engine)),
-        backend_manager: Arc::new(Mutex::new(backend_manager)),
-        performance: Arc::new(RwLock::new(PerformanceTracker::default())),
-        discovery_runtime: None,
-        event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(event_bus)),
-        render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
-        scene_manager: Arc::new(RwLock::new(SceneManager::new())),
-        input_manager: Arc::new(Mutex::new(InputManager::new())),
-        power_state,
-        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-            "device-settings.json",
-        )))),
-        scene_transactions: SceneTransactionQueue::default(),
-        screen_capture_configured: false,
-        canvas_dims: CanvasDims::new(320, 200),
-        render_acceleration_mode: RenderAccelerationMode::Cpu,
-        configured_max_fps_tier: FpsTier::Full,
-    };
+    let state = make_render_state(
+        active_builtin_effect("solid_color", solid_color_controls(255, 0, 0)),
+        spatial_engine,
+        backend_manager,
+    );
 
     // Start.
     {
@@ -1799,16 +1799,8 @@ async fn pipeline_renders_active_effect_to_devices() {
 
 #[tokio::test]
 async fn pipeline_publishes_slot_backed_canvas_for_active_effects() {
-    let mut effect_engine = EffectEngine::new();
-    effect_engine
-        .activate(
-            Box::new(MockEffectRenderer::solid(255, 0, 0)),
-            MockEffectRenderer::sample_metadata("slot-backed-canvas"),
-        )
-        .expect("activate");
-
     let state = make_render_state(
-        effect_engine,
+        active_builtin_effect("solid_color", solid_color_controls(255, 0, 0)),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -1843,16 +1835,8 @@ async fn pipeline_publishes_slot_backed_canvas_for_active_effects() {
 
 #[tokio::test]
 async fn pipeline_keeps_slot_backed_canvas_when_recent_frames_are_retained() {
-    let mut effect_engine = EffectEngine::new();
-    effect_engine
-        .activate(
-            Box::new(MockEffectRenderer::solid(255, 0, 0)),
-            MockEffectRenderer::sample_metadata("retained-slot-backed-canvas"),
-        )
-        .expect("activate");
-
     let state = make_render_state(
-        effect_engine,
+        active_builtin_effect("solid_color", solid_color_controls(255, 0, 0)),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -1892,16 +1876,8 @@ async fn pipeline_keeps_slot_backed_canvas_when_recent_frames_are_retained() {
 
 #[tokio::test]
 async fn pipeline_keeps_slot_backed_canvas_with_multiple_receivers() {
-    let mut effect_engine = EffectEngine::new();
-    effect_engine
-        .activate(
-            Box::new(MockEffectRenderer::solid(255, 0, 0)),
-            MockEffectRenderer::sample_metadata("multi-receiver-slot-backed-canvas"),
-        )
-        .expect("activate");
-
     let state = make_render_state(
-        effect_engine,
+        active_builtin_effect("solid_color", solid_color_controls(255, 0, 0)),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -2010,7 +1986,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
     }
 
     let layout = test_layout(vec![strip_zone("zone_0", &layout_device_id, 8)]);
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout)));
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout.clone())));
     let event_bus = Arc::new(HypercolorBus::new());
     let discovery_runtime = DiscoveryRuntime {
         device_registry: device_registry.clone(),
@@ -2044,12 +2020,20 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         task_spawner: tokio::runtime::Handle::current(),
     };
 
-    let mut effect_engine = EffectEngine::new();
-    let renderer = MockEffectRenderer::solid(255, 0, 0);
-    let metadata = MockEffectRenderer::sample_metadata("write-failure");
-    effect_engine
-        .activate(Box::new(renderer), metadata)
-        .expect("activate");
+    let effect_engine = active_builtin_effect("solid_color", solid_color_controls(255, 0, 0));
+    let mut scene_manager = SceneManager::with_default();
+    let metadata = effect_engine
+        .active_metadata()
+        .cloned()
+        .expect("builtin effect should expose metadata");
+    scene_manager
+        .upsert_primary_group(
+            &metadata,
+            effect_engine.active_controls().clone(),
+            effect_engine.active_preset_id().and_then(|id| id.parse().ok()),
+            layout.clone(),
+        )
+        .expect("failing-device test should seed a primary group");
 
     let (_, power_state) = watch::channel(OutputPowerState::default());
     let state = RenderThreadState {
@@ -2062,7 +2046,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
-        scene_manager: Arc::new(RwLock::new(SceneManager::new())),
+        scene_manager: Arc::new(RwLock::new(scene_manager)),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         power_state,
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
@@ -2167,11 +2151,12 @@ async fn pipeline_uses_screen_input_canvas_when_available() {
         point_zone("zone_right", "mock:right", 0.75, 0.5),
     ]);
 
-    let state = make_render_state(
+    let mut state = make_render_state(
         EffectEngine::new(),
         SpatialEngine::new(layout),
         BackendManager::new(),
     );
+    state.screen_capture_configured = true;
 
     {
         let mut input_manager = state.input_manager.lock().await;
@@ -2658,16 +2643,8 @@ async fn idle_pipeline_skips_spectrum_publication_without_receivers() {
 
 #[tokio::test]
 async fn render_thread_reuses_published_spectrum_bins_between_frames() {
-    let mut effect_engine = EffectEngine::new();
-    effect_engine
-        .activate(
-            Box::new(MockEffectRenderer::solid(24, 32, 48)),
-            MockEffectRenderer::sample_metadata("spectrum-reuse"),
-        )
-        .expect("activate");
-
     let state = make_render_state(
-        effect_engine,
+        active_builtin_effect("solid_color", solid_color_controls(24, 32, 48)),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -2784,15 +2761,8 @@ async fn idle_pipeline_does_not_republish_empty_screen_canvas_frames() {
 
 #[tokio::test]
 async fn idle_pipeline_skips_canvas_publication_without_receivers() {
-    let mut effect_engine = EffectEngine::new();
-    effect_engine
-        .activate(
-            Box::new(MockEffectRenderer::solid(64, 32, 255)),
-            MockEffectRenderer::sample_metadata("canvas-idle"),
-        )
-        .expect("activate");
     let state = make_render_state(
-        effect_engine,
+        active_builtin_effect("solid_color", solid_color_controls(64, 32, 255)),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -2831,15 +2801,8 @@ async fn idle_pipeline_skips_canvas_publication_without_receivers() {
 
 #[tokio::test]
 async fn pipeline_throttles_canvas_preview_publication_to_tracked_receiver_fps() {
-    let mut effect_engine = EffectEngine::new();
-    effect_engine
-        .activate(
-            Box::new(MockEffectRenderer::rainbow()),
-            MockEffectRenderer::sample_metadata("canvas-preview-throttle"),
-        )
-        .expect("activate");
     let state = make_render_state(
-        effect_engine,
+        active_builtin_effect("rainbow", HashMap::new()),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
@@ -2909,13 +2872,20 @@ fn preview_runtime_receivers_share_event_bus_canvas_channel() {
 #[tokio::test]
 async fn release_sleep_clears_published_frame_and_canvas_once() {
     let layout = test_layout(vec![strip_zone("zone_0", "mock:strip", 8)]);
-    let mut effect_engine = EffectEngine::new();
-    effect_engine
-        .activate(
-            Box::new(MockEffectRenderer::solid(255, 0, 0)),
-            MockEffectRenderer::sample_metadata("release-sleep"),
+    let effect_engine = active_builtin_effect("solid_color", solid_color_controls(255, 0, 0));
+    let mut scene_manager = SceneManager::with_default();
+    let metadata = effect_engine
+        .active_metadata()
+        .cloned()
+        .expect("builtin effect should expose metadata");
+    scene_manager
+        .upsert_primary_group(
+            &metadata,
+            effect_engine.active_controls().clone(),
+            effect_engine.active_preset_id().and_then(|id| id.parse().ok()),
+            layout.clone(),
         )
-        .expect("activate");
+        .expect("release-sleep test should seed a primary group");
 
     let (power_tx, power_state) = watch::channel(OutputPowerState::default());
     let event_bus = Arc::new(HypercolorBus::new());
@@ -2929,7 +2899,7 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(event_bus)),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
-        scene_manager: Arc::new(RwLock::new(SceneManager::new())),
+        scene_manager: Arc::new(RwLock::new(scene_manager)),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         power_state,
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(

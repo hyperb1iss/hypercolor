@@ -411,6 +411,7 @@ async fn activate_display_face_scene(
             description: None,
             effect_id: Some(EffectId::from(Uuid::now_v7())),
             controls: HashMap::new(),
+            control_bindings: HashMap::new(),
             preset_id: None,
             layout: SpatialLayout {
                 id: "display-face-layout".to_owned(),
@@ -428,6 +429,7 @@ async fn activate_display_face_scene(
             enabled: true,
             color: None,
             display_target: Some(DisplayFaceTarget { device_id }),
+            role: hypercolor_types::scene::RenderGroupRole::Display,
         }],
         transition: TransitionSpec {
             duration_ms: 0,
@@ -438,6 +440,7 @@ async fn activate_display_face_scene(
         enabled: true,
         metadata: HashMap::new(),
         unassigned_behavior: UnassignedBehavior::Off,
+        kind: hypercolor_types::scene::SceneKind::Named,
     };
 
     let mut manager = scene_manager.write().await;

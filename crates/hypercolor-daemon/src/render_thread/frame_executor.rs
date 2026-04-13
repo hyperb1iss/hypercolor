@@ -52,8 +52,6 @@ pub(crate) async fn execute_frame(
         render.apply_canvas_resize(width, height);
         frame_loop.idle_black_pushed = false;
         frame_loop.sleep_black_pushed = false;
-        let mut engine = state.effect_engine.lock().await;
-        engine.set_canvas_size(width, height);
     }
     let scene_snapshot = build_frame_scene_snapshot(
         state,

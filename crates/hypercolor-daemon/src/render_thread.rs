@@ -6,7 +6,7 @@
 //! ```text
 //! loop {
 //!     RenderLoop::tick()              // timing gate + FPS control
-//!     EffectEngine::tick()            // render effect → Canvas
+//!     compose active scene groups     // render groups → composed canvas
 //!     SpatialEngine::sample()         // map pixels → LED colors
 //!     BackendManager::write_frame()   // push to hardware
 //!     HypercolorBus::publish()        // notify subscribers
@@ -116,7 +116,7 @@ pub struct RenderThread {
 /// duration of each pipeline stage.
 #[derive(Clone)]
 pub struct RenderThreadState {
-    /// Active effect lifecycle and frame production.
+    /// Legacy active effect lifecycle shared with APIs during migration.
     pub effect_engine: Arc<Mutex<EffectEngine>>,
 
     /// Effect catalog used to resolve render-group assignments.

@@ -26,12 +26,12 @@ pub(crate) struct EffectDemand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EffectSceneSnapshot {
     pub(crate) demand: EffectDemand,
-    pub(crate) generation: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CachedRenderGroupDemand {
     pub(crate) groups_revision: u64,
+    pub(crate) screen_capture_configured: bool,
     pub(crate) demand: EffectDemand,
 }
 
@@ -57,7 +57,6 @@ pub(crate) async fn build_frame_scene_snapshot(
         budget_us: render_loop_snapshot.budget_us,
         output_power: *state.power_state.borrow(),
         effect_demand: effect_scene.demand,
-        effect_generation: effect_scene.generation,
         scene_runtime,
         spatial_engine: render_scene_state.spatial_engine().clone(),
     })
@@ -113,47 +112,12 @@ async fn current_effect_scene_snapshot(
     last_render_group_demand: &mut Option<CachedRenderGroupDemand>,
     screen_capture_configured: bool,
 ) -> EffectSceneSnapshot {
-    if scene_runtime.has_active_render_groups() {
-        return current_render_group_effect_scene_snapshot(
-            state,
-            scene_runtime,
-            last_render_group_demand,
-        )
-        .await;
-    }
-
-    let engine = state.effect_engine.lock().await;
-    let effect_running = engine.is_running();
-    let audio_capture_active = effect_running
-        && engine
-            .active_metadata()
-            .is_some_and(|meta| meta.audio_reactive);
-    let screen_capture_active = (effect_running
-        && engine
-            .active_metadata()
-            .is_some_and(|meta| meta.screen_reactive))
-        || (!effect_running && screen_capture_configured);
-    EffectSceneSnapshot {
-        demand: EffectDemand {
-            effect_running,
-            audio_capture_active,
-            screen_capture_active,
-        },
-        generation: engine.scene_generation(),
-    }
-}
-
-async fn current_render_group_effect_scene_snapshot(
-    state: &RenderThreadState,
-    scene_runtime: &SceneRuntimeSnapshot,
-    last_render_group_demand: &mut Option<CachedRenderGroupDemand>,
-) -> EffectSceneSnapshot {
     if let Some(cached) = last_render_group_demand.as_ref()
         && cached.groups_revision == scene_runtime.active_render_groups_revision
+        && cached.screen_capture_configured == screen_capture_configured
     {
         return EffectSceneSnapshot {
             demand: cached.demand,
-            generation: 0,
         };
     }
 
@@ -178,6 +142,10 @@ async fn current_render_group_effect_scene_snapshot(
         }
     }
 
+    if !effect_running && screen_capture_configured {
+        screen_capture_active = true;
+    }
+
     let demand = EffectDemand {
         effect_running,
         audio_capture_active,
@@ -185,13 +153,11 @@ async fn current_render_group_effect_scene_snapshot(
     };
     *last_render_group_demand = Some(CachedRenderGroupDemand {
         groups_revision: scene_runtime.active_render_groups_revision,
+        screen_capture_configured,
         demand,
     });
 
-    EffectSceneSnapshot {
-        demand,
-        generation: 0,
-    }
+    EffectSceneSnapshot { demand }
 }
 
 pub(crate) async fn reconcile_audio_capture(

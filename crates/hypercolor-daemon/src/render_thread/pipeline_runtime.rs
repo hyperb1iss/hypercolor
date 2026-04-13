@@ -88,8 +88,6 @@ pub(crate) struct FrameLoopState {
 }
 
 pub(crate) struct RenderCaches {
-    pub(crate) effect_target_canvas: Option<Canvas>,
-    pub(crate) effect_queue: ProducerQueue,
     pub(crate) screen_queue: ProducerQueue,
     pub(crate) composition_planner: CompositionPlanner,
     pub(crate) sparkleflinger: SparkleFlinger,
@@ -122,7 +120,6 @@ impl RenderCaches {
         );
         self.render_group_runtime = RenderGroupRuntime::new(width, height);
         self.composition_planner = CompositionPlanner::new();
-        self.effect_target_canvas = None;
         self.static_surface_cache = None;
     }
 
@@ -153,10 +150,6 @@ pub(crate) struct PipelineRuntime {
 
 impl PipelineRuntime {
     pub(crate) async fn from_state(state: &RenderThreadState) -> Result<Self> {
-        {
-            let mut effect_engine = state.effect_engine.lock().await;
-            effect_engine.set_canvas_size(state.canvas_dims.width(), state.canvas_dims.height());
-        }
         let initial_spatial_engine = state.spatial_engine.read().await.clone();
         Self::new(
             state.canvas_dims.width(),
@@ -192,8 +185,6 @@ impl PipelineRuntime {
                 last_render_group_demand: None,
             },
             render: RenderCaches {
-                effect_target_canvas: None,
-                effect_queue: ProducerQueue::new(),
                 screen_queue: ProducerQueue::new(),
                 composition_planner: CompositionPlanner::new(),
                 sparkleflinger: SparkleFlinger::new(render_acceleration_mode)?,
