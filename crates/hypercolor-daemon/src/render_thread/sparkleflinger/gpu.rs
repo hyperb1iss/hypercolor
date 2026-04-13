@@ -2301,6 +2301,7 @@ mod tests {
         GpuSparkleFlinger, GpuZoneSamplingDispatch, PendingPreviewMap, PendingPreviewReadback,
     };
     use crate::render_thread::producer_queue::ProducerFrame;
+    use crate::render_thread::sparkleflinger::gpu_sampling::GpuSamplingPlan;
     use crate::render_thread::sparkleflinger::{
         CompositionLayer, CompositionPlan, PreviewSurfaceRequest, cpu::CpuSparkleFlinger,
     };
@@ -4555,6 +4556,135 @@ mod tests {
             .expect("GPU pending sample finalize should succeed");
 
         assert_eq!(compositor.spatial_sampler.sample_readback_wait_count(), 0);
+        assert_eq!(
+            sampled,
+            engine.sample(
+                expected
+                    .sampling_canvas
+                    .as_ref()
+                    .expect("CPU compose should materialize a canvas"),
+            )
+        );
+    }
+
+    #[test]
+    fn gpu_sampler_nonblocking_finalize_eventually_completes_without_explicit_wait() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
+            ],
+        );
+        let expected =
+            CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+
+        compositor
+            .compose(&plan, false, None)
+            .expect("GPU composition should succeed before nonblocking sample finalize");
+
+        let mut sampled = Vec::new();
+        let mut pending = match compositor
+            .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
+            .expect("GPU sample dispatch should succeed")
+        {
+            GpuZoneSamplingDispatch::Pending(pending) => pending,
+            _ => panic!("GPU sample dispatch should defer readback completion"),
+        };
+
+        let start = std::time::Instant::now();
+        loop {
+            if compositor
+                .try_finish_pending_zone_sampling(&mut pending, &mut sampled)
+                .expect("nonblocking GPU sample finalize should not fail while pending")
+            {
+                break;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(2),
+                "expected nonblocking GPU sample finalize to complete within 2 seconds"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        assert!(!compositor.take_last_sample_readback_wait_blocked());
+        assert_eq!(
+            sampled,
+            engine.sample(
+                expected
+                    .sampling_canvas
+                    .as_ref()
+                    .expect("CPU compose should materialize a canvas"),
+            )
+        );
+    }
+
+    #[test]
+    fn gpu_pending_sample_matches_and_finishes_across_retained_bypass_frames() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
+        let source = PublishedSurface::from_owned_canvas(patterned_canvas(12), 1, 1);
+        let plan = CompositionPlan::single(
+            4,
+            4,
+            CompositionLayer::replace(ProducerFrame::Surface(source.clone())),
+        );
+        let expected =
+            CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+
+        compositor
+            .compose(&plan, false, None)
+            .expect("initial retained GPU composition should succeed");
+
+        let mut sampled = Vec::new();
+        let mut pending = match compositor
+            .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
+            .expect("GPU sample dispatch should succeed")
+        {
+            GpuZoneSamplingDispatch::Pending(pending) => pending,
+            _ => panic!("GPU sample dispatch should defer readback completion"),
+        };
+
+        let start = std::time::Instant::now();
+        loop {
+            compositor
+                .compose(&plan, false, None)
+                .expect("retained GPU composition should keep succeeding");
+            assert!(
+                compositor.pending_zone_sampling_matches_current_work(
+                    &pending,
+                    engine.sampling_plan().as_ref()
+                ),
+                "retained bypass should preserve pending GPU sample identity: pending_output_generation={} current_output_generation={} pending_sampling_plan={:?} current_sampling_plan={:?} current_output={:?} cached_key_present={}",
+                pending.output_generation,
+                compositor.output_generation,
+                pending.sampling_plan,
+                GpuSamplingPlan::key(engine.sampling_plan().as_ref()),
+                compositor.current_output,
+                compositor.cached_composition_key.is_some()
+            );
+            if compositor
+                .try_finish_pending_zone_sampling(&mut pending, &mut sampled)
+                .expect("nonblocking GPU sample finalize should not fail while pending")
+            {
+                break;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(2),
+                "expected retained pending GPU sample to complete within 2 seconds"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+
         assert_eq!(
             sampled,
             engine.sample(

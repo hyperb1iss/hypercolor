@@ -177,12 +177,15 @@ pub(crate) async fn execute_frame(
     let input_us = micros_between(input_start, input_done_at);
     let input_done_us = micros_between(frame_start, input_done_at);
     let mut stale_deferred_sampling = None;
+    let mut completed_deferred_sampling = None;
     if let Some(mut deferred_sampling) = render.deferred_zone_sampling.take() {
         match render.sparkleflinger.try_finish_pending_zone_sampling(
             &mut deferred_sampling,
             &mut render.deferred_zone_sampling_scratch,
         ) {
-            Ok(true) => {}
+            Ok(true) => {
+                completed_deferred_sampling = Some(deferred_sampling);
+            }
             Ok(false) => {
                 stale_deferred_sampling = Some(deferred_sampling);
             }
@@ -258,8 +261,22 @@ pub(crate) async fn execute_frame(
                 can_hold_published_frame_for_deferred_sampling(layout.as_ref(), &published_frame),
             )
         };
+        let completed_sampling_matches_current =
+            completed_deferred_sampling.as_ref().is_some_and(|pending| {
+                render
+                    .sparkleflinger
+                    .pending_zone_sampling_matches_current_work(pending, prepared_zones.as_ref())
+            });
+        if completed_sampling_matches_current {
+            render
+                .recycled_frame
+                .zones
+                .clone_from(&render.deferred_zone_sampling_scratch);
+            gpu_zone_sampling = true;
+            gpu_sample_retry_hit = true;
+        }
         let mut stale_sampling_matches_current = false;
-        if let Some(mut pending) = stale_deferred_sampling.take() {
+        if !gpu_zone_sampling && let Some(mut pending) = stale_deferred_sampling.take() {
             if render
                 .sparkleflinger
                 .pending_zone_sampling_matches_current_work(&pending, prepared_zones.as_ref())

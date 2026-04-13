@@ -37,6 +37,23 @@ impl ProducerFrame {
             Self::Surface(surface) => (Canvas::from_published_surface(&surface), Some(surface)),
         }
     }
+
+    fn stable_identity_matches(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Canvas(left), Self::Canvas(right)) => {
+                left.width() == right.width()
+                    && left.height() == right.height()
+                    && left.storage_identity() == right.storage_identity()
+            }
+            (Self::Surface(left), Self::Surface(right)) => {
+                left.width() == right.width()
+                    && left.height() == right.height()
+                    && left.generation() == right.generation()
+                    && left.storage_identity() == right.storage_identity()
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +120,14 @@ impl ProducerQueue {
     }
 
     fn replace_latest(&mut self, submission: ProducerSubmission) -> Option<ProducerFrame> {
+        if self
+            .latest
+            .as_ref()
+            .is_some_and(|current| current.frame.stable_identity_matches(&submission.frame))
+        {
+            return Some(submission.frame);
+        }
+
         self.latest
             .replace(submission)
             .map(|previous| previous.frame)
@@ -117,7 +142,7 @@ impl ProducerFrameState {
 
 #[cfg(test)]
 mod tests {
-    use hypercolor_core::types::canvas::Canvas;
+    use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
 
     use super::{ProducerFrame, ProducerFrameState, ProducerQueue};
 
@@ -160,5 +185,47 @@ mod tests {
         };
         assert_eq!(replaced.width(), first.width());
         assert_eq!(replaced.height(), first.height());
+    }
+
+    #[test]
+    fn producer_queue_keeps_duplicate_surface_submissions_retained() {
+        let mut queue = ProducerQueue::new();
+        let surface = PublishedSurface::from_owned_canvas(Canvas::new(3, 5), 7, 11);
+        queue.submit_latest(ProducerFrame::Surface(surface.clone()));
+
+        let fresh = queue.latch_latest().expect("fresh surface should latch");
+        assert_eq!(fresh.state, ProducerFrameState::Fresh);
+
+        let duplicate = queue.submit_latest(ProducerFrame::Surface(surface.clone()));
+        let Some(ProducerFrame::Surface(duplicate)) = duplicate else {
+            panic!("duplicate surface should be returned to the caller");
+        };
+        assert_eq!(duplicate.storage_identity(), surface.storage_identity());
+
+        let retained = queue
+            .latch_latest()
+            .expect("duplicate surface should leave the previous frame retained");
+        assert_eq!(retained.state, ProducerFrameState::Retained);
+    }
+
+    #[test]
+    fn producer_queue_keeps_duplicate_canvas_submissions_retained() {
+        let mut queue = ProducerQueue::new();
+        let canvas = Canvas::new(3, 5);
+        queue.submit_latest(ProducerFrame::Canvas(canvas.clone()));
+
+        let fresh = queue.latch_latest().expect("fresh canvas should latch");
+        assert_eq!(fresh.state, ProducerFrameState::Fresh);
+
+        let duplicate = queue.submit_latest(ProducerFrame::Canvas(canvas.clone()));
+        let Some(ProducerFrame::Canvas(duplicate)) = duplicate else {
+            panic!("duplicate canvas should be returned to the caller");
+        };
+        assert_eq!(duplicate.storage_identity(), canvas.storage_identity());
+
+        let retained = queue
+            .latch_latest()
+            .expect("duplicate canvas should leave the previous frame retained");
+        assert_eq!(retained.state, ProducerFrameState::Retained);
     }
 }

@@ -186,7 +186,10 @@ async fn scenes_create_serializes_mutation_mode_and_enabled() -> Result<()> {
 async fn scenes_activate_sends_transition_ms_body() -> Result<()> {
     let captured_body: SharedBody = Arc::new(Mutex::new(None));
     let router = Router::new()
-        .route("/api/v1/scenes/{scene}/activate", post(capture_scene_activate))
+        .route(
+            "/api/v1/scenes/{scene}/activate",
+            post(capture_scene_activate),
+        )
         .with_state(Arc::clone(&captured_body));
     let (port, shutdown_tx, task) = spawn_server(router).await?;
 

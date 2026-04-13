@@ -447,7 +447,9 @@ fn str_field<'a>(v: &'a serde_json::Value, key: &str, default: &'a str) -> &'a s
 }
 
 fn format_scene_summary(data: &serde_json::Value, p: &Painter) -> Option<String> {
-    let scene = data.get("active_scene").and_then(serde_json::Value::as_str)?;
+    let scene = data
+        .get("active_scene")
+        .and_then(serde_json::Value::as_str)?;
     let summary = p.name(scene);
     if bool_field(data, "active_scene_snapshot_locked") {
         Some(format!("{summary} {}", p.warning("[snap]")))

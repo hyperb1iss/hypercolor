@@ -339,6 +339,58 @@ impl InputSource for MockScreenPreviewSource {
     }
 }
 
+struct SequencedScreenPreviewSource {
+    running: bool,
+    pending_frames: VecDeque<ScreenData>,
+    last_frame: ScreenData,
+}
+
+impl SequencedScreenPreviewSource {
+    fn new(frames: Vec<ScreenData>) -> Self {
+        let pending_frames: VecDeque<_> = frames.into();
+        let last_frame = pending_frames
+            .back()
+            .cloned()
+            .expect("sequenced screen preview source requires at least one frame");
+        Self {
+            running: false,
+            pending_frames,
+            last_frame,
+        }
+    }
+}
+
+impl InputSource for SequencedScreenPreviewSource {
+    fn name(&self) -> &'static str {
+        "sequenced_screen_preview"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        if !self.running {
+            return Ok(InputData::None);
+        }
+
+        let frame = self
+            .pending_frames
+            .pop_front()
+            .unwrap_or_else(|| self.last_frame.clone());
+        Ok(InputData::Screen(frame))
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
 struct BurstyScreenPreviewSource {
     running: bool,
     next_screen_data: Option<ScreenData>,
@@ -752,6 +804,29 @@ async fn wait_for_render_loop_frame_number(
             "expected render loop frame_number to reach {minimum_frame_number} within 2 seconds, got {frame_number}"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn preview_screen_data(left: [u8; 3], right: [u8; 3], frame_number: u32) -> ScreenData {
+    let mut preview_canvas = Canvas::new(320, 200);
+    for y in 0..200 {
+        for x in 0..320 {
+            let rgb = if x < 160 { left } else { right };
+            preview_canvas.set_pixel(x, y, Rgba::new(rgb[0], rgb[1], rgb[2], 255));
+        }
+    }
+
+    ScreenData {
+        zone_colors: Vec::new(),
+        grid_width: 0,
+        grid_height: 0,
+        canvas_downscale: Some(PublishedSurface::from_owned_canvas(
+            preview_canvas,
+            frame_number,
+            frame_number.saturating_mul(10),
+        )),
+        source_width: 320,
+        source_height: 200,
     }
 }
 
@@ -2764,6 +2839,144 @@ async fn pipeline_gpu_fresh_screen_preview_hold_keeps_frame_watch_quiet() {
         shutdown = rt.shutdown() => shutdown.expect("shutdown"),
         _ = &mut deadline_rx => panic!("render thread should stop within 2 seconds"),
     }
+}
+
+#[cfg(feature = "wgpu")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "fresh GPU latest-wins coverage needs full render-thread setup"
+)]
+#[tokio::test]
+async fn pipeline_gpu_fresh_screen_preview_publishes_latest_colors_after_deferred_sampling() {
+    let layout = test_layout(vec![
+        point_zone("zone_left", "mock:left", 0.25, 0.5),
+        point_zone("zone_right", "mock:right", 0.75, 0.5),
+    ]);
+
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(layout),
+        BackendManager::new(),
+    );
+    state.screen_capture_configured = true;
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+
+    let initial_screen = preview_screen_data([255, 0, 0], [0, 255, 0], 1);
+    let intermediate_screen = preview_screen_data([0, 0, 255], [255, 255, 0], 2);
+    let latest_screen = preview_screen_data([0, 255, 255], [255, 0, 255], 3);
+
+    {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager.add_source(Box::new(SequencedScreenPreviewSource::new(vec![
+            initial_screen,
+            intermediate_screen,
+            latest_screen,
+        ])));
+        input_manager
+            .start_all()
+            .expect("input manager should start");
+    }
+
+    let mut frame_rx = state.event_bus.frame_receiver();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
+        .await
+        .expect("expected initial sampled GPU frame within 2 seconds")
+        .expect("frame sender should remain connected");
+
+    let initial_frame = frame_rx.borrow().clone();
+    wait_for_render_loop_frame_number(&state, 3).await;
+
+    let latest_frame = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            frame_rx
+                .changed()
+                .await
+                .expect("frame sender should remain connected");
+            let frame = frame_rx.borrow().clone();
+            let left = frame
+                .zones
+                .iter()
+                .find(|zone| zone.zone_id == "zone_left")
+                .and_then(|zone| zone.colors.first().copied());
+            if frame.frame_number > initial_frame.frame_number
+                && left.is_some_and(|color| color != [255, 0, 0])
+            {
+                break frame;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        let loop_frame_number = state
+            .render_loop
+            .try_read()
+            .map_or(0, |render_loop| render_loop.frame_number());
+        let performance_debug = state
+            .performance
+            .try_read()
+            .map(|metrics| format!("{metrics:?}"))
+            .unwrap_or_else(|_| "unavailable".to_owned());
+        let last_frame = frame_rx.borrow().clone();
+        panic!(
+            "expected a deferred GPU sample color change within 2 seconds: render_loop.frame_number={} last_watch_frame_number={} last_watch_zone_count={} performance={}",
+            loop_frame_number,
+            last_frame.frame_number,
+            last_frame.zones.len(),
+            performance_debug,
+        );
+    });
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    let (deadline_tx, mut deadline_rx) = oneshot::channel();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(2));
+        let _ = deadline_tx.send(());
+    });
+    tokio::select! {
+        shutdown = rt.shutdown() => shutdown.expect("shutdown"),
+        _ = &mut deadline_rx => panic!("render thread should stop within 2 seconds"),
+    }
+
+    let initial_left = initial_frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_left")
+        .and_then(|zone| zone.colors.first().copied())
+        .expect("initial left sample should exist");
+    let initial_right = initial_frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_right")
+        .and_then(|zone| zone.colors.first().copied())
+        .expect("initial right sample should exist");
+    let latest_left = latest_frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_left")
+        .and_then(|zone| zone.colors.first().copied())
+        .expect("latest left sample should exist");
+    let latest_right = latest_frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_right")
+        .and_then(|zone| zone.colors.first().copied())
+        .expect("latest right sample should exist");
+
+    assert_eq!(initial_left, [255, 0, 0]);
+    assert_eq!(initial_right, [0, 255, 0]);
+    assert_eq!(latest_left, [0, 255, 255]);
+    assert_eq!(latest_right, [255, 0, 255]);
 }
 
 #[tokio::test]
