@@ -58,7 +58,7 @@ zbus = { workspace = true }
 zerocopy = { workspace = true }
 dpi = { workspace = true, optional = true }
 nvml-wrapper = { workspace = true, optional = true }
-servo = { package = "libservo", git = "https://github.com/servo/servo", rev = "7c2c0aaf23107a16cddb8b5f7904bcb3f308a086", default-features = false, optional = true }
+servo = { version = "0.1.0", default-features = false, optional = true }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"], optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]

@@ -38,7 +38,7 @@ Funded by Sovereign Tech Fund (~545K EUR), Igalia, Linux Foundation Europe. Summ
 
 | Concern | Status | Evidence |
 |---|---|---|
-| Build complexity | **Improved** | Prebuilt SpiderMonkey archives. `cargo run -p libservo --example winit_minimal` works. CI down to 8 min. |
+| Build complexity | **Improved** | Prebuilt SpiderMonkey archives. `cargo run -p servo --example winit_minimal` works. CI down to 8 min. |
 | Windows/Cygwin | **Addressed** | Native MSVC builds work. v0.0.5 ships Windows binary. Use MSVC toolchain, not Cygwin. |
 | Software rendering perf | **Non-issue** | 320x200 = 256KB/frame. Software GL does 100s of FPS at this resolution. |
 | Vello memory growth | **Fixed** | PRs #38356 and #38406 merged. Scene pruned each frame. |
@@ -79,11 +79,11 @@ graph TD
 
 ```toml
 [dependencies]
-libservo = { git = "https://github.com/servo/servo", rev = "PIN_TO_STABLE_REV" }
+servo = { version = "0.1", default-features = false, optional = true }
 
 [features]
 default = ["servo"]
-servo = ["dep:libservo"]
+servo = ["dep:servo"]
 ```
 
 Feature-gated so the daemon compiles and runs with just the native Rust effects when Servo isn't available (CI, quick dev iteration, etc.).

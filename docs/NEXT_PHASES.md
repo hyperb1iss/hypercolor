@@ -118,7 +118,7 @@ Make these CLI commands actually work end-to-end:
 
 ### 6.1 — Servo Dependency Setup
 
-- Add `libservo` as a git dependency with pinned revision (target: v0.0.5+)
+- Add `servo` from crates.io with a pinned version (target: v0.1.0 LTS+)
 - Feature-gate: `features = ["servo"]` so the daemon compiles without it for quick dev
 - Set up `rust-toolchain` compatibility
 - Verify `cargo build` with the servo feature on Windows MSVC
@@ -128,11 +128,11 @@ Make these CLI commands actually work end-to-end:
 
 ```toml
 [dependencies]
-libservo = { git = "https://github.com/servo/servo", rev = "PIN", optional = true }
+servo = { version = "0.1", default-features = false, optional = true }
 
 [features]
 default = ["servo"]
-servo = ["dep:libservo"]
+servo = ["dep:servo"]
 ```
 
 **Files:** `crates/hypercolor-core/Cargo.toml`, workspace `Cargo.toml`

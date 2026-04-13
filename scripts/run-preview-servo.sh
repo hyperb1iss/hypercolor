@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Run hypercolor-daemon with Servo-enabled HTML effect rendering.
-# Uses the shared cache wrapper to avoid repeating expensive libservo/mozjs builds.
+# Uses the shared cache wrapper to avoid repeating expensive servo/mozjs builds.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

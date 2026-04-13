@@ -1,8 +1,8 @@
 # Servo Build Caching
 
-`libservo` pulls in `mozjs_sys`, which compiles a large native C++ codebase.
-The first build is expensive. Subsequent builds should be fast if caches are
-stable and reused.
+The `servo` crate pulls in `mozjs_sys`, which compiles a large native C++
+codebase. The first build is expensive. Subsequent builds should be fast if
+caches are stable and reused.
 
 ## Local Workflow
 
@@ -74,9 +74,9 @@ Cache these paths:
 Recommended cache key inputs:
 
 - `Cargo.lock`
-- `crates/hypercolor-core/Cargo.toml` (contains pinned `libservo` rev)
+- `crates/hypercolor-core/Cargo.toml` (contains the pinned `servo` version)
 - Rust toolchain version
 - target triple
 
-If the pinned `libservo` revision and toolchain are unchanged, warm builds
+If the pinned `servo` version and toolchain are unchanged, warm builds
 should avoid repeating the costly native compile.

@@ -275,7 +275,7 @@ wasm-plugins = ["dep:wasmtime", "dep:wasmtime-wasi"]
 grpc-bridge = ["dep:tonic"]
 
 # Effect engines
-servo = ["dep:libservo"]            # HTML/Canvas compatibility path
+servo = ["dep:servo"]               # HTML/Canvas compatibility path
 ```
 
 **Why Phase 1 works for launch:** No runtime complexity. No IPC overhead on the hot path. A contributor adds a new backend by implementing `DeviceBackend`, adding a feature flag, and opening a PR. The maintainer reviews Rust code they can fully audit. This is how most Rust projects handle extensibility (wgpu adapters, Bevy plugins, Axum extractors).

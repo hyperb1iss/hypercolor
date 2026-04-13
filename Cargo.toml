@@ -200,7 +200,7 @@ opt-level = 2
 # Servo HTML effects spend most CPU time in software canvas rasterization
 # (`vello_cpu` + SIMD helpers). Keep dev edit-compile loops fast while
 # avoiding debug-profile runtime cliffs for live preview.
-[profile.dev.package.libservo]
+[profile.dev.package.servo]
 opt-level = 3
 debug = 0
 
@@ -233,7 +233,7 @@ debug = 0
 opt-level = 3
 debug = 0
 
-[profile.dev.package.servo-canvas]
+[profile.dev.package.servo-paint]
 opt-level = 3
 debug = 0
 
@@ -278,7 +278,7 @@ opt-level = 2
 debug-assertions = false
 overflow-checks = false
 
-[profile.preview.package.libservo]
+[profile.preview.package.servo]
 opt-level = 3
 debug = 0
 
@@ -310,7 +310,7 @@ debug = 0
 opt-level = 3
 debug = 0
 
-[profile.preview.package.servo-canvas]
+[profile.preview.package.servo-paint]
 opt-level = 3
 debug = 0
 

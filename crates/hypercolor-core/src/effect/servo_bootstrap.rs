@@ -1,7 +1,7 @@
 //! Servo feature bootstrap helpers.
 //!
 //! This module is intentionally minimal for Phase 6.1:
-//! - verify that `libservo` is wired correctly behind a crate feature
+//! - verify that `servo` is wired correctly behind a crate feature
 //! - provide a tiny API to create a headless software rendering context
 //! - keep all Servo-specific types out of non-Servo builds
 

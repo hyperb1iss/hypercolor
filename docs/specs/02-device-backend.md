@@ -1975,7 +1975,7 @@ midi           = ["dep:midir"]
 wasm-plugins = ["dep:wasmtime", "dep:wasmtime-wasi"]
 
 # Effect engines
-servo = ["dep:libservo"]               # HTML/Canvas compatibility path
+servo = ["dep:servo"]                  # HTML/Canvas compatibility path
 
 # Development / debugging
 perf-dashboard = []                    # Enable /dashboard/performance endpoint

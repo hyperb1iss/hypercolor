@@ -1,7 +1,7 @@
 //! Shared Servo worker thread lifecycle and runtime.
 //!
 //! Servo initializes process-global options exactly once; recreating the
-//! runtime after a shutdown panics inside libservo. Hypercolor therefore
+//! runtime after a shutdown panics inside servo. Hypercolor therefore
 //! keeps one worker alive for the entire daemon lifetime and reuses it
 //! across HTML effect switches. The [`ServoCircuitBreaker`] gates retries
 //! for soft failures so a flaky effect load can't permanently knock HTML

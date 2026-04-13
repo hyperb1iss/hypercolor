@@ -1197,7 +1197,7 @@ but that's underselling it. The current Servo worker
 (`crates/hypercolor-core/src/effect/servo/worker.rs`) is built around:
 
 - one process-global `Servo` engine (initialized once, reinitialization
-  panics inside libservo)
+  panics inside servo)
 - one active `WebView` at any given time
 - one loaded HTML document — loading a new URL tears down the current
   document's JS context

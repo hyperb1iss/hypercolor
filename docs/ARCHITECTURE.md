@@ -748,10 +748,10 @@ Enables desktop integration: systemd service management, GNOME extension hooks, 
 
 | Crate | Purpose | License |
 |---|---|---|
-| `libservo` | HTML/Canvas/WebGL renderer | MPL-2.0 |
+| `servo` | HTML/Canvas/WebGL renderer | MPL-2.0 |
 | `surfman` | GPU surface management | MIT/Apache/MPL |
 
-Servo is a git dependency (not on crates.io). Requires pinned revision + matching `rust-toolchain`. MPL-2.0 is file-level copyleft — our code stays MIT/Apache, only modified Servo files carry MPL.
+Servo publishes versioned releases to crates.io (LTS `0.1.0`+). Requires a matching `rust-toolchain`. MPL-2.0 is file-level copyleft — our code stays MIT/Apache, only modified Servo files carry MPL.
 
 ---
 
