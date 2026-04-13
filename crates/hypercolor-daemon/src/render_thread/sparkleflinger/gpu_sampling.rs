@@ -97,7 +97,8 @@ pub(super) struct PendingGpuSampleReadback {
     used_bytes: u64,
     buffer: wgpu::Buffer,
     zones: Vec<GpuZoneRange>,
-    receiver: mpsc::Receiver<std::result::Result<(), wgpu::BufferAsyncError>>,
+    receiver: Option<mpsc::Receiver<std::result::Result<(), wgpu::BufferAsyncError>>>,
+    map_ready: bool,
     #[cfg(test)]
     slot: usize,
 }
@@ -437,33 +438,36 @@ impl GpuSpatialSampler {
     pub(super) fn finish_pending_readback(
         &mut self,
         device: &wgpu::Device,
-        pending_readback: PendingGpuSampleReadback,
+        mut pending_readback: PendingGpuSampleReadback,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<()> {
         self.last_readback_wait_blocked = false;
-        device
-            .poll(wgpu::PollType::Poll)
-            .context("GPU sample readiness poll failed")?;
-        let map_ready = match pending_readback.receiver.try_recv() {
-            Ok(Ok(())) => true,
-            Ok(Err(error)) => return Err(error).context("GPU sample buffer mapping failed"),
-            Err(TryRecvError::Disconnected) => {
-                anyhow::bail!("GPU sample channel closed before map completion")
-            }
-            Err(TryRecvError::Empty) => false,
-        };
-
-        if !map_ready {
+        if !self.try_finish_pending_readback(device, &mut pending_readback, zones)? {
             self.last_readback_wait_blocked = true;
             #[cfg(test)]
             {
                 self.sample_readback_wait_count =
                     self.sample_readback_wait_count.saturating_add(1);
             }
-            wait_for_zone_color_readback(device, &pending_readback)?;
+            wait_for_zone_color_readback(device, &mut pending_readback)?;
+            finish_zone_color_readback(&pending_readback, zones)?;
         }
 
-        finish_zone_color_readback(&pending_readback, zones)
+        Ok(())
+    }
+
+    pub(super) fn try_finish_pending_readback(
+        &mut self,
+        device: &wgpu::Device,
+        pending_readback: &mut PendingGpuSampleReadback,
+        zones: &mut Vec<ZoneColors>,
+    ) -> Result<bool> {
+        self.last_readback_wait_blocked = false;
+        if !poll_zone_color_readback_ready(device, pending_readback)? {
+            return Ok(false);
+        }
+        finish_zone_color_readback(pending_readback, zones)?;
+        Ok(true)
     }
 
     pub(super) fn take_last_readback_wait_blocked(&mut self) -> bool {
@@ -676,16 +680,47 @@ fn begin_zone_color_readback(
         used_bytes,
         buffer: buffer.clone(),
         zones,
-        receiver,
+        receiver: Some(receiver),
+        map_ready: false,
         #[cfg(test)]
         slot: _slot,
     }
 }
 
+fn poll_zone_color_readback_ready(
+    device: &wgpu::Device,
+    pending_readback: &mut PendingGpuSampleReadback,
+) -> Result<bool> {
+    if pending_readback.map_ready {
+        return Ok(true);
+    }
+    device
+        .poll(wgpu::PollType::Poll)
+        .context("GPU sample readiness poll failed")?;
+    let Some(receiver) = pending_readback.receiver.as_mut() else {
+        anyhow::bail!("GPU sample channel was unavailable before map completion")
+    };
+    match receiver.try_recv() {
+        Ok(Ok(())) => {
+            pending_readback.receiver = None;
+            pending_readback.map_ready = true;
+            Ok(true)
+        }
+        Ok(Err(error)) => Err(error).context("GPU sample buffer mapping failed"),
+        Err(TryRecvError::Disconnected) => {
+            anyhow::bail!("GPU sample channel closed before map completion")
+        }
+        Err(TryRecvError::Empty) => Ok(false),
+    }
+}
+
 fn wait_for_zone_color_readback(
     device: &wgpu::Device,
-    pending_readback: &PendingGpuSampleReadback,
+    pending_readback: &mut PendingGpuSampleReadback,
  ) -> Result<()> {
+    if pending_readback.map_ready {
+        return Ok(());
+    }
     device
         .poll(wgpu::PollType::Wait {
             submission_index: Some(pending_readback.submission_index.clone()),
@@ -694,9 +729,12 @@ fn wait_for_zone_color_readback(
         .context("GPU sample poll failed")?;
     pending_readback
         .receiver
+        .take()
+        .context("GPU sample channel was unavailable before wait completion")?
         .recv()
         .context("GPU sample channel closed before map completion")?
         .context("GPU sample buffer mapping failed")?;
+    pending_readback.map_ready = true;
     Ok(())
 }
 

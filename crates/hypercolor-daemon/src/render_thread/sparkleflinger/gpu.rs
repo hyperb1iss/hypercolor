@@ -646,32 +646,70 @@ impl GpuSparkleFlinger {
 
     pub(crate) fn finish_pending_zone_sampling(
         &mut self,
-        pending: PendingGpuZoneSampling,
+        mut pending: PendingGpuZoneSampling,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<()> {
-        self.spatial_sampler
-            .finish_pending_readback(&self.device, pending.pending_readback, zones)?;
-        if pending.output_generation == self.output_generation
-            && let Some(sampling_plan) = pending.sampling_plan
-        {
-            let mut cached_zones = self
-                .cached_sample_result
-                .take()
-                .map_or_else(Vec::new, |cached| cached.zones);
-            cached_zones.clone_from(zones);
-            self.cached_sample_result = Some(CachedSampleResult {
-                key: CachedSampleResultKey {
-                    output_generation: self.output_generation,
-                    sampling_plan,
-                },
-                zones: cached_zones,
-            });
+        if !self.try_finish_pending_zone_sampling(&mut pending, zones)? {
+            self.spatial_sampler
+                .finish_pending_readback(&self.device, pending.pending_readback, zones)?;
+            self.cache_finished_zone_sampling(
+                pending.output_generation,
+                pending.sampling_plan,
+                zones.as_slice(),
+            );
         }
         Ok(())
     }
 
+    pub(crate) fn try_finish_pending_zone_sampling(
+        &mut self,
+        pending: &mut PendingGpuZoneSampling,
+        zones: &mut Vec<ZoneColors>,
+    ) -> Result<bool> {
+        if !self.spatial_sampler.try_finish_pending_readback(
+            &self.device,
+            &mut pending.pending_readback,
+            zones,
+        )? {
+            return Ok(false);
+        }
+        self.cache_finished_zone_sampling(
+            pending.output_generation,
+            pending.sampling_plan,
+            zones.as_slice(),
+        );
+        Ok(true)
+    }
+
     pub(crate) fn take_last_sample_readback_wait_blocked(&mut self) -> bool {
         self.spatial_sampler.take_last_readback_wait_blocked()
+    }
+
+    fn cache_finished_zone_sampling(
+        &mut self,
+        output_generation: u64,
+        sampling_plan: Option<GpuSamplingPlanKey>,
+        zones: &[ZoneColors],
+    ) {
+        if output_generation != self.output_generation {
+            return;
+        }
+        let Some(sampling_plan) = sampling_plan else {
+            return;
+        };
+        let mut cached_zones = self
+            .cached_sample_result
+            .take()
+            .map_or_else(Vec::new, |cached| cached.zones);
+        cached_zones.clear();
+        cached_zones.extend_from_slice(zones);
+        self.cached_sample_result = Some(CachedSampleResult {
+            key: CachedSampleResultKey {
+                output_generation: self.output_generation,
+                sampling_plan,
+            },
+            zones: cached_zones,
+        });
     }
 
     pub(crate) fn resolve_preview_surface(&mut self) -> Result<Option<PublishedSurface>> {
@@ -4302,6 +4340,77 @@ mod tests {
             .expect("CPU compose should materialize a canvas");
         assert_eq!(large_sample, large_engine.sample(expected_canvas));
         assert_eq!(small_sample, small_engine.sample(expected_canvas));
+    }
+
+    #[test]
+    fn gpu_pending_sample_try_finish_can_prime_cache_without_blocking() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(sampling_layout(SamplingMode::Nearest));
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
+            ],
+        );
+        let expected =
+            CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+
+        compositor
+            .compose(&plan, false, None)
+            .expect("GPU composition should succeed before nonblocking sample finalize");
+
+        let mut sampled = Vec::new();
+        let mut pending = match compositor
+            .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
+            .expect("GPU sample dispatch should succeed")
+        {
+            GpuZoneSamplingDispatch::Pending(pending) => pending,
+            _ => panic!("GPU sample dispatch should defer readback completion"),
+        };
+        compositor
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(pending.pending_readback.submission_index()),
+                timeout: None,
+            })
+            .expect("GPU sample submission should become ready");
+
+        let dispatch_count_before = compositor.spatial_sampler.sample_dispatch_count();
+        let mut deferred_sample = Vec::new();
+        assert!(
+            compositor
+                .try_finish_pending_zone_sampling(&mut pending, &mut deferred_sample)
+                .expect("nonblocking GPU sample finalize should succeed when ready")
+        );
+        assert!(!compositor.take_last_sample_readback_wait_blocked());
+        assert_eq!(
+            deferred_sample,
+            engine.sample(
+                expected
+                    .sampling_canvas
+                    .as_ref()
+                    .expect("CPU compose should materialize a canvas"),
+            )
+        );
+
+        let mut cached_sample = Vec::new();
+        match compositor
+            .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut cached_sample)
+            .expect("cached GPU sample should succeed after nonblocking finalize")
+        {
+            GpuZoneSamplingDispatch::Ready => {}
+            _ => panic!("ready nonblocking finalize should prime the cached sample result"),
+        }
+        assert_eq!(cached_sample, deferred_sample);
+        assert_eq!(
+            compositor.spatial_sampler.sample_dispatch_count(),
+            dispatch_count_before
+        );
     }
 
     #[test]

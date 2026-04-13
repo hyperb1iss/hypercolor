@@ -325,6 +325,24 @@ impl SparkleFlinger {
         }
     }
 
+    pub(crate) fn try_finish_pending_zone_sampling(
+        &mut self,
+        pending: &mut PendingZoneSampling,
+        zones: &mut Vec<ZoneColors>,
+    ) -> Result<bool> {
+        #[cfg(not(feature = "wgpu"))]
+        let _ = zones;
+        match (&mut self.backend, pending) {
+            (SparkleFlingerBackend::Cpu(_), _) => Ok(false),
+            #[cfg(feature = "wgpu")]
+            (SparkleFlingerBackend::Gpu { gpu, .. }, PendingZoneSampling::Gpu(pending)) => {
+                gpu.try_finish_pending_zone_sampling(pending, zones)
+            }
+            #[allow(unreachable_patterns)]
+            _ => Ok(false),
+        }
+    }
+
     pub fn can_sample_zone_plan(&self, _prepared_zones: &[PreparedZonePlan]) -> bool {
         match &self.backend {
             SparkleFlingerBackend::Cpu(_) => false,

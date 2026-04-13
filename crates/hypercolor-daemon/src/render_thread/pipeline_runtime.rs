@@ -21,7 +21,7 @@ use super::frame_state::CachedRenderGroupDemand;
 use super::producer_queue::ProducerQueue;
 use super::render_groups::RenderGroupRuntime;
 use super::scene_state::RenderSceneState;
-use super::sparkleflinger::SparkleFlinger;
+use super::sparkleflinger::{PendingZoneSampling, SparkleFlinger};
 
 pub(crate) struct FrameInputs {
     pub(crate) audio: AudioData,
@@ -91,6 +91,8 @@ pub(crate) struct RenderCaches {
     pub(crate) screen_queue: ProducerQueue,
     pub(crate) composition_planner: CompositionPlanner,
     pub(crate) sparkleflinger: SparkleFlinger,
+    pub(crate) deferred_zone_sampling: Option<PendingZoneSampling>,
+    pub(crate) deferred_zone_sampling_scratch: Vec<hypercolor_types::event::ZoneColors>,
     pub(crate) render_group_runtime: RenderGroupRuntime,
     pub(crate) render_surface_pool: RenderSurfacePool,
     pub(crate) render_scene_state: RenderSceneState,
@@ -120,6 +122,8 @@ impl RenderCaches {
         );
         self.render_group_runtime = RenderGroupRuntime::new(width, height);
         self.composition_planner = CompositionPlanner::new();
+        self.deferred_zone_sampling = None;
+        self.deferred_zone_sampling_scratch.clear();
         self.static_surface_cache = None;
     }
 
@@ -188,6 +192,8 @@ impl PipelineRuntime {
                 screen_queue: ProducerQueue::new(),
                 composition_planner: CompositionPlanner::new(),
                 sparkleflinger: SparkleFlinger::new(render_acceleration_mode)?,
+                deferred_zone_sampling: None,
+                deferred_zone_sampling_scratch: Vec::new(),
                 render_group_runtime: RenderGroupRuntime::new(canvas_width, canvas_height),
                 render_surface_pool: RenderSurfacePool::with_slot_count(
                     SurfaceDescriptor::rgba8888(canvas_width, canvas_height),
