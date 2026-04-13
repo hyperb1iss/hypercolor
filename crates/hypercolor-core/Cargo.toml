@@ -58,7 +58,7 @@ zbus = { workspace = true }
 zerocopy = { workspace = true }
 dpi = { workspace = true, optional = true }
 nvml-wrapper = { workspace = true, optional = true }
-servo = { version = "0.1.0", default-features = false, optional = true }
+servo = { version = "0.1.0", default-features = false, features = ["baked-in-resources", "js_jit"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"], optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
