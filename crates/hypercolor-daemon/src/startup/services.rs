@@ -22,7 +22,7 @@ use hypercolor_core::device::{
 };
 use hypercolor_core::effect::builtin::register_builtin_effects;
 use hypercolor_core::effect::{
-    EffectEngine, EffectRegistry, default_effect_search_paths, register_html_effects,
+    EffectRegistry, default_effect_search_paths, register_html_effects,
 };
 use hypercolor_core::engine::RenderLoop;
 #[cfg(target_os = "linux")]
@@ -120,19 +120,6 @@ impl DaemonState {
         // ── Device Registry ─────────────────────────────────────────────
         let device_registry = DeviceRegistry::new();
         info!("Device registry created");
-
-        // ── Effect Engine ───────────────────────────────────────────────
-        let effect_engine = EffectEngine::new()
-            .with_canvas_size(config.daemon.canvas_width, config.daemon.canvas_height);
-        let effect_engine = Arc::new(Mutex::new(effect_engine));
-        info!(
-            canvas = format_args!(
-                "{}x{}",
-                config.daemon.canvas_width, config.daemon.canvas_height
-            ),
-            render_acceleration = ?config.effect_engine.render_acceleration_mode,
-            "Effect engine created"
-        );
 
         // ── Effect Registry ─────────────────────────────────────────────
         let effect_search_paths =
@@ -457,7 +444,6 @@ impl DaemonState {
         Ok(Self {
             config_manager,
             device_registry,
-            effect_engine,
             effect_registry,
             scene_manager,
             scene_store,

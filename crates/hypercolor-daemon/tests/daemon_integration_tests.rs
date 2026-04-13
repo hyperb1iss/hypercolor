@@ -143,12 +143,10 @@ async fn daemon_lifecycle_initialize_start_shutdown() {
     // Verify initial state — all subsystems created but not started
     assert!(state.device_registry.is_empty().await);
     {
-        let engine = state.effect_engine.lock().await;
-        assert!(!engine.is_running());
-    }
-    {
         let scenes = state.scene_manager.read().await;
         assert_eq!(scenes.scene_count(), 1);
+        assert!(scenes.active_scene_id().is_some_and(|id| id.is_default()));
+        assert!(scenes.active_render_groups().is_empty());
     }
     {
         let loop_guard = state.render_loop.read().await;
@@ -173,10 +171,11 @@ async fn daemon_lifecycle_initialize_start_shutdown() {
         assert!(!loop_guard.is_running());
     }
 
-    // Verify effect engine is deactivated
+    // Verify scene-backed runtime state returns to the empty default scene
     {
-        let engine = state.effect_engine.lock().await;
-        assert!(!engine.is_running());
+        let scenes = state.scene_manager.read().await;
+        assert!(scenes.active_scene_id().is_some_and(|id| id.is_default()));
+        assert!(scenes.active_render_groups().is_empty());
     }
 }
 
@@ -454,18 +453,18 @@ async fn api_state_device_list_starts_empty_and_grows() {
 }
 
 #[tokio::test]
-async fn api_state_effect_engine_accessible_through_mutex() {
+async fn api_state_default_scene_starts_without_active_groups() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
     let state = DaemonState::initialize(&config, temp.path().to_path_buf())
         .expect("initialization should succeed");
 
-    // Lock the engine and verify state
+    // Verify the default scene is active and empty until something applies a group.
     {
-        let engine = state.effect_engine.lock().await;
-        assert!(!engine.is_running());
-        assert!(engine.active_metadata().is_none());
+        let scenes = state.scene_manager.read().await;
+        assert!(scenes.active_scene_id().is_some_and(|id| id.is_default()));
+        assert!(scenes.active_render_groups().is_empty());
     }
 }
 

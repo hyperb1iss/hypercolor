@@ -81,7 +81,6 @@ impl DaemonState {
             resolve_compositor_acceleration_mode(config.effect_engine.render_acceleration_mode)
                 .context("failed to resolve compositor acceleration mode while starting daemon")?;
         let rt_state = RenderThreadState {
-            effect_engine: Arc::clone(&self.effect_engine),
             effect_registry: Arc::clone(&self.effect_registry),
             spatial_engine: Arc::clone(&self.spatial_engine),
             backend_manager: Arc::clone(&self.backend_manager),
@@ -159,9 +158,8 @@ impl DaemonState {
     /// 2. Wait for render thread to exit
     /// 3. Clear and disconnect renderable devices
     /// 4. Persist the current runtime session snapshot
-    /// 5. Deactivate the effect engine (release renderer resources)
-    /// 6. Scene manager cleanup
-    /// 7. Log final state
+    /// 5. Scene manager cleanup
+    /// 6. Log final state
     ///
     /// # Errors
     ///
@@ -225,30 +223,23 @@ impl DaemonState {
         }
         info!("Input sources stopped");
 
-        // 5. Persist the current runtime session before tearing down effect state.
+        // 5. Persist the current runtime session before scene cleanup.
         self.persist_runtime_session_snapshot().await;
         self.persist_scene_store_snapshot().await;
         info!("Runtime session snapshot persisted");
 
-        // 6. Deactivate effect engine.
-        {
-            let mut engine_guard = self.effect_engine.lock().await;
-            engine_guard.deactivate();
-        }
-        info!("Effect engine deactivated");
-
-        // 7. Scene manager — deactivate current scene.
+        // 6. Scene manager — deactivate current scene.
         {
             let mut scene_guard = self.scene_manager.write().await;
             scene_guard.deactivate_current();
         }
         info!("Scene manager cleaned up");
 
-        // 8. Log final device count.
+        // 7. Log final device count.
         let device_count = self.device_registry.len().await;
         info!(devices = device_count, "Device registry final state");
 
-        // 9. Publish shutdown event.
+        // 8. Publish shutdown event.
         self.event_bus
             .publish(hypercolor_types::event::HypercolorEvent::DaemonShutdown {
                 reason: "signal".to_string(),

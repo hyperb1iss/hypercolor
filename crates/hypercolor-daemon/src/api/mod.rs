@@ -48,7 +48,7 @@ use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
 };
-use hypercolor_core::effect::{EffectEngine, EffectRegistry};
+use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::InputManager;
 use hypercolor_core::scene::SceneManager;
@@ -86,10 +86,7 @@ use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayRuntime, Simula
 /// All fields are wrapped in `Arc` or interior-mutable containers so
 /// the state can be cloned cheaply across Axum's task pool.
 ///
-/// `EffectEngine` uses `Mutex` rather than `RwLock` because
-/// `dyn EffectRenderer` is `Send` but not `Sync`.
-///
-/// The `effect_engine`, `scene_manager`, and `render_loop` fields are
+/// The `scene_manager`, `render_loop`, and `event_bus` fields are
 /// `Arc`-wrapped so they can be shared with the daemon's live instances
 /// via [`from_daemon_state`](Self::from_daemon_state). This guarantees
 /// that API calls operate on the same subsystems as the render pipeline.
@@ -99,11 +96,6 @@ pub struct AppState {
 
     /// Effect catalog (metadata, search, categories).
     pub effect_registry: Arc<RwLock<EffectRegistry>>,
-
-    /// Active effect lifecycle and frame production.
-    /// Uses `Mutex` because `EffectEngine` contains `dyn EffectRenderer`
-    /// which is `Send` but not `Sync`.
-    pub effect_engine: Arc<Mutex<EffectEngine>>,
 
     /// Scene CRUD, priority stack, and transitions.
     pub scene_manager: Arc<RwLock<SceneManager>>,
@@ -376,7 +368,6 @@ impl AppState {
         );
         let device_registry = DeviceRegistry::new();
         let effect_registry = Arc::new(RwLock::new(EffectRegistry::default()));
-        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
         let scenes_path = ConfigManager::data_dir().join("scenes.json");
         let scene_store = SceneStore::load(&scenes_path).unwrap_or_else(|error| {
             warn!(
@@ -463,7 +454,6 @@ impl AppState {
         Self {
             device_registry,
             effect_registry,
-            effect_engine,
             scene_manager,
             scene_store,
             event_bus,
@@ -516,7 +506,7 @@ impl AppState {
     /// Create an `AppState` from a live [`DaemonState`](crate::startup::DaemonState).
     ///
     /// The device registry is cloned (it's internally `Arc`-wrapped).
-    /// The effect engine, scene manager, render loop, and event bus are
+    /// The scene manager, render loop, and event bus are
     /// shared by `Arc::clone` — the API operates on the exact same live
     /// instances as the daemon's render pipeline.
     pub fn from_daemon_state(daemon: &crate::startup::DaemonState) -> Self {
@@ -548,7 +538,6 @@ impl AppState {
         Self {
             device_registry: daemon.device_registry.clone(),
             effect_registry: Arc::clone(&daemon.effect_registry),
-            effect_engine: Arc::clone(&daemon.effect_engine),
             scene_manager: Arc::clone(&daemon.scene_manager),
             scene_store: Arc::clone(&daemon.scene_store),
             event_bus: Arc::clone(&daemon.event_bus),

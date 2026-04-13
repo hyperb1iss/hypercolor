@@ -462,17 +462,21 @@ async fn daemon_state_device_registry_starts_empty() {
 }
 
 #[tokio::test]
-async fn daemon_state_effect_engine_starts_idle() {
+async fn daemon_state_default_scene_starts_without_render_groups() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
     let state = DaemonState::initialize(&config, temp.path().to_path_buf())
         .expect("initialization should succeed");
 
-    let engine = state.effect_engine.lock().await;
+    let scenes = state.scene_manager.read().await;
     assert!(
-        !engine.is_running(),
-        "effect engine should not be running initially"
+        scenes.active_scene_id().is_some_and(SceneId::is_default),
+        "default scene should be active initially"
+    );
+    assert!(
+        scenes.active_render_groups().is_empty(),
+        "default scene should start without any active render groups"
     );
 }
 

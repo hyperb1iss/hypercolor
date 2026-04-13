@@ -670,7 +670,6 @@ fn make_render_state(
             .expect("test render state should seed a default primary group");
     }
     RenderThreadState {
-        effect_engine: Arc::new(Mutex::new(effect_engine)),
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
         spatial_engine: Arc::new(RwLock::new(spatial_engine)),
         backend_manager: Arc::new(Mutex::new(backend_manager)),
@@ -2037,7 +2036,6 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
 
     let (_, power_state) = watch::channel(OutputPowerState::default());
     let state = RenderThreadState {
-        effect_engine: Arc::new(Mutex::new(effect_engine)),
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
         spatial_engine,
         backend_manager,
@@ -2890,7 +2888,6 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
     let (power_tx, power_state) = watch::channel(OutputPowerState::default());
     let event_bus = Arc::new(HypercolorBus::new());
     let state = RenderThreadState {
-        effect_engine: Arc::new(Mutex::new(effect_engine)),
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
         spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(layout))),
         backend_manager: Arc::new(Mutex::new(BackendManager::new())),

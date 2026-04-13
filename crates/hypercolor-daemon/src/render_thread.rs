@@ -52,7 +52,7 @@ use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::OutputPowerState;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::BackendManager;
-use hypercolor_core::effect::{EffectEngine, EffectRegistry};
+use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 use hypercolor_core::input::InputManager;
 use hypercolor_core::scene::SceneManager;
@@ -116,9 +116,6 @@ pub struct RenderThread {
 /// duration of each pipeline stage.
 #[derive(Clone)]
 pub struct RenderThreadState {
-    /// Legacy active effect lifecycle shared with APIs during migration.
-    pub effect_engine: Arc<Mutex<EffectEngine>>,
-
     /// Effect catalog used to resolve render-group assignments.
     pub effect_registry: Arc<RwLock<EffectRegistry>>,
 

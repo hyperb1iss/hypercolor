@@ -1,7 +1,7 @@
 //! Daemon startup orchestration, state management, and graceful shutdown.
 //!
 //! [`DaemonState`] is the top-level container for all subsystems. It wires
-//! together configuration, the device registry, effect engine, spatial engine,
+//! together configuration, the device registry, effect registry, spatial engine,
 //! backend manager, scene manager, event bus, and render loop — then exposes
 //! [`start`](DaemonState::start) and [`shutdown`](DaemonState::shutdown) for
 //! lifecycle management.
@@ -23,7 +23,7 @@ use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
 };
-use hypercolor_core::effect::{EffectEngine, EffectRegistry};
+use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::InputManager;
 use hypercolor_core::scene::SceneManager;
@@ -77,12 +77,6 @@ pub struct DaemonState {
 
     /// Device registry — tracks all known and connected devices.
     pub device_registry: DeviceRegistry,
-
-    /// Effect engine — manages the active effect renderer.
-    ///
-    /// Uses `Mutex` rather than `RwLock` because `EffectEngine` contains a
-    /// `Box<dyn EffectRenderer>` which is `Send` but not `Sync`.
-    pub effect_engine: Arc<Mutex<EffectEngine>>,
 
     /// Effect catalog — metadata, search, categories for all known effects.
     pub effect_registry: Arc<RwLock<EffectRegistry>>,
