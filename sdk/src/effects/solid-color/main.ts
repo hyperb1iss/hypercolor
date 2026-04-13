@@ -25,7 +25,7 @@ export default canvas(
         vignette: num('Vignette', [0, 100], 0, { group: 'Output' }),
         brightness: num('Brightness', [0, 100], 100, { group: 'Output' }),
     },
-    (ctx, time, controls) => {
+    (ctx, _time, controls) => {
         const s = scaleContext(ctx.canvas, BUILTIN_DESIGN_BASIS)
         const width = s.width
         const height = s.height
@@ -66,26 +66,32 @@ export default canvas(
         } else if (pattern === 'Quadrants') {
             const splitX = width * split
             const splitY = height * split
-            const topRight = mixRgb(primary, accent, 0.5)
-            const bottomLeft = mixRgb(secondary, accent, 0.25)
             ctx.fillStyle = rgbToCss(primary)
             ctx.fillRect(0, 0, splitX, splitY)
-            ctx.fillStyle = rgbToCss(topRight)
-            ctx.fillRect(splitX, 0, width - splitX, splitY)
-            ctx.fillStyle = rgbToCss(bottomLeft)
-            ctx.fillRect(0, splitY, splitX, height - splitY)
             ctx.fillStyle = rgbToCss(secondary)
+            ctx.fillRect(splitX, 0, width - splitX, splitY)
+            ctx.fillStyle = rgbToCss(secondary)
+            ctx.fillRect(0, splitY, splitX, height - splitY)
+            ctx.fillStyle = rgbToCss(primary)
             ctx.fillRect(splitX, splitY, width - splitX, height - splitY)
         } else {
-            ctx.fillStyle = rgbToCss(primary)
+            ctx.fillStyle = rgbToCss(secondary)
             ctx.fillRect(0, 0, width, height)
-            const cx = s.dx(160 + Math.sin(time * 0.42) * 18)
-            const cy = s.dy(100 + Math.cos(time * 0.33) * 12)
-            const halo = ctx.createRadialGradient(cx, cy, s.ds(8), cx, cy, s.ds(112))
-            halo.addColorStop(0, rgbToCss(accent, 0.95))
-            halo.addColorStop(0.38, rgbToCss(mixRgb(accent, primary, 0.45), 0.45))
-            halo.addColorStop(1, rgbToCss(primary, 0))
-            ctx.fillStyle = halo
+            const cx = width * split
+            const cy = height * 0.5
+            const glowRadius = s.ds(52 + (controls.scale as number) * 8)
+            const body = ctx.createRadialGradient(cx, cy, s.ds(8), cx, cy, glowRadius)
+            body.addColorStop(0, rgbToCss(primary, 0.92))
+            body.addColorStop(0.45, rgbToCss(mixRgb(primary, accent, 0.2), 0.4))
+            body.addColorStop(1, rgbToCss(primary, 0))
+            ctx.fillStyle = body
+            ctx.fillRect(0, 0, width, height)
+
+            const core = ctx.createRadialGradient(cx, cy, s.ds(4), cx, cy, glowRadius * 0.45)
+            core.addColorStop(0, rgbToCss(accent, 0.82))
+            core.addColorStop(0.32, rgbToCss(mixRgb(accent, primary, 0.35), 0.3))
+            core.addColorStop(1, rgbToCss(accent, 0))
+            ctx.fillStyle = core
             ctx.fillRect(0, 0, width, height)
         }
 
@@ -102,54 +108,93 @@ export default canvas(
         author: 'Hypercolor',
         builtinId: 'solid_color',
         category: 'ambient',
-        description: 'Solid fills and clean diagnostic splits with richer accent lighting, vignette shaping, and scene-ready presets.',
+        description: 'Clean fills, simple diagnostic patterns, and a restrained beacon mode for practical room lighting and layout checks.',
         designBasis: BUILTIN_DESIGN_BASIS,
         presets: [
             {
-                controls: { brightness: 100, color: '#f6f7fb', pattern: 'Solid', vignette: 0 },
-                description: 'Clean neutral fill for hardware checks and understated ambient light.',
-                name: 'Studio White',
+                controls: { brightness: 100, color: '#f5f6fb', pattern: 'Solid', vignette: 0 },
+                description: 'Neutral full white for confirming output, dead LEDs, and overall brightness.',
+                name: 'Neutral White',
             },
             {
                 controls: {
-                    accentColor: '#80ffea',
-                    brightness: 92,
-                    color: '#09111e',
-                    pattern: 'Vertical Split',
-                    position: 52,
-                    secondaryColor: '#e135ff',
-                    softness: 8,
-                    vignette: 18,
+                    brightness: 52,
+                    color: '#fff2d6',
+                    pattern: 'Solid',
+                    vignette: 0,
                 },
-                description: 'A sharp cyan-to-magenta divider that makes zone placement instantly obvious.',
-                name: 'Silk Divide',
+                description: 'Warm monitor bias light that fills the room without looking clinical or harsh.',
+                name: 'Warm Bias',
             },
             {
                 controls: {
-                    accentColor: '#ffffff',
-                    brightness: 88,
-                    color: '#130b1f',
+                    brightness: 16,
+                    color: '#ff8f1f',
+                    pattern: 'Solid',
+                    vignette: 0,
+                },
+                description: 'Low-light amber for night use when you want visibility without blowing up your pupils.',
+                name: 'Night Amber',
+            },
+            {
+                controls: {
+                    brightness: 14,
+                    color: '#b81818',
+                    pattern: 'Solid',
+                    vignette: 0,
+                },
+                description: 'A dim deep-red fill that keeps the room readable without feeling awake.',
+                name: 'Darkroom Red',
+            },
+            {
+                controls: {
+                    brightness: 22,
+                    color: '#4ec7ff',
+                    pattern: 'Solid',
+                    vignette: 0,
+                },
+                description: 'Cool low-blue ambience for desks and underglow when you want something calm but present.',
+                name: 'Focus Blue',
+            },
+            {
+                controls: {
+                    brightness: 100,
+                    color: '#ffffff',
+                    pattern: 'Vertical Split',
+                    position: 50,
+                    secondaryColor: '#000000',
+                    softness: 0,
+                    vignette: 0,
+                },
+                description: 'Hard left-right split for checking zone placement, mirrored mapping, and strip order.',
+                name: 'A/B Split',
+            },
+            {
+                controls: {
+                    brightness: 100,
+                    color: '#ffffff',
                     pattern: 'Checker',
                     scale: 8,
-                    secondaryColor: '#ff6ac1',
-                    vignette: 10,
+                    secondaryColor: '#000000',
+                    vignette: 0,
                 },
-                description: 'Checkerboard contrast with enough drama to spot sampling mistakes at a glance.',
-                name: 'Rose Checker',
+                description: 'Black-and-white checkerboard for quickly spotting sampling errors and uneven footprints.',
+                name: 'Checkerboard',
             },
             {
                 controls: {
-                    accentColor: '#f1fa8c',
-                    brightness: 80,
-                    color: '#05070c',
+                    accentColor: '#fff4cf',
+                    brightness: 42,
+                    color: '#fff0da',
                     pattern: 'Halo',
-                    secondaryColor: '#05070c',
-                    vignette: 24,
+                    position: 50,
+                    scale: 6,
+                    secondaryColor: '#090b10',
+                    vignette: 12,
                 },
-                description: 'A dark field with a soft central beacon for quickly judging centering and falloff.',
-                name: 'Operator Halo',
+                description: 'A restrained center beacon for judging centering and falloff without turning the whole rig into a gimmick.',
+                name: 'Center Beacon',
             },
         ],
     },
 )
-

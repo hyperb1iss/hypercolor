@@ -109,20 +109,25 @@ function drawLinearSweep(
 ): void {
     const span = Math.hypot(width, height)
     const angle = directionAngle(direction)
-    const position = (phase - 0.5) * span * 2
+    const cycle = span * 2
+    const position = phase * cycle - span
 
     ctx.save()
     ctx.translate(width / 2, height / 2)
     ctx.rotate(angle)
 
-    const gradient = ctx.createLinearGradient(position - bandWidth, 0, position + bandWidth, 0)
-    gradient.addColorStop(0, 'rgba(255, 255, 255, 0)')
-    gradient.addColorStop(0.3, secondary)
-    gradient.addColorStop(0.5, primary)
-    gradient.addColorStop(0.7, secondary)
-    gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
-    ctx.fillStyle = gradient
-    ctx.fillRect(position - bandWidth, -span, bandWidth * 2, span * 2)
+    for (const offset of [-cycle, 0, cycle]) {
+        const bandCenter = position + offset
+        const gradient = ctx.createLinearGradient(bandCenter - bandWidth, 0, bandCenter + bandWidth, 0)
+        gradient.addColorStop(0, 'rgba(255, 255, 255, 0)')
+        gradient.addColorStop(0.3, secondary)
+        gradient.addColorStop(0.5, primary)
+        gradient.addColorStop(0.7, secondary)
+        gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
+        ctx.fillStyle = gradient
+        ctx.fillRect(bandCenter - bandWidth, -span, bandWidth * 2, span * 2)
+    }
+
     ctx.restore()
 }
 
@@ -159,7 +164,7 @@ export default canvas(
     {
         pattern: combo('Pattern', ['Sweep', 'Opposing Sweeps', 'Crosshair', 'Quadrant Cycle', 'Corner Cycle', 'Rings'], {
             default: 'Sweep',
-            group: 'Scene',
+            group: 'Pattern',
         }),
         direction: combo(
             'Direction',
@@ -177,28 +182,28 @@ export default canvas(
                 'Outward',
                 'Inward',
             ],
-            { default: 'Left to Right', group: 'Scene' },
+            { default: 'Left to Right', group: 'Motion' },
         ),
-        primaryColor: color('Primary Color', '#80ffea', { group: 'Colors' }),
-        secondaryColor: color('Secondary Color', '#ff6ac1', { group: 'Colors' }),
-        accentColor: color('Accent Color', '#f8fbff', { group: 'Colors' }),
-        backgroundColor: color('Background Color', '#070714', { group: 'Colors' }),
-        speed: num('Speed', [0, 100], 22, { group: 'Motion' }),
-        size: num('Size', [0, 100], 28, { group: 'Motion' }),
-        softness: num('Softness', [0, 100], 42, { group: 'Motion' }),
-        gridScale: num('Grid Scale', [2, 16], 8, { group: 'Guides' }),
-        brightness: num('Brightness', [0, 100], 96, { group: 'Output' }),
-        showGrid: toggle('Show Grid', true, { group: 'Guides' }),
+        speed: num('Sweep Speed', [0, 100], 18, { group: 'Motion' }),
+        size: num('Marker Size', [1, 100], 22, { group: 'Motion' }),
+        softness: num('Edge Softness', [0, 100], 18, { group: 'Motion' }),
+        primary_color: color('Lead Color', '#80ffea', { group: 'Colors' }),
+        secondary_color: color('Trail Color', '#ff6ac1', { group: 'Colors' }),
+        accent_color: color('Accent Color', '#f8fbff', { group: 'Colors' }),
+        background_color: color('Background Color', '#070714', { group: 'Colors' }),
+        show_grid: toggle('Show Grid Overlay', false, { group: 'Layout' }),
+        grid_scale: num('Grid Scale', [2, 16], 8, { group: 'Layout' }),
+        brightness: num('Brightness', [0, 1], 1, { group: 'Output' }),
     },
     (ctx, time, controls) => {
         const s = scaleContext(ctx.canvas, BUILTIN_DESIGN_BASIS)
         const width = s.width
         const height = s.height
-        const brightness = (controls.brightness as number) / 100
-        const primary = rgbToCss(scaleRgb(hexToRgb(controls.primaryColor as string), brightness))
-        const secondary = rgbToCss(scaleRgb(hexToRgb(controls.secondaryColor as string), brightness))
-        const accent = rgbToCss(scaleRgb(hexToRgb(controls.accentColor as string), brightness))
-        const background = rgbToCss(scaleRgb(hexToRgb(controls.backgroundColor as string), brightness))
+        const brightness = controls.brightness as number
+        const primary = rgbToCss(scaleRgb(hexToRgb(controls.primary_color as string), brightness))
+        const secondary = rgbToCss(scaleRgb(hexToRgb(controls.secondary_color as string), brightness))
+        const accent = rgbToCss(scaleRgb(hexToRgb(controls.accent_color as string), brightness))
+        const background = rgbToCss(scaleRgb(hexToRgb(controls.background_color as string), brightness))
         const phase = fract(time * (0.04 + ((controls.speed as number) / 100) * 0.24))
         const bandWidth = s.ds(6 + (controls.size as number) * 0.65)
         const softness = (controls.softness as number) / 100
@@ -309,14 +314,14 @@ export default canvas(
 
         const centerGuides = ctx.createLinearGradient(0, height / 2, width, height / 2)
         centerGuides.addColorStop(0, 'rgba(255, 255, 255, 0)')
-        centerGuides.addColorStop(0.5, rgbToCss(withLift(hexToRgb(controls.accentColor as string), 0.15), 0.18))
+        centerGuides.addColorStop(0.5, rgbToCss(withLift(hexToRgb(controls.accent_color as string), 0.15), 0.18))
         centerGuides.addColorStop(1, 'rgba(255, 255, 255, 0)')
         ctx.fillStyle = centerGuides
         ctx.fillRect(0, height / 2 - 1, width, 2)
         ctx.fillRect(width / 2 - 1, 0, 2, height)
 
-        if (controls.showGrid as boolean) {
-            drawGrid(ctx, width, height, controls.gridScale as number, rgbToCss(hexToRgb(controls.accentColor as string), 0.28))
+        if (controls.show_grid as boolean) {
+            drawGrid(ctx, width, height, controls.grid_scale as number, rgbToCss(hexToRgb(controls.accent_color as string), 0.28))
         }
 
         drawCornerMarkers(ctx, width, height, bandWidth)
@@ -331,75 +336,101 @@ export default canvas(
         presets: [
             {
                 controls: {
-                    accentColor: '#f8fbff',
-                    backgroundColor: '#05060f',
-                    brightness: 100,
                     direction: 'Left to Right',
-                    gridScale: 8,
                     pattern: 'Sweep',
-                    primaryColor: '#80ffea',
-                    secondaryColor: '#ff6ac1',
-                    showGrid: true,
-                    size: 26,
-                    softness: 40,
-                    speed: 20,
+                    show_grid: false,
+                    size: 20,
+                    softness: 12,
+                    speed: 18,
                 },
-                description: 'The clean default for finding footprint placement and verifying left-to-right ordering.',
-                name: 'Sweep Finder',
+                description: 'Slow left-to-right pass for rough device placement and strip direction checks.',
+                name: 'Horizontal Sweep',
             },
             {
                 controls: {
-                    accentColor: '#ffffff',
-                    backgroundColor: '#070714',
-                    brightness: 96,
-                    direction: 'Clockwise',
-                    gridScale: 6,
-                    pattern: 'Corner Cycle',
-                    primaryColor: '#80ffea',
-                    secondaryColor: '#ff6ac1',
-                    showGrid: true,
-                    size: 32,
-                    softness: 30,
-                    speed: 26,
+                    direction: 'Top to Bottom',
+                    pattern: 'Sweep',
+                    show_grid: false,
+                    size: 20,
+                    softness: 12,
+                    speed: 18,
                 },
-                description: 'Walk the corners in order to catch mirrored or rotated devices fast.',
+                description: 'Top-to-bottom pass for stacked layouts, towers, and vertical strips.',
+                name: 'Vertical Sweep',
+            },
+            {
+                controls: {
+                    direction: 'Left to Right',
+                    grid_scale: 8,
+                    pattern: 'Opposing Sweeps',
+                    show_grid: true,
+                    size: 16,
+                    softness: 10,
+                    speed: 16,
+                },
+                description: 'Two mirrored sweeps that make center alignment and mirrored mistakes obvious.',
+                name: 'Opposing Edge Scan',
+            },
+            {
+                controls: {
+                    direction: 'Top Left to Bottom Right',
+                    grid_scale: 10,
+                    pattern: 'Crosshair',
+                    show_grid: true,
+                    size: 14,
+                    softness: 16,
+                    speed: 22,
+                },
+                description: 'Moving vertical and horizontal bars whose intersection walks the layout diagonally.',
+                name: 'Diagonal Crosshair',
+            },
+            {
+                controls: {
+                    direction: 'Clockwise',
+                    pattern: 'Quadrant Cycle',
+                    size: 24,
+                    softness: 8,
+                    speed: 20,
+                },
+                description: 'Clockwise quadrant cycling to verify global orientation at a glance.',
+                name: 'Quadrant Clock',
+            },
+            {
+                controls: {
+                    direction: 'Clockwise',
+                    pattern: 'Corner Cycle',
+                    size: 34,
+                    softness: 0,
+                    speed: 20,
+                },
+                description: 'Corner beacons cycle around the canvas to expose rotation and mirrored placements.',
                 name: 'Corner Compass',
             },
             {
                 controls: {
-                    accentColor: '#f1fa8c',
-                    backgroundColor: '#03060c',
-                    brightness: 94,
-                    direction: 'Top Left to Bottom Right',
-                    gridScale: 10,
-                    pattern: 'Crosshair',
-                    primaryColor: '#80ffea',
-                    secondaryColor: '#ff6363',
-                    showGrid: true,
-                    size: 24,
-                    softness: 46,
-                    speed: 24,
+                    direction: 'Outward',
+                    grid_scale: 8,
+                    pattern: 'Rings',
+                    show_grid: true,
+                    size: 44,
+                    softness: 20,
+                    speed: 16,
                 },
-                description: 'A traveling crosshair for checking diagonal motion, center alignment, and spatial drift.',
-                name: 'Rotation Probe',
+                description: 'Concentric rings from the center for scale, centering, and radial coverage checks.',
+                name: 'Expanding Rings',
             },
             {
                 controls: {
-                    accentColor: '#ffffff',
-                    backgroundColor: '#05060a',
-                    brightness: 92,
-                    direction: 'Outward',
-                    gridScale: 8,
+                    direction: 'Inward',
+                    grid_scale: 8,
                     pattern: 'Rings',
-                    primaryColor: '#80ffea',
-                    secondaryColor: '#ff6ac1',
-                    showGrid: false,
-                    size: 30,
-                    softness: 52,
-                    speed: 18,
+                    show_grid: true,
+                    size: 44,
+                    softness: 20,
+                    speed: 16,
                 },
-                description: 'Concentric marching rings for checking center weighting and radial layout symmetry.',
-                name: 'Ring March',
+                description: 'Reverse ring motion to confirm center-in vs center-out assumptions.',
+                name: 'Inbound Rings',
             },
         ],
     },

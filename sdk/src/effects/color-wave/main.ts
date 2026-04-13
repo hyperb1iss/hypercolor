@@ -2,7 +2,6 @@ import { canvas, color, combo, num, scaleContext } from '@hypercolor/sdk'
 
 import {
     BUILTIN_DESIGN_BASIS,
-    clamp01,
     hexToRgb,
     hslCss,
     mixRgb,
