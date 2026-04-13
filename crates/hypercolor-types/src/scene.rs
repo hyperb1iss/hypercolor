@@ -119,7 +119,6 @@ pub struct RenderGroup {
     pub display_target: Option<DisplayFaceTarget>,
 
     /// Semantic role inside the scene.
-    #[serde(default)]
     pub role: RenderGroupRole,
 }
 
@@ -141,7 +140,7 @@ pub struct DisplayFaceTarget {
 }
 
 impl RenderGroup {
-    /// Flatten this render group into legacy zone assignments.
+    /// Flatten this render group into zone assignments.
     #[must_use]
     pub fn zone_assignments(&self) -> Vec<ZoneAssignment> {
         if !self.enabled {
@@ -259,7 +258,6 @@ pub struct Scene {
     pub unassigned_behavior: UnassignedBehavior,
 
     /// Whether this scene is daemon-managed or user-visible.
-    #[serde(default)]
     pub kind: SceneKind,
 }
 
@@ -272,7 +270,7 @@ pub enum SceneKind {
 }
 
 impl Scene {
-    /// Whether this scene uses render groups instead of the legacy flat assignments.
+    /// Whether this scene uses render groups instead of flat zone assignments.
     #[must_use]
     pub fn has_render_groups(&self) -> bool {
         !self.groups.is_empty()
@@ -299,7 +297,7 @@ impl Scene {
         }
     }
 
-    /// Flatten the active scene into legacy zone assignments for existing systems.
+    /// Flatten the active scene into zone assignments.
     #[must_use]
     pub fn effective_zone_assignments(&self) -> Vec<ZoneAssignment> {
         if !self.has_render_groups() {

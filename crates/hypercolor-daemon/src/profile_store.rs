@@ -18,6 +18,7 @@ pub enum ResolveProfileError {
 
 /// Serializable lighting profile snapshot.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct Profile {
     pub id: String,
@@ -29,17 +30,10 @@ pub struct Profile {
     pub displays: Vec<ProfileDisplay>,
     pub brightness: Option<u8>,
     pub layout_id: Option<String>,
-    #[serde(rename = "effect_id", skip_serializing_if = "Option::is_none")]
-    pub(crate) legacy_effect_id: Option<EffectId>,
-    #[serde(rename = "effect_name", skip_serializing_if = "Option::is_none")]
-    pub(crate) legacy_effect_name: Option<String>,
-    #[serde(rename = "active_preset_id", skip_serializing_if = "Option::is_none")]
-    pub(crate) legacy_active_preset_id: Option<PresetId>,
-    #[serde(rename = "controls", skip_serializing_if = "HashMap::is_empty")]
-    pub(crate) legacy_controls: HashMap<String, ControlValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProfilePrimary {
     pub effect_id: EffectId,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -49,6 +43,7 @@ pub struct ProfilePrimary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProfileDisplay {
     pub device_id: DeviceId,
     pub effect_id: EffectId,
@@ -74,19 +69,6 @@ impl Profile {
             .map(|description| description.trim().to_owned())
             .filter(|description| !description.is_empty());
         self.brightness = self.brightness.map(|brightness| brightness.min(100));
-        if self.primary.is_none()
-            && let Some(effect_id) = self.legacy_effect_id.take()
-        {
-            self.primary = Some(ProfilePrimary {
-                effect_id,
-                controls: std::mem::take(&mut self.legacy_controls),
-                active_preset_id: self.legacy_active_preset_id.take(),
-            });
-        }
-        self.legacy_effect_id = None;
-        self.legacy_effect_name = None;
-        self.legacy_active_preset_id = None;
-        self.legacy_controls.clear();
         let mut seen_displays = HashSet::new();
         self.displays
             .retain(|display| seen_displays.insert(display.device_id));
@@ -239,29 +221,59 @@ mod tests {
     use hypercolor_types::library::PresetId;
 
     #[test]
-    fn load_migrates_legacy_primary_shape() {
+    fn load_rejects_unknown_fields_from_pre_final_profile_shape() {
         let temp = tempdir().expect("tempdir should be created");
         let path = temp.path().join("profiles.json");
         let effect_id = EffectId::from(Uuid::now_v7());
-        let preset_id = PresetId(Uuid::now_v7());
-        let display_id = DeviceId::new();
         let payload = serde_json::json!({
             "prof_evening": {
                 "id": "prof_evening",
                 "name": "Evening",
                 "effect_id": effect_id,
-                "effect_name": "legacy-name",
-                "active_preset_id": preset_id,
-                "controls": {
-                    "speed": { "float": 12.5 }
+            }
+        });
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&payload).expect("profile json should serialize"),
+        )
+        .expect("profile json should be written");
+
+        let error = ProfileStore::load(&path).expect_err("old profile shapes should fail");
+        assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn load_normalizes_profile_shape() {
+        let temp = tempdir().expect("tempdir should be created");
+        let path = temp.path().join("profiles.json");
+        let effect_id = EffectId::from(Uuid::now_v7());
+        let preset_id = PresetId(Uuid::now_v7());
+        let device_id = DeviceId::new();
+        let payload = serde_json::json!({
+            "prof_evening": {
+                "id": "prof_evening",
+                "name": "  Evening  ",
+                "description": "  Cozy lights  ",
+                "primary": {
+                    "effect_id": effect_id,
+                    "controls": {
+                        "speed": { "float": 12.5 }
+                    },
+                    "active_preset_id": preset_id
                 },
                 "displays": [{
-                    "device_id": display_id,
+                    "device_id": device_id,
+                    "effect_id": effect_id,
+                    "controls": {}
+                }, {
+                    "device_id": device_id,
                     "effect_id": effect_id,
                     "controls": {
                         "accent": { "float": 0.25 }
                     }
-                }]
+                }],
+                "brightness": 140,
+                "layout_id": "layout_evening"
             }
         });
         fs::write(
@@ -273,29 +285,14 @@ mod tests {
         let store = ProfileStore::load(&path).expect("profile store should load");
         let profile = store
             .get("prof_evening")
-            .expect("migrated profile should exist");
-        let primary = profile
-            .primary
-            .as_ref()
-            .expect("legacy effect fields should migrate to primary");
-        assert_eq!(primary.effect_id, effect_id);
-        assert_eq!(primary.active_preset_id, Some(preset_id));
+            .expect("normalized profile should exist");
+        assert_eq!(profile.name, "Evening");
+        assert_eq!(profile.description.as_deref(), Some("Cozy lights"));
+        assert_eq!(profile.brightness, Some(100));
         assert_eq!(
-            primary.controls.get("speed"),
-            Some(&ControlValue::Float(12.5))
+            profile.primary.as_ref().and_then(|primary| primary.active_preset_id),
+            Some(preset_id)
         );
         assert_eq!(profile.displays.len(), 1);
-        let saved = serde_json::to_value(profile).expect("profile should serialize");
-        assert_eq!(saved["primary"]["effect_id"], serde_json::json!(effect_id));
-        assert!(saved.get("effect_id").is_none());
-        assert!(saved.get("effect_name").is_none());
-        assert!(saved.get("active_preset_id").is_none());
-        assert_eq!(
-            saved["primary"]["controls"],
-            serde_json::json!(HashMap::from([(
-                String::from("speed"),
-                ControlValue::Float(12.5)
-            )]))
-        );
     }
 }

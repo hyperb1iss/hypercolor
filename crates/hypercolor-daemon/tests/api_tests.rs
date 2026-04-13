@@ -2021,8 +2021,13 @@ async fn put_current_control_binding_updates_active_effect_schema() {
     let persisted =
         runtime_state::load(&state.runtime_state_path).expect("runtime state should load");
     let persisted = persisted.expect("runtime state should exist");
+    let primary = persisted
+        .default_scene_groups
+        .iter()
+        .find(|group| group.role == RenderGroupRole::Primary)
+        .expect("primary group should be persisted");
     assert_eq!(
-        persisted
+        primary
             .control_bindings
             .get("speed")
             .expect("binding should be persisted")
@@ -3639,7 +3644,7 @@ async fn profile_crud_lifecycle() {
 }
 
 #[tokio::test]
-async fn legacy_profile_migrates_to_new_shape() {
+async fn pre_final_profile_shape_is_rejected_on_load() {
     let _lock = DATA_DIR_LOCK
         .lock()
         .expect("data dir lock should not be poisoned");
@@ -3664,9 +3669,9 @@ async fn legacy_profile_migrates_to_new_shape() {
                 }
             }
         }))
-        .expect("legacy profile json should serialize"),
+        .expect("pre-final profile json should serialize"),
     )
-    .expect("legacy profile json should be written");
+    .expect("pre-final profile json should be written");
 
     ConfigManager::set_data_dir_override(Some(data_dir.clone()));
     let state = AppState::new();
@@ -3674,37 +3679,11 @@ async fn legacy_profile_migrates_to_new_shape() {
 
     {
         let profiles = state.profiles.read().await;
-        let profile = profiles
-            .get("prof_evening")
-            .expect("legacy profile should load");
-        let primary = profile
-            .primary
-            .as_ref()
-            .expect("legacy primary snapshot should migrate");
-        assert_eq!(primary.effect_id, effect_id);
-        assert_eq!(primary.active_preset_id, Some(preset_id));
-        assert_eq!(
-            primary.controls.get("speed"),
-            Some(&ControlValue::Float(12.5))
+        assert!(
+            profiles.get("prof_evening").is_none(),
+            "invalid pre-final profiles should be dropped on load"
         );
     }
-
-    {
-        let profiles = state.profiles.read().await;
-        profiles.save().expect("migrated profiles should save");
-    }
-
-    let saved: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(&profiles_path).expect("saved profile json should be readable"),
-    )
-    .expect("saved profile json should parse");
-    assert_eq!(
-        saved["prof_evening"]["primary"]["effect_id"],
-        effect_id.to_string()
-    );
-    assert!(saved["prof_evening"].get("effect_id").is_none());
-    assert!(saved["prof_evening"].get("effect_name").is_none());
-    assert!(saved["prof_evening"].get("active_preset_id").is_none());
 }
 
 #[tokio::test]

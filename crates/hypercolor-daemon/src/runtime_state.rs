@@ -1,9 +1,8 @@
 //! Persisted runtime session state for startup restoration.
 //!
-//! Stores the currently active effect, control values, and selected preset so
-//! daemon startup can restore the previous user session.
+//! Stores the active scene snapshot so daemon startup can restore the previous user session.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,7 +14,6 @@ use hypercolor_core::device::DeviceRegistry;
 use hypercolor_core::device::wled::WledKnownTarget;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::device::{DeviceColorFormat, DeviceFamily};
-use hypercolor_types::effect::{ControlBinding, ControlValue};
 use hypercolor_types::scene::{RenderGroup, SceneId};
 
 /// Process-local counter to guarantee per-save temp file uniqueness.
@@ -23,6 +21,7 @@ static SNAPSHOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Runtime session snapshot persisted to disk.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct RuntimeSessionSnapshot {
     /// Active scene ID, including the synthesized default scene.
@@ -30,18 +29,6 @@ pub struct RuntimeSessionSnapshot {
 
     /// Full render groups for the synthesized default scene.
     pub default_scene_groups: Vec<RenderGroup>,
-
-    /// Active effect ID (UUID string), if any.
-    pub active_effect_id: Option<String>,
-
-    /// Active preset ID, if one is currently applied.
-    pub active_preset_id: Option<String>,
-
-    /// Current active control values for the running effect.
-    pub control_values: HashMap<String, ControlValue>,
-
-    /// Live sensor bindings attached to active controls.
-    pub control_bindings: HashMap<String, ControlBinding>,
 
     /// Active layout ID, if one was applied to the spatial engine.
     pub active_layout_id: Option<String>,
@@ -100,22 +87,10 @@ pub fn snapshot_from_scene_manager(manager: &SceneManager) -> RuntimeSessionSnap
         .get(&SceneId::DEFAULT)
         .map(|scene| scene.groups.clone())
         .unwrap_or_default();
-    let primary_group = manager
-        .active_scene()
-        .and_then(|scene| scene.primary_group());
 
     RuntimeSessionSnapshot {
         active_scene_id,
         default_scene_groups,
-        active_effect_id: primary_group
-            .and_then(|group| group.effect_id)
-            .map(|effect_id| effect_id.to_string()),
-        active_preset_id: primary_group
-            .and_then(|group| group.preset_id)
-            .map(|preset| preset.to_string()),
-        control_values: primary_group.map_or_else(HashMap::new, |group| group.controls.clone()),
-        control_bindings: primary_group
-            .map_or_else(HashMap::new, |group| group.control_bindings.clone()),
         active_layout_id: None,
         global_brightness: 1.0,
         wled_probe_ips: Vec::new(),
@@ -277,13 +252,11 @@ fn unique_temp_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::{Arc, Barrier};
 
     use tempfile::TempDir;
 
     use super::{RuntimeSessionSnapshot, load, save};
-    use hypercolor_types::effect::{ControlBinding, ControlValue};
     use hypercolor_types::scene::SceneId;
 
     #[test]
@@ -291,26 +264,9 @@ mod tests {
         let tempdir = TempDir::new().expect("tempdir");
         let path = tempdir.path().join("runtime-state.json");
 
-        let mut controls = HashMap::new();
-        controls.insert("speed".to_owned(), ControlValue::Float(0.72));
         let expected = RuntimeSessionSnapshot {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
             default_scene_groups: Vec::new(),
-            active_effect_id: Some("0195e5b0-b2ea-7f22-9ab2-9bc31b48adf3".to_owned()),
-            active_preset_id: Some("preset_42".to_owned()),
-            control_values: controls,
-            control_bindings: HashMap::from([(
-                "speed".to_owned(),
-                ControlBinding {
-                    sensor: "cpu_temp".to_owned(),
-                    sensor_min: 30.0,
-                    sensor_max: 100.0,
-                    target_min: 0.0,
-                    target_max: 1.0,
-                    deadband: 0.5,
-                    smoothing: 0.2,
-                },
-            )]),
             active_layout_id: Some("layout_abc123".to_owned()),
             global_brightness: 0.42,
             wled_probe_ips: vec![
@@ -324,12 +280,8 @@ mod tests {
         let loaded = load(&path).expect("load snapshot");
         let loaded = loaded.expect("snapshot should exist");
 
-        assert_eq!(loaded.active_effect_id, expected.active_effect_id);
-        assert_eq!(loaded.active_preset_id, expected.active_preset_id);
         assert_eq!(loaded.active_scene_id, expected.active_scene_id);
         assert_eq!(loaded.default_scene_groups, expected.default_scene_groups);
-        assert_eq!(loaded.control_values, expected.control_values);
-        assert_eq!(loaded.control_bindings, expected.control_bindings);
         assert!((loaded.global_brightness - expected.global_brightness).abs() < f32::EPSILON);
         assert_eq!(loaded.wled_probe_ips, expected.wled_probe_ips);
     }
@@ -349,10 +301,6 @@ mod tests {
         let snapshot = Arc::new(RuntimeSessionSnapshot {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
             default_scene_groups: Vec::new(),
-            active_effect_id: Some("0195e5b0-b2ea-7f22-9ab2-9bc31b48adf3".to_owned()),
-            active_preset_id: Some("preset_42".to_owned()),
-            control_values: HashMap::new(),
-            control_bindings: HashMap::new(),
             active_layout_id: None,
             global_brightness: 1.0,
             wled_probe_ips: vec!["10.0.0.42".parse().expect("valid IP")],
@@ -384,5 +332,24 @@ mod tests {
             loaded.is_some(),
             "snapshot file should exist after concurrent saves"
         );
+    }
+
+    #[test]
+    fn load_rejects_removed_effect_snapshot_fields() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("runtime-state.json");
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "active_scene_id": SceneId::DEFAULT.to_string(),
+                "default_scene_groups": [],
+                "active_effect_id": "0195e5b0-b2ea-7f22-9ab2-9bc31b48adf3",
+            }))
+            .expect("snapshot json should serialize"),
+        )
+        .expect("snapshot json should write");
+
+        let error = load(&path).expect_err("removed fields should fail to load");
+        assert!(matches!(error, super::RuntimeSessionError::Parse { .. }));
     }
 }

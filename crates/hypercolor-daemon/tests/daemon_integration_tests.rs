@@ -3,7 +3,6 @@
 //! Tests the full daemon lifecycle: initialization, subsystem wiring,
 //! config loading, and graceful shutdown. Uses real subsystems (no mocks).
 
-use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
@@ -11,7 +10,6 @@ use std::time::Duration;
 
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::input::InputManager;
-use hypercolor_daemon::runtime_state::{self, RuntimeSessionSnapshot};
 use hypercolor_daemon::startup::{DaemonState, default_config, load_config};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::config::{CURRENT_SCHEMA_VERSION, RenderAccelerationMode};
@@ -19,7 +17,7 @@ use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
-use hypercolor_types::effect::{ControlBinding, ControlValue, EffectSource};
+use hypercolor_types::effect::EffectSource;
 use hypercolor_types::sensor::SystemSnapshot;
 use tempfile::NamedTempFile;
 use tokio::sync::{Mutex, watch};
@@ -240,7 +238,7 @@ async fn daemon_double_shutdown_is_safe() {
 }
 
 #[tokio::test]
-async fn legacy_runtime_state_migrates_default_scene_groups() {
+async fn removed_runtime_effect_fields_are_rejected_on_startup() {
     let _guard = TestDataDirGuard::new().await;
     let mut config = default_config();
     config.daemon.start_profile = "last".to_owned();
@@ -249,8 +247,6 @@ async fn legacy_runtime_state_migrates_default_scene_groups() {
         .expect("initialization should succeed");
     *state.input_manager.lock().await = test_input_manager();
 
-    let requested_speed = ControlValue::Float(7.0);
-    let preset_id = hypercolor_types::library::PresetId::new();
     let effect_id = {
         let registry = state.effect_registry.read().await;
         let (_, entry) = registry
@@ -262,55 +258,33 @@ async fn legacy_runtime_state_migrates_default_scene_groups() {
             .expect("expected at least one native effect with a speed control in registry");
         entry.metadata.id.to_string()
     };
-    let snapshot = RuntimeSessionSnapshot {
-        active_scene_id: Some(hypercolor_types::scene::SceneId::DEFAULT.to_string()),
-        default_scene_groups: Vec::new(),
-        active_effect_id: Some(effect_id.clone()),
-        active_preset_id: Some(preset_id.to_string()),
-        control_values: HashMap::from([("speed".to_owned(), requested_speed.clone())]),
-        control_bindings: HashMap::from([(
-            "speed".to_owned(),
-            ControlBinding {
-                sensor: "cpu_temp".to_owned(),
-                sensor_min: 30.0,
-                sensor_max: 100.0,
-                target_min: 0.0,
-                target_max: 1.0,
-                deadband: 0.5,
-                smoothing: 0.25,
-            },
-        )]),
-        active_layout_id: None,
-        global_brightness: 1.0,
-        wled_probe_ips: Vec::new(),
-        wled_probe_targets: Vec::new(),
-    };
-    runtime_state::save(&state.runtime_state_path, &snapshot).expect("persist runtime snapshot");
+    std::fs::write(
+        &state.runtime_state_path,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "active_scene_id": hypercolor_types::scene::SceneId::DEFAULT.to_string(),
+            "default_scene_groups": [],
+            "active_effect_id": effect_id,
+            "control_values": {
+                "speed": { "float": 7.0 }
+            }
+        }))
+        .expect("runtime snapshot json should serialize"),
+    )
+    .expect("runtime snapshot json should write");
 
     state
         .start()
         .await
-        .expect("start should restore runtime state");
+        .expect("start should ignore invalid runtime state");
 
     let scenes = state.scene_manager.read().await;
-    let primary_group = scenes
-        .active_scene()
-        .and_then(|scene| scene.primary_group())
-        .expect("primary group should be restored on startup");
-    assert_eq!(
-        primary_group.effect_id.map(|id| id.to_string()),
-        Some(effect_id)
+    assert!(
+        scenes
+            .active_scene()
+            .and_then(|scene| scene.primary_group())
+            .is_none(),
+        "startup should not hydrate removed runtime fields"
     );
-    assert_eq!(
-        primary_group.preset_id.map(|preset| preset.to_string()),
-        Some(preset_id.to_string())
-    );
-    assert_eq!(primary_group.controls.get("speed"), Some(&requested_speed));
-    let binding = primary_group
-        .control_bindings
-        .get("speed")
-        .expect("speed binding should be restored");
-    assert_eq!(binding.sensor, "cpu_temp");
     drop(scenes);
 
     state.shutdown().await.expect("shutdown should succeed");

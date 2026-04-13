@@ -241,7 +241,7 @@ pub enum RenderGroupRole {
 }
 ```
 
-Backward compat: existing persisted scenes (profiles with render groups, if any) default `role` to `Custom`. A migration runs once on load to promote groups with `display_target.is_some()` to `Display` and — where unambiguous — the first full-scope non-display group to `Primary` (see §5.7.3).
+Because this model has not shipped yet, persisted scenes must include explicit `role` and `kind` fields. Missing-role or missing-kind payloads are rejected instead of being auto-migrated.
 
 #### 5.1.2 `Scene` (`hypercolor-types/src/scene.rs`)
 
@@ -440,7 +440,7 @@ let group = {
 
 The renderer is no longer built in the API handler — `EffectPool::reconcile()` creates it on the next tick when it sees the new `effect_id` on the primary group.
 
-Keep `HypercolorEvent::EffectStarted` publication for backward compat — also publish new `RenderGroupChanged` event. Keep persist_runtime_session.
+Keep `HypercolorEvent::EffectStarted` publication for existing clients, and also publish the new `RenderGroupChanged` event. Keep `persist_runtime_session`.
 
 Display category effects keep their validation rejection (line 353-358) — display faces go through `/displays/{id}/face`, not `/effects/apply`.
 
@@ -569,10 +569,7 @@ New fields:
 }
 ```
 
-Rationale: Default scene isn't in `scenes.json`, so its contents go into `runtime-state.json`. Named scenes restore from `scenes.json` by ID.
-
-Migration (one-shot on first boot after upgrade):
-- If `effect` block present but `default_scene_groups` absent, synthesize a Primary group from the old effect data, write to `default_scene_groups`. Leave `effect` alone for rollback compatibility.
+Rationale: Default scene isn't in `scenes.json`, so its contents go into `runtime-state.json`. Named scenes restore from `scenes.json` by ID. The file is scene-backed only; older effect-only payloads are rejected.
 
 #### 5.6.3 Startup sequence
 
@@ -645,7 +642,7 @@ struct ProfileDisplay {
 }
 ```
 
-Existing profiles (old shape) migrate on load: if `effect_id` etc. present and `primary` absent, synthesize `primary` from legacy fields.
+Profiles persist only the final scene-backed shape. Pre-final top-level `effect_id`/`controls` fields are rejected on load.
 
 Apply logic (`api/profiles.rs:209-252`) becomes:
 - If `primary` → `upsert_primary_group`
@@ -690,7 +687,7 @@ Apply logic (`api/profiles.rs:209-252`) becomes:
   - `current_display_face_assignment` — read primary/display groups from active scene.
   - Move `upsert_display_face_group`, `display_face_layout` into SceneManager.
 - `src/api/scenes.rs` — filter out `SceneKind::Ephemeral` from `list`. Add `POST /scenes/deactivate`.
-- `src/api/profiles.rs` — use new profile shape, apply via scene_manager. Support legacy profile migration.
+- `src/api/profiles.rs` — use the new profile shape and apply via scene_manager.
 - `src/api/ws/`:
   - `protocol.rs` — add new server events if desired.
   - `relays.rs` / `mod.rs` — wire `RenderGroupChanged` / `ActiveSceneChanged` through as WS events.
@@ -699,11 +696,11 @@ Apply logic (`api/profiles.rs:209-252`) becomes:
 - `src/render_thread/frame_io.rs` — publish primary group canvas to global `canvas` channel.
 - `src/render_thread/frame_state.rs` — audio-reactive detection iterates all active groups.
 - `src/render_thread/pipeline_driver.rs` — drop `effect_engine.lock()` uses.
-- `src/runtime_state.rs` — extend schema, migration code.
+- `src/runtime_state.rs` — store only scene-backed runtime fields.
 - `src/startup/lifecycle.rs` — update restore logic.
 - `src/mcp/tools/effects.rs` — `set_effect`, `stop_effect` handlers route through scene_manager.
 - `src/mcp/tools/scenes.rs` — surface the new `ActiveSceneChanged` event; Default doesn't appear in `list_scenes`.
-- `src/profile_store.rs` — new profile shape + migration.
+- `src/profile_store.rs` — new profile shape with strict deserialization.
 
 ### 6.4 UI (`crates/hypercolor-ui/`)
 
@@ -820,8 +817,8 @@ Minimal — the API shapes are preserved.
   - `runtime_state_captures_default_scene_groups`
   - `named_scenes_persist_across_restart`
   - `default_scene_contents_restore_on_restart`
-  - `legacy_profile_migrates_to_new_shape`
-  - `legacy_runtime_state_migrates_default_scene_groups`
+  - `pre_final_profile_shape_is_rejected_on_load`
+  - `removed_runtime_effect_fields_are_rejected_on_startup`
 
 ### 8.3 Render pipeline tests
 
@@ -848,7 +845,7 @@ Recommended rollout order. Each phase should leave the workspace green (`just ve
 ### Phase 1 — Types & invariants (no runtime behavior change)
 - Add `RenderGroupRole`, `SceneKind`, `SceneId::DEFAULT`.
 - Add `Scene::validate()` for new invariants.
-- Extend legacy deserialization with role migration.
+- Require explicit `role`/`kind` in persisted scene payloads.
 - Unit tests for types.
 
 ### Phase 2 — SceneManager default + helpers
@@ -859,7 +856,7 @@ Recommended rollout order. Each phase should leave the workspace green (`just ve
 
 ### Phase 3 — SceneStore + persistence
 - `SceneStore::load/save`.
-- `runtime-state.json` schema extension + migration.
+- `runtime-state.json` schema cutover to scene-backed data only.
 - Startup loads + restores.
 - Persistence tests.
 
@@ -875,7 +872,7 @@ Recommended rollout order. Each phase should leave the workspace green (`just ve
 - `apply_effect`, `update_current_controls`, `reset_current_controls`, `stop_current`, `get_active_effect` — reroute to scene_manager.
 - `set_display_face`, `delete_display_face`, `patch_display_face_controls`, `current_display_face_assignment` — drop 409, route through scene_manager helpers.
 - MCP `set_effect`, `stop_effect` — reroute.
-- Profile save/apply — new shape + legacy migration.
+- Profile save/apply — new shape only.
 - API integration tests.
 
 ### Phase 6 — Events & WS
@@ -893,11 +890,11 @@ Phases 1–3 are safe to merge independently. Phases 4–5 must land together (d
 
 ## 10. Risk & Mitigation
 
-### 10.1 Persistence migration breakage
+### 10.1 Persistence contract drift
 
-**Risk:** existing users have `runtime-state.json` in the old shape. If migration is buggy, they lose their last-applied effect on upgrade.
+**Risk:** local dev data written by pre-final branches may no longer parse once the strict scene-backed schema lands.
 
-**Mitigation:** migration is strictly additive — synthesize new fields from old, don't touch old fields in the first rollout. If the new fields are absent on load, fall back to legacy parsing. Ship one release with both readers. Remove legacy reader in a follow-up release.
+**Mitigation:** fail fast on load, log the parse error, and continue with a clean synthesized Default scene. Because this has not shipped, we prefer an explicit contract cutover over carrying compatibility code.
 
 ### 10.2 Servo effect re-init cost
 
@@ -934,7 +931,7 @@ Phases 1–3 are safe to merge independently. Phases 4–5 must land together (d
 ## 11. Observability
 
 - Log at info level: `scene_activated`, `scene_deactivated`, `default_scene_primary_updated`, `display_group_upserted`, `display_group_removed`.
-- Log at warn level: legacy persistence migration events, any scene validation failures.
+- Log at warn level: persistence parse failures and any scene validation failures.
 - Metrics: `render_group_count` already in `MetricsTimeline`. Add `render_group_primary_effect_id`, `render_group_display_count` for visibility.
 
 ---
@@ -969,7 +966,7 @@ Possible follow-up. Not blocking.
 4. Restarting the daemon restores the last effect + all face assignments.
 5. `GET /scenes` returns no Default.
 6. Every test listed in §8 exists and passes.
-7. `runtime-state.json` written by an upgraded daemon loads cleanly into the legacy daemon (rollback-safe for at least one release).
+7. `runtime-state.json` and `profiles.json` use only the final scene-backed schema; pre-final shapes are rejected.
 8. Manual verification checklist (§8.4) complete.
 
 ---

@@ -665,7 +665,7 @@ pub(crate) async fn persist_layout_auto_exclusions(state: &Arc<AppState>) {
     }
 }
 
-/// Persist the current runtime session snapshot (active effect/preset/controls/layout).
+/// Persist the current runtime session snapshot (active scene, layout, brightness, and discovery state).
 pub(crate) async fn save_runtime_session_snapshot(state: &AppState) {
     let mut snapshot = {
         let scene_manager = state.scene_manager.read().await;

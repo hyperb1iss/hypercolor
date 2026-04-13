@@ -239,6 +239,61 @@ fn render_group_display_target_round_trips_in_scene_json() {
 }
 
 #[test]
+fn scene_json_requires_group_role() {
+    let json = serde_json::json!({
+        "id": SceneId::new(),
+        "name": "Strict Scene",
+        "description": null,
+        "scope": "full",
+        "zone_assignments": [],
+        "groups": [{
+            "id": RenderGroupId::new(),
+            "name": "Primary",
+            "description": null,
+            "effect_id": EffectId::from(Uuid::now_v7()),
+            "controls": {},
+            "control_bindings": {},
+            "preset_id": null,
+            "layout": sample_layout("desk:main"),
+            "brightness": 1.0,
+            "enabled": true,
+            "color": null,
+            "display_target": null
+        }],
+        "transition": sample_transition(),
+        "priority": "user",
+        "enabled": true,
+        "metadata": {},
+        "unassigned_behavior": "off",
+        "kind": "named"
+    });
+
+    let error = serde_json::from_value::<Scene>(json).expect_err("missing role should fail");
+    assert!(error.to_string().contains("missing field `role`"));
+}
+
+#[test]
+fn scene_json_requires_scene_kind() {
+    let mut json = serde_json::to_value(Scene {
+        groups: vec![RenderGroup {
+            role: RenderGroupRole::Primary,
+            ..sample_group("Primary", "desk:main", EffectId::from(Uuid::now_v7()))
+        }],
+        ..sample_scene()
+    })
+    .expect("scene should serialize");
+    json.as_object_mut()
+        .expect("scene should serialize as an object")
+        .remove("kind");
+
+    let error = serde_json::from_value::<Scene>(json).expect_err("missing kind should fail");
+    assert!(
+        error.to_string().contains("kind"),
+        "expected kind parse error, got {error}"
+    );
+}
+
+#[test]
 fn scene_validate_group_exclusivity_rejects_duplicates() {
     let scene = Scene {
         groups: vec![
@@ -339,26 +394,6 @@ fn scene_validate_rejects_duplicate_display_device_ids() {
             .any(|error| error.contains("duplicate display render groups")),
         "expected duplicate-display validation error, got {errors:?}"
     );
-}
-
-#[test]
-fn legacy_scenes_with_no_role_field_deserialize_with_custom_default() {
-    let mut value = serde_json::to_value(Scene {
-        groups: vec![sample_group(
-            "Desk",
-            "desk:main",
-            EffectId::from(Uuid::now_v7()),
-        )],
-        ..sample_scene()
-    })
-    .expect("scene should serialize");
-    value["groups"][0]
-        .as_object_mut()
-        .expect("group should serialize as an object")
-        .remove("role");
-
-    let restored: Scene = serde_json::from_value(value).expect("legacy scene should deserialize");
-    assert_eq!(restored.groups[0].role, RenderGroupRole::Custom);
 }
 
 // ── SceneScope ───────────────────────────────────────────────────────────

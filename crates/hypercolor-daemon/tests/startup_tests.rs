@@ -597,10 +597,6 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
         &runtime_state::RuntimeSessionSnapshot {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
             default_scene_groups: Vec::new(),
-            active_effect_id: None,
-            active_preset_id: None,
-            control_values: std::collections::HashMap::new(),
-            control_bindings: std::collections::HashMap::new(),
             active_layout_id: Some(restored_layout.id.clone()),
             global_brightness: 1.0,
             wled_probe_ips: Vec::new(),
@@ -737,10 +733,13 @@ async fn runtime_state_captures_default_scene_groups() {
     let snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime state should load")
         .expect("runtime state snapshot should exist");
-    assert_eq!(snapshot.active_effect_id, Some(metadata.id.to_string()));
-    assert_eq!(snapshot.active_preset_id, Some(preset_id.to_string()));
     assert_eq!(snapshot.active_scene_id, Some(SceneId::DEFAULT.to_string()));
     assert_eq!(snapshot.default_scene_groups.len(), 1);
+    assert_eq!(
+        snapshot.default_scene_groups[0].effect_id,
+        Some(metadata.id)
+    );
+    assert_eq!(snapshot.default_scene_groups[0].preset_id, Some(preset_id));
     assert_eq!(
         snapshot.wled_probe_ips,
         vec!["10.0.0.42".parse::<std::net::IpAddr>().expect("valid IP"),]
@@ -787,10 +786,6 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
         &runtime_state::RuntimeSessionSnapshot {
             active_scene_id: Some(named_scene_id.to_string()),
             default_scene_groups: vec![default_group.clone()],
-            active_effect_id: None,
-            active_preset_id: None,
-            control_values: std::collections::HashMap::new(),
-            control_bindings: std::collections::HashMap::new(),
             active_layout_id: None,
             global_brightness: 1.0,
             wled_probe_ips: Vec::new(),
@@ -854,10 +849,6 @@ async fn default_scene_contents_restore_on_restart() {
                 display_target: None,
                 role: RenderGroupRole::Primary,
             }],
-            active_effect_id: None,
-            active_preset_id: None,
-            control_values: std::collections::HashMap::new(),
-            control_bindings: std::collections::HashMap::new(),
             active_layout_id: None,
             global_brightness: 1.0,
             wled_probe_ips: Vec::new(),

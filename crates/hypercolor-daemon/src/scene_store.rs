@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use hypercolor_core::scene::SceneManager;
-use hypercolor_types::scene::{RenderGroupRole, Scene, SceneId, SceneKind, SceneScope};
+use hypercolor_types::scene::{Scene, SceneId, SceneKind};
 
 /// JSON-backed named-scene store.
 #[derive(Debug, Clone, Default)]
@@ -98,42 +98,11 @@ impl SceneStore {
                 .take()
                 .map(|description| description.trim().to_owned())
                 .filter(|description| !description.is_empty());
-            migrate_legacy_group_roles(scene);
 
             !id.is_default()
                 && scene.id == *id
                 && scene.kind == SceneKind::Named
                 && !scene.name.is_empty()
         });
-    }
-}
-
-fn migrate_legacy_group_roles(scene: &mut Scene) {
-    for group in &mut scene.groups {
-        if group.display_target.is_some() {
-            group.role = RenderGroupRole::Display;
-        }
-    }
-
-    let has_primary_group = scene
-        .groups
-        .iter()
-        .any(|group| group.role == RenderGroupRole::Primary);
-    if has_primary_group || !matches!(scene.scope, SceneScope::Full) {
-        return;
-    }
-
-    let mut primary_candidate = None;
-    for (index, group) in scene.groups.iter().enumerate() {
-        if group.display_target.is_some() || group.role == RenderGroupRole::Display {
-            continue;
-        }
-        if primary_candidate.replace(index).is_some() {
-            return;
-        }
-    }
-
-    if let Some(index) = primary_candidate {
-        scene.groups[index].role = RenderGroupRole::Primary;
     }
 }

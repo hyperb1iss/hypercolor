@@ -443,9 +443,7 @@ async fn snapshot_profile(
                     scene
                         .groups
                         .iter()
-                        .filter(|group| {
-                            group.role == RenderGroupRole::Display || group.display_target.is_some()
-                        })
+                        .filter(|group| group.role == RenderGroupRole::Display)
                         .cloned()
                         .collect(),
                 )

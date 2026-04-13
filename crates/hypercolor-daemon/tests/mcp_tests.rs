@@ -918,12 +918,13 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
     let active_snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
+    assert_eq!(active_snapshot.default_scene_groups.len(), 1);
     assert_eq!(
-        active_snapshot.active_effect_id,
-        Some(effect.id.to_string())
+        active_snapshot.default_scene_groups[0].effect_id,
+        Some(effect.id)
     );
     assert_eq!(
-        active_snapshot.control_values.get("speed"),
+        active_snapshot.default_scene_groups[0].controls.get("speed"),
         Some(&ControlValue::Float(7.5))
     );
 
@@ -979,8 +980,9 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
     let stopped_snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
-    assert_eq!(stopped_snapshot.active_effect_id, None);
-    assert!(stopped_snapshot.control_values.is_empty());
+    assert_eq!(stopped_snapshot.default_scene_groups.len(), 1);
+    assert_eq!(stopped_snapshot.default_scene_groups[0].effect_id, None);
+    assert!(stopped_snapshot.default_scene_groups[0].controls.is_empty());
 
     let cleared_group = {
         let manager = state.scene_manager.read().await;
@@ -1039,12 +1041,13 @@ async fn stateful_set_color_syncs_scene_runtime_state() {
     let snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
-    assert_eq!(snapshot.active_effect_id, Some(solid_effect.id.to_string()));
+    assert_eq!(snapshot.default_scene_groups.len(), 1);
+    assert_eq!(snapshot.default_scene_groups[0].effect_id, Some(solid_effect.id));
     assert_eq!(
-        snapshot.control_values.get("brightness"),
+        snapshot.default_scene_groups[0].controls.get("brightness"),
         Some(&ControlValue::Float(0.5))
     );
-    match snapshot.control_values.get("color") {
+    match snapshot.default_scene_groups[0].controls.get("color") {
         Some(ControlValue::Color([r, g, b, a])) => {
             assert_eq!((*r, *g, *b, *a), (1.0, 106.0 / 255.0, 193.0 / 255.0, 1.0));
         }
@@ -1074,9 +1077,10 @@ async fn stateful_set_profile_persists_runtime_snapshot() {
     let snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
-    assert_eq!(snapshot.active_effect_id, Some(effect.id.to_string()));
+    assert_eq!(snapshot.default_scene_groups.len(), 1);
+    assert_eq!(snapshot.default_scene_groups[0].effect_id, Some(effect.id));
     assert_eq!(
-        snapshot.control_values.get("speed"),
+        snapshot.default_scene_groups[0].controls.get("speed"),
         Some(&ControlValue::Float(12.0))
     );
 }

@@ -4,9 +4,7 @@ use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_daemon::scene_store::SceneStore;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::EffectId;
-use hypercolor_types::scene::{
-    DisplayFaceTarget, RenderGroup, RenderGroupId, RenderGroupRole, SceneId, SceneScope,
-};
+use hypercolor_types::scene::{RenderGroupId, SceneId};
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
@@ -48,24 +46,6 @@ fn sample_layout(zone_id: &str) -> SpatialLayout {
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
         version: 1,
-    }
-}
-
-fn sample_group(name: &str, zone_id: &str) -> RenderGroup {
-    RenderGroup {
-        id: RenderGroupId::new(),
-        name: name.to_owned(),
-        description: None,
-        effect_id: Some(EffectId::from(Uuid::now_v7())),
-        controls: Default::default(),
-        control_bindings: Default::default(),
-        preset_id: None,
-        layout: sample_layout(zone_id),
-        brightness: 1.0,
-        enabled: true,
-        color: None,
-        display_target: None,
-        role: RenderGroupRole::Custom,
     }
 }
 
@@ -113,71 +93,92 @@ fn scene_store_sync_from_manager_filters_default_scene() {
 }
 
 #[test]
-fn scene_store_load_promotes_legacy_display_groups() {
+fn scene_store_load_rejects_groups_missing_role() {
     let tempdir = TempDir::new().expect("tempdir");
     let path = tempdir.path().join("scenes.json");
-    let device_id = DeviceId::new();
-
-    let mut scene = make_scene("Display Scene");
-    scene.groups = vec![RenderGroup {
-        display_target: Some(DisplayFaceTarget { device_id }),
-        ..sample_group("Face", "desk:display")
-    }];
-
-    let payload =
-        serde_json::to_string_pretty(&std::collections::HashMap::from([(scene.id, scene)]))
+    let mut scene = make_scene("Strict Display");
+    scene.groups = vec![serde_json::from_value(serde_json::json!({
+        "id": RenderGroupId::new(),
+        "name": "Face",
+        "description": null,
+        "effect_id": EffectId::from(Uuid::now_v7()),
+        "controls": {},
+        "control_bindings": {},
+        "preset_id": null,
+        "layout": sample_layout("desk:display"),
+        "brightness": 1.0,
+        "enabled": true,
+        "color": null,
+        "display_target": {
+            "device_id": DeviceId::new()
+        },
+        "role": "display"
+    }))
+    .expect("group should deserialize")];
+    let mut payload =
+        serde_json::to_value(std::collections::HashMap::from([(scene.id, scene)]))
             .expect("scene payload should serialize");
-    std::fs::write(&path, payload).expect("scene store payload should write");
+    payload
+        .as_object_mut()
+        .and_then(|scenes| scenes.values_mut().next())
+        .and_then(|scene| scene.get_mut("groups"))
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|groups| groups.first_mut())
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("group should serialize as an object")
+        .remove("role");
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&payload).expect("scene payload should serialize"),
+    )
+    .expect("scene store payload should write");
 
-    let loaded = SceneStore::load(&path).expect("scene store should load");
-    let restored = loaded.list().next().expect("scene should load");
-    assert_eq!(restored.groups.len(), 1);
-    assert_eq!(restored.groups[0].role, RenderGroupRole::Display);
-}
-
-#[test]
-fn scene_store_load_promotes_unambiguous_full_scope_primary_group() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let path = tempdir.path().join("scenes.json");
-
-    let mut scene = make_scene("Legacy Primary");
-    scene.groups = vec![sample_group("Legacy Group", "desk:main")];
-
-    let payload =
-        serde_json::to_string_pretty(&std::collections::HashMap::from([(scene.id, scene)]))
-            .expect("scene payload should serialize");
-    std::fs::write(&path, payload).expect("scene store payload should write");
-
-    let loaded = SceneStore::load(&path).expect("scene store should load");
-    let restored = loaded.list().next().expect("scene should load");
-    assert_eq!(restored.groups.len(), 1);
-    assert_eq!(restored.groups[0].role, RenderGroupRole::Primary);
-}
-
-#[test]
-fn scene_store_load_keeps_multiple_legacy_non_display_groups_custom() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let path = tempdir.path().join("scenes.json");
-
-    let mut scene = make_scene("Custom Split");
-    scene.scope = SceneScope::Full;
-    scene.groups = vec![
-        sample_group("Left", "desk:left"),
-        sample_group("Right", "desk:right"),
-    ];
-
-    let payload =
-        serde_json::to_string_pretty(&std::collections::HashMap::from([(scene.id, scene)]))
-            .expect("scene payload should serialize");
-    std::fs::write(&path, payload).expect("scene store payload should write");
-
-    let loaded = SceneStore::load(&path).expect("scene store should load");
-    let restored = loaded.list().next().expect("scene should load");
+    let error = SceneStore::load(&path).expect_err("missing role should fail");
     assert!(
-        restored
-            .groups
-            .iter()
-            .all(|group| group.role == RenderGroupRole::Custom),
-        "ambiguous legacy groups should remain custom"
+        error.to_string().contains("failed to parse scenes"),
+        "expected parse failure, got {error}"
+    );
+}
+
+#[test]
+fn scene_store_load_rejects_scenes_missing_kind() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let path = tempdir.path().join("scenes.json");
+    let mut scene = make_scene("Strict Primary");
+    scene.groups = vec![serde_json::from_value(serde_json::json!({
+        "id": RenderGroupId::new(),
+        "name": "Primary",
+        "description": null,
+        "effect_id": EffectId::from(Uuid::now_v7()),
+        "controls": {},
+        "control_bindings": {},
+        "preset_id": null,
+        "layout": sample_layout("desk:main"),
+        "brightness": 1.0,
+        "enabled": true,
+        "color": null,
+        "display_target": null,
+        "role": "primary"
+    }))
+    .expect("group should deserialize")];
+    let mut payload =
+        serde_json::to_value(std::collections::HashMap::from([(scene.id, scene)]))
+            .expect("scene payload should serialize");
+    payload
+        .as_object_mut()
+        .and_then(|scenes| scenes.values_mut().next())
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("scene should serialize as an object")
+        .remove("kind");
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&payload).expect("scene payload should serialize"),
+    )
+    .expect("scene store payload should write");
+
+    let error = SceneStore::load(&path).expect_err("missing kind should fail");
+    assert!(
+        error.to_string().contains("failed to parse scenes"),
+        "expected parse failure, got {error}"
     );
 }

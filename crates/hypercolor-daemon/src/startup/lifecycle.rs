@@ -6,12 +6,11 @@ use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 
 use hypercolor_core::device::{UsbHotplugEvent, UsbHotplugMonitor};
-use hypercolor_core::effect::{EffectRegistry, EffectWatchEvent, EffectWatcher};
+use hypercolor_core::effect::{EffectWatchEvent, EffectWatcher};
 use hypercolor_core::engine::FpsTier;
 use hypercolor_types::config::HypercolorConfig;
-use hypercolor_types::effect::{EffectId, EffectMetadata};
 use hypercolor_types::event::{HypercolorEvent, SceneChangeReason};
-use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole, SceneId};
+use hypercolor_types::scene::SceneId;
 
 use crate::discovery::{self, DiscoveryBackend};
 use crate::display_output::overlay::DefaultOverlayRendererFactory;
@@ -53,8 +52,7 @@ impl DaemonState {
                 .context("failed to start input sources")?;
         }
 
-        // Restore persisted runtime session (last active effect/preset/controls)
-        // before the render loop begins producing frames.
+        // Restore persisted scene state before the render loop begins producing frames.
         self.restore_runtime_session_if_configured(&config).await;
 
         self.session_controller = Some(SessionController::start(
@@ -399,87 +397,13 @@ impl DaemonState {
             });
         }
 
-        if !snapshot.default_scene_groups.is_empty() {
+        if !snapshot.default_scene_groups.is_empty() || requested_active_scene_id.is_some() {
             info!(
                 groups = snapshot.default_scene_groups.len(),
-                active_scene_id = ?requested_active_scene_id,
+                active_scene_id = ?requested_active_scene_id.unwrap_or(SceneId::DEFAULT),
                 "Restored runtime scene snapshot"
             );
-            return Ok(());
         }
-
-        let Some(active_effect_id) = snapshot.active_effect_id.as_deref() else {
-            return Ok(());
-        };
-
-        let metadata = {
-            let registry = self.effect_registry.read().await;
-            resolve_effect_metadata_for_restore(&registry, active_effect_id)
-        };
-        let Some(metadata) = metadata else {
-            anyhow::bail!("saved effect is no longer available: {active_effect_id}");
-        };
-
-        let (controls, migrated_controls) =
-            crate::library::migration::migrate_effect_controls_for_load(
-                &metadata,
-                &snapshot.control_values,
-            );
-        let active_preset_id = snapshot
-            .active_preset_id
-            .as_deref()
-            .map(str::parse)
-            .transpose()
-            .map_err(|error| anyhow::anyhow!("invalid saved preset id: {error}"))?;
-        {
-            let layout = {
-                let spatial = self.spatial_engine.read().await;
-                spatial.layout().as_ref().clone()
-            };
-            let mut scene_manager = self.scene_manager.write().await;
-            let Some(mut default_scene) = scene_manager.get(&SceneId::DEFAULT).cloned() else {
-                anyhow::bail!("default scene is missing during legacy runtime restore");
-            };
-            default_scene
-                .groups
-                .retain(|group| group.role != RenderGroupRole::Primary);
-            default_scene.groups.push(RenderGroup {
-                id: RenderGroupId::new(),
-                name: metadata.name.clone(),
-                description: (!metadata.description.is_empty())
-                    .then(|| metadata.description.clone()),
-                effect_id: Some(metadata.id),
-                controls: controls.clone(),
-                control_bindings: snapshot.control_bindings.clone(),
-                preset_id: active_preset_id,
-                layout,
-                brightness: 1.0,
-                enabled: true,
-                color: None,
-                display_target: None,
-                role: RenderGroupRole::Primary,
-            });
-            scene_manager
-                .update(default_scene)
-                .with_context(|| format!("failed to restore '{}'", metadata.name))?;
-        }
-
-        if migrated_controls {
-            info!(
-                effect_id = %metadata.id,
-                effect = %metadata.name,
-                "Migrated legacy screencast session controls to the viewport rect"
-            );
-        }
-
-        info!(
-            effect_id = %metadata.id,
-            effect = %metadata.name,
-            controls = snapshot.control_values.len(),
-            bindings = snapshot.control_bindings.len(),
-            active_scene_id = ?requested_active_scene_id.unwrap_or(SceneId::DEFAULT),
-            "Restored legacy runtime session snapshot into the default scene"
-        );
 
         Ok(())
     }
@@ -654,20 +578,4 @@ impl DaemonState {
             }
         }));
     }
-}
-
-fn resolve_effect_metadata_for_restore(
-    registry: &EffectRegistry,
-    id_or_name: &str,
-) -> Option<EffectMetadata> {
-    if let Ok(uuid) = id_or_name.parse::<uuid::Uuid>() {
-        return registry
-            .get(&EffectId::new(uuid))
-            .map(|entry| entry.metadata.clone());
-    }
-
-    registry
-        .iter()
-        .find(|(_, entry)| entry.metadata.matches_lookup(id_or_name))
-        .map(|(_, entry)| entry.metadata.clone())
 }
