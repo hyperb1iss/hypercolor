@@ -17,11 +17,13 @@ use leptos_use::{use_debounce_fn, use_debounce_fn_with_arg, use_interval_fn};
 use web_sys::PointerEvent;
 
 use crate::api;
+use crate::app::EffectsContext;
 use crate::components::control_panel::ControlPanel;
 use crate::components::page_header::PageHeader;
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::toasts;
+use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 
 type DisplaysResource = LocalResource<Result<Vec<api::DisplaySummary>, String>>;
 
@@ -114,6 +116,7 @@ impl DragState {
 
 #[component]
 pub fn DisplaysPage() -> impl IntoView {
+    let fx = expect_context::<EffectsContext>();
     let displays: DisplaysResource = LocalResource::new(api::fetch_displays);
     let (selected_id, set_selected_id) = signal(None::<String>);
     let (simulator_modal_open, set_simulator_modal_open) = signal(false);
@@ -226,6 +229,12 @@ pub fn DisplaysPage() -> impl IntoView {
     });
 
     let assign_face = Callback::new(move |effect_id: String| {
+        if let Some(message) =
+            snapshot_scene_lock_message(Some(fx), "assigning or changing display faces")
+        {
+            toasts::toast_error(&message);
+            return;
+        }
         let Some(display) = selected_display.get_untracked() else {
             return;
         };
@@ -250,6 +259,10 @@ pub fn DisplaysPage() -> impl IntoView {
         });
     });
     let clear_face = Callback::new(move |_| {
+        if let Some(message) = snapshot_scene_lock_message(Some(fx), "clearing display faces") {
+            toasts::toast_error(&message);
+            return;
+        }
         let Some(display) = selected_display.get_untracked() else {
             return;
         };
@@ -271,7 +284,15 @@ pub fn DisplaysPage() -> impl IntoView {
             }
         });
     });
-    let open_face_picker = Callback::new(move |_| set_face_picker_open.set(true));
+    let open_face_picker = Callback::new(move |_| {
+        if let Some(message) =
+            snapshot_scene_lock_message(Some(fx), "assigning or changing display faces")
+        {
+            toasts::toast_error(&message);
+            return;
+        }
+        set_face_picker_open.set(true);
+    });
     let close_face_picker = Callback::new(move |_| set_face_picker_open.set(false));
 
     let open_simulator_modal = Callback::new(move |_| set_simulator_modal_open.set(true));
@@ -279,6 +300,37 @@ pub fn DisplaysPage() -> impl IntoView {
     let open_simulator_editor =
         Callback::new(move |display: api::DisplaySummary| set_editing_simulator.set(Some(display)));
     let close_simulator_editor = Callback::new(move |_| set_editing_simulator.set(None));
+    let named_scene_warning = Memo::new(move |_| {
+        (fx.active_scene_kind.get() == Some(SceneKind::Named)).then(|| {
+            (
+                fx.active_scene_name
+                    .get()
+                    .unwrap_or_else(|| "Active scene".to_owned()),
+                fx.active_scene_mutation_mode.get() == Some(SceneMutationMode::Snapshot),
+            )
+        })
+    });
+    let (returning_to_default, set_returning_to_default) = signal(false);
+    let on_return_to_default = {
+        let fx = fx;
+        Callback::new(move |_| {
+            if returning_to_default.get_untracked() {
+                return;
+            }
+            set_returning_to_default.set(true);
+            spawn_local(async move {
+                if api::deactivate_scene().await.is_ok() {
+                    fx.refresh_active_scene();
+                    set_face_picker_open.set(false);
+                    set_face_refresh_tick.update(|value| *value = value.wrapping_add(1));
+                    toasts::toast_success("Returned to Default scene.");
+                } else {
+                    toasts::toast_error("Couldn't return to Default scene.");
+                }
+                set_returning_to_default.set(false);
+            });
+        })
+    };
     let on_simulator_created = Callback::new(move |summary: api::SimulatedDisplaySummary| {
         displays.refetch();
         set_selected_id.set(Some(summary.id));
@@ -309,6 +361,41 @@ pub fn DisplaysPage() -> impl IntoView {
                         gradient="linear-gradient(105deg,#e135ff 0%,#e8f4ff 55%,#80ffea 100%)"
                     />
                 </div>
+                {move || named_scene_warning.get().map(|(scene_name, snapshot_locked)| view! {
+                    <div class="px-6 pb-4">
+                        <div class="rounded-xl border border-[rgba(241,250,140,0.24)] bg-[rgba(241,250,140,0.08)] px-4 py-3 shadow-[0_0_24px_rgba(241,250,140,0.08)]">
+                            <div class="flex items-start gap-3">
+                                <div class="mt-0.5 shrink-0 text-[rgba(241,250,140,0.9)]">
+                                    <Icon icon=LuTriangleAlert width="14px" height="14px" />
+                                </div>
+                                <div class="min-w-0 flex-1">
+                                    <div class="text-[11px] font-semibold uppercase tracking-[0.16em] text-[rgba(241,250,140,0.82)]">
+                                        {if snapshot_locked { "Snapshot Scene Locked" } else { "Named Scene Active" }}
+                                    </div>
+                                    <div class="mt-1 text-sm leading-5 text-fg-secondary">
+                                        <span class="text-fg-primary">{scene_name.clone()}</span>
+                                        {if snapshot_locked {
+                                            " is snapshot-locked. Return to Default before assigning, clearing, or tuning a display face."
+                                        } else {
+                                            " is active. Assigning, clearing, or tuning a face here rewrites that scene’s display group."
+                                        }}
+                                    </div>
+                                </div>
+                                <button
+                                    class="shrink-0 rounded-lg border border-[rgba(241,250,140,0.28)] px-3 py-1.5 text-[11px] font-medium text-[rgba(241,250,140,0.92)] transition-all duration-200 hover:bg-[rgba(241,250,140,0.08)] disabled:cursor-wait disabled:opacity-60"
+                                    disabled=move || returning_to_default.get()
+                                    on:click=move |_| on_return_to_default.run(())
+                                >
+                                    {move || if returning_to_default.get() {
+                                        "Returning..."
+                                    } else {
+                                        "Return to Default"
+                                    }}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                })}
             </div>
             <div class="relative flex min-h-0 flex-1 gap-3 p-3">
                 <aside class="flex min-h-0 w-[260px] shrink-0 flex-col">
@@ -419,6 +506,23 @@ fn drag_callbacks(
     });
 
     (on_start, on_drag, on_end)
+}
+
+fn snapshot_scene_lock_message(ctx: Option<EffectsContext>, action: &str) -> Option<String> {
+    let ctx = ctx?;
+    if ctx.active_scene_kind.get_untracked() != Some(SceneKind::Named)
+        || ctx.active_scene_mutation_mode.get_untracked() != Some(SceneMutationMode::Snapshot)
+    {
+        return None;
+    }
+
+    let scene_name = ctx
+        .active_scene_name
+        .get_untracked()
+        .unwrap_or_else(|| "Active scene".to_owned());
+    Some(format!(
+        "{scene_name} is snapshot-locked. Return to Default before {action}."
+    ))
 }
 
 fn toggle_body_resizing(active: bool) {
@@ -1538,6 +1642,7 @@ fn FaceControlsSection(
     set_display_face: WriteSignal<Option<Result<Option<api::DisplayFaceResponse>, String>>>,
     set_face_refresh_tick: WriteSignal<u64>,
 ) -> impl IntoView {
+    let effects_ctx = use_context::<EffectsContext>();
     // Derived view of the face's control definitions for ControlPanel.
     let face_controls = Signal::derive(move || match display_face.get() {
         Some(Ok(Some(face))) => face.effect.controls,
@@ -1585,9 +1690,26 @@ fn FaceControlsSection(
     // drag only sends the final position when the debounce fires.
     let pending_updates: StoredValue<std::collections::HashMap<String, serde_json::Value>> =
         StoredValue::new(std::collections::HashMap::new());
+    let show_locked_toast = use_debounce_fn_with_arg(
+        move |message: String| {
+            toasts::toast_error(&message);
+        },
+        150.0,
+    );
 
     let flush_updates = use_debounce_fn(
         move || {
+            if let Some(message) =
+                snapshot_scene_lock_message(effects_ctx, "changing display face controls")
+            {
+                set_face_control_values.set(match display_face.get_untracked() {
+                    Some(Ok(Some(face))) => face.group.controls,
+                    _ => std::collections::HashMap::new(),
+                });
+                let _ = pending_updates.try_update_value(std::mem::take);
+                toasts::toast_error(&message);
+                return;
+            }
             let Some(display) = selected_display.get_untracked() else {
                 return;
             };
@@ -1615,6 +1737,12 @@ fn FaceControlsSection(
     );
 
     let on_control_change = Callback::new(move |(name, value): (String, serde_json::Value)| {
+        if let Some(message) =
+            snapshot_scene_lock_message(effects_ctx, "changing display face controls")
+        {
+            show_locked_toast(message);
+            return;
+        }
         // Optimistic local update — mirrors what the ControlPanel expects
         // so sliders/toggles/color pickers feel immediate even before the
         // daemon acknowledges.
@@ -1641,6 +1769,12 @@ fn FaceControlsSection(
             let Some(display) = selected_display.get_untracked() else {
                 return;
             };
+            if let Some(message) =
+                snapshot_scene_lock_message(effects_ctx, "applying display face presets")
+            {
+                toasts::toast_error(&message);
+                return;
+            }
             // Drop any queued per-key PATCH so it doesn't overwrite the
             // preset values we're about to send.
             let _ = pending_updates.try_update_value(std::mem::take);
