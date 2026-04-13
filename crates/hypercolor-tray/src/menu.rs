@@ -78,6 +78,17 @@ fn build_connected_menu(menu: &Menu, state: &AppState) -> anyhow::Result<()> {
         None,
     );
     menu.append(&current_effect)?;
+    if let Some(scene_name) = &state.active_scene_name {
+        let scene_suffix = if state.scene_snapshot_locked {
+            " [snap]"
+        } else {
+            ""
+        };
+        let scene_label = format!("Scene: {scene_name}{scene_suffix}");
+        let current_scene =
+            MenuItem::with_id(MenuId::new("current_scene"), &scene_label, false, None);
+        menu.append(&current_scene)?;
+    }
     menu.append(&PredefinedMenuItem::separator())?;
 
     // Effects submenu

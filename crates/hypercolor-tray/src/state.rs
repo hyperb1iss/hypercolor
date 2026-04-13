@@ -21,6 +21,10 @@ pub struct AppState {
     pub brightness: u8,
     /// Currently active effect, if any.
     pub current_effect: Option<EffectInfo>,
+    /// Currently active scene name, if known.
+    pub active_scene_name: Option<String>,
+    /// Whether the active scene blocks live mutation.
+    pub scene_snapshot_locked: bool,
     /// Number of connected devices.
     pub device_count: usize,
     /// All available effects from the daemon registry.
@@ -45,6 +49,8 @@ impl AppState {
             paused: false,
             brightness: 0,
             current_effect: None,
+            active_scene_name: None,
+            scene_snapshot_locked: false,
             device_count: 0,
             effects: Vec::new(),
             profiles: Vec::new(),
@@ -103,6 +109,11 @@ pub enum StateUpdate {
     EffectChanged { id: String, name: String },
     /// The active effect was stopped.
     EffectStopped,
+    /// The active scene changed.
+    SceneChanged {
+        name: Option<String>,
+        snapshot_locked: bool,
+    },
     /// Global brightness changed.
     BrightnessChanged(u8),
     /// Rendering was paused.
@@ -152,6 +163,8 @@ pub struct ApiEnvelope<T> {
 pub struct StatusResponse {
     pub running: bool,
     pub active_effect: Option<String>,
+    pub active_scene: Option<String>,
+    pub active_scene_snapshot_locked: bool,
     pub global_brightness: u8,
     pub device_count: usize,
 }

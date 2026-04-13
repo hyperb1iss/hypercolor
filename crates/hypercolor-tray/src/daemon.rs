@@ -115,7 +115,7 @@ impl DaemonClient {
                 ws_msg = ws_read.next() => {
                     match ws_msg {
                         Some(Ok(Message::Text(text))) => {
-                            self.handle_ws_message(&text);
+                            self.handle_ws_message(&text).await;
                         }
                         Some(Ok(Message::Ping(payload))) => {
                             let _ = ws_write.send(Message::Pong(payload)).await;
@@ -158,16 +158,7 @@ impl DaemonClient {
             .data
             .ok_or_else(|| anyhow::anyhow!("Missing data in server response"))?;
 
-        let status_url = format!("{}/api/v1/status", self.base_url);
-        let status_resp: ApiEnvelope<StatusResponse> = self
-            .auth_request(self.http.get(&status_url))
-            .send()
-            .await?
-            .json()
-            .await?;
-        let status = status_resp
-            .data
-            .ok_or_else(|| anyhow::anyhow!("Missing data in status response"))?;
+        let status = self.fetch_status().await?;
 
         let effects_url = format!("{}/api/v1/effects", self.base_url);
         let effects_resp: ApiEnvelope<EffectListResponse> = self
@@ -240,6 +231,8 @@ impl DaemonClient {
             paused: false,
             brightness: status.global_brightness,
             current_effect,
+            active_scene_name: status.active_scene,
+            scene_snapshot_locked: status.active_scene_snapshot_locked,
             device_count: status.device_count,
             effects,
             profiles,
@@ -249,8 +242,21 @@ impl DaemonClient {
         })
     }
 
+    async fn fetch_status(&self) -> anyhow::Result<StatusResponse> {
+        let status_url = format!("{}/api/v1/status", self.base_url);
+        let status_resp: ApiEnvelope<StatusResponse> = self
+            .auth_request(self.http.get(&status_url))
+            .send()
+            .await?
+            .json()
+            .await?;
+        status_resp
+            .data
+            .ok_or_else(|| anyhow::anyhow!("Missing data in status response"))
+    }
+
     /// Parse a WebSocket text message and send a state update if relevant.
-    fn handle_ws_message(&self, text: &str) {
+    async fn handle_ws_message(&self, text: &str) {
         let Ok(msg) = serde_json::from_str::<WsEventMessage>(text) else {
             debug!("Ignoring unparseable WS message");
             return;
@@ -286,6 +292,16 @@ impl DaemonClient {
         }
 
         let update = match msg.event.as_str() {
+            "active_scene_changed" => match self.fetch_status().await {
+                Ok(status) => Some(StateUpdate::SceneChanged {
+                    name: status.active_scene,
+                    snapshot_locked: status.active_scene_snapshot_locked,
+                }),
+                Err(error) => {
+                    debug!("Failed to refresh tray scene state: {error}");
+                    None
+                }
+            },
             "effect_started" => {
                 let effect_data = &msg.data["effect"];
                 let id = effect_data["id"].as_str().unwrap_or_default().to_owned();

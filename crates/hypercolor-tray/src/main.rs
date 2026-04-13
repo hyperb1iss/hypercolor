@@ -265,6 +265,13 @@ fn apply_state_update(state: &mut AppState, update: StateUpdate) {
         StateUpdate::EffectStopped => {
             state.current_effect = None;
         }
+        StateUpdate::SceneChanged {
+            name,
+            snapshot_locked,
+        } => {
+            state.active_scene_name = name;
+            state.scene_snapshot_locked = snapshot_locked;
+        }
         StateUpdate::BrightnessChanged(value) => {
             state.brightness = value;
         }
@@ -289,6 +296,8 @@ fn mark_disconnected(state: &mut AppState) {
     state.paused = false;
     state.brightness = 0;
     state.current_effect = None;
+    state.active_scene_name = None;
+    state.scene_snapshot_locked = false;
     state.device_count = 0;
     state.effects.clear();
     state.profiles.clear();
@@ -326,9 +335,16 @@ fn update_tray(tray_icon: &tray_icon::TrayIcon, state: &AppState) {
 
     // Update tooltip.
     let tooltip = if state.connected {
-        match &state.current_effect {
-            Some(effect) => format!("Hypercolor - {}", effect.name),
-            None => "Hypercolor - No effect".to_owned(),
+        let effect_label = match &state.current_effect {
+            Some(effect) => effect.name.as_str(),
+            None => "No effect",
+        };
+        match &state.active_scene_name {
+            Some(scene) if state.scene_snapshot_locked => {
+                format!("Hypercolor - {effect_label} [{scene} snap]")
+            }
+            Some(scene) => format!("Hypercolor - {effect_label} [{scene}]"),
+            None => format!("Hypercolor - {effect_label}"),
         }
     } else {
         "Hypercolor - Disconnected".to_owned()

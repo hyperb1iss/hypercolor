@@ -66,6 +66,8 @@ struct ApiEnvelope<T> {
 struct StatusResponse {
     running: bool,
     active_effect: Option<String>,
+    active_scene: Option<String>,
+    active_scene_snapshot_locked: bool,
     global_brightness: u8,
     device_count: usize,
 }
@@ -250,6 +252,25 @@ fn parse_ws_event_paused() {
 }
 
 #[test]
+fn parse_ws_event_active_scene_changed() {
+    let raw = json!({
+        "type": "event",
+        "event": "active_scene_changed",
+        "timestamp": "2026-04-13T12:00:00Z",
+        "data": {
+            "previous": "default",
+            "current": "scene_movie_night",
+            "reason": "user_activate"
+        }
+    });
+
+    let msg: WsEventMessage = serde_json::from_value(raw).expect("should parse event");
+    assert_eq!(msg.event, "active_scene_changed");
+    assert_eq!(msg.data["current"], "scene_movie_night");
+    assert_eq!(msg.data["reason"], "user_activate");
+}
+
+#[test]
 fn parse_status_response() {
     let raw = json!({
         "data": {
@@ -263,6 +284,8 @@ fn parse_status_response() {
             "effect_count": 15,
             "scene_count": 3,
             "active_effect": "Aurora Borealis",
+            "active_scene": "Movie Night",
+            "active_scene_snapshot_locked": true,
             "global_brightness": 80,
             "audio_available": true,
             "capture_available": false,
@@ -280,6 +303,8 @@ fn parse_status_response() {
     let status = envelope.data.expect("should have data");
     assert!(status.running);
     assert_eq!(status.active_effect.as_deref(), Some("Aurora Borealis"));
+    assert_eq!(status.active_scene.as_deref(), Some("Movie Night"));
+    assert!(status.active_scene_snapshot_locked);
     assert_eq!(status.global_brightness, 80);
     assert_eq!(status.device_count, 2);
 }
