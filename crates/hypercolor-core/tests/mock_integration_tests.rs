@@ -6,11 +6,13 @@
 
 use std::sync::LazyLock;
 
+#[path = "support/effect_engine.rs"]
+mod effect_engine;
+
 use hypercolor_core::device::mock::{
     MockCall, MockDeviceBackend, MockDeviceConfig, MockEffectRenderer, MockTransportScanner,
 };
 use hypercolor_core::device::{DeviceBackend, DeviceRegistry, DiscoveryOrchestrator};
-use hypercolor_core::effect::EffectEngine;
 use hypercolor_core::effect::EffectRenderer;
 use hypercolor_core::spatial::{SpatialEngine, generate_positions};
 use hypercolor_types::audio::AudioData;
@@ -20,6 +22,8 @@ use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
     DeviceZone, LedTopology, NormalizedPosition, SpatialLayout, StripDirection,
 };
+
+use effect_engine::EffectEngine;
 
 static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
 

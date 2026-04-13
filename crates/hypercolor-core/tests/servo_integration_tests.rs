@@ -5,12 +5,17 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use hypercolor_core::effect::{EffectEngine, bundled_effects_root, parse_html_effect_metadata};
+#[path = "support/effect_engine.rs"]
+mod effect_engine;
+
+use hypercolor_core::effect::{bundled_effects_root, parse_html_effect_metadata};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use tempfile::tempdir;
 use uuid::Uuid;
+
+use effect_engine::EffectEngine;
 
 const FRAME_DT_SECONDS: f32 = 1.0 / 60.0;
 const BUILTIN_EFFECTS: &[&str] = &[

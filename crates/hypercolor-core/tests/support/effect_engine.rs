@@ -1,7 +1,10 @@
-//! Effect engine — manages the active effect and delegates to the renderer.
+//! Legacy single-effect harness retained for test and benchmark coverage.
 //!
-//! The [`EffectEngine`] is the single orchestrator that owns the current
-//! renderer, manages lifecycle transitions, and produces frames on demand.
+//! Production code now renders through scene-backed [`EffectPool`] instances,
+//! but several integration tests and benches still benefit from a lightweight
+//! one-renderer driver with the old `EffectEngine` API surface.
+
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -16,11 +19,16 @@ use hypercolor_types::effect::{
 };
 use hypercolor_types::sensor::SystemSnapshot;
 
-use super::factory::create_renderer_for_metadata;
-use super::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
-use crate::input::{InteractionData, ScreenData};
+use hypercolor_core::effect::{EffectRenderer, FrameInput, create_renderer_for_metadata};
+use hypercolor_core::input::{InteractionData, ScreenData};
 
 static EMPTY_SYSTEM_SNAPSHOT: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
+
+fn prepare_target_canvas(target: &mut Canvas, width: u32, height: u32) {
+    if target.width() != width || target.height() != height {
+        *target = Canvas::new(width, height);
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 struct ActiveBindingState {

@@ -61,8 +61,8 @@ pub fn prepare_target_canvas(target: &mut Canvas, width: u32, height: u32) {
 /// Shared rendering interface for all effect backends.
 ///
 /// Both `WgpuRenderer` (native shaders) and `ServoRenderer` (HTML/Canvas)
-/// implement this trait. The [`EffectEngine`](super::EffectEngine) holds a
-/// `Box<dyn EffectRenderer>` and delegates frame production through it.
+/// implement this trait. `EffectPool` stores `Box<dyn EffectRenderer>`
+/// instances per active render group and delegates frame production through them.
 ///
 /// # Lifecycle
 ///

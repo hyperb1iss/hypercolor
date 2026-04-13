@@ -1,6 +1,10 @@
+#[path = "support/effect_engine.rs"]
+mod effect_engine;
+
 use hypercolor_core::device::mock::MockEffectRenderer;
-use hypercolor_core::effect::EffectEngine;
 use hypercolor_types::effect::ControlValue;
+
+use effect_engine::EffectEngine;
 
 #[test]
 fn scene_generation_advances_on_effect_state_changes() {

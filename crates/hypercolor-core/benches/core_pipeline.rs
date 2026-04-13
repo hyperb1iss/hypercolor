@@ -6,6 +6,10 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::Result;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+
+#[path = "../tests/support/effect_engine.rs"]
+mod effect_engine;
+
 use hypercolor_core::bus::CanvasFrame;
 use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend};
 use hypercolor_core::effect::builtin::{
@@ -13,7 +17,7 @@ use hypercolor_core::effect::builtin::{
     register_builtin_effects,
 };
 use hypercolor_core::effect::{
-    EffectEngine, EffectPool, EffectRegistry, EffectRenderer, FrameInput,
+    EffectPool, EffectRegistry, EffectRenderer, FrameInput,
 };
 use hypercolor_core::input::InputSource;
 use hypercolor_core::input::InteractionData;
@@ -37,7 +41,9 @@ use hypercolor_types::overlay::{
     ClockConfig, ClockStyle, HourFormat, ImageFit, ImageOverlayConfig, SensorDisplayStyle,
     SensorOverlayConfig, TextAlign, TextOverlayConfig,
 };
-use hypercolor_types::scene::{RenderGroup, RenderGroupId};
+use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole};
+
+use effect_engine::EffectEngine;
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
     Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -167,6 +173,8 @@ fn binding_metadata(binding_count: usize) -> EffectMetadata {
             labels: Vec::new(),
             group: Some("Bench".to_owned()),
             tooltip: None,
+            aspect_lock: None,
+            preview_source: None,
             binding: (index < binding_count).then(|| ControlBinding {
                 sensor: (*sensor).to_owned(),
                 sensor_min: 0.0,
@@ -332,12 +340,14 @@ fn render_group(
         description: None,
         effect_id: Some(effect_id),
         controls: HashMap::from([("color".to_owned(), ControlValue::Color(color))]),
+        control_bindings: HashMap::new(),
         preset_id: None,
         layout: layout_with_zone(bench_routing_zone(zone_id, device_id, led_count, None)),
         brightness: 1.0,
         enabled: true,
         color: None,
         display_target: None,
+        role: RenderGroupRole::Custom,
     }
 }
 

@@ -3,10 +3,13 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+
+#[path = "../../hypercolor-core/tests/support/effect_engine.rs"]
+mod effect_engine;
+
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig, MockEffectRenderer};
 use hypercolor_core::device::{BackendManager, DeviceBackend};
-use hypercolor_core::effect::EffectEngine;
 use hypercolor_core::input::InteractionData;
 use hypercolor_core::overlay::{
     OverlayBuffer, OverlayError, OverlayInput, OverlayRenderer, OverlaySize,
@@ -38,6 +41,8 @@ use hypercolor_types::spatial::{
     StripDirection,
 };
 use tokio::runtime::Runtime;
+
+use effect_engine::EffectEngine;
 use uuid::Uuid;
 
 const CANVAS_WIDTH: u32 = 320;

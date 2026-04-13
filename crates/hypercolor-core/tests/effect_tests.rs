@@ -5,8 +5,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::SystemTime;
 
+#[path = "support/effect_engine.rs"]
+mod effect_engine;
+
 use hypercolor_core::effect::{
-    EffectEngine, EffectEntry, EffectRegistry, EffectRenderer, FrameInput,
+    EffectEntry, EffectRegistry, EffectRenderer, FrameInput,
 };
 use hypercolor_core::input::InteractionData;
 use hypercolor_types::audio::AudioData;
@@ -17,6 +20,8 @@ use hypercolor_types::effect::{
 };
 use hypercolor_types::sensor::SystemSnapshot;
 use uuid::Uuid;
+
+use effect_engine::EffectEngine;
 
 static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
 

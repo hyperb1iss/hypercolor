@@ -11,13 +11,16 @@ use std::time::{Duration, SystemTime};
 use anyhow::Result;
 use uuid::Uuid;
 
+#[path = "support/effect_engine.rs"]
+mod effect_engine;
+
 use hypercolor_core::bus::{EventFilter, HypercolorBus};
 use hypercolor_core::device::{
     DeviceRegistry, DiscoveredDevice, DiscoveryConnectBehavior, DiscoveryOrchestrator,
     TransportScanner,
 };
 use hypercolor_core::effect::{
-    EffectEngine, EffectEntry, EffectRegistry, EffectRenderer, FrameInput,
+    EffectEntry, EffectRegistry, EffectRenderer, FrameInput,
 };
 use hypercolor_core::engine::{
     FpsController, FpsTier, RenderLoop, RenderLoopState, TierTransitionConfig,
@@ -40,6 +43,8 @@ use hypercolor_types::scene::{
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, NormalizedPosition, SamplingMode, SpatialLayout,
 };
+
+use effect_engine::EffectEngine;
 
 // ─── Test Renderers ──────────────────────────────────────────────────────────
 // Real inline implementations — NOT mocks.
