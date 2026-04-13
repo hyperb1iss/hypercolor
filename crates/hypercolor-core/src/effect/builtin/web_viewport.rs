@@ -17,6 +17,7 @@ use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 use crate::spatial::sample_viewport;
 
 const URL_LOAD_DEBOUNCE: Duration = Duration::from_millis(250);
+const BLANK_URL: &str = "about:blank";
 
 pub struct WebViewportRenderer {
     session: Option<ServoSessionHandle>,
@@ -31,6 +32,7 @@ pub struct WebViewportRenderer {
     url_dirty_at: Option<Instant>,
     loaded_url: Option<String>,
     preview_canvas: Option<Canvas>,
+    load_failed: bool,
 }
 
 impl WebViewportRenderer {
@@ -49,6 +51,7 @@ impl WebViewportRenderer {
             url_dirty_at: None,
             loaded_url: None,
             preview_canvas: None,
+            load_failed: false,
         }
     }
 
@@ -68,11 +71,23 @@ impl WebViewportRenderer {
         if url.is_empty() {
             bail!("web viewport URL is empty");
         }
-        session.load_url(&url)?;
-        self.url = url.clone();
-        self.loaded_url = Some(url);
-        self.url_dirty_at = None;
-        Ok(())
+        match session.load_url(&url) {
+            Ok(()) => {
+                self.url = url.clone();
+                self.loaded_url = Some(url);
+                self.load_failed = false;
+                self.url_dirty_at = None;
+                Ok(())
+            }
+            Err(error) => {
+                self.loaded_url = None;
+                self.preview_canvas = None;
+                self.load_failed = true;
+                self.url_dirty_at = None;
+                let _ = session.load_url(BLANK_URL);
+                Err(error)
+            }
+        }
     }
 
     fn maybe_load_pending_url(&mut self) -> anyhow::Result<()> {
@@ -124,11 +139,15 @@ impl EffectRenderer for WebViewportRenderer {
         }
         if let Err(error) = session.load_url(&url) {
             note_servo_session_error("web viewport initial URL load failed", &error);
-            return Err(error);
+            self.load_failed = true;
+            self.loaded_url = None;
+            let _ = session.load_url(BLANK_URL);
+        } else {
+            self.url = url.clone();
+            self.loaded_url = Some(url);
+            self.load_failed = false;
         }
         session.request_render(Vec::new())?;
-        self.url = url.clone();
-        self.loaded_url = Some(url);
         self.last_refresh_time_secs = Some(0.0);
         self.session = Some(session);
         Ok(())
@@ -140,11 +159,11 @@ impl EffectRenderer for WebViewportRenderer {
 
         if let Err(error) = self.maybe_load_pending_url() {
             note_servo_session_error("web viewport URL load failed", &error);
-            return Err(error);
+            return Ok(());
         }
         if let Err(error) = self.maybe_reload(input.time_secs) {
             note_servo_session_error("web viewport refresh failed", &error);
-            return Err(error);
+            return Ok(());
         }
 
         let mut latest_source = None::<Canvas>;
@@ -152,6 +171,7 @@ impl EffectRenderer for WebViewportRenderer {
             match session.poll_frame() {
                 Ok(Some(frame)) => {
                     self.preview_canvas = Some(frame.clone());
+                    self.load_failed = false;
                     latest_source = Some(frame);
                 }
                 Ok(None) => {}
@@ -163,11 +183,14 @@ impl EffectRenderer for WebViewportRenderer {
         }
 
         if latest_source.is_none() {
-            latest_source = self
-                .session
-                .as_ref()
-                .and_then(ServoSessionHandle::last_canvas)
-                .cloned();
+            latest_source = (!self.load_failed)
+                .then(|| {
+                    self.session
+                        .as_ref()
+                        .and_then(ServoSessionHandle::last_canvas)
+                        .cloned()
+                })
+                .flatten();
         }
 
         if let Some(source) = latest_source.as_ref() {
@@ -198,6 +221,8 @@ impl EffectRenderer for WebViewportRenderer {
                     if normalized != self.url {
                         self.url = normalized;
                         self.loaded_url = None;
+                        self.load_failed = false;
+                        self.preview_canvas = None;
                         self.url_dirty_at = Some(Instant::now());
                     }
                 }
@@ -255,6 +280,7 @@ impl EffectRenderer for WebViewportRenderer {
         self.preview_canvas = None;
         self.loaded_url = None;
         self.url_dirty_at = None;
+        self.load_failed = false;
     }
 }
 

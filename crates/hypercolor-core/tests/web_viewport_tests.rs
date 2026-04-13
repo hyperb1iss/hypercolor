@@ -143,6 +143,12 @@ fn pixel_is_blue_dominant(pixel: Rgba) -> bool {
     pixel.b >= 180 && pixel.r <= 80 && pixel.g <= 80
 }
 
+fn canvas_is_black(canvas: &Canvas) -> bool {
+    canvas
+        .pixels()
+        .all(|[r, g, b, _]| r == 0 && g == 0 && b == 0)
+}
+
 #[test]
 #[ignore = "requires full Servo runtime and local file rendering"]
 fn web_viewport_renders_local_fixture_and_exposes_preview_canvas() {
@@ -203,6 +209,27 @@ fn web_viewport_viewport_control_crops_the_requested_region() {
     assert!(pixel_is_blue_dominant(
         canvas.get_pixel(OUTPUT_WIDTH - 1, OUTPUT_HEIGHT / 2)
     ));
+
+    renderer.destroy();
+}
+
+#[test]
+#[ignore = "requires full Servo runtime and local file rendering"]
+fn web_viewport_invalid_url_falls_back_to_black() {
+    let mut renderer = WebViewportRenderer::new();
+    renderer.set_control("url", &ControlValue::Text("not a valid url value".into()));
+    renderer.set_control("render_width", &ControlValue::Float(PREVIEW_WIDTH as f32));
+    renderer.set_control("render_height", &ControlValue::Float(PREVIEW_HEIGHT as f32));
+    renderer
+        .init(&metadata())
+        .expect("invalid URL should not abort renderer init");
+
+    let (canvas, preview) = render_until(&mut renderer, |canvas, _| canvas_is_black(canvas));
+
+    assert!(canvas_is_black(&canvas));
+    if let Some(preview) = preview.as_ref() {
+        assert!(canvas_is_black(preview));
+    }
 
     renderer.destroy();
 }
