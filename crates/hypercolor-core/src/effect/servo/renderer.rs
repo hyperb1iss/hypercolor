@@ -10,8 +10,6 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, TryRecvError};
-
 use anyhow::{Result, bail};
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
 use hypercolor_types::effect::{ControlValue, EffectMetadata, EffectSource};
@@ -19,11 +17,11 @@ use hypercolor_types::sensor::SystemSnapshot;
 use tracing::{debug, info, warn};
 
 use super::worker::{
-    RENDER_RESPONSE_TIMEOUT, acquire_servo_worker, effect_is_audio_reactive,
-    poison_shared_servo_worker, poison_shared_servo_worker_if_fatal, prepare_runtime_html_source,
-    servo_worker_is_fatal_error,
+    RENDER_RESPONSE_TIMEOUT, effect_is_audio_reactive, poison_shared_servo_worker,
+    prepare_runtime_html_source, servo_worker_is_fatal_error,
 };
-use super::worker_client::{PendingServoFrame, ServoSessionId, ServoWorkerClient};
+use super::session::DrainPendingRenderError;
+use super::{SessionConfig, ServoSessionHandle, note_servo_session_error};
 use crate::effect::lightscript::LightscriptRuntime;
 use crate::effect::paths::resolve_html_source_path;
 use crate::effect::traits::{EffectRenderer, FrameInput};
@@ -41,10 +39,8 @@ pub struct ServoRenderer {
     runtime: LightscriptRuntime,
     initialized: bool,
     pending_scripts: Vec<String>,
-    worker: Option<ServoWorkerClient>,
-    session_id: Option<ServoSessionId>,
+    session: Option<ServoSessionHandle>,
     queued_frame: Option<QueuedFrameInput>,
-    in_flight_render: Option<PendingServoFrame>,
     last_canvas: Option<Canvas>,
     warned_fallback_frame: bool,
     warned_stalled_frame: bool,
@@ -64,10 +60,8 @@ impl ServoRenderer {
             runtime: LightscriptRuntime::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT),
             initialized: false,
             pending_scripts: Vec::new(),
-            worker: None,
-            session_id: None,
+            session: None,
             queued_frame: None,
-            in_flight_render: None,
             last_canvas: None,
             warned_fallback_frame: false,
             warned_stalled_frame: false,
@@ -169,8 +163,7 @@ impl ServoRenderer {
 
         self.destroy();
         self.cleanup_runtime_html();
-        self.worker = None;
-        self.session_id = None;
+        self.session = None;
         self.controls.clear();
         self.runtime = LightscriptRuntime::new(canvas_width, canvas_height);
         self.pending_scripts.clear();
@@ -179,7 +172,6 @@ impl ServoRenderer {
         self.include_audio_updates = effect_is_audio_reactive(metadata);
         self.last_animation_fps_cap = None;
         self.queued_frame = None;
-        self.in_flight_render = None;
         self.last_canvas = None;
         self.controls = metadata
             .controls
@@ -208,17 +200,23 @@ impl ServoRenderer {
                 )
             })?;
 
-        let worker = acquire_servo_worker()?;
-        let session_id = match worker.create_and_load(&runtime_source, canvas_width, canvas_height)
-        {
-            Ok(session_id) => session_id,
+        let mut session = match ServoSessionHandle::new_shared(SessionConfig {
+            render_width: canvas_width,
+            render_height: canvas_height,
+            inject_engine_globals: true,
+        }) {
+            Ok(session) => session,
             Err(error) => {
-                poison_shared_servo_worker_if_fatal("Servo effect page load failed", &error);
+                note_servo_session_error("Servo effect session creation failed", &error);
                 return Err(error);
             }
         };
-        self.worker = Some(worker);
-        self.session_id = Some(session_id);
+        if let Err(error) = session.load_html_file(&runtime_source) {
+            let _ = session.close();
+            note_servo_session_error("Servo effect page load failed", &error);
+            return Err(error);
+        }
+        self.session = Some(session);
         self.html_source = Some(path.clone());
         self.html_resolved_path = Some(runtime_source.clone());
         self.runtime_html_path = runtime_html_path;
@@ -247,37 +245,23 @@ impl ServoRenderer {
     }
 
     fn poll_in_flight_render(&mut self) {
-        let Some(render) = self.in_flight_render.as_mut() else {
+        let pending_age = self
+            .session
+            .as_ref()
+            .and_then(ServoSessionHandle::pending_render_age);
+        let Some(session) = self.session.as_mut() else {
             return;
         };
 
-        match render.response_rx.try_recv() {
-            Ok(result) => {
-                self.in_flight_render = None;
+        match session.poll_frame() {
+            Ok(Some(canvas)) => {
                 self.warned_stalled_frame = false;
-
-                match result {
-                    Ok(canvas) => {
-                        self.last_canvas = Some(canvas);
-                        self.warned_fallback_frame = false;
-                    }
-                    Err(error) => {
-                        poison_shared_servo_worker_if_fatal("Servo frame render failed", &error);
-                        if servo_worker_is_fatal_error(&error) {
-                            self.worker = None;
-                            self.session_id = None;
-                        }
-                        warn!(%error, "Servo frame render failed");
-                        if !self.warned_fallback_frame {
-                            warn!("Falling back to the previous completed frame for this effect");
-                            self.warned_fallback_frame = true;
-                        }
-                    }
-                }
+                self.last_canvas = Some(canvas);
+                self.warned_fallback_frame = false;
             }
-            Err(TryRecvError::Empty) => {
+            Ok(None) => {
                 if !self.warned_stalled_frame
-                    && render.submitted_at.elapsed() >= RENDER_RESPONSE_TIMEOUT
+                    && pending_age.is_some_and(|age| age >= RENDER_RESPONSE_TIMEOUT)
                 {
                     warn!(
                         timeout_ms = RENDER_RESPONSE_TIMEOUT.as_millis(),
@@ -286,14 +270,12 @@ impl ServoRenderer {
                     self.warned_stalled_frame = true;
                 }
             }
-            Err(TryRecvError::Disconnected) => {
-                self.in_flight_render = None;
-                self.worker = None;
-                self.session_id = None;
-                poison_shared_servo_worker(
-                    "Servo worker disconnected before sending frame response",
-                );
-                warn!("Servo worker disconnected before sending frame response");
+            Err(error) => {
+                note_servo_session_error("Servo frame render failed", &error);
+                if servo_worker_is_fatal_error(&error) {
+                    self.session = None;
+                }
+                warn!(%error, "Servo frame render failed");
                 if !self.warned_fallback_frame {
                     warn!("Falling back to the previous completed frame for this effect");
                     self.warned_fallback_frame = true;
@@ -303,14 +285,10 @@ impl ServoRenderer {
     }
 
     fn try_submit_queued_frame(&mut self) {
-        if self.in_flight_render.is_some() {
+        let Some(session) = self.session.as_ref() else {
             return;
-        }
-
-        if self.worker.is_none() {
-            return;
-        }
-        let Some(session_id) = self.session_id else {
+        };
+        if session.has_pending_render() {
             return;
         };
         let Some(frame) = self.queued_frame.take() else {
@@ -319,20 +297,22 @@ impl ServoRenderer {
 
         let frame_input = frame.as_frame_input();
         self.enqueue_frame_scripts(&frame_input);
+        if let Some(session) = self.session.as_mut() {
+            session.resize(frame.canvas_width, frame.canvas_height);
+        }
         let scripts = self.take_pending_scripts();
-        let worker = self
-            .worker
-            .as_ref()
-            .expect("worker presence should be stable while queuing one render");
-        match worker.submit_render(session_id, scripts, frame.canvas_width, frame.canvas_height) {
-            Ok(render) => {
-                self.in_flight_render = Some(render);
+        match self
+            .session
+            .as_mut()
+            .expect("session presence should be stable while queuing one render")
+            .request_render(scripts)
+        {
+            Ok(()) => {
                 self.warned_stalled_frame = false;
             }
             Err(error) => {
-                self.worker = None;
-                self.session_id = None;
-                poison_shared_servo_worker_if_fatal("Failed to queue Servo frame render", &error);
+                note_servo_session_error("Failed to queue Servo frame render", &error);
+                self.session = None;
                 warn!(%error, "Failed to queue Servo frame render");
                 if !self.warned_fallback_frame {
                     warn!("Falling back to the previous completed frame for this effect");
@@ -343,28 +323,25 @@ impl ServoRenderer {
     }
 
     fn drain_in_flight_render(&mut self) {
-        let Some(render) = self.in_flight_render.take() else {
+        let Some(session) = self.session.as_mut() else {
             return;
         };
 
-        match render.response_rx.recv_timeout(RENDER_RESPONSE_TIMEOUT) {
-            Ok(Ok(canvas)) => {
+        match session.drain_pending_render(RENDER_RESPONSE_TIMEOUT) {
+            Ok(Some(canvas)) => {
                 self.last_canvas = Some(canvas);
                 self.warned_fallback_frame = false;
                 self.warned_stalled_frame = false;
             }
-            Ok(Err(error)) => {
-                poison_shared_servo_worker_if_fatal(
-                    "Servo frame render failed while draining effect teardown",
-                    &error,
-                );
+            Ok(None) => {}
+            Err(DrainPendingRenderError::Worker(error)) => {
+                note_servo_session_error("Servo frame render failed while draining effect teardown", &error);
                 if servo_worker_is_fatal_error(&error) {
-                    self.worker = None;
-                    self.session_id = None;
+                    self.session = None;
                 }
                 warn!(%error, "Servo frame render failed while draining effect teardown");
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
+            Err(DrainPendingRenderError::TimedOut) => {
                 poison_shared_servo_worker(
                     "Timed out waiting for in-flight Servo frame during effect teardown",
                 );
@@ -373,13 +350,12 @@ impl ServoRenderer {
                     "Timed out waiting for in-flight Servo frame during effect teardown"
                 );
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(DrainPendingRenderError::Disconnected) => {
                 poison_shared_servo_worker(
                     "Servo worker disconnected while draining effect teardown",
                 );
                 warn!("Servo worker disconnected while draining effect teardown");
-                self.worker = None;
-                self.session_id = None;
+                self.session = None;
             }
         }
     }
@@ -425,20 +401,14 @@ impl EffectRenderer for ServoRenderer {
 
     fn destroy(&mut self) {
         self.drain_in_flight_render();
-        if let (Some(worker), Some(session_id)) = (self.worker.as_ref(), self.session_id) {
-            if let Err(error) = worker.destroy_session(session_id) {
-                poison_shared_servo_worker_if_fatal(
-                    "Failed to destroy Servo effect session during destroy",
-                    &error,
-                );
+        if let Some(session) = self.session.take() {
+            if let Err(error) = session.close() {
+                note_servo_session_error("Failed to destroy Servo effect session during destroy", &error);
                 warn!(%error, "Failed to destroy Servo effect session during destroy");
             }
         }
-        self.worker = None;
-        self.session_id = None;
         self.pending_scripts.clear();
         self.queued_frame = None;
-        self.in_flight_render = None;
         self.last_canvas = None;
         self.controls.clear();
         self.html_source = None;
@@ -656,16 +626,19 @@ mod tests {
         renderer: &mut ServoRenderer,
         worker: &crate::effect::servo::worker::ServoWorker,
     ) {
-        let client = worker_client_from(worker);
-        let session_id = client
-            .create_and_load(
-                std::path::Path::new("test.html"),
-                DEFAULT_CANVAS_WIDTH,
-                DEFAULT_CANVAS_HEIGHT,
-            )
-            .expect("test session should initialize");
-        renderer.worker = Some(client);
-        renderer.session_id = Some(session_id);
+        let mut session = ServoSessionHandle::new(
+            worker_client_from(worker),
+            SessionConfig {
+                render_width: DEFAULT_CANVAS_WIDTH,
+                render_height: DEFAULT_CANVAS_HEIGHT,
+                inject_engine_globals: true,
+            },
+        )
+        .expect("test session should initialize");
+        session
+            .load_html_file(std::path::Path::new("test.html"))
+            .expect("test session should load");
+        renderer.session = Some(session);
     }
 
     #[test]
@@ -686,20 +659,20 @@ mod tests {
         renderer.warned_stalled_frame = true;
         renderer.include_audio_updates = false;
         renderer.queued_frame = Some(QueuedFrameInput::from_input(&frame_input(1.0 / 30.0)));
-        let (_tx, rx) = mpsc::channel();
-        renderer.in_flight_render = Some(PendingServoFrame {
-            response_rx: rx,
-            submitted_at: Instant::now(),
-        });
+        renderer
+            .session
+            .as_mut()
+            .expect("attached test session")
+            .request_render(Vec::new())
+            .expect("test render should queue");
         renderer.last_canvas = Some(solid_canvas(1, 2, 3));
 
         renderer.destroy();
 
         assert!(!stopped.load(Ordering::SeqCst));
-        assert!(renderer.worker.is_none());
+        assert!(renderer.session.is_none());
         assert!(renderer.pending_scripts.is_empty());
         assert!(renderer.queued_frame.is_none());
-        assert!(renderer.in_flight_render.is_none());
         assert!(renderer.last_canvas.is_none());
         assert!(renderer.controls.is_empty());
         assert!(renderer.html_source.is_none());

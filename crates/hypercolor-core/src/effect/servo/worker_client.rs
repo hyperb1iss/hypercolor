@@ -187,21 +187,6 @@ impl ServoWorkerClient {
             .expect("test session should exist")
     }
 
-    pub(super) fn create_and_load(
-        &self,
-        html_path: &Path,
-        width: u32,
-        height: u32,
-    ) -> Result<ServoSessionId> {
-        let session_id = ServoSessionId(self.shared.next_id.fetch_add(1, Ordering::AcqRel));
-        self.create_session(session_id, width, height)?;
-        if let Err(error) = self.load_effect(session_id, html_path, width, height) {
-            let _ = self.destroy_session(session_id);
-            return Err(error);
-        }
-        Ok(session_id)
-    }
-
     pub(super) fn create_session_only(&self, width: u32, height: u32) -> Result<ServoSessionId> {
         let session_id = ServoSessionId(self.shared.next_id.fetch_add(1, Ordering::AcqRel));
         self.create_session(session_id, width, height)?;

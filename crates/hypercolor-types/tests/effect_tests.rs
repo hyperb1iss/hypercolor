@@ -79,10 +79,11 @@ fn effect_category_all_variants_exist() {
         EffectCategory::Scenic,
         EffectCategory::Interactive,
         EffectCategory::Fun,
+        EffectCategory::Source,
         EffectCategory::Utility,
         EffectCategory::Display,
     ];
-    assert_eq!(categories.len(), 9);
+    assert_eq!(categories.len(), 10);
 }
 
 #[test]
@@ -101,6 +102,7 @@ fn effect_category_display_via_strum() {
     assert_eq!(EffectCategory::Scenic.to_string(), "scenic");
     assert_eq!(EffectCategory::Interactive.to_string(), "interactive");
     assert_eq!(EffectCategory::Fun.to_string(), "fun");
+    assert_eq!(EffectCategory::Source.to_string(), "source");
     assert_eq!(EffectCategory::Utility.to_string(), "utility");
     assert_eq!(EffectCategory::Display.to_string(), "display");
 }
@@ -122,6 +124,10 @@ fn effect_category_from_str_via_strum() {
     assert_eq!(
         EffectCategory::from_str("fun").expect("parse"),
         EffectCategory::Fun
+    );
+    assert_eq!(
+        EffectCategory::from_str("source").expect("parse"),
+        EffectCategory::Source
     );
     assert_eq!(
         EffectCategory::from_str("generative").expect("parse"),
@@ -148,6 +154,7 @@ fn effect_category_serde_round_trip() {
         EffectCategory::Scenic,
         EffectCategory::Interactive,
         EffectCategory::Fun,
+        EffectCategory::Source,
         EffectCategory::Utility,
         EffectCategory::Display,
     ] {
@@ -525,6 +532,8 @@ fn sample_slider_control() -> ControlDefinition {
         labels: vec![],
         group: Some("Animation".into()),
         tooltip: Some("Animation speed multiplier".into()),
+        aspect_lock: None,
+        preview_source: None,
         binding: None,
     }
 }
@@ -542,6 +551,8 @@ fn sample_dropdown_control() -> ControlDefinition {
         labels: vec!["Aurora".into(), "Sunset".into(), "Ocean".into()],
         group: None,
         tooltip: None,
+        aspect_lock: None,
+        preview_source: None,
         binding: None,
     }
 }
@@ -559,6 +570,8 @@ fn sample_color_picker_control() -> ControlDefinition {
         labels: vec![],
         group: Some("Colors".into()),
         tooltip: None,
+        aspect_lock: None,
+        preview_source: None,
         binding: None,
     }
 }

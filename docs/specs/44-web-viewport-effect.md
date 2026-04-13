@@ -561,8 +561,8 @@ same mechanism as the other canvas frame channels.
 Publication is gated on subscriber demand, matching the recent changes
 at commits `99a2d82` and `74788cf`. With no UI subscribers, the
 renderer skips the publication step. This matters because the full
-render can be 1920×1080 at 8 bytes per pixel — roughly 16 MB per
-frame — and publishing that unconditionally burns bandwidth.
+render can be 1920×1080 RGBA — roughly 8.3 MB per frame before any
+extra copies — and publishing that unconditionally burns bandwidth.
 
 ### 9.2 UI Side
 

@@ -14,6 +14,10 @@ pub fn category_style(category: &str) -> (&'static str, &'static str) {
             "bg-electric-yellow/10 text-electric-yellow",
             "241, 250, 140",
         ),
+        "source" => (
+            "bg-electric-yellow/10 text-electric-yellow",
+            "241, 250, 140",
+        ),
         "generative" => ("bg-success-green/10 text-success-green", "80, 250, 123"),
         "interactive" => ("bg-info-blue/10 text-info-blue", "130, 170, 255"),
         "productivity" => ("bg-pink-soft/10 text-pink-soft", "255, 153, 255"),

@@ -1,5 +1,6 @@
 use std::path::Path;
-use std::sync::mpsc::TryRecvError;
+use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use hypercolor_types::canvas::Canvas;
@@ -23,6 +24,16 @@ pub struct ServoSessionHandle {
     last_canvas: Option<Canvas>,
     #[allow(dead_code)]
     inject_engine_globals: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DrainPendingRenderError {
+    #[error(transparent)]
+    Worker(#[from] anyhow::Error),
+    #[error("Timed out waiting for in-flight Servo frame")]
+    TimedOut,
+    #[error("Servo worker disconnected while waiting for a frame")]
+    Disconnected,
 }
 
 impl ServoSessionHandle {
@@ -51,7 +62,6 @@ impl ServoSessionHandle {
             .load_url(self.session_id, url, self.render_width, self.render_height)
     }
 
-    #[allow(dead_code)]
     pub fn load_html_file(&mut self, path: &Path) -> Result<()> {
         self.worker
             .load_effect(self.session_id, path, self.render_width, self.render_height)
@@ -93,6 +103,37 @@ impl ServoSessionHandle {
     pub fn resize(&mut self, width: u32, height: u32) {
         self.render_width = width.max(1);
         self.render_height = height.max(1);
+    }
+
+    #[must_use]
+    pub fn has_pending_render(&self) -> bool {
+        self.pending_render.is_some()
+    }
+
+    #[must_use]
+    pub fn pending_render_age(&self) -> Option<Duration> {
+        self.pending_render
+            .as_ref()
+            .map(|render| render.submitted_at.elapsed())
+    }
+
+    pub fn drain_pending_render(
+        &mut self,
+        timeout: Duration,
+    ) -> std::result::Result<Option<Canvas>, DrainPendingRenderError> {
+        let Some(render) = self.pending_render.take() else {
+            return Ok(None);
+        };
+
+        match render.response_rx.recv_timeout(timeout) {
+            Ok(result) => {
+                let canvas = result?;
+                self.last_canvas = Some(canvas.clone());
+                Ok(Some(canvas))
+            }
+            Err(RecvTimeoutError::Timeout) => Err(DrainPendingRenderError::TimedOut),
+            Err(RecvTimeoutError::Disconnected) => Err(DrainPendingRenderError::Disconnected),
+        }
     }
 
     #[must_use]

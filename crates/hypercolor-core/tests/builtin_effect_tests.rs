@@ -935,7 +935,12 @@ fn register_builtin_effects_populates_registry() {
     let mut registry = EffectRegistry::default();
     register_builtin_effects(&mut registry);
 
-    assert_eq!(registry.len(), 9, "should register all 9 built-in effects");
+    let expected_builtin_count = if cfg!(feature = "servo") { 10 } else { 9 };
+    assert_eq!(
+        registry.len(),
+        expected_builtin_count,
+        "should register all built-in effects"
+    );
 
     // Verify category filtering works
     let ambient = registry.by_category(EffectCategory::Ambient);
@@ -953,7 +958,7 @@ fn registered_builtins_use_human_readable_names_and_stable_native_keys() {
     let mut registry = EffectRegistry::default();
     register_builtin_effects(&mut registry);
 
-    let expected = [
+    let mut expected = vec![
         ("Solid Color", "solid_color"),
         ("Gradient", "gradient"),
         ("Rainbow", "rainbow"),
@@ -964,6 +969,9 @@ fn registered_builtins_use_human_readable_names_and_stable_native_keys() {
         ("Screen Cast", "screen_cast"),
         ("Calibration", "calibration"),
     ];
+    if cfg!(feature = "servo") {
+        expected.push(("Web Viewport", "web_viewport"));
+    }
 
     for (display_name, source_key) in expected {
         let (_, entry) = registry
@@ -977,6 +985,20 @@ fn registered_builtins_use_human_readable_names_and_stable_native_keys() {
             PathBuf::from(format!("builtin/{source_key}"))
         );
     }
+}
+
+#[cfg(feature = "servo")]
+#[test]
+fn web_viewport_metadata_uses_source_category() {
+    let mut registry = EffectRegistry::default();
+    register_builtin_effects(&mut registry);
+
+    let (_, entry) = registry
+        .iter()
+        .find(|(_, entry)| entry.metadata.source.source_stem() == Some("web_viewport"))
+        .expect("Web Viewport should be registered");
+
+    assert_eq!(entry.metadata.category, EffectCategory::Source);
 }
 
 #[test]

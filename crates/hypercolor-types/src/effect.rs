@@ -73,6 +73,8 @@ pub enum EffectCategory {
     Interactive,
     /// Playful/seasonal (corner hunt, snowfall, dragonfire).
     Fun,
+    /// Live feeds and sampled external surfaces (web pages, cameras, capture).
+    Source,
     /// Functional (solid color, off, system monitor).
     Utility,
     /// Full-fidelity HTML display faces for LCD surfaces.

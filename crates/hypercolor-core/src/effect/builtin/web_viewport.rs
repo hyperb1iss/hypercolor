@@ -322,7 +322,7 @@ pub(super) fn metadata() -> EffectMetadata {
         author: "Hypercolor".into(),
         version: "0.1.0".into(),
         description: "Loads a webpage in Servo and samples a draggable viewport from the rendered page.".into(),
-        category: EffectCategory::Utility,
+        category: EffectCategory::Source,
         tags: vec![
             "web".into(),
             "browser".into(),
