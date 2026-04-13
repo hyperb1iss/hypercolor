@@ -22,7 +22,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use hypercolor_core::effect::{EffectEntry, EffectRenderer, FrameInput};
+use hypercolor_core::effect::EffectEntry;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::display_overlays::{
     DisplayOverlayRuntime, OverlaySlotRuntime, OverlaySlotStatus,
@@ -31,7 +31,6 @@ use hypercolor_daemon::profile_store::Profile;
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_transactions::SceneTransaction;
 use hypercolor_daemon::session::{current_global_brightness, set_global_brightness};
-use hypercolor_types::canvas::Canvas;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
@@ -198,25 +197,6 @@ async fn body_text(response: axum::response::Response) -> String {
         .await
         .expect("failed to read response body");
     String::from_utf8(bytes.to_vec()).expect("failed to decode UTF-8 body")
-}
-
-struct TestHtmlRenderer;
-
-impl EffectRenderer for TestHtmlRenderer {
-    fn init(&mut self, _metadata: &EffectMetadata) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> anyhow::Result<()> {
-        if canvas.width() != input.canvas_width || canvas.height() != input.canvas_height {
-            *canvas = Canvas::new(input.canvas_width, input.canvas_height);
-        }
-        Ok(())
-    }
-
-    fn set_control(&mut self, _name: &str, _value: &ControlValue) {}
-
-    fn destroy(&mut self) {}
 }
 
 // ── Health / Status ──────────────────────────────────────────────────────
@@ -971,12 +951,29 @@ fn test_display_face_effect_metadata(name: &str) -> EffectMetadata {
     metadata
 }
 
-async fn activate_test_html_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
+async fn insert_test_html_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
     let metadata = test_html_effect_metadata(name);
-    let mut engine = state.effect_engine.lock().await;
-    engine
-        .activate(Box::new(TestHtmlRenderer), metadata.clone())
-        .expect("html test effect should activate");
+    let entry = EffectEntry {
+        metadata: metadata.clone(),
+        source_path: format!("/tmp/{name}.html").into(),
+        modified: SystemTime::now(),
+        state: EffectState::Loading,
+    };
+    let mut registry = state.effect_registry.write().await;
+    let _ = registry.register(entry);
+    metadata
+}
+
+async fn activate_test_html_scene_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
+    let metadata = insert_test_html_effect(state, name).await;
+    let layout = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().as_ref().clone()
+    };
+    let mut scene_manager = state.scene_manager.write().await;
+    scene_manager
+        .upsert_primary_group(&metadata, HashMap::new(), None, layout)
+        .expect("html test effect should populate the primary scene group");
     metadata
 }
 
@@ -4859,7 +4856,7 @@ async fn display_overlay_endpoints_reject_non_display_devices_and_invalid_reorde
 async fn display_overlay_endpoints_reject_enabled_html_overlay_while_html_effect_active() {
     let (state, _tmp) = test_state_with_temp_output_store();
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
-    let active_effect = activate_test_html_effect(&state, "Servo Aurora").await;
+    let active_effect = activate_test_html_scene_effect(&state, "Servo Aurora").await;
     let app = test_app_with_state(Arc::clone(&state));
 
     let response = app
@@ -4959,7 +4956,7 @@ async fn auto_disable_html_overlays_for_html_effect_persists_and_reports_html_ga
         .expect("slot id should be present")
         .to_owned();
 
-    let active_effect = activate_test_html_effect(&state, "Servo Aurora").await;
+    let active_effect = activate_test_html_scene_effect(&state, "Servo Aurora").await;
     let warnings = hypercolor_daemon::api::displays::auto_disable_html_overlays_for_effect(
         state.as_ref(),
         &active_effect,

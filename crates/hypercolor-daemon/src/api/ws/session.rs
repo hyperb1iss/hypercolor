@@ -27,6 +27,7 @@ use super::relays::{
     relay_metrics, relay_screen_canvas, relay_spectrum, relay_web_viewport_canvas,
 };
 use crate::api::AppState;
+use crate::api::effects::active_effect_metadata;
 use crate::api::security::RequestAuthContext;
 
 const WS_PROTOCOL_VERSION: &str = "1.0";
@@ -313,13 +314,10 @@ async fn build_hello_state(state: &AppState) -> HelloState {
     let target_fps = render_snapshot.tier.fps();
     let actual_fps = paced_fps(render_snapshot.avg_frame_time.as_secs_f64(), target_fps);
 
-    let active_effect = {
-        let engine = state.effect_engine.lock().await;
-        engine.active_metadata().map(|meta| NameRef {
-            id: meta.id.to_string(),
-            name: meta.name.clone(),
-        })
-    };
+    let active_effect = active_effect_metadata(state).await.map(|meta| NameRef {
+        id: meta.id.to_string(),
+        name: meta.name.clone(),
+    });
 
     let devices = state.device_registry.list().await;
     let total_leds = devices.iter().fold(0_usize, |acc, tracked| {

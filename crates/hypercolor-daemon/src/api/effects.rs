@@ -796,6 +796,15 @@ pub(crate) async fn active_primary_effect(
     Some((group, metadata))
 }
 
+pub(crate) async fn active_effect_metadata(state: &AppState) -> Option<EffectMetadata> {
+    if let Some((_, metadata)) = active_primary_effect(state).await {
+        return Some(metadata);
+    }
+
+    let engine = state.effect_engine.lock().await;
+    engine.active_metadata().cloned()
+}
+
 fn controls_with_group_bindings(
     metadata: &EffectMetadata,
     group: &RenderGroup,

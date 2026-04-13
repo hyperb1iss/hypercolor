@@ -305,6 +305,29 @@ async fn current_live_audio_capture_demand(state: &Arc<AppState>) -> bool {
         return false;
     }
 
+    let active_effect_ids = {
+        let scene_manager = state.scene_manager.read().await;
+        scene_manager
+            .active_render_groups()
+            .iter()
+            .filter(|group| group.enabled)
+            .filter_map(|group| group.effect_id)
+            .collect::<Vec<_>>()
+    };
+    if active_effect_ids.is_empty() {
+        return false;
+    }
+
+    let registry = state.effect_registry.read().await;
+    if active_effect_ids.into_iter().any(|effect_id| {
+        registry
+            .get(&effect_id)
+            .is_some_and(|entry| entry.metadata.audio_reactive)
+    }) {
+        return true;
+    }
+    drop(registry);
+
     let engine = state.effect_engine.lock().await;
     engine.is_running()
         && engine

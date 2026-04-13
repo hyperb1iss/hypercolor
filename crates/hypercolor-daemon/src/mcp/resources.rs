@@ -6,6 +6,7 @@
 use serde_json::{Value, json};
 
 use crate::api::AppState;
+use crate::api::effects::active_effect_metadata;
 use crate::session::current_global_brightness;
 
 /// Definition of a single MCP resource.
@@ -189,15 +190,12 @@ async fn read_state_with_state(state: &AppState) -> Value {
     let brightness =
         super::tools::brightness_percent(current_global_brightness(&state.power_state));
 
-    let active_effect = {
-        let engine = state.effect_engine.lock().await;
-        engine.active_metadata().map(|metadata| {
-            json!({
-                "id": metadata.id.to_string(),
-                "name": metadata.name
-            })
+    let active_effect = active_effect_metadata(state).await.map(|metadata| {
+        json!({
+            "id": metadata.id.to_string(),
+            "name": metadata.name
         })
-    };
+    });
     let devices = state.device_registry.list().await;
     let connected = devices
         .iter()

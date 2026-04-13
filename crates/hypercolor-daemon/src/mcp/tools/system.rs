@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, brightness_percent, capped_fps, default_output_schema};
 use crate::api::AppState;
+use crate::api::effects::active_effect_metadata;
 use crate::session::current_global_brightness;
 use hypercolor_types::sensor::SystemSnapshot;
 use std::sync::Arc;
@@ -218,10 +219,7 @@ pub(super) async fn handle_get_status_with_state(state: &AppState) -> Result<Val
 
     let brightness = brightness_percent(current_global_brightness(&state.power_state));
 
-    let active_effect = {
-        let engine = state.effect_engine.lock().await;
-        engine.active_metadata().cloned()
-    };
+    let active_effect = active_effect_metadata(state).await;
 
     let effect_count = state.effect_registry.read().await.len();
     let scene_count = state.scene_manager.read().await.scene_count();

@@ -7,14 +7,13 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::effect::{EffectRenderer, FrameInput};
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::mcp;
 use hypercolor_daemon::mcp::prompts::{
     build_prompt_definitions, get_prompt_messages, is_valid_prompt,
 };
 use hypercolor_daemon::mcp::resources::{
-    build_resource_definitions, is_valid_resource_uri, read_resource,
+    build_resource_definitions, is_valid_resource_uri, read_resource, read_resource_with_state,
 };
 use hypercolor_daemon::mcp::tools::{
     ToolError, build_tool_definitions, execute_tool, execute_tool_with_state,
@@ -22,7 +21,6 @@ use hypercolor_daemon::mcp::tools::{
 use hypercolor_daemon::profile_store::Profile;
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_store::SceneStore;
-use hypercolor_types::canvas::Canvas;
 use hypercolor_types::config::{CURRENT_SCHEMA_VERSION, McpConfig};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
@@ -125,25 +123,6 @@ async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> Device
     id
 }
 
-struct TestHtmlRenderer;
-
-impl EffectRenderer for TestHtmlRenderer {
-    fn init(&mut self, _metadata: &EffectMetadata) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> anyhow::Result<()> {
-        if canvas.width() != input.canvas_width || canvas.height() != input.canvas_height {
-            *canvas = Canvas::new(input.canvas_width, input.canvas_height);
-        }
-        Ok(())
-    }
-
-    fn set_control(&mut self, _name: &str, _value: &ControlValue) {}
-
-    fn destroy(&mut self) {}
-}
-
 fn test_html_effect_metadata(name: &str) -> EffectMetadata {
     EffectMetadata {
         id: EffectId::new(Uuid::now_v7()),
@@ -170,17 +149,21 @@ fn test_display_face_effect_metadata(name: &str) -> EffectMetadata {
     metadata
 }
 
-async fn activate_test_html_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
-    let metadata = test_html_effect_metadata(name);
-    let mut engine = state.effect_engine.lock().await;
-    engine
-        .activate(Box::new(TestHtmlRenderer), metadata.clone())
-        .expect("html test effect should activate");
+async fn insert_test_display_face_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
+    let metadata = test_display_face_effect_metadata(name);
+    let entry = hypercolor_core::effect::EffectEntry {
+        metadata: metadata.clone(),
+        source_path: format!("/tmp/{name}.html").into(),
+        modified: std::time::SystemTime::now(),
+        state: hypercolor_types::effect::EffectState::Loading,
+    };
+    let mut registry = state.effect_registry.write().await;
+    let _ = registry.register(entry);
     metadata
 }
 
-async fn insert_test_display_face_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
-    let metadata = test_display_face_effect_metadata(name);
+async fn insert_test_html_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
+    let metadata = test_html_effect_metadata(name);
     let entry = hypercolor_core::effect::EffectEntry {
         metadata: metadata.clone(),
         source_path: format!("/tmp/{name}.html").into(),
@@ -936,6 +919,18 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
         Some(&ControlValue::Float(7.5))
     );
 
+    let status = execute_tool_with_state("get_status", &json!({}), state.as_ref())
+        .await
+        .expect("get_status should succeed");
+    assert_eq!(status["effect"]["id"], effect.id.to_string());
+    assert_eq!(status["effect"]["name"], effect.name);
+
+    let resource_state = read_resource_with_state("hypercolor://state", state.as_ref())
+        .await
+        .expect("state resource should exist");
+    assert_eq!(resource_state["effect"]["id"], effect.id.to_string());
+    assert_eq!(resource_state["effect"]["name"], effect.name);
+
     let mut saw_started_event = false;
     let mut saw_group_event = false;
     while let Ok(timestamped) = start_events.try_recv() {
@@ -1104,7 +1099,17 @@ async fn list_display_overlays_reports_html_gated_runtime() {
     .expect("append html overlay should succeed");
     assert_eq!(create_result["applied"], true);
 
-    let active_effect = activate_test_html_effect(&state, "Servo Aurora").await;
+    let active_effect = insert_test_html_effect(&state, "Servo Aurora").await;
+    let layout = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().as_ref().clone()
+    };
+    {
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .upsert_primary_group(&active_effect, HashMap::new(), None, layout)
+            .expect("html test effect should populate the primary scene group");
+    }
     let warnings = hypercolor_daemon::api::displays::auto_disable_html_overlays_for_effect(
         state.as_ref(),
         &active_effect,

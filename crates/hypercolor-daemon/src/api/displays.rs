@@ -1101,16 +1101,6 @@ async fn apply_html_gate_runtime_status(
 }
 
 async fn active_html_effect_name(state: &AppState) -> Option<String> {
-    {
-        let effect_engine = state.effect_engine.lock().await;
-        if effect_engine.is_running()
-            && let Some(metadata) = effect_engine.active_metadata()
-            && effect_source_is_html(&metadata.source)
-        {
-            return Some(metadata.name.clone());
-        }
-    }
-
     let active_effect_ids = {
         let scene_manager = state.scene_manager.read().await;
         scene_manager
@@ -1125,11 +1115,24 @@ async fn active_html_effect_name(state: &AppState) -> Option<String> {
     }
 
     let registry = state.effect_registry.read().await;
-    active_effect_ids.into_iter().find_map(|effect_id| {
+    let active_scene_html = active_effect_ids.into_iter().find_map(|effect_id| {
         registry.get(&effect_id).and_then(|entry| {
             effect_source_is_html(&entry.metadata.source).then(|| entry.metadata.name.clone())
         })
-    })
+    });
+    if active_scene_html.is_some() {
+        return active_scene_html;
+    }
+    drop(registry);
+
+    let effect_engine = state.effect_engine.lock().await;
+    if let Some(metadata) = effect_engine.active_metadata()
+        && effect_source_is_html(&metadata.source)
+    {
+        return Some(metadata.name.clone());
+    }
+
+    None
 }
 
 fn overlay_warning(

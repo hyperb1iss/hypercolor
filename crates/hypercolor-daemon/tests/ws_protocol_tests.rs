@@ -20,10 +20,12 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use axum::Router;
 use hypercolor_daemon::api::{self, AppState};
+use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
+use uuid::Uuid;
 
 // ── Test Harness ─────────────────────────────────────────────────────────
 
@@ -32,7 +34,10 @@ use tokio::time::timeout;
 /// Returns the bound address. The serve task runs until the test ends —
 /// tokio tears it down when the runtime shuts down.
 async fn spawn_test_daemon() -> std::net::SocketAddr {
-    let state = Arc::new(AppState::new());
+    spawn_test_daemon_with_state(Arc::new(AppState::new())).await
+}
+
+async fn spawn_test_daemon_with_state(state: Arc<AppState>) -> std::net::SocketAddr {
     let router: Router = api::build_router(state, None);
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -46,6 +51,35 @@ async fn spawn_test_daemon() -> std::net::SocketAddr {
         .await;
     });
     addr
+}
+
+async fn insert_test_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
+    let metadata = EffectMetadata {
+        id: EffectId::new(Uuid::now_v7()),
+        name: name.to_owned(),
+        author: "test".to_owned(),
+        version: "0.1.0".to_owned(),
+        description: format!("{name} ws effect"),
+        category: EffectCategory::Ambient,
+        tags: vec!["test".to_owned()],
+        controls: Vec::new(),
+        presets: Vec::new(),
+        audio_reactive: false,
+        screen_reactive: false,
+        source: EffectSource::Native {
+            path: format!("builtin/{name}").into(),
+        },
+        license: None,
+    };
+    let entry = hypercolor_core::effect::EffectEntry {
+        metadata: metadata.clone(),
+        source_path: format!("/tmp/{name}.rs").into(),
+        modified: std::time::SystemTime::now(),
+        state: hypercolor_types::effect::EffectState::Loading,
+    };
+    let mut registry = state.effect_registry.write().await;
+    let _ = registry.register(entry);
+    metadata
 }
 
 /// Open a WebSocket connection to `/api/v1/ws` and complete the upgrade.
@@ -273,6 +307,34 @@ async fn hello_handshake_returns_expected_capability_set() {
     // Default subscription set is exactly {events} per SubscriptionState::default.
     assert_eq!(subscriptions.len(), 1);
     assert_eq!(subscriptions[0], "events");
+}
+
+#[tokio::test]
+async fn hello_handshake_reports_scene_backed_active_effect() {
+    let state = Arc::new(AppState::new());
+    let effect = insert_test_effect(&state, "Aurora").await;
+    let layout = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().as_ref().clone()
+    };
+    {
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .upsert_primary_group(&effect, std::collections::HashMap::new(), None, layout)
+            .expect("hello test should install a primary group");
+    }
+
+    let addr = spawn_test_daemon_with_state(state).await;
+    let mut stream = ws_connect(addr)
+        .await
+        .expect("ws handshake should complete");
+
+    let hello = recv_until_type(&mut stream, "hello")
+        .await
+        .expect("hello message should arrive");
+
+    assert_eq!(hello["state"]["effect"]["id"], effect.id.to_string());
+    assert_eq!(hello["state"]["effect"]["name"], effect.name);
 }
 
 // ── Scenario 1: Subscribe → Unsubscribe → Subscribe cycle ────────────────
