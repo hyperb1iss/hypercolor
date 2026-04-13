@@ -8,6 +8,7 @@ use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, Spe
 use hypercolor_types::scene::RenderGroupId;
 use hypercolor_types::sensor::SystemSnapshot;
 use std::sync::Arc;
+use tokio::sync::watch;
 
 use super::pipeline_runtime::FrameInputs;
 use super::render_groups::GroupCanvasFrame;
@@ -99,6 +100,7 @@ pub(crate) fn publish_frame_updates(
     last_screen_canvas_preview_publish_ms: &mut Option<u32>,
     last_web_viewport_preview_publish_ms: &mut Option<u32>,
     reuse_existing_frame: bool,
+    refresh_existing_frame_metadata: bool,
     timing: FrameTiming,
 ) -> PublishFrameStats {
     let publish_start = Instant::now();
@@ -113,16 +115,14 @@ pub(crate) fn publish_frame_updates(
         .then(|| AudioSignalSnapshot::from_audio(audio));
     let mut full_frame_copy_count = 0_u32;
     let mut full_frame_copy_bytes = 0_u32;
-    if !reuse_existing_frame {
-        state
-            .event_bus
-            .frame_sender()
-            .send_modify(|published_frame| {
-                std::mem::swap(published_frame, recycled_frame);
-                published_frame.frame_number = frame_number;
-                published_frame.timestamp_ms = elapsed_ms;
-            });
-    }
+    update_published_frame(
+        state.event_bus.frame_sender(),
+        recycled_frame,
+        frame_number,
+        elapsed_ms,
+        reuse_existing_frame,
+        refresh_existing_frame_metadata,
+    );
     if spectrum_receivers > 0 {
         let audio_signal = audio_signal.as_ref().expect("audio signal should exist");
         state
@@ -315,6 +315,31 @@ pub(crate) fn publish_frame_updates(
         elapsed_us: micros_u32(publish_start.elapsed()),
         full_frame_copy_count,
         full_frame_copy_bytes,
+    }
+}
+
+fn update_published_frame(
+    frame_sender: &watch::Sender<FrameData>,
+    recycled_frame: &mut FrameData,
+    frame_number: u32,
+    elapsed_ms: u32,
+    reuse_existing_frame: bool,
+    refresh_existing_frame_metadata: bool,
+) {
+    if !reuse_existing_frame {
+        frame_sender.send_modify(|published_frame| {
+            std::mem::swap(published_frame, recycled_frame);
+            published_frame.frame_number = frame_number;
+            published_frame.timestamp_ms = elapsed_ms;
+        });
+        return;
+    }
+
+    if refresh_existing_frame_metadata {
+        frame_sender.send_modify(|published_frame| {
+            published_frame.frame_number = frame_number;
+            published_frame.timestamp_ms = elapsed_ms;
+        });
     }
 }
 
@@ -571,4 +596,55 @@ pub(crate) fn parse_sector_zone_id(zone_id: &str) -> Option<(u32, u32)> {
     let row = row_raw.parse().ok()?;
     let col = col_raw.parse().ok()?;
     Some((row, col))
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::watch;
+
+    use hypercolor_core::types::event::{FrameData, ZoneColors};
+
+    use super::update_published_frame;
+
+    fn sample_frame(zone_id: &str, color: [u8; 3], frame_number: u32, timestamp_ms: u32) -> FrameData {
+        FrameData::new(
+            vec![ZoneColors {
+                zone_id: zone_id.to_owned(),
+                colors: vec![color],
+            }],
+            frame_number,
+            timestamp_ms,
+        )
+    }
+
+    #[test]
+    fn reused_frame_metadata_refresh_notifies_without_replacing_zones() {
+        let (sender, mut receiver) = watch::channel(sample_frame("zone", [1, 2, 3], 1, 10));
+        let mut recycled_frame = sample_frame("new-zone", [9, 9, 9], 99, 99);
+
+        update_published_frame(&sender, &mut recycled_frame, 2, 20, true, true);
+
+        assert!(receiver.has_changed().expect("receiver should remain connected"));
+        let frame = receiver.borrow_and_update().clone();
+        assert_eq!(frame.frame_number, 2);
+        assert_eq!(frame.timestamp_ms, 20);
+        assert_eq!(frame.zones[0].zone_id, "zone");
+        assert_eq!(frame.zones[0].colors, vec![[1, 2, 3]]);
+        assert_eq!(recycled_frame.frame_number, 99);
+        assert_eq!(recycled_frame.zones[0].zone_id, "new-zone");
+    }
+
+    #[test]
+    fn reused_frame_without_metadata_refresh_stays_quiet() {
+        let (sender, receiver) = watch::channel(sample_frame("zone", [1, 2, 3], 1, 10));
+        let mut recycled_frame = sample_frame("new-zone", [9, 9, 9], 99, 99);
+
+        update_published_frame(&sender, &mut recycled_frame, 2, 20, true, false);
+
+        assert!(!receiver.has_changed().expect("receiver should remain connected"));
+        let frame = receiver.borrow().clone();
+        assert_eq!(frame.frame_number, 1);
+        assert_eq!(frame.timestamp_ms, 10);
+        assert_eq!(frame.zones[0].zone_id, "zone");
+    }
 }

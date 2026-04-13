@@ -205,6 +205,7 @@ pub(crate) async fn execute_frame(
 
     let mut gpu_zone_sampling = false;
     let mut gpu_sample_wait_blocked = false;
+    let mut refresh_reused_frame_metadata = false;
     let mut pending_gpu_zone_sampling = None;
     let used_pre_sampled_scene_zones = render_stage.sampled_layout.is_some();
     let layout = if let Some(sampled_layout) = render_stage.sampled_layout.take() {
@@ -292,11 +293,13 @@ pub(crate) async fn execute_frame(
                     render.deferred_zone_sampling = Some(pending);
                     gpu_zone_sampling = false;
                     render_stage.reuse_published_frame = true;
+                    refresh_reused_frame_metadata = true;
                 }
                 Err(error) => {
                     warn!(%error, "Deferred GPU spatial sampling finalize failed; reusing retained frame zones");
                     gpu_zone_sampling = false;
                     render_stage.reuse_published_frame = true;
+                    refresh_reused_frame_metadata = true;
                 }
             }
         } else {
@@ -437,6 +440,7 @@ pub(crate) async fn execute_frame(
         &mut frame_loop.last_screen_canvas_preview_publish_ms,
         &mut frame_loop.last_web_viewport_preview_publish_ms,
         render_stage.reuse_published_frame,
+        refresh_reused_frame_metadata,
         FrameTiming {
             producer_us: render_stage.producer_us,
             composition_us: render_stage.composition_us,

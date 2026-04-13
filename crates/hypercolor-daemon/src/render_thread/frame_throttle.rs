@@ -112,6 +112,7 @@ pub(crate) async fn maybe_sleep_throttle(
             last_screen_canvas_preview_publish_ms,
             last_web_viewport_preview_publish_ms,
             false,
+            false,
             FrameTiming {
                 producer_us: 0,
                 composition_us: 0,
@@ -190,6 +191,7 @@ pub(crate) async fn maybe_sleep_throttle(
         last_canvas_preview_publish_ms,
         last_screen_canvas_preview_publish_ms,
         last_web_viewport_preview_publish_ms,
+        false,
         false,
         FrameTiming {
             producer_us: 0,
