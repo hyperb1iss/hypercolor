@@ -17,7 +17,7 @@ use hypercolor_daemon::startup::{
     DaemonState, collect_unmapped_prefixed_layout_targets, default_config, install_signal_handlers,
     load_config, parse_config_toml,
 };
-use hypercolor_daemon::{layout_store, runtime_state};
+use hypercolor_daemon::{layout_store, runtime_state, scene_store::SceneStore};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::config::{RenderAccelerationMode, WledProtocolConfig};
 use hypercolor_types::device::{
@@ -25,6 +25,7 @@ use hypercolor_types::device::{
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::effect::EffectSource;
+use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole, SceneId};
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
@@ -118,6 +119,10 @@ impl TestDataDirGuard {
 
     fn runtime_state_path(&self) -> PathBuf {
         self.data_dir.join("runtime-state.json")
+    }
+
+    fn scenes_path(&self) -> PathBuf {
+        self.data_dir.join("scenes.json")
     }
 }
 
@@ -492,6 +497,29 @@ async fn daemon_state_scene_manager_starts_with_default_scene() {
 }
 
 #[tokio::test]
+async fn daemon_state_loads_named_scenes_from_store() {
+    let guard = TestDataDirGuard::new().await;
+    let mut store = SceneStore::new(guard.scenes_path());
+    let named_scene = hypercolor_core::scene::make_scene("Movie Night");
+    let named_scene_id = named_scene.id;
+    store.replace_named_scenes([named_scene]);
+    store.save().expect("scene store should save");
+
+    let config = default_config();
+    let temp = temp_config_file();
+    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
+        .expect("initialization should succeed");
+
+    let scenes = state.scene_manager.read().await;
+    assert_eq!(scenes.scene_count(), 2);
+    assert_eq!(scenes.active_scene_id(), Some(&SceneId::DEFAULT));
+    assert_eq!(
+        scenes.get(&named_scene_id).map(|scene| scene.name.as_str()),
+        Some("Movie Night")
+    );
+}
+
+#[tokio::test]
 async fn daemon_state_config_accessor_returns_loaded_config() {
     let _guard = TestDataDirGuard::new().await;
     let mut config = default_config();
@@ -563,6 +591,8 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
     runtime_state::save(
         &guard.runtime_state_path(),
         &runtime_state::RuntimeSessionSnapshot {
+            active_scene_id: Some(SceneId::DEFAULT.to_string()),
+            default_scene_groups: Vec::new(),
             active_effect_id: None,
             active_preset_id: None,
             control_values: std::collections::HashMap::new(),
@@ -705,10 +735,83 @@ async fn daemon_shutdown_persists_active_runtime_session() {
         .expect("runtime state snapshot should exist");
     assert_eq!(snapshot.active_effect_id, Some(metadata.id.to_string()));
     assert_eq!(snapshot.active_preset_id, Some(preset_id.to_string()));
+    assert_eq!(snapshot.active_scene_id, Some(SceneId::DEFAULT.to_string()));
+    assert_eq!(snapshot.default_scene_groups.len(), 1);
     assert_eq!(
         snapshot.wled_probe_ips,
         vec!["10.0.0.42".parse::<std::net::IpAddr>().expect("valid IP"),]
     );
+}
+
+#[tokio::test]
+async fn daemon_start_restores_named_active_scene_and_default_groups() {
+    let guard = TestDataDirGuard::new().await;
+    let mut store = SceneStore::new(guard.scenes_path());
+    let named_scene = hypercolor_core::scene::make_scene("Focus");
+    let named_scene_id = named_scene.id;
+    store.replace_named_scenes([named_scene]);
+    store.save().expect("scene store should save");
+
+    let default_group = RenderGroup {
+        id: RenderGroupId::new(),
+        name: "Saved Default Group".to_owned(),
+        description: None,
+        effect_id: None,
+        controls: std::collections::HashMap::new(),
+        control_bindings: std::collections::HashMap::new(),
+        preset_id: None,
+        layout: SpatialLayout {
+            id: "default_saved".to_owned(),
+            name: "Saved Default Layout".to_owned(),
+            description: None,
+            canvas_width: 320,
+            canvas_height: 200,
+            zones: Vec::new(),
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        },
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: None,
+        role: RenderGroupRole::Primary,
+    };
+    runtime_state::save(
+        &guard.runtime_state_path(),
+        &runtime_state::RuntimeSessionSnapshot {
+            active_scene_id: Some(named_scene_id.to_string()),
+            default_scene_groups: vec![default_group.clone()],
+            active_effect_id: None,
+            active_preset_id: None,
+            control_values: std::collections::HashMap::new(),
+            control_bindings: std::collections::HashMap::new(),
+            active_layout_id: None,
+            global_brightness: 1.0,
+            wled_probe_ips: Vec::new(),
+            wled_probe_targets: Vec::new(),
+        },
+    )
+    .expect("runtime state should save");
+
+    let mut config = default_config();
+    config.daemon.start_profile = "last".into();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
+        .expect("initialization should succeed");
+
+    state.start().await.expect("start should succeed");
+
+    let scenes = state.scene_manager.read().await;
+    assert_eq!(scenes.active_scene_id(), Some(&named_scene_id));
+    let default_scene = scenes
+        .get(&SceneId::DEFAULT)
+        .expect("default scene should exist");
+    assert_eq!(default_scene.groups, vec![default_group]);
+    drop(scenes);
+
+    state.shutdown().await.expect("shutdown should succeed");
 }
 
 #[tokio::test]

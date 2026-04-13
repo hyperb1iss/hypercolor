@@ -45,6 +45,7 @@ use crate::network::DaemonDriverHost;
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
 use crate::render_thread::RenderThread;
+use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::{OutputPowerState, SessionController};
 use crate::simulators::{SimulatedDisplayRuntime, SimulatedDisplayStore};
@@ -88,6 +89,9 @@ pub struct DaemonState {
 
     /// Scene manager — scene lifecycle, priority stack, transitions.
     pub scene_manager: Arc<RwLock<SceneManager>>,
+
+    /// Persisted named-scene store.
+    pub scene_store: Arc<RwLock<SceneStore>>,
 
     /// Event bus — broadcast events, frame data, spectrum data.
     pub event_bus: Arc<HypercolorBus>,

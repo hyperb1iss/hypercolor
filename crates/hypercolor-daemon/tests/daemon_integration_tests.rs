@@ -148,7 +148,7 @@ async fn daemon_lifecycle_initialize_start_shutdown() {
     }
     {
         let scenes = state.scene_manager.read().await;
-        assert_eq!(scenes.scene_count(), 0);
+        assert_eq!(scenes.scene_count(), 1);
     }
     {
         let loop_guard = state.render_loop.read().await;
@@ -243,13 +243,15 @@ async fn daemon_double_shutdown_is_safe() {
 #[tokio::test]
 async fn daemon_start_restores_last_runtime_session() {
     let _guard = TestDataDirGuard::new().await;
-    let config = default_config();
+    let mut config = default_config();
+    config.daemon.start_profile = "last".to_owned();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
         .expect("initialization should succeed");
     *state.input_manager.lock().await = test_input_manager();
 
     let requested_speed = ControlValue::Float(7.0);
+    let preset_id = hypercolor_types::library::PresetId::new();
     let (effect_id, expected_speed) = {
         let registry = state.effect_registry.read().await;
         let (_, entry) = registry
@@ -268,8 +270,10 @@ async fn daemon_start_restores_last_runtime_session() {
         (entry.metadata.id.to_string(), expected_speed)
     };
     let snapshot = RuntimeSessionSnapshot {
+        active_scene_id: Some(hypercolor_types::scene::SceneId::DEFAULT.to_string()),
+        default_scene_groups: Vec::new(),
         active_effect_id: Some(effect_id.clone()),
-        active_preset_id: Some("startup-preset".to_owned()),
+        active_preset_id: Some(preset_id.to_string()),
         control_values: HashMap::from([("speed".to_owned(), requested_speed)]),
         control_bindings: HashMap::from([(
             "speed".to_owned(),
@@ -295,20 +299,26 @@ async fn daemon_start_restores_last_runtime_session() {
         .await
         .expect("start should restore runtime state");
 
-    {
-        let engine = state.effect_engine.lock().await;
-        let active = engine
-            .active_metadata()
-            .expect("effect should be restored on startup");
-        assert_eq!(active.id.to_string(), effect_id);
-        assert_eq!(engine.active_preset_id(), Some("startup-preset"));
-        assert_eq!(engine.active_controls().get("speed"), Some(&expected_speed));
-        let binding = active
-            .control_by_id("speed")
-            .and_then(|control| control.binding.as_ref())
-            .expect("speed binding should be restored");
-        assert_eq!(binding.sensor, "cpu_temp");
-    }
+    let scenes = state.scene_manager.read().await;
+    let primary_group = scenes
+        .active_scene()
+        .and_then(|scene| scene.primary_group())
+        .expect("primary group should be restored on startup");
+    assert_eq!(
+        primary_group.effect_id.map(|id| id.to_string()),
+        Some(effect_id)
+    );
+    assert_eq!(
+        primary_group.preset_id.map(|preset| preset.to_string()),
+        Some(preset_id.to_string())
+    );
+    assert_eq!(primary_group.controls.get("speed"), Some(&expected_speed));
+    let binding = primary_group
+        .control_bindings
+        .get("speed")
+        .expect("speed binding should be restored");
+    assert_eq!(binding.sensor, "cpu_temp");
+    drop(scenes);
 
     state.shutdown().await.expect("shutdown should succeed");
 }

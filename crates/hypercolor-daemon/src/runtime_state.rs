@@ -17,6 +17,7 @@ use hypercolor_core::effect::EffectEngine;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::device::{DeviceColorFormat, DeviceFamily};
 use hypercolor_types::effect::{ControlBinding, ControlValue};
+use hypercolor_types::scene::{RenderGroup, SceneId};
 
 /// Process-local counter to guarantee per-save temp file uniqueness.
 static SNAPSHOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -25,6 +26,12 @@ static SNAPSHOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RuntimeSessionSnapshot {
+    /// Active scene ID, including the synthesized default scene.
+    pub active_scene_id: Option<String>,
+
+    /// Full render groups for the synthesized default scene.
+    pub default_scene_groups: Vec<RenderGroup>,
+
     /// Active effect ID (UUID string), if any.
     pub active_effect_id: Option<String>,
 
@@ -96,6 +103,8 @@ pub fn snapshot_from_engine(engine: &EffectEngine) -> RuntimeSessionSnapshot {
     }
 
     RuntimeSessionSnapshot {
+        active_scene_id: None,
+        default_scene_groups: Vec::new(),
         active_effect_id,
         active_preset_id: engine.active_preset_id().map(ToOwned::to_owned),
         control_values: engine.active_controls().clone(),
@@ -123,21 +132,27 @@ pub fn snapshot_from_engine(engine: &EffectEngine) -> RuntimeSessionSnapshot {
 
 #[must_use]
 pub fn snapshot_from_scene_manager(manager: &SceneManager) -> RuntimeSessionSnapshot {
-    let Some(group) = manager
+    let active_scene_id = manager.active_scene_id().map(ToString::to_string);
+    let default_scene_groups = manager
+        .get(&SceneId::DEFAULT)
+        .map(|scene| scene.groups.clone())
+        .unwrap_or_default();
+    let primary_group = manager
         .active_scene()
-        .and_then(|scene| scene.primary_group())
-    else {
-        return RuntimeSessionSnapshot::default();
-    };
-    let Some(effect_id) = group.effect_id else {
-        return RuntimeSessionSnapshot::default();
-    };
+        .and_then(|scene| scene.primary_group());
 
     RuntimeSessionSnapshot {
-        active_effect_id: Some(effect_id.to_string()),
-        active_preset_id: group.preset_id.map(|preset| preset.to_string()),
-        control_values: group.controls.clone(),
-        control_bindings: group.control_bindings.clone(),
+        active_scene_id,
+        default_scene_groups,
+        active_effect_id: primary_group
+            .and_then(|group| group.effect_id)
+            .map(|effect_id| effect_id.to_string()),
+        active_preset_id: primary_group
+            .and_then(|group| group.preset_id)
+            .map(|preset| preset.to_string()),
+        control_values: primary_group.map_or_else(HashMap::new, |group| group.controls.clone()),
+        control_bindings: primary_group
+            .map_or_else(HashMap::new, |group| group.control_bindings.clone()),
         active_layout_id: None,
         global_brightness: 1.0,
         wled_probe_ips: Vec::new(),
@@ -306,6 +321,7 @@ mod tests {
 
     use super::{RuntimeSessionSnapshot, load, save};
     use hypercolor_types::effect::{ControlBinding, ControlValue};
+    use hypercolor_types::scene::SceneId;
 
     #[test]
     fn round_trip_snapshot() {
@@ -315,6 +331,8 @@ mod tests {
         let mut controls = HashMap::new();
         controls.insert("speed".to_owned(), ControlValue::Float(0.72));
         let expected = RuntimeSessionSnapshot {
+            active_scene_id: Some(SceneId::DEFAULT.to_string()),
+            default_scene_groups: Vec::new(),
             active_effect_id: Some("0195e5b0-b2ea-7f22-9ab2-9bc31b48adf3".to_owned()),
             active_preset_id: Some("preset_42".to_owned()),
             control_values: controls,
@@ -345,6 +363,8 @@ mod tests {
 
         assert_eq!(loaded.active_effect_id, expected.active_effect_id);
         assert_eq!(loaded.active_preset_id, expected.active_preset_id);
+        assert_eq!(loaded.active_scene_id, expected.active_scene_id);
+        assert_eq!(loaded.default_scene_groups, expected.default_scene_groups);
         assert_eq!(loaded.control_values, expected.control_values);
         assert_eq!(loaded.control_bindings, expected.control_bindings);
         assert!((loaded.global_brightness - expected.global_brightness).abs() < f32::EPSILON);
@@ -364,6 +384,8 @@ mod tests {
         let tempdir = TempDir::new().expect("tempdir");
         let path = Arc::new(tempdir.path().join("runtime-state.json"));
         let snapshot = Arc::new(RuntimeSessionSnapshot {
+            active_scene_id: Some(SceneId::DEFAULT.to_string()),
+            default_scene_groups: Vec::new(),
             active_effect_id: Some("0195e5b0-b2ea-7f22-9ab2-9bc31b48adf3".to_owned()),
             active_preset_id: Some("preset_42".to_owned()),
             control_values: HashMap::new(),

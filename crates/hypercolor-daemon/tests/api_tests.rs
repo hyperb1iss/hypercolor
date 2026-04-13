@@ -2610,7 +2610,9 @@ async fn library_delete_active_playlist_stops_runtime() {
     reason = "CRUD lifecycle test covers full create-read-update-delete flow"
 )]
 async fn scene_crud_lifecycle() {
-    let state = Arc::new(isolated_state());
+    let (state, tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let scenes_path = tempdir.path().join("data/scenes.json");
 
     // Create scene
     let app = test_app_with_state(Arc::clone(&state));
@@ -2635,6 +2637,11 @@ async fn scene_crud_lifecycle() {
         .as_str()
         .expect("id should be a string")
         .to_owned();
+    let persisted: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&scenes_path).expect("scene store should be written after create"),
+    )
+    .expect("scene store should parse");
+    assert_eq!(persisted[scene_id.as_str()]["name"], "Test Scene");
 
     // Get scene
     let app = test_app_with_state(Arc::clone(&state));
@@ -2687,6 +2694,11 @@ async fn scene_crud_lifecycle() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["name"], "Updated Scene");
+    let persisted: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&scenes_path).expect("scene store should be written after update"),
+    )
+    .expect("scene store should parse");
+    assert_eq!(persisted[scene_id.as_str()]["name"], "Updated Scene");
 
     // Activate scene
     let app = test_app_with_state(Arc::clone(&state));
@@ -2705,6 +2717,20 @@ async fn scene_crud_lifecycle() {
     let json = body_json(response).await;
     assert_eq!(json["data"]["activated"], true);
 
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/scenes/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["id"], scene_id);
+
     // Delete scene
     let app = test_app_with_state(Arc::clone(&state));
     let response = app
@@ -2721,6 +2747,14 @@ async fn scene_crud_lifecycle() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["deleted"], true);
+    let persisted: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&scenes_path).expect("scene store should be written after delete"),
+    )
+    .expect("scene store should parse");
+    assert!(
+        persisted.get(scene_id.as_str()).is_none(),
+        "deleted scene should be removed from the scene store"
+    );
 
     // Verify deletion
     let app = test_app_with_state(Arc::clone(&state));
@@ -2735,6 +2769,71 @@ async fn scene_crud_lifecycle() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn scene_deactivate_returns_to_default_scene() {
+    let state = Arc::new(isolated_state());
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name": "Work"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    let json = body_json(response).await;
+    let scene_id = json["data"]["id"]
+        .as_str()
+        .expect("id should be a string")
+        .to_owned();
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/scenes/{scene_id}/activate"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes/deactivate")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["scene"]["name"], "Default");
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/scenes/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["name"], "Default");
 }
 
 // ── Profiles ─────────────────────────────────────────────────────────────

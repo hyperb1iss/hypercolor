@@ -20,6 +20,7 @@ pub mod preview_runtime;
 pub mod profile_store;
 pub mod render_thread;
 pub mod runtime_state;
+pub mod scene_store;
 pub mod scene_transactions;
 pub mod session;
 pub mod simulators;

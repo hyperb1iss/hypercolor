@@ -47,6 +47,7 @@ use crate::layout_auto_exclusions;
 use crate::network::{self, DaemonDriverHost};
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
+use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::{OutputPowerState, set_global_brightness};
 use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayRuntime, SimulatedDisplayStore};
@@ -151,9 +152,25 @@ impl DaemonState {
             "Effect registry created"
         );
 
-        // ── Scene Manager ───────────────────────────────────────────────
-        let scene_manager = Arc::new(RwLock::new(SceneManager::with_default()));
-        info!("Scene manager created");
+        // ── Scene Manager / Store ──────────────────────────────────────
+        let scenes_path = ConfigManager::data_dir().join("scenes.json");
+        let scene_store_inner = SceneStore::load(&scenes_path).unwrap_or_else(|error| {
+            warn!(
+                path = %scenes_path.display(),
+                %error,
+                "Failed to load scenes; starting with empty store"
+            );
+            SceneStore::new(scenes_path.clone())
+        });
+        let mut scene_manager_inner = SceneManager::with_default();
+        for scene in scene_store_inner.list().cloned() {
+            if let Err(error) = scene_manager_inner.create(scene) {
+                warn!(%error, "Failed to install persisted named scene");
+            }
+        }
+        let scene_manager = Arc::new(RwLock::new(scene_manager_inner));
+        let scene_store = Arc::new(RwLock::new(scene_store_inner));
+        info!(path = %scenes_path.display(), "Scene manager created");
 
         // ── Render Loop ─────────────────────────────────────────────────
         let render_loop = RenderLoop::new(config.daemon.target_fps);
@@ -443,6 +460,7 @@ impl DaemonState {
             effect_engine,
             effect_registry,
             scene_manager,
+            scene_store,
             event_bus,
             preview_runtime,
             render_loop,

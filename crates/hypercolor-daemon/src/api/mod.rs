@@ -72,6 +72,7 @@ use crate::playlist_runtime::PlaylistRuntimeState;
 use crate::preview_runtime::PreviewRuntime;
 use crate::profile_store::ProfileStore;
 use crate::runtime_state;
+use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::{OutputPowerState, current_global_brightness};
 use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayRuntime, SimulatedDisplayStore};
@@ -104,6 +105,9 @@ pub struct AppState {
 
     /// Scene CRUD, priority stack, and transitions.
     pub scene_manager: Arc<RwLock<SceneManager>>,
+
+    /// Persisted named-scene store.
+    pub scene_store: Arc<RwLock<SceneStore>>,
 
     /// System-wide event bus (broadcast + watch channels).
     pub event_bus: Arc<HypercolorBus>,
@@ -368,7 +372,23 @@ impl AppState {
         let device_registry = DeviceRegistry::new();
         let effect_registry = Arc::new(RwLock::new(EffectRegistry::default()));
         let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
-        let scene_manager = Arc::new(RwLock::new(SceneManager::with_default()));
+        let scenes_path = ConfigManager::data_dir().join("scenes.json");
+        let scene_store = SceneStore::load(&scenes_path).unwrap_or_else(|error| {
+            warn!(
+                path = %scenes_path.display(),
+                %error,
+                "Failed to load scenes; starting with empty store"
+            );
+            SceneStore::new(scenes_path)
+        });
+        let mut scene_manager_inner = SceneManager::with_default();
+        for scene in scene_store.list().cloned() {
+            if let Err(error) = scene_manager_inner.create(scene) {
+                warn!(%error, "Failed to install persisted named scene into default app state");
+            }
+        }
+        let scene_manager = Arc::new(RwLock::new(scene_manager_inner));
+        let scene_store = Arc::new(RwLock::new(scene_store));
         let event_bus = Arc::new(HypercolorBus::new());
         let preview_runtime = Arc::new(PreviewRuntime::new(Arc::clone(&event_bus)));
         let render_loop = Arc::new(RwLock::new(RenderLoop::new(60)));
@@ -440,6 +460,7 @@ impl AppState {
             effect_registry,
             effect_engine,
             scene_manager,
+            scene_store,
             event_bus,
             preview_runtime,
             render_loop,
@@ -524,6 +545,7 @@ impl AppState {
             effect_registry: Arc::clone(&daemon.effect_registry),
             effect_engine: Arc::clone(&daemon.effect_engine),
             scene_manager: Arc::clone(&daemon.scene_manager),
+            scene_store: Arc::clone(&daemon.scene_store),
             event_bus: Arc::clone(&daemon.event_bus),
             preview_runtime: Arc::clone(&daemon.preview_runtime),
             render_loop: Arc::clone(&daemon.render_loop),
@@ -593,6 +615,17 @@ pub(crate) async fn persist_simulated_displays(state: &Arc<AppState>) {
     }
 }
 
+pub(crate) async fn save_scene_store_snapshot(state: &AppState) -> anyhow::Result<()> {
+    let scenes = {
+        let manager = state.scene_manager.read().await;
+        manager.list().into_iter().cloned().collect::<Vec<_>>()
+    };
+
+    let mut store = state.scene_store.write().await;
+    store.replace_named_scenes(scenes);
+    store.save()
+}
+
 /// Persist layout-specific discovery auto-sync exclusions to disk.
 pub(crate) async fn persist_layout_auto_exclusions(state: &Arc<AppState>) {
     let exclusions = state.layout_auto_exclusions.read().await;
@@ -623,6 +656,10 @@ pub(crate) async fn persist_runtime_session(state: &Arc<AppState>) {
     snapshot.wled_probe_ips = runtime_state::collect_wled_probe_ips(&state.device_registry).await;
     snapshot.wled_probe_targets =
         runtime_state::collect_wled_probe_targets(&state.device_registry).await;
+
+    if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
+        warn!(%error, "Failed to persist scene store before runtime snapshot save");
+    }
 
     if let Err(error) = runtime_state::save(&state.runtime_state_path, &snapshot) {
         warn!(
@@ -827,6 +864,11 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route(
             "/scenes",
             axum::routing::get(scenes::list_scenes).post(scenes::create_scene),
+        )
+        .route("/scenes/active", axum::routing::get(scenes::get_active_scene))
+        .route(
+            "/scenes/deactivate",
+            axum::routing::post(scenes::deactivate_scene),
         )
         .route(
             "/scenes/{id}",

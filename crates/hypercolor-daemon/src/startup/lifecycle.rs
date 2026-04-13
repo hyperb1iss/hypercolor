@@ -10,6 +10,7 @@ use hypercolor_core::effect::{EffectRegistry, EffectWatchEvent, EffectWatcher};
 use hypercolor_core::engine::FpsTier;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::effect::{EffectId, EffectMetadata};
+use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole, SceneId};
 
 use crate::discovery::{self, DiscoveryBackend};
 use crate::display_output::overlay::DefaultOverlayRendererFactory;
@@ -226,6 +227,7 @@ impl DaemonState {
 
         // 5. Persist the current runtime session before tearing down effect state.
         self.persist_runtime_session_snapshot().await;
+        self.persist_scene_store_snapshot().await;
         info!("Runtime session snapshot persisted");
 
         // 6. Deactivate effect engine.
@@ -278,6 +280,23 @@ impl DaemonState {
                 %error,
                 "Failed to persist runtime session snapshot"
             );
+        }
+    }
+
+    async fn persist_scene_store_snapshot(&self) {
+        let scenes = {
+            let scene_manager = self.scene_manager.read().await;
+            scene_manager
+                .list()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+
+        let mut store = self.scene_store.write().await;
+        store.replace_named_scenes(scenes);
+        if let Err(error) = store.save() {
+            warn!(%error, "Failed to persist scene store");
         }
     }
 
@@ -345,6 +364,50 @@ impl DaemonState {
         &self,
         snapshot: RuntimeSessionSnapshot,
     ) -> anyhow::Result<()> {
+        let requested_active_scene_id = snapshot
+            .active_scene_id
+            .as_deref()
+            .map(str::parse::<uuid::Uuid>)
+            .transpose()
+            .map(|scene_id| scene_id.map(SceneId))?;
+
+        {
+            let mut scene_manager = self.scene_manager.write().await;
+            if !snapshot.default_scene_groups.is_empty() {
+                let Some(mut default_scene) = scene_manager.get(&SceneId::DEFAULT).cloned() else {
+                    anyhow::bail!("default scene is missing during runtime restore");
+                };
+                default_scene.groups = snapshot.default_scene_groups.clone();
+                scene_manager
+                    .update(default_scene)
+                    .context("failed to restore default scene groups")?;
+            }
+
+            if let Some(scene_id) =
+                requested_active_scene_id.filter(|scene_id| !scene_id.is_default())
+            {
+                if scene_manager.get(&scene_id).is_some() {
+                    scene_manager
+                        .activate(&scene_id, None)
+                        .with_context(|| format!("failed to activate restored scene {scene_id}"))?;
+                } else {
+                    warn!(
+                        scene_id = %scene_id,
+                        "Persisted active scene was not found in the scene store"
+                    );
+                }
+            }
+        }
+
+        if !snapshot.default_scene_groups.is_empty() {
+            info!(
+                groups = snapshot.default_scene_groups.len(),
+                active_scene_id = ?requested_active_scene_id,
+                "Restored runtime scene snapshot"
+            );
+            return Ok(());
+        }
+
         let Some(active_effect_id) = snapshot.active_effect_id.as_deref() else {
             return Ok(());
         };
@@ -362,8 +425,6 @@ impl DaemonState {
                 &metadata,
                 &snapshot.control_values,
             );
-        let rejected_controls: Vec<String> = Vec::new();
-        let mut rejected_bindings: Vec<String> = Vec::new();
         let active_preset_id = snapshot
             .active_preset_id
             .as_deref()
@@ -376,29 +437,33 @@ impl DaemonState {
                 spatial.layout().as_ref().clone()
             };
             let mut scene_manager = self.scene_manager.write().await;
-            let primary_group = scene_manager
-                .upsert_primary_group(&metadata, controls.clone(), active_preset_id, layout)
-                .with_context(|| format!("failed to restore '{}'", metadata.name))?
-                .clone();
-
-            for (name, binding) in &snapshot.control_bindings {
-                if scene_manager
-                    .set_group_control_binding(primary_group.id, name.clone(), binding.clone())
-                    .is_none()
-                {
-                    rejected_bindings.push(format!("{name} (group missing)"));
-                }
-            }
+            let Some(mut default_scene) = scene_manager.get(&SceneId::DEFAULT).cloned() else {
+                anyhow::bail!("default scene is missing during legacy runtime restore");
+            };
+            default_scene
+                .groups
+                .retain(|group| group.role != RenderGroupRole::Primary);
+            default_scene.groups.push(RenderGroup {
+                id: RenderGroupId::new(),
+                name: metadata.name.clone(),
+                description: (!metadata.description.is_empty())
+                    .then(|| metadata.description.clone()),
+                effect_id: Some(metadata.id),
+                controls: controls.clone(),
+                control_bindings: snapshot.control_bindings.clone(),
+                preset_id: active_preset_id,
+                layout,
+                brightness: 1.0,
+                enabled: true,
+                color: None,
+                display_target: None,
+                role: RenderGroupRole::Primary,
+            });
+            scene_manager
+                .update(default_scene)
+                .with_context(|| format!("failed to restore '{}'", metadata.name))?;
         }
 
-        if !rejected_controls.is_empty() {
-            warn!(
-                effect_id = %metadata.id,
-                effect = %metadata.name,
-                rejected_controls = ?rejected_controls,
-                "Some persisted control values were rejected during restore"
-            );
-        }
         if migrated_controls {
             info!(
                 effect_id = %metadata.id,
@@ -407,21 +472,13 @@ impl DaemonState {
             );
         }
 
-        if !rejected_bindings.is_empty() {
-            warn!(
-                effect_id = %metadata.id,
-                effect = %metadata.name,
-                rejected_bindings = ?rejected_bindings,
-                "Some persisted control bindings were rejected during restore"
-            );
-        }
-
         info!(
             effect_id = %metadata.id,
             effect = %metadata.name,
             controls = snapshot.control_values.len(),
             bindings = snapshot.control_bindings.len(),
-            "Restored runtime session snapshot"
+            active_scene_id = ?requested_active_scene_id.unwrap_or(SceneId::DEFAULT),
+            "Restored legacy runtime session snapshot into the default scene"
         );
 
         Ok(())

@@ -16,6 +16,7 @@ use hypercolor_types::scene::{
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::{persist_runtime_session, save_scene_store_snapshot};
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -99,6 +100,22 @@ pub async fn get_scene(State(state): State<Arc<AppState>>, Path(id): Path<String
     })
 }
 
+/// `GET /api/v1/scenes/active` — Get the currently active scene, including Default.
+pub async fn get_active_scene(State(state): State<Arc<AppState>>) -> Response {
+    let manager = state.scene_manager.read().await;
+    let Some(scene) = manager.active_scene() else {
+        return ApiError::not_found("No active scene".to_owned());
+    };
+
+    ApiResponse::ok(SceneSummary {
+        id: scene.id.to_string(),
+        name: scene.name.clone(),
+        description: scene.description.clone(),
+        enabled: scene.enabled,
+        priority: scene.priority.0,
+    })
+}
+
 /// `POST /api/v1/scenes` — Create a new scene.
 pub async fn create_scene(
     State(state): State<Arc<AppState>>,
@@ -135,6 +152,11 @@ pub async fn create_scene(
 
     if let Err(e) = manager.create(scene) {
         return ApiError::conflict(format!("Failed to create scene: {e}"));
+    }
+    drop(manager);
+
+    if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
+        return ApiError::internal(format!("Failed to persist scenes: {error}"));
     }
 
     ApiResponse::created(summary)
@@ -181,6 +203,11 @@ pub async fn update_scene(
     if let Err(e) = manager.update(updated) {
         return ApiError::internal(format!("Failed to update scene: {e}"));
     }
+    drop(manager);
+
+    if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
+        return ApiError::internal(format!("Failed to persist scenes: {error}"));
+    }
 
     ApiResponse::ok(summary)
 }
@@ -195,6 +222,12 @@ pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<Str
     if let Err(e) = manager.delete(&scene_id) {
         return ApiError::not_found(format!("Scene not found: {e}"));
     }
+    drop(manager);
+
+    if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
+        return ApiError::internal(format!("Failed to persist scenes: {error}"));
+    }
+    persist_runtime_session(&state).await;
 
     ApiResponse::ok(serde_json::json!({
         "id": id,
@@ -220,6 +253,9 @@ pub async fn activate_scene(
     if let Err(e) = manager.activate(&scene_id, None) {
         return ApiError::internal(format!("Failed to activate scene: {e}"));
     }
+    drop(manager);
+
+    persist_runtime_session(&state).await;
 
     ApiResponse::ok(serde_json::json!({
         "scene": {
@@ -230,7 +266,40 @@ pub async fn activate_scene(
     }))
 }
 
+/// `POST /api/v1/scenes/deactivate` — Return to the synthesized default scene.
+pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
+    let mut manager = state.scene_manager.write().await;
+    let previous_scene = manager.active_scene().map(|scene| SceneSummary {
+        id: scene.id.to_string(),
+        name: scene.name.clone(),
+        description: scene.description.clone(),
+        enabled: scene.enabled,
+        priority: scene.priority.0,
+    });
+    manager.deactivate_current();
+    let current_scene = manager.active_scene().map(|scene| SceneSummary {
+        id: scene.id.to_string(),
+        name: scene.name.clone(),
+        description: scene.description.clone(),
+        enabled: scene.enabled,
+        priority: scene.priority.0,
+    });
+    drop(manager);
+
+    persist_runtime_session(&state).await;
+
+    ApiResponse::ok(serde_json::json!({
+        "deactivated": true,
+        "previous_scene": previous_scene,
+        "scene": current_scene,
+    }))
+}
+
 fn resolve_scene_id(manager: &SceneManager, id_or_name: &str) -> Option<SceneId> {
+    if id_or_name.eq_ignore_ascii_case("default") {
+        return Some(SceneId::DEFAULT);
+    }
+
     if let Ok(uuid) = id_or_name.parse::<uuid::Uuid>() {
         return Some(SceneId(uuid));
     }
