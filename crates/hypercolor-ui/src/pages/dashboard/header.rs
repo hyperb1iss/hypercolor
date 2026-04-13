@@ -22,6 +22,8 @@ pub(super) fn StatusStrip(
     let uptime = format_uptime(status.uptime_seconds);
     let device_count = status.device_count;
     let effect_count = status.effect_count;
+    let active_scene = status.active_scene;
+    let active_scene_snapshot_locked = status.active_scene_snapshot_locked;
 
     let ws_clients = Memo::new(move |_| metrics.get().map_or(0, |m| m.websocket.client_count));
 
@@ -54,6 +56,23 @@ pub(super) fn StatusStrip(
                 color="var(--color-electric-purple)"
                 pulsing=false
             />
+            {active_scene.as_ref().map(|scene| view! {
+                <div class="w-px h-5 bg-edge-subtle/30" />
+                <StatusPill
+                    label=if active_scene_snapshot_locked { "Scene Lock" } else { "Scene" }
+                    value=if active_scene_snapshot_locked {
+                        format!("{scene} · snap")
+                    } else {
+                        scene.clone()
+                    }
+                    color=if active_scene_snapshot_locked {
+                        "var(--color-electric-yellow)"
+                    } else {
+                        "var(--color-neon-cyan)"
+                    }
+                    pulsing=false
+                />
+            })}
             <div class="w-px h-5 bg-edge-subtle/30" />
             <StatusPillDynamic
                 label="WS Clients"

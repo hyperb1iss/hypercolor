@@ -18,6 +18,9 @@ pub struct SystemStatus {
     pub device_count: usize,
     pub effect_count: usize,
     pub active_effect: Option<String>,
+    pub active_scene: Option<String>,
+    #[serde(default)]
+    pub active_scene_snapshot_locked: bool,
     pub global_brightness: u8,
 }
 
