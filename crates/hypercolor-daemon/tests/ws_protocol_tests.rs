@@ -335,6 +335,12 @@ async fn hello_handshake_reports_scene_backed_active_effect() {
 
     assert_eq!(hello["state"]["effect"]["id"], effect.id.to_string());
     assert_eq!(hello["state"]["effect"]["name"], effect.name);
+    assert_eq!(
+        hello["state"]["scene"]["id"],
+        hypercolor_types::scene::SceneId::DEFAULT.to_string()
+    );
+    assert_eq!(hello["state"]["scene"]["name"], "Default");
+    assert_eq!(hello["state"]["scene"]["snapshot_locked"], false);
 }
 
 // ── Scenario 1: Subscribe → Unsubscribe → Subscribe cycle ────────────────

@@ -653,6 +653,7 @@ pub(super) struct HelloState {
     pub(super) brightness: u8,
     pub(super) fps: HelloFps,
     pub(super) effect: Option<NameRef>,
+    pub(super) scene: Option<SceneRef>,
     pub(super) profile: Option<NameRef>,
     pub(super) layout: Option<NameRef>,
     pub(super) device_count: usize,
@@ -669,6 +670,13 @@ pub(super) struct HelloFps {
 pub(super) struct NameRef {
     pub(super) id: String,
     pub(super) name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct SceneRef {
+    pub(super) id: String,
+    pub(super) name: String,
+    pub(super) snapshot_locked: bool,
 }
 
 #[derive(Debug, Serialize)]

@@ -18,7 +18,7 @@ use tracing::{debug, warn};
 use super::cache::{WS_BUFFER_SIZE, WsClientGuard, track_ws_bytes_sent};
 use super::command::dispatch_command;
 use super::protocol::{
-    ClientMessage, HelloFps, HelloState, NameRef, ServerMessage, SubscriptionState,
+    ClientMessage, HelloFps, HelloState, NameRef, SceneRef, ServerMessage, SubscriptionState,
     WsProtocolError, parse_channels, sorted_channel_names, unique_sorted_channel_names,
     ws_capabilities,
 };
@@ -318,6 +318,14 @@ async fn build_hello_state(state: &AppState) -> HelloState {
         id: meta.id.to_string(),
         name: meta.name.clone(),
     });
+    let active_scene = {
+        let scene_manager = state.scene_manager.read().await;
+        scene_manager.active_scene().map(|scene| SceneRef {
+            id: scene.id.to_string(),
+            name: scene.name.clone(),
+            snapshot_locked: scene.blocks_runtime_mutation(),
+        })
+    };
 
     let devices = state.device_registry.list().await;
     let total_leds = devices.iter().fold(0_usize, |acc, tracked| {
@@ -334,6 +342,7 @@ async fn build_hello_state(state: &AppState) -> HelloState {
             actual: (actual_fps * 10.0).round() / 10.0,
         },
         effect: active_effect,
+        scene: active_scene,
         profile: None,
         layout: None,
         device_count: devices.len(),
