@@ -1,8 +1,10 @@
 //! Profile endpoints — `/api/v1/profiles/*`.
 //!
-//! Profiles are named snapshots of runtime state: active effect, control
-//! values, layout, and brightness. They are persisted to `profiles.json`.
+//! Profiles are named snapshots of runtime state: active primary effect,
+//! display face assignments, control values, layout, and brightness. They are
+//! persisted to `profiles.json`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::Json;
@@ -16,9 +18,15 @@ use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::api::{effects, persist_runtime_session};
 use crate::discovery;
-use crate::profile_store::{Profile, ResolveProfileError};
+use crate::profile_store::{Profile, ProfileDisplay, ProfilePrimary, ResolveProfileError};
 use crate::scene_transactions::apply_layout_update;
 use crate::session::{current_global_brightness, set_global_brightness};
+use hypercolor_core::effect::EffectRegistry;
+use hypercolor_types::device::DeviceId;
+use hypercolor_types::effect::{ControlValue, EffectMetadata};
+use hypercolor_types::library::PresetId;
+use hypercolor_types::scene::{RenderGroup, RenderGroupRole};
+use hypercolor_types::spatial::SpatialLayout;
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -47,6 +55,22 @@ pub struct ApplyProfileRequest {
 pub struct ProfileListResponse {
     pub items: Vec<Profile>,
     pub pagination: super::devices::Pagination,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedProfilePrimary {
+    metadata: EffectMetadata,
+    controls: HashMap<String, ControlValue>,
+    active_preset_id: Option<PresetId>,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedProfileDisplay {
+    device_id: DeviceId,
+    device_name: String,
+    metadata: EffectMetadata,
+    controls: HashMap<String, ControlValue>,
+    layout: SpatialLayout,
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────
@@ -266,49 +290,36 @@ pub(crate) async fn apply_profile_snapshot(
     } else {
         None
     };
-
-    let prepared_effect = if let Some(effect_id) = profile.effect_id.as_deref() {
-        let metadata = {
-            let registry = state.effect_registry.read().await;
-            effects::resolve_effect_metadata(&registry, effect_id)
-                .ok_or_else(|| format!("profile effect not found: {effect_id}"))?
-        };
-
-        Some(metadata)
-    } else {
-        None
-    };
+    let prepared_primary = prepare_profile_primary(state, profile.primary.as_ref()).await?;
+    let prepared_displays = prepare_profile_displays(state, &profile.displays).await?;
     let mut warnings = Vec::new();
     let current_layout = {
         let spatial = state.spatial_engine.read().await;
         spatial.layout().as_ref().clone()
     };
 
-    if let Some(metadata) = prepared_effect {
+    if let Some(prepared_primary) = prepared_primary {
         let (controls, migrated_controls) =
             crate::library::migration::migrate_effect_controls_for_load(
-                &metadata,
-                &profile.controls,
+                &prepared_primary.metadata,
+                &prepared_primary.controls,
             );
         let (controls, rejected_controls) =
-            crate::api::effects::normalize_control_values(&metadata, &controls);
+            crate::api::effects::normalize_control_values(&prepared_primary.metadata, &controls);
         let active_layout = layout.clone().unwrap_or_else(|| current_layout.clone());
         {
             let mut scene_manager = state.scene_manager.write().await;
             scene_manager
                 .upsert_primary_group(
-                    &metadata,
+                    &prepared_primary.metadata,
                     controls,
-                    profile
-                        .active_preset_id
-                        .clone()
-                        .and_then(|id| id.parse::<hypercolor_types::library::PresetId>().ok()),
+                    prepared_primary.active_preset_id,
                     active_layout,
                 )
                 .map_err(|error| {
                     format!(
                         "failed to activate profile effect '{}': {error}",
-                        metadata.name
+                        prepared_primary.metadata.name
                     )
                 })?;
         }
@@ -323,12 +334,63 @@ pub(crate) async fn apply_profile_snapshot(
         if migrated_controls {
             info!(
                 profile_id = %profile.id,
-                effect = %metadata.name,
+                effect = %prepared_primary.metadata.name,
                 "Migrated legacy screencast profile controls to the viewport rect"
             );
         }
-        warnings =
-            crate::api::displays::auto_disable_html_overlays_for_effect(state, &metadata).await;
+        warnings.extend(
+            crate::api::displays::auto_disable_html_overlays_for_effect(
+                state,
+                &prepared_primary.metadata,
+            )
+            .await,
+        );
+    }
+
+    if !prepared_displays.is_empty() {
+        let mut scene_manager = state.scene_manager.write().await;
+        for prepared_display in prepared_displays {
+            let (controls, migrated_controls) =
+                crate::library::migration::migrate_effect_controls_for_load(
+                    &prepared_display.metadata,
+                    &prepared_display.controls,
+                );
+            let (controls, rejected_controls) = crate::api::effects::normalize_control_values(
+                &prepared_display.metadata,
+                &controls,
+            );
+            scene_manager
+                .upsert_display_group(
+                    prepared_display.device_id,
+                    prepared_display.device_name.as_str(),
+                    &prepared_display.metadata,
+                    controls,
+                    prepared_display.layout,
+                )
+                .map_err(|error| {
+                    format!(
+                        "failed to assign profile display face '{}' to {}: {error}",
+                        prepared_display.metadata.name, prepared_display.device_id
+                    )
+                })?;
+
+            if !rejected_controls.is_empty() {
+                warn!(
+                    profile_id = %profile.id,
+                    device_id = %prepared_display.device_id,
+                    rejected_controls = ?rejected_controls,
+                    "Profile apply skipped one or more invalid display-face control values"
+                );
+            }
+            if migrated_controls {
+                info!(
+                    profile_id = %profile.id,
+                    device_id = %prepared_display.device_id,
+                    effect = %prepared_display.metadata.name,
+                    "Migrated legacy screencast display-face controls to the viewport rect"
+                );
+            }
+        }
     }
 
     if let Some(layout) = layout {
@@ -371,31 +433,152 @@ async fn snapshot_profile(
         let spatial = state.spatial_engine.read().await;
         Some(spatial.layout().id.clone())
     };
-    let (effect_id, effect_name, active_preset_id, controls) =
-        if let Some((group, effect)) = effects::active_primary_effect(state.as_ref()).await {
-            let controls = effects::resolved_control_values(&effect, &group);
-            (
-                Some(effect.id.to_string()),
-                Some(effect.name.clone()),
-                group.preset_id.map(|preset| preset.to_string()),
-                controls,
-            )
-        } else {
-            (None, None, None, Default::default())
-        };
+    let (primary_group, display_groups) = {
+        let scene_manager = state.scene_manager.read().await;
+        scene_manager
+            .active_scene()
+            .map_or((None, Vec::new()), |scene| {
+                (
+                    scene.primary_group().cloned(),
+                    scene
+                        .groups
+                        .iter()
+                        .filter(|group| {
+                            group.role == RenderGroupRole::Display || group.display_target.is_some()
+                        })
+                        .cloned()
+                        .collect(),
+                )
+            })
+    };
+    let registry = state.effect_registry.read().await;
+    let primary = primary_group
+        .as_ref()
+        .and_then(|group| snapshot_primary_group(&registry, group));
+    let displays = display_groups
+        .iter()
+        .filter_map(|group| snapshot_display_group(&registry, group))
+        .collect();
 
     Ok(Profile {
         id,
         name,
         description,
         brightness,
-        effect_id,
-        effect_name,
-        active_preset_id,
-        controls,
+        primary,
+        displays,
         layout_id,
+        ..Profile::default()
     }
     .normalized())
+}
+
+async fn prepare_profile_primary(
+    state: &AppState,
+    primary: Option<&ProfilePrimary>,
+) -> Result<Option<PreparedProfilePrimary>, String> {
+    let Some(primary) = primary else {
+        return Ok(None);
+    };
+
+    let metadata = {
+        let registry = state.effect_registry.read().await;
+        registry
+            .get(&primary.effect_id)
+            .map(|entry| entry.metadata.clone())
+            .ok_or_else(|| format!("profile effect not found: {}", primary.effect_id))?
+    };
+
+    Ok(Some(PreparedProfilePrimary {
+        metadata,
+        controls: primary.controls.clone(),
+        active_preset_id: primary.active_preset_id,
+    }))
+}
+
+async fn prepare_profile_displays(
+    state: &AppState,
+    displays: &[ProfileDisplay],
+) -> Result<Vec<PreparedProfileDisplay>, String> {
+    let resolved_effects = {
+        let registry = state.effect_registry.read().await;
+        displays
+            .iter()
+            .map(|display| {
+                registry
+                    .get(&display.effect_id)
+                    .map(|entry| (display, entry.metadata.clone()))
+                    .ok_or_else(|| {
+                        format!("profile display effect not found: {}", display.effect_id)
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
+    let mut prepared = Vec::with_capacity(resolved_effects.len());
+    for (display, metadata) in resolved_effects {
+        let Some(tracked) = state.device_registry.get(&display.device_id).await else {
+            return Err(format!(
+                "profile display device not found: {}",
+                display.device_id
+            ));
+        };
+        let Some(surface) = crate::api::displays::display_surface_info(&tracked.info) else {
+            return Err(format!(
+                "profile display target does not support display faces: {}",
+                tracked.info.name
+            ));
+        };
+        prepared.push(PreparedProfileDisplay {
+            device_id: display.device_id,
+            device_name: tracked.info.name.clone(),
+            metadata,
+            controls: display.controls.clone(),
+            layout: crate::api::displays::display_face_layout(
+                display.device_id,
+                tracked.info.name.as_str(),
+                surface,
+            ),
+        });
+    }
+
+    Ok(prepared)
+}
+
+fn snapshot_primary_group(
+    registry: &EffectRegistry,
+    group: &RenderGroup,
+) -> Option<ProfilePrimary> {
+    let effect_id = group.effect_id?;
+    Some(ProfilePrimary {
+        effect_id,
+        controls: resolved_profile_controls(registry, effect_id, group),
+        active_preset_id: group.preset_id,
+    })
+}
+
+fn snapshot_display_group(
+    registry: &EffectRegistry,
+    group: &RenderGroup,
+) -> Option<ProfileDisplay> {
+    let device_id = group.display_target.as_ref()?.device_id;
+    let effect_id = group.effect_id?;
+    Some(ProfileDisplay {
+        device_id,
+        effect_id,
+        controls: resolved_profile_controls(registry, effect_id, group),
+    })
+}
+
+fn resolved_profile_controls(
+    registry: &EffectRegistry,
+    effect_id: hypercolor_types::effect::EffectId,
+    group: &RenderGroup,
+) -> HashMap<String, ControlValue> {
+    registry.get(&effect_id).map_or_else(
+        || group.controls.clone(),
+        |entry| effects::resolved_control_values(&entry.metadata, group),
+    )
 }
 
 #[allow(

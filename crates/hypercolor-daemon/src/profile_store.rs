@@ -1,13 +1,15 @@
 //! Persisted lighting profiles: named snapshots of runtime state.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::device::DeviceId;
+use hypercolor_types::effect::{ControlValue, EffectId};
+use hypercolor_types::library::PresetId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveProfileError {
@@ -21,15 +23,49 @@ pub struct Profile {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary: Option<ProfilePrimary>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub displays: Vec<ProfileDisplay>,
     pub brightness: Option<u8>,
-    pub effect_id: Option<String>,
-    pub effect_name: Option<String>,
-    pub active_preset_id: Option<String>,
-    pub controls: HashMap<String, ControlValue>,
     pub layout_id: Option<String>,
+    #[serde(rename = "effect_id", skip_serializing_if = "Option::is_none")]
+    pub(crate) legacy_effect_id: Option<EffectId>,
+    #[serde(rename = "effect_name", skip_serializing_if = "Option::is_none")]
+    pub(crate) legacy_effect_name: Option<String>,
+    #[serde(rename = "active_preset_id", skip_serializing_if = "Option::is_none")]
+    pub(crate) legacy_active_preset_id: Option<PresetId>,
+    #[serde(rename = "controls", skip_serializing_if = "HashMap::is_empty")]
+    pub(crate) legacy_controls: HashMap<String, ControlValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfilePrimary {
+    pub effect_id: EffectId,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub controls: HashMap<String, ControlValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_preset_id: Option<PresetId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileDisplay {
+    pub device_id: DeviceId,
+    pub effect_id: EffectId,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub controls: HashMap<String, ControlValue>,
 }
 
 impl Profile {
+    #[must_use]
+    pub fn named(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            ..Self::default()
+        }
+    }
+
     #[must_use]
     pub fn normalized(mut self) -> Self {
         self.name = self.name.trim().to_owned();
@@ -38,6 +74,22 @@ impl Profile {
             .map(|description| description.trim().to_owned())
             .filter(|description| !description.is_empty());
         self.brightness = self.brightness.map(|brightness| brightness.min(100));
+        if self.primary.is_none()
+            && let Some(effect_id) = self.legacy_effect_id.take()
+        {
+            self.primary = Some(ProfilePrimary {
+                effect_id,
+                controls: std::mem::take(&mut self.legacy_controls),
+                active_preset_id: self.legacy_active_preset_id.take(),
+            });
+        }
+        self.legacy_effect_id = None;
+        self.legacy_effect_name = None;
+        self.legacy_active_preset_id = None;
+        self.legacy_controls.clear();
+        let mut seen_displays = HashSet::new();
+        self.displays
+            .retain(|display| seen_displays.insert(display.device_id));
         self
     }
 }
@@ -170,5 +222,80 @@ impl ProfileStore {
             })
             .map(|(id, _)| id.clone())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::fs;
+
+    use tempfile::tempdir;
+    use uuid::Uuid;
+
+    use super::ProfileStore;
+    use hypercolor_types::device::DeviceId;
+    use hypercolor_types::effect::{ControlValue, EffectId};
+    use hypercolor_types::library::PresetId;
+
+    #[test]
+    fn load_migrates_legacy_primary_shape() {
+        let temp = tempdir().expect("tempdir should be created");
+        let path = temp.path().join("profiles.json");
+        let effect_id = EffectId::from(Uuid::now_v7());
+        let preset_id = PresetId(Uuid::now_v7());
+        let display_id = DeviceId::new();
+        let payload = serde_json::json!({
+            "prof_evening": {
+                "id": "prof_evening",
+                "name": "Evening",
+                "effect_id": effect_id,
+                "effect_name": "legacy-name",
+                "active_preset_id": preset_id,
+                "controls": {
+                    "speed": { "float": 12.5 }
+                },
+                "displays": [{
+                    "device_id": display_id,
+                    "effect_id": effect_id,
+                    "controls": {
+                        "accent": { "float": 0.25 }
+                    }
+                }]
+            }
+        });
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&payload).expect("profile json should serialize"),
+        )
+        .expect("profile json should be written");
+
+        let store = ProfileStore::load(&path).expect("profile store should load");
+        let profile = store
+            .get("prof_evening")
+            .expect("migrated profile should exist");
+        let primary = profile
+            .primary
+            .as_ref()
+            .expect("legacy effect fields should migrate to primary");
+        assert_eq!(primary.effect_id, effect_id);
+        assert_eq!(primary.active_preset_id, Some(preset_id));
+        assert_eq!(
+            primary.controls.get("speed"),
+            Some(&ControlValue::Float(12.5))
+        );
+        assert_eq!(profile.displays.len(), 1);
+        let saved = serde_json::to_value(profile).expect("profile should serialize");
+        assert_eq!(saved["primary"]["effect_id"], serde_json::json!(effect_id));
+        assert!(saved.get("effect_id").is_none());
+        assert!(saved.get("effect_name").is_none());
+        assert!(saved.get("active_preset_id").is_none());
+        assert_eq!(
+            saved["primary"]["controls"],
+            serde_json::json!(HashMap::from([(
+                String::from("speed"),
+                ControlValue::Float(12.5)
+            )]))
+        );
     }
 }

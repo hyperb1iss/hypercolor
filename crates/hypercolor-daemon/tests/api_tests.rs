@@ -27,7 +27,7 @@ use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::display_overlays::{
     DisplayOverlayRuntime, OverlaySlotRuntime, OverlaySlotStatus,
 };
-use hypercolor_daemon::profile_store::Profile;
+use hypercolor_daemon::profile_store::{Profile, ProfilePrimary};
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_transactions::SceneTransaction;
 use hypercolor_daemon::session::{current_global_brightness, set_global_brightness};
@@ -3031,6 +3031,8 @@ async fn scene_deactivate_returns_to_default_scene() {
 async fn profile_crud_lifecycle() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
     let profile_layout = SpatialLayout {
         id: "layout_profile".to_owned(),
         name: "Profile Layout".to_owned(),
@@ -3083,6 +3085,20 @@ async fn profile_crud_lifecycle() {
         .expect("failed to execute request");
     assert_eq!(response.status(), StatusCode::OK);
 
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"effect_id":"{}"}}"#, face.id)))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
     // Create profile
     let response = app
         .clone()
@@ -3102,7 +3118,19 @@ async fn profile_crud_lifecycle() {
     assert_eq!(json["data"]["name"], "Gaming Mode");
     assert_eq!(json["data"]["brightness"], 72);
     assert_eq!(json["data"]["layout_id"], profile_layout.id);
-    assert_eq!(json["data"]["effect_name"], "solid_color");
+    assert_eq!(json["data"]["primary"]["controls"]["speed"]["float"], 12.5);
+    assert_eq!(
+        json["data"]["displays"][0]["device_id"],
+        display_id.to_string()
+    );
+    assert_eq!(
+        json["data"]["displays"][0]["effect_id"],
+        face.id.to_string()
+    );
+    let primary_effect_id = json["data"]["primary"]["effect_id"]
+        .as_str()
+        .expect("primary effect id should be present")
+        .to_owned();
     let profile_id = json["data"]["id"]
         .as_str()
         .expect("id should be a string")
@@ -3123,7 +3151,11 @@ async fn profile_crud_lifecycle() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["name"], "Gaming Mode");
-    assert_eq!(json["data"]["effect_name"], "solid_color");
+    assert_eq!(json["data"]["primary"]["controls"]["speed"]["float"], 12.5);
+    assert_eq!(
+        json["data"]["displays"][0]["effect_id"],
+        face.id.to_string()
+    );
     assert_eq!(json["data"]["layout_id"], profile_layout.id);
 
     // List profiles
@@ -3184,6 +3216,19 @@ async fn profile_crud_lifecycle() {
         .clone()
         .oneshot(
             Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
                 .method("POST")
                 .uri(format!("/api/v1/profiles/{profile_id}/apply"))
                 .body(Body::empty())
@@ -3195,7 +3240,18 @@ async fn profile_crud_lifecycle() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["applied"], true);
-    assert_eq!(json["data"]["profile"]["effect_name"], "solid_color");
+    assert_eq!(
+        json["data"]["profile"]["primary"]["effect_id"],
+        primary_effect_id
+    );
+    assert_eq!(
+        json["data"]["profile"]["primary"]["controls"]["speed"]["float"],
+        12.5
+    );
+    assert_eq!(
+        json["data"]["profile"]["displays"][0]["device_id"],
+        display_id.to_string()
+    );
 
     let response = app
         .clone()
@@ -3211,6 +3267,20 @@ async fn profile_crud_lifecycle() {
     let json = body_json(response).await;
     assert_eq!(json["data"]["name"], "solid_color");
     assert_eq!(json["data"]["control_values"]["speed"]["float"], 12.5);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["effect"]["id"], face.id.to_string());
 
     let response = app
         .clone()
@@ -3349,16 +3419,8 @@ async fn profile_lookup_returns_conflict_for_ambiguous_name() {
     let state = Arc::new(isolated_state());
     {
         let mut profiles = state.profiles.write().await;
-        profiles.insert(Profile {
-            id: "prof_alpha".to_owned(),
-            name: "Evening".to_owned(),
-            ..Profile::default()
-        });
-        profiles.insert(Profile {
-            id: "prof_beta".to_owned(),
-            name: "evening".to_owned(),
-            ..Profile::default()
-        });
+        profiles.insert(Profile::named("prof_alpha", "Evening"));
+        profiles.insert(Profile::named("prof_beta", "evening"));
     }
 
     let app = test_app_with_state(state);
@@ -3388,11 +3450,7 @@ async fn apply_profile_rejects_unimplemented_transition_requests() {
     let state = Arc::new(isolated_state());
     {
         let mut profiles = state.profiles.write().await;
-        profiles.insert(Profile {
-            id: "prof_evening".to_owned(),
-            name: "Evening".to_owned(),
-            ..Profile::default()
-        });
+        profiles.insert(Profile::named("prof_evening", "Evening"));
     }
 
     let app = test_app_with_state(state);
@@ -3458,15 +3516,15 @@ async fn failed_profile_apply_does_not_mutate_layout_or_brightness() {
     set_global_brightness(&state.power_state, 0.8);
     {
         let mut profiles = state.profiles.write().await;
-        profiles.insert(Profile {
-            id: "prof_broken".to_owned(),
-            name: "Broken".to_owned(),
-            brightness: Some(25),
-            effect_id: Some("missing_effect".to_owned()),
-            effect_name: Some("missing_effect".to_owned()),
-            layout_id: Some("layout_profile".to_owned()),
-            ..Profile::default()
+        let mut profile = Profile::named("prof_broken", "Broken");
+        profile.brightness = Some(25);
+        profile.primary = Some(ProfilePrimary {
+            effect_id: EffectId::new(Uuid::now_v7()),
+            controls: HashMap::new(),
+            active_preset_id: None,
         });
+        profile.layout_id = Some("layout_profile".to_owned());
+        profiles.insert(profile);
     }
 
     let app = test_app_with_state(Arc::clone(&state));

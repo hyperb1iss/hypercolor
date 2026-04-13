@@ -100,7 +100,8 @@ pub(super) async fn handle_set_profile_with_state(
             "id": profile.id,
             "name": profile.name,
             "description": profile.description,
-            "effect_id": profile.effect_id,
+            "primary": profile.primary,
+            "displays": profile.displays,
             "layout_id": profile.layout_id
         },
         "applied": true,

@@ -18,7 +18,7 @@ use hypercolor_daemon::mcp::resources::{
 use hypercolor_daemon::mcp::tools::{
     ToolError, build_tool_definitions, execute_tool, execute_tool_with_state,
 };
-use hypercolor_daemon::profile_store::Profile;
+use hypercolor_daemon::profile_store::{Profile, ProfilePrimary};
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_store::SceneStore;
 use hypercolor_types::config::{CURRENT_SCHEMA_VERSION, McpConfig};
@@ -26,12 +26,12 @@ use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
-use hypercolor_types::event::{
-    ChangeTrigger, EffectStopReason, HypercolorEvent, RenderGroupChangeKind, SceneChangeReason,
-};
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
     EffectMetadata, EffectSource,
+};
+use hypercolor_types::event::{
+    ChangeTrigger, EffectStopReason, HypercolorEvent, RenderGroupChangeKind, SceneChangeReason,
 };
 use hypercolor_types::scene::SceneId;
 use reqwest::{Client, Response};
@@ -230,17 +230,16 @@ async fn insert_test_profile(
     if effect.is_some() {
         controls.insert("speed".to_owned(), ControlValue::Float(12.0));
     }
-    profiles.insert(Profile {
-        id: id.to_owned(),
-        name: name.to_owned(),
-        description: Some(format!("{name} profile")),
-        brightness: Some(75),
-        effect_id: effect.map(|metadata| metadata.id.to_string()),
-        effect_name: effect.map(|metadata| metadata.name.clone()),
-        active_preset_id: None,
+    let mut profile = Profile::named(id, name);
+    profile.description = Some(format!("{name} profile"));
+    profile.brightness = Some(75);
+    profile.primary = effect.map(|metadata| ProfilePrimary {
+        effect_id: metadata.id,
         controls,
-        layout_id: None,
+        active_preset_id: None,
     });
+    profile.layout_id = None;
+    profiles.insert(profile);
 }
 
 fn scenes_path(state: &AppState) -> PathBuf {
@@ -790,7 +789,10 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
     let assign_snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
-    assert_eq!(assign_snapshot.active_scene_id, Some(SceneId::DEFAULT.to_string()));
+    assert_eq!(
+        assign_snapshot.active_scene_id,
+        Some(SceneId::DEFAULT.to_string())
+    );
     assert_eq!(assign_snapshot.default_scene_groups.len(), 1);
 
     let mut saw_assign_event = false;
@@ -887,7 +889,10 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
     .expect("set_effect should succeed");
     assert_eq!(apply_result["applied"], true);
     assert_eq!(apply_result["matched_effect"]["id"], effect.id.to_string());
-    assert_eq!(apply_result["applied_controls"]["speed"]["float"], json!(7.5));
+    assert_eq!(
+        apply_result["applied_controls"]["speed"]["float"],
+        json!(7.5)
+    );
     assert_eq!(apply_result["rejected_controls"], json!([]));
 
     let (scene_id, active_group) = {
@@ -913,7 +918,10 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
     let active_snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
-    assert_eq!(active_snapshot.active_effect_id, Some(effect.id.to_string()));
+    assert_eq!(
+        active_snapshot.active_effect_id,
+        Some(effect.id.to_string())
+    );
     assert_eq!(
         active_snapshot.control_values.get("speed"),
         Some(&ControlValue::Float(7.5))
@@ -989,7 +997,10 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
     let mut saw_updated_group = false;
     while let Ok(timestamped) = stop_events.try_recv() {
         match timestamped.event {
-            HypercolorEvent::EffectStopped { effect: stopped, reason } => {
+            HypercolorEvent::EffectStopped {
+                effect: stopped,
+                reason,
+            } => {
                 assert_eq!(stopped.id, effect.id.to_string());
                 assert_eq!(reason, EffectStopReason::Stopped);
                 saw_stopped_event = true;
