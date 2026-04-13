@@ -170,7 +170,11 @@ async fn refresh_for_event(
             *latest_daemon_state = Some(refresh_status(client, action_tx).await?);
             refresh_effects(client, action_tx).await;
         }
-        name if name.starts_with("profile_") || name == "session_changed" => {
+        name if name.starts_with("profile_")
+            || name.starts_with("scene_")
+            || name == "active_scene_changed"
+            || name == "session_changed" =>
+        {
             *latest_daemon_state = Some(refresh_status(client, action_tx).await?);
         }
         _ => {}
