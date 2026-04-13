@@ -1,7 +1,7 @@
 //! `hyper scenes` -- scene management and automation.
 
 use anyhow::Result;
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 
 use crate::client::DaemonClient;
 use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
@@ -28,35 +28,37 @@ pub enum SceneCommand {
     Info(SceneInfoArgs),
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum SceneMutationModeArg {
+    Live,
+    Snapshot,
+}
+
+impl SceneMutationModeArg {
+    const fn as_api_value(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Snapshot => "snapshot",
+        }
+    }
+}
+
 /// Arguments for `scenes create`.
 #[derive(Debug, Args)]
 pub struct SceneCreateArgs {
     /// Scene name.
     pub name: String,
 
-    /// Profile to activate when triggered.
-    #[arg(long, required = true)]
-    pub profile: String,
-
-    /// Trigger type: schedule, sunset, sunrise, device, audio.
-    #[arg(long, required = true)]
-    pub trigger: String,
-
-    /// Cron expression (for schedule trigger).
     #[arg(long)]
-    pub cron: Option<String>,
-
-    /// Offset in minutes from solar event (for sunset/sunrise).
-    #[arg(long, default_value = "0")]
-    pub offset: i32,
-
-    /// Transition duration in milliseconds.
-    #[arg(long, default_value = "1000")]
-    pub transition: u32,
+    pub description: Option<String>,
 
     /// Start enabled.
     #[arg(long, default_value = "true")]
     pub enabled: bool,
+
+    /// Whether live runtime actions can rewrite this scene.
+    #[arg(long, value_enum, default_value_t = SceneMutationModeArg::Live)]
+    pub mutation_mode: SceneMutationModeArg,
 }
 
 /// Arguments for `scenes activate`.
@@ -119,7 +121,7 @@ async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
         }
         OutputFormat::Table => {
             if let Some(scenes) = response.get("items").and_then(serde_json::Value::as_array) {
-                let headers = ["ID", "Scene", "Priority", "Enabled"];
+                let headers = ["ID", "Scene", "Mode", "Priority", "Enabled"];
                 let rows: Vec<Vec<String>> = scenes
                     .iter()
                     .map(|s| {
@@ -130,6 +132,7 @@ async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
                         vec![
                             ctx.painter.id(&extract_str(s, "id")),
                             ctx.painter.name(&extract_str(s, "name")),
+                            extract_str(s, "mutation_mode"),
                             ctx.painter.number(
                                 &s.get("priority")
                                     .and_then(serde_json::Value::as_u64)
@@ -160,12 +163,9 @@ async fn execute_create(
 ) -> Result<()> {
     let body = serde_json::json!({
         "name": args.name,
-        "profile": args.profile,
-        "trigger": args.trigger,
-        "cron": args.cron,
-        "offset_minutes": args.offset,
-        "transition_ms": args.transition,
+        "description": args.description,
         "enabled": args.enabled,
+        "mutation_mode": args.mutation_mode.as_api_value(),
     });
 
     let response = client.post("/scenes", &body).await?;
@@ -247,6 +247,10 @@ async fn execute_info(
                 .get("priority")
                 .and_then(serde_json::Value::as_u64)
                 .map_or_else(|| "?".to_string(), |v| v.to_string());
+            ctx.info(&format!(
+                "Mutation Mode  {}",
+                extract_str(&response, "mutation_mode")
+            ));
             ctx.info(&format!("Priority       {priority}"));
             ctx.info(&format!(
                 "Enabled        {}",

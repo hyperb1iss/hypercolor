@@ -148,8 +148,19 @@ fn build_cmd() -> clap::Command {
                     Command::new("create")
                         .about("Create scene")
                         .arg(Arg::new("name").required(true))
-                        .arg(Arg::new("profile").long("profile").required(true))
-                        .arg(Arg::new("trigger").long("trigger").required(true)),
+                        .arg(Arg::new("description").long("description"))
+                        .arg(
+                            Arg::new("mutation_mode")
+                                .long("mutation-mode")
+                                .default_value("live")
+                                .value_parser(["live", "snapshot"]),
+                        )
+                        .arg(
+                            Arg::new("enabled")
+                                .long("enabled")
+                                .default_value("true")
+                                .value_parser(["true", "false"]),
+                        ),
                 )
                 .subcommand(
                     Command::new("activate")
@@ -596,10 +607,10 @@ fn parse_scenes_create() {
             "scenes",
             "create",
             "sunset-warmth",
-            "--profile",
-            "warm-ambient",
-            "--trigger",
-            "sunset",
+            "--description",
+            "Warm scene",
+            "--mutation-mode",
+            "snapshot",
         ])
         .expect("scenes create should parse");
     let (_, sub) = matches.subcommand().expect("should have subcommand");
@@ -609,8 +620,14 @@ fn parse_scenes_create() {
         Some("sunset-warmth")
     );
     assert_eq!(
-        create.get_one::<String>("profile").map(String::as_str),
-        Some("warm-ambient")
+        create.get_one::<String>("description").map(String::as_str),
+        Some("Warm scene")
+    );
+    assert_eq!(
+        create
+            .get_one::<String>("mutation_mode")
+            .map(String::as_str),
+        Some("snapshot")
     );
 }
 
