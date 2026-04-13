@@ -3,6 +3,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
+use arc_swap::ArcSwap;
 use tokio::sync::watch;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -76,12 +77,28 @@ pub struct PreviewDemandSummary {
     pub any_jpeg: bool,
 }
 
+#[derive(Debug)]
+struct PreviewDemandSummaryState {
+    snapshot: ArcSwap<PreviewDemandSummary>,
+}
+
+impl Default for PreviewDemandSummaryState {
+    fn default() -> Self {
+        Self {
+            snapshot: ArcSwap::from_pointee(PreviewDemandSummary::default()),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct PreviewRuntimeDemandState {
     next_subscription_id: AtomicU64,
     canvas: Mutex<Vec<(u64, PreviewStreamDemand)>>,
     screen_canvas: Mutex<Vec<(u64, PreviewStreamDemand)>>,
     web_viewport_canvas: Mutex<Vec<(u64, PreviewStreamDemand)>>,
+    canvas_summary: PreviewDemandSummaryState,
+    screen_canvas_summary: PreviewDemandSummaryState,
+    web_viewport_canvas_summary: PreviewDemandSummaryState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -349,74 +366,97 @@ impl Default for PreviewRuntime {
 }
 
 impl PreviewRuntimeDemandState {
+    fn entries(&self, kind: PreviewStreamKind) -> &Mutex<Vec<(u64, PreviewStreamDemand)>> {
+        match kind {
+            PreviewStreamKind::Canvas => &self.canvas,
+            PreviewStreamKind::ScreenCanvas => &self.screen_canvas,
+            PreviewStreamKind::WebViewportCanvas => &self.web_viewport_canvas,
+        }
+    }
+
+    fn summary_state(&self, kind: PreviewStreamKind) -> &PreviewDemandSummaryState {
+        match kind {
+            PreviewStreamKind::Canvas => &self.canvas_summary,
+            PreviewStreamKind::ScreenCanvas => &self.screen_canvas_summary,
+            PreviewStreamKind::WebViewportCanvas => &self.web_viewport_canvas_summary,
+        }
+    }
+
     fn register(
         &self,
         kind: PreviewStreamKind,
         id: u64,
         demand: PreviewStreamDemand,
     ) -> PreviewStreamDemand {
-        let entries = match kind {
-            PreviewStreamKind::Canvas => &self.canvas,
-            PreviewStreamKind::ScreenCanvas => &self.screen_canvas,
-            PreviewStreamKind::WebViewportCanvas => &self.web_viewport_canvas,
-        };
+        let entries = self.entries(kind);
         let mut entries = entries
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         entries.push((id, demand));
+        store_preview_demand_summary(
+            self.summary_state(kind),
+            summarize_preview_demands(entries.as_slice()),
+        );
         demand
     }
 
     fn update(&self, kind: PreviewStreamKind, id: u64, demand: PreviewStreamDemand) {
-        let entries = match kind {
-            PreviewStreamKind::Canvas => &self.canvas,
-            PreviewStreamKind::ScreenCanvas => &self.screen_canvas,
-            PreviewStreamKind::WebViewportCanvas => &self.web_viewport_canvas,
-        };
+        let entries = self.entries(kind);
         let mut entries = entries
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some((_, current)) = entries.iter_mut().find(|(entry_id, _)| *entry_id == id) {
             *current = demand;
+            store_preview_demand_summary(
+                self.summary_state(kind),
+                summarize_preview_demands(entries.as_slice()),
+            );
         }
     }
 
     fn unregister(&self, kind: PreviewStreamKind, id: u64) {
-        let entries = match kind {
-            PreviewStreamKind::Canvas => &self.canvas,
-            PreviewStreamKind::ScreenCanvas => &self.screen_canvas,
-            PreviewStreamKind::WebViewportCanvas => &self.web_viewport_canvas,
-        };
+        let entries = self.entries(kind);
         let mut entries = entries
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         entries.retain(|(entry_id, _)| *entry_id != id);
+        store_preview_demand_summary(
+            self.summary_state(kind),
+            summarize_preview_demands(entries.as_slice()),
+        );
     }
 
     fn summary(&self, kind: PreviewStreamKind) -> PreviewDemandSummary {
-        let entries = match kind {
-            PreviewStreamKind::Canvas => &self.canvas,
-            PreviewStreamKind::ScreenCanvas => &self.screen_canvas,
-            PreviewStreamKind::WebViewportCanvas => &self.web_viewport_canvas,
-        };
-        let entries = entries
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut summary = PreviewDemandSummary {
-            subscribers: u32::try_from(entries.len()).unwrap_or(u32::MAX),
-            ..PreviewDemandSummary::default()
-        };
-        for (_, demand) in entries.iter() {
-            summary.max_fps = summary.max_fps.max(demand.fps);
-            summary.max_width = summary.max_width.max(demand.width);
-            summary.max_height = summary.max_height.max(demand.height);
-            summary.any_full_resolution |= demand.width == 0 && demand.height == 0;
-            summary.any_rgb |= demand.format == PreviewPixelFormat::Rgb;
-            summary.any_rgba |= demand.format == PreviewPixelFormat::Rgba;
-            summary.any_jpeg |= demand.format == PreviewPixelFormat::Jpeg;
-        }
-        summary
+        load_preview_demand_summary(self.summary_state(kind))
     }
+}
+
+fn summarize_preview_demands(entries: &[(u64, PreviewStreamDemand)]) -> PreviewDemandSummary {
+    let mut summary = PreviewDemandSummary {
+        subscribers: u32::try_from(entries.len()).unwrap_or(u32::MAX),
+        ..PreviewDemandSummary::default()
+    };
+    for (_, demand) in entries {
+        summary.max_fps = summary.max_fps.max(demand.fps);
+        summary.max_width = summary.max_width.max(demand.width);
+        summary.max_height = summary.max_height.max(demand.height);
+        summary.any_full_resolution |= demand.width == 0 && demand.height == 0;
+        summary.any_rgb |= demand.format == PreviewPixelFormat::Rgb;
+        summary.any_rgba |= demand.format == PreviewPixelFormat::Rgba;
+        summary.any_jpeg |= demand.format == PreviewPixelFormat::Jpeg;
+    }
+    summary
+}
+
+fn store_preview_demand_summary(
+    state: &PreviewDemandSummaryState,
+    summary: PreviewDemandSummary,
+) {
+    state.snapshot.store(Arc::new(summary));
+}
+
+fn load_preview_demand_summary(state: &PreviewDemandSummaryState) -> PreviewDemandSummary {
+    **state.snapshot.load()
 }
 
 impl PreviewDemandRegistration {
