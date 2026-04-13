@@ -16,7 +16,7 @@ use super::{
 use crate::performance::CompositorBackendKind;
 use crate::render_thread::producer_queue::ProducerFrame;
 use crate::render_thread::sparkleflinger::gpu_sampling::{
-    GpuSamplingPlan, GpuSamplingPlanKey, GpuSpatialSampler,
+    GpuSamplingPlan, GpuSamplingPlanKey, GpuSpatialSampler, PendingGpuSampleReadback,
 };
 
 const COMPOSITOR_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -222,6 +222,17 @@ struct CachedSampleResultKey {
 struct CachedSampleResult {
     key: CachedSampleResultKey,
     zones: Vec<ZoneColors>,
+}
+
+pub(crate) enum GpuZoneSamplingDispatch {
+    Unsupported,
+    Ready,
+    Pending(PendingGpuZoneSampling),
+}
+
+pub(crate) struct PendingGpuZoneSampling {
+    sampling_plan: Option<GpuSamplingPlanKey>,
+    pending_readback: PendingGpuSampleReadback,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -541,6 +552,21 @@ impl GpuSparkleFlinger {
         prepared_zones: &[PreparedZonePlan],
         zones: &mut Vec<ZoneColors>,
     ) -> Result<bool> {
+        match self.begin_sample_zone_plan_into(prepared_zones, zones)? {
+            GpuZoneSamplingDispatch::Unsupported => Ok(false),
+            GpuZoneSamplingDispatch::Ready => Ok(true),
+            GpuZoneSamplingDispatch::Pending(pending) => {
+                self.finish_pending_zone_sampling(pending, zones)?;
+                Ok(true)
+            }
+        }
+    }
+
+    pub(crate) fn begin_sample_zone_plan_into(
+        &mut self,
+        prepared_zones: &[PreparedZonePlan],
+        zones: &mut Vec<ZoneColors>,
+    ) -> Result<GpuZoneSamplingDispatch> {
         let pending_output_submission = self.pending_output_submission.take();
         let sampling_plan = GpuSamplingPlan::key(prepared_zones);
         if let Some(sampling_plan) = sampling_plan
@@ -552,14 +578,14 @@ impl GpuSparkleFlinger {
                 })
         {
             zones.clone_from(&cached.zones);
-            return Ok(true);
+            return Ok(GpuZoneSamplingDispatch::Ready);
         }
         let Some(output) = self.current_output else {
-            return Ok(false);
+            return Ok(GpuZoneSamplingDispatch::Unsupported);
         };
         let (source_view, output_width, output_height) = {
             let Some(surfaces) = self.surfaces.as_ref() else {
-                return Ok(false);
+                return Ok(GpuZoneSamplingDispatch::Unsupported);
             };
             let source_view = match output {
                 GpuCompositorOutputSurface::Front => surfaces.front.view.clone(),
@@ -590,12 +616,12 @@ impl GpuSparkleFlinger {
             }
         }
         if let Some(pending_readback) = sampling_dispatch.pending_readback {
-            self.spatial_sampler
-                .finish_pending_readback(&self.device, pending_readback, zones)?;
+            return Ok(GpuZoneSamplingDispatch::Pending(PendingGpuZoneSampling {
+                sampling_plan,
+                pending_readback,
+            }));
         }
-        if sampling_dispatch.sampled
-            && let Some(sampling_plan) = sampling_plan
-        {
+        if sampling_dispatch.sampled && let Some(sampling_plan) = sampling_plan {
             let mut cached_zones = self
                 .cached_sample_result
                 .take()
@@ -609,7 +635,35 @@ impl GpuSparkleFlinger {
                 zones: cached_zones,
             });
         }
-        Ok(sampling_dispatch.sampled)
+        if sampling_dispatch.sampled {
+            Ok(GpuZoneSamplingDispatch::Ready)
+        } else {
+            Ok(GpuZoneSamplingDispatch::Unsupported)
+        }
+    }
+
+    pub(crate) fn finish_pending_zone_sampling(
+        &mut self,
+        pending: PendingGpuZoneSampling,
+        zones: &mut Vec<ZoneColors>,
+    ) -> Result<()> {
+        self.spatial_sampler
+            .finish_pending_readback(&self.device, pending.pending_readback, zones)?;
+        if let Some(sampling_plan) = pending.sampling_plan {
+            let mut cached_zones = self
+                .cached_sample_result
+                .take()
+                .map_or_else(Vec::new, |cached| cached.zones);
+            cached_zones.clone_from(zones);
+            self.cached_sample_result = Some(CachedSampleResult {
+                key: CachedSampleResultKey {
+                    output_generation: self.output_generation,
+                    sampling_plan,
+                },
+                zones: cached_zones,
+            });
+        }
+        Ok(())
     }
 
     pub(crate) fn resolve_preview_surface(&mut self) -> Result<Option<PublishedSurface>> {
@@ -2183,7 +2237,9 @@ mod tests {
         StripDirection,
     };
 
-    use super::{GpuSparkleFlinger, PendingPreviewMap, PendingPreviewReadback};
+    use super::{
+        GpuSparkleFlinger, GpuZoneSamplingDispatch, PendingPreviewMap, PendingPreviewReadback,
+    };
     use crate::render_thread::producer_queue::ProducerFrame;
     use crate::render_thread::sparkleflinger::{
         CompositionLayer, CompositionPlan, PreviewSurfaceRequest, cpu::CpuSparkleFlinger,
@@ -4055,6 +4111,60 @@ mod tests {
         assert_eq!(
             small_sample,
             small_engine.sample(
+                expected
+                    .sampling_canvas
+                    .as_ref()
+                    .expect("CPU compose should materialize a canvas"),
+            )
+        );
+    }
+
+    #[test]
+    fn gpu_sampler_skips_blocking_wait_when_readback_is_already_mapped() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
+            ],
+        );
+        let expected =
+            CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+
+        compositor
+            .compose(&plan, false, None)
+            .expect("GPU composition should succeed before pending sample readback testing");
+
+        let mut sampled = Vec::new();
+        let pending = match compositor
+            .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
+            .expect("GPU sample dispatch should succeed")
+        {
+            GpuZoneSamplingDispatch::Pending(pending) => pending,
+            _ => panic!("GPU sample dispatch should defer readback completion"),
+        };
+        compositor
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(pending.pending_readback.submission_index()),
+                timeout: None,
+            })
+            .expect("GPU sample submission should become ready");
+
+        compositor
+            .finish_pending_zone_sampling(pending, &mut sampled)
+            .expect("GPU pending sample finalize should succeed");
+
+        assert_eq!(compositor.spatial_sampler.sample_readback_wait_count(), 0);
+        assert_eq!(
+            sampled,
+            engine.sample(
                 expected
                     .sampling_canvas
                     .as_ref()

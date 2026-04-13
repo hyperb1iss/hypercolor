@@ -1,4 +1,4 @@
-use std::sync::mpsc;
+use std::sync::mpsc::{self, TryRecvError};
 
 use anyhow::{Context, Result};
 use hypercolor_core::spatial::{PreparedZonePlan, PreparedZoneSamples};
@@ -98,6 +98,13 @@ pub(super) struct PendingGpuSampleReadback {
     receiver: mpsc::Receiver<std::result::Result<(), wgpu::BufferAsyncError>>,
 }
 
+impl PendingGpuSampleReadback {
+    #[cfg(test)]
+    pub(super) fn submission_index(&self) -> wgpu::SubmissionIndex {
+        self.submission_index.clone()
+    }
+}
+
 impl GpuSamplingPlan {
     pub(super) fn key(prepared_zones: &[PreparedZonePlan]) -> Option<GpuSamplingPlanKey> {
         Self::supports_prepared_zones(prepared_zones).then_some(GpuSamplingPlanKey {
@@ -194,6 +201,8 @@ pub(super) struct GpuSpatialSampler {
     sample_param_write_count: usize,
     #[cfg(test)]
     last_readback_copy_bytes: u64,
+    #[cfg(test)]
+    sample_readback_wait_count: usize,
 }
 
 impl GpuSpatialSampler {
@@ -289,6 +298,8 @@ impl GpuSpatialSampler {
             sample_param_write_count: 0,
             #[cfg(test)]
             last_readback_copy_bytes: 0,
+            #[cfg(test)]
+            sample_readback_wait_count: 0,
         }
     }
 
@@ -408,19 +419,34 @@ impl GpuSpatialSampler {
     }
 
     pub(super) fn finish_pending_readback(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         pending_readback: PendingGpuSampleReadback,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<()> {
-        finish_zone_color_readback(
-            device,
-            &pending_readback,
-            self.cached_plan
-                .as_ref()
-                .expect("GPU sampling plan should remain cached after sampling"),
-            zones,
-        )
+        let cached_plan = self
+            .cached_plan
+            .as_ref()
+            .expect("GPU sampling plan should remain cached after sampling");
+        let map_ready = match pending_readback.receiver.try_recv() {
+            Ok(Ok(())) => true,
+            Ok(Err(error)) => return Err(error).context("GPU sample buffer mapping failed"),
+            Err(TryRecvError::Disconnected) => {
+                anyhow::bail!("GPU sample channel closed before map completion")
+            }
+            Err(TryRecvError::Empty) => false,
+        };
+
+        if !map_ready {
+            #[cfg(test)]
+            {
+                self.sample_readback_wait_count =
+                    self.sample_readback_wait_count.saturating_add(1);
+            }
+            wait_for_zone_color_readback(device, &pending_readback)?;
+        }
+
+        finish_zone_color_readback(&pending_readback, cached_plan, zones)
     }
 
     fn ensure_capacity(&mut self, device: &wgpu::Device, sample_count: usize) {
@@ -557,6 +583,11 @@ impl GpuSpatialSampler {
     pub(super) fn last_readback_copy_bytes(&self) -> u64 {
         self.last_readback_copy_bytes
     }
+
+    #[cfg(test)]
+    pub(super) fn sample_readback_wait_count(&self) -> usize {
+        self.sample_readback_wait_count
+    }
 }
 
 fn encode_points(plan: &GpuSamplingPlan) -> Vec<u8> {
@@ -615,12 +646,10 @@ fn begin_zone_color_readback(
     }
 }
 
-fn finish_zone_color_readback(
+fn wait_for_zone_color_readback(
     device: &wgpu::Device,
     pending_readback: &PendingGpuSampleReadback,
-    cached_plan: &CachedGpuSamplingPlan,
-    zones: &mut Vec<ZoneColors>,
-) -> Result<()> {
+ ) -> Result<()> {
     device
         .poll(wgpu::PollType::Wait {
             submission_index: Some(pending_readback.submission_index.clone()),
@@ -632,7 +661,14 @@ fn finish_zone_color_readback(
         .recv()
         .context("GPU sample channel closed before map completion")?
         .context("GPU sample buffer mapping failed")?;
+    Ok(())
+}
 
+fn finish_zone_color_readback(
+    pending_readback: &PendingGpuSampleReadback,
+    cached_plan: &CachedGpuSamplingPlan,
+    zones: &mut Vec<ZoneColors>,
+) -> Result<()> {
     let slice = pending_readback.buffer.slice(..pending_readback.used_bytes);
     let mapped = slice.get_mapped_range();
     rebuild_zone_colors_from_mapped_bytes(&cached_plan.plan, &mapped, zones);

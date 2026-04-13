@@ -71,14 +71,28 @@ pub struct EffectSummary {
 
 #[derive(Debug, Serialize)]
 pub struct ActiveEffectResponse {
-    pub id: String,
-    pub name: String,
+    pub id: Option<String>,
+    pub name: Option<String>,
     pub state: String,
     pub controls: Vec<ControlDefinition>,
     pub control_values: HashMap<String, ControlValue>,
     pub active_preset_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub render_group_id: Option<String>,
+}
+
+impl ActiveEffectResponse {
+    fn idle() -> Self {
+        Self {
+            id: None,
+            name: None,
+            state: "idle".to_owned(),
+            controls: Vec::new(),
+            control_values: HashMap::new(),
+            active_preset_id: None,
+            render_group_id: None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -447,12 +461,12 @@ pub async fn apply_effect(
 /// `GET /api/v1/effects/active` — Get the currently active effect.
 pub async fn get_active_effect(State(state): State<Arc<AppState>>) -> Response {
     let Some((group, meta)) = active_primary_effect(state.as_ref()).await else {
-        return ApiError::not_found("No effect is currently active");
+        return ApiResponse::ok(ActiveEffectResponse::idle());
     };
 
     ApiResponse::ok(ActiveEffectResponse {
-        id: meta.id.to_string(),
-        name: meta.name.clone(),
+        id: Some(meta.id.to_string()),
+        name: Some(meta.name.clone()),
         state: "running".to_owned(),
         controls: controls_with_group_bindings(&meta, &group),
         control_values: resolved_control_values(&meta, &group),

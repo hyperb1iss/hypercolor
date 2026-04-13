@@ -109,13 +109,7 @@ pub async fn get_active_scene(State(state): State<Arc<AppState>>) -> Response {
         return ApiError::not_found("No active scene".to_owned());
     };
 
-    ApiResponse::ok(SceneSummary {
-        id: scene.id.to_string(),
-        name: scene.name.clone(),
-        description: scene.description.clone(),
-        enabled: scene.enabled,
-        priority: scene.priority.0,
-    })
+    ApiResponse::ok(scene.clone())
 }
 
 /// `POST /api/v1/scenes` — Create a new scene.

@@ -232,8 +232,19 @@ pub async fn get_display_face(
         Err(response) => return response,
     };
 
+    let has_face_assignment = {
+        let scene_manager = state.scene_manager.read().await;
+        scene_manager
+            .active_scene()
+            .and_then(|scene| scene.display_group_for(device_id))
+            .is_some()
+    };
+    if !has_face_assignment {
+        return ApiResponse::ok(None::<DisplayFaceResponse>);
+    }
+
     match current_display_face_assignment(&state, device_id).await {
-        Ok(response) => ApiResponse::ok(response),
+        Ok(response) => ApiResponse::ok(Some(response)),
         Err(response) => response,
     }
 }

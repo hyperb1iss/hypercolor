@@ -47,6 +47,21 @@ pub struct ActiveEffectResponse {
     pub render_group_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+struct WireActiveEffectResponse {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub state: String,
+    #[serde(default)]
+    pub controls: Vec<ControlDefinition>,
+    #[serde(default)]
+    pub control_values: HashMap<String, ControlValue>,
+    #[serde(default)]
+    pub active_preset_id: Option<String>,
+    #[serde(default)]
+    pub render_group_id: Option<String>,
+}
+
 /// Detailed effect payload from `GET /api/v1/effects/:id`.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct EffectDetailResponse {
@@ -94,9 +109,23 @@ pub async fn fetch_effects_by_category(category: &str) -> Result<Vec<EffectSumma
 
 /// Fetch the currently active effect, if any.
 pub async fn fetch_active_effect() -> Result<Option<ActiveEffectResponse>, String> {
-    client::fetch_json_optional("/api/v1/effects/active")
+    let active = client::fetch_json::<Option<WireActiveEffectResponse>>("/api/v1/effects/active")
         .await
-        .map_err(Into::into)
+        .map_err(|error| error.to_string())?;
+    Ok(active.and_then(|effect| {
+        if effect.state == "idle" {
+            return None;
+        }
+        Some(ActiveEffectResponse {
+            id: effect.id?,
+            name: effect.name?,
+            state: effect.state,
+            controls: effect.controls,
+            control_values: effect.control_values,
+            active_preset_id: effect.active_preset_id,
+            render_group_id: effect.render_group_id,
+        })
+    }))
 }
 
 /// Fetch detailed metadata for one effect.

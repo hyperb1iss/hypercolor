@@ -13,6 +13,10 @@ use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::event::ZoneColors;
 
 use crate::performance::CompositorBackendKind;
+#[cfg(feature = "wgpu")]
+use crate::render_thread::sparkleflinger::gpu::{
+    GpuZoneSamplingDispatch, PendingGpuZoneSampling,
+};
 
 use super::producer_queue::ProducerFrame;
 
@@ -185,6 +189,18 @@ pub struct SparkleFlinger {
     backend: SparkleFlingerBackend,
 }
 
+#[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
+pub(crate) enum ZoneSamplingDispatch {
+    Unsupported,
+    Ready,
+    Pending(PendingZoneSampling),
+}
+
+pub(crate) enum PendingZoneSampling {
+    #[cfg(feature = "wgpu")]
+    Gpu(PendingGpuZoneSampling),
+}
+
 impl SparkleFlinger {
     pub fn cpu() -> Self {
         Self {
@@ -261,6 +277,51 @@ impl SparkleFlinger {
             SparkleFlingerBackend::Gpu { gpu, .. } => {
                 gpu.sample_zone_plan_into(_prepared_zones, _zones)
             }
+        }
+    }
+
+    pub(crate) fn begin_sample_zone_plan_into(
+        &mut self,
+        prepared_zones: &[PreparedZonePlan],
+        zones: &mut Vec<ZoneColors>,
+    ) -> Result<ZoneSamplingDispatch> {
+        match &mut self.backend {
+            SparkleFlingerBackend::Cpu(_) => {
+                let _ = prepared_zones;
+                let _ = zones;
+                Ok(ZoneSamplingDispatch::Unsupported)
+            }
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                Ok(match gpu.begin_sample_zone_plan_into(prepared_zones, zones)? {
+                    GpuZoneSamplingDispatch::Unsupported => ZoneSamplingDispatch::Unsupported,
+                    GpuZoneSamplingDispatch::Ready => ZoneSamplingDispatch::Ready,
+                    GpuZoneSamplingDispatch::Pending(pending) => {
+                        ZoneSamplingDispatch::Pending(PendingZoneSampling::Gpu(pending))
+                    }
+                })
+            }
+        }
+    }
+
+    pub(crate) fn finish_pending_zone_sampling(
+        &mut self,
+        pending: PendingZoneSampling,
+        zones: &mut Vec<ZoneColors>,
+    ) -> Result<()> {
+        #[cfg(not(feature = "wgpu"))]
+        {
+            let _ = pending;
+            let _ = zones;
+            Ok(())
+        }
+        #[cfg(feature = "wgpu")]
+        match (&mut self.backend, pending) {
+            (SparkleFlingerBackend::Gpu { gpu, .. }, PendingZoneSampling::Gpu(pending)) => {
+                gpu.finish_pending_zone_sampling(pending, zones)
+            }
+            #[allow(unreachable_patterns)]
+            _ => Ok(()),
         }
     }
 

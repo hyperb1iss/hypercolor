@@ -1,3 +1,5 @@
+use std::future::{Future, poll_fn};
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use tracing::{info, trace, warn};
@@ -13,7 +15,7 @@ use super::frame_state::{
 };
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
 use super::pipeline_runtime::PipelineRuntime;
-use super::sparkleflinger::ComposedFrameSet;
+use super::sparkleflinger::{ComposedFrameSet, ZoneSamplingDispatch};
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
 use crate::performance::{FrameTimeline, LatestFrameMetrics};
@@ -159,24 +161,49 @@ pub(crate) async fn execute_frame(
     })
     .await;
     let render_us = render_stage.total_us;
+    let manager_lock = state.backend_manager.lock();
+    tokio::pin!(manager_lock);
+    let primed_backend_manager_lock = poll_fn(|cx| match manager_lock.as_mut().poll(cx) {
+        Poll::Ready(manager) => {
+            drop(manager);
+            Poll::Ready(false)
+        }
+        Poll::Pending => Poll::Ready(true),
+    })
+    .await;
 
     let mut gpu_zone_sampling = false;
+    let mut pending_gpu_zone_sampling = None;
     let layout = if let Some(sampled_layout) = render_stage.sampled_layout.take() {
         if let Some(sampled_zones) = render_stage.sampled_zones.take() {
             render.recycled_frame.zones = sampled_zones;
         }
         sampled_layout
     } else {
-        let sample_start = Instant::now();
+        render_stage.sampled_us = 0;
         gpu_zone_sampling = if matches!(
             render_stage.composed_frame.backend,
             crate::performance::CompositorBackendKind::Gpu
         ) {
-            match render.sparkleflinger.sample_zone_plan_into(
+            let gpu_sample_start = Instant::now();
+            match render.sparkleflinger.begin_sample_zone_plan_into(
                 scene_snapshot.spatial_engine.sampling_plan().as_ref(),
                 &mut render.recycled_frame.zones,
             ) {
-                Ok(sampled) => sampled,
+                Ok(ZoneSamplingDispatch::Unsupported) => false,
+                Ok(ZoneSamplingDispatch::Ready) => {
+                    render_stage.sampled_us = render_stage
+                        .sampled_us
+                        .saturating_add(micros_between(gpu_sample_start, Instant::now()));
+                    true
+                }
+                Ok(ZoneSamplingDispatch::Pending(pending)) => {
+                    render_stage.sampled_us = render_stage
+                        .sampled_us
+                        .saturating_add(micros_between(gpu_sample_start, Instant::now()));
+                    pending_gpu_zone_sampling = Some(pending);
+                    true
+                }
                 Err(error) => {
                     warn!(%error, "GPU spatial sampling failed; falling back to CPU");
                     false
@@ -185,31 +212,8 @@ pub(crate) async fn execute_frame(
         } else {
             false
         };
-        if !gpu_zone_sampling {
-            scene_snapshot.spatial_engine.sample_into(
-                render_stage
-                    .composed_frame
-                    .sampling_canvas
-                    .as_ref()
-                    .expect("CPU spatial sampling requires a materialized canvas"),
-                &mut render.recycled_frame.zones,
-            );
-        }
-        let sample_done_at = Instant::now();
-        render_stage.sampled_us = micros_between(sample_start, sample_done_at);
         scene_snapshot.spatial_engine.layout()
     };
-    let retained_frame = render_stage
-        .reuse_published_frame
-        .then(|| state.event_bus.frame_sender().borrow());
-    let zone_colors = retained_frame
-        .as_ref()
-        .map_or(render.recycled_frame.zones.as_slice(), |frame| {
-            frame.zones.as_slice()
-        });
-    let sample_us = render_stage.sampled_us;
-    let sample_done_at = Instant::now();
-    let sample_done_us = micros_between(frame_start, sample_done_at);
 
     if should_advance_gpu_preview(&render_stage)
         && let Err(error) = render.sparkleflinger.submit_pending_preview_work()
@@ -229,10 +233,50 @@ pub(crate) async fn execute_frame(
             }
         }
     }
-
+    if let Some(pending) = pending_gpu_zone_sampling.take() {
+        let gpu_sample_finish = Instant::now();
+        if let Err(error) = render
+            .sparkleflinger
+            .finish_pending_zone_sampling(pending, &mut render.recycled_frame.zones)
+        {
+            warn!(%error, "GPU spatial sampling finalize failed; falling back to CPU");
+            gpu_zone_sampling = false;
+        } else {
+            render_stage.sampled_us = render_stage
+                .sampled_us
+                .saturating_add(micros_between(gpu_sample_finish, Instant::now()));
+        }
+    }
+    if !gpu_zone_sampling && render_stage.sampled_layout.is_none() {
+        let cpu_sample_start = Instant::now();
+        scene_snapshot.spatial_engine.sample_into(
+            render_stage
+                .composed_frame
+                .sampling_canvas
+                .as_ref()
+                .expect("CPU spatial sampling requires a materialized canvas"),
+            &mut render.recycled_frame.zones,
+        );
+        render_stage.sampled_us = micros_between(cpu_sample_start, Instant::now());
+    }
+    let retained_frame = render_stage
+        .reuse_published_frame
+        .then(|| state.event_bus.frame_sender().borrow());
+    let zone_colors = retained_frame
+        .as_ref()
+        .map_or(render.recycled_frame.zones.as_slice(), |frame| {
+            frame.zones.as_slice()
+        });
+    let sample_us = render_stage.sampled_us;
+    let sample_done_at = Instant::now();
+    let sample_done_us = micros_between(frame_start, sample_done_at);
     let push_start = Instant::now();
     let (write_stats, async_failures) = {
-        let mut manager = state.backend_manager.lock().await;
+        let mut manager = if primed_backend_manager_lock {
+            manager_lock.await
+        } else {
+            state.backend_manager.lock().await
+        };
         let write_stats = manager
             .write_frame_with_brightness(
                 zone_colors,

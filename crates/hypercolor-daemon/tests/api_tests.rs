@@ -1662,7 +1662,7 @@ async fn get_effect_returns_controls() {
 }
 
 #[tokio::test]
-async fn get_active_effect_returns_not_found_when_none() {
+async fn get_active_effect_returns_idle_payload_when_none() {
     let app = test_app();
 
     let response = app
@@ -1675,7 +1675,12 @@ async fn get_active_effect_returns_not_found_when_none() {
         .await
         .expect("failed to execute request");
 
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["state"], "idle");
+    assert!(json["data"]["id"].is_null());
+    assert!(json["data"]["name"].is_null());
+    assert!(json["data"]["render_group_id"].is_null());
 }
 
 #[tokio::test]
@@ -2916,6 +2921,13 @@ async fn scene_crud_lifecycle() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["id"], scene_id);
+    assert_eq!(json["data"]["kind"], "named");
+    assert!(
+        json["data"]["groups"]
+            .as_array()
+            .expect("groups should serialize as an array")
+            .is_empty()
+    );
 
     // Delete scene
     let app = test_app_with_state(Arc::clone(&state));
@@ -3020,6 +3032,13 @@ async fn scene_deactivate_returns_to_default_scene() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["name"], "Default");
+    assert_eq!(json["data"]["kind"], "ephemeral");
+    assert!(
+        json["data"]["groups"]
+            .as_array()
+            .expect("groups should serialize as an array")
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -4751,7 +4770,9 @@ async fn display_face_endpoints_assign_get_and_delete_face() {
         )
         .await
         .expect("failed to execute request");
-    assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(missing_response.status(), StatusCode::OK);
+    let missing_json = body_json(missing_response).await;
+    assert!(missing_json["data"].is_null());
 
     let manager = state.scene_manager.read().await;
     let active_scene = manager.active_scene().expect("scene should remain active");

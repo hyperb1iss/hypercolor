@@ -188,9 +188,9 @@ pub async fn fetch_displays() -> Result<Vec<DisplaySummary>, String> {
 /// `GET /api/v1/displays/{id}/face` — fetch the current face assignment.
 pub async fn fetch_display_face(display_id: &str) -> Result<Option<DisplayFaceResponse>, String> {
     let url = format!("/api/v1/displays/{display_id}/face");
-    client::fetch_json_optional::<DisplayFaceResponse>(&url)
+    client::fetch_json::<Option<DisplayFaceResponse>>(&url)
         .await
-        .map_err(Into::into)
+        .map_err(|error| error.to_string())
 }
 
 /// `PUT /api/v1/displays/{id}/face` — assign a display face in the active scene.
