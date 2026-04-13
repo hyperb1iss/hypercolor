@@ -144,6 +144,7 @@ fn build_cmd() -> clap::Command {
                 .about("Scene management")
                 .subcommand_required(true)
                 .subcommand(Command::new("list").about("List scenes"))
+                .subcommand(Command::new("active").about("Show active scene"))
                 .subcommand(
                     Command::new("create")
                         .about("Create scene")
@@ -167,6 +168,7 @@ fn build_cmd() -> clap::Command {
                         .about("Activate scene")
                         .arg(Arg::new("name").required(true)),
                 )
+                .subcommand(Command::new("deactivate").about("Return to default scene"))
                 .subcommand(
                     Command::new("delete")
                         .about("Delete scene")
@@ -599,6 +601,13 @@ fn parse_scenes_list() {
 }
 
 #[test]
+fn parse_scenes_active() {
+    let cmd = build_cmd();
+    cmd.try_get_matches_from(["hyper", "scenes", "active"])
+        .expect("scenes active should parse");
+}
+
+#[test]
 fn parse_scenes_create() {
     let cmd = build_cmd();
     let matches = cmd
@@ -636,6 +645,13 @@ fn parse_scenes_activate() {
     let cmd = build_cmd();
     cmd.try_get_matches_from(["hyper", "scenes", "activate", "sunset-warmth"])
         .expect("scenes activate should parse");
+}
+
+#[test]
+fn parse_scenes_deactivate() {
+    let cmd = build_cmd();
+    cmd.try_get_matches_from(["hyper", "scenes", "deactivate"])
+        .expect("scenes deactivate should parse");
 }
 
 #[test]

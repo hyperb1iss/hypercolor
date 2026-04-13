@@ -18,10 +18,14 @@ pub struct ScenesArgs {
 pub enum SceneCommand {
     /// List configured scenes.
     List,
+    /// Show the currently active scene.
+    Active,
     /// Create a new scene.
     Create(SceneCreateArgs),
     /// Manually activate a scene.
     Activate(SceneActivateArgs),
+    /// Return to the Default scene.
+    Deactivate,
     /// Delete a scene.
     Delete(SceneDeleteArgs),
     /// Show detailed scene configuration.
@@ -98,8 +102,10 @@ pub struct SceneInfoArgs {
 pub async fn execute(args: &ScenesArgs, client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
     match &args.command {
         SceneCommand::List => execute_list(client, ctx).await,
+        SceneCommand::Active => execute_active(client, ctx).await,
         SceneCommand::Create(create_args) => execute_create(create_args, client, ctx).await,
         SceneCommand::Activate(activate_args) => execute_activate(activate_args, client, ctx).await,
+        SceneCommand::Deactivate => execute_deactivate(client, ctx).await,
         SceneCommand::Delete(delete_args) => execute_delete(delete_args, client, ctx).await,
         SceneCommand::Info(info_args) => execute_info(info_args, client, ctx).await,
     }
@@ -180,6 +186,56 @@ async fn execute_create(
     Ok(())
 }
 
+async fn execute_active(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
+    let response = client.get("/scenes/active").await?;
+
+    match ctx.format {
+        OutputFormat::Json => ctx.print_json(&response)?,
+        OutputFormat::Plain => {
+            println!("{}", extract_str(&response, "name"));
+        }
+        OutputFormat::Table => {
+            println!();
+            ctx.info(&format!("Active Scene: {}", extract_str(&response, "name")));
+            println!();
+            ctx.info(&format!("ID             {}", extract_str(&response, "id")));
+            ctx.info(&format!(
+                "Kind           {}",
+                extract_str(&response, "kind")
+            ));
+            ctx.info(&format!(
+                "Mutation Mode  {}",
+                extract_str(&response, "mutation_mode")
+            ));
+            let priority = response
+                .get("priority")
+                .and_then(serde_json::Value::as_u64)
+                .map_or_else(|| "?".to_string(), |value| value.to_string());
+            ctx.info(&format!("Priority       {priority}"));
+            ctx.info(&format!(
+                "Enabled        {}",
+                if response
+                    .get("enabled")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    "yes"
+                } else {
+                    "no"
+                }
+            ));
+            let groups = response
+                .get("groups")
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, Vec::len);
+            ctx.info(&format!("Groups         {groups}"));
+            println!();
+        }
+    }
+
+    Ok(())
+}
+
 async fn execute_activate(
     args: &SceneActivateArgs,
     client: &DaemonClient,
@@ -193,6 +249,21 @@ async fn execute_activate(
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain | OutputFormat::Table => {
             ctx.success(&format!("Scene triggered: {}", args.name));
+        }
+    }
+
+    Ok(())
+}
+
+async fn execute_deactivate(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
+    let response = client
+        .post("/scenes/deactivate", &serde_json::json!({}))
+        .await?;
+
+    match ctx.format {
+        OutputFormat::Json => ctx.print_json(&response)?,
+        OutputFormat::Plain | OutputFormat::Table => {
+            ctx.success("Returned to Default scene");
         }
     }
 
