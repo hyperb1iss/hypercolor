@@ -71,7 +71,6 @@ fn render_status(data: &serde_json::Value, ctx: &OutputContext) -> Result<()> {
 
 fn print_status_table(data: &serde_json::Value, ctx: &OutputContext) {
     if ctx.quiet {
-        // Quiet mode: one-liner
         let running = bool_field(data, "running");
         let effect = str_field(data, "active_effect", "off");
         let dot = if ctx.painter.is_enabled() {
@@ -81,7 +80,11 @@ fn print_status_table(data: &serde_json::Value, ctx: &OutputContext) {
         } else {
             "x".to_string()
         };
-        println!("  {dot} {effect}");
+        if let Some(scene) = format_scene_summary(data, &ctx.painter) {
+            println!("  {dot} {effect}  {scene}");
+        } else {
+            println!("  {dot} {effect}");
+        }
         return;
     }
 
@@ -136,6 +139,9 @@ fn status_table_lines(data: &serde_json::Value, p: &Painter) -> Vec<String> {
         p.muted(&pad("Effect", 10)),
         p.keyword(effect_name),
     ));
+    if let Some(scene) = format_scene_summary(data, p) {
+        lines.push(format!("  {}   {}", p.muted(&pad("Scene", 10)), scene));
+    }
 
     // ── Render ──────────────────────────────────────────────────────
     let target_fps = data
@@ -440,6 +446,16 @@ fn str_field<'a>(v: &'a serde_json::Value, key: &str, default: &'a str) -> &'a s
         .unwrap_or(default)
 }
 
+fn format_scene_summary(data: &serde_json::Value, p: &Painter) -> Option<String> {
+    let scene = data.get("active_scene").and_then(serde_json::Value::as_str)?;
+    let summary = p.name(scene);
+    if bool_field(data, "active_scene_snapshot_locked") {
+        Some(format!("{summary} {}", p.warning("[snap]")))
+    } else {
+        Some(summary)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{format_count, format_kib, format_uptime, status_table_lines};
@@ -484,6 +500,8 @@ mod tests {
                 "total_frames": 1234
             },
             "active_effect": "Breakthrough",
+            "active_scene": "Movie Night",
+            "active_scene_snapshot_locked": true,
             "device_count": 5,
             "effect_count": 18,
             "latest_frame": {
@@ -517,6 +535,8 @@ mod tests {
         let joined = lines.join("\n");
 
         assert!(joined.contains("Breakthrough"), "effect name present");
+        assert!(joined.contains("Movie Night"), "scene name present");
+        assert!(joined.contains("[snap]"), "snapshot marker present");
         assert!(joined.contains("running"), "running state present");
         assert!(joined.contains("1.0.0"), "version present");
         assert!(joined.contains("1h 1m"), "uptime formatted");
