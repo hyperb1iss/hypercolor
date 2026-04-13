@@ -170,7 +170,7 @@ export default canvas(
         builtinId: 'color_wave',
         category: 'ambient',
         description:
-            'Traveling light bands with richer palettes, counterflow motion, and tunnel pulses that feel designed instead of purely procedural.',
+            'Traveling light bands with sweep, counterflow, and tunnel modes across curated palettes.',
         designBasis: BUILTIN_DESIGN_BASIS,
         presets: [
             {
@@ -189,7 +189,7 @@ export default canvas(
                     warp: 18,
                     width: 32,
                 },
-                description: 'A glossy SilkCircuit sweep with enough warmth in the accents to keep the motion feeling expensive.',
+                description: 'A glossy sweep with warm accents layered into the motion.',
                 name: 'Silk Sweep',
             },
             {
@@ -247,7 +247,7 @@ export default canvas(
                     width: 38,
                 },
                 description: 'Concentric club rings that feel like a portal opening in the center of the desk.',
-                name: 'Portal Loop',
+                name: 'Club Portal',
             },
         ],
     },

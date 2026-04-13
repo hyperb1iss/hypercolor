@@ -70,7 +70,7 @@ export default canvas(
         author: 'Hypercolor',
         builtinId: 'breathing',
         category: 'ambient',
-        description: 'Soft pulse lighting with richer glow shaping, dual-color crossfades, and an aurora mode for more dimensional ambient scenes.',
+        description: 'Soft pulse lighting with shaped glow, dual-color crossfades, and an aurora mode for layered ambient scenes.',
         designBasis: BUILTIN_DESIGN_BASIS,
         presets: [
             {
@@ -124,7 +124,7 @@ export default canvas(
                     secondaryColor: '#80ffea',
                     speed: 11,
                 },
-                description: 'A drifting neon bloom with layered color instead of a flat single-channel fade.',
+                description: 'A drifting neon bloom with layered color and a slow crossfade.',
                 name: 'Silk Bloom',
             },
         ],

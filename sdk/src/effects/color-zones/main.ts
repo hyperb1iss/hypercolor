@@ -199,7 +199,7 @@ export default canvas(
         builtinId: 'color_zones',
         category: 'ambient',
         description:
-            'A multi-zone scene builder with clean geometric boundaries, smooth seam blending, and richer preset palettes for actual room setups.',
+            'A multi-zone scene builder with clean geometric boundaries, smooth seam blending, and curated palettes for room setups.',
         designBasis: BUILTIN_DESIGN_BASIS,
         presets: [
             {
@@ -214,7 +214,7 @@ export default canvas(
                     zone3: '#ff6ac1',
                     zoneCount: '3',
                 },
-                description: 'A simple three-column SilkCircuit spread for keyboards, underglow, and ambient bars.',
+                description: 'A three-column neon spread for keyboards, underglow, and ambient bars.',
                 name: 'Silk Stack',
             },
             {
@@ -230,7 +230,7 @@ export default canvas(
                     zone4: '#80ffea',
                     zoneCount: '4',
                 },
-                description: 'Top-to-bottom status colors that stay readable when you need zones to communicate, not just look pretty.',
+                description: 'Top-to-bottom status colors that stay readable when zones need to communicate at a glance.',
                 name: 'Status Ladder',
             },
             {
@@ -269,7 +269,7 @@ export default canvas(
                     zone9: '#14061f',
                     zoneCount: '9',
                 },
-                description: 'A candy-glass control wall with enough variation to make full layouts feel intentionally composed.',
+                description: 'A candy-glass control wall with enough variation to carry a full nine-zone layout.',
                 name: 'Candy Control',
             },
         ],

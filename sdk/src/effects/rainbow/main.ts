@@ -81,7 +81,7 @@ export default canvas(
         author: 'Hypercolor',
         builtinId: 'rainbow',
         category: 'ambient',
-        description: 'A more intentional rainbow: denser bands, tunnel mode, controllable black floor, and shimmer that stays vivid on LEDs instead of washing white.',
+        description: 'Rainbow sweeps with dense bands, a tunnel mode, a controllable black floor, and shimmer that stays vivid on LEDs.',
         designBasis: BUILTIN_DESIGN_BASIS,
         presets: [
             {

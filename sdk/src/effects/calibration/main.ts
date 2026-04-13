@@ -109,14 +109,15 @@ function drawLinearSweep(
 ): void {
     const span = Math.hypot(width, height)
     const angle = directionAngle(direction)
-    const cycle = span * 2
-    const position = phase * cycle - span
+    const projection = Math.abs(width * Math.cos(angle)) + Math.abs(height * Math.sin(angle))
+    const halfProjection = projection * 0.5
+    const position = phase * projection - halfProjection
 
     ctx.save()
     ctx.translate(width / 2, height / 2)
     ctx.rotate(angle)
 
-    for (const offset of [-cycle, 0, cycle]) {
+    for (const offset of [-projection, 0, projection]) {
         const bandCenter = position + offset
         const gradient = ctx.createLinearGradient(bandCenter - bandWidth, 0, bandCenter + bandWidth, 0)
         gradient.addColorStop(0, 'rgba(255, 255, 255, 0)')
@@ -331,7 +332,7 @@ export default canvas(
         builtinId: 'calibration',
         category: 'utility',
         description:
-            'Diagnostic sweeps, quadrants, rings, and corner markers for layout placement, rotation checks, and coverage debugging without the old native render cost.',
+            'Diagnostic sweeps, quadrants, rings, and corner markers for layout placement, rotation checks, and coverage debugging.',
         designBasis: BUILTIN_DESIGN_BASIS,
         presets: [
             {

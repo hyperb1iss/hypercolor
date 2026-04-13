@@ -182,7 +182,7 @@ export default canvas.stateful(
         builtinId: 'screen_cast',
         category: 'utility',
         description:
-            'Live screen-reactive sampling with crop controls, fit modes, smoothing, and display treatments built for actual LED layouts instead of raw debug output.',
+            'Live screen-reactive sampling with crop controls, fit modes, smoothing, and display treatments tuned for LED layouts.',
         presets: [
             {
                 controls: {

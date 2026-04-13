@@ -213,7 +213,7 @@ export default canvas.stateful(
         builtinId: 'audio_pulse',
         category: 'audio',
         description:
-            'Beat-reactive blooms and expanding rings with richer color layering, stronger bass presence, and presets tuned for music instead of flashlight flashes.',
+            'Beat-reactive blooms and expanding rings with layered color, bass presence, and presets tuned for music.',
         designBasis: BUILTIN_DESIGN_BASIS,
         presets: [
             {
@@ -230,7 +230,7 @@ export default canvas.stateful(
                     speed: 52,
                     style: 'Hybrid',
                 },
-                description: 'A plush SilkCircuit heartbeat with crisp rings on the downbeat and a soft neon body between kicks.',
+                description: 'A plush heartbeat with crisp rings on the downbeat and a soft neon body between kicks.',
                 name: 'Silk Heartbeat',
             },
             {
@@ -264,7 +264,7 @@ export default canvas.stateful(
                     speed: 34,
                     style: 'Bloom',
                 },
-                description: 'Low-light sub bass ambience that hangs in the room instead of constantly snapping back to black.',
+                description: 'Low-light sub-bass ambience that hangs in the room between kicks.',
                 name: 'Midnight Sub',
             },
             {

@@ -108,12 +108,12 @@ export default canvas(
         author: 'Hypercolor',
         builtinId: 'solid_color',
         category: 'ambient',
-        description: 'Clean fills, simple diagnostic patterns, and a restrained beacon mode for practical room lighting and layout checks.',
+        description: 'Solid color fills for bias lighting, nightlights, and ambient moods.',
         designBasis: BUILTIN_DESIGN_BASIS,
         presets: [
             {
                 controls: { brightness: 100, color: '#f5f6fb', pattern: 'Solid', vignette: 0 },
-                description: 'Neutral full white for confirming output, dead LEDs, and overall brightness.',
+                description: 'Full white for confirming output, spotting dead LEDs, and setting overall brightness.',
                 name: 'Neutral White',
             },
             {
@@ -123,8 +123,18 @@ export default canvas(
                     pattern: 'Solid',
                     vignette: 0,
                 },
-                description: 'Warm monitor bias light that fills the room without looking clinical or harsh.',
+                description: 'Warm monitor bias light that fills the room without looking clinical.',
                 name: 'Warm Bias',
+            },
+            {
+                controls: {
+                    brightness: 70,
+                    color: '#f4e8c4',
+                    pattern: 'Solid',
+                    vignette: 0,
+                },
+                description: 'Balanced warm daylight for desk work and video calls.',
+                name: 'Studio Warm',
             },
             {
                 controls: {
@@ -133,7 +143,7 @@ export default canvas(
                     pattern: 'Solid',
                     vignette: 0,
                 },
-                description: 'Low-light amber for night use when you want visibility without blowing up your pupils.',
+                description: 'Low-light amber for night use — visible without wrecking your dark adaptation.',
                 name: 'Night Amber',
             },
             {
@@ -143,7 +153,7 @@ export default canvas(
                     pattern: 'Solid',
                     vignette: 0,
                 },
-                description: 'A dim deep-red fill that keeps the room readable without feeling awake.',
+                description: 'Dim deep red that keeps the room readable without feeling awake.',
                 name: 'Darkroom Red',
             },
             {
@@ -158,42 +168,13 @@ export default canvas(
             },
             {
                 controls: {
-                    brightness: 100,
-                    color: '#ffffff',
-                    pattern: 'Vertical Split',
-                    position: 50,
-                    secondaryColor: '#000000',
-                    softness: 0,
+                    brightness: 28,
+                    color: '#e135ff',
+                    pattern: 'Solid',
                     vignette: 0,
                 },
-                description: 'Hard left-right split for checking zone placement, mirrored mapping, and strip order.',
-                name: 'A/B Split',
-            },
-            {
-                controls: {
-                    brightness: 100,
-                    color: '#ffffff',
-                    pattern: 'Checker',
-                    scale: 8,
-                    secondaryColor: '#000000',
-                    vignette: 0,
-                },
-                description: 'Black-and-white checkerboard for quickly spotting sampling errors and uneven footprints.',
-                name: 'Checkerboard',
-            },
-            {
-                controls: {
-                    accentColor: '#fff4cf',
-                    brightness: 42,
-                    color: '#fff0da',
-                    pattern: 'Halo',
-                    position: 50,
-                    scale: 6,
-                    secondaryColor: '#090b10',
-                    vignette: 12,
-                },
-                description: 'A restrained center beacon for judging centering and falloff without turning the whole rig into a gimmick.',
-                name: 'Center Beacon',
+                description: 'Dim neon magenta for night moods that stay vivid without overpowering the room.',
+                name: 'Neon Dusk',
             },
         ],
     },
