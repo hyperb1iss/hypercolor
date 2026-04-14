@@ -119,12 +119,6 @@ pub fn ControlPanel(
     // Lifted state: which color picker is currently expanded (survives inner re-renders)
     let (expanded_picker_id, set_expanded_picker_id) = signal(Option::<String>::None);
 
-    // Global click-outside handler — closes any open color picker when clicking
-    // outside its popover. Uses document-level mousedown so it works regardless
-    // of sidebar stacking contexts / overflow clipping.
-    install_click_outside_handler(expanded_picker_id, set_expanded_picker_id);
-    install_scroll_close_handler_for_picker(expanded_picker_id, set_expanded_picker_id);
-
     // Group by definition structure only — NOT by control_values.
     // This prevents the entire widget tree from being torn down on every value change.
     let grouped = Memo::new(move |_| {
@@ -154,6 +148,12 @@ pub fn ControlPanel(
 
     view! {
         <div class="space-y-1">
+            <Show when=move || expanded_picker_id.get().is_some()>
+                <ColorPickerDismissHandlers
+                    expanded_picker_id=expanded_picker_id
+                    set_expanded_picker_id=set_expanded_picker_id
+                />
+            </Show>
             {move || {
                 let groups = grouped.get();
                 if groups.is_empty() {
@@ -233,6 +233,27 @@ pub fn ControlPanel(
             }}
         </div>
     }
+}
+
+#[component]
+fn ColorPickerDismissHandlers(
+    expanded_picker_id: ReadSignal<Option<String>>,
+    set_expanded_picker_id: WriteSignal<Option<String>>,
+) -> impl IntoView {
+    install_click_outside_handler(expanded_picker_id, set_expanded_picker_id);
+    install_scroll_close_handler_for_picker(expanded_picker_id, set_expanded_picker_id);
+    view! {}
+}
+
+#[component]
+pub(super) fn ControlDropdownDismissHandlers(
+    class_name: String,
+    is_open: ReadSignal<bool>,
+    set_open: WriteSignal<bool>,
+) -> impl IntoView {
+    install_control_dropdown_outside_handler(class_name, is_open, set_open);
+    install_scroll_close_handler(is_open, set_open);
+    view! {}
 }
 
 /// A single control widget, dispatched by ControlType.

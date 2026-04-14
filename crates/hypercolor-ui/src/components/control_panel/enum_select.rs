@@ -6,9 +6,7 @@ use serde_json::json;
 
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
 
-use super::{
-    dropdown_panel_style, install_control_dropdown_outside_handler, install_scroll_close_handler,
-};
+use super::{ControlDropdownDismissHandlers, dropdown_panel_style};
 use leptos_icons::Icon;
 
 #[allow(clippy::too_many_arguments)]
@@ -34,6 +32,7 @@ pub(super) fn render_dropdown(
     let control_name = control_id;
     let dropdown_control_name = StoredValue::new(control_name.clone());
     let dropdown_class = format!("control-dropdown-{}", control_name);
+    let dropdown_wrapper_class = dropdown_class.clone();
     let dropdown_class_value = StoredValue::new(dropdown_class.clone());
     let trigger_ref = NodeRef::<leptos::html::Button>::new();
 
@@ -47,13 +46,6 @@ pub(super) fn render_dropdown(
         }
     });
 
-    // Click-outside handler
-    {
-        let dropdown_class = dropdown_class.clone();
-        install_control_dropdown_outside_handler(dropdown_class, dropdown_open, set_dropdown_open);
-    }
-    install_scroll_close_handler(dropdown_open, set_dropdown_open);
-
     view! {
         <div
             class="flex items-center gap-2.5 rounded-lg px-3 py-2 hover:bg-surface-hover/20 transition-colors duration-200 group"
@@ -63,7 +55,7 @@ pub(super) fn render_dropdown(
         >
             <Icon icon=icon width="15px" height="15px" style=icon_style.clone() />
             <label class="text-xs text-fg-secondary font-medium shrink-0 min-w-[80px] max-w-[120px] truncate">{name.clone()}</label>
-            <div class=format!("relative flex-1 min-w-0 {dropdown_class}")>
+            <div class=format!("relative flex-1 min-w-0 {dropdown_wrapper_class}")>
                 <button
                     type="button"
                     node_ref=trigger_ref
@@ -99,6 +91,11 @@ pub(super) fn render_dropdown(
                 </button>
 
                 <Show when=move || dropdown_open.get()>
+                    <ControlDropdownDismissHandlers
+                        class_name=dropdown_class.clone()
+                        is_open=dropdown_open
+                        set_open=set_dropdown_open
+                    />
                     <Portal>
                         <div class=move || dropdown_class_value.get_value()>
                             <div
