@@ -852,6 +852,7 @@ fn make_render_state(
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
         spatial_engine: Arc::new(RwLock::new(spatial_engine)),
         backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: DeviceRegistry::new(),
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),
         discovery_runtime: None,
         event_bus: Arc::clone(&event_bus),
@@ -1482,24 +1483,25 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
         rl.start();
     }
 
+    let group_canvas_sender = state.event_bus.group_canvas_sender(group_id);
     let mut rt = RenderThread::spawn(state.clone());
-    let first_frame = wait_for_next_frame(&mut frame_rx, 0).await;
+    let mut published_group_rx = group_canvas_sender.subscribe();
+    let _ = wait_for_next_frame(&mut frame_rx, 0).await;
+    tokio::time::timeout(Duration::from_secs(2), published_group_rx.changed())
+        .await
+        .expect("display face canvas should publish within timeout")
+        .expect("display face canvas stream should stay open");
+    let group_rx = group_canvas_sender.subscribe();
+    let frame = group_rx.borrow().clone();
+    assert_eq!(frame.width, 320);
+    assert_eq!(frame.height, 200);
+    assert_eq!(&frame.rgba_bytes()[0..4], [0, 0, 255, 255].as_slice());
 
     {
         let mut rl = state.render_loop.write().await;
         rl.stop();
     }
     rt.shutdown().await.expect("shutdown");
-
-    let group_rx = state.event_bus.group_canvas_receiver(group_id);
-    let frame = group_rx.borrow().clone();
-    assert!(
-        frame.frame_number >= first_frame.frame_number,
-        "late subscribers should see the latest retained face canvas"
-    );
-    assert_eq!(frame.width, 320);
-    assert_eq!(frame.height, 200);
-    assert_eq!(&frame.rgba_bytes()[0..4], [0, 0, 255, 255].as_slice());
 }
 
 #[tokio::test]
@@ -2214,6 +2216,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
         spatial_engine,
         backend_manager,
+        device_registry: DeviceRegistry::new(),
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),
         discovery_runtime: Some(discovery_runtime.clone()),
         event_bus: Arc::clone(&event_bus),
@@ -3594,6 +3597,7 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
         spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(layout))),
         backend_manager: Arc::new(Mutex::new(BackendManager::new())),
+        device_registry: DeviceRegistry::new(),
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),
         discovery_runtime: None,
         event_bus: Arc::clone(&event_bus),

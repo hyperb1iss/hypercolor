@@ -36,7 +36,6 @@ use worker::DisplayWorkerHandle;
 const DISPLAY_ERROR_WARN_INTERVAL: Duration = Duration::from_secs(5);
 const DISPLAY_OUTPUT_MAX_FPS: u32 = 15;
 pub(crate) const DISPLAY_FACE_DEFAULT_FPS: u32 = 30;
-pub(crate) const DISPLAY_FACE_MAX_FPS: u32 = 60;
 const DISPLAY_OUTPUT_DISPATCH_INTERVAL: Duration = Duration::from_millis(16);
 pub const DEFAULT_STATIC_HOLD_REFRESH_INTERVAL: Duration = Duration::from_secs(20);
 const DISPLAY_RUNTIME_WORKERS: usize = 2;
@@ -712,7 +711,7 @@ fn display_zone_targets_physical_device(
 
 fn capped_display_target_fps(device_max_fps: u32, canvas_source: &DisplayCanvasSource) -> u32 {
     let (default_fps, max_fps) = if canvas_source.is_group_direct() {
-        (DISPLAY_FACE_DEFAULT_FPS, DISPLAY_FACE_MAX_FPS)
+        (DISPLAY_FACE_DEFAULT_FPS, DISPLAY_FACE_DEFAULT_FPS)
     } else {
         (DISPLAY_OUTPUT_MAX_FPS, DISPLAY_OUTPUT_MAX_FPS)
     };
@@ -732,7 +731,10 @@ pub(crate) fn capped_group_direct_display_target_fps(device_max_fps: u32) -> u32
         device_max_fps
     };
 
-    device_limit.clamp(1, DISPLAY_FACE_MAX_FPS)
+    // Keep HTML faces on the conservative default until we have budget-aware
+    // upshift logic; blindly inheriting a 60 fps panel limit reintroduces the
+    // exact render/composite/JPEG churn this path is supposed to avoid.
+    device_limit.clamp(1, DISPLAY_FACE_DEFAULT_FPS)
 }
 
 fn logical_device_store_signature(store: &HashMap<String, LogicalDevice>) -> u64 {
