@@ -8,7 +8,7 @@
 //! their own screenshots and coordinated accent colors — no daemon work,
 //! no build-time assets, no bandwidth explosion.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -201,6 +201,7 @@ pub fn install_auto_capture<F>(
     // Track when the current effect became active, so we can wait for the
     // stability window before capturing. Stored as (id, since_ms).
     let active_since: StoredValue<Option<(String, f64)>> = StoredValue::new(None);
+    let pending_captures: StoredValue<HashSet<(String, String)>> = StoredValue::new(HashSet::new());
 
     Effect::new(move |_| {
         // React to active effect changes — reset the stability timer.
@@ -231,6 +232,11 @@ pub fn install_auto_capture<F>(
         if store.get(&effect_id, &version).is_some() {
             return;
         }
+        if pending_captures
+            .with_value(|pending| pending.contains(&(effect_id.clone(), version.clone())))
+        {
+            return;
+        }
 
         // Defer the actual capture to an idle callback so we don't block
         // the frame dispatch. This gives the effect a beat to render into
@@ -239,10 +245,18 @@ pub fn install_auto_capture<F>(
         let effect_id_for_capture = effect_id.clone();
         let version_for_capture = version.clone();
         let frame_for_capture = frame.clone();
+        let pending_key = (effect_id.clone(), version.clone());
+        pending_captures.update_value(|pending| {
+            pending.insert(pending_key.clone());
+        });
+        let pending_captures_for_callback = pending_captures;
         let cb = Closure::once_into_js(move || {
             if let Some(thumbnail) = capture_thumbnail(&frame_for_capture, version_for_capture) {
                 store.insert(effect_id_for_capture, thumbnail);
             }
+            pending_captures_for_callback.update_value(|pending| {
+                pending.remove(&pending_key);
+            });
         });
         if let Some(window) = web_sys::window() {
             let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
