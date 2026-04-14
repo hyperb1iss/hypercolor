@@ -366,6 +366,12 @@ fn solid_canvas(color: Rgba) -> Canvas {
     canvas
 }
 
+fn transparent_white_canvas() -> Canvas {
+    let mut canvas = Canvas::new(320, 200);
+    canvas.fill(Rgba::new(255, 255, 255, 0));
+    canvas
+}
+
 async fn activate_display_face_scene(
     scene_manager: &Arc<RwLock<SceneManager>>,
     device_id: DeviceId,
@@ -1177,6 +1183,78 @@ async fn display_group_alpha_blends_face_with_effect_canvas() {
     assert!(
         pixel[1] < 60,
         "expected the red/blue blend to stay magenta rather than drifting green, got {pixel:?}"
+    );
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
+async fn display_group_replace_preserves_face_transparency_over_effect_canvas() {
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let scene_manager = default_scene_manager();
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+    let group_id = RenderGroupId::new();
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 320, 320, true))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    activate_display_face_scene(&scene_manager, device_id, group_id, 320, 320).await;
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: Arc::clone(&scene_manager),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
+    });
+
+    let _ = event_bus.canvas_sender().send(CanvasFrame::from_canvas(
+        &solid_canvas(Rgba::new(255, 0, 0, 255)),
+        1,
+        16,
+    ));
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    display_writes.lock().await.clear();
+    event_bus
+        .group_canvas_sender(group_id)
+        .send_replace(CanvasFrame::from_canvas(&transparent_white_canvas(), 2, 32));
+
+    let writes = wait_for_display_writes(&display_writes).await;
+    let image = decode_jpeg(&writes[0]);
+    let pixel = image.get_pixel(image.width() / 2, image.height() / 2);
+
+    assert!(
+        pixel[0] > 200,
+        "expected replace mode to keep the red effect visible through transparent face pixels, got {pixel:?}"
+    );
+    assert!(
+        pixel[1] < 60 && pixel[2] < 60,
+        "expected transparent face pixels to avoid a white fill in replace mode, got {pixel:?}"
     );
 
     thread.shutdown().await.expect("display thread should stop");

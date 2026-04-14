@@ -142,16 +142,6 @@ pub(super) fn encode_canvas_frame(
     }
 }
 
-pub(super) fn encode_direct_canvas_frame(
-    source: &CanvasFrame,
-    geometry: &DisplayGeometry,
-    brightness: f32,
-    encode_state: &mut DisplayEncodeState,
-) -> Result<Vec<u8>> {
-    render_direct_canvas_frame_rgb(source, geometry, encode_state);
-    encode_prepared_rgb_frame(geometry, brightness, encode_state)
-}
-
 pub(super) fn encode_face_effect_blend(
     effect_source: Option<&CanvasFrame>,
     face_source: &CanvasFrame,
@@ -176,54 +166,6 @@ pub(super) fn encode_face_effect_blend(
         face_opacity,
     );
     encode_prepared_rgba_frame(geometry, brightness, encode_state)
-}
-
-pub(super) fn render_direct_canvas_frame_rgb(
-    source: &CanvasFrame,
-    geometry: &DisplayGeometry,
-    encode_state: &mut DisplayEncodeState,
-) {
-    if geometry.width == 0 || geometry.height == 0 {
-        encode_state.rgb_buffer.clear();
-        return;
-    }
-
-    if source.width == geometry.width && source.height == geometry.height {
-        let Some(render_len) = rgb_buffer_len(geometry.width, geometry.height) else {
-            encode_state.rgb_buffer.clear();
-            return;
-        };
-        if encode_state.rgb_buffer.len() != render_len {
-            encode_state.rgb_buffer.resize(render_len, 0);
-        }
-
-        for (pixel, rgba) in encode_state
-            .rgb_buffer
-            .chunks_exact_mut(3)
-            .zip(source.rgba_bytes().chunks_exact(4))
-        {
-            pixel[0] = rgba[0];
-            pixel[1] = rgba[1];
-            pixel[2] = rgba[2];
-        }
-        return;
-    }
-
-    render_display_view(
-        source,
-        &DisplayViewport {
-            position: hypercolor_types::spatial::NormalizedPosition::new(0.5, 0.5),
-            size: hypercolor_types::spatial::NormalizedPosition::new(1.0, 1.0),
-            rotation: 0.0,
-            scale: 1.0,
-            edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
-        },
-        geometry.width,
-        geometry.height,
-        &mut encode_state.rgb_buffer,
-        &mut encode_state.axis_plan,
-        None,
-    );
 }
 
 fn render_canvas_frame_rgba(
@@ -324,34 +266,6 @@ fn render_direct_canvas_frame_rgba(
     )
 }
 
-pub(super) fn encode_prepared_rgb_frame(
-    geometry: &DisplayGeometry,
-    brightness: f32,
-    encode_state: &mut DisplayEncodeState,
-) -> Result<Vec<u8>> {
-    let brightness_factor = display_brightness_factor(brightness);
-    if brightness_factor == 0 {
-        prepare_black_frame(geometry, &mut encode_state.rgb_buffer);
-        return encode_rgb_to_jpeg(geometry, encode_state);
-    }
-
-    refresh_display_brightness_lut(encode_state, brightness_factor);
-    apply_display_brightness(
-        &mut encode_state.rgb_buffer,
-        brightness_factor,
-        &encode_state.brightness_lut,
-    );
-    if geometry.circular {
-        apply_circular_mask(
-            &mut encode_state.rgb_buffer,
-            geometry.width,
-            geometry.height,
-        );
-    }
-
-    encode_rgb_to_jpeg(geometry, encode_state)
-}
-
 pub(super) fn encode_prepared_rgba_frame(
     geometry: &DisplayGeometry,
     brightness: f32,
@@ -374,19 +288,6 @@ pub(super) fn encode_prepared_rgba_frame(
     }
 
     encode_rgba_to_jpeg(geometry, encode_state)
-}
-
-pub(super) fn apply_display_brightness(
-    rgb_buffer: &mut [u8],
-    brightness_factor: u16,
-    brightness_lut: &[u8; 256],
-) {
-    if brightness_factor >= u16::from(u8::MAX) {
-        return;
-    }
-    for channel in rgb_buffer {
-        *channel = brightness_lut[usize::from(*channel)];
-    }
 }
 
 fn apply_display_brightness_rgba(rgba_buffer: &mut [u8], brightness_lut: &[u8; 256]) {
@@ -584,7 +485,9 @@ fn blend_face_rgba_with_effect(
     opacity: f32,
 ) {
     match blend_mode {
-        DisplayFaceBlendMode::Replace => return,
+        DisplayFaceBlendMode::Replace => {
+            blend_rgba_pixels_in_place(target_rgba, source_rgba, RgbaBlendMode::Normal, opacity);
+        }
         DisplayFaceBlendMode::Tint => {
             blend_face_material_tint_rgba(target_rgba, source_rgba, opacity);
         }

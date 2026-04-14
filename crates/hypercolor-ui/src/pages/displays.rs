@@ -44,7 +44,7 @@ const FACE_BLEND_OPTIONS: [FaceBlendOption; 11] = [
     FaceBlendOption {
         mode: DisplayFaceBlendMode::Replace,
         label: "Replace",
-        blurb: "Render the face directly with no effect influence.",
+        blurb: "Let face pixels overwrite directly while transparent holes reveal the live effect underneath.",
     },
     FaceBlendOption {
         mode: DisplayFaceBlendMode::Alpha,
@@ -1610,7 +1610,7 @@ fn FaceCompositionSection(
                     </h3>
                 </div>
                 <p class="text-[11px] leading-relaxed text-fg-secondary">
-                    "Replace keeps the face in full control. Fusion modes let the live effect color interact with the face material instead of sitting passively underneath it."
+                    "Replace now acts like a cutout: solid face pixels stay authoritative while transparent regions reveal the live effect. Fusion modes push that interaction further by treating the face like glass, tint, or reactive material."
                 </p>
                 <div class="mt-3 grid grid-cols-2 gap-2">
                     {FACE_BLEND_OPTIONS
