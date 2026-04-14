@@ -722,12 +722,18 @@ pub(super) struct MetricsFrameTime {
 pub(super) struct MetricsStages {
     pub(super) input_sampling_ms: f64,
     pub(super) producer_rendering_ms: f64,
+    pub(super) producer_effect_rendering_ms: f64,
+    pub(super) producer_preview_compose_ms: f64,
     pub(super) composition_ms: f64,
     pub(super) effect_rendering_ms: f64,
     pub(super) spatial_sampling_ms: f64,
     pub(super) device_output_ms: f64,
     pub(super) preview_postprocess_ms: f64,
     pub(super) event_bus_ms: f64,
+    pub(super) publish_frame_data_ms: f64,
+    pub(super) publish_group_canvas_ms: f64,
+    pub(super) publish_preview_ms: f64,
+    pub(super) publish_events_ms: f64,
     pub(super) coordination_overhead_ms: f64,
 }
 

@@ -27,7 +27,9 @@ pub(crate) struct RenderGroupResult {
     pub group_canvases: Vec<(RenderGroupId, GroupCanvasFrame)>,
     pub active_group_canvas_ids: Vec<RenderGroupId>,
     pub layout: Arc<SpatialLayout>,
+    pub render_us: u32,
     pub sample_us: u32,
+    pub preview_compose_us: u32,
     pub logical_layer_count: u32,
     pub reuse_published_zones: bool,
 }
@@ -92,7 +94,9 @@ impl RenderGroupRuntime {
             group_canvases: Vec::new(),
             active_group_canvas_ids: retained.active_group_canvas_ids.clone(),
             layout: Arc::clone(&retained.layout),
+            render_us: 0,
             sample_us: 0,
+            preview_compose_us: 0,
             logical_layer_count: retained.logical_layer_count,
             reuse_published_zones: true,
         })
@@ -134,6 +138,7 @@ impl RenderGroupRuntime {
         }
 
         let mut next_index = 0;
+        let mut render_us = 0_u32;
         let mut sample_us = 0_u32;
         let mut group_canvases = Vec::new();
         let mut active_group_canvas_ids = Vec::new();
@@ -161,6 +166,7 @@ impl RenderGroupRuntime {
                 let Some(mut lease) = surface_pool.dequeue() else {
                     continue;
                 };
+                let render_start = Instant::now();
                 self.effect_pool.render_group_into(
                     group,
                     delta_secs,
@@ -170,6 +176,7 @@ impl RenderGroupRuntime {
                     sensors,
                     lease.canvas_mut(),
                 )?;
+                render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
                 if !group.layout.zones.is_empty() {
                     let sample_start = Instant::now();
                     next_index =
@@ -186,6 +193,7 @@ impl RenderGroupRuntime {
             let Some(target) = self.target_canvases.get_mut(&group.id) else {
                 continue;
             };
+            let render_start = Instant::now();
             self.effect_pool.render_group_into(
                 group,
                 delta_secs,
@@ -195,6 +203,7 @@ impl RenderGroupRuntime {
                 sensors,
                 target,
             )?;
+            render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
             if !group.layout.zones.is_empty() {
                 let sample_start = Instant::now();
                 next_index = spatial_engine.sample_append_into_at(target, zones, next_index);
@@ -209,7 +218,9 @@ impl RenderGroupRuntime {
                 .count(),
         )
         .unwrap_or(u32::MAX);
+        let preview_compose_start = Instant::now();
         let preview_frame = self.compose_preview(groups);
+        let preview_compose_us = micros_u32(preview_compose_start.elapsed());
         let layout = Arc::clone(&self.combined_layout);
 
         let result = RenderGroupResult {
@@ -217,7 +228,9 @@ impl RenderGroupRuntime {
             group_canvases,
             active_group_canvas_ids,
             layout,
+            render_us,
             sample_us,
+            preview_compose_us,
             logical_layer_count,
             reuse_published_zones: false,
         };
@@ -336,6 +349,7 @@ impl RenderGroupRuntime {
             return Ok(None);
         };
 
+        let render_start = Instant::now();
         if let Err(error) = self.effect_pool.render_group_into(
             preview_group,
             delta_secs,
@@ -348,6 +362,7 @@ impl RenderGroupRuntime {
             lease.release();
             return Err(error);
         }
+        let mut render_us = micros_u32(render_start.elapsed());
 
         let mut next_index = 0;
         let mut sample_us = 0_u32;
@@ -386,6 +401,7 @@ impl RenderGroupRuntime {
             let Some(mut group_lease) = surface_pool.dequeue() else {
                 continue;
             };
+            let render_start = Instant::now();
             self.effect_pool.render_group_into(
                 group,
                 delta_secs,
@@ -395,6 +411,7 @@ impl RenderGroupRuntime {
                 sensors,
                 group_lease.canvas_mut(),
             )?;
+            render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
             if !group.layout.zones.is_empty() {
                 let sample_start = Instant::now();
                 next_index = group_spatial_engine.sample_append_into_at(
@@ -416,7 +433,9 @@ impl RenderGroupRuntime {
             group_canvases,
             active_group_canvas_ids,
             layout: Arc::clone(&self.combined_layout),
+            render_us,
             sample_us,
+            preview_compose_us: 0,
             logical_layer_count: 1,
             reuse_published_zones: false,
         }))

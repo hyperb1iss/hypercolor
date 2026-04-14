@@ -1080,12 +1080,20 @@ pub(super) async fn build_metrics_message(
             stages: MetricsStages {
                 input_sampling_ms: round_2(us_to_ms(latest_frame.input_us)),
                 producer_rendering_ms: round_2(us_to_ms(latest_frame.producer_us)),
+                producer_effect_rendering_ms: round_2(us_to_ms(latest_frame.producer_render_us)),
+                producer_preview_compose_ms: round_2(us_to_ms(
+                    latest_frame.producer_preview_compose_us,
+                )),
                 composition_ms: round_2(us_to_ms(latest_frame.composition_us)),
                 effect_rendering_ms: round_2(us_to_ms(latest_frame.render_us)),
                 spatial_sampling_ms: round_2(us_to_ms(latest_frame.sample_us)),
                 device_output_ms: round_2(us_to_ms(latest_frame.push_us)),
                 preview_postprocess_ms: round_2(us_to_ms(latest_frame.postprocess_us)),
                 event_bus_ms: round_2(us_to_ms(latest_frame.publish_us)),
+                publish_frame_data_ms: round_2(us_to_ms(latest_frame.publish_frame_data_us)),
+                publish_group_canvas_ms: round_2(us_to_ms(latest_frame.publish_group_canvas_us)),
+                publish_preview_ms: round_2(us_to_ms(latest_frame.publish_preview_us)),
+                publish_events_ms: round_2(us_to_ms(latest_frame.publish_events_us)),
                 coordination_overhead_ms: round_2(us_to_ms(latest_frame.overhead_us)),
             },
             pacing: MetricsPacing {

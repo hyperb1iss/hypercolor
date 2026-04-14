@@ -152,12 +152,18 @@ async fn metrics_message_includes_latest_frame_timeline() {
             timestamp_ms: 1234,
             input_us: 200,
             producer_us: 900,
+            producer_render_us: 640,
+            producer_preview_compose_us: 110,
             composition_us: 300,
             render_us: 1_200,
             sample_us: 150,
             push_us: 250,
             postprocess_us: 0,
             publish_us: 180,
+            publish_frame_data_us: 70,
+            publish_group_canvas_us: 20,
+            publish_preview_us: 80,
+            publish_events_us: 10,
             overhead_us: 70,
             total_us: 1_850,
             wake_late_us: 220,
@@ -228,6 +234,12 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["timeline"]["scene_snapshot_done_ms"], 0.12);
     assert_eq!(json["timeline"]["composition_done_ms"], 1.34);
     assert_eq!(json["timeline"]["frame_done_ms"], 1.85);
+    assert_eq!(json["stages"]["producer_effect_rendering_ms"], 0.64);
+    assert_eq!(json["stages"]["producer_preview_compose_ms"], 0.11);
+    assert_eq!(json["stages"]["publish_frame_data_ms"], 0.07);
+    assert_eq!(json["stages"]["publish_group_canvas_ms"], 0.02);
+    assert_eq!(json["stages"]["publish_preview_ms"], 0.08);
+    assert_eq!(json["stages"]["publish_events_ms"], 0.01);
     assert_eq!(json["fps"]["ceiling"], 60);
     assert_eq!(json["render_surfaces"]["slot_count"], 6);
     assert_eq!(json["render_surfaces"]["published_slots"], 4);

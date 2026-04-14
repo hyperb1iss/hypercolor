@@ -75,6 +75,12 @@ pub struct LatestFrameStatus {
     pub total_ms: f64,
     pub wake_late_ms: f64,
     pub frame_age_ms: f64,
+    pub producer_render_ms: f64,
+    pub producer_preview_compose_ms: f64,
+    pub publish_frame_data_ms: f64,
+    pub publish_group_canvas_ms: f64,
+    pub publish_preview_ms: f64,
+    pub publish_events_ms: f64,
     pub logical_layer_count: u32,
     pub render_group_count: u32,
     pub full_frame_copy_count: u32,
@@ -370,6 +376,12 @@ fn latest_frame_status(frame: LatestFrameMetrics, render_elapsed_ms: f64) -> Lat
         total_ms: round_2(us_to_ms(frame.total_us)),
         wake_late_ms: round_2(us_to_ms(frame.wake_late_us)),
         frame_age_ms: round_2(frame_age_ms),
+        producer_render_ms: round_2(us_to_ms(frame.producer_render_us)),
+        producer_preview_compose_ms: round_2(us_to_ms(frame.producer_preview_compose_us)),
+        publish_frame_data_ms: round_2(us_to_ms(frame.publish_frame_data_us)),
+        publish_group_canvas_ms: round_2(us_to_ms(frame.publish_group_canvas_us)),
+        publish_preview_ms: round_2(us_to_ms(frame.publish_preview_us)),
+        publish_events_ms: round_2(us_to_ms(frame.publish_events_us)),
         logical_layer_count: frame.logical_layer_count,
         render_group_count: frame.render_group_count,
         full_frame_copy_count: frame.full_frame_copy_count,
@@ -490,12 +502,18 @@ mod tests {
                 timestamp_ms: 40,
                 input_us: 100,
                 producer_us: 500,
+                producer_render_us: 320,
+                producer_preview_compose_us: 60,
                 composition_us: 200,
                 render_us: 700,
                 sample_us: 150,
                 push_us: 250,
                 postprocess_us: 0,
                 publish_us: 120,
+                publish_frame_data_us: 30,
+                publish_group_canvas_us: 20,
+                publish_preview_us: 60,
+                publish_events_us: 10,
                 overhead_us: 50,
                 total_us: 1_270,
                 wake_late_us: 90,
@@ -564,6 +582,18 @@ mod tests {
             json["data"]["latest_frame"]["gpu_sample_wait_blocked"],
             true
         );
+        assert_eq!(json["data"]["latest_frame"]["producer_render_ms"], 0.32);
+        assert_eq!(
+            json["data"]["latest_frame"]["producer_preview_compose_ms"],
+            0.06
+        );
+        assert_eq!(json["data"]["latest_frame"]["publish_frame_data_ms"], 0.03);
+        assert_eq!(
+            json["data"]["latest_frame"]["publish_group_canvas_ms"],
+            0.02
+        );
+        assert_eq!(json["data"]["latest_frame"]["publish_preview_ms"], 0.06);
+        assert_eq!(json["data"]["latest_frame"]["publish_events_ms"], 0.01);
         assert_eq!(json["data"]["latest_frame"]["cpu_readback_skipped"], true);
         assert_eq!(
             json["data"]["latest_frame"]["render_surfaces"]["slot_count"],

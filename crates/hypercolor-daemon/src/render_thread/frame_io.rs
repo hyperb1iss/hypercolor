@@ -20,6 +20,10 @@ pub(crate) struct PublishFrameStats {
     pub(crate) elapsed_us: u32,
     pub(crate) full_frame_copy_count: u32,
     pub(crate) full_frame_copy_bytes: u32,
+    pub(crate) frame_data_us: u32,
+    pub(crate) group_canvas_us: u32,
+    pub(crate) preview_us: u32,
+    pub(crate) events_us: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -115,6 +119,7 @@ pub(crate) fn publish_frame_updates(
         .then(|| AudioSignalSnapshot::from_audio(audio));
     let mut full_frame_copy_count = 0_u32;
     let mut full_frame_copy_bytes = 0_u32;
+    let frame_data_start = Instant::now();
     update_published_frame(
         state.event_bus.frame_sender(),
         recycled_frame,
@@ -140,6 +145,8 @@ pub(crate) fn publish_frame_updates(
         last_audio_level_update_ms,
         publish_audio_level,
     );
+    let frame_data_us = micros_u32(frame_data_start.elapsed());
+    let group_canvas_start = Instant::now();
     let group_canvas_senders = state
         .event_bus
         .retain_group_canvases_and_collect_senders(active_group_canvas_ids)
@@ -159,6 +166,8 @@ pub(crate) fn publish_frame_updates(
             sender.send_replace(CanvasFrame::from_surface(surface));
         }
     }
+    let group_canvas_us = micros_u32(group_canvas_start.elapsed());
+    let preview_start = Instant::now();
     state
         .preview_runtime
         .note_canvas_frame(frame_number, elapsed_ms);
@@ -286,16 +295,23 @@ pub(crate) fn publish_frame_updates(
                 .send(preview_frame);
         }
     }
+    let preview_us = micros_u32(preview_start.elapsed());
+    let events_start = Instant::now();
     if event_subscribers > 0 {
         state.event_bus.publish(HypercolorEvent::FrameRendered {
             frame_number,
             timing,
         });
     }
+    let events_us = micros_u32(events_start.elapsed());
     PublishFrameStats {
         elapsed_us: micros_u32(publish_start.elapsed()),
         full_frame_copy_count,
         full_frame_copy_bytes,
+        frame_data_us,
+        group_canvas_us,
+        preview_us,
+        events_us,
     }
 }
 
