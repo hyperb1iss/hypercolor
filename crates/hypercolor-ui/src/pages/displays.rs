@@ -1347,7 +1347,7 @@ fn DisplayWorkspace(
                     } else {
                         "rounded-lg"
                     };
-                    let alt_text = format!("Live preview of {}", display.name);
+                    let aria_label = format!("Live preview of {}", display.name);
                     let container_class = format!(
                         "max-h-full max-w-full overflow-hidden border border-edge-default bg-black shadow-2xl {rounded_class}"
                     );
@@ -1356,11 +1356,17 @@ fn DisplayWorkspace(
                         <div
                             class=container_class
                             style=move || format!("aspect-ratio: {aspect};")
+                            role="img"
+                            aria-label=aria_label
                         >
+                            // alt is empty so the browser doesn't render the
+                            // fallback string while the preview URL loads —
+                            // the circular clip otherwise crops it mid-word.
+                            // The parent div carries the accessible label.
                             <img
                                 class="h-full w-full object-cover"
                                 src=src
-                                alt=alt_text
+                                alt=""
                                 loading="eager"
                                 decoding="async"
                                 draggable="false"
