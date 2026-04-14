@@ -291,6 +291,7 @@ pub async fn apply_layout(State(state): State<Arc<AppState>>, Path(id): Path<Str
 
     apply_layout_update(
         &state.spatial_engine,
+        &state.scene_manager,
         &state.scene_transactions,
         layout.clone(),
     )
@@ -312,7 +313,13 @@ pub async fn preview_layout(
     State(state): State<Arc<AppState>>,
     Json(layout): Json<SpatialLayout>,
 ) -> Response {
-    apply_layout_update(&state.spatial_engine, &state.scene_transactions, layout).await;
+    apply_layout_update(
+        &state.spatial_engine,
+        &state.scene_manager,
+        &state.scene_transactions,
+        layout,
+    )
+    .await;
     let runtime = super::discovery_runtime(&state);
     discovery::sync_active_layout_connectivity(&runtime, None).await;
 
@@ -354,7 +361,13 @@ pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<St
     };
 
     if let Some(layout) = next_active_layout {
-        apply_layout_update(&state.spatial_engine, &state.scene_transactions, layout).await;
+        apply_layout_update(
+            &state.spatial_engine,
+            &state.scene_manager,
+            &state.scene_transactions,
+            layout,
+        )
+        .await;
         let runtime = super::discovery_runtime(&state);
         discovery::sync_active_layout_connectivity(&runtime, None).await;
         persist_runtime_session(&state).await;

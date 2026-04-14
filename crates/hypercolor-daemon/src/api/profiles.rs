@@ -407,7 +407,13 @@ pub(crate) async fn apply_profile_snapshot(
     }
 
     if let Some(layout) = layout {
-        apply_layout_update(&state.spatial_engine, &state.scene_transactions, layout).await;
+        apply_layout_update(
+            &state.spatial_engine,
+            &state.scene_manager,
+            &state.scene_transactions,
+            layout,
+        )
+        .await;
 
         let runtime = super::discovery_runtime(state);
         discovery::sync_active_layout_connectivity(&runtime, None).await;

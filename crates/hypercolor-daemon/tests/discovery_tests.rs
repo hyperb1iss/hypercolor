@@ -16,6 +16,7 @@ use hypercolor_core::device::{
     BackendInfo, BackendManager, DeviceBackend, DeviceLifecycleManager, DeviceRegistry,
     UsbProtocolConfigStore,
 };
+use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::AttachmentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
@@ -298,6 +299,7 @@ fn make_runtime(
     let in_progress = Arc::new(AtomicBool::new(true));
     let runtime_state_path_for_host = runtime_state_path.clone();
     let scene_transactions = SceneTransactionQueue::default();
+    let scene_manager = Arc::new(RwLock::new(SceneManager::with_default()));
     let runtime = DiscoveryRuntime {
         device_registry: device_registry.clone(),
         backend_manager: Arc::clone(&backend_manager),
@@ -305,6 +307,7 @@ fn make_runtime(
         reconnect_tasks: Arc::clone(&reconnect_tasks),
         event_bus: Arc::clone(&event_bus),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: Arc::clone(&scene_manager),
         layouts: Arc::clone(&layouts),
         layouts_path,
         layout_auto_exclusions: Arc::clone(&layout_auto_exclusions),
@@ -326,6 +329,7 @@ fn make_runtime(
         reconnect_tasks,
         event_bus,
         spatial_engine,
+        scene_manager,
         layouts,
         runtime.layouts_path.clone(),
         layout_auto_exclusions,

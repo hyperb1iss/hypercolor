@@ -12,6 +12,7 @@ use hypercolor_core::device::net::{CredentialStore, Credentials};
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
 };
+use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::{
     DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverRuntimeActions,
@@ -41,6 +42,7 @@ pub struct DaemonDriverHost {
     reconnect_tasks: Arc<StdMutex<HashMap<DeviceId, JoinHandle<()>>>>,
     event_bus: Arc<HypercolorBus>,
     spatial_engine: Arc<RwLock<SpatialEngine>>,
+    scene_manager: Arc<RwLock<SceneManager>>,
     layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
     layouts_path: PathBuf,
     layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
@@ -65,6 +67,7 @@ impl DaemonDriverHost {
         reconnect_tasks: Arc<StdMutex<HashMap<DeviceId, JoinHandle<()>>>>,
         event_bus: Arc<HypercolorBus>,
         spatial_engine: Arc<RwLock<SpatialEngine>>,
+        scene_manager: Arc<RwLock<SceneManager>>,
         layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
         layouts_path: PathBuf,
         layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
@@ -85,6 +88,7 @@ impl DaemonDriverHost {
             reconnect_tasks,
             event_bus,
             spatial_engine,
+            scene_manager,
             layouts,
             layouts_path,
             layout_auto_exclusions,
@@ -109,6 +113,7 @@ impl DaemonDriverHost {
             reconnect_tasks: Arc::clone(&self.reconnect_tasks),
             event_bus: Arc::clone(&self.event_bus),
             spatial_engine: Arc::clone(&self.spatial_engine),
+            scene_manager: Arc::clone(&self.scene_manager),
             layouts: Arc::clone(&self.layouts),
             layouts_path: self.layouts_path.clone(),
             layout_auto_exclusions: Arc::clone(&self.layout_auto_exclusions),

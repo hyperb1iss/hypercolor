@@ -122,6 +122,7 @@ pub async fn sync_active_layout_for_renderable_devices(
     {
         apply_layout_update(
             &runtime.spatial_engine,
+            &runtime.scene_manager,
             &runtime.scene_transactions,
             layout.clone(),
         )

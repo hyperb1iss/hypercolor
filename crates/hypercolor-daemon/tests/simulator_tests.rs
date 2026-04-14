@@ -400,6 +400,7 @@ async fn simulated_display_crud_routes_update_runtime_state() {
     }
     apply_layout_update(
         &state.spatial_engine,
+        &state.scene_manager,
         &state.scene_transactions,
         active_layout_with_simulator.clone(),
     )

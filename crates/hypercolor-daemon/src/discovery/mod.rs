@@ -18,6 +18,7 @@ use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
 };
+use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_network::DriverRegistry;
 use hypercolor_types::config::HypercolorConfig;
@@ -100,6 +101,10 @@ pub struct DiscoveryRuntime {
 
     /// Active spatial layout used by the render loop.
     pub spatial_engine: Arc<RwLock<SpatialEngine>>,
+
+    /// Scene manager used to keep primary-group layouts aligned with the
+    /// active spatial layout.
+    pub scene_manager: Arc<RwLock<SceneManager>>,
 
     /// Persisted layout store shared with the runtime/API.
     pub layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,

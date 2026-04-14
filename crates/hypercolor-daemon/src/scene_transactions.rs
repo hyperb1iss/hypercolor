@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use tokio::sync::RwLock;
 
+use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::spatial::SpatialLayout;
 
@@ -38,6 +39,7 @@ impl SceneTransactionQueue {
 
 pub async fn apply_layout_update(
     spatial_engine: &RwLock<SpatialEngine>,
+    scene_manager: &RwLock<SceneManager>,
     scene_transactions: &SceneTransactionQueue,
     layout: SpatialLayout,
 ) {
@@ -52,6 +54,10 @@ pub async fn apply_layout_update(
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout.clone());
     }
+    {
+        let mut manager = scene_manager.write().await;
+        manager.sync_primary_group_layout(&layout);
+    }
     scene_transactions.push(SceneTransaction::ReplaceLayout(layout));
     if needs_resize {
         scene_transactions.push(SceneTransaction::ResizeCanvas {
@@ -65,6 +71,7 @@ pub async fn apply_layout_update(
 mod tests {
     use tokio::sync::RwLock;
 
+    use hypercolor_core::scene::SceneManager;
     use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
@@ -108,13 +115,14 @@ mod tests {
     async fn apply_layout_update_queues_resize_for_layout_canvas() {
         let queue = SceneTransactionQueue::default();
         let spatial_engine = RwLock::new(SpatialEngine::new(test_layout("initial")));
+        let scene_manager = RwLock::new(SceneManager::with_default());
         let layout = SpatialLayout {
             canvas_width: 640,
             canvas_height: 360,
             ..test_layout("updated")
         };
 
-        apply_layout_update(&spatial_engine, &queue, layout.clone()).await;
+        apply_layout_update(&spatial_engine, &scene_manager, &queue, layout.clone()).await;
 
         let updated = spatial_engine.read().await.layout().as_ref().clone();
         assert_eq!(updated.id, layout.id);
@@ -140,13 +148,14 @@ mod tests {
     async fn apply_layout_update_skips_resize_when_canvas_dimensions_match() {
         let queue = SceneTransactionQueue::default();
         let spatial_engine = RwLock::new(SpatialEngine::new(test_layout("initial")));
+        let scene_manager = RwLock::new(SceneManager::with_default());
         let layout = SpatialLayout {
             id: "updated".into(),
             name: "updated".into(),
             ..test_layout("initial")
         };
 
-        apply_layout_update(&spatial_engine, &queue, layout.clone()).await;
+        apply_layout_update(&spatial_engine, &scene_manager, &queue, layout.clone()).await;
 
         let transactions = queue.drain();
         assert_eq!(transactions.len(), 1);

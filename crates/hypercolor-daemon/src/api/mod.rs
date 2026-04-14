@@ -414,6 +414,7 @@ impl AppState {
             Arc::clone(&reconnect_tasks),
             Arc::clone(&event_bus),
             Arc::clone(&spatial_engine),
+            Arc::clone(&scene_manager),
             Arc::clone(&layouts),
             layouts_path.clone(),
             Arc::clone(&layout_auto_exclusions),

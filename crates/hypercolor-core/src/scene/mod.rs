@@ -589,6 +589,37 @@ impl SceneManager {
             .and_then(|active| active.groups.iter().find(|group| group.id == group_id))
     }
 
+    /// Refresh the active scene's full-scope (primary-role, non-display) groups
+    /// so their `layout` matches the supplied layout.
+    ///
+    /// The primary group's layout is a snapshot taken when an effect is
+    /// applied. When the active spatial layout changes, that snapshot goes
+    /// stale and the render pipeline stops seeing the real device zones. Call
+    /// this after applying a new active layout to keep the primary group in
+    /// sync. Custom and display groups are left alone — they own their own
+    /// layouts.
+    ///
+    /// Returns `true` if any group's layout changed.
+    pub fn sync_primary_group_layout(&mut self, layout: &SpatialLayout) -> bool {
+        let Some(scene) = self.active_scene_mut() else {
+            return false;
+        };
+        let mut changed = false;
+        for group in &mut scene.groups {
+            if group.role != RenderGroupRole::Primary || group.display_target.is_some() {
+                continue;
+            }
+            if group.layout != *layout {
+                group.layout = layout.clone();
+                changed = true;
+            }
+        }
+        if changed {
+            self.refresh_active_render_groups();
+        }
+        changed
+    }
+
     fn active_scene_mut(&mut self) -> Option<&mut Scene> {
         let scene_id = *self.active_scene_id()?;
         self.scenes.get_mut(&scene_id)

@@ -1107,6 +1107,7 @@ pub(crate) async fn apply_associated_layout(
     if let Some(layout) = layout {
         apply_layout_update(
             &state.spatial_engine,
+            &state.scene_manager,
             &state.scene_transactions,
             layout.clone(),
         )

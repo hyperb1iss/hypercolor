@@ -326,7 +326,8 @@ impl RenderGroupRuntime {
         let mut sample_us = 0_u32;
         if !preview_group.layout.zones.is_empty() {
             let sample_start = Instant::now();
-            next_index = spatial_engine.sample_append_into_at(lease.canvas_mut(), zones, next_index);
+            next_index =
+                spatial_engine.sample_append_into_at(lease.canvas_mut(), zones, next_index);
             sample_us = sample_us.saturating_add(micros_u32(sample_start.elapsed()));
         }
 
@@ -368,7 +369,10 @@ impl RenderGroupRuntime {
                 sample_us = sample_us.saturating_add(micros_u32(sample_start.elapsed()));
             }
             active_group_canvas_ids.push(group.id);
-            group_canvases.push((group.id, GroupCanvasFrame::Surface(group_lease.submit(0, 0))));
+            group_canvases.push((
+                group.id,
+                GroupCanvasFrame::Surface(group_lease.submit(0, 0)),
+            ));
         }
         zones.truncate(next_index);
         let preview_surface = lease.submit(0, 0);
@@ -385,7 +389,9 @@ impl RenderGroupRuntime {
     }
 
     fn single_full_preview_group<'a>(&self, groups: &'a [RenderGroup]) -> Option<&'a RenderGroup> {
-        let mut preview_groups = groups.iter().filter(|group| group_contributes_to_preview(group));
+        let mut preview_groups = groups
+            .iter()
+            .filter(|group| group_contributes_to_preview(group));
         let group = preview_groups.next()?;
         if preview_groups.next().is_some() {
             return None;
@@ -842,17 +848,13 @@ mod tests {
         let solid_id = builtin_effect_id(&registry, "solid_color");
         let mut preview_group = sample_group(4, 4);
         preview_group.effect_id = Some(solid_id);
-        preview_group.controls = HashMap::from([(
-            "color".into(),
-            ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
-        )]);
+        preview_group.controls =
+            HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]);
         preview_group.layout.zones = vec![point_zone("zone_preview")];
         let mut display_group = sample_display_group(4, 4);
         display_group.effect_id = Some(solid_id);
-        display_group.controls = HashMap::from([(
-            "color".into(),
-            ControlValue::Color([0.0, 0.0, 1.0, 1.0]),
-        )]);
+        display_group.controls =
+            HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]);
         display_group.layout.zones = vec![point_zone("zone_display")];
         let mut zones = Vec::new();
 
@@ -984,18 +986,14 @@ mod tests {
         let mut left = sample_display_group(4, 4);
         left.name = "Left Display".into();
         left.effect_id = Some(solid_id);
-        left.controls = HashMap::from([(
-            "color".into(),
-            ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
-        )]);
+        left.controls =
+            HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]);
         left.layout.zones = vec![point_zone("zone_left")];
         let mut right = sample_display_group(4, 4);
         right.name = "Right Display".into();
         right.effect_id = Some(solid_id);
-        right.controls = HashMap::from([(
-            "color".into(),
-            ControlValue::Color([0.0, 0.0, 1.0, 1.0]),
-        )]);
+        right.controls =
+            HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]);
         right.layout.zones = vec![point_zone("zone_right")];
         let groups = vec![left.clone(), right.clone()];
         let mut zones = Vec::new();

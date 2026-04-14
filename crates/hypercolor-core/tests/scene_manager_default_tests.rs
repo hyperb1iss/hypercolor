@@ -400,3 +400,74 @@ fn patch_group_controls_missing_group_returns_none() {
             .is_none()
     );
 }
+
+#[test]
+fn sync_primary_group_layout_refreshes_primary_but_leaves_display_untouched() {
+    let mut manager = SceneManager::with_default();
+    let effect = sample_effect("Aurora");
+    manager
+        .upsert_primary_group(&effect, HashMap::new(), None, sample_layout("zone_stale"))
+        .expect("primary upsert should succeed");
+    let device_id = DeviceId::new();
+    let display_effect = sample_effect("Clock Face");
+    manager
+        .upsert_display_group(
+            device_id,
+            "Pump LCD",
+            &display_effect,
+            HashMap::new(),
+            sample_layout("display_stale"),
+        )
+        .expect("display upsert should succeed");
+    let revision_before = manager.active_render_groups_revision();
+
+    let next_layout = sample_layout("zone_fresh");
+    let changed = manager.sync_primary_group_layout(&next_layout);
+
+    assert!(changed, "layout swap should be reported as changed");
+    let primary_layout_id = manager
+        .active_scene()
+        .expect("default scene should remain active")
+        .primary_group()
+        .expect("primary group should exist")
+        .layout
+        .id
+        .clone();
+    assert_eq!(primary_layout_id, "layout-zone_fresh");
+    let display_layout_id = manager
+        .active_scene()
+        .expect("default scene should remain active")
+        .display_group_for(device_id)
+        .expect("display group should exist")
+        .layout
+        .id
+        .clone();
+    assert_eq!(
+        display_layout_id, "layout-display_stale",
+        "display groups own their own layouts and must not be rewritten"
+    );
+    assert!(
+        manager.active_render_groups_revision() > revision_before,
+        "render group revision should bump when the primary layout changes"
+    );
+}
+
+#[test]
+fn sync_primary_group_layout_is_noop_when_layout_already_matches() {
+    let mut manager = SceneManager::with_default();
+    let effect = sample_effect("Aurora");
+    let layout = sample_layout("zone_steady");
+    manager
+        .upsert_primary_group(&effect, HashMap::new(), None, layout.clone())
+        .expect("primary upsert should succeed");
+    let revision_before = manager.active_render_groups_revision();
+
+    let changed = manager.sync_primary_group_layout(&layout);
+
+    assert!(!changed, "matching layout should not report change");
+    assert_eq!(
+        manager.active_render_groups_revision(),
+        revision_before,
+        "render group revision should not move when nothing changed"
+    );
+}

@@ -2168,6 +2168,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
         event_bus: Arc::clone(&event_bus),
         spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: Arc::new(RwLock::new(SceneManager::with_default())),
         layouts: Arc::new(RwLock::new(HashMap::new())),
         layouts_path: PathBuf::from("layouts.json"),
         layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),

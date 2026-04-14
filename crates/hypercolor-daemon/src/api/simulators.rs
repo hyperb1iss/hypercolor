@@ -307,7 +307,13 @@ async fn prune_simulator_layout_targets(state: &Arc<AppState>, device_id: Device
     };
 
     if let Some(layout) = active_layout {
-        apply_layout_update(&state.spatial_engine, &state.scene_transactions, layout).await;
+        apply_layout_update(
+            &state.spatial_engine,
+            &state.scene_manager,
+            &state.scene_transactions,
+            layout,
+        )
+        .await;
     }
 
     crate::api::persist_layouts(state).await;

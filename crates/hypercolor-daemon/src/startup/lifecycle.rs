@@ -319,6 +319,7 @@ impl DaemonState {
             if let Some(layout) = layouts.get(layout_id) {
                 apply_layout_update(
                     &self.spatial_engine,
+                    &self.scene_manager,
                     &self.scene_transactions,
                     layout.clone(),
                 )
@@ -374,6 +375,12 @@ impl DaemonState {
                     );
                 }
             }
+
+            // Persisted groups carry a frozen layout snapshot that may pre-date
+            // the active layout restored just above. Re-align the primary group
+            // so the render pipeline sees the current layout's zones.
+            let active_layout = self.spatial_engine.read().await.layout().as_ref().clone();
+            scene_manager.sync_primary_group_layout(&active_layout);
         }
         if let Some(current_active_scene) = self.scene_manager.read().await.active_scene().cloned()
         {
@@ -464,6 +471,7 @@ impl DaemonState {
             driver_host: Arc::clone(&self.driver_host),
             driver_registry: Arc::clone(&self.driver_registry),
             spatial_engine: Arc::clone(&self.spatial_engine),
+            scene_manager: Arc::clone(&self.scene_manager),
             layouts: Arc::clone(&self.layouts),
             layouts_path: self.layouts_path.clone(),
             layout_auto_exclusions: Arc::clone(&self.layout_auto_exclusions),

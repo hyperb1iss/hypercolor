@@ -450,6 +450,7 @@ async fn sync_active_layout_canvas_size(state: &Arc<AppState>, width: u32, heigh
 
     apply_layout_update(
         &state.spatial_engine,
+        &state.scene_manager,
         &state.scene_transactions,
         updated_layout.clone(),
     )
