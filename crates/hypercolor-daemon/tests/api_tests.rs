@@ -5403,6 +5403,8 @@ async fn patch_face_composition_updates_material_blend_mode_and_normalizes_repla
     let face = insert_test_display_face_effect(&state, "System Monitor").await;
     activate_empty_test_scene(&state, "Desk Scene").await;
     let app = test_app_with_state(Arc::clone(&state));
+    // Cutout/alpha is the compact default; explicit `replace` is serialized
+    // because it diverges from the default and also forces opacity back to 1.0.
 
     let assign_response = app
         .clone()
@@ -5455,9 +5457,10 @@ async fn patch_face_composition_updates_material_blend_mode_and_normalizes_repla
         .expect("failed to execute request");
     assert_eq!(replace_response.status(), StatusCode::OK);
     let replace_json = body_json(replace_response).await;
-    assert!(
-        replace_json["data"]["group"]["display_target"]["blend_mode"].is_null(),
-        "replace mode should serialize as the compact default"
+    assert_eq!(
+        replace_json["data"]["group"]["display_target"]["blend_mode"],
+        "replace",
+        "explicit replace mode should serialize since it is no longer the default"
     );
     assert!(
         replace_json["data"]["group"]["display_target"]["opacity"].is_null(),

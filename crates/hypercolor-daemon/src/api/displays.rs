@@ -220,7 +220,7 @@ pub async fn set_display_face(
     };
 
     let mut display_target = DisplayFaceTarget {
-        blend_mode: body.blend_mode.unwrap_or(DisplayFaceBlendMode::Replace),
+        blend_mode: body.blend_mode.unwrap_or(DisplayFaceBlendMode::Alpha),
         device_id,
         opacity: body.opacity.unwrap_or(1.0),
     }

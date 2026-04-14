@@ -15,6 +15,7 @@ use crate::components::control_panel::ControlPanel;
 use crate::components::page_header::PageHeader;
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
+use crate::preferences::{EffectPreferences, PreferencesStore};
 use crate::toasts;
 use hypercolor_types::scene::{DisplayFaceBlendMode, SceneKind, SceneMutationMode};
 
@@ -153,7 +154,7 @@ fn sync_face_composition_from_server(
         set_local_blend_mode.set(target.blend_mode);
         set_local_opacity.set(target.opacity.clamp(0.0, 1.0));
     } else {
-        set_local_blend_mode.set(DisplayFaceBlendMode::Replace);
+        set_local_blend_mode.set(DisplayFaceBlendMode::Alpha);
         set_local_opacity.set(1.0);
     }
 }
@@ -1526,7 +1527,7 @@ fn FaceCompositionSection(
     set_display_face: WriteSignal<Option<Result<Option<api::DisplayFaceResponse>, String>>>,
 ) -> impl IntoView {
     let effects_ctx = use_context::<EffectsContext>();
-    let (local_blend_mode, set_local_blend_mode) = signal(DisplayFaceBlendMode::Replace);
+    let (local_blend_mode, set_local_blend_mode) = signal(DisplayFaceBlendMode::Alpha);
     let (local_opacity, set_local_opacity) = signal(1.0_f32);
     let has_face = Signal::derive(move || matches!(display_face.get(), Some(Ok(Some(_)))));
     let selected_blend_option = Memo::new(move |_| face_blend_option(local_blend_mode.get()));
@@ -1719,6 +1720,13 @@ fn FaceControlsSection(
     set_display_face: WriteSignal<Option<Result<Option<api::DisplayFaceResponse>, String>>>,
 ) -> impl IntoView {
     let effects_ctx = use_context::<EffectsContext>();
+    let prefs_store = use_context::<PreferencesStore>();
+    // Track the last seen face ID so we can re-check preferences exactly
+    // once per face (re-)assignment. A naive "already checked" set would
+    // skip the restore after the user switched away and back, because the
+    // ID is still in the set. Tracking the *previous* ID lets us treat a
+    // fresh assignment as a new restore opportunity.
+    let last_restored_face_id: StoredValue<Option<String>> = StoredValue::new(None);
     // Derived view of the face's control definitions for ControlPanel.
     let face_controls = Signal::derive(move || match display_face.get() {
         Some(Ok(Some(face))) => face.effect.controls,
@@ -1759,6 +1767,72 @@ fn FaceControlsSection(
                 *current = next;
             }
         });
+    });
+
+    // Per-face preferences: on first load of a given face ID, compare the
+    // server-loaded controls against any stored preferences. If they
+    // differ, PATCH the stored values back onto the daemon. On subsequent
+    // snapshots for the same face, save the current server state so
+    // switching away and coming back lands on the same tweaks.
+    //
+    // `last_restored_face_id` tracks the most recently-restored face so
+    // we trigger the restore check exactly once per assignment. Without
+    // this, switching A -> B -> A would skip the restore on the second A
+    // (ID already seen) and then save the daemon's fresh empty state,
+    // clobbering the stored preferences.
+    Effect::new(move |_| {
+        let Some(Ok(Some(face))) = display_face.get() else {
+            last_restored_face_id.set_value(None);
+            return;
+        };
+        let Some(store) = prefs_store else {
+            return;
+        };
+        let face_id = face.effect.id.clone();
+        let daemon_controls = face.group.controls.clone();
+        let is_fresh_assignment = last_restored_face_id
+            .with_value(|last| last.as_deref() != Some(face_id.as_str()));
+        if is_fresh_assignment {
+            last_restored_face_id.set_value(Some(face_id.clone()));
+            if let Some(prefs) = store.get(&face_id)
+                && !prefs.control_values.is_empty()
+                && prefs.control_values != daemon_controls
+                && let Some(display) = selected_display.get_untracked()
+            {
+                let display_id = display.id;
+                let stored_values = prefs.control_values.clone();
+                set_face_control_values.set(stored_values.clone());
+                spawn_local(async move {
+                    let controls_json =
+                        crate::components::preset_matching::bundled_preset_to_json(
+                            &stored_values,
+                        );
+                    match api::update_display_face_controls(&display_id, &controls_json).await {
+                        Ok(face) => {
+                            set_display_face.set(Some(Ok(Some(face))));
+                        }
+                        Err(error) => {
+                            toasts::toast_error(&format!(
+                                "Face preferences restore failed: {error}"
+                            ));
+                        }
+                    }
+                });
+                return;
+            }
+        }
+        // Only persist once the daemon has overrides to save. Saving an
+        // empty map right after a swap would clobber real preferences
+        // stored from earlier sessions on the same face.
+        if !daemon_controls.is_empty() {
+            store.save(
+                face_id,
+                EffectPreferences {
+                    preset_id: None,
+                    control_values: daemon_controls,
+                },
+            );
+        }
     });
 
     // Pending-updates buffer keyed by control name. Each user input

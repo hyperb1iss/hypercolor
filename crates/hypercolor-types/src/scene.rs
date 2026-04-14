@@ -135,8 +135,8 @@ pub enum RenderGroupRole {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DisplayFaceBlendMode {
-    #[default]
     Replace,
+    #[default]
     Alpha,
     Tint,
     LumaReveal,
@@ -158,9 +158,8 @@ impl DisplayFaceBlendMode {
     #[must_use]
     pub fn standard_canvas_blend_mode(self) -> Option<BlendMode> {
         match self {
-            Self::Replace => None,
+            Self::Replace | Self::Tint | Self::LumaReveal => None,
             Self::Alpha => Some(BlendMode::Normal),
-            Self::Tint | Self::LumaReveal => None,
             Self::Add => Some(BlendMode::Add),
             Self::Screen => Some(BlendMode::Screen),
             Self::Multiply => Some(BlendMode::Multiply),
@@ -173,7 +172,7 @@ impl DisplayFaceBlendMode {
 }
 
 fn is_default_display_face_blend_mode(value: &DisplayFaceBlendMode) -> bool {
-    matches!(value, DisplayFaceBlendMode::Replace)
+    matches!(value, DisplayFaceBlendMode::Alpha)
 }
 
 fn default_display_face_opacity() -> f32 {
@@ -206,7 +205,7 @@ impl DisplayFaceTarget {
     pub fn new(device_id: DeviceId) -> Self {
         Self {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Replace,
+            blend_mode: DisplayFaceBlendMode::Alpha,
             opacity: default_display_face_opacity(),
         }
     }

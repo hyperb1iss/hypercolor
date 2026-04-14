@@ -120,6 +120,10 @@ function createFaceContext(
 
     container.style.position = 'relative'
     container.style.background = 'transparent'
+    container.style.display = 'flex'
+    container.style.alignItems = 'center'
+    container.style.justifyContent = 'center'
+    container.style.overflow = 'hidden'
     canvas.style.position = 'absolute'
     canvas.style.inset = '0'
     canvas.style.width = '100%'

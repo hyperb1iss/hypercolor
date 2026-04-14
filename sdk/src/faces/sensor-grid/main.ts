@@ -5,7 +5,6 @@ import {
     face,
     font,
     lerpColor,
-    num,
     palette,
     sensor,
     sensorColors,
@@ -21,7 +20,6 @@ import {
     humanizeSensorLabel,
     mixFaceAccent,
     resolveFaceInk,
-    resolveFaceSurface,
 } from '../shared/dom'
 
 const STYLE_ID = 'hc-face-sensor-grid'
@@ -32,29 +30,19 @@ const STYLES = `
     --secondary: ${palette.electricPurple};
     --hero-font: 'Rajdhani', sans-serif;
     --ui-font: 'Inter', sans-serif;
-    --panel: transparent;
     --hero-ink: ${palette.fg.primary};
     --ui-ink: ${palette.fg.secondary};
     --dim-ink: ${palette.fg.tertiary};
-    --edge-ink: rgba(255,255,255,0.12);
     position: absolute;
     inset: 0;
     overflow: hidden;
     color: var(--hero-ink);
-}
-
-.hc-sensor-grid__layout {
-    position: absolute;
-    inset: 0;
     display: grid;
     place-items: center;
-    padding: 32px;
 }
 
 .hc-sensor-grid__frame {
     position: relative;
-    width: 100%;
-    height: 100%;
 }
 
 .hc-sensor-grid__cards {
@@ -68,17 +56,22 @@ const STYLES = `
     width: calc(50% - 7px);
     height: calc(50% - 7px);
     display: grid;
-    grid-template-rows: auto 1fr auto;
-    gap: 12px;
-    align-items: center;
+    grid-template-rows: 1fr;
+    place-items: center;
     justify-items: center;
-    padding: 18px 18px 16px;
-    border-radius: 26px;
-    border: 1px solid color-mix(in srgb, var(--accent) 14%, rgba(255,255,255,0.06));
-    background:
-        linear-gradient(180deg, color-mix(in srgb, var(--accent) 8%, transparent), rgba(10, 12, 20, 0.08)),
-        var(--panel);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+    text-align: center;
+    padding: 8px;
+    background: transparent;
+    border: none;
+}
+
+.hc-sensor-grid__card-inner {
+    display: grid;
+    gap: 8px;
+    justify-items: center;
+    align-items: center;
+    text-align: center;
+    width: 100%;
 }
 
 .hc-sensor-grid__card:nth-child(1) {
@@ -112,9 +105,6 @@ const STYLES = `
 }
 
 .hc-sensor-grid__value {
-    display: grid;
-    place-items: center;
-    min-height: 2.2em;
     font-family: var(--hero-font);
     font-size: 50px;
     font-weight: 600;
@@ -129,14 +119,7 @@ const STYLES = `
         0 8px 24px rgba(0,0,0,0.24);
 }
 
-.hc-sensor-grid__footer {
-    width: 100%;
-    display: grid;
-    gap: 10px;
-}
-
 .hc-sensor-grid__percent {
-    justify-self: center;
     font-family: var(--ui-font);
     font-size: 11px;
     font-weight: 600;
@@ -149,11 +132,12 @@ const STYLES = `
 
 .hc-sensor-grid__track {
     position: relative;
-    width: 100%;
-    height: 8px;
+    width: 80%;
+    height: 6px;
     border-radius: 999px;
     overflow: hidden;
-    background: rgba(255,255,255,0.05);
+    background: rgba(255,255,255,0.06);
+    justify-self: center;
 }
 
 .hc-sensor-grid__track-fill {
@@ -164,12 +148,8 @@ const STYLES = `
     background: linear-gradient(90deg, var(--accent), var(--secondary));
 }
 
-.hc-sensor-grid[data-style='signal'] .hc-sensor-grid__card {
-    border-radius: 20px;
-}
-
-.hc-sensor-grid[data-style='radar'] .hc-sensor-grid__track {
-    height: 10px;
+.hc-sensor-grid__hidden {
+    display: none !important;
 }
 `
 
@@ -182,16 +162,15 @@ export default face(
         sensor4: sensor('Bottom Right', 'ram_used', { group: 'Sensors' }),
         colorMode: combo('Colors', ['Auto', 'Accent'], { group: 'Style' }),
         accent: color('Accent', palette.neonCyan, { group: 'Style' }),
-        frameStyle: combo('Frame Style', ['Atlas', 'Signal', 'Radar'], { group: 'Layout' }),
         heroFont: font('Hero Font', 'Rajdhani', { group: 'Typography', families: [...DISPLAY_FONT_FAMILIES] }),
         uiFont: font('UI Font', 'Inter', { group: 'Typography', families: [...UI_FONT_FAMILIES] }),
-        panelColor: color('Panel Color', palette.bg.deep, { group: 'Style' }),
-        panelAlpha: num('Panel Alpha', [0, 100], 0, { group: 'Style' }),
-        backdrop: combo('Backdrop', ['Clear', 'Glass', 'Opaque'], { group: 'Style' }),
-        showTracks: toggle('Tracks', true, { group: 'Style' }),
+        showLabels: toggle('Show Labels', true, { group: 'Elements' }),
+        showValues: toggle('Show Values', true, { group: 'Elements' }),
+        showPercents: toggle('Show Percents', false, { group: 'Elements' }),
+        showTracks: toggle('Show Tracks', true, { group: 'Elements' }),
     },
     {
-        description: 'A readable four-panel dashboard with centered values, restrained surfaces, and color that reacts without visual noise.',
+        description: 'A readable four-panel dashboard. Every element is independently toggleable.',
         author: 'Hypercolor',
         designBasis: { width: 480, height: 480 },
         presets: [
@@ -204,7 +183,6 @@ export default face(
                     sensor3: 'cpu_load',
                     sensor4: 'ram_used',
                     colorMode: 'Auto',
-                    frameStyle: 'Atlas',
                     heroFont: 'Rajdhani',
                     uiFont: 'Inter',
                 },
@@ -218,7 +196,6 @@ export default face(
                     sensor3: 'cpu_temp',
                     sensor4: 'gpu_temp',
                     colorMode: 'Auto',
-                    frameStyle: 'Signal',
                     heroFont: 'Roboto Condensed',
                     uiFont: 'Inter',
                 },
@@ -229,7 +206,6 @@ export default face(
                 controls: {
                     colorMode: 'Accent',
                     accent: '#9ae7ff',
-                    frameStyle: 'Atlas',
                     heroFont: 'Exo 2',
                     uiFont: 'Inter',
                 },
@@ -240,17 +216,15 @@ export default face(
                 controls: {
                     colorMode: 'Accent',
                     accent: palette.coral,
-                    frameStyle: 'Radar',
                     heroFont: 'Exo 2',
                     uiFont: 'DM Sans',
                 },
             },
             {
                 name: 'Mono Ops',
-                description: 'Sharp monospaced cards for clean telemetry.',
+                description: 'Sharp monospaced telemetry.',
                 controls: {
                     colorMode: 'Auto',
-                    frameStyle: 'Signal',
                     heroFont: 'Space Mono',
                     uiFont: 'JetBrains Mono',
                 },
@@ -261,20 +235,20 @@ export default face(
                 controls: {
                     colorMode: 'Accent',
                     accent: palette.electricYellow,
-                    frameStyle: 'Radar',
                     heroFont: 'Rajdhani',
                     uiFont: 'Space Grotesk',
                 },
             },
             {
-                name: 'Night Mesh',
-                description: 'Blue-magenta telemetry mesh with clear contrast.',
+                name: 'Naked Numbers',
+                description: 'Just the big values, no labels or chrome.',
                 controls: {
-                    colorMode: 'Accent',
-                    accent: '#8ed8ff',
-                    frameStyle: 'Signal',
+                    colorMode: 'Auto',
                     heroFont: 'Rajdhani',
-                    uiFont: 'DM Sans',
+                    uiFont: 'Inter',
+                    showLabels: false,
+                    showPercents: false,
+                    showTracks: false,
                 },
             },
             {
@@ -283,7 +257,6 @@ export default face(
                 controls: {
                     colorMode: 'Accent',
                     accent: '#ffb45f',
-                    frameStyle: 'Atlas',
                     heroFont: 'Roboto Condensed',
                     uiFont: 'Space Grotesk',
                 },
@@ -294,20 +267,18 @@ export default face(
         ensureFaceStyles(STYLE_ID, STYLES)
         const root = createFaceRoot(ctx, 'hc-sensor-grid')
         root.innerHTML = `
-            <div class="hc-sensor-grid__layout">
-                <div class="hc-sensor-grid__frame">
-                    <div class="hc-sensor-grid__cards">
-                        ${Array.from({ length: 4 }, () => `
-                            <div class="hc-sensor-grid__card">
+            <div class="hc-sensor-grid__frame">
+                <div class="hc-sensor-grid__cards">
+                    ${Array.from({ length: 4 }, () => `
+                        <div class="hc-sensor-grid__card">
+                            <div class="hc-sensor-grid__card-inner">
                                 <div class="hc-sensor-grid__label">UNASSIGNED</div>
                                 <div class="hc-sensor-grid__value">--</div>
-                                <div class="hc-sensor-grid__footer">
-                                    <div class="hc-sensor-grid__percent">0%</div>
-                                    <div class="hc-sensor-grid__track"><div class="hc-sensor-grid__track-fill"></div></div>
-                                </div>
+                                <div class="hc-sensor-grid__percent">0%</div>
+                                <div class="hc-sensor-grid__track"><div class="hc-sensor-grid__track-fill"></div></div>
                             </div>
-                        `).join('')}
-                    </div>
+                        </div>
+                    `).join('')}
                 </div>
             </div>
         `
@@ -316,7 +287,7 @@ export default face(
         const cards = Array.from(root.querySelectorAll<HTMLDivElement>('.hc-sensor-grid__card'))
         const sensorKeys = ['sensor1', 'sensor2', 'sensor3', 'sensor4'] as const
         const smoothValues = [0, 0, 0, 0]
-        const safeSize = Math.round(Math.min(ctx.width, ctx.height) * 0.68)
+        const safeSize = Math.round(Math.min(ctx.width, ctx.height) * 0.78)
         frameEl.style.width = `${safeSize}px`
         frameEl.style.height = `${safeSize}px`
 
@@ -325,23 +296,19 @@ export default face(
             const accent = lerpColor(controls.accent as string, palette.fg.primary, 0.04)
             const secondary = mixFaceAccent(accent)
             const ink = resolveFaceInk(accent)
-            const panelColor = controls.panelColor as string
-            const panelAlpha = controls.panelAlpha as number
-            const backdrop = controls.backdrop as string
-            const frameStyle = (controls.frameStyle as string).toLowerCase()
 
-            root.dataset.backdrop = backdrop.toLowerCase()
-            root.dataset.panel = panelAlpha > 0 ? 'on' : 'off'
-            root.dataset.style = frameStyle
             root.style.setProperty('--accent', accent)
             root.style.setProperty('--secondary', secondary)
             root.style.setProperty('--hero-ink', ink.hero)
             root.style.setProperty('--ui-ink', ink.ui)
             root.style.setProperty('--dim-ink', ink.dim)
-            root.style.setProperty('--edge-ink', ink.edge)
             root.style.setProperty('--hero-font', `"${controls.heroFont as string}", sans-serif`)
             root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
-            root.style.setProperty('--panel', resolveFaceSurface(backdrop, panelColor, panelAlpha, { clear: 0, glass: 0.36 }))
+
+            const showLabels = controls.showLabels as boolean
+            const showValues = controls.showValues as boolean
+            const showPercents = controls.showPercents as boolean
+            const showTracks = controls.showTracks as boolean
 
             cards.forEach((card, index) => {
                 const sensorLabel = controls[sensorKeys[index]] as string
@@ -365,15 +332,24 @@ export default face(
                 card.style.setProperty('--hero-ink', cardInk.hero)
                 card.style.setProperty('--ui-ink', cardInk.ui)
                 card.style.setProperty('--dim-ink', cardInk.dim)
-                card.querySelector<HTMLElement>('.hc-sensor-grid__value')!.textContent = sensors.formatted(sensorLabel)
-                card.querySelector<HTMLElement>('.hc-sensor-grid__label')!.textContent = humanizeSensorLabel(sensorLabel)
-                card.querySelector<HTMLElement>('.hc-sensor-grid__percent')!.textContent = `${Math.round(clamp01(smoothValues[index]) * 100)}%`
-                const track = card.querySelector<HTMLElement>('.hc-sensor-grid__track')
-                track!.style.display = controls.showTracks ? 'block' : 'none'
+
+                const labelEl = card.querySelector<HTMLElement>('.hc-sensor-grid__label')!
+                const valueEl = card.querySelector<HTMLElement>('.hc-sensor-grid__value')!
+                const percentEl = card.querySelector<HTMLElement>('.hc-sensor-grid__percent')!
+                const trackEl = card.querySelector<HTMLElement>('.hc-sensor-grid__track')!
+
+                valueEl.textContent = sensors.formatted(sensorLabel)
+                labelEl.textContent = humanizeSensorLabel(sensorLabel)
+                percentEl.textContent = `${Math.round(clamp01(smoothValues[index]) * 100)}%`
                 card.querySelector<HTMLElement>('.hc-sensor-grid__track-fill')!.style.setProperty(
                     '--fill',
                     clamp01(smoothValues[index]).toFixed(4),
                 )
+
+                labelEl.classList.toggle('hc-sensor-grid__hidden', !showLabels)
+                valueEl.classList.toggle('hc-sensor-grid__hidden', !showValues)
+                percentEl.classList.toggle('hc-sensor-grid__hidden', !showPercents)
+                trackEl.classList.toggle('hc-sensor-grid__hidden', !showTracks)
             })
 
             const c = ctx.ctx

@@ -18,7 +18,6 @@ import {
     ensureFaceStyles,
     mixFaceAccent,
     resolveFaceInk,
-    resolveFaceSurface,
 } from '../shared/dom'
 
 const STYLE_ID = 'hc-face-neon-clock'
@@ -29,76 +28,42 @@ const STYLES = `
     --secondary: ${palette.electricPurple};
     --headline-font: 'Rajdhani', sans-serif;
     --ui-font: 'Inter', sans-serif;
-    --panel: transparent;
     --hero-ink: ${palette.fg.primary};
     --ui-ink: ${palette.fg.secondary};
     --dim-ink: ${palette.fg.tertiary};
-    --panel-edge: rgba(255, 255, 255, 0.08);
     position: absolute;
     inset: 0;
     overflow: hidden;
     color: var(--hero-ink);
 }
 
-.hc-neon-clock__stage {
-    position: absolute;
-    inset: 0;
-    display: grid;
-    place-items: center;
-    padding: 36px;
-}
-
-.hc-neon-clock__stack {
-    width: 100%;
-    height: 100%;
-    display: grid;
-    place-items: center;
-}
-
-.hc-neon-clock__time-block {
-    display: grid;
-    gap: 14px;
-    justify-items: center;
-    padding: 20px 24px;
-    border-radius: 30px;
-    background: var(--panel);
-    border: 1px solid transparent;
-}
-
-.hc-neon-clock[data-panel='on'] .hc-neon-clock__time-block {
-    border-color: var(--panel-edge);
-}
-
 .hc-neon-clock__time {
-    display: grid;
-    grid-auto-flow: column;
-    align-items: end;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    display: inline-flex;
+    align-items: baseline;
     justify-content: center;
-    column-gap: 10px;
+    gap: 10px;
     font-family: var(--headline-font);
     font-size: 120px;
     font-weight: 600;
-    line-height: 0.84;
+    line-height: 1;
     letter-spacing: 0.015em;
     color: var(--hero-ink);
     font-variant-numeric: tabular-nums lining-nums;
     font-feature-settings: 'tnum' 1, 'lnum' 1;
+    white-space: nowrap;
     text-shadow:
         0 0 20px color-mix(in srgb, var(--accent) 12%, transparent),
         0 10px 28px rgba(0, 0, 0, 0.28);
 }
 
 .hc-neon-clock__slot {
-    display: grid;
+    display: inline-grid;
     grid-auto-flow: column;
     justify-content: center;
-}
-
-.hc-neon-clock__slot--hours {
-    grid-template-columns: repeat(2, 0.68ch);
-}
-
-.hc-neon-clock__slot--minutes {
     grid-template-columns: repeat(2, 0.68ch);
 }
 
@@ -117,23 +82,15 @@ const STYLES = `
     transform: translateY(-3px);
 }
 
-.hc-neon-clock__seconds {
-    font-family: var(--ui-font);
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: var(--dim-ink);
-    font-variant-numeric: tabular-nums lining-nums;
-    font-feature-settings: 'tnum' 1, 'lnum' 1;
-}
-
 .hc-neon-clock__meta {
+    position: absolute;
+    top: calc(50% + 88px);
+    left: 50%;
+    transform: translateX(-50%);
     display: flex;
     justify-content: center;
     align-items: center;
     gap: 14px;
-    min-height: 1em;
     font-family: var(--ui-font);
     font-size: 12px;
     font-weight: 600;
@@ -142,18 +99,16 @@ const STYLES = `
     color: var(--ui-ink);
     font-variant-numeric: tabular-nums lining-nums;
     font-feature-settings: 'tnum' 1, 'lnum' 1;
+    white-space: nowrap;
 }
 
+.hc-neon-clock__seconds,
 .hc-neon-clock__ampm {
     color: var(--dim-ink);
 }
 
-.hc-neon-clock[data-style='split'] .hc-neon-clock__time-block {
-    border-radius: 24px;
-}
-
-.hc-neon-clock[data-style='pulse'] .hc-neon-clock__time {
-    letter-spacing: 0.03em;
+.hc-neon-clock__hidden {
+    display: none !important;
 }
 `
 
@@ -170,16 +125,17 @@ export default face(
         dialStyle: combo('Dial Style', ['Orbit', 'Split', 'Pulse'], { group: 'Clock' }),
         headlineFont: font('Headline Font', 'Rajdhani', { group: 'Typography', families: [...DISPLAY_FONT_FAMILIES] }),
         uiFont: font('UI Font', 'Inter', { group: 'Typography', families: [...UI_FONT_FAMILIES] }),
-        panelColor: color('Panel Color', palette.bg.deep, { group: 'Style' }),
-        panelAlpha: num('Panel Alpha', [0, 100], 0, { group: 'Style' }),
-        backdrop: combo('Backdrop', ['Clear', 'Glass', 'Opaque'], { group: 'Style' }),
         hourFormat: combo('Format', ['24h', '12h'], { group: 'Clock' }),
-        showSeconds: toggle('Show Seconds', false, { group: 'Clock' }),
-        showDate: toggle('Show Date', true, { group: 'Clock' }),
         glowIntensity: num('Glow', [0, 100], 56, { group: 'Style' }),
+        showTime: toggle('Show Time', true, { group: 'Elements' }),
+        showSeparator: toggle('Show Separator', true, { group: 'Elements' }),
+        showDate: toggle('Show Date', true, { group: 'Elements' }),
+        showSeconds: toggle('Show Seconds', false, { group: 'Elements' }),
+        showAmPm: toggle('Show AM/PM', true, { group: 'Elements' }),
+        showDial: toggle('Show Dial', true, { group: 'Elements' }),
     },
     {
-        description: 'A centered digital clock with restrained motion, stable numerals, and presets that keep the face readable first.',
+        description: 'A centered digital clock. Every element is independently toggleable.',
         author: 'Hypercolor',
         designBasis: { width: 480, height: 480 },
         presets: [
@@ -268,15 +224,17 @@ export default face(
                 },
             },
             {
-                name: 'Prism Pulse',
-                description: 'Bright magenta pulse with compact seconds.',
+                name: 'Naked Time',
+                description: 'Just the digits. No meta, no dial.',
                 controls: {
-                    accent: '#ff78d2',
-                    secondaryAccent: '#8fcbff',
-                    dialStyle: 'Pulse',
-                    headlineFont: 'Exo 2',
-                    uiFont: 'Space Grotesk',
-                    glowIntensity: 62,
+                    accent: palette.neonCyan,
+                    secondaryAccent: palette.electricPurple,
+                    headlineFont: 'Rajdhani',
+                    uiFont: 'Inter',
+                    showDate: false,
+                    showSeconds: false,
+                    showAmPm: false,
+                    showDial: false,
                 },
             },
         ],
@@ -285,30 +243,26 @@ export default face(
         ensureFaceStyles(STYLE_ID, STYLES)
         const root = createFaceRoot(ctx, 'hc-neon-clock')
         root.innerHTML = `
-            <div class="hc-neon-clock__stage">
-                <div class="hc-neon-clock__stack">
-                    <div class="hc-neon-clock__time-block">
-                        <div class="hc-neon-clock__time">
-                            <span class="hc-neon-clock__slot hc-neon-clock__slot--hours">
-                                <span class="hc-neon-clock__digit hc-neon-clock__hours-tens">0</span>
-                                <span class="hc-neon-clock__digit hc-neon-clock__hours-ones">0</span>
-                            </span>
-                            <span class="hc-neon-clock__separator">:</span>
-                            <span class="hc-neon-clock__slot hc-neon-clock__slot--minutes">
-                                <span class="hc-neon-clock__digit hc-neon-clock__minutes-tens">0</span>
-                                <span class="hc-neon-clock__digit hc-neon-clock__minutes-ones">0</span>
-                            </span>
-                        </div>
-                        <div class="hc-neon-clock__meta">
-                            <span class="hc-neon-clock__date"></span>
-                            <span class="hc-neon-clock__seconds"></span>
-                            <span class="hc-neon-clock__ampm"></span>
-                        </div>
-                    </div>
-                </div>
+            <div class="hc-neon-clock__time">
+                <span class="hc-neon-clock__slot hc-neon-clock__slot--hours">
+                    <span class="hc-neon-clock__digit hc-neon-clock__hours-tens">0</span>
+                    <span class="hc-neon-clock__digit hc-neon-clock__hours-ones">0</span>
+                </span>
+                <span class="hc-neon-clock__separator">:</span>
+                <span class="hc-neon-clock__slot hc-neon-clock__slot--minutes">
+                    <span class="hc-neon-clock__digit hc-neon-clock__minutes-tens">0</span>
+                    <span class="hc-neon-clock__digit hc-neon-clock__minutes-ones">0</span>
+                </span>
+            </div>
+            <div class="hc-neon-clock__meta">
+                <span class="hc-neon-clock__date"></span>
+                <span class="hc-neon-clock__seconds"></span>
+                <span class="hc-neon-clock__ampm"></span>
             </div>
         `
 
+        const timeEl = root.querySelector<HTMLDivElement>('.hc-neon-clock__time')!
+        const separatorEl = root.querySelector<HTMLSpanElement>('.hc-neon-clock__separator')!
         const hoursTensEl = root.querySelector<HTMLSpanElement>('.hc-neon-clock__hours-tens')!
         const hoursOnesEl = root.querySelector<HTMLSpanElement>('.hc-neon-clock__hours-ones')!
         const minutesTensEl = root.querySelector<HTMLSpanElement>('.hc-neon-clock__minutes-tens')!
@@ -326,27 +280,24 @@ export default face(
             const accent = lerpColor(controls.accent as string, palette.fg.primary, 0.06)
             const secondary = mixFaceAccent(controls.secondaryAccent as string, accent, 0.12)
             const ink = resolveFaceInk(accent)
-            const panelColor = controls.panelColor as string
-            const panelAlpha = controls.panelAlpha as number
-            const backdrop = controls.backdrop as string
             const glow = clamp01((controls.glowIntensity as number) / 100)
+            const showTime = controls.showTime as boolean
+            const showSeparator = controls.showSeparator as boolean
             const showSeconds = controls.showSeconds as boolean
             const showDate = controls.showDate as boolean
+            const showAmPm = controls.showAmPm as boolean
+            const showDial = controls.showDial as boolean
             const is12h = controls.hourFormat === '12h'
             const dialStyle = (controls.dialStyle as string).toLowerCase()
 
-            root.dataset.backdrop = backdrop.toLowerCase()
-            root.dataset.panel = panelAlpha > 0 ? 'on' : 'off'
             root.dataset.style = dialStyle
             root.style.setProperty('--accent', accent)
             root.style.setProperty('--secondary', secondary)
             root.style.setProperty('--hero-ink', ink.hero)
             root.style.setProperty('--ui-ink', ink.ui)
             root.style.setProperty('--dim-ink', ink.dim)
-            root.style.setProperty('--panel-edge', ink.edge)
             root.style.setProperty('--headline-font', `"${controls.headlineFont as string}", sans-serif`)
             root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
-            root.style.setProperty('--panel', resolveFaceSurface(backdrop, panelColor, panelAlpha, { clear: 0, glass: 0.42 }))
 
             const now = new Date()
             let hours = now.getHours()
@@ -361,30 +312,26 @@ export default face(
             setClockDigit(hoursOnesEl, hoursText[hoursText.length - 1] ?? '0')
             setClockDigit(minutesTensEl, minutesText[0] ?? '0')
             setClockDigit(minutesOnesEl, minutesText[1] ?? '0')
-            secondsEl.textContent = showSeconds ? `SEC ${seconds.toString().padStart(2, '0')}` : ''
-            secondsEl.style.display = showSeconds ? 'inline' : 'none'
+            secondsEl.textContent = `SEC ${seconds.toString().padStart(2, '0')}`
+            ampmEl.textContent = is12h ? ampm : ''
+            dateEl.textContent = now
+                .toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+                .toUpperCase()
 
-            if (showDate || showSeconds || is12h) {
-                dateEl.textContent = showDate
-                    ? now
-                          .toLocaleDateString('en-US', {
-                              weekday: 'short',
-                              month: 'short',
-                              day: 'numeric',
-                          })
-                          .toUpperCase()
-                    : ''
-                ampmEl.textContent = is12h ? ampm : ''
-                dateEl.style.display = showDate ? 'inline' : 'none'
-                secondsEl.style.display = showSeconds ? 'inline' : 'none'
-                ampmEl.style.display = is12h ? 'inline' : 'none'
-                metaEl.style.display = 'flex'
-            } else {
-                metaEl.style.display = 'none'
-            }
+            timeEl.classList.toggle('hc-neon-clock__hidden', !showTime)
+            separatorEl.classList.toggle('hc-neon-clock__hidden', !showSeparator)
+            dateEl.classList.toggle('hc-neon-clock__hidden', !showDate)
+            secondsEl.classList.toggle('hc-neon-clock__hidden', !showSeconds)
+            ampmEl.classList.toggle('hc-neon-clock__hidden', !is12h || !showAmPm)
+            metaEl.classList.toggle(
+                'hc-neon-clock__hidden',
+                !showDate && !showSeconds && !(is12h && showAmPm),
+            )
 
             const c = ctx.ctx
             c.clearRect(0, 0, W, H)
+            if (!showDial) return
+
             c.save()
             c.strokeStyle = withAlpha(accent, 0.16 + glow * 0.14)
             c.shadowColor = withAlpha(accent, 0.16 + glow * 0.12)

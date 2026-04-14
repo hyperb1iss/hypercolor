@@ -4,7 +4,6 @@ import {
     face,
     font,
     lerpColor,
-    num,
     palette,
     sensor,
     toggle,
@@ -17,7 +16,6 @@ import {
     ensureFaceStyles,
     mixFaceAccent,
     resolveFaceInk,
-    resolveFaceSurface,
 } from '../shared/dom'
 
 const STYLE_ID = 'hc-face-silkcircuit-hud'
@@ -28,38 +26,38 @@ const STYLES = `
     --secondary: ${palette.coral};
     --hero-font: 'Rajdhani', sans-serif;
     --ui-font: 'Inter', sans-serif;
-    --panel: transparent;
     --hero-ink: ${palette.fg.primary};
     --ui-ink: ${palette.fg.secondary};
     --dim-ink: ${palette.fg.tertiary};
-    --edge-ink: rgba(255,255,255,0.12);
     position: absolute;
     inset: 0;
     overflow: hidden;
     color: var(--hero-ink);
+    display: grid;
+    place-items: center;
 }
 
-.hc-silk-hud__layout {
-    position: absolute;
-    inset: 0;
+.hc-silk-hud__stack {
     display: grid;
-    align-content: center;
     gap: 18px;
-    padding: 32px;
+    justify-items: center;
+    align-items: center;
+    text-align: center;
+    width: min(78%, 420px);
 }
 
 .hc-silk-hud__clock {
     display: grid;
     gap: 10px;
     justify-items: center;
+    align-items: center;
 }
 
 .hc-silk-hud__time {
-    display: grid;
-    grid-auto-flow: column;
-    align-items: end;
+    display: inline-flex;
+    align-items: baseline;
     justify-content: center;
-    column-gap: 8px;
+    gap: 8px;
     font-family: var(--hero-font);
     font-size: 84px;
     font-weight: 600;
@@ -74,13 +72,9 @@ const STYLES = `
 }
 
 .hc-silk-hud__slot {
-    display: grid;
+    display: inline-grid;
     grid-auto-flow: column;
     justify-content: center;
-}
-
-.hc-silk-hud__slot--hours,
-.hc-silk-hud__slot--minutes {
     grid-template-columns: repeat(2, 0.66ch);
 }
 
@@ -100,7 +94,6 @@ const STYLES = `
 }
 
 .hc-silk-hud__date {
-    min-height: 1em;
     font-family: var(--ui-font);
     font-size: 12px;
     font-weight: 600;
@@ -109,22 +102,24 @@ const STYLES = `
     color: var(--ui-ink);
 }
 
-.hc-silk-hud__hero {
+.hc-silk-hud__metrics {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 16px;
+    gap: 20px;
+    width: 100%;
+    justify-items: center;
+    align-items: center;
 }
 
 .hc-silk-hud__metric {
     display: grid;
-    gap: 10px;
+    gap: 6px;
     justify-items: center;
-    padding: 18px 18px 16px;
-    border-radius: 26px;
-    border: 1px solid color-mix(in srgb, var(--accent) 12%, rgba(255,255,255,0.06));
-    background:
-        linear-gradient(180deg, color-mix(in srgb, var(--accent) 8%, transparent), rgba(10, 12, 20, 0.08)),
-        var(--panel);
+    align-items: center;
+    text-align: center;
+    background: transparent;
+    border: none;
+    padding: 0;
 }
 
 .hc-silk-hud__metric-label {
@@ -137,7 +132,6 @@ const STYLES = `
 }
 
 .hc-silk-hud__metric-value {
-    min-width: 4ch;
     font-family: var(--hero-font);
     font-size: 56px;
     font-weight: 600;
@@ -150,18 +144,17 @@ const STYLES = `
 
 .hc-silk-hud__bars {
     display: grid;
-    gap: 12px;
+    gap: 10px;
+    width: 100%;
 }
 
 .hc-silk-hud__bar {
     display: grid;
-    gap: 8px;
-    padding: 12px 14px;
-    border-radius: 20px;
-    border: 1px solid color-mix(in srgb, var(--accent) 8%, rgba(255,255,255,0.05));
-    background:
-        linear-gradient(180deg, color-mix(in srgb, var(--accent) 6%, transparent), rgba(10, 12, 20, 0.06)),
-        var(--panel);
+    gap: 6px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    width: 100%;
 }
 
 .hc-silk-hud__bar-head {
@@ -180,7 +173,7 @@ const STYLES = `
 
 .hc-silk-hud__bar-rail {
     position: relative;
-    height: 9px;
+    height: 6px;
     border-radius: 999px;
     overflow: hidden;
     background: rgba(255,255,255,0.06);
@@ -194,12 +187,8 @@ const STYLES = `
     background: linear-gradient(90deg, var(--accent), var(--secondary));
 }
 
-.hc-silk-hud[data-style='pulse'] .hc-silk-hud__metric {
-    border-radius: 20px;
-}
-
-.hc-silk-hud[data-style='matrix'] .hc-silk-hud__bar {
-    border-radius: 14px;
+.hc-silk-hud__hidden {
+    display: none !important;
 }
 `
 
@@ -217,18 +206,18 @@ export default face(
         ramSensor: sensor('RAM Sensor', 'ram_used', { group: 'Sensors' }),
         accent: color('Accent', palette.neonCyan, { group: 'Style' }),
         secondaryAccent: color('Secondary', palette.coral, { group: 'Style' }),
-        deckStyle: combo('Deck Style', ['Bridge', 'Pulse', 'Matrix'], { group: 'Layout' }),
         heroFont: font('Hero Font', 'Rajdhani', { group: 'Typography', families: [...DISPLAY_FONT_FAMILIES] }),
         uiFont: font('UI Font', 'Inter', { group: 'Typography', families: [...UI_FONT_FAMILIES] }),
-        panelColor: color('Panel Color', palette.bg.deep, { group: 'Style' }),
-        panelAlpha: num('Panel Alpha', [0, 100], 0, { group: 'Style' }),
-        backdrop: combo('Backdrop', ['Clear', 'Glass', 'Opaque'], { group: 'Style' }),
         hourFormat: combo('Clock Format', ['24h', '12h'], { group: 'Clock' }),
-        showDate: toggle('Show Date', true, { group: 'Clock' }),
-        showBars: toggle('Show Bars', true, { group: 'Layout' }),
+        showClock: toggle('Show Clock', true, { group: 'Elements' }),
+        showDate: toggle('Show Date', true, { group: 'Elements' }),
+        showMetrics: toggle('Show Metrics', true, { group: 'Elements' }),
+        showMetricLabels: toggle('Show Metric Labels', true, { group: 'Elements' }),
+        showBars: toggle('Show Bars', true, { group: 'Elements' }),
+        showBarLabels: toggle('Show Bar Labels', true, { group: 'Elements' }),
     },
     {
-        description: 'A clean command-center face with a stable centered clock and readable system metrics.',
+        description: 'A clean command-center face. Every element is independently toggleable.',
         author: 'Hypercolor',
         designBasis: { width: 480, height: 480 },
         presets: [
@@ -238,7 +227,6 @@ export default face(
                 controls: {
                     accent: palette.neonCyan,
                     secondaryAccent: palette.coral,
-                    deckStyle: 'Bridge',
                     heroFont: 'Rajdhani',
                     uiFont: 'Inter',
                 },
@@ -249,7 +237,6 @@ export default face(
                 controls: {
                     accent: '#ffb347',
                     secondaryAccent: '#ff6b6b',
-                    deckStyle: 'Pulse',
                     heroFont: 'Roboto Condensed',
                     uiFont: 'Inter',
                 },
@@ -260,7 +247,6 @@ export default face(
                 controls: {
                     accent: '#9ae7ff',
                     secondaryAccent: '#c8d5ff',
-                    deckStyle: 'Bridge',
                     heroFont: 'Exo 2',
                     uiFont: 'Inter',
                 },
@@ -271,7 +257,6 @@ export default face(
                 controls: {
                     accent: palette.coral,
                     secondaryAccent: '#ffb8dd',
-                    deckStyle: 'Matrix',
                     heroFont: 'Exo 2',
                     uiFont: 'DM Sans',
                 },
@@ -282,20 +267,20 @@ export default face(
                 controls: {
                     accent: palette.electricYellow,
                     secondaryAccent: '#ffa166',
-                    deckStyle: 'Pulse',
                     heroFont: 'Space Mono',
                     uiFont: 'JetBrains Mono',
                 },
             },
             {
-                name: 'Nightclub Ops',
-                description: 'Dark magenta-blue control room.',
+                name: 'Clock Only',
+                description: 'Just the clock, centered and clean.',
                 controls: {
-                    accent: '#ff4da6',
-                    secondaryAccent: '#6a8bff',
-                    deckStyle: 'Matrix',
+                    accent: palette.neonCyan,
+                    secondaryAccent: palette.electricPurple,
                     heroFont: 'Rajdhani',
-                    uiFont: 'Space Grotesk',
+                    uiFont: 'Inter',
+                    showMetrics: false,
+                    showBars: false,
                 },
             },
             {
@@ -304,20 +289,20 @@ export default face(
                 controls: {
                     accent: '#8fe8ff',
                     secondaryAccent: '#7fa2ff',
-                    deckStyle: 'Bridge',
                     heroFont: 'Orbitron',
                     uiFont: 'DM Sans',
                 },
             },
             {
-                name: 'Solar Mesh',
-                description: 'Amber coral command mesh with centered modules.',
+                name: 'Metrics Only',
+                description: 'Just the metric tiles with bars.',
                 controls: {
                     accent: '#ffb25f',
                     secondaryAccent: '#ff7d8e',
-                    deckStyle: 'Matrix',
                     heroFont: 'Roboto Condensed',
                     uiFont: 'Space Grotesk',
+                    showClock: false,
+                    showDate: false,
                 },
             },
         ],
@@ -326,7 +311,7 @@ export default face(
         ensureFaceStyles(STYLE_ID, STYLES)
         const root = createFaceRoot(ctx, 'hc-silk-hud')
         root.innerHTML = `
-            <div class="hc-silk-hud__layout">
+            <div class="hc-silk-hud__stack">
                 <div class="hc-silk-hud__clock">
                     <div class="hc-silk-hud__time">
                         <span class="hc-silk-hud__slot hc-silk-hud__slot--hours">
@@ -341,7 +326,7 @@ export default face(
                     </div>
                     <div class="hc-silk-hud__date">MON MAY 15</div>
                 </div>
-                <div class="hc-silk-hud__hero">
+                <div class="hc-silk-hud__metrics">
                     <div class="hc-silk-hud__metric hc-silk-hud__cpu">
                         <div class="hc-silk-hud__metric-label">CPU TEMP</div>
                         <div class="hc-silk-hud__metric-value">--</div>
@@ -364,40 +349,39 @@ export default face(
             </div>
         `
 
+        const clockEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__clock')!
         const hoursTensEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__hours-tens')!
         const hoursOnesEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__hours-ones')!
         const minutesTensEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__minutes-tens')!
         const minutesOnesEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__minutes-ones')!
         const dateEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__date')!
+        const metricsEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__metrics')!
+        const cpuLabelEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__cpu .hc-silk-hud__metric-label')!
+        const gpuLabelEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__gpu .hc-silk-hud__metric-label')!
         const cpuValueEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__cpu .hc-silk-hud__metric-value')!
         const gpuValueEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__gpu .hc-silk-hud__metric-value')!
+        const loadLabelEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__load-label')!
         const loadValueEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__load-value')!
+        const ramLabelEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__ram-label')!
         const ramValueEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__ram-value')!
         const loadFillEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__load-fill')!
         const ramFillEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__ram-fill')!
         const barsEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__bars')!
+        const loadHeadEl = loadLabelEl.parentElement!
+        const ramHeadEl = ramLabelEl.parentElement!
 
         return (_time, controls, sensors) => {
             const accent = lerpColor(controls.accent as string, palette.fg.primary, 0.05)
             const secondary = mixFaceAccent(controls.secondaryAccent as string, accent, 0.14)
             const ink = resolveFaceInk(accent)
-            const panelColor = controls.panelColor as string
-            const panelAlpha = controls.panelAlpha as number
-            const backdrop = controls.backdrop as string
-            const deckStyle = (controls.deckStyle as string).toLowerCase()
 
-            root.dataset.backdrop = backdrop.toLowerCase()
-            root.dataset.panel = panelAlpha > 0 ? 'on' : 'off'
-            root.dataset.style = deckStyle
             root.style.setProperty('--accent', accent)
             root.style.setProperty('--secondary', secondary)
             root.style.setProperty('--hero-ink', ink.hero)
             root.style.setProperty('--ui-ink', ink.ui)
             root.style.setProperty('--dim-ink', ink.dim)
-            root.style.setProperty('--edge-ink', ink.edge)
             root.style.setProperty('--hero-font', `"${controls.heroFont as string}", sans-serif`)
             root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
-            root.style.setProperty('--panel', resolveFaceSurface(backdrop, panelColor, panelAlpha, { clear: 0, glass: 0.36 }))
 
             const now = new Date()
             let hours = now.getHours()
@@ -409,17 +393,9 @@ export default face(
             setHudDigit(hoursOnesEl, hourText[hourText.length - 1] ?? '0')
             setHudDigit(minutesTensEl, minuteText[0] ?? '0')
             setHudDigit(minutesOnesEl, minuteText[1] ?? '0')
-
-            dateEl.textContent = controls.showDate
-                ? now
-                      .toLocaleDateString('en-US', {
-                          weekday: 'short',
-                          month: 'short',
-                          day: 'numeric',
-                      })
-                      .toUpperCase()
-                : ''
-            dateEl.style.display = controls.showDate ? 'block' : 'none'
+            dateEl.textContent = now
+                .toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+                .toUpperCase()
 
             const cpuLoad = sensors.normalized(controls.cpuLoadSensor as string)
             const ram = sensors.normalized(controls.ramSensor as string)
@@ -429,7 +405,22 @@ export default face(
             ramValueEl.textContent = sensors.formatted(controls.ramSensor as string)
             loadFillEl.style.setProperty('--fill', Math.max(0, Math.min(1, cpuLoad)).toFixed(4))
             ramFillEl.style.setProperty('--fill', Math.max(0, Math.min(1, ram)).toFixed(4))
-            barsEl.style.display = controls.showBars ? 'grid' : 'none'
+
+            const showClock = controls.showClock as boolean
+            const showDate = controls.showDate as boolean
+            const showMetrics = controls.showMetrics as boolean
+            const showMetricLabels = controls.showMetricLabels as boolean
+            const showBars = controls.showBars as boolean
+            const showBarLabels = controls.showBarLabels as boolean
+
+            clockEl.classList.toggle('hc-silk-hud__hidden', !showClock)
+            dateEl.classList.toggle('hc-silk-hud__hidden', !showDate)
+            metricsEl.classList.toggle('hc-silk-hud__hidden', !showMetrics)
+            cpuLabelEl.classList.toggle('hc-silk-hud__hidden', !showMetricLabels)
+            gpuLabelEl.classList.toggle('hc-silk-hud__hidden', !showMetricLabels)
+            barsEl.classList.toggle('hc-silk-hud__hidden', !showBars)
+            loadHeadEl.classList.toggle('hc-silk-hud__hidden', !showBarLabels)
+            ramHeadEl.classList.toggle('hc-silk-hud__hidden', !showBarLabels)
 
             const c = ctx.ctx
             c.clearRect(0, 0, ctx.width, ctx.height)

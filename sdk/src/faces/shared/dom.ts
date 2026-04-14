@@ -46,7 +46,7 @@ export function createFaceRoot(ctx: FaceContext, className: string): HTMLDivElem
     root.style.width = '100%'
     root.style.height = '100%'
     root.style.background = 'transparent'
-    root.style.placeItems = 'stretch'
+    root.style.placeItems = 'center'
     ctx.container.appendChild(root)
     return root
 }
@@ -85,49 +85,4 @@ export function resolveFaceInk(accent: string): FaceInk {
         edge: withAlpha(lerpColor(accent, palette.fg.secondary, 0.58), 0.24),
         glow: withAlpha(accent, 0.24),
     }
-}
-
-function faceBackdropStrength(backdrop: string, opaque: number, glass: number, clear: number): number {
-    switch (backdrop.toLowerCase()) {
-        case 'opaque':
-            return opaque
-        case 'glass':
-            return glass
-        case 'clear':
-        default:
-            return clear
-    }
-}
-
-export function resolveFaceSurface(
-    backdrop: string,
-    color: string,
-    alphaPercent: number,
-    strengths: { opaque?: number; glass?: number; clear?: number } = {},
-): string {
-    const alpha = clamp01(alphaPercent / 100)
-    const strength = faceBackdropStrength(
-        backdrop,
-        strengths.opaque ?? 1,
-        strengths.glass ?? 0.56,
-        strengths.clear ?? 0.16,
-    )
-    return withAlpha(color, alpha * strength)
-}
-
-export function resolveFaceCanvasWash(
-    backdrop: string,
-    color: string,
-    alphaPercent: number,
-    strengths: { opaque?: number; glass?: number; clear?: number } = {},
-): string | null {
-    const alpha = clamp01(alphaPercent / 100)
-    const strength = faceBackdropStrength(
-        backdrop,
-        strengths.opaque ?? 1,
-        strengths.glass ?? 0.32,
-        strengths.clear ?? 0,
-    )
-    const finalAlpha = alpha * strength
-    return finalAlpha > 0 ? withAlpha(color, finalAlpha) : null
 }
