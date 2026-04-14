@@ -33,7 +33,7 @@ struct FaceBlendOption {
     blurb: &'static str,
 }
 
-const FACE_BLEND_OPTIONS: [FaceBlendOption; 9] = [
+const FACE_BLEND_OPTIONS: [FaceBlendOption; 11] = [
     FaceBlendOption {
         mode: DisplayFaceBlendMode::Replace,
         label: "Replace",
@@ -43,6 +43,16 @@ const FACE_BLEND_OPTIONS: [FaceBlendOption; 9] = [
         mode: DisplayFaceBlendMode::Alpha,
         label: "Alpha",
         blurb: "Use face transparency as a clean reveal into the live effect layer.",
+    },
+    FaceBlendOption {
+        mode: DisplayFaceBlendMode::Tint,
+        label: "Effect Tint",
+        blurb: "Let the effect provide the living color while the face behaves like tinted material.",
+    },
+    FaceBlendOption {
+        mode: DisplayFaceBlendMode::LumaReveal,
+        label: "Luma Reveal",
+        blurb: "Drive bright face details from the effect while darker panels stay anchored to the face artwork.",
     },
     FaceBlendOption {
         mode: DisplayFaceBlendMode::Screen,

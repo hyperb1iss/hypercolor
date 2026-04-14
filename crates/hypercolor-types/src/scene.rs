@@ -138,6 +138,8 @@ pub enum DisplayFaceBlendMode {
     #[default]
     Replace,
     Alpha,
+    Tint,
+    LumaReveal,
     Add,
     Screen,
     Multiply,
@@ -154,10 +156,11 @@ impl DisplayFaceBlendMode {
     }
 
     #[must_use]
-    pub fn canvas_blend_mode(self) -> Option<BlendMode> {
+    pub fn standard_canvas_blend_mode(self) -> Option<BlendMode> {
         match self {
             Self::Replace => None,
             Self::Alpha => Some(BlendMode::Normal),
+            Self::Tint | Self::LumaReveal => None,
             Self::Add => Some(BlendMode::Add),
             Self::Screen => Some(BlendMode::Screen),
             Self::Multiply => Some(BlendMode::Multiply),
