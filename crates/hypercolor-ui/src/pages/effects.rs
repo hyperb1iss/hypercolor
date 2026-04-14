@@ -699,38 +699,108 @@ pub fn EffectsPage() -> impl IntoView {
                 </div>
             </div>
 
-            // Detail panel(s) — right side, visible when an effect is selected
+            // Detail panel(s) — right side, visible when an effect is selected.
             //
-            // IMPORTANT: Only read active_effect_id here so that accent color
-            // changes don't rebuild the DOM (which destroys CanvasPreview and
-            // causes a burst of re-paints). All dynamic styles use reactive bindings.
-                {move || {
-                    fx.active_effect_id.get().map(|_| {
-                        view! {
-                            <div style="display: contents">
-                                // Resize handle between grid and preview
-                                <ResizeHandle
-                                    on_drag_start=on_detail_drag_start
-                                    on_drag=on_detail_drag
-                                    on_drag_end=on_detail_drag_end
-                                />
+            // Gate this subtree on presence rather than the specific effect ID
+            // so switching between effects doesn't remount CanvasPreview and
+            // briefly drop the preview subscription.
+            {move || {
+                has_active.get().then(|| {
+                    view! {
+                        <div style="display: contents">
+                            // Resize handle between grid and preview
+                            <ResizeHandle
+                                on_drag_start=on_detail_drag_start
+                                on_drag=on_detail_drag
+                                on_drag_end=on_detail_drag_end
+                            />
 
-                                // Preview panel (always visible when effect selected)
-                                <aside
-                                    class="shrink-0 flex flex-col min-h-0 animate-slide-in-right"
-                                    style=move || format!("width: {}px", detail_width.get())
-                                >
-                                    // Unified cinematic cabinet — canvas + preset strip, shared
-                                    // with the dashboard. The effects page owns no telemetry
-                                    // reporting, so `report_telemetry` stays at its default
-                                    // `false`; canvas sizes via its own aspect ratio here.
-                                    <div class="shrink-0 pb-3">
-                                        <PreviewCabinet />
-                                    </div>
+                            // Preview panel (always visible when effect selected)
+                            <aside
+                                class="shrink-0 flex flex-col min-h-0 animate-slide-in-right"
+                                style=move || format!("width: {}px", detail_width.get())
+                            >
+                                // Unified cinematic cabinet — canvas + preset strip, shared
+                                // with the dashboard. The effects page owns no telemetry
+                                // reporting, so `report_telemetry` stays at its default
+                                // `false`; canvas sizes via its own aspect ratio here.
+                                <div class="shrink-0 pb-3">
+                                    <PreviewCabinet />
+                                </div>
 
-                                    // Controls (docked mode — inside preview panel)
-                                    {move || (!controls_detached.get()).then(|| {
-                                        view! {
+                                // Controls (docked mode — inside preview panel)
+                                {move || (!controls_detached.get()).then(|| {
+                                    view! {
+                                        <div
+                                            class="flex-1 min-h-0 overflow-y-auto"
+                                            style="overscroll-behavior: contain"
+                                        >
+                                            <div class="space-y-3">
+                                                {move || show_calibration_guide.get().then(|| view! {
+                                                    <CalibrationGuide
+                                                        effect_id=active_effect_id_signal
+                                                        control_values=control_values
+                                                        accent_rgb=accent_rgb
+                                                    />
+                                                })}
+                                                <div
+                                                    class="rounded-xl bg-surface-raised/80 border border-edge-subtle p-3 edge-glow"
+                                                    style:border-top=move || format!("2px solid rgba({}, 0.2)", accent_rgb.get())
+                                                >
+                                                    <div class="flex items-center gap-2 mb-3 pb-2 border-b border-edge-subtle/50">
+                                                        <div
+                                                            class="w-6 h-6 rounded-md flex items-center justify-center"
+                                                            style=move || format!(
+                                                                "background: rgba({0}, 0.1); box-shadow: 0 0 8px rgba({0}, 0.08)",
+                                                                accent_rgb.get()
+                                                            )
+                                                        >
+                                                            <span style=move || format!("color: rgba({}, 0.7)", accent_rgb.get())>
+                                                                <Icon icon=LuSettings2 width="13px" height="13px" />
+                                                            </span>
+                                                        </div>
+                                                        <h3 class="text-[11px] font-semibold tracking-wide text-fg-secondary uppercase">
+                                                            "Controls"
+                                                        </h3>
+                                                        <div class="flex-1" />
+                                                        <button
+                                                            class="p-1 rounded-md hover:bg-surface-hover/40 text-fg-tertiary/50 hover:text-fg-secondary transition-all duration-150"
+                                                            title="Float controls into separate panel"
+                                                            on:click=move |_| {
+                                                                set_controls_detached.set(true);
+                                                                persist_to_storage("hc-fx-controls-detached", "true");
+                                                            }
+                                                        >
+                                                            <Icon icon=LuUnlink width="11px" height="11px" />
+                                                        </button>
+                                                    </div>
+                                                    <ControlPanel
+                                                        controls=controls
+                                                        control_values=control_values
+                                                        accent_rgb=accent_rgb
+                                                        on_change=on_control_change
+                                                    />
+                                                </div>
+                                            </div>
+                                        </div>
+                                    }
+                                })}
+
+                            </aside>
+
+                            // Controls (detached mode — own column with resize handle)
+                            {move || controls_detached.get().then(|| {
+                                view! {
+                                    <div style="display: contents">
+                                        <ResizeHandle
+                                            on_drag_start=on_controls_drag_start
+                                            on_drag=on_controls_drag
+                                            on_drag_end=on_controls_drag_end
+                                        />
+                                        <aside
+                                            class="shrink-0 flex flex-col min-h-0 animate-slide-in-right"
+                                            style=move || format!("width: {}px", controls_width.get())
+                                        >
                                             <div
                                                 class="flex-1 min-h-0 overflow-y-auto"
                                                 style="overscroll-behavior: contain"
@@ -765,13 +835,13 @@ pub fn EffectsPage() -> impl IntoView {
                                                             <div class="flex-1" />
                                                             <button
                                                                 class="p-1 rounded-md hover:bg-surface-hover/40 text-fg-tertiary/50 hover:text-fg-secondary transition-all duration-150"
-                                                                title="Float controls into separate panel"
+                                                                title="Dock controls back"
                                                                 on:click=move |_| {
-                                                                    set_controls_detached.set(true);
-                                                                    persist_to_storage("hc-fx-controls-detached", "true");
+                                                                    set_controls_detached.set(false);
+                                                                    persist_to_storage("hc-fx-controls-detached", "false");
                                                                 }
                                                             >
-                                                                <Icon icon=LuUnlink width="11px" height="11px" />
+                                                                <Icon icon=LuLink width="11px" height="11px" />
                                                             </button>
                                                         </div>
                                                         <ControlPanel
@@ -783,84 +853,14 @@ pub fn EffectsPage() -> impl IntoView {
                                                     </div>
                                                 </div>
                                             </div>
-                                        }
-                                    })}
-
-                                </aside>
-
-                                // Controls (detached mode — own column with resize handle)
-                                {move || controls_detached.get().then(|| {
-                                    view! {
-                                        <div style="display: contents">
-                                            <ResizeHandle
-                                                on_drag_start=on_controls_drag_start
-                                                on_drag=on_controls_drag
-                                                on_drag_end=on_controls_drag_end
-                                            />
-                                            <aside
-                                                class="shrink-0 flex flex-col min-h-0 animate-slide-in-right"
-                                                style=move || format!("width: {}px", controls_width.get())
-                                            >
-                                                <div
-                                                    class="flex-1 min-h-0 overflow-y-auto"
-                                                    style="overscroll-behavior: contain"
-                                                >
-                                                    <div class="space-y-3">
-                                                        {move || show_calibration_guide.get().then(|| view! {
-                                                            <CalibrationGuide
-                                                                effect_id=active_effect_id_signal
-                                                                control_values=control_values
-                                                                accent_rgb=accent_rgb
-                                                            />
-                                                        })}
-                                                        <div
-                                                            class="rounded-xl bg-surface-raised/80 border border-edge-subtle p-3 edge-glow"
-                                                            style:border-top=move || format!("2px solid rgba({}, 0.2)", accent_rgb.get())
-                                                        >
-                                                            <div class="flex items-center gap-2 mb-3 pb-2 border-b border-edge-subtle/50">
-                                                                <div
-                                                                    class="w-6 h-6 rounded-md flex items-center justify-center"
-                                                                    style=move || format!(
-                                                                        "background: rgba({0}, 0.1); box-shadow: 0 0 8px rgba({0}, 0.08)",
-                                                                        accent_rgb.get()
-                                                                    )
-                                                                >
-                                                                    <span style=move || format!("color: rgba({}, 0.7)", accent_rgb.get())>
-                                                                        <Icon icon=LuSettings2 width="13px" height="13px" />
-                                                                    </span>
-                                                                </div>
-                                                                <h3 class="text-[11px] font-semibold tracking-wide text-fg-secondary uppercase">
-                                                                    "Controls"
-                                                                </h3>
-                                                                <div class="flex-1" />
-                                                                <button
-                                                                    class="p-1 rounded-md hover:bg-surface-hover/40 text-fg-tertiary/50 hover:text-fg-secondary transition-all duration-150"
-                                                                    title="Dock controls back"
-                                                                    on:click=move |_| {
-                                                                        set_controls_detached.set(false);
-                                                                        persist_to_storage("hc-fx-controls-detached", "false");
-                                                                    }
-                                                                >
-                                                                    <Icon icon=LuLink width="11px" height="11px" />
-                                                                </button>
-                                                            </div>
-                                                            <ControlPanel
-                                                                controls=controls
-                                                                control_values=control_values
-                                                                accent_rgb=accent_rgb
-                                                                on_change=on_control_change
-                                                            />
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </aside>
-                                        </div>
-                                    }
-                                })}
-                            </div>
-                        }
-                    })
-                }}
+                                        </aside>
+                                    </div>
+                                }
+                            })}
+                        </div>
+                    }
+                })
+            }}
             </div>
         </div>
     }
