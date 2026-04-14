@@ -191,6 +191,7 @@ pub struct SparkleFlinger {
 pub(crate) enum ZoneSamplingDispatch {
     Unsupported,
     Ready,
+    Saturated,
     Pending(PendingZoneSampling),
 }
 
@@ -294,6 +295,7 @@ impl SparkleFlinger {
                 match gpu.begin_sample_zone_plan_into(prepared_zones, zones)? {
                     GpuZoneSamplingDispatch::Unsupported => ZoneSamplingDispatch::Unsupported,
                     GpuZoneSamplingDispatch::Ready => ZoneSamplingDispatch::Ready,
+                    GpuZoneSamplingDispatch::Saturated => ZoneSamplingDispatch::Saturated,
                     GpuZoneSamplingDispatch::Pending(pending) => {
                         ZoneSamplingDispatch::Pending(PendingZoneSampling::Gpu(pending))
                     }
@@ -341,6 +343,18 @@ impl SparkleFlinger {
         }
     }
 
+    pub(crate) fn discard_pending_zone_sampling(&mut self, pending: PendingZoneSampling) {
+        match (&mut self.backend, pending) {
+            (SparkleFlingerBackend::Cpu(_), _) => {}
+            #[cfg(feature = "wgpu")]
+            (SparkleFlingerBackend::Gpu { gpu, .. }, PendingZoneSampling::Gpu(pending)) => {
+                gpu.discard_pending_zone_sampling(pending);
+            }
+            #[allow(unreachable_patterns)]
+            _ => {}
+        }
+    }
+
     pub(crate) fn pending_zone_sampling_matches_current_work(
         &self,
         pending: &PendingZoneSampling,
@@ -362,6 +376,14 @@ impl SparkleFlinger {
             SparkleFlingerBackend::Cpu(_) => false,
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, .. } => gpu.can_sample_zone_plan(_prepared_zones),
+        }
+    }
+
+    pub(crate) fn max_pending_zone_sampling(&self) -> usize {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => 0,
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.max_pending_zone_sampling(),
         }
     }
 

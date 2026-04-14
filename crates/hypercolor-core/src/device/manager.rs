@@ -1136,8 +1136,7 @@ impl BackendManager {
                 .is_none_or(|previous| previous.to_bits() != normalized.to_bits())
         };
         if changed {
-            self.device_brightness_generation =
-                self.device_brightness_generation.saturating_add(1);
+            self.device_brightness_generation = self.device_brightness_generation.saturating_add(1);
         }
     }
 

@@ -251,10 +251,11 @@ pub fn DashboardPage() -> impl IntoView {
         set_layout_menu_open.set(false);
     });
 
-    install_layout_menu_outside_handler(set_layout_menu_open);
-
     view! {
         <div class="flex h-full min-h-0 flex-col overflow-hidden animate-fade-in">
+            <Show when=move || layout_menu_open.get()>
+                <LayoutMenuDismissHandler set_open=set_layout_menu_open />
+            </Show>
             // `relative z-30` lifts the header into its own stacking
             // context above the scroll container below, so the layout
             // gear menu can pop down past the header edge and float
@@ -612,4 +613,10 @@ fn install_layout_menu_outside_handler(set_open: WriteSignal<bool>) {
         },
         UseEventListenerOptions::default().capture(true),
     );
+}
+
+#[component]
+fn LayoutMenuDismissHandler(set_open: WriteSignal<bool>) -> impl IntoView {
+    install_layout_menu_outside_handler(set_open);
+    view! {}
 }

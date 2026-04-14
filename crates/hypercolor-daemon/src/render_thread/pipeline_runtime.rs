@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -94,7 +95,7 @@ pub(crate) struct RenderCaches {
     pub(crate) composition_planner: CompositionPlanner,
     pub(crate) sparkleflinger: SparkleFlinger,
     pub(crate) deferred_zone_sampling: Option<PendingZoneSampling>,
-    pub(crate) retired_zone_sampling: Option<PendingZoneSampling>,
+    pub(crate) retired_zone_sampling: VecDeque<PendingZoneSampling>,
     pub(crate) deferred_zone_sampling_scratch: Vec<hypercolor_types::event::ZoneColors>,
     pub(crate) render_group_runtime: RenderGroupRuntime,
     pub(crate) render_surface_pool: RenderSurfacePool,
@@ -119,14 +120,18 @@ impl RenderCaches {
     /// Existing published surfaces stay valid until their leases drop; new
     /// dequeues get the updated dimensions.
     pub(crate) fn apply_canvas_resize(&mut self, width: u32, height: u32) {
+        if let Some(pending) = self.deferred_zone_sampling.take() {
+            self.sparkleflinger.discard_pending_zone_sampling(pending);
+        }
+        while let Some(pending) = self.retired_zone_sampling.pop_front() {
+            self.sparkleflinger.discard_pending_zone_sampling(pending);
+        }
         self.render_surface_pool = RenderSurfacePool::with_slot_count(
             SurfaceDescriptor::rgba8888(width, height),
             desired_render_surface_slots(0),
         );
         self.render_group_runtime = RenderGroupRuntime::new(width, height);
         self.composition_planner = CompositionPlanner::new();
-        self.deferred_zone_sampling = None;
-        self.retired_zone_sampling = None;
         self.deferred_zone_sampling_scratch.clear();
         self.static_surface_cache = None;
     }
@@ -199,7 +204,7 @@ impl PipelineRuntime {
                 composition_planner: CompositionPlanner::new(),
                 sparkleflinger: SparkleFlinger::new(render_acceleration_mode)?,
                 deferred_zone_sampling: None,
-                retired_zone_sampling: None,
+                retired_zone_sampling: VecDeque::new(),
                 deferred_zone_sampling_scratch: Vec::new(),
                 render_group_runtime: RenderGroupRuntime::new(canvas_width, canvas_height),
                 render_surface_pool: RenderSurfacePool::with_slot_count(

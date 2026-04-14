@@ -752,6 +752,7 @@ pub(super) struct MetricsPacing {
     pub(super) gpu_zone_sampling: u32,
     pub(super) gpu_sample_deferred: u32,
     pub(super) gpu_sample_retry_hit: u32,
+    pub(super) gpu_sample_queue_saturated: u32,
     pub(super) gpu_sample_wait_blocked: u32,
 }
 
@@ -766,6 +767,7 @@ pub(super) struct MetricsTimeline {
     pub(super) gpu_zone_sampling: bool,
     pub(super) gpu_sample_deferred: bool,
     pub(super) gpu_sample_retry_hit: bool,
+    pub(super) gpu_sample_queue_saturated: bool,
     pub(super) gpu_sample_wait_blocked: bool,
     pub(super) cpu_readback_skipped: bool,
     pub(super) budget_ms: f64,

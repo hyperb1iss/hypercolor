@@ -8,7 +8,7 @@ use hypercolor_types::event::ZoneColors;
 const SAMPLE_WORKGROUP_SIZE: u32 = 64;
 const SAMPLE_PARAM_BYTES: usize = 16;
 const SAMPLE_POINT_BYTES: u64 = 16;
-const SAMPLE_READBACK_SLOT_COUNT: usize = 2;
+const SAMPLE_READBACK_SLOT_COUNT: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -88,6 +88,7 @@ struct CachedGpuSamplingBindGroup {
 
 pub(super) struct GpuSamplingDispatch {
     pub(super) sampled: bool,
+    pub(super) queue_saturated: bool,
     pub(super) submission_index: Option<wgpu::SubmissionIndex>,
     pub(super) pending_readback: Option<PendingGpuSampleReadback>,
 }
@@ -99,7 +100,6 @@ pub(super) struct PendingGpuSampleReadback {
     zones: Vec<GpuZoneRange>,
     receiver: Option<mpsc::Receiver<std::result::Result<(), wgpu::BufferAsyncError>>>,
     map_ready: bool,
-    #[cfg(test)]
     slot: usize,
 }
 
@@ -200,6 +200,7 @@ pub(super) struct GpuSpatialSampler {
     points_buffer: Option<wgpu::Buffer>,
     output_buffer: Option<wgpu::Buffer>,
     readback_buffers: Option<[wgpu::Buffer; SAMPLE_READBACK_SLOT_COUNT]>,
+    readback_slots_in_use: [bool; SAMPLE_READBACK_SLOT_COUNT],
     next_readback_slot: usize,
     capacity: usize,
     buffer_generation: u64,
@@ -299,6 +300,7 @@ impl GpuSpatialSampler {
             points_buffer: None,
             output_buffer: None,
             readback_buffers: None,
+            readback_slots_in_use: [false; SAMPLE_READBACK_SLOT_COUNT],
             next_readback_slot: 0,
             capacity: 0,
             buffer_generation: 0,
@@ -331,6 +333,7 @@ impl GpuSpatialSampler {
         if !self.ensure_plan(prepared_zones) {
             return Ok(GpuSamplingDispatch {
                 sampled: false,
+                queue_saturated: false,
                 submission_index: None,
                 pending_readback: None,
             });
@@ -345,6 +348,7 @@ impl GpuSpatialSampler {
             zones.clear();
             return Ok(GpuSamplingDispatch {
                 sampled: true,
+                queue_saturated: false,
                 submission_index: encoder.map(|encoder| queue.submit(Some(encoder.finish()))),
                 pending_readback: None,
             });
@@ -353,6 +357,7 @@ impl GpuSpatialSampler {
             zones.clear();
             return Ok(GpuSamplingDispatch {
                 sampled: true,
+                queue_saturated: false,
                 submission_index: encoder.map(|encoder| queue.submit(Some(encoder.finish()))),
                 pending_readback: None,
             });
@@ -404,6 +409,7 @@ impl GpuSpatialSampler {
             zones.clear();
             return Ok(GpuSamplingDispatch {
                 sampled: true,
+                queue_saturated: false,
                 submission_index: Some(submission_index),
                 pending_readback: None,
             });
@@ -411,7 +417,8 @@ impl GpuSpatialSampler {
         let Some((readback_slot, readback_buffer)) = self.next_readback_buffer() else {
             zones.clear();
             return Ok(GpuSamplingDispatch {
-                sampled: true,
+                sampled: false,
+                queue_saturated: true,
                 submission_index: Some(queue.submit(Some(encoder.finish()))),
                 pending_readback: None,
             });
@@ -424,6 +431,7 @@ impl GpuSpatialSampler {
             .map_or_else(Vec::new, |cached| cached.plan.zones.clone());
         Ok(GpuSamplingDispatch {
             sampled: true,
+            queue_saturated: false,
             submission_index: Some(submission_index.clone()),
             pending_readback: Some(begin_zone_color_readback(
                 &readback_buffer,
@@ -448,8 +456,12 @@ impl GpuSpatialSampler {
             {
                 self.sample_readback_wait_count = self.sample_readback_wait_count.saturating_add(1);
             }
-            wait_for_zone_color_readback(device, &mut pending_readback)?;
+            if let Err(error) = wait_for_zone_color_readback(device, &mut pending_readback) {
+                self.release_readback_slot(pending_readback.slot);
+                return Err(error);
+            }
             finish_zone_color_readback(&pending_readback, zones)?;
+            self.release_readback_slot(pending_readback.slot);
         }
 
         Ok(())
@@ -462,15 +474,32 @@ impl GpuSpatialSampler {
         zones: &mut Vec<ZoneColors>,
     ) -> Result<bool> {
         self.last_readback_wait_blocked = false;
-        if !poll_zone_color_readback_ready(device, pending_readback)? {
+        if let Err(error) = poll_zone_color_readback_ready(device, pending_readback) {
+            self.release_readback_slot(pending_readback.slot);
+            return Err(error);
+        }
+        if !pending_readback.map_ready {
             return Ok(false);
         }
-        finish_zone_color_readback(pending_readback, zones)?;
+        if let Err(error) = finish_zone_color_readback(pending_readback, zones) {
+            self.release_readback_slot(pending_readback.slot);
+            return Err(error);
+        }
+        self.release_readback_slot(pending_readback.slot);
         Ok(true)
     }
 
     pub(super) fn take_last_readback_wait_blocked(&mut self) -> bool {
         std::mem::take(&mut self.last_readback_wait_blocked)
+    }
+
+    pub(super) const fn max_pending_readbacks(&self) -> usize {
+        SAMPLE_READBACK_SLOT_COUNT
+    }
+
+    pub(super) fn discard_pending_readback(&mut self, pending_readback: PendingGpuSampleReadback) {
+        pending_readback.buffer.unmap();
+        self.release_readback_slot(pending_readback.slot);
     }
 
     fn ensure_capacity(&mut self, device: &wgpu::Device, sample_count: usize) {
@@ -501,6 +530,7 @@ impl GpuSpatialSampler {
                 mapped_at_creation: false,
             })
         }));
+        self.readback_slots_in_use = [false; SAMPLE_READBACK_SLOT_COUNT];
         self.next_readback_slot = 0;
         self.capacity = sample_count;
         self.buffer_generation = self.buffer_generation.saturating_add(1);
@@ -510,9 +540,21 @@ impl GpuSpatialSampler {
 
     fn next_readback_buffer(&mut self) -> Option<(usize, wgpu::Buffer)> {
         let readback_buffers = self.readback_buffers.as_ref()?;
-        let slot = self.next_readback_slot % SAMPLE_READBACK_SLOT_COUNT;
-        self.next_readback_slot = (slot + 1) % SAMPLE_READBACK_SLOT_COUNT;
-        Some((slot, readback_buffers[slot].clone()))
+        for offset in 0..SAMPLE_READBACK_SLOT_COUNT {
+            let slot = (self.next_readback_slot + offset) % SAMPLE_READBACK_SLOT_COUNT;
+            if !self.readback_slots_in_use[slot] {
+                self.readback_slots_in_use[slot] = true;
+                self.next_readback_slot = (slot + 1) % SAMPLE_READBACK_SLOT_COUNT;
+                return Some((slot, readback_buffers[slot].clone()));
+            }
+        }
+        None
+    }
+
+    fn release_readback_slot(&mut self, slot: usize) {
+        if slot < SAMPLE_READBACK_SLOT_COUNT {
+            self.readback_slots_in_use[slot] = false;
+        }
     }
 
     fn ensure_plan(&mut self, prepared_zones: &[PreparedZonePlan]) -> bool {
@@ -667,7 +709,7 @@ fn begin_zone_color_readback(
     used_bytes: u64,
     submission_index: wgpu::SubmissionIndex,
     zones: Vec<GpuZoneRange>,
-    _slot: usize,
+    slot: usize,
 ) -> PendingGpuSampleReadback {
     let slice = buffer.slice(..used_bytes);
     let (sender, receiver) = mpsc::channel::<std::result::Result<(), wgpu::BufferAsyncError>>();
@@ -681,8 +723,7 @@ fn begin_zone_color_readback(
         zones,
         receiver: Some(receiver),
         map_ready: false,
-        #[cfg(test)]
-        slot: _slot,
+        slot,
     }
 }
 

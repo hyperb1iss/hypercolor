@@ -10,7 +10,7 @@
 
 use anyhow::{Result, bail};
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
-use hypercolor_types::effect::{ControlValue, EffectMetadata, EffectSource};
+use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, EffectSource};
 use hypercolor_types::sensor::SystemSnapshot;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,7 +28,35 @@ use crate::effect::traits::{EffectRenderer, FrameInput};
 use crate::engine::FpsTier;
 
 const DEFAULT_EFFECT_FPS_CAP: u32 = 30;
+const DEFAULT_DISPLAY_FPS_CAP: u32 = 30;
 const MAX_EFFECT_FPS_CAP: u32 = 60;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnimationCadence {
+    MatchRenderLoop,
+    Fixed(u32),
+}
+
+impl AnimationCadence {
+    fn fps_cap(self, delta_secs: f32) -> u32 {
+        match self {
+            Self::MatchRenderLoop => animation_fps_cap(delta_secs),
+            Self::Fixed(fps_cap) => fps_cap,
+        }
+    }
+
+    fn render_due(self, last_submit_time_secs: Option<f32>, next_time_secs: f32) -> bool {
+        match self {
+            Self::MatchRenderLoop => true,
+            Self::Fixed(fps_cap) => {
+                let min_frame_interval_secs = 1.0 / fps_cap.max(1) as f32;
+                last_submit_time_secs.is_none_or(|last_submit_time_secs| {
+                    next_time_secs + f32::EPSILON >= last_submit_time_secs + min_frame_interval_secs
+                })
+            }
+        }
+    }
+}
 
 /// Feature-gated renderer for HTML effects.
 pub struct ServoRenderer {
@@ -47,6 +75,8 @@ pub struct ServoRenderer {
     include_audio_updates: bool,
     include_screen_updates: bool,
     last_animation_fps_cap: Option<u32>,
+    animation_cadence: AnimationCadence,
+    last_submit_time_secs: Option<f32>,
 }
 
 impl ServoRenderer {
@@ -69,6 +99,8 @@ impl ServoRenderer {
             include_audio_updates: true,
             include_screen_updates: false,
             last_animation_fps_cap: None,
+            animation_cadence: AnimationCadence::MatchRenderLoop,
+            last_submit_time_secs: None,
         }
     }
 
@@ -80,7 +112,7 @@ impl ServoRenderer {
     }
 
     fn enqueue_frame_scripts(&mut self, input: &FrameInput) {
-        let fps_cap = animation_fps_cap(input.delta_secs);
+        let fps_cap = self.animation_cadence.fps_cap(input.delta_secs);
         if self.last_animation_fps_cap != Some(fps_cap) {
             self.pending_scripts.push(animation_fps_cap_script(fps_cap));
             self.last_animation_fps_cap = Some(fps_cap);
@@ -176,6 +208,8 @@ impl ServoRenderer {
         self.include_audio_updates = effect_is_audio_reactive(metadata);
         self.include_screen_updates = metadata.screen_reactive;
         self.last_animation_fps_cap = None;
+        self.animation_cadence = animation_cadence(metadata);
+        self.last_submit_time_secs = None;
         self.queued_frame = None;
         self.last_canvas = None;
         self.controls = metadata
@@ -299,6 +333,13 @@ impl ServoRenderer {
         let Some(frame) = self.queued_frame.take() else {
             return;
         };
+        if !self
+            .animation_cadence
+            .render_due(self.last_submit_time_secs, frame.time_secs)
+        {
+            self.queued_frame = Some(frame);
+            return;
+        }
 
         let frame_input = frame.as_frame_input();
         self.enqueue_frame_scripts(&frame_input);
@@ -314,6 +355,7 @@ impl ServoRenderer {
         {
             Ok(()) => {
                 self.warned_stalled_frame = false;
+                self.last_submit_time_secs = Some(frame.time_secs);
             }
             Err(error) => {
                 note_servo_session_error("Failed to queue Servo frame render", &error);
@@ -431,6 +473,8 @@ impl EffectRenderer for ServoRenderer {
         self.include_audio_updates = true;
         self.include_screen_updates = false;
         self.last_animation_fps_cap = None;
+        self.animation_cadence = AnimationCadence::MatchRenderLoop;
+        self.last_submit_time_secs = None;
     }
 }
 
@@ -529,6 +573,14 @@ fn animation_fps_cap(delta_secs: f32) -> u32 {
 
 fn animation_fps_cap_script(fps_cap: u32) -> String {
     format!("window.__hypercolorFpsCap = {fps_cap};")
+}
+
+fn animation_cadence(metadata: &EffectMetadata) -> AnimationCadence {
+    if metadata.category == EffectCategory::Display {
+        return AnimationCadence::Fixed(DEFAULT_DISPLAY_FPS_CAP);
+    }
+
+    AnimationCadence::MatchRenderLoop
 }
 
 #[cfg(test)]
@@ -634,6 +686,12 @@ mod tests {
         }
     }
 
+    fn display_html_metadata(path: PathBuf) -> EffectMetadata {
+        let mut metadata = html_metadata(path);
+        metadata.category = EffectCategory::Display;
+        metadata
+    }
+
     fn attach_renderer_session(
         renderer: &mut ServoRenderer,
         worker: &crate::effect::servo::worker::ServoWorker,
@@ -715,6 +773,25 @@ mod tests {
                 .iter()
                 .any(|script| script == "window.__hypercolorFpsCap = 30;")
         );
+    }
+
+    #[test]
+    fn display_animation_cadence_stays_fixed_at_30_fps() {
+        let metadata = display_html_metadata(PathBuf::from("display.html"));
+
+        assert_eq!(animation_cadence(&metadata), AnimationCadence::Fixed(30));
+        assert_eq!(animation_cadence(&metadata).fps_cap(1.0 / 60.0), 30);
+        assert_eq!(animation_cadence(&metadata).fps_cap(1.0 / 20.0), 30);
+    }
+
+    #[test]
+    fn fixed_animation_cadence_waits_for_next_due_frame() {
+        let cadence = AnimationCadence::Fixed(30);
+
+        assert!(cadence.render_due(None, 0.0));
+        assert!(!cadence.render_due(Some(0.0), 0.01));
+        assert!(cadence.render_due(Some(0.0), 1.0 / 30.0));
+        assert!(cadence.render_due(Some(0.0), 0.05));
     }
 
     #[test]
@@ -801,6 +878,24 @@ mod tests {
                 .pending_scripts
                 .iter()
                 .any(|script| script == "window.__hypercolorFpsCap = 20;")
+        );
+    }
+
+    #[test]
+    fn display_frame_scripts_keep_fixed_animation_cap() {
+        let mut renderer = ServoRenderer::new();
+        renderer.animation_cadence = AnimationCadence::Fixed(30);
+        renderer.enqueue_bootstrap_scripts();
+        renderer.pending_scripts.clear();
+
+        renderer.enqueue_frame_scripts(&frame_input(1.0 / 60.0));
+
+        assert_eq!(renderer.last_animation_fps_cap, Some(30));
+        assert!(
+            renderer
+                .pending_scripts
+                .iter()
+                .all(|script| !script.contains("__hypercolorFpsCap"))
         );
     }
 

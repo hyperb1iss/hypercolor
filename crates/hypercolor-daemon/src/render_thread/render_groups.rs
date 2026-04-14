@@ -155,16 +155,14 @@ impl RenderGroupRuntime {
         let logical_layer_count = u32::try_from(
             groups
                 .iter()
-                .filter(|group| group.enabled && group.effect_id.is_some())
+                .filter(|group| group_contributes_to_preview(group))
                 .count(),
         )
         .unwrap_or(u32::MAX);
         let preview_frame = self.compose_preview(groups);
         let active_group_canvas_ids = groups
             .iter()
-            .filter(|group| {
-                group.enabled && group.effect_id.is_some() && group.display_target.is_some()
-            })
+            .filter(|group| group_publishes_direct_canvas(group))
             .map(|group| group.id)
             .collect::<Vec<_>>();
         let group_canvases = active_group_canvas_ids
@@ -305,11 +303,12 @@ impl RenderGroupRuntime {
     }
 
     fn single_full_preview_group<'a>(&self, groups: &'a [RenderGroup]) -> Option<&'a RenderGroup> {
-        let mut active_groups = groups
-            .iter()
-            .filter(|group| group.enabled && group.effect_id.is_some());
+        let mut active_groups = groups.iter().filter(|group| group_is_active(group));
         let group = active_groups.next()?;
         if active_groups.next().is_some() {
+            return None;
+        }
+        if !group_contributes_to_preview(group) {
             return None;
         }
         if group.layout.canvas_width != self.preview_width
@@ -364,7 +363,7 @@ fn compose_preview_canvas(
 ) {
     let preview_count = groups
         .iter()
-        .filter(|group| group.enabled && group.effect_id.is_some())
+        .filter(|group| group_contributes_to_preview(group))
         .count();
 
     if preview_count == 0 {
@@ -375,7 +374,7 @@ fn compose_preview_canvas(
     if preview_count == 1
         && let Some(source) = groups
             .iter()
-            .find(|group| group.enabled && group.effect_id.is_some())
+            .find(|group| group_contributes_to_preview(group))
             .and_then(|group| target_canvases.get(&group.id))
     {
         if source.width() == preview_width && source.height() == preview_height {
@@ -393,7 +392,7 @@ fn compose_preview_canvas(
     let rows = preview_count.div_ceil(columns);
     for (index, group) in groups
         .iter()
-        .filter(|group| group.enabled && group.effect_id.is_some())
+        .filter(|group| group_contributes_to_preview(group))
         .enumerate()
     {
         let Some(source) = target_canvases.get(&group.id) else {
@@ -408,6 +407,18 @@ fn compose_preview_canvas(
         let y1 = tile_origin(row + 1, rows, preview_height);
         blit_scaled_tile(preview, source, x0, y0, x1, y1);
     }
+}
+
+fn group_is_active(group: &RenderGroup) -> bool {
+    group.enabled && group.effect_id.is_some()
+}
+
+fn group_contributes_to_preview(group: &RenderGroup) -> bool {
+    group_is_active(group) && group.display_target.is_none()
+}
+
+fn group_publishes_direct_canvas(group: &RenderGroup) -> bool {
+    group_is_active(group) && group.display_target.is_some()
 }
 
 fn empty_group_layout(width: u32, height: u32) -> SpatialLayout {
@@ -517,6 +528,15 @@ mod tests {
         }
     }
 
+    fn sample_display_group(width: u32, height: u32) -> RenderGroup {
+        let mut group = sample_group(width, height);
+        group.display_target = Some(hypercolor_types::scene::DisplayFaceTarget {
+            device_id: hypercolor_types::device::DeviceId::new(),
+        });
+        group.role = RenderGroupRole::Display;
+        group
+    }
+
     fn point_zone(id: &str) -> DeviceZone {
         DeviceZone {
             id: id.into(),
@@ -607,6 +627,31 @@ mod tests {
     }
 
     #[test]
+    fn compose_preview_ignores_display_groups() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let preview_group = sample_group(4, 4);
+        let display_group = sample_display_group(4, 4);
+        let mut preview_canvas = Canvas::new(4, 4);
+        preview_canvas.fill(Rgba::new(255, 0, 0, 255));
+        let mut display_canvas = Canvas::new(4, 4);
+        display_canvas.fill(Rgba::new(0, 0, 255, 255));
+        runtime
+            .target_canvases
+            .insert(preview_group.id, preview_canvas);
+        runtime
+            .target_canvases
+            .insert(display_group.id, display_canvas);
+
+        let preview = runtime.compose_preview(&[preview_group, display_group]);
+        let ProducerFrame::Surface(surface) = preview else {
+            panic!("mixed preview should publish a pooled surface");
+        };
+
+        assert_eq!(surface.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
+        assert_eq!(surface.get_pixel(3, 3), Rgba::new(255, 0, 0, 255));
+    }
+
+    #[test]
     fn single_full_preview_group_renders_directly_into_surface() {
         let mut runtime = RenderGroupRuntime::new(4, 4);
         let registry = builtin_registry();
@@ -671,38 +716,15 @@ mod tests {
     }
 
     #[test]
-    fn single_full_preview_display_group_reuses_surface_for_direct_canvas() {
+    fn single_full_preview_display_group_keeps_shared_preview_blank() {
         let mut runtime = RenderGroupRuntime::new(4, 4);
         let registry = builtin_registry();
         let solid_id = builtin_effect_id(&registry, "solid_color");
-        let group = RenderGroup {
-            id: RenderGroupId::new(),
-            name: "Display".into(),
-            description: None,
-            effect_id: Some(solid_id),
-            controls: HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
-            control_bindings: HashMap::new(),
-            preset_id: None,
-            layout: SpatialLayout {
-                id: "display-group".into(),
-                name: "Display Group".into(),
-                description: None,
-                canvas_width: 4,
-                canvas_height: 4,
-                zones: Vec::new(),
-                default_sampling_mode: SamplingMode::Bilinear,
-                default_edge_behavior: EdgeBehavior::Clamp,
-                spaces: None,
-                version: 1,
-            },
-            brightness: 1.0,
-            enabled: true,
-            color: None,
-            display_target: Some(hypercolor_types::scene::DisplayFaceTarget {
-                device_id: hypercolor_types::device::DeviceId::new(),
-            }),
-            role: RenderGroupRole::Display,
-        };
+        let mut group = sample_display_group(4, 4);
+        group.name = "Display".into();
+        group.effect_id = Some(solid_id);
+        group.controls =
+            HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]);
         let mut zones = Vec::new();
 
         let result = runtime
@@ -722,15 +744,17 @@ mod tests {
         let ProducerFrame::Surface(preview_surface) = result.preview_frame else {
             panic!("single display group should render into a surface");
         };
-        let [(_, GroupCanvasFrame::Surface(group_surface))] = &result.group_canvases[..] else {
+        let [(_, group_canvas_frame)] = &result.group_canvases[..] else {
             panic!("display group should publish a surface-backed direct canvas");
         };
+        let group_canvas_pixel = match group_canvas_frame {
+            GroupCanvasFrame::Canvas(canvas) => canvas.get_pixel(0, 0),
+            GroupCanvasFrame::Surface(surface) => surface.get_pixel(0, 0),
+        };
 
-        assert_eq!(
-            preview_surface.storage_identity(),
-            group_surface.storage_identity()
-        );
-        assert_eq!(preview_surface.generation(), group_surface.generation());
+        assert_eq!(result.logical_layer_count, 0);
+        assert_eq!(preview_surface.get_pixel(0, 0), Rgba::new(0, 0, 0, 255));
+        assert_eq!(group_canvas_pixel, Rgba::new(0, 0, 255, 255));
     }
 
     #[test]

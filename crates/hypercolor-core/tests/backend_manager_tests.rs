@@ -2847,11 +2847,8 @@ async fn write_frame_retries_identical_payload_after_async_write_error() {
     let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
     let attempts = Arc::new(AtomicUsize::new(0));
 
-    let backend = FailOnceRecordingBackend::new(
-        device_id,
-        Arc::clone(&writes),
-        Arc::clone(&attempts),
-    );
+    let backend =
+        FailOnceRecordingBackend::new(device_id, Arc::clone(&writes), Arc::clone(&attempts));
 
     let mut manager = BackendManager::new();
     manager.register_backend(Box::new(backend));
@@ -2934,11 +2931,8 @@ async fn reuse_routed_frame_outputs_retries_latest_payload_after_async_write_err
     let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
     let attempts = Arc::new(AtomicUsize::new(0));
 
-    let backend = FailOnceRecordingBackend::new(
-        device_id,
-        Arc::clone(&writes),
-        Arc::clone(&attempts),
-    );
+    let backend =
+        FailOnceRecordingBackend::new(device_id, Arc::clone(&writes), Arc::clone(&attempts));
 
     let mut manager = BackendManager::new();
     manager.register_backend(Box::new(backend));

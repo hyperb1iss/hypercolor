@@ -1063,6 +1063,7 @@ pub(super) async fn build_metrics_message(
                 gpu_zone_sampling: performance_snapshot.pacing.gpu_zone_sampling,
                 gpu_sample_deferred: performance_snapshot.pacing.gpu_sample_deferred,
                 gpu_sample_retry_hit: performance_snapshot.pacing.gpu_sample_retry_hit,
+                gpu_sample_queue_saturated: performance_snapshot.pacing.gpu_sample_queue_saturated,
                 gpu_sample_wait_blocked: performance_snapshot.pacing.gpu_sample_wait_blocked,
             },
             timeline: MetricsTimeline {
@@ -1071,6 +1072,7 @@ pub(super) async fn build_metrics_message(
                 gpu_zone_sampling: latest_frame.gpu_zone_sampling,
                 gpu_sample_deferred: latest_frame.gpu_sample_deferred,
                 gpu_sample_retry_hit: latest_frame.gpu_sample_retry_hit,
+                gpu_sample_queue_saturated: latest_frame.gpu_sample_queue_saturated,
                 gpu_sample_wait_blocked: latest_frame.gpu_sample_wait_blocked,
                 cpu_readback_skipped: latest_frame.cpu_readback_skipped,
                 budget_ms: round_2(us_to_ms(latest_frame.timeline.budget_us)),

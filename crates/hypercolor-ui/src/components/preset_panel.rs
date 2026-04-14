@@ -510,9 +510,6 @@ fn PresetSelectorRow(
     // indicator dot and the accent-leaning background gradient.
     let has_selection = Memo::new(move |_| selected_id.get().is_some());
 
-    // Click-outside handler — close dropdown when clicking outside
-    install_dropdown_outside_handler(set_is_open);
-
     // Close on Escape
     let on_keydown = move |ev: web_sys::KeyboardEvent| {
         if ev.key() == "Escape" && is_open.get_untracked() {
@@ -523,6 +520,9 @@ fn PresetSelectorRow(
 
     view! {
         <div class="flex items-center gap-2" on:keydown=on_keydown>
+            <Show when=move || is_open.get()>
+                <PresetDropdownDismissHandler set_open=set_is_open />
+            </Show>
             // Custom dropdown
             <div class="relative flex-1 min-w-0 preset-dropdown">
                 // Trigger button — accent-tinted with the selected preset's
@@ -870,6 +870,12 @@ fn install_dropdown_outside_handler(set_open: WriteSignal<bool>) {
         },
         UseEventListenerOptions::default().capture(true),
     );
+}
+
+#[component]
+fn PresetDropdownDismissHandler(set_open: WriteSignal<bool>) -> impl IntoView {
+    install_dropdown_outside_handler(set_open);
+    view! {}
 }
 
 /// Action button group — extracted to keep tuple sizes manageable.

@@ -227,6 +227,7 @@ struct CachedSampleResult {
 pub(crate) enum GpuZoneSamplingDispatch {
     Unsupported,
     Ready,
+    Saturated,
     Pending(PendingGpuZoneSampling),
 }
 
@@ -556,6 +557,7 @@ impl GpuSparkleFlinger {
         match self.begin_sample_zone_plan_into(prepared_zones, zones)? {
             GpuZoneSamplingDispatch::Unsupported => Ok(false),
             GpuZoneSamplingDispatch::Ready => Ok(true),
+            GpuZoneSamplingDispatch::Saturated => Ok(false),
             GpuZoneSamplingDispatch::Pending(pending) => {
                 self.finish_pending_zone_sampling(pending, zones)?;
                 Ok(true)
@@ -615,6 +617,9 @@ impl GpuSparkleFlinger {
             } else {
                 self.pending_preview_readback = Some(pending_preview_readback);
             }
+        }
+        if sampling_dispatch.queue_saturated {
+            return Ok(GpuZoneSamplingDispatch::Saturated);
         }
         if let Some(pending_readback) = sampling_dispatch.pending_readback {
             return Ok(GpuZoneSamplingDispatch::Pending(PendingGpuZoneSampling {
@@ -697,6 +702,15 @@ impl GpuSparkleFlinger {
 
     pub(crate) fn take_last_sample_readback_wait_blocked(&mut self) -> bool {
         self.spatial_sampler.take_last_readback_wait_blocked()
+    }
+
+    pub(crate) const fn max_pending_zone_sampling(&self) -> usize {
+        self.spatial_sampler.max_pending_readbacks()
+    }
+
+    pub(crate) fn discard_pending_zone_sampling(&mut self, pending: PendingGpuZoneSampling) {
+        self.spatial_sampler
+            .discard_pending_readback(pending.pending_readback);
     }
 
     fn cache_finished_zone_sampling(
@@ -4231,7 +4245,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_sampler_reuses_alternate_readback_slots_for_overlapped_dispatches() {
+    fn gpu_sampler_rotates_readback_slots_for_overlapped_dispatches() {
         let mut compositor = match GpuSparkleFlinger::new() {
             Ok(compositor) => compositor,
             Err(_) => return,
@@ -4270,9 +4284,26 @@ mod tests {
             _ => panic!("second GPU sample dispatch should defer readback completion"),
         };
 
+        let mut third_sample = Vec::new();
+        let third_pending = match compositor
+            .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut third_sample)
+            .expect("third GPU sample dispatch should succeed")
+        {
+            GpuZoneSamplingDispatch::Pending(pending) => pending,
+            _ => panic!("third GPU sample dispatch should defer readback completion"),
+        };
+
         assert_ne!(
             first_pending.pending_readback.readback_slot(),
             second_pending.pending_readback.readback_slot()
+        );
+        assert_ne!(
+            first_pending.pending_readback.readback_slot(),
+            third_pending.pending_readback.readback_slot()
+        );
+        assert_ne!(
+            second_pending.pending_readback.readback_slot(),
+            third_pending.pending_readback.readback_slot()
         );
 
         compositor
@@ -4281,6 +4312,9 @@ mod tests {
         compositor
             .finish_pending_zone_sampling(second_pending, &mut second_sample)
             .expect("second pending sample finalize should succeed");
+        compositor
+            .finish_pending_zone_sampling(third_pending, &mut third_sample)
+            .expect("third pending sample finalize should succeed");
 
         assert_eq!(
             first_sample,
@@ -4292,6 +4326,157 @@ mod tests {
             )
         );
         assert_eq!(second_sample, first_sample);
+        assert_eq!(third_sample, first_sample);
+    }
+
+    #[test]
+    fn gpu_sampler_refuses_a_fourth_overlapped_readback_until_a_slot_is_released() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
+        let alternate_engine = SpatialEngine::new(sampling_layout(SamplingMode::AreaAverage {
+            radius_x: 1.0,
+            radius_y: 1.0,
+        }));
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
+            ],
+        );
+
+        compositor
+            .compose(&plan, false, None)
+            .expect("GPU composition should succeed before saturation testing");
+
+        let first_pending = match compositor
+            .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut Vec::new())
+            .expect("first GPU sample dispatch should succeed")
+        {
+            GpuZoneSamplingDispatch::Pending(pending) => pending,
+            _ => panic!("first GPU sample dispatch should defer readback completion"),
+        };
+        let second_pending = match compositor
+            .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut Vec::new())
+            .expect("second GPU sample dispatch should succeed")
+        {
+            GpuZoneSamplingDispatch::Pending(pending) => pending,
+            _ => panic!("second GPU sample dispatch should defer readback completion"),
+        };
+        let third_pending = match compositor
+            .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut Vec::new())
+            .expect("third GPU sample dispatch should succeed")
+        {
+            GpuZoneSamplingDispatch::Pending(pending) => pending,
+            _ => panic!("third GPU sample dispatch should defer readback completion"),
+        };
+
+        assert!(
+            matches!(
+                compositor
+                    .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut Vec::new())
+                    .expect("fourth GPU sample dispatch should stay non-fatal"),
+                GpuZoneSamplingDispatch::Saturated
+            ),
+            "fourth overlapped GPU sample should refuse to reuse an in-flight readback slot"
+        );
+
+        compositor
+            .finish_pending_zone_sampling(first_pending, &mut Vec::new())
+            .expect("first pending sample finalize should succeed");
+
+        assert!(
+            matches!(
+                compositor
+                    .begin_sample_zone_plan_into(
+                        alternate_engine.sampling_plan().as_ref(),
+                        &mut Vec::new()
+                    )
+                    .expect("dispatch after releasing a slot should succeed"),
+                GpuZoneSamplingDispatch::Pending(_)
+            ),
+            "freeing one readback slot should allow the next overlapped GPU sample dispatch"
+        );
+
+        compositor
+            .finish_pending_zone_sampling(second_pending, &mut Vec::new())
+            .expect("second pending sample finalize should succeed");
+        compositor
+            .finish_pending_zone_sampling(third_pending, &mut Vec::new())
+            .expect("third pending sample finalize should succeed");
+    }
+
+    #[test]
+    fn gpu_sampler_discard_releases_overlapped_readback_slot() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
+        let alternate_engine = SpatialEngine::new(sampling_layout(SamplingMode::AreaAverage {
+            radius_x: 1.0,
+            radius_y: 1.0,
+        }));
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
+            ],
+        );
+
+        compositor
+            .compose(&plan, false, None)
+            .expect("GPU composition should succeed before discard testing");
+
+        let first_pending = match compositor
+            .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut Vec::new())
+            .expect("first GPU sample dispatch should succeed")
+        {
+            GpuZoneSamplingDispatch::Pending(pending) => pending,
+            _ => panic!("first GPU sample dispatch should defer readback completion"),
+        };
+        let second_pending = match compositor
+            .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut Vec::new())
+            .expect("second GPU sample dispatch should succeed")
+        {
+            GpuZoneSamplingDispatch::Pending(pending) => pending,
+            _ => panic!("second GPU sample dispatch should defer readback completion"),
+        };
+        let third_pending = match compositor
+            .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut Vec::new())
+            .expect("third GPU sample dispatch should succeed")
+        {
+            GpuZoneSamplingDispatch::Pending(pending) => pending,
+            _ => panic!("third GPU sample dispatch should defer readback completion"),
+        };
+
+        compositor.discard_pending_zone_sampling(first_pending);
+
+        assert!(
+            matches!(
+                compositor
+                    .begin_sample_zone_plan_into(
+                        alternate_engine.sampling_plan().as_ref(),
+                        &mut Vec::new()
+                    )
+                    .expect("dispatch after discarding a slot should succeed"),
+                GpuZoneSamplingDispatch::Pending(_)
+            ),
+            "discarding an unfinished GPU sample should free one readback slot for new work"
+        );
+
+        compositor
+            .finish_pending_zone_sampling(second_pending, &mut Vec::new())
+            .expect("second pending sample finalize should succeed");
+        compositor
+            .finish_pending_zone_sampling(third_pending, &mut Vec::new())
+            .expect("third pending sample finalize should succeed");
     }
 
     #[test]

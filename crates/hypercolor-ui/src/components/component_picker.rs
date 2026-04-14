@@ -81,6 +81,12 @@ fn install_outside_click_handler(set_open: WriteSignal<bool>) {
     );
 }
 
+#[component]
+fn ComponentPickerDismissHandler(set_open: WriteSignal<bool>) -> impl IntoView {
+    install_outside_click_handler(set_open);
+    view! {}
+}
+
 fn dropdown_panel_style(trigger: Option<web_sys::HtmlButtonElement>) -> String {
     trigger
         .map(|el| {
@@ -199,8 +205,6 @@ pub fn ComponentPicker(
     let list_ref = NodeRef::<leptos::html::Div>::new();
     let components_store = StoredValue::new(components);
 
-    install_outside_click_handler(set_open);
-
     let filtered = Memo::new(move |_| {
         let term = search.get();
         components_store.with_value(|components| filter_components(components, &term))
@@ -227,6 +231,9 @@ pub fn ComponentPicker(
 
     view! {
         <div class="component-picker">
+            <Show when=move || open.get()>
+                <ComponentPickerDismissHandler set_open=set_open />
+            </Show>
             <button
                 type="button"
                 node_ref=trigger_ref
