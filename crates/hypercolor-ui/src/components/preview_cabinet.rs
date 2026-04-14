@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use hypercolor_types::effect::ControlValue;
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use wasm_bindgen::{JsCast, closure::Closure};
 
 use crate::app::{EffectsContext, WsContext};
 use crate::color;
@@ -94,6 +95,28 @@ pub fn PreviewCabinet(
     let active_preset_id_signal = Signal::derive(move || fx.active_preset_id.get());
     let has_effect = Memo::new(move |_| fx.active_effect_id.get().is_some());
 
+    // Ignition pulse — toggles briefly whenever the active effect changes so
+    // keyframe-based swap animations restart. Setting false then re-enabling
+    // via `requestAnimationFrame` ensures the class is removed and re-added
+    // across a single paint boundary, so the element snaps to the keyframe
+    // start state (opacity:0, blurred) without flashing the visible default
+    // in between. Prev-id is stored so initial mount doesn't animate.
+    let igniting = RwSignal::new(false);
+    let prev_effect_id = StoredValue::new(fx.active_effect_id.get_untracked());
+
+    Effect::new(move |_| {
+        let current = fx.active_effect_id.get();
+        let previous = prev_effect_id.get_value();
+        if previous != current {
+            igniting.set(false);
+            if let Some(window) = web_sys::window() {
+                let cb = Closure::once_into_js(move || igniting.set(true));
+                let _ = window.request_animation_frame(cb.unchecked_ref());
+            }
+        }
+        prev_effect_id.set_value(current);
+    });
+
     // Sizing classes switch between the two modes.
     //
     // The outer cabinet deliberately does NOT set `overflow-hidden` — the
@@ -102,11 +125,15 @@ pub fn PreviewCabinet(
     // the dashboard). Clipping lives on the inner canvas wrapper instead,
     // which rounds its top corners so the canvas and scrim still clip to
     // the cabinet's rounded silhouette.
+    // `cabinet-accent-transition` adds a 2px transparent top border with a
+    // `border-top-color` transition, so the dynamic `style:border-top-color`
+    // below crossfades to the new accent instead of snap-changing. The
+    // ignite pulse layers an animated box-shadow on top for extra drama.
     let cabinet_class = if fill_height {
-        "relative rounded-xl border border-edge-subtle bg-black edge-glow \
+        "cabinet-accent-transition relative rounded-xl border border-edge-subtle bg-black edge-glow \
          h-full flex flex-col"
     } else {
-        "relative rounded-xl border border-edge-subtle bg-black edge-glow flex flex-col"
+        "cabinet-accent-transition relative rounded-xl border border-edge-subtle bg-black edge-glow flex flex-col"
     };
     let canvas_wrapper_class = if fill_height {
         "relative flex-1 min-h-0 overflow-hidden rounded-t-xl"
@@ -117,11 +144,12 @@ pub fn PreviewCabinet(
     view! {
         <div
             class=cabinet_class
+            class:animate-cabinet-ignite=move || igniting.get()
             style:--glow-rgb=move || accent_rgb.get()
-            style:border-top=move || format!("2px solid rgba({}, 0.45)", accent_rgb.get())
+            style:border-top-color=move || format!("rgba({}, 0.45)", accent_rgb.get())
         >
             // ── Top: canvas + scrim + overlay info ─────────────────────────
-            <div class=canvas_wrapper_class>
+            <div class=canvas_wrapper_class class:animate-canvas-ignite=move || igniting.get()>
                 <CanvasPreview
                     frame=ws.canvas_frame
                     fps=ws.preview_fps
@@ -169,7 +197,10 @@ pub fn PreviewCabinet(
                             let show_source = source != "native";
 
                             view! {
-                                <div class="flex items-baseline justify-between gap-3 mb-1">
+                                <div
+                                    class="flex items-baseline justify-between gap-3 mb-1"
+                                    class:animate-effect-swap=move || igniting.get()
+                                >
                                     <h3
                                         class="text-[15px] font-semibold line-clamp-1 leading-tight \
                                                drop-shadow-[0_2px_8px_rgba(0,0,0,0.85)]"
@@ -192,13 +223,17 @@ pub fn PreviewCabinet(
                                     <p
                                         class="text-[11px] line-clamp-2 leading-relaxed mb-2 \
                                                drop-shadow-[0_1px_4px_rgba(0,0,0,0.85)]"
+                                        class:animate-effect-swap-2=move || igniting.get()
                                         style:color=move || format!("rgba({}, 0.88)", body_tint.get())
                                     >
                                         {description}
                                     </p>
                                 })}
 
-                                <div class="flex items-center justify-between gap-2">
+                                <div
+                                    class="flex items-center justify-between gap-2"
+                                    class:animate-effect-swap-3=move || igniting.get()
+                                >
                                     <div class="flex items-center gap-1.5 min-w-0">
                                         <div
                                             class="w-1.5 h-1.5 rounded-full shrink-0 dot-alive"

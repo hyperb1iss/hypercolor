@@ -499,6 +499,33 @@ input[type="range"].slider-silk::-moz-range-track {
     to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+/* Cinematic overlay-text swap — used by the preview cabinet when the
+   active effect changes. Fades up from below with a brief blur release
+   so the new title settles into focus instead of hard-cutting. */
+@keyframes effectSwap {
+    0%   { opacity: 0; transform: translateY(8px); filter: blur(3px); }
+    55%  { opacity: 1; filter: blur(0); }
+    100% { opacity: 1; transform: translateY(0); filter: blur(0); }
+}
+
+/* Canvas ignition — lets the preview bloom in from a dim/desaturated
+   state so the effect swap feels like a focus pull instead of a pop. */
+@keyframes canvasIgnite {
+    0%   { filter: brightness(0.55) saturate(0.85) blur(2px); }
+    45%  { filter: brightness(1.12) saturate(1.15) blur(0); }
+    100% { filter: brightness(1) saturate(1) blur(0); }
+}
+
+/* Cabinet ignition — ambient glow bloom layered behind the cabinet
+   border when the effect changes. Uses `--glow-rgb` so the pulse takes
+   the new effect's accent color, matching the border-top and palette. */
+@keyframes cabinetIgnite {
+    0%   { box-shadow: 0 0 0 rgba(var(--glow-rgb, 225, 53, 255), 0); }
+    35%  { box-shadow: 0 0 42px rgba(var(--glow-rgb, 225, 53, 255), 0.32),
+                       0 0 8px rgba(var(--glow-rgb, 225, 53, 255), 0.48); }
+    100% { box-shadow: 0 0 0 rgba(var(--glow-rgb, 225, 53, 255), 0); }
+}
+
 /* ── Ambient / Continuous Animations ─────────────────────────────────────── */
 
 @keyframes neonGlow {
@@ -587,6 +614,26 @@ input[type="range"].slider-silk::-moz-range-track {
 .animate-edge-shimmer   { animation: edgeShimmer 3s ease-in-out infinite; }
 .animate-glow-reveal    { animation: glowReveal 0.5s var(--ease-silk) both; }
 .animate-swap-in        { animation: swapIn 0.22s var(--ease-silk) both; }
+
+/* Effect-swap stagger — three variants with cascading delays so the
+   title lands first, then the description, then the category chip. */
+.animate-effect-swap    { animation: effectSwap 0.5s var(--ease-silk) both; }
+.animate-effect-swap-2  { animation: effectSwap 0.5s var(--ease-silk) 0.07s both; }
+.animate-effect-swap-3  { animation: effectSwap 0.5s var(--ease-silk) 0.14s both; }
+
+/* Preview ignition — canvas focus pull and cabinet glow bloom. No
+   fill-mode so after the pulse the element reverts to its base styles
+   (edge-glow, default filter). */
+.animate-canvas-ignite  { animation: canvasIgnite 0.55s var(--ease-silk); }
+.animate-cabinet-ignite { animation: cabinetIgnite 0.7s var(--ease-silk); }
+
+/* Smooth transition for the cabinet's accent-tinted border so the
+   color crossfades when the active effect changes. Paired with a
+   `border-top: 2px solid transparent` base so only the color animates. */
+.cabinet-accent-transition {
+    transition: border-top-color 0.45s var(--ease-silk);
+}
+
 .animate-eq-bar {
     animation: eqBar 1.1s ease-in-out infinite;
     transform-origin: bottom;
@@ -1840,6 +1887,11 @@ body.resizing * {
     .animate-edge-shimmer,
     .animate-glow-reveal,
     .animate-shimmer,
+    .animate-effect-swap,
+    .animate-effect-swap-2,
+    .animate-effect-swap-3,
+    .animate-canvas-ignite,
+    .animate-cabinet-ignite,
     .dot-alive,
     .card-glow,
     .logo-gradient-text,
