@@ -195,6 +195,10 @@ impl DisplayTarget {
             .map_or(DisplayFaceBlendMode::Replace, |target| target.blend_mode)
     }
 
+    fn blends_with_effect(&self) -> bool {
+        self.face_blend_mode().blends_with_effect()
+    }
+
     fn face_opacity(&self) -> f32 {
         self.display_target
             .as_ref()
@@ -336,9 +340,10 @@ async fn run_display_output(
                 DisplayCanvasSource::Global => {
                     global_frame.as_ref().map(|(_, frame)| Arc::clone(frame))
                 }
-                DisplayCanvasSource::GroupDirect { .. } => {
+                DisplayCanvasSource::GroupDirect { .. } if target.blends_with_effect() => {
                     global_frame.as_ref().map(|(_, frame)| Arc::clone(frame))
                 }
+                DisplayCanvasSource::GroupDirect { .. } => None,
             };
             let face_frame = match &target.canvas_source {
                 DisplayCanvasSource::Global => None,

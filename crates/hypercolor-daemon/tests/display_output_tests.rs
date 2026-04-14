@@ -1189,7 +1189,7 @@ async fn display_group_alpha_blends_face_with_effect_canvas() {
 }
 
 #[tokio::test]
-async fn display_group_replace_preserves_face_transparency_over_effect_canvas() {
+async fn display_group_replace_keeps_transparent_face_pixels_from_bleeding_effect_canvas() {
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -1249,12 +1249,8 @@ async fn display_group_replace_preserves_face_transparency_over_effect_canvas() 
     let pixel = image.get_pixel(image.width() / 2, image.height() / 2);
 
     assert!(
-        pixel[0] > 200,
-        "expected replace mode to keep the red effect visible through transparent face pixels, got {pixel:?}"
-    );
-    assert!(
-        pixel[1] < 60 && pixel[2] < 60,
-        "expected transparent face pixels to avoid a white fill in replace mode, got {pixel:?}"
+        pixel[0] < 40 && pixel[1] < 40 && pixel[2] < 40,
+        "expected replace mode to isolate the face and keep fully transparent pixels dark, got {pixel:?}"
     );
 
     thread.shutdown().await.expect("display thread should stop");
