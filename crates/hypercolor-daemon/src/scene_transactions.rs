@@ -43,15 +43,22 @@ pub async fn apply_layout_update(
 ) {
     let canvas_width = layout.canvas_width;
     let canvas_height = layout.canvas_height;
+    let needs_resize = {
+        let spatial = spatial_engine.read().await;
+        let current = spatial.layout();
+        current.canvas_width != canvas_width || current.canvas_height != canvas_height
+    };
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout.clone());
     }
     scene_transactions.push(SceneTransaction::ReplaceLayout(layout));
-    scene_transactions.push(SceneTransaction::ResizeCanvas {
-        width: canvas_width,
-        height: canvas_height,
-    });
+    if needs_resize {
+        scene_transactions.push(SceneTransaction::ResizeCanvas {
+            width: canvas_width,
+            height: canvas_height,
+        });
+    }
 }
 
 #[cfg(test)]
@@ -126,6 +133,26 @@ mod tests {
             transactions.get(1),
             Some(SceneTransaction::ResizeCanvas { width, height })
                 if *width == layout.canvas_width && *height == layout.canvas_height
+        ));
+    }
+
+    #[tokio::test]
+    async fn apply_layout_update_skips_resize_when_canvas_dimensions_match() {
+        let queue = SceneTransactionQueue::default();
+        let spatial_engine = RwLock::new(SpatialEngine::new(test_layout("initial")));
+        let layout = SpatialLayout {
+            id: "updated".into(),
+            name: "updated".into(),
+            ..test_layout("initial")
+        };
+
+        apply_layout_update(&spatial_engine, &queue, layout.clone()).await;
+
+        let transactions = queue.drain();
+        assert_eq!(transactions.len(), 1);
+        assert!(matches!(
+            transactions.first(),
+            Some(SceneTransaction::ReplaceLayout(queued)) if queued.id == layout.id
         ));
     }
 }
