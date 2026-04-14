@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
 use leptos_meta::*;
+use leptos_router::hooks::use_location;
 use leptos_router::components::{Route, Router, Routes};
 use leptos_router::path;
 
@@ -12,6 +13,7 @@ use crate::api;
 use crate::components::preset_matching::controls_to_json;
 use crate::components::shell::Shell;
 use crate::pages::dashboard::DashboardPage;
+use crate::pages::display_preview::DisplayPreviewPage;
 use crate::pages::devices::DevicesPage;
 use crate::pages::displays::DisplaysPage;
 use crate::pages::effects::EffectsPage;
@@ -724,19 +726,36 @@ pub fn App() -> impl IntoView {
         <Title text="Hypercolor" />
 
         <Router>
-            <Shell>
-                <Routes fallback=|| view! { <p class="text-fg-tertiary p-8">"Not found"</p> }>
-                    <Route path=path!("/") view=DashboardPage />
-                    <Route path=path!("/effects") view=EffectsPage />
-                    <Route path=path!("/effects/:id") view=EffectsPage />
-                    <Route path=path!("/layout") view=LayoutPage />
-                    <Route path=path!("/devices") view=DevicesPage />
-                    <Route path=path!("/displays") view=DisplaysPage />
-                    <Route path=path!("/settings") view=SettingsPage />
-                </Routes>
-            </Shell>
+            <AppRoutes />
         </Router>
 
         <leptoaster::Toaster />
+    }
+}
+
+#[component]
+fn AppRoutes() -> impl IntoView {
+    let location = use_location();
+    let preview_shell_active = Memo::new(move |_| location.pathname.get() == "/preview");
+
+    view! {
+        <Show
+            when=move || preview_shell_active.get()
+            fallback=move || view! {
+                <Shell>
+                    <Routes fallback=|| view! { <p class="text-fg-tertiary p-8">"Not found"</p> }>
+                        <Route path=path!("/") view=DashboardPage />
+                        <Route path=path!("/effects") view=EffectsPage />
+                        <Route path=path!("/effects/:id") view=EffectsPage />
+                        <Route path=path!("/layout") view=LayoutPage />
+                        <Route path=path!("/devices") view=DevicesPage />
+                        <Route path=path!("/displays") view=DisplaysPage />
+                        <Route path=path!("/settings") view=SettingsPage />
+                    </Routes>
+                </Shell>
+            }
+        >
+            <DisplayPreviewPage />
+        </Show>
     }
 }

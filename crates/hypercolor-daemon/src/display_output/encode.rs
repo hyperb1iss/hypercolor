@@ -23,6 +23,7 @@ const JPEG_SUBSAMP: TurboJpegSubsamp = TurboJpegSubsamp::Sub2x2;
 pub(super) struct DisplayEncodeState {
     pub rgb_buffer: Vec<u8>,
     pub rgba_buffer: Vec<u8>,
+    pub scratch_rgba_buffer: Vec<u8>,
     pub jpeg_buffer: Vec<u8>,
     pub jpeg_compressor: TurboJpegCompressor,
     pub fast_resizer: fr::Resizer,
@@ -45,6 +46,7 @@ impl DisplayEncodeState {
         Ok(Self {
             rgb_buffer: Vec::new(),
             rgba_buffer: Vec::new(),
+            scratch_rgba_buffer: Vec::new(),
             jpeg_buffer: Vec::new(),
             jpeg_compressor,
             fast_resizer: fr::Resizer::new(),
@@ -78,7 +80,7 @@ pub(super) fn encode_canvas_frame(
         encode_state.rgba_buffer.clear();
         false
     } else {
-        match try_render_canvas_frame_rgba_fast(source, viewport, geometry, encode_state) {
+        match try_render_canvas_frame_rgba_fast(source, viewport, geometry, encode_state, false) {
             Ok(true) => true,
             Ok(false) => {
                 render_display_view(
@@ -145,6 +147,30 @@ pub(super) fn encode_direct_canvas_frame(
     encode_prepared_rgb_frame(geometry, brightness, encode_state)
 }
 
+pub(super) fn encode_face_effect_blend(
+    effect_source: Option<&CanvasFrame>,
+    face_source: &CanvasFrame,
+    viewport: &DisplayViewport,
+    geometry: &DisplayGeometry,
+    brightness: f32,
+    face_opacity: f32,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<Vec<u8>> {
+    if let Some(effect_source) = effect_source {
+        render_canvas_frame_rgba(effect_source, viewport, geometry, encode_state, false)?;
+    } else {
+        prepare_black_rgba_frame(geometry, &mut encode_state.rgba_buffer);
+    }
+
+    render_direct_canvas_frame_rgba(face_source, geometry, encode_state, true)?;
+    blend_face_rgba_over_opaque_rgba(
+        &mut encode_state.rgba_buffer,
+        &encode_state.scratch_rgba_buffer,
+        face_opacity,
+    );
+    encode_prepared_rgba_frame(geometry, brightness, encode_state)
+}
+
 pub(super) fn render_direct_canvas_frame_rgb(
     source: &CanvasFrame,
     geometry: &DisplayGeometry,
@@ -193,6 +219,104 @@ pub(super) fn render_direct_canvas_frame_rgb(
     );
 }
 
+fn render_canvas_frame_rgba(
+    source: &CanvasFrame,
+    viewport: &DisplayViewport,
+    geometry: &DisplayGeometry,
+    encode_state: &mut DisplayEncodeState,
+    use_scratch: bool,
+) -> Result<()> {
+    if geometry.width == 0 || geometry.height == 0 {
+        if use_scratch {
+            encode_state.scratch_rgba_buffer.clear();
+        } else {
+            encode_state.rgba_buffer.clear();
+        }
+        return Ok(());
+    }
+
+    if try_render_canvas_frame_rgba_fast(source, viewport, geometry, encode_state, use_scratch)? {
+        return Ok(());
+    }
+
+    render_display_view(
+        source,
+        viewport,
+        geometry.width,
+        geometry.height,
+        &mut encode_state.rgb_buffer,
+        &mut encode_state.axis_plan,
+        None,
+    );
+    if use_scratch {
+        promote_rgb_to_rgba(
+            &encode_state.rgb_buffer,
+            &mut encode_state.scratch_rgba_buffer,
+            geometry.width,
+            geometry.height,
+        );
+    } else {
+        promote_rgb_to_rgba(
+            &encode_state.rgb_buffer,
+            &mut encode_state.rgba_buffer,
+            geometry.width,
+            geometry.height,
+        );
+    }
+    Ok(())
+}
+
+fn render_direct_canvas_frame_rgba(
+    source: &CanvasFrame,
+    geometry: &DisplayGeometry,
+    encode_state: &mut DisplayEncodeState,
+    use_scratch: bool,
+) -> Result<()> {
+    if geometry.width == 0 || geometry.height == 0 {
+        if use_scratch {
+            encode_state.scratch_rgba_buffer.clear();
+        } else {
+            encode_state.rgba_buffer.clear();
+        }
+        return Ok(());
+    }
+
+    if source.width == geometry.width && source.height == geometry.height {
+        let Some(render_len) = rgba_buffer_len(geometry.width, geometry.height) else {
+            if use_scratch {
+                encode_state.scratch_rgba_buffer.clear();
+            } else {
+                encode_state.rgba_buffer.clear();
+            }
+            return Ok(());
+        };
+        let target_buffer = if use_scratch {
+            &mut encode_state.scratch_rgba_buffer
+        } else {
+            &mut encode_state.rgba_buffer
+        };
+        if target_buffer.len() != render_len {
+            target_buffer.resize(render_len, 0);
+        }
+        target_buffer.copy_from_slice(source.rgba_bytes());
+        return Ok(());
+    }
+
+    render_canvas_frame_rgba(
+        source,
+        &DisplayViewport {
+            position: hypercolor_types::spatial::NormalizedPosition::new(0.5, 0.5),
+            size: hypercolor_types::spatial::NormalizedPosition::new(1.0, 1.0),
+            rotation: 0.0,
+            scale: 1.0,
+            edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
+        },
+        geometry,
+        encode_state,
+        use_scratch,
+    )
+}
+
 pub(super) fn encode_prepared_rgb_frame(
     geometry: &DisplayGeometry,
     brightness: f32,
@@ -219,6 +343,30 @@ pub(super) fn encode_prepared_rgb_frame(
     }
 
     encode_rgb_to_jpeg(geometry, encode_state)
+}
+
+pub(super) fn encode_prepared_rgba_frame(
+    geometry: &DisplayGeometry,
+    brightness: f32,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<Vec<u8>> {
+    let brightness_factor = display_brightness_factor(brightness);
+    if brightness_factor == 0 {
+        prepare_black_rgba_frame(geometry, &mut encode_state.rgba_buffer);
+        return encode_rgba_to_jpeg(geometry, encode_state);
+    }
+
+    refresh_display_brightness_lut(encode_state, brightness_factor);
+    apply_display_brightness_rgba(&mut encode_state.rgba_buffer, &encode_state.brightness_lut);
+    if geometry.circular {
+        apply_circular_mask_rgba(
+            &mut encode_state.rgba_buffer,
+            geometry.width,
+            geometry.height,
+        );
+    }
+
+    encode_rgba_to_jpeg(geometry, encode_state)
 }
 
 pub(super) fn apply_display_brightness(
@@ -329,9 +477,14 @@ fn try_render_canvas_frame_rgba_fast(
     viewport: &DisplayViewport,
     geometry: &DisplayGeometry,
     encode_state: &mut DisplayEncodeState,
+    use_scratch: bool,
 ) -> Result<bool> {
     if source.width == 0 || source.height == 0 {
-        encode_state.rgba_buffer.clear();
+        if use_scratch {
+            encode_state.scratch_rgba_buffer.clear();
+        } else {
+            encode_state.rgba_buffer.clear();
+        }
         return Ok(false);
     }
 
@@ -339,11 +492,20 @@ fn try_render_canvas_frame_rgba_fast(
         return Ok(false);
     };
     let Some(render_len) = rgba_buffer_len(geometry.width, geometry.height) else {
-        encode_state.rgba_buffer.clear();
+        if use_scratch {
+            encode_state.scratch_rgba_buffer.clear();
+        } else {
+            encode_state.rgba_buffer.clear();
+        }
         return Ok(false);
     };
-    if encode_state.rgba_buffer.len() != render_len {
-        encode_state.rgba_buffer.resize(render_len, 0);
+    let target_buffer = if use_scratch {
+        &mut encode_state.scratch_rgba_buffer
+    } else {
+        &mut encode_state.rgba_buffer
+    };
+    if target_buffer.len() != render_len {
+        target_buffer.resize(render_len, 0);
     }
 
     let src_image = fr::images::ImageRef::new(
@@ -356,7 +518,7 @@ fn try_render_canvas_frame_rgba_fast(
     let mut dst_image = fr::images::Image::from_slice_u8(
         geometry.width,
         geometry.height,
-        encode_state.rgba_buffer.as_mut_slice(),
+        target_buffer.as_mut_slice(),
         fr::PixelType::U8x4,
     )
     .context("display destination image buffer is invalid for fast resize")?;
@@ -369,6 +531,88 @@ fn try_render_canvas_frame_rgba_fast(
         .context("fast display resize failed")?;
 
     Ok(true)
+}
+
+fn promote_rgb_to_rgba(
+    rgb_buffer: &[u8],
+    rgba_buffer: &mut Vec<u8>,
+    width: u32,
+    height: u32,
+) {
+    let Some(render_len) = rgba_buffer_len(width, height) else {
+        rgba_buffer.clear();
+        return;
+    };
+    if rgba_buffer.len() != render_len {
+        rgba_buffer.resize(render_len, 0);
+    }
+
+    for (rgba, rgb) in rgba_buffer.chunks_exact_mut(4).zip(rgb_buffer.chunks_exact(3)) {
+        rgba[0] = rgb[0];
+        rgba[1] = rgb[1];
+        rgba[2] = rgb[2];
+        rgba[3] = u8::MAX;
+    }
+}
+
+fn prepare_black_rgba_frame(geometry: &DisplayGeometry, rgba_buffer: &mut Vec<u8>) {
+    let Some(render_len) = rgba_buffer_len(geometry.width, geometry.height) else {
+        rgba_buffer.clear();
+        return;
+    };
+    if rgba_buffer.len() != render_len {
+        rgba_buffer.resize(render_len, 0);
+    }
+
+    for pixel in rgba_buffer.chunks_exact_mut(4) {
+        pixel[0] = 0;
+        pixel[1] = 0;
+        pixel[2] = 0;
+        pixel[3] = u8::MAX;
+    }
+}
+
+fn blend_face_rgba_over_opaque_rgba(
+    target_rgba: &mut [u8],
+    source_rgba: &[u8],
+    opacity: f32,
+) {
+    let opacity_weight = round_unit_to_u16(opacity.clamp(0.0, 1.0));
+    if opacity_weight == 0 {
+        return;
+    }
+
+    for (dst, src) in target_rgba
+        .chunks_exact_mut(4)
+        .zip(source_rgba.chunks_exact(4))
+    {
+        let alpha = (u32::from(src[3]) * u32::from(opacity_weight) + 127) / 255;
+        if alpha == 0 {
+            continue;
+        }
+        if alpha >= u32::from(u8::MAX) {
+            dst[0] = src[0];
+            dst[1] = src[1];
+            dst[2] = src[2];
+            dst[3] = u8::MAX;
+            continue;
+        }
+
+        let inverse_alpha = u32::from(u8::MAX) - alpha;
+        dst[0] = u8::try_from(
+            ((u32::from(dst[0]) * inverse_alpha) + (u32::from(src[0]) * alpha) + 127) / 255,
+        )
+        .expect("alpha blend should remain within byte range");
+        dst[1] = u8::try_from(
+            ((u32::from(dst[1]) * inverse_alpha) + (u32::from(src[1]) * alpha) + 127) / 255,
+        )
+        .expect("alpha blend should remain within byte range");
+        dst[2] = u8::try_from(
+            ((u32::from(dst[2]) * inverse_alpha) + (u32::from(src[2]) * alpha) + 127) / 255,
+        )
+        .expect("alpha blend should remain within byte range");
+        dst[3] = u8::MAX;
+    }
 }
 
 fn scale_channel(channel: u8, factor: u16) -> u8 {

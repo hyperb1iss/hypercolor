@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint};
 use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, EffectSource};
 use hypercolor_types::event::RenderGroupChangeKind;
-use hypercolor_types::scene::RenderGroup;
+use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, RenderGroup};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use serde::{Deserialize, Serialize};
 
@@ -46,6 +46,10 @@ pub struct SetDisplayFaceRequest {
     pub effect_id: String,
     #[serde(default)]
     pub controls: std::collections::HashMap<String, ControlValue>,
+    #[serde(default)]
+    pub blend_mode: Option<DisplayFaceBlendMode>,
+    #[serde(default)]
+    pub opacity: Option<f32>,
 }
 
 /// Request body for `PATCH /api/v1/displays/{id}/face/controls`.
@@ -60,6 +64,14 @@ pub struct SetDisplayFaceRequest {
 pub struct UpdateDisplayFaceControlsRequest {
     #[serde(default)]
     pub controls: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateDisplayFaceCompositionRequest {
+    #[serde(default)]
+    pub blend_mode: Option<DisplayFaceBlendMode>,
+    #[serde(default)]
+    pub opacity: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -207,6 +219,16 @@ pub async fn set_display_face(
         effect
     };
 
+    let mut display_target = DisplayFaceTarget {
+        blend_mode: body.blend_mode.unwrap_or(DisplayFaceBlendMode::Replace),
+        device_id,
+        opacity: body.opacity.unwrap_or(1.0),
+    }
+    .normalized();
+    if !display_target.clone().blends_with_effect() {
+        display_target.opacity = 1.0;
+    }
+
     let (scene_id, response, change_kind) = {
         let mut scene_manager = state.scene_manager.write().await;
         let active_scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
@@ -234,6 +256,13 @@ pub async fn set_display_face(
                 return ApiError::internal(format!("Failed to update active scene: {error}"));
             }
         };
+        let Some(group) = scene_manager.patch_display_group_target(
+            group.id,
+            Some(display_target.blend_mode),
+            Some(display_target.opacity),
+        ) else {
+            return ApiError::internal("Failed to update display face composition");
+        };
 
         (
             active_scene_id,
@@ -241,13 +270,83 @@ pub async fn set_display_face(
                 device_id: device_id.to_string(),
                 scene_id: active_scene_id.to_string(),
                 effect,
-                group,
+                group: group.clone(),
             },
             change_kind,
         )
     };
 
     publish_render_group_changed(state.as_ref(), scene_id, &response.group, change_kind);
+    crate::api::persist_runtime_session(&state).await;
+
+    ApiResponse::ok(response)
+}
+
+/// `PATCH /api/v1/displays/{id}/face/composition` — update how the assigned
+/// face composes with the effect layer beneath it.
+pub async fn patch_display_face_composition(
+    State(state): State<Arc<AppState>>,
+    Path(device): Path<String>,
+    Json(body): Json<UpdateDisplayFaceCompositionRequest>,
+) -> Response {
+    let device_id = match resolve_display_device_id_or_response(&state, &device).await {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+
+    if body.blend_mode.is_none() && body.opacity.is_none() {
+        return ApiError::bad_request("composition payload must include blend_mode or opacity");
+    }
+
+    let (scene_id, response) = {
+        let (active_scene_id, group, effect) =
+            match current_display_face_assignment(state.as_ref(), device_id).await {
+                Ok(response) => {
+                    let scene_id = response.scene_id.clone();
+                    (scene_id, response.group, response.effect)
+                }
+                Err(response) => return response,
+            };
+        {
+            let mut scene_manager = state.scene_manager.write().await;
+            if let Err(error) = active_scene_id_for_runtime_mutation(&scene_manager) {
+                return error.api_response("updating display face composition");
+            }
+            if scene_manager
+                .patch_display_group_target(group.id, body.blend_mode, body.opacity)
+                .is_none()
+            {
+                return ApiError::not_found(format!(
+                    "No display face is assigned to device {device_id}"
+                ));
+            }
+        }
+        let refreshed_group = match current_display_face_assignment(state.as_ref(), device_id).await
+        {
+            Ok(response) => response.group,
+            Err(response) => return response,
+        };
+
+        (
+            active_scene_id
+                .parse::<uuid::Uuid>()
+                .map(hypercolor_types::scene::SceneId)
+                .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT),
+            DisplayFaceResponse {
+                device_id: device_id.to_string(),
+                scene_id: active_scene_id,
+                effect,
+                group: refreshed_group,
+            },
+        )
+    };
+
+    publish_render_group_changed(
+        state.as_ref(),
+        scene_id,
+        &response.group,
+        RenderGroupChangeKind::Updated,
+    );
     crate::api::persist_runtime_session(&state).await;
 
     ApiResponse::ok(response)

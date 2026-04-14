@@ -470,17 +470,14 @@ impl SceneManager {
     ) -> Option<&RenderGroup> {
         let scene = self.active_scene_mut()?;
         let group = scene.groups.iter_mut().find(|group| group.id == group_id)?;
-        let current_target = group
-            .display_target
-            .clone()
-            .unwrap_or_else(|| DisplayFaceTarget::new(DeviceId::new()));
+        let current_target = group.display_target.clone()?;
         let mut next_target = DisplayFaceTarget {
             blend_mode: blend_mode.unwrap_or(current_target.blend_mode),
             device_id: current_target.device_id,
             opacity: opacity.unwrap_or(current_target.opacity),
         }
         .normalized();
-        if !next_target.blends_with_effect() {
+        if !next_target.clone().blends_with_effect() {
             next_target.opacity = 1.0;
         }
         group.display_target = Some(next_target);

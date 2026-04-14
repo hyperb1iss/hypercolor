@@ -23,7 +23,7 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::device::{DeviceId, DeviceTopologyHint};
-use hypercolor_types::scene::RenderGroupId;
+use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, RenderGroupId};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
 
 use self::render::display_viewport_signature;
@@ -89,6 +89,7 @@ struct DisplayTarget {
     brightness: f32,
     geometry: DisplayGeometry,
     canvas_source: DisplayCanvasSource,
+    display_target: Option<DisplayFaceTarget>,
     viewport: DisplayViewport,
 }
 
@@ -100,6 +101,8 @@ pub(super) struct DisplayWorkerConfigSignature {
     brightness_bits: u32,
     geometry: DisplayGeometry,
     canvas_source: DisplayCanvasSourceSignature,
+    face_blend_mode: DisplayFaceBlendMode,
+    face_opacity_bits: u32,
     viewport: DisplayViewportSignature,
 }
 
@@ -153,12 +156,24 @@ struct DisplayTargetsSnapshot {
     targets: Arc<[Arc<DisplayTarget>]>,
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct DisplayWorkerFrameSet {
+    pub effect_frame: Option<Arc<CanvasFrame>>,
+    pub face_frame: Option<Arc<CanvasFrame>>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct StableDisplaySourceIdentity {
     generation: u64,
     storage: PublishedSurfaceStorageIdentity,
     width: u32,
     height: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StableDisplayFrameSetIdentity {
+    effect_frame: Option<StableDisplaySourceIdentity>,
+    face_frame: Option<StableDisplaySourceIdentity>,
 }
 
 impl DisplayTarget {
@@ -168,8 +183,25 @@ impl DisplayTarget {
             brightness_bits: self.brightness.to_bits(),
             geometry: self.geometry.clone(),
             canvas_source: self.canvas_source.signature(),
+            face_blend_mode: self
+                .display_target
+                .as_ref()
+                .map_or(DisplayFaceBlendMode::Replace, |target| target.blend_mode),
+            face_opacity_bits: self.face_opacity().to_bits(),
             viewport: display_viewport_signature(&self.viewport),
         }
+    }
+
+    fn blends_with_effect(&self) -> bool {
+        self.display_target
+            .as_ref()
+            .is_some_and(|target| target.blends_with_effect())
+    }
+
+    fn face_opacity(&self) -> f32 {
+        self.display_target
+            .as_ref()
+            .map_or(1.0, |target| target.opacity.clamp(0.0, 1.0))
     }
 }
 
@@ -256,7 +288,7 @@ async fn run_display_output(
     let mut targets_cache = DisplayTargetCache::default();
     let mut last_reconciled_target_version = None::<u64>;
     let mut last_dispatched_sources =
-        HashMap::<DisplayWorkerKey, StableDisplaySourceIdentity>::new();
+        HashMap::<DisplayWorkerKey, StableDisplayFrameSetIdentity>::new();
     let mut dispatch_tick = tokio::time::interval(DISPLAY_OUTPUT_DISPATCH_INTERVAL);
     dispatch_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -302,29 +334,41 @@ async fn run_display_output(
         };
 
         for target in targets.targets.iter() {
-            let source_frame = match &target.canvas_source {
+            let effect_frame = match &target.canvas_source {
                 DisplayCanvasSource::Global => {
                     global_frame.as_ref().map(|(_, frame)| Arc::clone(frame))
                 }
+                DisplayCanvasSource::GroupDirect { .. } if target.blends_with_effect() => {
+                    global_frame.as_ref().map(|(_, frame)| Arc::clone(frame))
+                }
+                DisplayCanvasSource::GroupDirect { .. } => None,
+            };
+            let face_frame = match &target.canvas_source {
+                DisplayCanvasSource::Global => None,
                 DisplayCanvasSource::GroupDirect { group_id } => {
                     let sender = state.event_bus.group_canvas_sender(*group_id);
                     let frame = sender.borrow();
                     stable_display_source_identity(&frame).map(|_| Arc::new(frame.clone()))
                 }
             };
-            let Some(source_frame) = source_frame else {
-                continue;
+            let dispatch_identity = StableDisplayFrameSetIdentity {
+                effect_frame: effect_frame
+                    .as_deref()
+                    .and_then(stable_display_source_identity),
+                face_frame: face_frame.as_deref().and_then(stable_display_source_identity),
             };
-            let Some(source_identity) = stable_display_source_identity(source_frame.as_ref())
-            else {
+            if dispatch_identity.effect_frame.is_none() && dispatch_identity.face_frame.is_none() {
                 continue;
-            };
-            if last_dispatched_sources.get(&target.worker_key) == Some(&source_identity) {
+            }
+            if last_dispatched_sources.get(&target.worker_key) == Some(&dispatch_identity) {
                 continue;
             }
             if let Some(worker) = workers.get(&target.worker_key) {
-                worker.push(Arc::clone(&source_frame));
-                last_dispatched_sources.insert(target.worker_key.clone(), source_identity);
+                worker.push(DisplayWorkerFrameSet {
+                    effect_frame: effect_frame.as_ref().map(Arc::clone),
+                    face_frame: face_frame.as_ref().map(Arc::clone),
+                });
+                last_dispatched_sources.insert(target.worker_key.clone(), dispatch_identity);
             }
         }
     }
@@ -430,7 +474,7 @@ async fn display_targets(
                     group
                         .display_target
                         .as_ref()
-                        .map(|target| (target.device_id, group.id))
+                        .map(|target| (target.device_id, (group.id, target.clone().normalized())))
                 })
                 .collect::<HashMap<_, _>>(),
         )
@@ -480,9 +524,12 @@ async fn display_targets(
         let has_non_display_led_zones = tracked.info.zones.iter().any(|zone| {
             zone.led_count > 0 && !matches!(zone.topology, DeviceTopologyHint::Display { .. })
         });
+        let display_target = display_face_targets
+            .get(&tracked.info.id)
+            .map(|(_, target)| target.clone());
         let canvas_source = display_face_targets
             .get(&tracked.info.id)
-            .copied()
+            .map(|(group_id, _)| *group_id)
             .map_or(DisplayCanvasSource::Global, |group_id| {
                 DisplayCanvasSource::GroupDirect { group_id }
             });
@@ -514,6 +561,7 @@ async fn display_targets(
             brightness: tracked.user_settings.brightness,
             geometry,
             canvas_source,
+            display_target,
             viewport,
         }));
     }

@@ -188,7 +188,7 @@ impl DisplayFaceTarget {
     }
 
     #[must_use]
-    pub fn blends_with_effect(self) -> bool {
+    pub fn blends_with_effect(&self) -> bool {
         matches!(self.blend_mode, DisplayFaceBlendMode::Alpha)
     }
 }

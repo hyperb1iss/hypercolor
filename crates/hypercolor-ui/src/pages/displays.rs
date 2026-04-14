@@ -16,7 +16,7 @@ use crate::components::page_header::PageHeader;
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::toasts;
-use hypercolor_types::scene::{SceneKind, SceneMutationMode};
+use hypercolor_types::scene::{DisplayFaceBlendMode, SceneKind, SceneMutationMode};
 
 type DisplaysResource = LocalResource<Result<Vec<api::DisplaySummary>, String>>;
 
@@ -1075,6 +1075,11 @@ fn DisplayWorkspace(
         let device_id = selected_display.with(|d| d.as_ref().map(|s| s.id.clone()));
         ctx.set_display_preview_device.set(device_id);
     });
+    on_cleanup(move || {
+        if let Some(ctx) = ws {
+            ctx.set_display_preview_device.set(None);
+        }
+    });
 
     // Blob URL lifecycle for the WS display preview frame. Every incoming
     // JPEG frame gets a fresh object URL; the previous URL is revoked on
@@ -1264,6 +1269,12 @@ fn DisplayRightPanel(
                 on_choose_face=on_choose_face
                 on_clear_face=on_clear_face
             />
+            <FaceCompositionSection
+                selected_display=selected_display
+                display_face=display_face
+                set_display_face=set_display_face
+                set_face_refresh_tick=set_face_refresh_tick
+            />
             <FaceControlsSection
                 selected_display=selected_display
                 display_face=display_face
@@ -1373,6 +1384,156 @@ fn FaceAssignmentCard(
                 </div>
             </div>
         </div>
+    }
+}
+
+#[component]
+fn FaceCompositionSection(
+    selected_display: Memo<Option<api::DisplaySummary>>,
+    display_face: ReadSignal<Option<Result<Option<api::DisplayFaceResponse>, String>>>,
+    set_display_face: WriteSignal<Option<Result<Option<api::DisplayFaceResponse>, String>>>,
+    set_face_refresh_tick: WriteSignal<u64>,
+) -> impl IntoView {
+    let effects_ctx = use_context::<EffectsContext>();
+    let (local_blend_mode, set_local_blend_mode) = signal(DisplayFaceBlendMode::Replace);
+    let (local_opacity, set_local_opacity) = signal(1.0_f32);
+    let has_face = Signal::derive(move || matches!(display_face.get(), Some(Ok(Some(_)))));
+
+    let sync_from_server = move || {
+        let target = display_face
+            .get_untracked()
+            .and_then(Result::ok)
+            .flatten()
+            .and_then(|face| face.group.display_target);
+        if let Some(target) = target {
+            set_local_blend_mode.set(target.blend_mode);
+            set_local_opacity.set(target.opacity.clamp(0.0, 1.0));
+        } else {
+            set_local_blend_mode.set(DisplayFaceBlendMode::Replace);
+            set_local_opacity.set(1.0);
+        }
+    };
+
+    Effect::new(move |_| sync_from_server());
+
+    let commit_composition =
+        Callback::new(move |(blend_mode, opacity): (Option<DisplayFaceBlendMode>, Option<f32>)| {
+            if let Some(message) =
+                snapshot_scene_lock_message(effects_ctx, "changing display face composition")
+            {
+                sync_from_server();
+                toasts::toast_error(&message);
+                return;
+            }
+            let Some(display) = selected_display.get_untracked() else {
+                return;
+            };
+            let display_id = display.id.clone();
+            spawn_local(async move {
+                match api::update_display_face_composition(&display_id, blend_mode, opacity).await {
+                    Ok(face) => {
+                        set_display_face.set(Some(Ok(Some(face))));
+                        set_face_refresh_tick.update(|value| *value = value.wrapping_add(1));
+                    }
+                    Err(error) => {
+                        sync_from_server();
+                        toasts::toast_error(&format!("Face composition update failed: {error}"));
+                    }
+                }
+            });
+        });
+
+    let commit_opacity = use_debounce_fn(
+        move || {
+            if local_blend_mode.get_untracked() != DisplayFaceBlendMode::Alpha {
+                return;
+            }
+            commit_composition.run((None, Some(local_opacity.get_untracked())));
+        },
+        90.0,
+    );
+
+    let set_mode = Callback::new(move |mode: DisplayFaceBlendMode| {
+        set_local_blend_mode.set(mode);
+        let opacity = if mode == DisplayFaceBlendMode::Alpha {
+            local_opacity.get_untracked()
+        } else {
+            1.0
+        };
+        commit_composition.run((Some(mode), Some(opacity)));
+    });
+
+    let on_opacity_input = move |event| {
+        let Ok(raw) = event_target_value(&event).parse::<f32>() else {
+            return;
+        };
+        set_local_opacity.set((raw / 100.0).clamp(0.0, 1.0));
+        commit_opacity();
+    };
+
+    view! {
+        <Show when=move || has_face.get() fallback=|| ()>
+            <div class="rounded-xl border border-t-2 border-edge-subtle border-t-coral/20 bg-surface-raised/80 p-3 edge-glow">
+                <div class="mb-3 flex items-center gap-2 border-b border-edge-subtle/50 pb-2">
+                    <div class="flex h-6 w-6 items-center justify-center rounded-md bg-coral/10 text-coral/70">
+                        <Icon icon=LuSlidersHorizontal width="13" height="13" />
+                    </div>
+                    <h3 class="text-[11px] font-semibold uppercase tracking-wide text-fg-secondary">
+                        "Composition"
+                    </h3>
+                </div>
+                <p class="text-[11px] leading-relaxed text-fg-secondary">
+                    "Replace keeps the face fully in charge. Alpha uses the face's transparency to reveal the sampled effect layer underneath."
+                </p>
+                <div class="mt-3 grid grid-cols-2 gap-2">
+                    <button
+                        type="button"
+                        class=move || {
+                            if local_blend_mode.get() == DisplayFaceBlendMode::Replace {
+                                "rounded-md border border-coral/45 bg-coral/12 px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-coral transition"
+                            } else {
+                                "rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-[11px] uppercase tracking-wider text-fg-tertiary transition hover:border-coral/30 hover:text-fg-primary"
+                            }
+                        }
+                        on:click=move |_| set_mode.run(DisplayFaceBlendMode::Replace)
+                    >
+                        "Replace"
+                    </button>
+                    <button
+                        type="button"
+                        class=move || {
+                            if local_blend_mode.get() == DisplayFaceBlendMode::Alpha {
+                                "rounded-md border border-coral/45 bg-coral/12 px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-coral transition"
+                            } else {
+                                "rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-[11px] uppercase tracking-wider text-fg-tertiary transition hover:border-coral/30 hover:text-fg-primary"
+                            }
+                        }
+                        on:click=move |_| set_mode.run(DisplayFaceBlendMode::Alpha)
+                    >
+                        "Alpha Blend"
+                    </button>
+                </div>
+                <Show when=move || local_blend_mode.get() == DisplayFaceBlendMode::Alpha fallback=|| ()>
+                    <div class="mt-3 rounded-lg border border-edge-subtle/60 bg-surface-overlay/45 px-3 py-3">
+                        <div class="mb-2 flex items-center justify-between gap-2 text-[11px] uppercase tracking-wider text-fg-tertiary">
+                            <span>"Face opacity"</span>
+                            <span class="text-coral">
+                                {move || format!("{:.0}%", local_opacity.get() * 100.0)}
+                            </span>
+                        </div>
+                        <input
+                            type="range"
+                            min="0"
+                            max="100"
+                            step="1"
+                            class="w-full accent-[rgb(255,106,193)]"
+                            prop:value=move || format!("{:.0}", local_opacity.get() * 100.0)
+                            on:input=on_opacity_input
+                        />
+                    </div>
+                </Show>
+            </div>
+        </Show>
     }
 }
 

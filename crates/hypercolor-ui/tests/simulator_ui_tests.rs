@@ -9,8 +9,8 @@ mod style_utils;
 
 use api::{DisplaySummary, SetDisplayFaceRequest, UpdateSimulatedDisplayRequest};
 use display_utils::{
-    display_preview_shell_url, hex_to_rgba, is_simulator_display, json_to_face_control_value,
-    parse_simulator_dimension,
+    display_preview_shell_url, display_preview_target_from_search, hex_to_rgba,
+    is_simulator_display, json_to_face_control_value, parse_simulator_dimension,
 };
 use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, ControlValue};
 use style_utils::category_style;
@@ -133,10 +133,26 @@ fn display_preview_shell_url_targets_selected_display() {
 }
 
 #[test]
+fn display_preview_target_from_search_extracts_display_id() {
+    assert_eq!(
+        display_preview_target_from_search("?display=display-123"),
+        Some("display-123".to_owned())
+    );
+    assert_eq!(
+        display_preview_target_from_search("?foo=bar&display=display-456"),
+        Some("display-456".to_owned())
+    );
+    assert_eq!(display_preview_target_from_search("?foo=bar"), None);
+    assert_eq!(display_preview_target_from_search("?display="), None);
+}
+
+#[test]
 fn set_display_face_request_skips_empty_controls() {
     let payload = serde_json::to_value(SetDisplayFaceRequest {
         effect_id: "face-1".to_owned(),
         controls: std::collections::HashMap::new(),
+        blend_mode: None,
+        opacity: None,
     })
     .expect("display-face request should serialize");
 
@@ -151,6 +167,8 @@ fn set_display_face_request_serializes_present_controls() {
             "accent".to_owned(),
             ControlValue::Float(0.75),
         )]),
+        blend_mode: None,
+        opacity: None,
     })
     .expect("display-face request should serialize");
 

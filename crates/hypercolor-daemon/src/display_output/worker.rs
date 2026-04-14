@@ -15,12 +15,14 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::encode::{
-    DisplayEncodeState, display_brightness_factor, encode_canvas_frame, encode_direct_canvas_frame,
+    DisplayEncodeState, display_brightness_factor, encode_canvas_frame,
+    encode_direct_canvas_frame, encode_face_effect_blend,
 };
 use super::render::display_viewport_signature;
 use super::{
     DISPLAY_ERROR_WARN_INTERVAL, DisplayCanvasSource, DisplayCanvasSourceSignature,
     DisplayGeometry, DisplayTarget, DisplayViewportSignature, DisplayWorkerConfigSignature,
+    DisplayWorkerFrameSet,
 };
 use crate::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
 use crate::session::OutputPowerState;
@@ -46,41 +48,49 @@ async fn publish_display_frame_snapshot(
 }
 
 pub(super) struct DisplayWorkerHandle {
-    tx: watch::Sender<Option<Arc<CanvasFrame>>>,
+    tx: watch::Sender<Option<DisplayWorkerFrameSet>>,
     join_handle: JoinHandle<()>,
     pub config_signature: DisplayWorkerConfigSignature,
 }
 
 #[derive(Clone)]
 struct PendingDisplayFrame {
-    source: Arc<CanvasFrame>,
+    frames: DisplayWorkerFrameSet,
     force_send: bool,
 }
 
 impl PendingDisplayFrame {
-    fn fresh(source: Arc<CanvasFrame>) -> Self {
+    fn fresh(frames: DisplayWorkerFrameSet) -> Self {
         Self {
-            source,
+            frames,
             force_send: false,
         }
     }
 
-    fn forced(source: Arc<CanvasFrame>) -> Self {
+    fn forced(frames: DisplayWorkerFrameSet) -> Self {
         Self {
-            source,
+            frames,
             force_send: true,
         }
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
+struct CapturedDisplaySource {
+    identity: DisplaySourceIdentity,
+    snapshot: Arc<CanvasFrame>,
+}
+
+#[derive(Clone)]
 struct DisplayFrameInputState {
-    source_identity: DisplaySourceIdentity,
-    source_snapshot: Option<Arc<CanvasFrame>>,
+    effect_source: Option<CapturedDisplaySource>,
+    face_source: Option<CapturedDisplaySource>,
     canvas_source: DisplayCanvasSourceSignature,
     brightness_factor: u16,
     geometry: DisplayGeometry,
     viewport: DisplayViewportSignature,
+    face_blend_mode: hypercolor_types::scene::DisplayFaceBlendMode,
+    face_opacity_bits: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,35 +102,66 @@ struct DisplaySourceIdentity {
 }
 
 impl DisplayFrameInputState {
-    fn matches(&self, source: &Arc<CanvasFrame>, target: &DisplayTarget) -> bool {
-        let source_identity = display_source_identity(source.as_ref());
-        let source_matches = self.source_identity == source_identity
-            || self.source_snapshot.as_ref().is_some_and(|snapshot| {
-                Arc::ptr_eq(snapshot, source)
-                    || (snapshot.width == source.width
-                        && snapshot.height == source.height
-                        && snapshot.rgba_bytes() == source.rgba_bytes())
-            });
-
-        source_matches
+    fn matches(&self, frames: &DisplayWorkerFrameSet, target: &DisplayTarget) -> bool {
+        display_source_matches(&self.effect_source, &frames.effect_frame)
+            && display_source_matches(&self.face_source, &frames.face_frame)
             && self.canvas_source == target.canvas_source.signature()
             && self.brightness_factor == display_brightness_factor(target.brightness)
             && self.geometry == target.geometry
+            && self.face_blend_mode
+                == target
+                    .display_target
+                    .as_ref()
+                    .map_or(hypercolor_types::scene::DisplayFaceBlendMode::Replace, |display| {
+                        display.blend_mode
+                    })
+            && self.face_opacity_bits == target.face_opacity().to_bits()
             && (self.canvas_source != DisplayCanvasSourceSignature::Global
                 || self.viewport == display_viewport_signature(&target.viewport))
     }
 
-    fn capture(source: &Arc<CanvasFrame>, target: &DisplayTarget) -> Self {
-        let source_identity = display_source_identity(source.as_ref());
+    fn capture(frames: &DisplayWorkerFrameSet, target: &DisplayTarget) -> Self {
         Self {
-            source_identity,
-            source_snapshot: Some(Arc::clone(source)),
+            effect_source: capture_display_source(&frames.effect_frame),
+            face_source: capture_display_source(&frames.face_frame),
             canvas_source: target.canvas_source.signature(),
             brightness_factor: display_brightness_factor(target.brightness),
             geometry: target.geometry.clone(),
             viewport: display_viewport_signature(&target.viewport),
+            face_blend_mode: target
+                .display_target
+                .as_ref()
+                .map_or(hypercolor_types::scene::DisplayFaceBlendMode::Replace, |display| {
+                    display.blend_mode
+                }),
+            face_opacity_bits: target.face_opacity().to_bits(),
         }
     }
+}
+
+fn display_source_matches(
+    captured: &Option<CapturedDisplaySource>,
+    source: &Option<Arc<CanvasFrame>>,
+) -> bool {
+    match (captured, source) {
+        (None, None) => true,
+        (Some(captured), Some(source)) => {
+            let source_identity = display_source_identity(source.as_ref());
+            captured.identity == source_identity
+                || Arc::ptr_eq(&captured.snapshot, source)
+                || (captured.snapshot.width == source.width
+                    && captured.snapshot.height == source.height
+                    && captured.snapshot.rgba_bytes() == source.rgba_bytes())
+        }
+        _ => false,
+    }
+}
+
+fn capture_display_source(source: &Option<Arc<CanvasFrame>>) -> Option<CapturedDisplaySource> {
+    source.as_ref().map(|source| CapturedDisplaySource {
+        identity: display_source_identity(source.as_ref()),
+        snapshot: Arc::clone(source),
+    })
 }
 
 fn display_source_identity(source: &CanvasFrame) -> DisplaySourceIdentity {
@@ -144,7 +185,7 @@ impl DisplayWorkerHandle {
         static_hold_refresh_interval: Duration,
         display_frames: Arc<RwLock<DisplayFrameRuntime>>,
     ) -> Self {
-        let (tx, rx) = watch::channel(None::<Arc<CanvasFrame>>);
+        let (tx, rx) = watch::channel(None::<DisplayWorkerFrameSet>);
         let worker_backend_id = target.backend_id.clone();
         let worker_device_id = target.device_id;
         let config_signature = target.worker_config_signature();
@@ -166,8 +207,8 @@ impl DisplayWorkerHandle {
         }
     }
 
-    pub fn push(&self, source: Arc<CanvasFrame>) {
-        self.tx.send_replace(Some(source));
+    pub fn push(&self, frames: DisplayWorkerFrameSet) {
+        self.tx.send_replace(Some(frames));
     }
 
     pub async fn shutdown(self) {
@@ -189,7 +230,7 @@ async fn run_display_worker(
     backend_key: String,
     device_id: DeviceId,
     target: DisplayTarget,
-    mut rx: watch::Receiver<Option<Arc<CanvasFrame>>>,
+    mut rx: watch::Receiver<Option<DisplayWorkerFrameSet>>,
     mut power_state: watch::Receiver<OutputPowerState>,
     static_hold_refresh_interval: Duration,
     display_frames: Arc<RwLock<DisplayFrameRuntime>>,
@@ -199,7 +240,7 @@ async fn run_display_worker(
     let mut next_send_at = Instant::now();
     let mut last_warned_at = None::<Instant>;
     let mut last_delivered_input = None::<DisplayFrameInputState>;
-    let mut last_delivered_source = None::<Arc<CanvasFrame>>;
+    let mut last_delivered_frames = None::<DisplayWorkerFrameSet>;
     let mut next_hold_refresh_at = None::<Instant>;
     let mut encode_state = match DisplayEncodeState::new() {
         Ok(state) => state,
@@ -240,9 +281,9 @@ async fn run_display_worker(
                     }
                     () = tokio::time::sleep_until(tokio::time::Instant::from_std(wake_deadline)) => {
                         if should_refresh_static_hold(&power_state)
-                            && let Some(source) = last_delivered_source.as_ref()
+                            && let Some(frames) = last_delivered_frames.as_ref()
                         {
-                            pending = Some(PendingDisplayFrame::forced(Arc::clone(source)));
+                            pending = Some(PendingDisplayFrame::forced(frames.clone()));
                         }
                     }
                 }
@@ -264,7 +305,7 @@ async fn run_display_worker(
             }
             next_hold_refresh_at = static_hold_refresh_deadline(
                 &power_state,
-                last_delivered_source.as_ref(),
+                last_delivered_frames.as_ref(),
                 static_hold_refresh_interval,
             );
             continue;
@@ -283,14 +324,14 @@ async fn run_display_worker(
             }
         }
 
-        let Some(PendingDisplayFrame { source, force_send }) = pending.take() else {
+        let Some(PendingDisplayFrame { frames, force_send }) = pending.take() else {
             continue;
         };
 
         let zero_brightness_output = display_brightness_factor(target.brightness) == 0;
         let input_matches = last_delivered_input
             .as_ref()
-            .is_some_and(|previous| previous.matches(&source, &target));
+            .is_some_and(|previous| previous.matches(&frames, &target));
         if zero_brightness_output && !force_send && last_delivered_jpeg.is_some() {
             trace!(
                 device = %target.name,
@@ -331,36 +372,61 @@ async fn run_display_worker(
                 maybe_warn_display_error(&mut last_warned_at, &target, &error);
                 continue;
             }
-            last_delivered_source = Some(source);
+            last_delivered_frames = Some(frames);
             next_hold_refresh_at = static_hold_refresh_deadline(
                 &power_state,
-                last_delivered_source.as_ref(),
+                last_delivered_frames.as_ref(),
                 static_hold_refresh_interval,
             );
             delivered_frame_number = delivered_frame_number.saturating_add(1);
             continue;
         }
 
-        let encode_source = Arc::clone(&source);
+        let encode_effect_source = frames.effect_frame.as_ref().map(Arc::clone);
+        let encode_face_source = frames.face_frame.as_ref().map(Arc::clone);
         let viewport = target.viewport;
         let geometry = target.geometry;
         let brightness = target.brightness;
         let canvas_source = target.canvas_source.clone();
+        let face_opacity = target.face_opacity();
+        let blend_face_with_effect = target.blends_with_effect();
         let encode_result = tokio::task::spawn_blocking(move || {
             let mut encode_state = encode_state;
             let encoded = match canvas_source {
-                DisplayCanvasSource::Global => encode_canvas_frame(
-                    encode_source.as_ref(),
-                    &viewport,
-                    &geometry,
-                    brightness,
-                    &mut encode_state,
+                DisplayCanvasSource::Global => encode_effect_source.as_ref().map_or_else(
+                    || Err(anyhow!("display worker missing effect frame")),
+                    |effect_source| {
+                        encode_canvas_frame(
+                            effect_source.as_ref(),
+                            &viewport,
+                            &geometry,
+                            brightness,
+                            &mut encode_state,
+                        )
+                    },
                 ),
-                DisplayCanvasSource::GroupDirect { .. } => encode_direct_canvas_frame(
-                    encode_source.as_ref(),
-                    &geometry,
-                    brightness,
-                    &mut encode_state,
+                DisplayCanvasSource::GroupDirect { .. } => encode_face_source.as_ref().map_or_else(
+                    || Err(anyhow!("display worker missing face frame")),
+                    |face_source| {
+                        if blend_face_with_effect {
+                            encode_face_effect_blend(
+                                encode_effect_source.as_deref(),
+                                face_source.as_ref(),
+                                &viewport,
+                                &geometry,
+                                brightness,
+                                face_opacity,
+                                &mut encode_state,
+                            )
+                        } else {
+                            encode_direct_canvas_frame(
+                                face_source.as_ref(),
+                                &geometry,
+                                brightness,
+                                &mut encode_state,
+                            )
+                        }
+                    },
                 ),
             };
             (encode_state, encoded)
@@ -427,11 +493,11 @@ async fn run_display_worker(
             maybe_warn_display_error(&mut last_warned_at, &target, &error);
             continue;
         }
-        last_delivered_input = Some(DisplayFrameInputState::capture(&source, &target));
-        last_delivered_source = Some(source);
+        last_delivered_input = Some(DisplayFrameInputState::capture(&frames, &target));
+        last_delivered_frames = Some(frames);
         next_hold_refresh_at = static_hold_refresh_deadline(
             &power_state,
-            last_delivered_source.as_ref(),
+            last_delivered_frames.as_ref(),
             static_hold_refresh_interval,
         );
         delivered_frame_number = delivered_frame_number.saturating_add(1);
@@ -478,7 +544,7 @@ fn should_refresh_static_hold(power_state: &watch::Receiver<OutputPowerState>) -
 
 fn static_hold_refresh_deadline(
     power_state: &watch::Receiver<OutputPowerState>,
-    last_delivered_source: Option<&Arc<CanvasFrame>>,
+    last_delivered_source: Option<&DisplayWorkerFrameSet>,
     refresh_interval: Duration,
 ) -> Option<Instant> {
     if !should_refresh_static_hold(power_state) || last_delivered_source.is_none() {

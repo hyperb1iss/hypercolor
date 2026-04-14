@@ -35,6 +35,22 @@ pub fn display_preview_shell_url(display_id: &str) -> String {
     format!("/preview?display={display_id}")
 }
 
+#[must_use]
+pub fn display_preview_target_from_search(search: &str) -> Option<String> {
+    let query = search.strip_prefix('?').unwrap_or(search);
+    query
+        .split('&')
+        .filter(|segment| !segment.is_empty())
+        .find_map(|segment| {
+            let (key, value) = segment.split_once('=')?;
+            if key != "display" {
+                return None;
+            }
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_owned())
+        })
+}
+
 /// JSON → `ControlValue` conversion used for optimistic local state when
 /// a face control changes. Awareness of the control definition list lets
 /// string inputs pick the right variant: `Enum` for dropdowns, `Color`

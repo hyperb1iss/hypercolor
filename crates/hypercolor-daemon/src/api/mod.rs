@@ -843,6 +843,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::patch(displays::patch_display_face_controls),
         )
         .route(
+            "/displays/{id}/face/composition",
+            axum::routing::patch(displays::patch_display_face_composition),
+        )
+        .route(
             "/simulators/displays",
             axum::routing::get(simulators::list_simulated_displays)
                 .post(simulators::create_simulated_display),

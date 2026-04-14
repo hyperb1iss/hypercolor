@@ -288,22 +288,29 @@ impl ComposeContext<'_> {
     ) -> RenderStageStats {
         match render_group_result {
             Ok(render_group_result) => {
+                let preview_frame = render_group_result.preview_frame.clone();
                 let composition_start = Instant::now();
                 let compiled_plan = self.render.composition_planner.compile_primary_frame(
                     self.state.canvas_dims.width(),
                     self.state.canvas_dims.height(),
                     &self.scene_snapshot.scene_runtime,
-                    render_group_result.preview_frame,
+                    preview_frame,
                     true,
                 );
                 let preview_request = self.preview_surface_request();
-                let composed = self.render.sparkleflinger.compose_for_outputs(
-                    compiled_plan.plan.with_cpu_replay_cacheable(
-                        effect_retained && !compiled_plan.metadata.transition_active,
-                    ),
-                    self.requires_cpu_sampling_canvas(),
-                    preview_request,
-                );
+                let composed = if !compiled_plan.metadata.transition_active {
+                    self.render
+                        .sparkleflinger
+                        .preview_only_frame(render_group_result.preview_frame, preview_request)
+                } else {
+                    self.render.sparkleflinger.compose_for_outputs(
+                        compiled_plan.plan.with_cpu_replay_cacheable(
+                            effect_retained && !compiled_plan.metadata.transition_active,
+                        ),
+                        self.requires_cpu_sampling_canvas(),
+                        preview_request,
+                    )
+                };
                 let composition_bypassed = composed.bypassed;
                 let composition_done_at = Instant::now();
                 let composition_us = micros_between(composition_start, composition_done_at);

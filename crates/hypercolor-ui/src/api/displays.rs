@@ -4,6 +4,7 @@
 //! preview JPEG URL.
 
 use hypercolor_types::effect::{ControlDefinition, ControlValue, PresetTemplate};
+use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -42,6 +43,8 @@ pub struct DisplayFaceGroup {
     pub id: String,
     #[serde(default)]
     pub controls: HashMap<String, ControlValue>,
+    #[serde(default)]
+    pub display_target: Option<DisplayFaceTarget>,
 }
 
 /// Response from `GET /api/v1/displays/{id}/face`.
@@ -65,6 +68,19 @@ pub struct SetDisplayFaceRequest {
     pub effect_id: String,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub controls: HashMap<String, ControlValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend_mode: Option<DisplayFaceBlendMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f32>,
+}
+
+/// Request body for `PATCH /api/v1/displays/{id}/face/composition`.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UpdateDisplayFaceCompositionRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend_mode: Option<DisplayFaceBlendMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f32>,
 }
 
 /// `GET /api/v1/displays` — list display-capable devices.
@@ -91,6 +107,8 @@ pub async fn set_display_face(
     let body = SetDisplayFaceRequest {
         effect_id: effect_id.to_owned(),
         controls: HashMap::new(),
+        blend_mode: None,
+        opacity: None,
     };
     client::put_json::<SetDisplayFaceRequest, DisplayFaceResponse>(&url, &body)
         .await
@@ -111,6 +129,22 @@ pub async fn update_display_face_controls(
     let url = format!("/api/v1/displays/{display_id}/face/controls");
     let body = serde_json::json!({ "controls": controls });
     client::patch_json::<serde_json::Value, DisplayFaceResponse>(&url, &body)
+        .await
+        .map_err(Into::into)
+}
+
+/// `PATCH /api/v1/displays/{id}/face/composition` — update face/effect composition.
+pub async fn update_display_face_composition(
+    display_id: &str,
+    blend_mode: Option<DisplayFaceBlendMode>,
+    opacity: Option<f32>,
+) -> Result<DisplayFaceResponse, String> {
+    let url = format!("/api/v1/displays/{display_id}/face/composition");
+    let body = UpdateDisplayFaceCompositionRequest {
+        blend_mode,
+        opacity,
+    };
+    client::patch_json::<UpdateDisplayFaceCompositionRequest, DisplayFaceResponse>(&url, &body)
         .await
         .map_err(Into::into)
 }

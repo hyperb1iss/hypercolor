@@ -532,6 +532,8 @@ mod tests {
         let mut group = sample_group(width, height);
         group.display_target = Some(hypercolor_types::scene::DisplayFaceTarget {
             device_id: hypercolor_types::device::DeviceId::new(),
+            blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Replace,
+            opacity: 1.0,
         });
         group.role = RenderGroupRole::Display;
         group
