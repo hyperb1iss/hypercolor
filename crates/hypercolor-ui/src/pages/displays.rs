@@ -26,6 +26,69 @@ const MAX_RIGHT_WIDTH: f64 = 600.0;
 const DEFAULT_RIGHT_WIDTH: f64 = 360.0;
 const LS_KEY_RIGHT_WIDTH: &str = "hc-disp-right-width";
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FaceBlendOption {
+    mode: DisplayFaceBlendMode,
+    label: &'static str,
+    blurb: &'static str,
+}
+
+const FACE_BLEND_OPTIONS: [FaceBlendOption; 9] = [
+    FaceBlendOption {
+        mode: DisplayFaceBlendMode::Replace,
+        label: "Replace",
+        blurb: "Render the face directly with no effect influence.",
+    },
+    FaceBlendOption {
+        mode: DisplayFaceBlendMode::Alpha,
+        label: "Alpha",
+        blurb: "Use face transparency as a clean reveal into the live effect layer.",
+    },
+    FaceBlendOption {
+        mode: DisplayFaceBlendMode::Screen,
+        label: "Screen",
+        blurb: "Fuse face highlights with the effect for luminous neon glass.",
+    },
+    FaceBlendOption {
+        mode: DisplayFaceBlendMode::Add,
+        label: "Add",
+        blurb: "Push both layers together for hotter, flashier glow.",
+    },
+    FaceBlendOption {
+        mode: DisplayFaceBlendMode::Multiply,
+        label: "Multiply",
+        blurb: "Turn the face into tinted glass that darkens and colors the effect.",
+    },
+    FaceBlendOption {
+        mode: DisplayFaceBlendMode::Overlay,
+        label: "Overlay",
+        blurb: "Blend contrast-rich UI material that pops without flattening the effect.",
+    },
+    FaceBlendOption {
+        mode: DisplayFaceBlendMode::SoftLight,
+        label: "Soft Light",
+        blurb: "Keep the effect alive under a softer satin face treatment.",
+    },
+    FaceBlendOption {
+        mode: DisplayFaceBlendMode::ColorDodge,
+        label: "Color Dodge",
+        blurb: "Turn bright face areas into intense reactive highlights.",
+    },
+    FaceBlendOption {
+        mode: DisplayFaceBlendMode::Difference,
+        label: "Difference",
+        blurb: "Create reactive inversions for wilder holographic looks.",
+    },
+];
+
+fn face_blend_option(mode: DisplayFaceBlendMode) -> FaceBlendOption {
+    FACE_BLEND_OPTIONS
+        .iter()
+        .copied()
+        .find(|option| option.mode == mode)
+        .unwrap_or(FACE_BLEND_OPTIONS[0])
+}
+
 fn sync_face_composition_from_server(
     display_face: ReadSignal<Option<Result<Option<api::DisplayFaceResponse>, String>>>,
     set_local_blend_mode: WriteSignal<DisplayFaceBlendMode>,
@@ -1410,6 +1473,7 @@ fn FaceCompositionSection(
     let (local_blend_mode, set_local_blend_mode) = signal(DisplayFaceBlendMode::Replace);
     let (local_opacity, set_local_opacity) = signal(1.0_f32);
     let has_face = Signal::derive(move || matches!(display_face.get(), Some(Ok(Some(_)))));
+    let selected_blend_option = Memo::new(move |_| face_blend_option(local_blend_mode.get()));
 
     Effect::new(move |_| {
         sync_face_composition_from_server(display_face, set_local_blend_mode, set_local_opacity);
@@ -1452,7 +1516,7 @@ fn FaceCompositionSection(
 
     let commit_opacity = use_debounce_fn(
         move || {
-            if local_blend_mode.get_untracked() != DisplayFaceBlendMode::Alpha {
+            if !local_blend_mode.get_untracked().blends_with_effect() {
                 return;
             }
             commit_composition.run((None, Some(local_opacity.get_untracked())));
@@ -1462,7 +1526,7 @@ fn FaceCompositionSection(
 
     let set_mode = Callback::new(move |mode: DisplayFaceBlendMode| {
         set_local_blend_mode.set(mode);
-        let opacity = if mode == DisplayFaceBlendMode::Alpha {
+        let opacity = if mode.blends_with_effect() {
             local_opacity.get_untracked()
         } else {
             1.0
@@ -1490,40 +1554,45 @@ fn FaceCompositionSection(
                     </h3>
                 </div>
                 <p class="text-[11px] leading-relaxed text-fg-secondary">
-                    "Replace keeps the face fully in charge. Alpha uses the face's transparency to reveal the sampled effect layer underneath."
+                    "Replace keeps the face in full control. Fusion modes let the live effect color interact with the face material instead of sitting passively underneath it."
                 </p>
                 <div class="mt-3 grid grid-cols-2 gap-2">
-                    <button
-                        type="button"
-                        class=move || {
-                            if local_blend_mode.get() == DisplayFaceBlendMode::Replace {
-                                "rounded-md border border-coral/45 bg-coral/12 px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-coral transition"
-                            } else {
-                                "rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-[11px] uppercase tracking-wider text-fg-tertiary transition hover:border-coral/30 hover:text-fg-primary"
+                    {FACE_BLEND_OPTIONS
+                        .iter()
+                        .copied()
+                        .map(|option| {
+                            let mode = option.mode;
+                            view! {
+                                <button
+                                    type="button"
+                                    class=move || {
+                                        if local_blend_mode.get() == mode {
+                                            "rounded-md border border-coral/45 bg-coral/12 px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-coral transition"
+                                        } else {
+                                            "rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-[11px] uppercase tracking-wider text-fg-tertiary transition hover:border-coral/30 hover:text-fg-primary"
+                                        }
+                                    }
+                                    on:click=move |_| set_mode.run(mode)
+                                >
+                                    {option.label}
+                                </button>
                             }
-                        }
-                        on:click=move |_| set_mode.run(DisplayFaceBlendMode::Replace)
-                    >
-                        "Replace"
-                    </button>
-                    <button
-                        type="button"
-                        class=move || {
-                            if local_blend_mode.get() == DisplayFaceBlendMode::Alpha {
-                                "rounded-md border border-coral/45 bg-coral/12 px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-coral transition"
-                            } else {
-                                "rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-[11px] uppercase tracking-wider text-fg-tertiary transition hover:border-coral/30 hover:text-fg-primary"
-                            }
-                        }
-                        on:click=move |_| set_mode.run(DisplayFaceBlendMode::Alpha)
-                    >
-                        "Alpha Blend"
-                    </button>
+                        })
+                        .collect_view()}
                 </div>
-                <Show when=move || local_blend_mode.get() == DisplayFaceBlendMode::Alpha fallback=|| ()>
+                <div class="mt-3 rounded-lg border border-edge-subtle/60 bg-surface-overlay/45 px-3 py-3">
+                    <div class="flex items-center justify-between gap-2 text-[11px] uppercase tracking-wider text-fg-tertiary">
+                        <span>"Selected Look"</span>
+                        <span class="text-coral">{move || selected_blend_option.get().label}</span>
+                    </div>
+                    <p class="mt-2 text-[11px] leading-relaxed text-fg-secondary">
+                        {move || selected_blend_option.get().blurb}
+                    </p>
+                </div>
+                <Show when=move || local_blend_mode.get().blends_with_effect() fallback=|| ()>
                     <div class="mt-3 rounded-lg border border-edge-subtle/60 bg-surface-overlay/45 px-3 py-3">
                         <div class="mb-2 flex items-center justify-between gap-2 text-[11px] uppercase tracking-wider text-fg-tertiary">
-                            <span>"Face opacity"</span>
+                            <span>"Blend amount"</span>
                             <span class="text-coral">
                                 {move || format!("{:.0}%", local_opacity.get() * 100.0)}
                             </span>
