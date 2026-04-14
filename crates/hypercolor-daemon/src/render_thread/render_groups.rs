@@ -299,10 +299,10 @@ impl RenderGroupRuntime {
         sensors: &SystemSnapshot,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<Option<RenderGroupResult>> {
-        let Some(group) = self.single_full_preview_group(groups) else {
+        let Some(preview_group) = self.single_full_preview_group(groups) else {
             return Ok(None);
         };
-        let Some(spatial_engine) = self.spatial_engines.get(&group.id) else {
+        let Some(spatial_engine) = self.spatial_engines.get(&preview_group.id) else {
             return Ok(None);
         };
         let Some(mut lease) = self.preview_surface_pool.dequeue() else {
@@ -310,7 +310,7 @@ impl RenderGroupRuntime {
         };
 
         if let Err(error) = self.effect_pool.render_group_into(
-            group,
+            preview_group,
             delta_secs,
             audio,
             interaction,
@@ -322,18 +322,56 @@ impl RenderGroupRuntime {
             return Err(error);
         }
 
-        let sample_start = Instant::now();
-        let next_index = spatial_engine.sample_append_into_at(lease.canvas_mut(), zones, 0);
+        let mut next_index = 0;
+        let mut sample_us = 0_u32;
+        if !preview_group.layout.zones.is_empty() {
+            let sample_start = Instant::now();
+            next_index = spatial_engine.sample_append_into_at(lease.canvas_mut(), zones, next_index);
+            sample_us = sample_us.saturating_add(micros_u32(sample_start.elapsed()));
+        }
+
+        let mut group_canvases = Vec::new();
+        let mut active_group_canvas_ids = Vec::new();
+        for group in groups {
+            if !group.enabled || group.effect_id.is_none() || group.id == preview_group.id {
+                continue;
+            }
+            if !group_publishes_direct_canvas(group) {
+                continue;
+            }
+
+            let Some(group_spatial_engine) = self.spatial_engines.get(&group.id) else {
+                continue;
+            };
+            let Some(surface_pool) = self.direct_surface_pools.get_mut(&group.id) else {
+                continue;
+            };
+            let Some(mut group_lease) = surface_pool.dequeue() else {
+                continue;
+            };
+            self.effect_pool.render_group_into(
+                group,
+                delta_secs,
+                audio,
+                interaction,
+                screen,
+                sensors,
+                group_lease.canvas_mut(),
+            )?;
+            if !group.layout.zones.is_empty() {
+                let sample_start = Instant::now();
+                next_index = group_spatial_engine.sample_append_into_at(
+                    group_lease.canvas_mut(),
+                    zones,
+                    next_index,
+                );
+                sample_us = sample_us.saturating_add(micros_u32(sample_start.elapsed()));
+            }
+            active_group_canvas_ids.push(group.id);
+            group_canvases.push((group.id, GroupCanvasFrame::Surface(group_lease.submit(0, 0))));
+        }
         zones.truncate(next_index);
-        let sample_us = micros_u32(sample_start.elapsed());
         let preview_surface = lease.submit(0, 0);
-        let active_group_canvas_ids = group
-            .display_target
-            .as_ref()
-            .map_or_else(Vec::new, |_| vec![group.id]);
-        let group_canvases = group.display_target.as_ref().map_or_else(Vec::new, |_| {
-            vec![(group.id, GroupCanvasFrame::Surface(preview_surface.clone()))]
-        });
 
         Ok(Some(RenderGroupResult {
             preview_frame: ProducerFrame::Surface(preview_surface),
@@ -347,12 +385,9 @@ impl RenderGroupRuntime {
     }
 
     fn single_full_preview_group<'a>(&self, groups: &'a [RenderGroup]) -> Option<&'a RenderGroup> {
-        let mut active_groups = groups.iter().filter(|group| group_is_active(group));
-        let group = active_groups.next()?;
-        if active_groups.next().is_some() {
-            return None;
-        }
-        if !group_contributes_to_preview(group) {
+        let mut preview_groups = groups.iter().filter(|group| group_contributes_to_preview(group));
+        let group = preview_groups.next()?;
+        if preview_groups.next().is_some() {
             return None;
         }
         if group.layout.canvas_width != self.preview_width
@@ -798,6 +833,58 @@ mod tests {
         assert_eq!(result.logical_layer_count, 0);
         assert_eq!(preview_surface.get_pixel(0, 0), Rgba::new(0, 0, 0, 255));
         assert_eq!(surface.get_pixel(0, 0), Rgba::new(0, 0, 255, 255));
+    }
+
+    #[test]
+    fn full_preview_group_with_display_group_uses_surface_fast_path() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let registry = builtin_registry();
+        let solid_id = builtin_effect_id(&registry, "solid_color");
+        let mut preview_group = sample_group(4, 4);
+        preview_group.effect_id = Some(solid_id);
+        preview_group.controls = HashMap::from([(
+            "color".into(),
+            ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
+        )]);
+        preview_group.layout.zones = vec![point_zone("zone_preview")];
+        let mut display_group = sample_display_group(4, 4);
+        display_group.effect_id = Some(solid_id);
+        display_group.controls = HashMap::from([(
+            "color".into(),
+            ControlValue::Color([0.0, 0.0, 1.0, 1.0]),
+        )]);
+        display_group.layout.zones = vec![point_zone("zone_display")];
+        let mut zones = Vec::new();
+
+        let result = runtime
+            .render_scene(
+                &[preview_group.clone(), display_group.clone()],
+                1,
+                &registry,
+                1.0 / 60.0,
+                &AudioData::silence(),
+                &InteractionData::default(),
+                None,
+                &SystemSnapshot::empty(),
+                &mut zones,
+            )
+            .expect("mixed preview and display groups should render");
+
+        let ProducerFrame::Surface(preview_surface) = result.preview_frame else {
+            panic!("mixed full-preview scene should publish a surface-backed preview");
+        };
+        let [(_, group_canvas_frame)] = &result.group_canvases[..] else {
+            panic!("display group should publish a direct surface");
+        };
+        let GroupCanvasFrame::Surface(display_surface) = group_canvas_frame;
+
+        assert_eq!(preview_surface.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
+        assert_eq!(display_surface.get_pixel(0, 0), Rgba::new(0, 0, 255, 255));
+        assert_eq!(zones.len(), 2);
+        assert_eq!(zones[0].zone_id, "zone_preview");
+        assert_eq!(zones[0].colors.first().copied(), Some([255, 0, 0]));
+        assert_eq!(zones[1].zone_id, "zone_display");
+        assert_eq!(zones[1].colors.first().copied(), Some([0, 0, 255]));
     }
 
     #[test]
