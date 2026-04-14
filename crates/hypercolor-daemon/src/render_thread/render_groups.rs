@@ -41,11 +41,18 @@ struct RetainedRenderGroupFrame {
     logical_layer_count: u32,
 }
 
+#[derive(Clone)]
+struct RetainedDirectGroupFrame {
+    frame: GroupCanvasFrame,
+    rendered_at_ms: u32,
+}
+
 pub(crate) struct RenderGroupRuntime {
     effect_pool: EffectPool,
     target_canvases: HashMap<RenderGroupId, Canvas>,
     spatial_engines: HashMap<RenderGroupId, SpatialEngine>,
     direct_surface_pools: HashMap<RenderGroupId, RenderSurfacePool>,
+    retained_direct_group_frames: HashMap<RenderGroupId, RetainedDirectGroupFrame>,
     preview_surface_pool: RenderSurfacePool,
     reconciled_groups_revision: Option<u64>,
     retained_frame: Option<RetainedRenderGroupFrame>,
@@ -61,6 +68,7 @@ impl RenderGroupRuntime {
             target_canvases: HashMap::new(),
             spatial_engines: HashMap::new(),
             direct_surface_pools: HashMap::new(),
+            retained_direct_group_frames: HashMap::new(),
             preview_surface_pool: RenderSurfacePool::new(SurfaceDescriptor::rgba8888(
                 preview_width,
                 preview_height,
@@ -98,6 +106,8 @@ impl RenderGroupRuntime {
         &mut self,
         groups: &[RenderGroup],
         groups_revision: u64,
+        elapsed_ms: u32,
+        display_group_target_fps: &HashMap<RenderGroupId, u32>,
         registry: &EffectRegistry,
         delta_secs: f32,
         audio: &AudioData,
@@ -110,6 +120,8 @@ impl RenderGroupRuntime {
 
         if let Some(result) = self.render_single_full_preview_group(
             groups,
+            elapsed_ms,
+            display_group_target_fps,
             delta_secs,
             audio,
             interaction,
@@ -134,6 +146,15 @@ impl RenderGroupRuntime {
                 continue;
             };
             if group_publishes_direct_canvas(group) {
+                if let Some(retained) = self.reuse_retained_direct_group_frame(
+                    group,
+                    elapsed_ms,
+                    display_group_target_fps,
+                ) {
+                    active_group_canvas_ids.push(group.id);
+                    group_canvases.push((group.id, retained));
+                    continue;
+                }
                 let Some(surface_pool) = self.direct_surface_pools.get_mut(&group.id) else {
                     continue;
                 };
@@ -156,7 +177,9 @@ impl RenderGroupRuntime {
                     sample_us = sample_us.saturating_add(micros_u32(sample_start.elapsed()));
                 }
                 active_group_canvas_ids.push(group.id);
-                group_canvases.push((group.id, GroupCanvasFrame::Surface(lease.submit(0, 0))));
+                let frame = GroupCanvasFrame::Surface(lease.submit(0, 0));
+                self.retain_direct_group_frame(group.id, elapsed_ms, &frame);
+                group_canvases.push((group.id, frame));
                 continue;
             }
 
@@ -231,6 +254,8 @@ impl RenderGroupRuntime {
             .retain(|group_id, _| desired_ids.contains(group_id));
         self.direct_surface_pools
             .retain(|group_id, _| direct_group_ids.contains(group_id));
+        self.retained_direct_group_frames
+            .retain(|group_id, _| direct_group_ids.contains(group_id));
 
         for group in groups {
             if group_contributes_to_preview(group) {
@@ -292,6 +317,8 @@ impl RenderGroupRuntime {
     fn render_single_full_preview_group(
         &mut self,
         groups: &[RenderGroup],
+        elapsed_ms: u32,
+        display_group_target_fps: &HashMap<RenderGroupId, u32>,
         delta_secs: f32,
         audio: &AudioData,
         interaction: &InteractionData,
@@ -330,6 +357,7 @@ impl RenderGroupRuntime {
                 spatial_engine.sample_append_into_at(lease.canvas_mut(), zones, next_index);
             sample_us = sample_us.saturating_add(micros_u32(sample_start.elapsed()));
         }
+        let preview_surface = lease.submit(0, 0);
 
         let mut group_canvases = Vec::new();
         let mut active_group_canvas_ids = Vec::new();
@@ -338,6 +366,14 @@ impl RenderGroupRuntime {
                 continue;
             }
             if !group_publishes_direct_canvas(group) {
+                continue;
+            }
+
+            if let Some(retained) =
+                self.reuse_retained_direct_group_frame(group, elapsed_ms, display_group_target_fps)
+            {
+                active_group_canvas_ids.push(group.id);
+                group_canvases.push((group.id, retained));
                 continue;
             }
 
@@ -369,13 +405,11 @@ impl RenderGroupRuntime {
                 sample_us = sample_us.saturating_add(micros_u32(sample_start.elapsed()));
             }
             active_group_canvas_ids.push(group.id);
-            group_canvases.push((
-                group.id,
-                GroupCanvasFrame::Surface(group_lease.submit(0, 0)),
-            ));
+            let frame = GroupCanvasFrame::Surface(group_lease.submit(0, 0));
+            self.retain_direct_group_frame(group.id, elapsed_ms, &frame);
+            group_canvases.push((group.id, frame));
         }
         zones.truncate(next_index);
-        let preview_surface = lease.submit(0, 0);
 
         Ok(Some(RenderGroupResult {
             preview_frame: ProducerFrame::Surface(preview_surface),
@@ -412,6 +446,38 @@ impl RenderGroupRuntime {
             layout: Arc::clone(&result.layout),
             logical_layer_count: result.logical_layer_count,
         });
+    }
+
+    fn reuse_retained_direct_group_frame(
+        &self,
+        group: &RenderGroup,
+        elapsed_ms: u32,
+        display_group_target_fps: &HashMap<RenderGroupId, u32>,
+    ) -> Option<GroupCanvasFrame> {
+        if !group_publishes_direct_canvas(group) || !group.layout.zones.is_empty() {
+            return None;
+        }
+
+        let target_fps = *display_group_target_fps.get(&group.id)?;
+        let retained = self.retained_direct_group_frames.get(&group.id)?;
+        let frame_interval_ms = 1000_u32.div_ceil(target_fps.max(1));
+        (elapsed_ms.saturating_sub(retained.rendered_at_ms) < frame_interval_ms)
+            .then(|| retained.frame.clone())
+    }
+
+    fn retain_direct_group_frame(
+        &mut self,
+        group_id: RenderGroupId,
+        elapsed_ms: u32,
+        frame: &GroupCanvasFrame,
+    ) {
+        self.retained_direct_group_frames.insert(
+            group_id,
+            RetainedDirectGroupFrame {
+                frame: frame.clone(),
+                rendered_at_ms: elapsed_ms,
+            },
+        );
     }
 
     fn compose_preview(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
@@ -665,6 +731,30 @@ mod tests {
             .expect("builtin effect should exist")
     }
 
+    fn render_scene_for_test(
+        runtime: &mut RenderGroupRuntime,
+        groups: &[RenderGroup],
+        groups_revision: u64,
+        elapsed_ms: u32,
+        display_group_target_fps: &HashMap<RenderGroupId, u32>,
+        registry: &EffectRegistry,
+        zones: &mut Vec<ZoneColors>,
+    ) -> Result<RenderGroupResult> {
+        runtime.render_scene(
+            groups,
+            groups_revision,
+            elapsed_ms,
+            display_group_target_fps,
+            registry,
+            1.0 / 60.0,
+            &AudioData::silence(),
+            &InteractionData::default(),
+            None,
+            &SystemSnapshot::empty(),
+            zones,
+        )
+    }
+
     #[test]
     fn single_group_preview_publishes_surface_frame() {
         let mut runtime = RenderGroupRuntime::new(4, 4);
@@ -770,20 +860,18 @@ mod tests {
             role: RenderGroupRole::Custom,
         };
         let mut zones = Vec::new();
+        let display_group_target_fps = HashMap::new();
 
-        let result = runtime
-            .render_scene(
-                std::slice::from_ref(&group),
-                1,
-                &registry,
-                1.0 / 60.0,
-                &AudioData::silence(),
-                &InteractionData::default(),
-                None,
-                &SystemSnapshot::empty(),
-                &mut zones,
-            )
-            .expect("single group should render");
+        let result = render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&group),
+            1,
+            0,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("single group should render");
 
         let ProducerFrame::Surface(surface) = result.preview_frame else {
             panic!("single full-size group should render into a surface");
@@ -813,20 +901,18 @@ mod tests {
         group.controls =
             HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]);
         let mut zones = Vec::new();
+        let display_group_target_fps = HashMap::new();
 
-        let result = runtime
-            .render_scene(
-                std::slice::from_ref(&group),
-                1,
-                &registry,
-                1.0 / 60.0,
-                &AudioData::silence(),
-                &InteractionData::default(),
-                None,
-                &SystemSnapshot::empty(),
-                &mut zones,
-            )
-            .expect("single display group should render");
+        let result = render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&group),
+            1,
+            0,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("single display group should render");
 
         let ProducerFrame::Surface(preview_surface) = result.preview_frame else {
             panic!("single display group should render into a surface");
@@ -857,20 +943,18 @@ mod tests {
             HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]);
         display_group.layout.zones = vec![point_zone("zone_display")];
         let mut zones = Vec::new();
+        let display_group_target_fps = HashMap::new();
 
-        let result = runtime
-            .render_scene(
-                &[preview_group.clone(), display_group.clone()],
-                1,
-                &registry,
-                1.0 / 60.0,
-                &AudioData::silence(),
-                &InteractionData::default(),
-                None,
-                &SystemSnapshot::empty(),
-                &mut zones,
-            )
-            .expect("mixed preview and display groups should render");
+        let result = render_scene_for_test(
+            &mut runtime,
+            &[preview_group.clone(), display_group.clone()],
+            1,
+            0,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("mixed preview and display groups should render");
 
         let ProducerFrame::Surface(preview_surface) = result.preview_frame else {
             panic!("mixed full-preview scene should publish a surface-backed preview");
@@ -955,20 +1039,18 @@ mod tests {
             },
         ];
         let mut zones = Vec::new();
+        let display_group_target_fps = HashMap::new();
 
-        let result = runtime
-            .render_scene(
-                &groups,
-                1,
-                &registry,
-                1.0 / 60.0,
-                &AudioData::silence(),
-                &InteractionData::default(),
-                None,
-                &SystemSnapshot::empty(),
-                &mut zones,
-            )
-            .expect("multiple groups should render");
+        let result = render_scene_for_test(
+            &mut runtime,
+            &groups,
+            1,
+            0,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("multiple groups should render");
 
         assert_eq!(result.logical_layer_count, 2);
         assert_eq!(zones.len(), 2);
@@ -997,20 +1079,18 @@ mod tests {
         right.layout.zones = vec![point_zone("zone_right")];
         let groups = vec![left.clone(), right.clone()];
         let mut zones = Vec::new();
+        let display_group_target_fps = HashMap::new();
 
-        let result = runtime
-            .render_scene(
-                &groups,
-                1,
-                &registry,
-                1.0 / 60.0,
-                &AudioData::silence(),
-                &InteractionData::default(),
-                None,
-                &SystemSnapshot::empty(),
-                &mut zones,
-            )
-            .expect("display groups should render");
+        let result = render_scene_for_test(
+            &mut runtime,
+            &groups,
+            1,
+            0,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("display groups should render");
 
         assert!(runtime.target_canvases.is_empty());
         assert_eq!(result.group_canvases.len(), 2);
@@ -1025,5 +1105,75 @@ mod tests {
         assert_eq!(zones[0].colors.first().copied(), Some([255, 0, 0]));
         assert_eq!(zones[1].zone_id, "zone_right");
         assert_eq!(zones[1].colors.first().copied(), Some([0, 0, 255]));
+    }
+
+    #[test]
+    fn zero_zone_display_group_reuses_retained_surface_until_target_interval() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let registry = builtin_registry();
+        let solid_id = builtin_effect_id(&registry, "solid_color");
+        let mut group = sample_display_group(4, 4);
+        group.effect_id = Some(solid_id);
+        group.controls =
+            HashMap::from([("color".into(), ControlValue::Color([0.0, 1.0, 0.0, 1.0]))]);
+        let display_group_target_fps = HashMap::from([(group.id, 30)]);
+        let mut zones = Vec::new();
+
+        let first = render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&group),
+            1,
+            0,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("display group should render");
+        let [(_, first_frame)] = &first.group_canvases[..] else {
+            panic!("display group should publish a direct surface");
+        };
+        let GroupCanvasFrame::Surface(first_surface) = first_frame;
+
+        let second = render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&group),
+            1,
+            10,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("display group should reuse retained surface");
+        let [(_, second_frame)] = &second.group_canvases[..] else {
+            panic!("display group should keep publishing a direct surface");
+        };
+        let GroupCanvasFrame::Surface(second_surface) = second_frame;
+
+        let third = render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&group),
+            1,
+            40,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("display group should rerender once its interval elapses");
+        let [(_, third_frame)] = &third.group_canvases[..] else {
+            panic!("display group should keep publishing a direct surface");
+        };
+        let GroupCanvasFrame::Surface(third_surface) = third_frame;
+
+        assert_eq!(
+            first_surface.storage_identity(),
+            second_surface.storage_identity()
+        );
+        assert_eq!(first_surface.generation(), second_surface.generation());
+        assert_eq!(first_surface.get_pixel(0, 0), Rgba::new(0, 255, 0, 255));
+        assert_eq!(third_surface.get_pixel(0, 0), Rgba::new(0, 255, 0, 255));
+        assert!(
+            third_surface.storage_identity() != second_surface.storage_identity()
+                || third_surface.generation() != second_surface.generation()
+        );
     }
 }

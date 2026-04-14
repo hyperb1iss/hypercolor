@@ -35,8 +35,8 @@ use worker::DisplayWorkerHandle;
 
 const DISPLAY_ERROR_WARN_INTERVAL: Duration = Duration::from_secs(5);
 const DISPLAY_OUTPUT_MAX_FPS: u32 = 15;
-const DISPLAY_FACE_DEFAULT_FPS: u32 = 30;
-const DISPLAY_FACE_MAX_FPS: u32 = 60;
+pub(crate) const DISPLAY_FACE_DEFAULT_FPS: u32 = 30;
+pub(crate) const DISPLAY_FACE_MAX_FPS: u32 = 60;
 const DISPLAY_OUTPUT_DISPATCH_INTERVAL: Duration = Duration::from_millis(16);
 pub const DEFAULT_STATIC_HOLD_REFRESH_INTERVAL: Duration = Duration::from_secs(20);
 const DISPLAY_RUNTIME_WORKERS: usize = 2;
@@ -720,6 +720,16 @@ fn capped_display_target_fps(device_max_fps: u32, canvas_source: &DisplayCanvasS
     };
 
     device_limit.clamp(1, max_fps)
+}
+
+pub(crate) fn capped_group_direct_display_target_fps(device_max_fps: u32) -> u32 {
+    let device_limit = if device_max_fps == 0 {
+        DISPLAY_FACE_DEFAULT_FPS
+    } else {
+        device_max_fps
+    };
+
+    device_limit.clamp(1, DISPLAY_FACE_MAX_FPS)
 }
 
 fn logical_device_store_signature(store: &HashMap<String, LogicalDevice>) -> u64 {

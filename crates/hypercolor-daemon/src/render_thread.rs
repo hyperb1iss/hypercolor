@@ -51,7 +51,7 @@ use crate::preview_runtime::PreviewRuntime;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::OutputPowerState;
 use hypercolor_core::bus::HypercolorBus;
-use hypercolor_core::device::BackendManager;
+use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 use hypercolor_core::input::InputManager;
@@ -124,6 +124,9 @@ pub struct RenderThreadState {
 
     /// Device backend router — pushes colors to hardware.
     pub backend_manager: Arc<Mutex<BackendManager>>,
+
+    /// Device registry — used for per-device render cadence decisions.
+    pub device_registry: DeviceRegistry,
 
     /// Rolling render-performance snapshot shared with metrics endpoints.
     pub performance: Arc<RwLock<PerformanceTracker>>,

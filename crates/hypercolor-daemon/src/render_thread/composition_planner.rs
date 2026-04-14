@@ -317,6 +317,7 @@ mod tests {
                 active_render_groups: vec![sample_group()].into(),
                 active_render_groups_revision: 1,
                 active_render_group_count: 1,
+                active_display_group_target_fps: std::collections::HashMap::new(),
             },
             vec![PlannedSceneLayer::replace(
                 ProducerFrame::Canvas(solid_canvas(Rgba::new(12, 34, 56, 255))),
@@ -381,6 +382,7 @@ mod tests {
             active_render_groups: Vec::new().into(),
             active_render_groups_revision: 0,
             active_render_group_count: 0,
+            active_display_group_target_fps: std::collections::HashMap::new(),
         };
         let compiled = planner.compile_primary_frame(2, 2, &transition_runtime, entering, true);
         let mut sparkleflinger = SparkleFlinger::cpu();

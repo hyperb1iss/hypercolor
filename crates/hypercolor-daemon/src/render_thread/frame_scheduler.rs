@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_types::scene::{RenderGroup, SceneId};
+use hypercolor_types::scene::{RenderGroup, RenderGroupId, SceneId};
 
 use crate::session::OutputPowerState;
 
@@ -26,6 +27,7 @@ pub(crate) struct SceneRuntimeSnapshot {
     pub active_render_groups: Arc<[RenderGroup]>,
     pub active_render_groups_revision: u64,
     pub active_render_group_count: u32,
+    pub active_display_group_target_fps: HashMap<RenderGroupId, u32>,
 }
 
 impl SceneRuntimeSnapshot {
@@ -189,6 +191,7 @@ mod tests {
                 active_render_groups: vec![sample_group()].into(),
                 active_render_groups_revision: 1,
                 active_render_group_count: 1,
+                active_display_group_target_fps: std::collections::HashMap::new(),
             },
             spatial_engine: empty_spatial_engine(),
         });

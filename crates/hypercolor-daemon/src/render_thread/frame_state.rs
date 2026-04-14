@@ -1,6 +1,10 @@
+use std::collections::HashMap;
+
 use tracing::warn;
 
 use hypercolor_core::scene::SceneManager;
+use hypercolor_types::device::DeviceId;
+use hypercolor_types::scene::{RenderGroup, RenderGroupId};
 
 use super::RenderThreadState;
 use super::frame_scheduler::{
@@ -8,6 +12,7 @@ use super::frame_scheduler::{
     SceneTransitionSnapshot,
 };
 use super::scene_state::RenderSceneState;
+use crate::display_output::capped_group_direct_display_target_fps;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RenderLoopSnapshot {
@@ -74,15 +79,21 @@ async fn current_scene_runtime_snapshot(
     if transitioning {
         let mut manager = state.scene_manager.write().await;
         manager.tick_transition(delta_secs);
-        return snapshot_scene_runtime(&manager);
+        return snapshot_scene_runtime(state, &manager).await;
     }
 
     let manager = state.scene_manager.read().await;
-    snapshot_scene_runtime(&manager)
+    snapshot_scene_runtime(state, &manager).await
 }
 
-fn snapshot_scene_runtime(manager: &SceneManager) -> SceneRuntimeSnapshot {
+async fn snapshot_scene_runtime(
+    state: &RenderThreadState,
+    manager: &SceneManager,
+) -> SceneRuntimeSnapshot {
     let active_render_groups = manager.active_render_groups();
+    let active_display_group_target_fps =
+        snapshot_display_group_target_fps(&state.device_registry, active_render_groups.as_ref())
+            .await;
     let active_render_group_count = u32::try_from(
         active_render_groups
             .iter()
@@ -103,7 +114,35 @@ fn snapshot_scene_runtime(manager: &SceneManager) -> SceneRuntimeSnapshot {
         active_render_groups,
         active_render_groups_revision: manager.active_render_groups_revision(),
         active_render_group_count,
+        active_display_group_target_fps,
     }
+}
+
+async fn snapshot_display_group_target_fps(
+    device_registry: &hypercolor_core::device::DeviceRegistry,
+    groups: &[RenderGroup],
+) -> HashMap<RenderGroupId, u32> {
+    let max_fps_by_device = device_registry
+        .list()
+        .await
+        .into_iter()
+        .map(|tracked| (tracked.info.id, tracked.info.capabilities.max_fps))
+        .collect::<HashMap<DeviceId, u32>>();
+
+    groups
+        .iter()
+        .filter_map(|group| {
+            let target = group.display_target.as_ref()?;
+            let device_max_fps = max_fps_by_device
+                .get(&target.device_id)
+                .copied()
+                .unwrap_or(0);
+            Some((
+                group.id,
+                capped_group_direct_display_target_fps(device_max_fps),
+            ))
+        })
+        .collect()
 }
 
 async fn current_effect_scene_snapshot(

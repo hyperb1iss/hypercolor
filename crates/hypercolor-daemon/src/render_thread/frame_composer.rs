@@ -134,6 +134,11 @@ impl ComposeContext<'_> {
                             self.scene_snapshot
                                 .scene_runtime
                                 .active_render_groups_revision,
+                            self.scene_snapshot.elapsed_ms,
+                            &self
+                                .scene_snapshot
+                                .scene_runtime
+                                .active_display_group_target_fps,
                             &registry,
                             self.delta_secs,
                             &self.inputs.audio,
@@ -166,6 +171,11 @@ impl ComposeContext<'_> {
                         self.scene_snapshot
                             .scene_runtime
                             .active_render_groups_revision,
+                        self.scene_snapshot.elapsed_ms,
+                        &self
+                            .scene_snapshot
+                            .scene_runtime
+                            .active_display_group_target_fps,
                         &registry,
                         self.delta_secs,
                         &self.inputs.audio,

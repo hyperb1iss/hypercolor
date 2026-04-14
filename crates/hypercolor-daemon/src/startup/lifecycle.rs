@@ -81,6 +81,7 @@ impl DaemonState {
             effect_registry: Arc::clone(&self.effect_registry),
             spatial_engine: Arc::clone(&self.spatial_engine),
             backend_manager: Arc::clone(&self.backend_manager),
+            device_registry: self.device_registry.clone(),
             performance: Arc::clone(&self.performance),
             discovery_runtime: Some(self.discovery_runtime()),
             event_bus: Arc::clone(&self.event_bus),
