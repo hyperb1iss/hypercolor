@@ -16,6 +16,8 @@ import {
     clamp01,
     createFaceRoot,
     ensureFaceStyles,
+    resolveFaceCanvasWash,
+    resolveFaceSurface,
 } from '../shared/dom'
 
 const STYLE_ID = 'hc-face-neon-clock'
@@ -39,7 +41,13 @@ const STYLES = `
     position: absolute;
     inset: 16px;
     border-radius: 32px;
-    border: 1px solid var(--panel-edge);
+    border: 1px solid transparent;
+    background: transparent;
+    box-shadow: none;
+}
+
+.hc-neon-clock[data-panel='on'] .hc-neon-clock__backdrop {
+    border-color: var(--panel-edge);
     background:
         radial-gradient(circle at 20% 20%, rgba(255,255,255,0.08), transparent 32%),
         linear-gradient(160deg, rgba(255,255,255,0.06), transparent 55%),
@@ -49,8 +57,10 @@ const STYLES = `
         0 24px 60px rgba(0, 0, 0, 0.42);
 }
 
-.hc-neon-clock[data-backdrop='clear'] .hc-neon-clock__backdrop {
-    background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+.hc-neon-clock[data-panel='on'][data-backdrop='clear'] .hc-neon-clock__backdrop {
+    background:
+        linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02)),
+        var(--panel);
     border-color: rgba(255,255,255,0.04);
     box-shadow: none;
 }
@@ -58,13 +68,14 @@ const STYLES = `
 .hc-neon-clock__chrome {
     position: absolute;
     inset: 0;
-    display: grid;
-    grid-template-rows: auto 1fr auto;
     padding: 30px;
 }
 
 .hc-neon-clock__topline,
 .hc-neon-clock__footer {
+    position: absolute;
+    left: 30px;
+    right: 30px;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -74,6 +85,14 @@ const STYLES = `
     letter-spacing: 0.18em;
     text-transform: uppercase;
     color: rgba(232, 230, 240, 0.72);
+}
+
+.hc-neon-clock__topline {
+    top: 30px;
+}
+
+.hc-neon-clock__footer {
+    bottom: 30px;
 }
 
 .hc-neon-clock__badge {
@@ -97,7 +116,8 @@ const STYLES = `
 }
 
 .hc-neon-clock__main {
-    position: relative;
+    position: absolute;
+    inset: 0;
     display: grid;
     place-items: center;
 }
@@ -235,11 +255,13 @@ export default face(
         secondaryAccent: color('Secondary', palette.electricPurple, { group: 'Style' }),
         headlineFont: font('Headline Font', 'Orbitron', { group: 'Typography', families: [...DISPLAY_FONT_FAMILIES] }),
         uiFont: font('UI Font', 'Sora', { group: 'Typography', families: [...UI_FONT_FAMILIES] }),
+        panelColor: color('Panel Color', palette.bg.deep, { group: 'Style' }),
+        panelAlpha: num('Panel Alpha', [0, 100], 0, { group: 'Style' }),
         hourFormat: combo('Format', ['24h', '12h'], { group: 'Clock' }),
         showSeconds: toggle('Show Seconds', true, { group: 'Clock' }),
         showDate: toggle('Show Date', true, { group: 'Clock' }),
         motion: combo('Motion', ['Orbit', 'Bloom', 'Minimal'], { group: 'Style' }),
-        backdrop: combo('Backdrop', ['Opaque', 'Glass', 'Clear'], { group: 'Style' }),
+        backdrop: combo('Backdrop', ['Clear', 'Glass', 'Opaque'], { group: 'Style' }),
         glowIntensity: num('Glow', [0, 100], 78, { group: 'Style' }),
     },
     {
@@ -257,6 +279,7 @@ export default face(
                     uiFont: 'Sora',
                     motion: 'Orbit',
                     backdrop: 'Glass',
+                    panelAlpha: 72,
                     glowIntensity: 84,
                 },
             },
@@ -270,6 +293,7 @@ export default face(
                     uiFont: 'DM Sans',
                     motion: 'Bloom',
                     backdrop: 'Glass',
+                    panelAlpha: 72,
                     glowIntensity: 70,
                 },
             },
@@ -283,6 +307,7 @@ export default face(
                     uiFont: 'JetBrains Mono',
                     motion: 'Orbit',
                     backdrop: 'Opaque',
+                    panelAlpha: 92,
                     glowIntensity: 64,
                 },
             },
@@ -296,6 +321,7 @@ export default face(
                     uiFont: 'Roboto Condensed',
                     motion: 'Minimal',
                     backdrop: 'Glass',
+                    panelAlpha: 72,
                     glowIntensity: 58,
                 },
             },
@@ -309,6 +335,7 @@ export default face(
                     uiFont: 'Inter',
                     motion: 'Bloom',
                     backdrop: 'Clear',
+                    panelAlpha: 24,
                     glowIntensity: 62,
                 },
             },
@@ -322,6 +349,7 @@ export default face(
                     uiFont: 'Space Grotesk',
                     motion: 'Orbit',
                     backdrop: 'Opaque',
+                    panelAlpha: 92,
                     glowIntensity: 88,
                 },
             },
@@ -389,12 +417,15 @@ export default face(
             const secondary = controls.secondaryAccent as string
             const glow = clamp01((controls.glowIntensity as number) / 100)
             const backdrop = controls.backdrop as string
+            const panelColor = controls.panelColor as string
+            const panelAlpha = controls.panelAlpha as number
             const motion = (controls.motion as string).toLowerCase()
             const showSeconds = controls.showSeconds as boolean
             const showDate = controls.showDate as boolean
             const is12h = controls.hourFormat === '12h'
 
             root.dataset.backdrop = backdrop.toLowerCase()
+            root.dataset.panel = panelAlpha > 0 ? 'on' : 'off'
             root.dataset.motion = motion
             root.style.setProperty('--accent', accent)
             root.style.setProperty('--secondary', secondary)
@@ -403,11 +434,7 @@ export default face(
             root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
             root.style.setProperty(
                 '--panel',
-                backdrop === 'Opaque'
-                    ? withAlpha(palette.bg.deep, 0.92)
-                    : backdrop === 'Glass'
-                      ? withAlpha(palette.bg.deep, 0.52)
-                      : withAlpha('#05060a', 0.16),
+                resolveFaceSurface(backdrop, panelColor, panelAlpha),
             )
 
             const now = new Date()
@@ -443,12 +470,9 @@ export default face(
 
             const c = ctx.ctx
             c.clearRect(0, 0, W, H)
-
-            if (backdrop === 'Opaque') {
-                c.fillStyle = withAlpha(palette.bg.deep, 0.96)
-                c.fillRect(0, 0, W, H)
-            } else if (backdrop === 'Glass') {
-                c.fillStyle = withAlpha(palette.bg.deep, 0.18)
+            const canvasWash = resolveFaceCanvasWash(backdrop, panelColor, panelAlpha)
+            if (canvasWash) {
+                c.fillStyle = canvasWash
                 c.fillRect(0, 0, W, H)
             }
 

@@ -21,6 +21,8 @@ import {
     createFaceRoot,
     ensureFaceStyles,
     humanizeSensorLabel,
+    resolveFaceCanvasWash,
+    resolveFaceSurface,
 } from '../shared/dom'
 
 const STYLE_ID = 'hc-face-pulse-temp'
@@ -41,7 +43,13 @@ const STYLES = `
     position: absolute;
     inset: 18px;
     border-radius: 34px;
-    border: 1px solid rgba(255,255,255,0.08);
+    border: 1px solid transparent;
+    background: transparent;
+    box-shadow: none;
+}
+
+.hc-pulse-temp[data-panel='on'] .hc-pulse-temp__veil {
+    border-color: rgba(255,255,255,0.08);
     background:
         radial-gradient(circle at 16% 18%, rgba(255,255,255,0.1), transparent 34%),
         linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.01)),
@@ -51,21 +59,23 @@ const STYLES = `
         0 24px 64px rgba(0,0,0,0.42);
 }
 
-.hc-pulse-temp[data-backdrop='clear'] .hc-pulse-temp__veil {
-    background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
+.hc-pulse-temp[data-panel='on'][data-backdrop='clear'] .hc-pulse-temp__veil {
+    background:
+        linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)),
+        var(--panel);
     box-shadow: none;
 }
 
 .hc-pulse-temp__layout {
     position: absolute;
     inset: 0;
-    display: grid;
-    grid-template-rows: auto 1fr auto;
-    padding: 28px;
 }
 
 .hc-pulse-temp__topline,
 .hc-pulse-temp__footer {
+    position: absolute;
+    left: 28px;
+    right: 28px;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -75,6 +85,14 @@ const STYLES = `
     letter-spacing: 0.18em;
     text-transform: uppercase;
     color: rgba(232,230,240,0.72);
+}
+
+.hc-pulse-temp__topline {
+    top: 28px;
+}
+
+.hc-pulse-temp__footer {
+    bottom: 28px;
 }
 
 .hc-pulse-temp__chip {
@@ -98,8 +116,11 @@ const STYLES = `
 }
 
 .hc-pulse-temp__center {
+    position: absolute;
+    inset: 0;
     display: grid;
     place-items: center;
+    padding: 28px;
 }
 
 .hc-pulse-temp__hero {
@@ -209,7 +230,9 @@ export default face(
         customColor: color('Custom Color', palette.neonCyan, { group: 'Style' }),
         heroFont: font('Hero Font', 'Orbitron', { group: 'Typography', families: [...DISPLAY_FONT_FAMILIES] }),
         uiFont: font('UI Font', 'Sora', { group: 'Typography', families: [...UI_FONT_FAMILIES] }),
-        backdrop: combo('Backdrop', ['Opaque', 'Glass', 'Clear'], { group: 'Style' }),
+        panelColor: color('Panel Color', palette.bg.deep, { group: 'Style' }),
+        panelAlpha: num('Panel Alpha', [0, 100], 0, { group: 'Style' }),
+        backdrop: combo('Backdrop', ['Clear', 'Glass', 'Opaque'], { group: 'Style' }),
         chrome: combo('Chrome', ['Halo', 'Prism', 'Ribbon'], { group: 'Style' }),
         glowIntensity: num('Glow', [0, 100], 80, { group: 'Style' }),
         showSparkline: toggle('Sparkline', true, { group: 'Layout' }),
@@ -229,6 +252,7 @@ export default face(
                     heroFont: 'Orbitron',
                     uiFont: 'Sora',
                     backdrop: 'Glass',
+                    panelAlpha: 72,
                     chrome: 'Halo',
                     glowIntensity: 86,
                 },
@@ -242,6 +266,7 @@ export default face(
                     heroFont: 'Bebas Neue',
                     uiFont: 'Roboto Condensed',
                     backdrop: 'Opaque',
+                    panelAlpha: 92,
                     chrome: 'Prism',
                     glowIntensity: 72,
                 },
@@ -255,6 +280,7 @@ export default face(
                     heroFont: 'Audiowide',
                     uiFont: 'DM Sans',
                     backdrop: 'Glass',
+                    panelAlpha: 72,
                     chrome: 'Ribbon',
                     glowIntensity: 82,
                 },
@@ -268,6 +294,7 @@ export default face(
                     heroFont: 'Exo 2',
                     uiFont: 'Inter',
                     backdrop: 'Clear',
+                    panelAlpha: 24,
                     chrome: 'Halo',
                     glowIntensity: 66,
                 },
@@ -282,6 +309,7 @@ export default face(
                     heroFont: 'Rajdhani',
                     uiFont: 'Space Grotesk',
                     backdrop: 'Glass',
+                    panelAlpha: 72,
                     chrome: 'Prism',
                     glowIntensity: 78,
                 },
@@ -295,6 +323,7 @@ export default face(
                     heroFont: 'Space Mono',
                     uiFont: 'JetBrains Mono',
                     backdrop: 'Opaque',
+                    panelAlpha: 92,
                     chrome: 'Ribbon',
                     glowIntensity: 58,
                 },
@@ -347,7 +376,7 @@ export default face(
 
         const { width: W, height: H } = ctx
         const cx = W * 0.5
-        const cy = H * 0.48
+        const cy = H * 0.5
 
         return (time, controls, sensors) => {
             const sensorLabel = controls.targetSensor as string
@@ -368,20 +397,19 @@ export default face(
                     ? colorByValue(smoothValue, sensorColors.memory.gradient)
                     : (controls.customColor as string)
             const backdrop = controls.backdrop as string
+            const panelColor = controls.panelColor as string
+            const panelAlpha = controls.panelAlpha as number
             const chrome = (controls.chrome as string).toLowerCase()
             const glow = clamp01((controls.glowIntensity as number) / 100)
 
             root.dataset.backdrop = backdrop.toLowerCase()
+            root.dataset.panel = panelAlpha > 0 ? 'on' : 'off'
             root.style.setProperty('--accent', accent)
             root.style.setProperty('--hero-font', `"${controls.heroFont as string}", sans-serif`)
             root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
             root.style.setProperty(
                 '--panel',
-                backdrop === 'Opaque'
-                    ? withAlpha(palette.bg.deep, 0.94)
-                    : backdrop === 'Glass'
-                      ? withAlpha(palette.bg.deep, 0.48)
-                      : withAlpha('#05060a', 0.12),
+                resolveFaceSurface(backdrop, panelColor, panelAlpha),
             )
 
             const formatted = sensors.formatted(sensorLabel)
@@ -399,11 +427,9 @@ export default face(
 
             const c = ctx.ctx
             c.clearRect(0, 0, W, H)
-            if (backdrop === 'Opaque') {
-                c.fillStyle = withAlpha(palette.bg.deep, 0.96)
-                c.fillRect(0, 0, W, H)
-            } else if (backdrop === 'Glass') {
-                c.fillStyle = withAlpha(palette.bg.deep, 0.18)
+            const canvasWash = resolveFaceCanvasWash(backdrop, panelColor, panelAlpha)
+            if (canvasWash) {
+                c.fillStyle = canvasWash
                 c.fillRect(0, 0, W, H)
             }
 

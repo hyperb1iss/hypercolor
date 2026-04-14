@@ -4,6 +4,7 @@ import {
     combo,
     face,
     font,
+    num,
     palette,
     sensor,
     sensorColors,
@@ -18,6 +19,8 @@ import {
     createFaceRoot,
     ensureFaceStyles,
     humanizeSensorLabel,
+    resolveFaceCanvasWash,
+    resolveFaceSurface,
 } from '../shared/dom'
 
 const STYLE_ID = 'hc-face-sensor-grid'
@@ -38,7 +41,13 @@ const STYLES = `
     position: absolute;
     inset: 18px;
     border-radius: 32px;
-    border: 1px solid rgba(255,255,255,0.08);
+    border: 1px solid transparent;
+    background: transparent;
+    box-shadow: none;
+}
+
+.hc-sensor-grid[data-panel='on'] .hc-sensor-grid__panel {
+    border-color: rgba(255,255,255,0.08);
     background:
         radial-gradient(circle at 18% 18%, rgba(255,255,255,0.08), transparent 30%),
         linear-gradient(160deg, rgba(255,255,255,0.05), rgba(255,255,255,0.01)),
@@ -46,8 +55,10 @@ const STYLES = `
     box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 24px 64px rgba(0,0,0,0.42);
 }
 
-.hc-sensor-grid[data-backdrop='clear'] .hc-sensor-grid__panel {
-    background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
+.hc-sensor-grid[data-panel='on'][data-backdrop='clear'] .hc-sensor-grid__panel {
+    background:
+        linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)),
+        var(--panel);
     box-shadow: none;
 }
 
@@ -95,7 +106,7 @@ const STYLES = `
     position: relative;
     display: grid;
     gap: 12px;
-    align-content: start;
+    align-content: center;
     padding: 16px;
     border-radius: 24px;
     border: 1px solid rgba(255,255,255,0.08);
@@ -170,8 +181,10 @@ export default face(
         accent: color('Accent', palette.neonCyan, { group: 'Style' }),
         heroFont: font('Hero Font', 'Rajdhani', { group: 'Typography', families: [...DISPLAY_FONT_FAMILIES] }),
         uiFont: font('UI Font', 'Sora', { group: 'Typography', families: [...UI_FONT_FAMILIES] }),
+        panelColor: color('Panel Color', palette.bg.deep, { group: 'Style' }),
+        panelAlpha: num('Panel Alpha', [0, 100], 0, { group: 'Style' }),
         layoutStyle: combo('Layout', ['Matrix', 'Ribbon', 'Radar'], { group: 'Style' }),
-        backdrop: combo('Backdrop', ['Opaque', 'Glass', 'Clear'], { group: 'Style' }),
+        backdrop: combo('Backdrop', ['Clear', 'Glass', 'Opaque'], { group: 'Style' }),
         showTracks: toggle('Tracks', true, { group: 'Style' }),
     },
     {
@@ -192,6 +205,7 @@ export default face(
                     uiFont: 'Sora',
                     layoutStyle: 'Matrix',
                     backdrop: 'Glass',
+                    panelAlpha: 72,
                 },
             },
             {
@@ -207,6 +221,7 @@ export default face(
                     uiFont: 'Roboto Condensed',
                     layoutStyle: 'Ribbon',
                     backdrop: 'Opaque',
+                    panelAlpha: 92,
                 },
             },
             {
@@ -219,6 +234,7 @@ export default face(
                     uiFont: 'Inter',
                     layoutStyle: 'Radar',
                     backdrop: 'Clear',
+                    panelAlpha: 24,
                 },
             },
             {
@@ -231,6 +247,7 @@ export default face(
                     uiFont: 'DM Sans',
                     layoutStyle: 'Matrix',
                     backdrop: 'Glass',
+                    panelAlpha: 72,
                 },
             },
             {
@@ -242,6 +259,7 @@ export default face(
                     uiFont: 'JetBrains Mono',
                     layoutStyle: 'Ribbon',
                     backdrop: 'Opaque',
+                    panelAlpha: 92,
                 },
             },
             {
@@ -254,6 +272,7 @@ export default face(
                     uiFont: 'Space Grotesk',
                     layoutStyle: 'Radar',
                     backdrop: 'Glass',
+                    panelAlpha: 72,
                 },
             },
         ],
@@ -294,21 +313,20 @@ export default face(
         return (time, controls, sensors) => {
             const colorMode = controls.colorMode as string
             const accent = controls.accent as string
+            const panelColor = controls.panelColor as string
+            const panelAlpha = controls.panelAlpha as number
             const layoutStyle = (controls.layoutStyle as string).toLowerCase()
             const backdrop = controls.backdrop as string
 
             root.dataset.backdrop = backdrop.toLowerCase()
             root.dataset.layout = layoutStyle
+            root.dataset.panel = panelAlpha > 0 ? 'on' : 'off'
             root.style.setProperty('--accent', accent)
             root.style.setProperty('--hero-font', `"${controls.heroFont as string}", sans-serif`)
             root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
             root.style.setProperty(
                 '--panel',
-                backdrop === 'Opaque'
-                    ? withAlpha(palette.bg.deep, 0.94)
-                    : backdrop === 'Glass'
-                      ? withAlpha(palette.bg.deep, 0.5)
-                      : withAlpha('#05060a', 0.12),
+                resolveFaceSurface(backdrop, panelColor, panelAlpha),
             )
             modeEl.textContent = colorMode === 'Auto' ? 'AUTO COLORS' : 'ACCENT LOCK'
 
@@ -340,11 +358,9 @@ export default face(
 
             const c = ctx.ctx
             c.clearRect(0, 0, W, H)
-            if (backdrop === 'Opaque') {
-                c.fillStyle = withAlpha(palette.bg.deep, 0.96)
-                c.fillRect(0, 0, W, H)
-            } else if (backdrop === 'Glass') {
-                c.fillStyle = withAlpha(palette.bg.deep, 0.18)
+            const canvasWash = resolveFaceCanvasWash(backdrop, panelColor, panelAlpha)
+            if (canvasWash) {
+                c.fillStyle = canvasWash
                 c.fillRect(0, 0, W, H)
             }
 

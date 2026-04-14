@@ -4,6 +4,7 @@ import {
     combo,
     face,
     font,
+    num,
     palette,
     sensor,
     toggle,
@@ -18,6 +19,8 @@ import {
     createFaceRoot,
     ensureFaceStyles,
     humanizeSensorLabel,
+    resolveFaceCanvasWash,
+    resolveFaceSurface,
 } from '../shared/dom'
 
 const STYLE_ID = 'hc-face-silkcircuit-hud'
@@ -39,7 +42,13 @@ const STYLES = `
     position: absolute;
     inset: 18px;
     border-radius: 34px;
-    border: 1px solid rgba(255,255,255,0.08);
+    border: 1px solid transparent;
+    background: transparent;
+    box-shadow: none;
+}
+
+.hc-silk-hud[data-panel='on'] .hc-silk-hud__panel {
+    border-color: rgba(255,255,255,0.08);
     background:
         radial-gradient(circle at 16% 18%, rgba(255,255,255,0.08), transparent 30%),
         linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01)),
@@ -47,25 +56,31 @@ const STYLES = `
     box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 24px 64px rgba(0,0,0,0.42);
 }
 
-.hc-silk-hud[data-backdrop='clear'] .hc-silk-hud__panel {
-    background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
+.hc-silk-hud[data-panel='on'][data-backdrop='clear'] .hc-silk-hud__panel {
+    background:
+        linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)),
+        var(--panel);
     box-shadow: none;
 }
 
 .hc-silk-hud__layout {
     position: absolute;
     inset: 0;
-    display: grid;
-    grid-template-rows: auto auto 1fr auto;
-    gap: 14px;
     padding: 24px;
 }
 
 .hc-silk-hud__row {
+    position: absolute;
+    left: 24px;
+    right: 24px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
+}
+
+.hc-silk-hud__row--top {
+    top: 24px;
 }
 
 .hc-silk-hud__pill {
@@ -119,10 +134,22 @@ const STYLES = `
     gap: 14px;
 }
 
+.hc-silk-hud__center-stage {
+    position: absolute;
+    inset: 0 24px;
+    display: grid;
+    align-content: center;
+    gap: 14px;
+    padding: 92px 0 74px;
+}
+
 .hc-silk-hud__metric {
     position: relative;
     display: grid;
     gap: 8px;
+    align-content: center;
+    justify-items: center;
+    text-align: center;
     padding: 18px;
     border-radius: 26px;
     border: 1px solid rgba(255,255,255,0.08);
@@ -190,6 +217,10 @@ const STYLES = `
 }
 
 .hc-silk-hud__footer {
+    position: absolute;
+    left: 24px;
+    right: 24px;
+    bottom: 24px;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -213,8 +244,10 @@ export default face(
         secondaryAccent: color('Secondary', palette.coral, { group: 'Style' }),
         heroFont: font('Hero Font', 'Orbitron', { group: 'Typography', families: [...DISPLAY_FONT_FAMILIES] }),
         uiFont: font('UI Font', 'Sora', { group: 'Typography', families: [...UI_FONT_FAMILIES] }),
+        panelColor: color('Panel Color', palette.bg.deep, { group: 'Style' }),
+        panelAlpha: num('Panel Alpha', [0, 100], 0, { group: 'Style' }),
         hourFormat: combo('Clock Format', ['24h', '12h'], { group: 'Clock' }),
-        backdrop: combo('Backdrop', ['Opaque', 'Glass', 'Clear'], { group: 'Style' }),
+        backdrop: combo('Backdrop', ['Clear', 'Glass', 'Opaque'], { group: 'Style' }),
         chrome: combo('Chrome', ['Command', 'Studio', 'Minimal'], { group: 'Style' }),
         showDate: toggle('Show Date', true, { group: 'Clock' }),
         showSparkline: toggle('Sparkline', true, { group: 'Layout' }),
@@ -233,6 +266,7 @@ export default face(
                     heroFont: 'Orbitron',
                     uiFont: 'Sora',
                     backdrop: 'Glass',
+                    panelAlpha: 72,
                     chrome: 'Command',
                 },
             },
@@ -245,6 +279,7 @@ export default face(
                     heroFont: 'Bebas Neue',
                     uiFont: 'Roboto Condensed',
                     backdrop: 'Opaque',
+                    panelAlpha: 92,
                     chrome: 'Studio',
                 },
             },
@@ -257,6 +292,7 @@ export default face(
                     heroFont: 'Exo 2',
                     uiFont: 'Inter',
                     backdrop: 'Clear',
+                    panelAlpha: 24,
                     chrome: 'Minimal',
                 },
             },
@@ -269,6 +305,7 @@ export default face(
                     heroFont: 'Audiowide',
                     uiFont: 'DM Sans',
                     backdrop: 'Glass',
+                    panelAlpha: 72,
                     chrome: 'Studio',
                 },
             },
@@ -281,6 +318,7 @@ export default face(
                     heroFont: 'Space Mono',
                     uiFont: 'JetBrains Mono',
                     backdrop: 'Opaque',
+                    panelAlpha: 92,
                     chrome: 'Command',
                 },
             },
@@ -293,6 +331,7 @@ export default face(
                     heroFont: 'Rajdhani',
                     uiFont: 'Space Grotesk',
                     backdrop: 'Glass',
+                    panelAlpha: 72,
                     chrome: 'Command',
                 },
             },
@@ -304,33 +343,35 @@ export default face(
         root.innerHTML = `
             <div class="hc-silk-hud__panel"></div>
             <div class="hc-silk-hud__layout">
-                <div class="hc-silk-hud__row">
+                <div class="hc-silk-hud__row hc-silk-hud__row--top">
                     <div class="hc-silk-hud__clock">
                         <div class="hc-silk-hud__time">00:00</div>
                         <div class="hc-silk-hud__date">MON MAY 15</div>
                     </div>
                     <div class="hc-silk-hud__pill"><span class="hc-silk-hud__dot"></span><span class="hc-silk-hud__mode">COMMAND DECK</span></div>
                 </div>
-                <div class="hc-silk-hud__hero">
-                    <div class="hc-silk-hud__metric hc-silk-hud__cpu">
-                        <div class="hc-silk-hud__metric-label">CPU TEMP</div>
-                        <div class="hc-silk-hud__metric-value">--</div>
-                        <div class="hc-silk-hud__metric-sub">THERMAL</div>
+                <div class="hc-silk-hud__center-stage">
+                    <div class="hc-silk-hud__hero">
+                        <div class="hc-silk-hud__metric hc-silk-hud__cpu">
+                            <div class="hc-silk-hud__metric-label">CPU TEMP</div>
+                            <div class="hc-silk-hud__metric-value">--</div>
+                            <div class="hc-silk-hud__metric-sub">THERMAL</div>
+                        </div>
+                        <div class="hc-silk-hud__metric hc-silk-hud__gpu">
+                            <div class="hc-silk-hud__metric-label">GPU TEMP</div>
+                            <div class="hc-silk-hud__metric-value">--</div>
+                            <div class="hc-silk-hud__metric-sub">GRAPHICS</div>
+                        </div>
                     </div>
-                    <div class="hc-silk-hud__metric hc-silk-hud__gpu">
-                        <div class="hc-silk-hud__metric-label">GPU TEMP</div>
-                        <div class="hc-silk-hud__metric-value">--</div>
-                        <div class="hc-silk-hud__metric-sub">GRAPHICS</div>
-                    </div>
-                </div>
-                <div class="hc-silk-hud__bars">
-                    <div class="hc-silk-hud__bar">
-                        <div class="hc-silk-hud__bar-head"><span class="hc-silk-hud__load-label">CPU LOAD</span><span class="hc-silk-hud__load-value">--</span></div>
-                        <div class="hc-silk-hud__bar-rail"><div class="hc-silk-hud__bar-fill hc-silk-hud__load-fill"></div></div>
-                    </div>
-                    <div class="hc-silk-hud__bar">
-                        <div class="hc-silk-hud__bar-head"><span class="hc-silk-hud__ram-label">RAM</span><span class="hc-silk-hud__ram-value">--</span></div>
-                        <div class="hc-silk-hud__bar-rail"><div class="hc-silk-hud__bar-fill hc-silk-hud__ram-fill"></div></div>
+                    <div class="hc-silk-hud__bars">
+                        <div class="hc-silk-hud__bar">
+                            <div class="hc-silk-hud__bar-head"><span class="hc-silk-hud__load-label">CPU LOAD</span><span class="hc-silk-hud__load-value">--</span></div>
+                            <div class="hc-silk-hud__bar-rail"><div class="hc-silk-hud__bar-fill hc-silk-hud__load-fill"></div></div>
+                        </div>
+                        <div class="hc-silk-hud__bar">
+                            <div class="hc-silk-hud__bar-head"><span class="hc-silk-hud__ram-label">RAM</span><span class="hc-silk-hud__ram-value">--</span></div>
+                            <div class="hc-silk-hud__bar-rail"><div class="hc-silk-hud__bar-fill hc-silk-hud__ram-fill"></div></div>
+                        </div>
                     </div>
                 </div>
                 <div class="hc-silk-hud__footer">
@@ -360,25 +401,24 @@ export default face(
 
         const { width: W, height: H } = ctx
         const cx = W * 0.5
-        const cy = H * 0.58
+        const cy = H * 0.5
 
         return (time, controls, sensors) => {
             const accent = controls.accent as string
             const secondary = controls.secondaryAccent as string
             const backdrop = controls.backdrop as string
+            const panelColor = controls.panelColor as string
+            const panelAlpha = controls.panelAlpha as number
             const chrome = (controls.chrome as string).toLowerCase()
             root.dataset.backdrop = backdrop.toLowerCase()
+            root.dataset.panel = panelAlpha > 0 ? 'on' : 'off'
             root.style.setProperty('--accent', accent)
             root.style.setProperty('--secondary', secondary)
             root.style.setProperty('--hero-font', `"${controls.heroFont as string}", sans-serif`)
             root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
             root.style.setProperty(
                 '--panel',
-                backdrop === 'Opaque'
-                    ? withAlpha(palette.bg.deep, 0.94)
-                    : backdrop === 'Glass'
-                      ? withAlpha(palette.bg.deep, 0.5)
-                      : withAlpha('#05060a', 0.12),
+                resolveFaceSurface(backdrop, panelColor, panelAlpha),
             )
             modeEl.textContent = `${chrome.toUpperCase()} HUD`
 
@@ -426,11 +466,9 @@ export default face(
 
             const c = ctx.ctx
             c.clearRect(0, 0, W, H)
-            if (backdrop === 'Opaque') {
-                c.fillStyle = withAlpha(palette.bg.deep, 0.96)
-                c.fillRect(0, 0, W, H)
-            } else if (backdrop === 'Glass') {
-                c.fillStyle = withAlpha(palette.bg.deep, 0.18)
+            const canvasWash = resolveFaceCanvasWash(backdrop, panelColor, panelAlpha)
+            if (canvasWash) {
+                c.fillStyle = canvasWash
                 c.fillRect(0, 0, W, H)
             }
 
