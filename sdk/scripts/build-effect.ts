@@ -309,9 +309,9 @@ function generateFaceHTML(
   <meta category="display"/>
 ${controlMetas.join('\n')}${presetBlock}
 </head>
-<body style="margin:0;overflow:hidden;background:#0a0a12;-webkit-user-select:none;user-select:none">
-  <div id="faceContainer" style="position:relative;overflow:hidden;width:100vw;height:100vh">
-    <canvas id="faceCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none"></canvas>
+<body style="margin:0;overflow:hidden;background:transparent;-webkit-user-select:none;user-select:none">
+  <div id="faceContainer" style="position:relative;overflow:hidden;width:100vw;height:100vh;background:transparent">
+    <canvas id="faceCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2"></canvas>
   </div>
   <script>
 ${jsBundle}

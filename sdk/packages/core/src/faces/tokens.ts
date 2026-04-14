@@ -124,6 +124,13 @@ export function colorByValue(value: number, stops: readonly string[]): string {
     return lerpColor(stops[i], stops[i + 1], localT)
 }
 
+/** Apply an alpha channel to a hex color and return an rgba() CSS string. */
+export function withAlpha(color: string, alpha: number): string {
+    const [r, g, b] = parseHex(color)
+    const clamped = Math.max(0, Math.min(1, alpha))
+    return `rgba(${r}, ${g}, ${b}, ${clamped})`
+}
+
 /** Apply a neon glow (shadowBlur) around subsequent canvas draws. */
 export function withGlow(ctx: CanvasRenderingContext2D, color: string, intensity: number, fn: () => void): void {
     if (intensity <= 0) {

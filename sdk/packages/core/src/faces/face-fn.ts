@@ -118,6 +118,17 @@ function createFaceContext(
     const dpr = typeof devicePixelRatio !== 'undefined' ? devicePixelRatio : 1
     const scale = Math.min(width / designBasis.width, height / designBasis.height)
 
+    container.style.position = 'relative'
+    container.style.width = '100%'
+    container.style.height = '100%'
+    container.style.background = 'transparent'
+    canvas.style.position = 'absolute'
+    canvas.style.inset = '0'
+    canvas.style.width = '100%'
+    canvas.style.height = '100%'
+    canvas.style.pointerEvents = 'none'
+    canvas.style.zIndex = '2'
+
     // Size canvas to match container at device pixel ratio
     canvas.width = width * dpr
     canvas.height = height * dpr
@@ -139,9 +150,12 @@ function createFaceContext(
 
 // ── Font Loading ────────────────────────────────────────────────────────
 
-/** Google Fonts CSS URL for a given family. */
-function googleFontsUrl(family: string): string {
-    return `https://fonts.googleapis.com/css2?family=${encodeURIComponent(family)}:wght@400;700&display=swap`
+/** Google Fonts CSS URL for a given family list. */
+function googleFontsUrl(families: Iterable<string>): string {
+    const query = [...families]
+        .map((family) => `family=${encodeURIComponent(family).replace(/%20/g, '+')}:wght@400;500;600;700`)
+        .join('&')
+    return `https://fonts.googleapis.com/css2?${query}&display=swap`
 }
 
 /**
@@ -167,7 +181,7 @@ async function loadFaceFonts(controls: ResolvedFaceControl[]): Promise<void> {
     // Inject Google Fonts stylesheet
     const link = document.createElement('link')
     link.rel = 'stylesheet'
-    link.href = googleFontsUrl([...families].join('&family='))
+    link.href = googleFontsUrl(families)
     document.head.appendChild(link)
 
     // Wait for the default font of each control to be ready
@@ -251,6 +265,9 @@ export function face(
             console.error('[face] Missing #faceContainer or #faceCanvas in DOM')
             return
         }
+
+        document.documentElement.style.background = 'transparent'
+        document.body.style.background = 'transparent'
 
         // Apply circular mask if needed
         if (circular) {

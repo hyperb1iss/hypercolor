@@ -1,25 +1,206 @@
-/**
- * SilkCircuit HUD — flagship system monitoring face.
- *
- * Animated arc gauges for CPU and GPU, memory bar, load bars, clock with
- * date, and a trailing temperature sparkline. Full SilkCircuit neon
- * aesthetic with configurable accent colors and fonts.
- */
-
 import {
     ValueHistory,
-    arcGauge,
-    barGauge,
     color,
-    colorByValue,
     combo,
     face,
+    font,
     palette,
     sensor,
-    sensorColors,
-    sparkline,
     toggle,
+    withAlpha,
+    withGlow,
 } from '@hypercolor/sdk'
+
+import {
+    DISPLAY_FONT_FAMILIES,
+    UI_FONT_FAMILIES,
+    clamp01,
+    createFaceRoot,
+    ensureFaceStyles,
+    humanizeSensorLabel,
+} from '../shared/dom'
+
+const STYLE_ID = 'hc-face-silkcircuit-hud'
+
+const STYLES = `
+.hc-silk-hud {
+    --accent: ${palette.neonCyan};
+    --secondary: ${palette.coral};
+    --hero-font: 'Orbitron', sans-serif;
+    --ui-font: 'Sora', sans-serif;
+    --panel: rgba(10, 10, 18, 0.82);
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    color: ${palette.fg.primary};
+}
+
+.hc-silk-hud__panel {
+    position: absolute;
+    inset: 18px;
+    border-radius: 34px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background:
+        radial-gradient(circle at 16% 18%, rgba(255,255,255,0.08), transparent 30%),
+        linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01)),
+        var(--panel);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 24px 64px rgba(0,0,0,0.42);
+}
+
+.hc-silk-hud[data-backdrop='clear'] .hc-silk-hud__panel {
+    background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
+    box-shadow: none;
+}
+
+.hc-silk-hud__layout {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    grid-template-rows: auto auto 1fr auto;
+    gap: 14px;
+    padding: 24px;
+}
+
+.hc-silk-hud__row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.hc-silk-hud__pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(10,10,18,0.4);
+    font-family: var(--ui-font);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: rgba(232,230,240,0.72);
+    backdrop-filter: blur(16px);
+}
+
+.hc-silk-hud__dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: var(--accent);
+    box-shadow: 0 0 18px var(--accent);
+}
+
+.hc-silk-hud__clock {
+    display: grid;
+    gap: 4px;
+}
+
+.hc-silk-hud__time {
+    font-family: var(--hero-font);
+    font-size: 54px;
+    line-height: 0.94;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.hc-silk-hud__date {
+    font-family: var(--ui-font);
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: rgba(232,230,240,0.68);
+}
+
+.hc-silk-hud__hero {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.hc-silk-hud__metric {
+    position: relative;
+    display: grid;
+    gap: 8px;
+    padding: 18px;
+    border-radius: 26px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.04);
+    backdrop-filter: blur(14px);
+}
+
+.hc-silk-hud__metric-label {
+    font-family: var(--ui-font);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: rgba(232,230,240,0.66);
+}
+
+.hc-silk-hud__metric-value {
+    font-family: var(--hero-font);
+    font-size: 52px;
+    line-height: 0.94;
+}
+
+.hc-silk-hud__metric-sub {
+    font-family: var(--ui-font);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: rgba(232,230,240,0.66);
+}
+
+.hc-silk-hud__bars {
+    display: grid;
+    gap: 12px;
+}
+
+.hc-silk-hud__bar {
+    display: grid;
+    gap: 6px;
+}
+
+.hc-silk-hud__bar-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-family: var(--ui-font);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: rgba(232,230,240,0.7);
+}
+
+.hc-silk-hud__bar-rail {
+    position: relative;
+    height: 12px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(255,255,255,0.06);
+}
+
+.hc-silk-hud__bar-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: calc(var(--fill, 0) * 100%);
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), var(--secondary));
+}
+
+.hc-silk-hud__footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-family: var(--ui-font);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: rgba(232,230,240,0.68);
+}
+`
 
 export default face(
     'SilkCircuit HUD',
@@ -30,250 +211,298 @@ export default face(
         ramSensor: sensor('RAM Sensor', 'ram_used', { group: 'Sensors' }),
         accent: color('Accent', palette.neonCyan, { group: 'Style' }),
         secondaryAccent: color('Secondary', palette.coral, { group: 'Style' }),
+        heroFont: font('Hero Font', 'Orbitron', { group: 'Typography', families: [...DISPLAY_FONT_FAMILIES] }),
+        uiFont: font('UI Font', 'Sora', { group: 'Typography', families: [...UI_FONT_FAMILIES] }),
         hourFormat: combo('Clock Format', ['24h', '12h'], { group: 'Clock' }),
+        backdrop: combo('Backdrop', ['Opaque', 'Glass', 'Clear'], { group: 'Style' }),
+        chrome: combo('Chrome', ['Command', 'Studio', 'Minimal'], { group: 'Style' }),
         showDate: toggle('Show Date', true, { group: 'Clock' }),
-        showSparkline: toggle('Show Sparkline', true, { group: 'Layout' }),
-        gaugeGlow: combo('Gauge Glow', ['High', 'Low', 'Off'], { group: 'Style' }),
+        showSparkline: toggle('Sparkline', true, { group: 'Layout' }),
     },
     {
-        description: 'Animated system dashboard — arc gauges, bars, clock, sparkline. Full SilkCircuit neon aesthetic.',
+        description: 'A flagship command-center face with stronger typography, layered hero metrics, animated HUD chrome, and presets with distinct moods.',
         author: 'Hypercolor',
         designBasis: { width: 480, height: 480 },
         presets: [
             {
-                name: 'SilkCircuit Dark',
-                description: 'Neon cyan + coral on deep black — the signature look',
-                controls: { accent: palette.neonCyan, secondaryAccent: palette.coral, gaugeGlow: 'High' },
+                name: 'Signature HUD',
+                description: 'The classic SilkCircuit cyan/coral command deck.',
+                controls: {
+                    accent: palette.neonCyan,
+                    secondaryAccent: palette.coral,
+                    heroFont: 'Orbitron',
+                    uiFont: 'Sora',
+                    backdrop: 'Glass',
+                    chrome: 'Command',
+                },
             },
             {
-                name: 'Forge',
-                description: 'Amber heat on charcoal — for the overclockers',
-                controls: { accent: '#ffb347', secondaryAccent: '#ff6b6b', gaugeGlow: 'Low' },
+                name: 'Forge Deck',
+                description: 'Warm amber chrome and bold numerals.',
+                controls: {
+                    accent: '#ffb347',
+                    secondaryAccent: '#ff6b6b',
+                    heroFont: 'Bebas Neue',
+                    uiFont: 'Roboto Condensed',
+                    backdrop: 'Opaque',
+                    chrome: 'Studio',
+                },
             },
             {
-                name: 'Arctic',
-                description: 'Ice blue minimalism — cool and clean',
-                controls: { accent: '#7ec8e3', secondaryAccent: '#c8b6ff', gaugeGlow: 'Off' },
+                name: 'Arctic Rail',
+                description: 'Cool blue minimal HUD with airy type.',
+                controls: {
+                    accent: '#9ae7ff',
+                    secondaryAccent: '#c8d5ff',
+                    heroFont: 'Exo 2',
+                    uiFont: 'Inter',
+                    backdrop: 'Clear',
+                    chrome: 'Minimal',
+                },
+            },
+            {
+                name: 'Rose Protocol',
+                description: 'Coral-forward femme variant with sleek cards.',
+                controls: {
+                    accent: palette.coral,
+                    secondaryAccent: '#ffb8dd',
+                    heroFont: 'Audiowide',
+                    uiFont: 'DM Sans',
+                    backdrop: 'Glass',
+                    chrome: 'Studio',
+                },
+            },
+            {
+                name: 'Mono Grid',
+                description: 'Sharper monospaced telemetry for clean reads.',
+                controls: {
+                    accent: palette.electricYellow,
+                    secondaryAccent: '#ffa166',
+                    heroFont: 'Space Mono',
+                    uiFont: 'JetBrains Mono',
+                    backdrop: 'Opaque',
+                    chrome: 'Command',
+                },
+            },
+            {
+                name: 'Nightclub Ops',
+                description: 'Dark magenta-blue control room.',
+                controls: {
+                    accent: '#ff4da6',
+                    secondaryAccent: '#6a8bff',
+                    heroFont: 'Rajdhani',
+                    uiFont: 'Space Grotesk',
+                    backdrop: 'Glass',
+                    chrome: 'Command',
+                },
             },
         ],
     },
     (ctx) => {
-        const { width: W, height: H } = ctx
-        const cx = W / 2
+        ensureFaceStyles(STYLE_ID, STYLES)
+        const root = createFaceRoot(ctx, 'hc-silk-hud')
+        root.innerHTML = `
+            <div class="hc-silk-hud__panel"></div>
+            <div class="hc-silk-hud__layout">
+                <div class="hc-silk-hud__row">
+                    <div class="hc-silk-hud__clock">
+                        <div class="hc-silk-hud__time">00:00</div>
+                        <div class="hc-silk-hud__date">MON MAY 15</div>
+                    </div>
+                    <div class="hc-silk-hud__pill"><span class="hc-silk-hud__dot"></span><span class="hc-silk-hud__mode">COMMAND DECK</span></div>
+                </div>
+                <div class="hc-silk-hud__hero">
+                    <div class="hc-silk-hud__metric hc-silk-hud__cpu">
+                        <div class="hc-silk-hud__metric-label">CPU TEMP</div>
+                        <div class="hc-silk-hud__metric-value">--</div>
+                        <div class="hc-silk-hud__metric-sub">THERMAL</div>
+                    </div>
+                    <div class="hc-silk-hud__metric hc-silk-hud__gpu">
+                        <div class="hc-silk-hud__metric-label">GPU TEMP</div>
+                        <div class="hc-silk-hud__metric-value">--</div>
+                        <div class="hc-silk-hud__metric-sub">GRAPHICS</div>
+                    </div>
+                </div>
+                <div class="hc-silk-hud__bars">
+                    <div class="hc-silk-hud__bar">
+                        <div class="hc-silk-hud__bar-head"><span class="hc-silk-hud__load-label">CPU LOAD</span><span class="hc-silk-hud__load-value">--</span></div>
+                        <div class="hc-silk-hud__bar-rail"><div class="hc-silk-hud__bar-fill hc-silk-hud__load-fill"></div></div>
+                    </div>
+                    <div class="hc-silk-hud__bar">
+                        <div class="hc-silk-hud__bar-head"><span class="hc-silk-hud__ram-label">RAM</span><span class="hc-silk-hud__ram-value">--</span></div>
+                        <div class="hc-silk-hud__bar-rail"><div class="hc-silk-hud__bar-fill hc-silk-hud__ram-fill"></div></div>
+                    </div>
+                </div>
+                <div class="hc-silk-hud__footer">
+                    <span class="hc-silk-hud__footer-left">LIVE TELEMETRY</span>
+                    <span class="hc-silk-hud__footer-right">SPARKLINE READY</span>
+                </div>
+            </div>
+        `
 
-        // State
-        const cpuTempHistory = new ValueHistory(60)
-        const gpuTempHistory = new ValueHistory(60)
-        let smoothCpuTemp = 0
-        let smoothGpuTemp = 0
-        let smoothCpuLoad = 0
+        const timeEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__time')!
+        const dateEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__date')!
+        const modeEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__mode')!
+        const cpuValueEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__cpu .hc-silk-hud__metric-value')!
+        const gpuValueEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__gpu .hc-silk-hud__metric-value')!
+        const loadValueEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__load-value')!
+        const ramValueEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__ram-value')!
+        const loadFillEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__load-fill')!
+        const ramFillEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__ram-fill')!
+        const footerRightEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__footer-right')!
+        const cpuHistory = new ValueHistory(72)
+        const gpuHistory = new ValueHistory(72)
+        let smoothCpu = 0
+        let smoothGpu = 0
+        let smoothLoad = 0
         let smoothRam = 0
         let lastHistoryPush = 0
 
-        // Smooth approach helper
-        const approach = (current: number, target: number, speed: number): number =>
-            current + (target - current) * Math.min(1, speed)
+        const { width: W, height: H } = ctx
+        const cx = W * 0.5
+        const cy = H * 0.58
 
         return (time, controls, sensors) => {
-            const c = ctx.ctx
             const accent = controls.accent as string
             const secondary = controls.secondaryAccent as string
-            const glow = controls.gaugeGlow === 'High' ? 0.8 : controls.gaugeGlow === 'Low' ? 0.3 : 0
+            const backdrop = controls.backdrop as string
+            const chrome = (controls.chrome as string).toLowerCase()
+            root.dataset.backdrop = backdrop.toLowerCase()
+            root.style.setProperty('--accent', accent)
+            root.style.setProperty('--secondary', secondary)
+            root.style.setProperty('--hero-font', `"${controls.heroFont as string}", sans-serif`)
+            root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
+            root.style.setProperty(
+                '--panel',
+                backdrop === 'Opaque'
+                    ? withAlpha(palette.bg.deep, 0.94)
+                    : backdrop === 'Glass'
+                      ? withAlpha(palette.bg.deep, 0.5)
+                      : withAlpha('#05060a', 0.12),
+            )
+            modeEl.textContent = `${chrome.toUpperCase()} HUD`
 
-            // Read sensors
             const cpuTemp = sensors.normalized(controls.cpuTempSensor as string)
             const gpuTemp = sensors.normalized(controls.gpuTempSensor as string)
             const cpuLoad = sensors.normalized(controls.cpuLoadSensor as string)
             const ram = sensors.normalized(controls.ramSensor as string)
+            smoothCpu += (cpuTemp - smoothCpu) * 0.08
+            smoothGpu += (gpuTemp - smoothGpu) * 0.08
+            smoothLoad += (cpuLoad - smoothLoad) * 0.12
+            smoothRam += (ram - smoothRam) * 0.1
 
-            // Smooth values for animation
-            smoothCpuTemp = approach(smoothCpuTemp, cpuTemp, 0.08)
-            smoothGpuTemp = approach(smoothGpuTemp, gpuTemp, 0.08)
-            smoothCpuLoad = approach(smoothCpuLoad, cpuLoad, 0.12)
-            smoothRam = approach(smoothRam, ram, 0.1)
-
-            // Push to history every ~500ms
-            if (time - lastHistoryPush > 0.5) {
-                cpuTempHistory.push(cpuTemp)
-                gpuTempHistory.push(gpuTemp)
+            if (time - lastHistoryPush > 0.25) {
+                cpuHistory.push(cpuTemp)
+                gpuHistory.push(gpuTemp)
                 lastHistoryPush = time
             }
 
-            // ── Background ────────────────────────────────────────
-            c.fillStyle = palette.bg.deep
-            c.fillRect(0, 0, W, H)
-
-            // Subtle radial vignette
-            const vignette = c.createRadialGradient(cx, H / 2, W * 0.2, cx, H / 2, W * 0.7)
-            vignette.addColorStop(0, 'transparent')
-            vignette.addColorStop(1, 'rgba(0, 0, 0, 0.4)')
-            c.fillStyle = vignette
-            c.fillRect(0, 0, W, H)
-
-            // ── Clock ─────────────────────────────────────────────
             const now = new Date()
-            const is12h = controls.hourFormat === '12h'
             let hours = now.getHours()
             const minutes = now.getMinutes()
-            const ampm = hours >= 12 ? 'PM' : 'AM'
-            if (is12h) hours = hours % 12 || 12
-            const timeStr = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`
+            if (controls.hourFormat === '12h') hours = hours % 12 || 12
+            timeEl.textContent = `${hours.toString().padStart(2, '0')}:${minutes
+                .toString()
+                .padStart(2, '0')}`
+            dateEl.textContent = controls.showDate
+                ? now
+                      .toLocaleDateString('en-US', {
+                          weekday: 'short',
+                          month: 'short',
+                          day: 'numeric',
+                      })
+                      .toUpperCase()
+                : 'ACTIVE SCENE'
 
-            c.font = "bold 52px 'Orbitron', 'JetBrains Mono', monospace"
-            c.fillStyle = palette.fg.primary
-            c.textAlign = 'center'
-            c.textBaseline = 'top'
-            c.fillText(timeStr + (is12h ? ` ${ampm}` : ''), cx, 28)
+            cpuValueEl.textContent = sensors.formatted(controls.cpuTempSensor as string)
+            gpuValueEl.textContent = sensors.formatted(controls.gpuTempSensor as string)
+            loadValueEl.textContent = sensors.formatted(controls.cpuLoadSensor as string)
+            ramValueEl.textContent = sensors.formatted(controls.ramSensor as string)
+            loadFillEl.style.setProperty('--fill', clamp01(smoothLoad).toFixed(4))
+            ramFillEl.style.setProperty('--fill', clamp01(smoothRam).toFixed(4))
+            footerRightEl.textContent = controls.showSparkline
+                ? `${Math.round((smoothCpu + smoothGpu) * 50)}% ENERGY`
+                : `${humanizeSensorLabel(controls.cpuLoadSensor as string).toUpperCase()}`
 
-            if (controls.showDate) {
-                const dateStr = now.toLocaleDateString('en-US', {
-                    month: 'short',
-                    day: 'numeric',
-                    year: 'numeric',
-                })
-                c.font = "16px 'Inter', sans-serif"
-                c.fillStyle = palette.fg.tertiary
-                c.fillText(dateStr, cx, 88)
+            const c = ctx.ctx
+            c.clearRect(0, 0, W, H)
+            if (backdrop === 'Opaque') {
+                c.fillStyle = withAlpha(palette.bg.deep, 0.96)
+                c.fillRect(0, 0, W, H)
+            } else if (backdrop === 'Glass') {
+                c.fillStyle = withAlpha(palette.bg.deep, 0.18)
+                c.fillRect(0, 0, W, H)
             }
 
-            // ── Arc Gauges — CPU and GPU temp ─────────────────────
-            const gaugeY = 195
-            const gaugeR = 72
-            const gaugeThickness = 10
+            const ambient = c.createRadialGradient(cx, cy, 18, cx, cy, W * 0.54)
+            ambient.addColorStop(0, withAlpha(accent, 0.14))
+            ambient.addColorStop(0.5, withAlpha(secondary, 0.08))
+            ambient.addColorStop(1, withAlpha(secondary, 0))
+            c.fillStyle = ambient
+            c.fillRect(0, 0, W, H)
 
-            // CPU temp gauge (left)
-            const cpuColor = colorByValue(smoothCpuTemp, sensorColors.temperature.gradient)
-            arcGauge(c, {
-                cx: cx - 90,
-                cy: gaugeY,
-                radius: gaugeR,
-                thickness: gaugeThickness,
-                value: smoothCpuTemp,
-                fillColor: [accent, cpuColor],
-                glow,
-            })
+            c.strokeStyle = withAlpha(accent, chrome === 'minimal' ? 0.08 : 0.14)
+            c.lineWidth = 1.5
+            c.beginPath()
+            c.moveTo(30, H * 0.36)
+            c.lineTo(W - 30, H * 0.36)
+            c.moveTo(30, H * 0.82)
+            c.lineTo(W - 30, H * 0.82)
+            c.stroke()
 
-            // CPU temp label + value
-            c.font = "bold 28px 'JetBrains Mono', monospace"
-            c.fillStyle = cpuColor
-            c.textAlign = 'center'
-            c.textBaseline = 'middle'
-            c.fillText(sensors.formatted(controls.cpuTempSensor as string), cx - 90, gaugeY)
-            c.font = "13px 'Inter', sans-serif"
-            c.fillStyle = palette.fg.secondary
-            c.fillText('CPU', cx - 90, gaugeY + 22)
-
-            // GPU temp gauge (right)
-            const gpuColor = colorByValue(smoothGpuTemp, sensorColors.temperature.gradient)
-            arcGauge(c, {
-                cx: cx + 90,
-                cy: gaugeY,
-                radius: gaugeR,
-                thickness: gaugeThickness,
-                value: smoothGpuTemp,
-                fillColor: [secondary, gpuColor],
-                glow,
-            })
-
-            // GPU temp label + value
-            c.font = "bold 28px 'JetBrains Mono', monospace"
-            c.fillStyle = gpuColor
-            c.textAlign = 'center'
-            c.textBaseline = 'middle'
-            c.fillText(sensors.formatted(controls.gpuTempSensor as string), cx + 90, gaugeY)
-            c.font = "13px 'Inter', sans-serif"
-            c.fillStyle = palette.fg.secondary
-            c.fillText('GPU', cx + 90, gaugeY + 22)
-
-            // ── Load Bars ─────────────────────────────────────────
-            const barX = 48
-            const barW = W - 96
-            const barH = 14
-            const barY = 305
-
-            // CPU Load bar
-            c.font = "12px 'Inter', sans-serif"
-            c.fillStyle = palette.fg.secondary
-            c.textAlign = 'left'
-            c.textBaseline = 'middle'
-            c.fillText('CPU', barX, barY - 2)
-            c.textAlign = 'right'
-            c.fillText(`${Math.round(smoothCpuLoad * 100)}%`, barX + barW, barY - 2)
-
-            barGauge(c, {
-                x: barX,
-                y: barY + 8,
-                width: barW,
-                height: barH,
-                value: smoothCpuLoad,
-                fillColor: [accent, colorByValue(smoothCpuLoad, sensorColors.load.gradient)],
-                borderRadius: 7,
-                glow: glow * 0.5,
-            })
-
-            // RAM bar
-            const ramY = barY + 48
-            c.font = "12px 'Inter', sans-serif"
-            c.fillStyle = palette.fg.secondary
-            c.textAlign = 'left'
-            c.textBaseline = 'middle'
-            c.fillText('RAM', barX, ramY - 2)
-            c.textAlign = 'right'
-            c.fillText(sensors.formatted(controls.ramSensor as string), barX + barW, ramY - 2)
-
-            barGauge(c, {
-                x: barX,
-                y: ramY + 8,
-                width: barW,
-                height: barH,
-                value: smoothRam,
-                fillColor: sensorColors.memory.gradient,
-                borderRadius: 7,
-                glow: glow * 0.5,
-            })
-
-            // ── Sparkline ─────────────────────────────────────────
-            if (controls.showSparkline && cpuTempHistory.length > 2) {
-                const sparkY = 410
-                const sparkH = 44
-
-                // Subtle separator line
-                c.strokeStyle = palette.bg.raised
-                c.lineWidth = 1
+            const arcRadius = Math.min(W, H) * 0.23
+            withGlow(c, accent, chrome === 'minimal' ? 0.2 : 0.5, () => {
+                c.strokeStyle = accent
+                c.lineWidth = 3
                 c.beginPath()
-                c.moveTo(barX, sparkY - 8)
-                c.lineTo(barX + barW, sparkY - 8)
+                c.arc(cx, cy, arcRadius, Math.PI * 0.12, Math.PI * (0.12 + smoothLoad * 1.76))
                 c.stroke()
+            })
+            withGlow(c, secondary, chrome === 'minimal' ? 0.15 : 0.4, () => {
+                c.strokeStyle = secondary
+                c.lineWidth = 3
+                c.beginPath()
+                c.arc(cx, cy, arcRadius + 18, Math.PI * 1.08, Math.PI * (1.08 + smoothRam * 1.5))
+                c.stroke()
+            })
 
-                sparkline(c, {
-                    x: barX,
-                    y: sparkY,
-                    width: barW / 2 - 8,
-                    height: sparkH,
-                    values: cpuTempHistory.values(),
-                    range: [0, 1],
-                    color: accent,
-                    lineWidth: 1.5,
-                })
+            if (chrome !== 'minimal') {
+                for (let i = 0; i < 4; i++) {
+                    const y = H * (0.44 + i * 0.08)
+                    c.strokeStyle = withAlpha(i % 2 === 0 ? accent : secondary, 0.08)
+                    c.beginPath()
+                    for (let x = 24; x <= W - 24; x += 12) {
+                        const wave = Math.sin(time * 1.1 + x * 0.024 + i) * 5
+                        if (x === 24) c.moveTo(x, y + wave)
+                        else c.lineTo(x, y + wave)
+                    }
+                    c.stroke()
+                }
+            }
 
-                sparkline(c, {
-                    x: cx + 8,
-                    y: sparkY,
-                    width: barW / 2 - 8,
-                    height: sparkH,
-                    values: gpuTempHistory.values(),
-                    range: [0, 1],
-                    color: secondary,
-                    lineWidth: 1.5,
-                })
+            if (controls.showSparkline && cpuHistory.length > 2) {
+                const cpuValues = cpuHistory.values()
+                const gpuValues = gpuHistory.values()
+                const sparkLeft = 34
+                const sparkTop = H - 82
+                const sparkWidth = W - 68
+                const sparkHeight = 34
 
-                // Sparkline labels
-                c.font = "10px 'Inter', sans-serif"
-                c.fillStyle = palette.fg.tertiary
-                c.textAlign = 'left'
-                c.textBaseline = 'bottom'
-                c.fillText('CPU temp', barX, sparkY - 1)
-                c.fillText('GPU temp', cx + 8, sparkY - 1)
+                const drawLine = (values: number[], stroke: string) => {
+                    c.beginPath()
+                    values.forEach((value, index) => {
+                        const x = sparkLeft + (index / Math.max(1, values.length - 1)) * sparkWidth
+                        const y = sparkTop + sparkHeight - value * sparkHeight
+                        if (index === 0) c.moveTo(x, y)
+                        else c.lineTo(x, y)
+                    })
+                    c.strokeStyle = stroke
+                    c.lineWidth = 2
+                    c.stroke()
+                }
+
+                drawLine(cpuValues, accent)
+                drawLine(gpuValues, secondary)
             }
         }
     },

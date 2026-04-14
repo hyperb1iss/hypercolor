@@ -134,6 +134,7 @@ export {
     radius,
     sensorColors,
     spacing,
+    withAlpha,
     withGlow,
 } from './faces/tokens'
 

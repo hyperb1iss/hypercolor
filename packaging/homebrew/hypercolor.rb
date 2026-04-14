@@ -36,7 +36,6 @@ class Hypercolor < Formula
     # Web UI + bundled effects
     (share/"hypercolor").install "share/hypercolor/ui" if File.directory?("share/hypercolor/ui")
     (share/"hypercolor").install "share/hypercolor/effects" if File.directory?("share/hypercolor/effects")
-    (share/"hypercolor").install "share/hypercolor/overlay-templates" if File.directory?("share/hypercolor/overlay-templates")
 
     # Shell completions
     bash_completion.install "share/bash-completion/completions/hyper" if File.exist?("share/bash-completion/completions/hyper")

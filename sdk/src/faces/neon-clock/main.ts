@@ -1,160 +1,521 @@
-/**
- * Neon Clock — clean animated timepiece.
- *
- * Large digital time with smooth glow transitions, optional date,
- * configurable font and accent colors. Pulsing colon and subtle
- * animated ring behind the time.
- */
+import {
+    color,
+    combo,
+    face,
+    font,
+    num,
+    palette,
+    toggle,
+    withAlpha,
+    withGlow,
+} from '@hypercolor/sdk'
 
-import { color, combo, face, num, palette, toggle, withGlow } from '@hypercolor/sdk'
+import {
+    DISPLAY_FONT_FAMILIES,
+    UI_FONT_FAMILIES,
+    clamp01,
+    createFaceRoot,
+    ensureFaceStyles,
+} from '../shared/dom'
+
+const STYLE_ID = 'hc-face-neon-clock'
+
+const STYLES = `
+.hc-neon-clock {
+    --accent: ${palette.neonCyan};
+    --secondary: ${palette.electricPurple};
+    --accent-glow: rgba(128, 255, 234, 0.36);
+    --headline-font: 'Orbitron', sans-serif;
+    --ui-font: 'Sora', sans-serif;
+    --panel: rgba(10, 10, 18, 0.78);
+    --panel-edge: rgba(255, 255, 255, 0.08);
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    color: ${palette.fg.primary};
+}
+
+.hc-neon-clock__backdrop {
+    position: absolute;
+    inset: 16px;
+    border-radius: 32px;
+    border: 1px solid var(--panel-edge);
+    background:
+        radial-gradient(circle at 20% 20%, rgba(255,255,255,0.08), transparent 32%),
+        linear-gradient(160deg, rgba(255,255,255,0.06), transparent 55%),
+        var(--panel);
+    box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.06),
+        0 24px 60px rgba(0, 0, 0, 0.42);
+}
+
+.hc-neon-clock[data-backdrop='clear'] .hc-neon-clock__backdrop {
+    background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+    border-color: rgba(255,255,255,0.04);
+    box-shadow: none;
+}
+
+.hc-neon-clock__chrome {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    padding: 30px;
+}
+
+.hc-neon-clock__topline,
+.hc-neon-clock__footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-family: var(--ui-font);
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: rgba(232, 230, 240, 0.72);
+}
+
+.hc-neon-clock__badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(10, 10, 18, 0.46);
+    backdrop-filter: blur(16px);
+}
+
+.hc-neon-clock__badge-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: var(--accent);
+    box-shadow: 0 0 18px var(--accent);
+    animation: hcNeonClockBlink 1.4s ease-in-out infinite;
+}
+
+.hc-neon-clock__main {
+    position: relative;
+    display: grid;
+    place-items: center;
+}
+
+.hc-neon-clock__time-block {
+    position: relative;
+    display: grid;
+    gap: 10px;
+    justify-items: center;
+    text-align: center;
+}
+
+.hc-neon-clock__orbit {
+    position: absolute;
+    inset: 50%;
+    width: 72%;
+    height: 72%;
+    transform: translate(-50%, -50%);
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.06);
+    box-shadow:
+        inset 0 0 24px rgba(255,255,255,0.04),
+        0 0 28px rgba(0,0,0,0.36);
+}
+
+.hc-neon-clock[data-motion='minimal'] .hc-neon-clock__orbit {
+    opacity: 0.35;
+}
+
+.hc-neon-clock__time {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    font-family: var(--headline-font);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    line-height: 0.9;
+    text-shadow: 0 0 36px rgba(0, 0, 0, 0.36);
+}
+
+.hc-neon-clock__hours,
+.hc-neon-clock__minutes {
+    font-size: 102px;
+}
+
+.hc-neon-clock__separator {
+    font-size: 84px;
+    opacity: 0.72;
+    transform: translateY(-4px);
+    animation: hcNeonClockBlink 1s steps(2) infinite;
+}
+
+.hc-neon-clock__seconds {
+    min-width: 2.5ch;
+    padding: 10px 12px 8px;
+    border-radius: 18px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.04);
+    font-family: var(--ui-font);
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+}
+
+.hc-neon-clock__meta {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: center;
+    font-family: var(--ui-font);
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: rgba(232, 230, 240, 0.72);
+}
+
+.hc-neon-clock__meta-pill {
+    padding: 8px 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(10,10,18,0.42);
+    backdrop-filter: blur(14px);
+}
+
+.hc-neon-clock__progress {
+    display: grid;
+    gap: 10px;
+    width: 100%;
+}
+
+.hc-neon-clock__meter {
+    display: grid;
+    gap: 6px;
+}
+
+.hc-neon-clock__meter-label {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-family: var(--ui-font);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: rgba(232,230,240,0.66);
+}
+
+.hc-neon-clock__meter-rail {
+    position: relative;
+    height: 8px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(255,255,255,0.06);
+}
+
+.hc-neon-clock__meter-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: calc(var(--fill, 0) * 100%);
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), var(--secondary));
+    box-shadow: 0 0 20px var(--accent-glow);
+}
+
+@keyframes hcNeonClockBlink {
+    0%, 42%, 100% { opacity: 1; }
+    50%, 92% { opacity: 0.35; }
+}
+`
 
 export default face(
     'Neon Clock',
     {
         accent: color('Accent', palette.neonCyan, { group: 'Style' }),
+        secondaryAccent: color('Secondary', palette.electricPurple, { group: 'Style' }),
+        headlineFont: font('Headline Font', 'Orbitron', { group: 'Typography', families: [...DISPLAY_FONT_FAMILIES] }),
+        uiFont: font('UI Font', 'Sora', { group: 'Typography', families: [...UI_FONT_FAMILIES] }),
         hourFormat: combo('Format', ['24h', '12h'], { group: 'Clock' }),
-        showSeconds: toggle('Show Seconds', false, { group: 'Clock' }),
+        showSeconds: toggle('Show Seconds', true, { group: 'Clock' }),
         showDate: toggle('Show Date', true, { group: 'Clock' }),
-        glowIntensity: num('Glow', [0, 100], 70, { group: 'Style' }),
-        ringStyle: combo('Ring', ['Sweep', 'Pulse', 'None'], { group: 'Style' }),
+        motion: combo('Motion', ['Orbit', 'Bloom', 'Minimal'], { group: 'Style' }),
+        backdrop: combo('Backdrop', ['Opaque', 'Glass', 'Clear'], { group: 'Style' }),
+        glowIntensity: num('Glow', [0, 100], 78, { group: 'Style' }),
     },
     {
-        description: 'Elegant neon timepiece with animated glow ring and smooth digit transitions.',
+        description: 'A cinematic neon clock with glass chrome, animated orbits, luxe typography, and presets that actually change the mood.',
         author: 'Hypercolor',
         designBasis: { width: 480, height: 480 },
         presets: [
             {
                 name: 'Electric Midnight',
-                description: 'Neon cyan glow with sweep ring',
-                controls: { accent: palette.neonCyan, glowIntensity: 80, ringStyle: 'Sweep' },
+                description: 'Orbitron over deep cyan and violet glass.',
+                controls: {
+                    accent: palette.neonCyan,
+                    secondaryAccent: palette.electricPurple,
+                    headlineFont: 'Orbitron',
+                    uiFont: 'Sora',
+                    motion: 'Orbit',
+                    backdrop: 'Glass',
+                    glowIntensity: 84,
+                },
             },
             {
-                name: 'Rose Gold',
-                description: 'Warm coral on dark — soft and luxurious',
-                controls: { accent: '#ffb4a2', glowIntensity: 50, ringStyle: 'Pulse' },
+                name: 'Blush Circuit',
+                description: 'High-femme coral and purple with soft bloom.',
+                controls: {
+                    accent: palette.coral,
+                    secondaryAccent: '#ffb3f2',
+                    headlineFont: 'Audiowide',
+                    uiFont: 'DM Sans',
+                    motion: 'Bloom',
+                    backdrop: 'Glass',
+                    glowIntensity: 70,
+                },
             },
             {
-                name: 'Ghost',
-                description: 'Barely-there white — minimal and sharp',
-                controls: { accent: '#e8e6f0', glowIntensity: 20, ringStyle: 'None' },
+                name: 'Arcade Mono',
+                description: 'Monospaced synth clock with bright rails.',
+                controls: {
+                    accent: palette.electricYellow,
+                    secondaryAccent: '#ff8d4d',
+                    headlineFont: 'Space Mono',
+                    uiFont: 'JetBrains Mono',
+                    motion: 'Orbit',
+                    backdrop: 'Opaque',
+                    glowIntensity: 64,
+                },
+            },
+            {
+                name: 'Afterglow',
+                description: 'Warm rose-gold chrome with restrained motion.',
+                controls: {
+                    accent: '#ffb38a',
+                    secondaryAccent: '#ffd2c3',
+                    headlineFont: 'Bebas Neue',
+                    uiFont: 'Roboto Condensed',
+                    motion: 'Minimal',
+                    backdrop: 'Glass',
+                    glowIntensity: 58,
+                },
+            },
+            {
+                name: 'Frostline',
+                description: 'Cool, airy blue-white with clear paneling.',
+                controls: {
+                    accent: '#9ae7ff',
+                    secondaryAccent: '#d6ecff',
+                    headlineFont: 'Exo 2',
+                    uiFont: 'Inter',
+                    motion: 'Bloom',
+                    backdrop: 'Clear',
+                    glowIntensity: 62,
+                },
+            },
+            {
+                name: 'Night Drive',
+                description: 'Cyberpunk magenta with bold condensed numerals.',
+                controls: {
+                    accent: '#ff4da6',
+                    secondaryAccent: '#6a8bff',
+                    headlineFont: 'Rajdhani',
+                    uiFont: 'Space Grotesk',
+                    motion: 'Orbit',
+                    backdrop: 'Opaque',
+                    glowIntensity: 88,
+                },
             },
         ],
     },
     (ctx) => {
+        ensureFaceStyles(STYLE_ID, STYLES)
+        const root = createFaceRoot(ctx, 'hc-neon-clock')
+        root.innerHTML = `
+            <div class="hc-neon-clock__backdrop"></div>
+            <div class="hc-neon-clock__chrome">
+                <div class="hc-neon-clock__topline">
+                    <div class="hc-neon-clock__badge">
+                        <span class="hc-neon-clock__badge-dot"></span>
+                        <span class="hc-neon-clock__mode">LOCAL TIME</span>
+                    </div>
+                    <div class="hc-neon-clock__badge hc-neon-clock__status">DISPLAY FACE</div>
+                </div>
+                <div class="hc-neon-clock__main">
+                    <div class="hc-neon-clock__orbit"></div>
+                    <div class="hc-neon-clock__time-block">
+                        <div class="hc-neon-clock__time">
+                            <span class="hc-neon-clock__hours">00</span>
+                            <span class="hc-neon-clock__separator">:</span>
+                            <span class="hc-neon-clock__minutes">00</span>
+                            <span class="hc-neon-clock__seconds">00</span>
+                        </div>
+                        <div class="hc-neon-clock__meta">
+                            <span class="hc-neon-clock__meta-pill hc-neon-clock__date">MON</span>
+                            <span class="hc-neon-clock__meta-pill hc-neon-clock__ampm">24H</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="hc-neon-clock__footer">
+                    <div class="hc-neon-clock__progress">
+                        <div class="hc-neon-clock__meter">
+                            <div class="hc-neon-clock__meter-label"><span>SECOND SWEEP</span><span class="hc-neon-clock__second-label">00</span></div>
+                            <div class="hc-neon-clock__meter-rail"><div class="hc-neon-clock__meter-fill hc-neon-clock__second-fill"></div></div>
+                        </div>
+                        <div class="hc-neon-clock__meter">
+                            <div class="hc-neon-clock__meter-label"><span>DAYLIGHT</span><span class="hc-neon-clock__day-label">00%</span></div>
+                            <div class="hc-neon-clock__meter-rail"><div class="hc-neon-clock__meter-fill hc-neon-clock__day-fill"></div></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `
+
+        const hoursEl = root.querySelector<HTMLSpanElement>('.hc-neon-clock__hours')!
+        const minutesEl = root.querySelector<HTMLSpanElement>('.hc-neon-clock__minutes')!
+        const secondsEl = root.querySelector<HTMLSpanElement>('.hc-neon-clock__seconds')!
+        const dateEl = root.querySelector<HTMLSpanElement>('.hc-neon-clock__date')!
+        const ampmEl = root.querySelector<HTMLSpanElement>('.hc-neon-clock__ampm')!
+        const secondLabelEl = root.querySelector<HTMLSpanElement>('.hc-neon-clock__second-label')!
+        const dayLabelEl = root.querySelector<HTMLSpanElement>('.hc-neon-clock__day-label')!
+        const secondFillEl = root.querySelector<HTMLDivElement>('.hc-neon-clock__second-fill')!
+        const dayFillEl = root.querySelector<HTMLDivElement>('.hc-neon-clock__day-fill')!
+
         const { width: W, height: H } = ctx
-        const cx = W / 2
-        const cy = H / 2
+        const cx = W * 0.5
+        const cy = H * 0.5
 
         return (time, controls) => {
-            const c = ctx.ctx
             const accent = controls.accent as string
-            const glow = (controls.glowIntensity as number) / 100
+            const secondary = controls.secondaryAccent as string
+            const glow = clamp01((controls.glowIntensity as number) / 100)
+            const backdrop = controls.backdrop as string
+            const motion = (controls.motion as string).toLowerCase()
+            const showSeconds = controls.showSeconds as boolean
+            const showDate = controls.showDate as boolean
             const is12h = controls.hourFormat === '12h'
-            const showSec = controls.showSeconds as boolean
+
+            root.dataset.backdrop = backdrop.toLowerCase()
+            root.dataset.motion = motion
+            root.style.setProperty('--accent', accent)
+            root.style.setProperty('--secondary', secondary)
+            root.style.setProperty('--accent-glow', withAlpha(accent, 0.18 + glow * 0.28))
+            root.style.setProperty('--headline-font', `"${controls.headlineFont as string}", sans-serif`)
+            root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
+            root.style.setProperty(
+                '--panel',
+                backdrop === 'Opaque'
+                    ? withAlpha(palette.bg.deep, 0.92)
+                    : backdrop === 'Glass'
+                      ? withAlpha(palette.bg.deep, 0.52)
+                      : withAlpha('#05060a', 0.16),
+            )
 
             const now = new Date()
             let hours = now.getHours()
-            const mins = now.getMinutes()
-            const secs = now.getSeconds()
-            const ms = now.getMilliseconds()
+            const minutes = now.getMinutes()
+            const seconds = now.getSeconds()
+            const milliseconds = now.getMilliseconds()
             const ampm = hours >= 12 ? 'PM' : 'AM'
             if (is12h) hours = hours % 12 || 12
 
-            // ── Background ────────────────────────────────────
-            c.fillStyle = palette.bg.deep
+            hoursEl.textContent = hours.toString().padStart(2, '0')
+            minutesEl.textContent = minutes.toString().padStart(2, '0')
+            secondsEl.textContent = seconds.toString().padStart(2, '0')
+            secondsEl.style.display = showSeconds ? 'inline-flex' : 'none'
+            dateEl.textContent = showDate
+                ? now
+                      .toLocaleDateString('en-US', {
+                          weekday: 'short',
+                          month: 'short',
+                          day: 'numeric',
+                      })
+                      .toUpperCase()
+                : 'SIGNAL FLOW'
+            ampmEl.textContent = is12h ? ampm : '24H'
+
+            const secondProgress = (seconds + milliseconds / 1000) / 60
+            const dayProgress =
+                (now.getHours() * 3600 + minutes * 60 + seconds + milliseconds / 1000) / 86400
+            secondLabelEl.textContent = `${Math.round(secondProgress * 100)}%`
+            dayLabelEl.textContent = `${Math.round(dayProgress * 100)}%`
+            secondFillEl.style.setProperty('--fill', secondProgress.toFixed(4))
+            dayFillEl.style.setProperty('--fill', dayProgress.toFixed(4))
+
+            const c = ctx.ctx
+            c.clearRect(0, 0, W, H)
+
+            if (backdrop === 'Opaque') {
+                c.fillStyle = withAlpha(palette.bg.deep, 0.96)
+                c.fillRect(0, 0, W, H)
+            } else if (backdrop === 'Glass') {
+                c.fillStyle = withAlpha(palette.bg.deep, 0.18)
+                c.fillRect(0, 0, W, H)
+            }
+
+            const bloom = c.createRadialGradient(cx, cy, 10, cx, cy, W * 0.46)
+            bloom.addColorStop(0, withAlpha(accent, 0.14 + glow * 0.14))
+            bloom.addColorStop(0.45, withAlpha(secondary, 0.08 + glow * 0.08))
+            bloom.addColorStop(1, 'rgba(0,0,0,0)')
+            c.fillStyle = bloom
             c.fillRect(0, 0, W, H)
 
-            // ── Ring ──────────────────────────────────────────
-            const ringRadius = Math.min(W, H) * 0.42
-            const ringThickness = 2.5
+            const beam = c.createLinearGradient(0, H * 0.18, W, H * 0.84)
+            beam.addColorStop(0, withAlpha(accent, 0))
+            beam.addColorStop(0.48, withAlpha(accent, 0.12 + glow * 0.1))
+            beam.addColorStop(0.52, withAlpha(secondary, 0.18 + glow * 0.1))
+            beam.addColorStop(1, withAlpha(secondary, 0))
+            c.fillStyle = beam
+            c.fillRect(0, 0, W, H)
 
-            if (controls.ringStyle !== 'None') {
-                c.lineCap = 'round'
-                c.lineWidth = ringThickness
+            const orbitRadius = Math.min(W, H) * 0.31
+            c.lineWidth = 3
+            c.lineCap = 'round'
+            c.strokeStyle = withAlpha(accent, 0.12)
+            c.beginPath()
+            c.arc(cx, cy, orbitRadius, 0, Math.PI * 2)
+            c.stroke()
 
-                // Track
-                c.beginPath()
-                c.arc(cx, cy, ringRadius, 0, Math.PI * 2)
-                c.strokeStyle = `${accent}10`
-                c.stroke()
-
-                if (controls.ringStyle === 'Sweep') {
-                    // Second-hand sweep
-                    const sweepProgress = (secs + ms / 1000) / 60
-                    const startAngle = -Math.PI / 2
-                    const endAngle = startAngle + Math.PI * 2 * sweepProgress
-
-                    withGlow(c, accent, glow * 0.5, () => {
-                        c.beginPath()
-                        c.arc(cx, cy, ringRadius, startAngle, endAngle)
-                        c.strokeStyle = accent
-                        c.stroke()
-                    })
-
-                    // Leading dot
-                    const dotX = cx + Math.cos(endAngle) * ringRadius
-                    const dotY = cy + Math.sin(endAngle) * ringRadius
-                    withGlow(c, accent, glow, () => {
-                        c.beginPath()
-                        c.arc(dotX, dotY, 4, 0, Math.PI * 2)
-                        c.fillStyle = accent
-                        c.fill()
-                    })
-                } else {
-                    // Pulse — breathing ring
-                    const pulse = 0.3 + Math.sin(time * 2) * 0.15
-                    c.beginPath()
-                    c.arc(cx, cy, ringRadius, 0, Math.PI * 2)
+            const sweepAngle = -Math.PI / 2 + secondProgress * Math.PI * 2
+            if (motion !== 'minimal') {
+                withGlow(c, accent, glow, () => {
                     c.strokeStyle = accent
-                    c.globalAlpha = pulse
-                    withGlow(c, accent, glow * 0.3, () => c.stroke())
-                    c.globalAlpha = 1
+                    c.beginPath()
+                    c.arc(cx, cy, orbitRadius, -Math.PI / 2, sweepAngle)
+                    c.stroke()
+                })
+
+                const dotX = cx + Math.cos(sweepAngle) * orbitRadius
+                const dotY = cy + Math.sin(sweepAngle) * orbitRadius
+                withGlow(c, secondary, glow * 1.2, () => {
+                    c.fillStyle = secondary
+                    c.beginPath()
+                    c.arc(dotX, dotY, 5 + glow * 3, 0, Math.PI * 2)
+                    c.fill()
+                })
+            }
+
+            if (motion === 'bloom') {
+                const petals = 6
+                for (let i = 0; i < petals; i++) {
+                    const angle = time * 0.55 + (Math.PI * 2 * i) / petals
+                    const x = cx + Math.cos(angle) * orbitRadius * 0.5
+                    const y = cy + Math.sin(angle) * orbitRadius * 0.5
+                    const orb = c.createRadialGradient(x, y, 2, x, y, 44)
+                    orb.addColorStop(0, withAlpha(secondary, 0.16))
+                    orb.addColorStop(1, withAlpha(secondary, 0))
+                    c.fillStyle = orb
+                    c.fillRect(x - 44, y - 44, 88, 88)
                 }
             }
 
-            // ── Time ──────────────────────────────────────────
-            const hStr = hours.toString().padStart(2, '0')
-            const mStr = mins.toString().padStart(2, '0')
-
-            // Pulsing colon (blinks on the second boundary)
-            let timeStr = `${hStr}:${mStr}`
-            if (showSec) {
-                const sStr = secs.toString().padStart(2, '0')
-                timeStr += `:${sStr}`
-            }
-
-            const fontSize = showSec ? 64 : 80
-            c.font = `bold ${fontSize}px 'Orbitron', 'JetBrains Mono', monospace`
-            c.textAlign = 'center'
-            c.textBaseline = 'middle'
-
-            // Draw time with glow
-            const timeY = controls.showDate ? cy - 12 : cy
-            withGlow(c, accent, glow * 0.6, () => {
-                c.fillStyle = accent
-                c.fillText(timeStr, cx, timeY)
-            })
-
-            // AM/PM badge
-            if (is12h) {
-                c.font = "bold 18px 'Inter', sans-serif"
-                c.fillStyle = `${accent}88`
-                c.textAlign = 'center'
-                c.fillText(ampm, cx, timeY - fontSize / 2 - 14)
-            }
-
-            // ── Date ──────────────────────────────────────────
-            if (controls.showDate) {
-                const dateStr = now.toLocaleDateString('en-US', {
-                    weekday: 'short',
-                    month: 'short',
-                    day: 'numeric',
-                })
-                c.font = "16px 'Inter', sans-serif"
-                c.fillStyle = palette.fg.tertiary
-                c.textAlign = 'center'
-                c.textBaseline = 'top'
-                c.fillText(dateStr, cx, timeY + fontSize / 2 + 8)
+            c.strokeStyle = withAlpha('#ffffff', 0.04)
+            c.lineWidth = 1
+            for (let i = -1; i <= 1; i++) {
+                const y = H * 0.22 + i * 10 + Math.sin(time * 0.8 + i) * 4
+                c.beginPath()
+                c.moveTo(32, y)
+                c.lineTo(W - 32, y)
+                c.stroke()
             }
         }
     },

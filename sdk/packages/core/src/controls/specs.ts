@@ -219,8 +219,15 @@ const DEFAULT_FONT_FAMILIES = [
     'JetBrains Mono',
     'Inter',
     'Orbitron',
+    'Audiowide',
+    'Bebas Neue',
+    'DM Sans',
+    'Exo 2',
     'Roboto Condensed',
+    'Rajdhani',
+    'Space Mono',
     'Space Grotesk',
+    'Sora',
 ]
 
 /** Font family picker — combobox with font family names.
