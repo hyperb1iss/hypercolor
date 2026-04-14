@@ -295,6 +295,24 @@ fn retain_group_canvases_prunes_stale_streams() {
     assert_eq!(frame.height, 0);
 }
 
+#[test]
+fn retain_group_canvases_and_collect_senders_reuses_kept_streams() {
+    let bus = HypercolorBus::new();
+    let keep_id = RenderGroupId::new();
+    let stale_id = RenderGroupId::new();
+
+    let keep_sender = bus.group_canvas_sender(keep_id);
+    let _stale_sender = bus.group_canvas_sender(stale_id);
+
+    let senders = bus.retain_group_canvases_and_collect_senders(&[keep_id]);
+
+    assert_eq!(bus.group_canvas_stream_count(), 1);
+    assert_eq!(senders.len(), 1);
+    assert_eq!(senders[0].0, keep_id);
+    assert_eq!(senders[0].1.borrow().width, 0);
+    assert!(senders[0].1.same_channel(&keep_sender));
+}
+
 // ── No Subscribers ───────────────────────────────────────────────────────
 
 #[tokio::test]

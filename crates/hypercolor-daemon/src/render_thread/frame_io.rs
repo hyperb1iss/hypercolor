@@ -140,11 +140,15 @@ pub(crate) fn publish_frame_updates(
         last_audio_level_update_ms,
         publish_audio_level,
     );
-    state
+    let group_canvas_senders = state
         .event_bus
-        .retain_group_canvases(active_group_canvas_ids);
+        .retain_group_canvases_and_collect_senders(active_group_canvas_ids)
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
     for (group_id, group_canvas) in group_canvases {
-        let sender = state.event_bus.group_canvas_sender(*group_id);
+        let Some(sender) = group_canvas_senders.get(group_id) else {
+            continue;
+        };
         match group_canvas {
             GroupCanvasFrame::Canvas(group_canvas) => {
                 let publish_group_canvas = {

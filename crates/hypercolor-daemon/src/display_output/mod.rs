@@ -89,6 +89,7 @@ struct DisplayTarget {
     brightness: f32,
     geometry: DisplayGeometry,
     canvas_source: DisplayCanvasSource,
+    group_canvas_sender: Option<watch::Sender<CanvasFrame>>,
     display_target: Option<DisplayFaceTarget>,
     viewport: DisplayViewport,
 }
@@ -314,6 +315,7 @@ async fn run_display_output(
             &state.spatial_engine,
             &state.scene_manager,
             &state.logical_devices,
+            &state.event_bus,
             &mut targets_cache,
         )
         .await;
@@ -345,8 +347,10 @@ async fn run_display_output(
             };
             let face_frame = match &target.canvas_source {
                 DisplayCanvasSource::Global => None,
-                DisplayCanvasSource::GroupDirect { group_id } => {
-                    let sender = state.event_bus.group_canvas_sender(*group_id);
+                DisplayCanvasSource::GroupDirect { .. } => {
+                    let Some(sender) = target.group_canvas_sender.as_ref() else {
+                        continue;
+                    };
                     let frame = sender.borrow();
                     stable_display_source_identity(&frame).map(|_| Arc::new(frame.clone()))
                 }
@@ -355,7 +359,9 @@ async fn run_display_output(
                 effect_frame: effect_frame
                     .as_deref()
                     .and_then(stable_display_source_identity),
-                face_frame: face_frame.as_deref().and_then(stable_display_source_identity),
+                face_frame: face_frame
+                    .as_deref()
+                    .and_then(stable_display_source_identity),
             };
             if dispatch_identity.effect_frame.is_none() && dispatch_identity.face_frame.is_none() {
                 continue;
@@ -457,6 +463,7 @@ async fn display_targets(
     spatial_engine: &Arc<RwLock<SpatialEngine>>,
     scene_manager: &Arc<RwLock<SceneManager>>,
     logical_devices: &Arc<RwLock<HashMap<String, LogicalDevice>>>,
+    event_bus: &Arc<HypercolorBus>,
     cache: &mut DisplayTargetCache,
 ) -> DisplayTargetsSnapshot {
     let layout = {
@@ -533,6 +540,12 @@ async fn display_targets(
             .map_or(DisplayCanvasSource::Global, |group_id| {
                 DisplayCanvasSource::GroupDirect { group_id }
             });
+        let group_canvas_sender = match &canvas_source {
+            DisplayCanvasSource::Global => None,
+            DisplayCanvasSource::GroupDirect { group_id } => {
+                Some(event_bus.group_canvas_sender(*group_id))
+            }
+        };
         let viewport = display_viewport_for_device(
             layout.as_ref(),
             &logical_store,
@@ -561,6 +574,7 @@ async fn display_targets(
             brightness: tracked.user_settings.brightness,
             geometry,
             canvas_source,
+            group_canvas_sender,
             display_target,
             viewport,
         }));

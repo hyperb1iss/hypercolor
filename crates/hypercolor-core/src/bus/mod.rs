@@ -393,6 +393,43 @@ impl HypercolorBus {
             .clone()
     }
 
+    /// Retain the active per-group canvas streams and collect their senders in one lock pass.
+    #[must_use]
+    pub fn retain_group_canvases_and_collect_senders(
+        &self,
+        active_ids: &[RenderGroupId],
+    ) -> Vec<(RenderGroupId, watch::Sender<CanvasFrame>)> {
+        let mut group_canvases = self
+            .group_canvases
+            .lock()
+            .expect("group canvas registry should not be poisoned");
+        if active_ids.is_empty() {
+            group_canvases.clear();
+            return Vec::new();
+        }
+
+        let active_set = active_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        group_canvases.retain(|group_id, _| active_set.contains(group_id));
+
+        active_ids
+            .iter()
+            .copied()
+            .map(|group_id| {
+                let sender = group_canvases
+                    .entry(group_id)
+                    .or_insert_with(|| {
+                        let (sender, _) = watch::channel(CanvasFrame::empty());
+                        sender
+                    })
+                    .clone();
+                (group_id, sender)
+            })
+            .collect()
+    }
+
     /// Subscribe to a render group's canvas updates.
     #[must_use]
     pub fn group_canvas_receiver(&self, id: RenderGroupId) -> watch::Receiver<CanvasFrame> {
