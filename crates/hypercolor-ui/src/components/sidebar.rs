@@ -15,6 +15,7 @@ use crate::color::{self, CanvasPalette};
 use crate::components::canvas_preview::CanvasPreview;
 use crate::icons::*;
 use crate::preview_telemetry::PreviewTelemetryContext;
+use crate::route_ui::{now_playing_canvas_mode, NowPlayingCanvasMode};
 use crate::style_utils::category_accent_rgb;
 use crate::ws::ConnectionState;
 
@@ -29,10 +30,8 @@ pub fn Sidebar() -> impl IntoView {
     let fx = expect_context::<EffectsContext>();
 
     let has_active = Memo::new(move |_| fx.active_effect_id.get().is_some());
-    let uses_sidebar_preview = Signal::derive(move || {
-        let path = location.pathname.get();
-        !(path == "/" || path.starts_with("/effects") || path.starts_with("/layout"))
-    });
+    let canvas_mode =
+        Signal::derive(move || now_playing_canvas_mode(&location.pathname.get()));
 
     let nav_items = vec![
         NavItem {
@@ -116,7 +115,7 @@ pub fn Sidebar() -> impl IntoView {
     if let Some(ws) = ws {
         // Palette extraction — throttled ~2x/sec for ambient styling
         Effect::new(move |_| {
-            if uses_sidebar_preview.get() {
+            if canvas_mode.get() != NowPlayingCanvasMode::Palette {
                 return;
             }
 
@@ -194,7 +193,7 @@ pub fn Sidebar() -> impl IntoView {
     // so the three hues sit in a cohesive L/S band.
     let primary_rgb = Memo::new(move |_| {
         let cat = fx.active_effect_category.get();
-        if uses_sidebar_preview.get() {
+        if canvas_mode.get() != NowPlayingCanvasMode::Palette {
             category_accent_rgb(&cat).to_string()
         } else {
             live_palette.get().map_or_else(
@@ -205,7 +204,7 @@ pub fn Sidebar() -> impl IntoView {
     });
     let secondary_rgb = Memo::new(move |_| {
         let cat = fx.active_effect_category.get();
-        if uses_sidebar_preview.get() {
+        if canvas_mode.get() != NowPlayingCanvasMode::Palette {
             category_accent_rgb(&cat).to_string()
         } else {
             live_palette.get().map_or_else(
@@ -216,7 +215,7 @@ pub fn Sidebar() -> impl IntoView {
     });
     let tertiary_rgb = Memo::new(move |_| {
         let cat = fx.active_effect_category.get();
-        if uses_sidebar_preview.get() {
+        if canvas_mode.get() != NowPlayingCanvasMode::Palette {
             category_accent_rgb(&cat).to_string()
         } else {
             live_palette.get().map_or_else(
@@ -531,7 +530,7 @@ pub fn Sidebar() -> impl IntoView {
 
                         // Live canvas thumbnail — only on pages without their own preview
                         {move || {
-                            uses_sidebar_preview.get().then(|| view! {
+                            (canvas_mode.get() == NowPlayingCanvasMode::Preview).then(|| view! {
                                 <div class="px-3 animate-fade-in">
                                     <div
                                         class="relative rounded-lg overflow-hidden bg-black/40"

@@ -231,8 +231,10 @@ const PREVIEW_HTML: &str = r##"<!doctype html>
     let ws = null;
     let frameCount = 0;
     let token = urlState.get("token") || "";
+    const CANVAS_PREVIEW_HEADER = 0x03;
+    const DISPLAY_PREVIEW_HEADER = 0x07;
+    const DISPLAY_PREVIEW_FPS = 15;
     let simulatorConfigs = [];
-    let simulatorPollHandle = null;
     const requestedDisplay = urlState.get("display") || "";
     const requestedMode = urlState.get("mode") || (requestedDisplay ? "simulator" : "canvas");
 
@@ -326,12 +328,6 @@ const PREVIEW_HTML: &str = r##"<!doctype html>
       try { socket.close(); } catch (_) {}
     }
 
-    function stopSimulatorPolling() {
-      if (!simulatorPollHandle) return;
-      clearInterval(simulatorPollHandle);
-      simulatorPollHandle = null;
-    }
-
     function syncPreviewQuery() {
       const next = new URLSearchParams(window.location.search);
       next.set("mode", modeEl.value);
@@ -351,7 +347,7 @@ const PREVIEW_HTML: &str = r##"<!doctype html>
       modeLabelEl.textContent = simulatorMode ? "simulator" : "canvas";
       simulatorEl.disabled = !simulatorMode || simulatorConfigs.length === 0;
       fpsEl.disabled = simulatorMode;
-      document.getElementById("reconnectBtn").textContent = simulatorMode ? "Refresh Frame" : "Reconnect";
+      document.getElementById("reconnectBtn").textContent = simulatorMode ? "Reconnect Stream" : "Reconnect";
       canvas.classList.toggle("circular-mask", simulatorMode && !!simulator?.circular);
       if (simulatorMode && simulator) {
         canvas.style.aspectRatio = `${simulator.width} / ${simulator.height}`;
@@ -518,10 +514,34 @@ const PREVIEW_HTML: &str = r##"<!doctype html>
       log("stopped active effect");
     }
 
+    async function drawBitmapFrame(bitmap, width, height, circular) {
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      ctx.save();
+      ctx.clearRect(0, 0, width, height);
+      if (circular) {
+        const radius = Math.min(width, height) / 2;
+        ctx.beginPath();
+        ctx.arc(width / 2, height / 2, radius, 0, Math.PI * 2);
+        ctx.clip();
+      }
+      ctx.drawImage(bitmap, 0, 0, width, height);
+      ctx.restore();
+      if (typeof bitmap.close === "function") bitmap.close();
+    }
+
     function connectWs() {
-      if (modeEl.value !== "canvas") return;
-      stopSimulatorPolling();
-      if (ws) ws.close();
+      closeWs();
+
+      const simulatorMode = modeEl.value === "simulator";
+      const simulator = simulatorMode ? selectedSimulator() : null;
+      if (simulatorMode && !simulator) {
+        clearCanvas(320, 200, "no simulator selected");
+        setWsState("idle", "status-warn");
+        return;
+      }
 
       const scheme = window.location.protocol === "https:" ? "wss" : "ws";
       const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : "";
@@ -533,13 +553,30 @@ const PREVIEW_HTML: &str = r##"<!doctype html>
 
       ws.onopen = () => {
         setWsState("connected", "status-ok");
+        if (simulatorMode) {
+          clearCanvas(simulator.width, simulator.height, "waiting for live display frame");
+          canvasSizeEl.textContent = `${simulator.width}x${simulator.height}`;
+          ws.send(JSON.stringify({
+            type: "subscribe",
+            channels: ["display_preview", "events"],
+            config: {
+              display_preview: {
+                device_id: simulator.id,
+                fps: DISPLAY_PREVIEW_FPS,
+              },
+            },
+          }));
+          log(`display preview ws connected (${url})`);
+          return;
+        }
+
         const fps = Math.max(1, Math.min(30, Number(fpsEl.value || 15)));
         ws.send(JSON.stringify({
           type: "subscribe",
           channels: ["canvas", "events"],
           config: { canvas: { fps, format: "rgba" } },
         }));
-        log(`ws connected (${url})`);
+        log(`canvas ws connected (${url})`);
       };
 
       ws.onclose = () => {
@@ -558,80 +595,14 @@ const PREVIEW_HTML: &str = r##"<!doctype html>
           return;
         }
         if (event.data instanceof ArrayBuffer) {
-          handleBinary(event.data);
+          void handleBinary(event.data);
         }
       };
-    }
-
-    async function refreshSimulatorFrame(options = {}) {
-      if (modeEl.value !== "simulator") return;
-
-      const quiet = options.quiet === true;
-      const simulator = selectedSimulator();
-      updatePreviewUi();
-      if (!simulator) {
-        clearCanvas(320, 200, "no simulator selected");
-        setWsState("idle", "status-warn");
-        return;
-      }
-
-      try {
-        const res = await fetch(
-          `/api/v1/simulators/displays/${encodeURIComponent(simulator.id)}/frame?ts=${Date.now()}`,
-          { headers: apiHeaders() }
-        );
-        if (modeEl.value !== "simulator") return;
-        if (res.status === 404) {
-          clearCanvas(simulator.width, simulator.height, "waiting for first frame");
-          setWsState("waiting", "status-warn");
-          canvasSizeEl.textContent = `${simulator.width}x${simulator.height}`;
-          return;
-        }
-        if (!res.ok) throw new Error(`simulator frame failed (${res.status})`);
-
-        const blob = await res.blob();
-        const bitmap = await createImageBitmap(blob);
-        if (canvas.width !== simulator.width || canvas.height !== simulator.height) {
-          canvas.width = simulator.width;
-          canvas.height = simulator.height;
-        }
-        ctx.save();
-        ctx.clearRect(0, 0, simulator.width, simulator.height);
-        if (simulator.circular) {
-          const radius = Math.min(simulator.width, simulator.height) / 2;
-          ctx.beginPath();
-          ctx.arc(simulator.width / 2, simulator.height / 2, radius, 0, Math.PI * 2);
-          ctx.clip();
-        }
-        ctx.drawImage(bitmap, 0, 0, simulator.width, simulator.height);
-        ctx.restore();
-        if (typeof bitmap.close === "function") bitmap.close();
-
-        frameCount += 1;
-        frameCountEl.textContent = String(frameCount);
-        canvasSizeEl.textContent = `${simulator.width}x${simulator.height}`;
-        setWsState("simulator", "status-ok");
-      } catch (err) {
-        setWsState("error", "status-err");
-        if (!quiet) log(`simulator frame error: ${String(err)}`);
-      }
     }
 
     async function activatePreviewMode() {
       resetFrameCount();
       updatePreviewUi();
-
-      if (modeEl.value === "simulator") {
-        closeWs();
-        stopSimulatorPolling();
-        await refreshSimulatorFrame();
-        simulatorPollHandle = setInterval(() => {
-          refreshSimulatorFrame({ quiet: true });
-        }, 1000);
-        return;
-      }
-
-      stopSimulatorPolling();
       connectWs();
     }
 
@@ -655,10 +626,43 @@ const PREVIEW_HTML: &str = r##"<!doctype html>
       }
     }
 
-    function handleBinary(buffer) {
+    async function handleBinary(buffer) {
       const bytes = new Uint8Array(buffer);
       if (bytes.length < 14) return;
-      if (bytes[0] !== 0x03) return;
+
+      const header = bytes[0];
+      if (header === DISPLAY_PREVIEW_HEADER) {
+        if (modeEl.value !== "simulator") return;
+
+        const simulator = selectedSimulator();
+        if (!simulator) return;
+
+        const view = new DataView(buffer);
+        const width = view.getUint16(9, true);
+        const height = view.getUint16(11, true);
+        const format = view.getUint8(13);
+        if (format !== 2) return;
+
+        try {
+          const jpegData = bytes.slice(14);
+          const bitmap = await createImageBitmap(new Blob([jpegData], { type: "image/jpeg" }));
+          if (modeEl.value !== "simulator" || simulatorEl.value !== simulator.id) {
+            if (typeof bitmap.close === "function") bitmap.close();
+            return;
+          }
+          await drawBitmapFrame(bitmap, width, height, simulator.circular);
+          frameCount += 1;
+          frameCountEl.textContent = String(frameCount);
+          canvasSizeEl.textContent = `${width}x${height}`;
+          setWsState("simulator", "status-ok");
+        } catch (err) {
+          setWsState("error", "status-err");
+          log(`display preview decode error: ${String(err)}`);
+        }
+        return;
+      }
+
+      if (header !== CANVAS_PREVIEW_HEADER || modeEl.value !== "canvas") return;
 
       const view = new DataView(buffer);
       const width = view.getUint16(9, true);
@@ -691,6 +695,7 @@ const PREVIEW_HTML: &str = r##"<!doctype html>
       frameCount += 1;
       frameCountEl.textContent = String(frameCount);
       canvasSizeEl.textContent = `${width}x${height}`;
+      setWsState("canvas", "status-ok");
     }
 
     document.getElementById("applyBtn").addEventListener("click", async () => {
@@ -701,12 +706,8 @@ const PREVIEW_HTML: &str = r##"<!doctype html>
     });
     document.getElementById("reconnectBtn").addEventListener("click", async () => {
       try {
-        if (modeEl.value === "simulator") {
-          await loadSimulators();
-          resetFrameCount();
-          await refreshSimulatorFrame();
-          return;
-        }
+        if (modeEl.value === "simulator") await loadSimulators();
+        resetFrameCount();
         connectWs();
       } catch (err) { log(String(err)); }
     });
