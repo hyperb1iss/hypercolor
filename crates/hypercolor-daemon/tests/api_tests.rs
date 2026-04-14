@@ -1887,6 +1887,112 @@ async fn apply_effect_swap_replaces_primary_effect_id() {
 }
 
 #[tokio::test]
+async fn apply_effect_with_preset_id_sets_group_preset_atomically() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/presets")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "name":"Saved State",
+                        "effect":"solid_color",
+                        "controls":{"speed":3.5}
+                    }"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let preset_id = body_json(create_response).await["data"]["id"]
+        .as_str()
+        .expect("preset id should be string")
+        .to_owned();
+
+    let apply_body = format!(r#"{{"preset_id":"{preset_id}"}}"#);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(apply_body))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let manager = state.scene_manager.read().await;
+    let primary = manager
+        .active_scene()
+        .and_then(Scene::primary_group)
+        .expect("primary group should exist after apply");
+    assert_eq!(
+        primary.preset_id.map(|id| id.to_string()),
+        Some(preset_id),
+        "preset_id should be set on the render group in the same transaction as the effect start"
+    );
+    let speed = primary
+        .controls
+        .get("speed")
+        .expect("preset controls should be baked into the group");
+    assert!(matches!(
+        speed,
+        hypercolor_types::effect::ControlValue::Float(value) if (*value - 3.5).abs() < 0.01
+    ));
+}
+
+#[tokio::test]
+async fn apply_effect_rejects_preset_targeting_different_effect() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    insert_test_effect(&state, "aurora").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/presets")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Mismatch","effect":"solid_color","controls":{}}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let preset_id = body_json(create_response).await["data"]["id"]
+        .as_str()
+        .expect("preset id should be string")
+        .to_owned();
+
+    let apply_body = format!(r#"{{"preset_id":"{preset_id}"}}"#);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/aurora/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(apply_body))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
 async fn put_current_control_binding_updates_active_effect_schema() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;

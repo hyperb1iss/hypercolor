@@ -141,11 +141,26 @@ pub async fn fetch_bundled_presets(id: &str) -> Result<Vec<PresetTemplate>, Stri
     Ok(detail.presets)
 }
 
-/// Apply an effect by ID or name.
-pub async fn apply_effect(id: &str) -> Result<(), String> {
-    client::post_empty(&format!("/api/v1/effects/{id}/apply"))
-        .await
-        .map_err(Into::into)
+/// Optional body for `apply_effect` — lets callers bake a remembered
+/// preset selection and control values into the initial apply request
+/// so the effect starts in its final state without a follow-up
+/// round-trip (which caused a brief defaults-flash).
+#[derive(Debug, Default, Serialize)]
+pub struct ApplyEffectBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preset_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub controls: Option<serde_json::Value>,
+}
+
+/// Apply an effect by ID or name. Pass `None` for a bare start; pass
+/// `Some(body)` to deliver preferences atomically.
+pub async fn apply_effect(id: &str, body: Option<&ApplyEffectBody>) -> Result<(), String> {
+    let path = format!("/api/v1/effects/{id}/apply");
+    match body {
+        Some(body) => client::post_json_discard(&path, body).await.map_err(Into::into),
+        None => client::post_empty(&path).await.map_err(Into::into),
+    }
 }
 
 /// Stop the currently active effect.

@@ -34,6 +34,13 @@ use crate::scene_transactions::apply_layout_update;
 pub struct ApplyEffectRequest {
     pub controls: Option<serde_json::Value>,
     pub transition: Option<TransitionRequest>,
+    /// Optional preset ID to associate with the render group in the same
+    /// transaction as the effect start — lets the UI pass a remembered
+    /// preset selection without a follow-up round-trip. If `controls` is
+    /// also provided, the explicit controls win (they're presumed to
+    /// already carry the preset's values, possibly with user tweaks).
+    #[serde(default)]
+    pub preset_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -387,8 +394,41 @@ pub async fn apply_effect(
         Err(error) => return ApiError::bad_request(error),
     };
 
-    let controls = extract_request_controls(body.as_ref());
-    let (normalized_controls, dropped_controls) = normalize_control_payload(&metadata, &controls);
+    // Resolve optional preset up front — both to validate before we touch
+    // the scene, and because if the caller didn't supply explicit controls
+    // we fall back to the preset's controls (matches `apply_preset`'s
+    // same-effect branch).
+    let resolved_preset = match body.as_ref().and_then(|body| body.preset_id.as_deref()) {
+        None => None,
+        Some(preset_ref) => {
+            let Some(preset_id) = crate::api::library::resolve_preset_id(&state, preset_ref).await
+            else {
+                return ApiError::not_found(format!("Preset not found: {preset_ref}"));
+            };
+            let Some(preset) = state.library_store.get_preset(preset_id).await else {
+                return ApiError::not_found(format!("Preset not found: {preset_ref}"));
+            };
+            if preset.effect_id != metadata.id {
+                return ApiError::validation(format!(
+                    "Preset '{}' targets effect '{}', not '{}'",
+                    preset.name, preset.effect_id, metadata.id
+                ));
+            }
+            Some(preset)
+        }
+    };
+
+    let raw_controls = extract_request_controls(body.as_ref());
+    let (controls, normalized_controls, dropped_controls) = if raw_controls.is_empty()
+        && let Some(preset) = resolved_preset.as_ref()
+    {
+        let (normalized, _) = normalize_control_values(&metadata, &preset.controls);
+        (serde_json::Map::new(), normalized, Vec::new())
+    } else {
+        let (normalized, dropped) = normalize_control_payload(&metadata, &raw_controls);
+        (raw_controls, normalized, dropped)
+    };
+
     let previous_effect = active_primary_effect(state.as_ref())
         .await
         .map(|(_, effect)| effect_ref(&effect));
@@ -412,7 +452,7 @@ pub async fn apply_effect(
         let group = match scene_manager.upsert_primary_group(
             &metadata,
             normalized_controls,
-            None,
+            resolved_preset.as_ref().map(|preset| preset.id),
             layout,
         ) {
             Ok(group) => group.clone(),

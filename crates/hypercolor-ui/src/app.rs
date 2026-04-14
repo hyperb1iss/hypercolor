@@ -209,18 +209,42 @@ impl EffectsContext {
     }
 
     /// Apply an effect by ID — sets local state + calls API.
+    ///
+    /// When remembered preferences exist for this effect, they're baked
+    /// into the initial `/apply` request so the daemon starts rendering
+    /// with the user's saved preset + controls immediately. This avoids
+    /// the defaults-flash that used to occur while `restore_effect_preferences`
+    /// ran its follow-up round-trip.
     pub fn apply_effect(&self, id: String) {
         // Skip if already the active effect
         if self.active_effect_id.get().as_deref() == Some(&id) {
             return;
         }
 
-        // Drop this effect from the "already checked for restore" set —
-        // the next snapshot for this ID should run through the restore
-        // path so the user's saved preferences get re-applied on top of
-        // whatever defaults the daemon loads.
+        let stored_prefs = self.preferences.get(&id);
+        let body = stored_prefs.as_ref().map(|prefs| api::ApplyEffectBody {
+            preset_id: prefs.preset_id.clone(),
+            controls: if prefs.control_values.is_empty() {
+                None
+            } else {
+                Some(serde_json::Value::Object(controls_to_json(
+                    &prefs.control_values,
+                )))
+            },
+        });
+
+        // If we're sending prefs with the initial apply, mark the effect
+        // as already-restored so the first snapshot falls through to the
+        // save branch instead of triggering a second restore round-trip.
+        // If no prefs exist, drop the flag so the snapshot's restore
+        // check runs (covers the case where prefs landed since the last
+        // time we looked).
         self.restored_effects.update_value(|set| {
-            set.remove(&id);
+            if stored_prefs.is_some() {
+                set.insert(id.clone());
+            } else {
+                set.remove(&id);
+            }
         });
 
         let previous = capture_active_effect_state(self);
@@ -234,13 +258,21 @@ impl EffectsContext {
                 .map(|effect| effect.category.clone())
                 .unwrap_or_default(),
         );
+        // Optimistically mirror the stored controls locally so the sidebar
+        // doesn't flash empty while the daemon's confirmation round-trips.
+        // The snapshot callback will overwrite with the authoritative state.
+        if let Some(prefs) = stored_prefs.as_ref() {
+            self.set_active_control_values.set(prefs.control_values.clone());
+            self.set_active_preset_id.set(prefs.preset_id.clone());
+        } else {
+            self.set_active_control_values.set(HashMap::new());
+            self.set_active_preset_id.set(None);
+        }
         self.set_active_controls.set(Vec::new());
-        self.set_active_control_values.set(HashMap::new());
-        self.set_active_preset_id.set(None);
 
         let ctx = *self;
         leptos::task::spawn_local(async move {
-            if api::apply_effect(&id).await.is_ok() {
+            if api::apply_effect(&id, body.as_ref()).await.is_ok() {
                 ctx.refresh_active_effect();
             } else {
                 restore_active_effect_state(&ctx, previous);
@@ -300,7 +332,7 @@ impl EffectsContext {
             self.set_is_playing.set(true);
             let ctx = *self;
             leptos::task::spawn_local(async move {
-                if api::apply_effect(&id).await.is_ok() {
+                if api::apply_effect(&id, None).await.is_ok() {
                     ctx.refresh_active_effect();
                 } else {
                     ctx.set_is_playing.set(false);
