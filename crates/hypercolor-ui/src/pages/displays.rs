@@ -33,6 +33,13 @@ struct FaceBlendOption {
     blurb: &'static str,
 }
 
+#[derive(Clone, Copy)]
+struct FaceBlendPreset {
+    label: &'static str,
+    mode: DisplayFaceBlendMode,
+    opacity: f32,
+}
+
 const FACE_BLEND_OPTIONS: [FaceBlendOption; 11] = [
     FaceBlendOption {
         mode: DisplayFaceBlendMode::Replace,
@@ -88,6 +95,39 @@ const FACE_BLEND_OPTIONS: [FaceBlendOption; 11] = [
         mode: DisplayFaceBlendMode::Difference,
         label: "Difference",
         blurb: "Create reactive inversions for wilder holographic looks.",
+    },
+];
+
+const FACE_BLEND_PRESETS: [FaceBlendPreset; 6] = [
+    FaceBlendPreset {
+        label: "Clean Reveal",
+        mode: DisplayFaceBlendMode::Alpha,
+        opacity: 0.78,
+    },
+    FaceBlendPreset {
+        label: "Neon Glass",
+        mode: DisplayFaceBlendMode::Screen,
+        opacity: 0.88,
+    },
+    FaceBlendPreset {
+        label: "Signal Mask",
+        mode: DisplayFaceBlendMode::LumaReveal,
+        opacity: 1.0,
+    },
+    FaceBlendPreset {
+        label: "Tinted HUD",
+        mode: DisplayFaceBlendMode::Tint,
+        opacity: 0.92,
+    },
+    FaceBlendPreset {
+        label: "Smoked Panel",
+        mode: DisplayFaceBlendMode::Multiply,
+        opacity: 0.84,
+    },
+    FaceBlendPreset {
+        label: "Hot Bloom",
+        mode: DisplayFaceBlendMode::Add,
+        opacity: 0.54,
     },
 ];
 
@@ -1552,6 +1592,12 @@ fn FaceCompositionSection(
         commit_opacity();
     });
 
+    let apply_preset = Callback::new(move |preset: FaceBlendPreset| {
+        set_local_blend_mode.set(preset.mode);
+        set_local_opacity.set(preset.opacity);
+        commit_composition.run((Some(preset.mode), Some(preset.opacity)));
+    });
+
     view! {
         <Show when=move || has_face.get() fallback=|| ()>
             <div class="rounded-xl border border-t-2 border-edge-subtle border-t-coral/20 bg-surface-raised/80 p-3 edge-glow">
@@ -1598,6 +1644,36 @@ fn FaceCompositionSection(
                     <p class="mt-2 text-[11px] leading-relaxed text-fg-secondary">
                         {move || selected_blend_option.get().blurb}
                     </p>
+                </div>
+                <div class="mt-3">
+                    <div class="mb-2 text-[11px] uppercase tracking-wider text-fg-tertiary">
+                        "Quick Looks"
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                        {FACE_BLEND_PRESETS
+                            .iter()
+                            .copied()
+                            .map(|preset| {
+                                view! {
+                                    <button
+                                        type="button"
+                                        class=move || {
+                                            if local_blend_mode.get() == preset.mode
+                                                && (local_opacity.get() - preset.opacity).abs() <= 0.01
+                                            {
+                                                "rounded-full border border-coral/45 bg-coral/12 px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.18em] text-coral transition"
+                                            } else {
+                                                "rounded-full border border-edge-subtle bg-surface-overlay px-3 py-1.5 text-[10px] uppercase tracking-[0.18em] text-fg-tertiary transition hover:border-coral/30 hover:text-fg-primary"
+                                            }
+                                        }
+                                        on:click=move |_| apply_preset.run(preset)
+                                    >
+                                        {preset.label}
+                                    </button>
+                                }
+                            })
+                            .collect_view()}
+                    </div>
                 </div>
                 <Show when=move || local_blend_mode.get().blends_with_effect() fallback=|| ()>
                     <div class="mt-3 rounded-lg border border-edge-subtle/60 bg-surface-overlay/45 px-3 py-3">
