@@ -62,6 +62,7 @@ pub struct WsManager {
     pub audio_level: ReadSignal<AudioLevel>,
     pub preview_target_fps: ReadSignal<u32>,
     pub set_preview_cap: WriteSignal<u32>,
+    pub set_preview_width_cap: WriteSignal<u32>,
     pub set_preview_consumers: WriteSignal<u32>,
     pub set_screen_preview_consumers: WriteSignal<u32>,
     pub set_web_viewport_preview_consumers: WriteSignal<u32>,
@@ -90,6 +91,7 @@ impl WsManager {
         let (preview_target_fps, set_preview_target_fps) = signal(0_u32);
         let (engine_preview_target, set_engine_preview_target) = signal(0_u32);
         let (preview_page_cap, set_preview_cap) = signal(DEFAULT_PREVIEW_FPS_CAP);
+        let (preview_width_cap, set_preview_width_cap) = signal(0_u32);
         let (preview_consumers, set_preview_consumers) = signal(0_u32);
         let (screen_preview_consumers, set_screen_preview_consumers) = signal(0_u32);
         let (web_viewport_preview_consumers, set_web_viewport_preview_consumers) = signal(0_u32);
@@ -296,6 +298,7 @@ impl WsManager {
             let engine_target = engine_preview_target.get();
             let consumer_count = preview_consumers.get();
             let client_cap = preview_page_cap.get().min(preview_transport_cap.get());
+            let width_cap = preview_width_cap.get();
             let is_visible = page_visible.get();
             if engine_target == 0 || consumer_count == 0 {
                 if let Some(ws) = ws_handle.get_value() {
@@ -317,6 +320,7 @@ impl WsManager {
                     set_preview_target_fps,
                     engine_target,
                     client_cap,
+                    width_cap,
                     is_visible,
                 );
             }
@@ -431,6 +435,7 @@ impl WsManager {
             audio_level,
             preview_target_fps,
             set_preview_cap,
+            set_preview_width_cap,
             set_preview_consumers,
             set_screen_preview_consumers,
             set_web_viewport_preview_consumers,

@@ -35,6 +35,40 @@ use crate::performance::FrameTimeSummary as RenderFrameTimeSummary;
 use crate::preview_runtime::{PreviewDemandSummary, PreviewPixelFormat, PreviewStreamDemand};
 use crate::session::OutputPowerState;
 
+const BACKPRESSURE_REPORT_INTERVAL: Duration = Duration::from_millis(500);
+
+#[derive(Debug, Default)]
+struct BackpressureReporter {
+    pending_drops: u32,
+    last_reported_at: Option<Instant>,
+}
+
+impl BackpressureReporter {
+    fn record_drop(
+        &mut self,
+        json_tx: &tokio::sync::mpsc::Sender<Utf8Bytes>,
+        channel: &'static str,
+        current_fps: u32,
+    ) {
+        self.pending_drops = self.pending_drops.saturating_add(1);
+        let now = Instant::now();
+        let should_report = self.last_reported_at.is_none_or(|last_reported_at| {
+            now.saturating_duration_since(last_reported_at) >= BACKPRESSURE_REPORT_INTERVAL
+        });
+        if !should_report {
+            return;
+        }
+
+        let dropped_frames = std::mem::take(&mut self.pending_drops);
+        self.last_reported_at = Some(now);
+        enqueue_backpressure_notice(json_tx, channel, current_fps, dropped_frames);
+        debug!(
+            channel,
+            dropped_frames, current_fps, "Dropping WebSocket binary payloads for slow consumer"
+        );
+    }
+}
+
 /// Relay events from the broadcast bus to a bounded mpsc channel.
 /// Drops events when the consumer is slow (backpressure).
 pub(super) async fn relay_events(
@@ -86,6 +120,7 @@ pub(super) async fn relay_frames(
         .checked_sub(Duration::from_secs(1))
         .unwrap_or_else(Instant::now);
     let mut was_subscribed = false;
+    let mut backpressure = BackpressureReporter::default();
 
     loop {
         if active_frame_config.is_none() {
@@ -146,8 +181,7 @@ pub(super) async fn relay_frames(
             }
             FrameRelayMessage::Binary(bytes) => {
                 if binary_tx.try_send(bytes).is_err() {
-                    enqueue_backpressure_notice(&json_tx, "frames", frame_config.config.fps);
-                    debug!("Dropping binary frame update for slow WebSocket consumer");
+                    backpressure.record_drop(&json_tx, "frames", frame_config.config.fps);
                 }
             }
         }
@@ -167,6 +201,7 @@ pub(super) async fn relay_spectrum(
         .checked_sub(Duration::from_secs(1))
         .unwrap_or_else(Instant::now);
     let mut was_subscribed = false;
+    let mut backpressure = BackpressureReporter::default();
 
     loop {
         if active_spectrum_config.is_none() {
@@ -223,8 +258,7 @@ pub(super) async fn relay_spectrum(
             .try_send(cached_spectrum_payload(&spectrum, spectrum_config.bins))
             .is_err()
         {
-            enqueue_backpressure_notice(&json_tx, "spectrum", spectrum_config.fps);
-            debug!("Dropping binary spectrum update for slow WebSocket consumer");
+            backpressure.record_drop(&json_tx, "spectrum", spectrum_config.fps);
         }
     }
 }
@@ -248,6 +282,7 @@ pub(super) async fn relay_canvas(
     let mut pending_send = false;
     let mut active_fps = 15_u32;
     let mut last_sent_at = preview_initial_last_sent();
+    let mut backpressure = BackpressureReporter::default();
 
     loop {
         if active_canvas_config.is_none() {
@@ -346,8 +381,7 @@ pub(super) async fn relay_canvas(
                 };
 
                 if binary_tx.try_send(payload).is_err() {
-                    enqueue_backpressure_notice(&json_tx, "canvas", canvas_config.fps);
-                    debug!("Dropping binary canvas update for slow WebSocket consumer");
+                    backpressure.record_drop(&json_tx, "canvas", canvas_config.fps);
                     continue;
                 }
 
@@ -373,6 +407,7 @@ pub(super) async fn relay_screen_canvas(
     let mut pending_send = false;
     let mut active_fps = 15_u32;
     let mut last_sent_at = preview_initial_last_sent();
+    let mut backpressure = BackpressureReporter::default();
 
     loop {
         if active_canvas_config.is_none() {
@@ -452,8 +487,7 @@ pub(super) async fn relay_screen_canvas(
                 };
 
                 if binary_tx.try_send(payload).is_err() {
-                    enqueue_backpressure_notice(&json_tx, "screen_canvas", canvas_config.fps);
-                    debug!("Dropping binary screen_canvas update for slow WebSocket consumer");
+                    backpressure.record_drop(&json_tx, "screen_canvas", canvas_config.fps);
                     continue;
                 }
 
@@ -478,6 +512,7 @@ pub(super) async fn relay_web_viewport_canvas(
     let mut pending_send = false;
     let mut active_fps = 15_u32;
     let mut last_sent_at = preview_initial_last_sent();
+    let mut backpressure = BackpressureReporter::default();
 
     loop {
         if active_canvas_config.is_none() {
@@ -557,8 +592,11 @@ pub(super) async fn relay_web_viewport_canvas(
                 };
 
                 if binary_tx.try_send(payload).is_err() {
-                    enqueue_backpressure_notice(&json_tx, "web_viewport_canvas", canvas_config.fps);
-                    debug!("Dropping binary web_viewport_canvas update for slow WebSocket consumer");
+                    backpressure.record_drop(
+                        &json_tx,
+                        "web_viewport_canvas",
+                        canvas_config.fps,
+                    );
                     continue;
                 }
 
@@ -620,6 +658,7 @@ pub(super) async fn relay_display_preview(
 
     let mut active: Option<ActiveTarget> = None;
     let mut dead_target_id: Option<DeviceId> = None;
+    let mut backpressure = BackpressureReporter::default();
 
     loop {
         // Re-derive the desired target from the current subscription
@@ -733,8 +772,7 @@ pub(super) async fn relay_display_preview(
 
                 let payload = encode_display_preview_frame(&snapshot);
                 if binary_tx.try_send(payload).is_err() {
-                    enqueue_backpressure_notice(&json_tx, "display_preview", target.fps);
-                    debug!("Dropping binary display_preview update for slow WebSocket consumer");
+                    backpressure.record_drop(&json_tx, "display_preview", target.fps);
                     // Advance last_sent_at so the next retry waits out a
                     // full fps interval instead of spinning the encoder.
                     // Clear pending_send too — if the consumer is slow
@@ -900,10 +938,12 @@ where
     match json_tx.try_send(text.into()) {
         Ok(()) => true,
         Err(TrySendError::Full(_)) => {
-            debug!(
-                stream,
-                "Dropping queued WebSocket JSON message for slow consumer"
-            );
+            if stream != "backpressure" {
+                debug!(
+                    stream,
+                    "Dropping queued WebSocket JSON message for slow consumer"
+                );
+            }
             false
         }
         Err(TrySendError::Closed(_)) => false,
@@ -954,10 +994,11 @@ fn enqueue_backpressure_notice(
     json_tx: &tokio::sync::mpsc::Sender<Utf8Bytes>,
     channel: &str,
     current_fps: u32,
+    dropped_frames: u32,
 ) {
     let suggested_fps = current_fps.saturating_div(2).max(1);
     let message = ServerMessage::Backpressure {
-        dropped_frames: 1,
+        dropped_frames: dropped_frames.max(1),
         channel: channel.to_owned(),
         recommendation: "reduce_fps".to_owned(),
         suggested_fps,
@@ -1246,10 +1287,12 @@ pub(super) fn publish_subscriptions(
 mod tests {
     use std::time::{Duration, Instant};
 
+    use axum::extract::ws::Utf8Bytes;
     use hypercolor_core::bus::CanvasFrame;
     use hypercolor_types::canvas::{Canvas, PublishedSurface};
+    use tokio::sync::mpsc;
 
-    use super::{preview_send_delay, preview_surface_identity};
+    use super::{BackpressureReporter, preview_send_delay, preview_surface_identity};
 
     #[test]
     fn preview_send_delay_is_zero_after_interval_elapses() {
@@ -1287,5 +1330,42 @@ mod tests {
             preview_surface_identity(&CanvasFrame::empty()),
             preview_surface_identity(&CanvasFrame::empty())
         );
+    }
+
+    #[tokio::test]
+    async fn backpressure_reporter_batches_drops_inside_interval() {
+        let (json_tx, mut json_rx) = mpsc::channel::<Utf8Bytes>(8);
+        let mut reporter = BackpressureReporter::default();
+
+        reporter.record_drop(&json_tx, "canvas", 60);
+        let first = json_rx
+            .try_recv()
+            .expect("first notice should send immediately");
+        let first: serde_json::Value =
+            serde_json::from_str(first.as_str()).expect("first notice json should parse");
+        assert_eq!(first["type"], "backpressure");
+        assert_eq!(first["channel"], "canvas");
+        assert_eq!(first["dropped_frames"], 1);
+        assert_eq!(first["suggested_fps"], 30);
+
+        reporter.record_drop(&json_tx, "canvas", 60);
+        assert!(json_rx.try_recv().is_err());
+
+        reporter.last_reported_at = Some(
+            Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now),
+        );
+        reporter.record_drop(&json_tx, "canvas", 60);
+
+        let second = json_rx
+            .try_recv()
+            .expect("batched notice should send after interval");
+        let second: serde_json::Value =
+            serde_json::from_str(second.as_str()).expect("second notice json should parse");
+        assert_eq!(second["type"], "backpressure");
+        assert_eq!(second["channel"], "canvas");
+        assert_eq!(second["dropped_frames"], 2);
+        assert_eq!(second["suggested_fps"], 30);
     }
 }

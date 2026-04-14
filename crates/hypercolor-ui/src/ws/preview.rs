@@ -26,8 +26,12 @@ pub(super) fn desired_preview_fps(
 }
 
 pub(super) fn preview_canvas_format() -> &'static str {
-    match preview_hostname().as_str() {
-        host if is_loopback_host(host) => "rgba",
+    preview_canvas_format_for_host(preview_hostname().as_str())
+}
+
+fn preview_canvas_format_for_host(hostname: &str) -> &'static str {
+    match hostname {
+        host if is_loopback_host(host) => "rgb",
         _ if supports_remote_jpeg_preview() => "jpeg",
         _ => "rgb",
     }
@@ -60,8 +64,12 @@ fn supports_remote_jpeg_preview() -> bool {
     has_bitmap_renderer && has_create_image_bitmap && has_worker
 }
 
-fn preview_canvas_request_dimensions(requested_fps: u32) -> (u32, u32) {
-    preview_canvas_request_dimensions_for_host(preview_hostname().as_str(), requested_fps)
+fn preview_canvas_request_dimensions(requested_fps: u32, width_cap: u32) -> (u32, u32) {
+    preview_canvas_request_dimensions_for_host(
+        preview_hostname().as_str(),
+        requested_fps,
+        width_cap,
+    )
 }
 
 fn web_viewport_preview_request_dimensions() -> (u32, u32) {
@@ -74,6 +82,7 @@ pub(super) fn request_preview_subscription(
     set_preview_target_fps: WriteSignal<u32>,
     engine_target_fps: u32,
     client_cap: u32,
+    width_cap: u32,
     page_visible: bool,
 ) {
     let desired_fps = desired_preview_fps(engine_target_fps, client_cap, page_visible);
@@ -83,7 +92,7 @@ pub(super) fn request_preview_subscription(
 
     requested_preview_fps.set_value(desired_fps);
     set_preview_target_fps.set(desired_fps);
-    let (preview_width, preview_height) = preview_canvas_request_dimensions(desired_fps);
+    let (preview_width, preview_height) = preview_canvas_request_dimensions(desired_fps, width_cap);
 
     let subscribe_msg = serde_json::json!({
         "type": "subscribe",
@@ -112,7 +121,7 @@ pub(super) fn request_screen_preview_subscription(
     }
 
     requested_preview_fps.set_value(desired_fps);
-    let (preview_width, preview_height) = preview_canvas_request_dimensions(desired_fps);
+    let (preview_width, preview_height) = preview_canvas_request_dimensions(desired_fps, 0);
 
     let subscribe_msg = serde_json::json!({
         "type": "subscribe",
@@ -265,15 +274,25 @@ fn is_loopback_host(hostname: &str) -> bool {
     matches!(hostname, "localhost" | "127.0.0.1" | "::1")
 }
 
-fn preview_canvas_request_dimensions_for_host(hostname: &str, requested_fps: u32) -> (u32, u32) {
-    if is_loopback_host(hostname) {
-        return (0, 0);
-    }
+fn preview_canvas_request_dimensions_for_host(
+    hostname: &str,
+    requested_fps: u32,
+    width_cap: u32,
+) -> (u32, u32) {
+    let default_width = if is_loopback_host(hostname) {
+        None
+    } else {
+        remote_preview_width_for_fps(requested_fps)
+    };
 
-    match remote_preview_width_for_fps(requested_fps) {
-        Some(width) => (width, 0),
-        None => (0, 0),
-    }
+    let preview_width = match (default_width, width_cap) {
+        (None, 0) => 0,
+        (None, cap) => cap,
+        (Some(width), 0) => width,
+        (Some(width), cap) => width.min(cap),
+    };
+
+    (preview_width, 0)
 }
 
 const fn remote_preview_width_for_fps(requested_fps: u32) -> Option<u32> {
@@ -287,7 +306,7 @@ const fn remote_preview_width_for_fps(requested_fps: u32) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        REMOTE_PREVIEW_WIDTH_LOW, REMOTE_PREVIEW_WIDTH_MEDIUM,
+        REMOTE_PREVIEW_WIDTH_LOW, REMOTE_PREVIEW_WIDTH_MEDIUM, preview_canvas_format_for_host,
         preview_canvas_request_dimensions_for_host, remote_preview_width_for_fps,
         web_viewport_preview_request_dimensions,
     };
@@ -306,13 +325,18 @@ mod tests {
     }
 
     #[test]
+    fn loopback_preview_uses_rgb_format() {
+        assert_eq!(preview_canvas_format_for_host("localhost"), "rgb");
+    }
+
+    #[test]
     fn loopback_preview_keeps_full_resolution() {
         assert_eq!(
-            preview_canvas_request_dimensions_for_host("localhost", 6),
+            preview_canvas_request_dimensions_for_host("localhost", 6, 0),
             (0, 0)
         );
         assert_eq!(
-            preview_canvas_request_dimensions_for_host("127.0.0.1", 30),
+            preview_canvas_request_dimensions_for_host("127.0.0.1", 30, 0),
             (0, 0)
         );
     }
@@ -320,16 +344,36 @@ mod tests {
     #[test]
     fn remote_preview_dimensions_scale_with_fps() {
         assert_eq!(
-            preview_canvas_request_dimensions_for_host("remote.example", 30),
+            preview_canvas_request_dimensions_for_host("remote.example", 30, 0),
             (0, 0)
         );
         assert_eq!(
-            preview_canvas_request_dimensions_for_host("remote.example", 15),
+            preview_canvas_request_dimensions_for_host("remote.example", 15, 0),
             (REMOTE_PREVIEW_WIDTH_MEDIUM, 0)
         );
         assert_eq!(
-            preview_canvas_request_dimensions_for_host("remote.example", 6),
+            preview_canvas_request_dimensions_for_host("remote.example", 6, 0),
             (REMOTE_PREVIEW_WIDTH_LOW, 0)
+        );
+    }
+
+    #[test]
+    fn loopback_preview_honors_explicit_width_cap() {
+        assert_eq!(
+            preview_canvas_request_dimensions_for_host("localhost", 60, 960),
+            (960, 0)
+        );
+    }
+
+    #[test]
+    fn remote_preview_clamps_to_explicit_width_cap() {
+        assert_eq!(
+            preview_canvas_request_dimensions_for_host("remote.example", 15, 320),
+            (320, 0)
+        );
+        assert_eq!(
+            preview_canvas_request_dimensions_for_host("remote.example", 15, 960),
+            (REMOTE_PREVIEW_WIDTH_MEDIUM, 0)
         );
     }
 

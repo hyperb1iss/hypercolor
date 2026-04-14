@@ -46,6 +46,23 @@ const DEFAULT_PREVIEW_WIDTH: f64 = 460.0;
 const HERO_ROW_HEIGHT_PX: f64 = 540.0;
 const PREVIEW_WIDTH_STORAGE_KEY: &str = "hc-dashboard-preview-width";
 const DASHBOARD_PREVIEW_FPS_CAP: u32 = 60;
+const DASHBOARD_PREVIEW_MIN_REQUEST_WIDTH: f64 = 640.0;
+const DASHBOARD_PREVIEW_MAX_REQUEST_WIDTH: f64 = 1280.0;
+const DASHBOARD_PREVIEW_REQUEST_QUANTUM: f64 = 64.0;
+
+fn dashboard_preview_request_width(preview_width_px: f64) -> u32 {
+    let device_pixel_ratio = web_sys::window().map_or(1.0, |window| window.device_pixel_ratio());
+    let scaled_width = (preview_width_px * device_pixel_ratio).clamp(
+        DASHBOARD_PREVIEW_MIN_REQUEST_WIDTH,
+        DASHBOARD_PREVIEW_MAX_REQUEST_WIDTH,
+    );
+    let quantized_width = (scaled_width / DASHBOARD_PREVIEW_REQUEST_QUANTUM).ceil()
+        * DASHBOARD_PREVIEW_REQUEST_QUANTUM;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        quantized_width as u32
+    }
+}
 
 // ── Rolling metrics history ──────────────────────────────────────────
 
@@ -105,13 +122,6 @@ pub fn DashboardPage() -> impl IntoView {
     let preview_telemetry = expect_context::<PreviewTelemetryContext>();
     let status_resource = LocalResource::new(api::fetch_status);
 
-    // Match the effects page cadence so the preview isn't judder-capped to 30
-    // when you switch over from /effects. Restores on leave.
-    Effect::new(move |_| {
-        ws.set_preview_cap.set(DASHBOARD_PREVIEW_FPS_CAP);
-    });
-    on_cleanup(move || ws.set_preview_cap.set(crate::ws::DEFAULT_PREVIEW_FPS_CAP));
-
     // Resizable preview column — persisted across reloads.
     let (preview_width, set_preview_width) = signal(
         read_stored_width()
@@ -132,6 +142,18 @@ pub fn DashboardPage() -> impl IntoView {
     let on_drag_end = Callback::new(move |()| {
         set_resizing_body(false);
         persist_width(preview_width.get_untracked());
+    });
+
+    // Match the effects page cadence, but only request enough preview pixels
+    // to fill the dashboard cabinet on the current display.
+    Effect::new(move |_| {
+        ws.set_preview_cap.set(DASHBOARD_PREVIEW_FPS_CAP);
+        ws.set_preview_width_cap
+            .set(dashboard_preview_request_width(preview_width.get()));
+    });
+    on_cleanup(move || {
+        ws.set_preview_cap.set(crate::ws::DEFAULT_PREVIEW_FPS_CAP);
+        ws.set_preview_width_cap.set(0);
     });
 
     // Rolling history — one signal driven by the metrics stream.

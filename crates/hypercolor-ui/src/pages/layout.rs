@@ -14,8 +14,12 @@ pub fn LayoutPage() -> impl IntoView {
 
     Effect::new(move |_| {
         ws.set_preview_cap.set(LAYOUT_PREVIEW_FPS_CAP);
+        ws.set_preview_width_cap.set(0);
     });
-    on_cleanup(move || ws.set_preview_cap.set(crate::ws::DEFAULT_PREVIEW_FPS_CAP));
+    on_cleanup(move || {
+        ws.set_preview_cap.set(crate::ws::DEFAULT_PREVIEW_FPS_CAP);
+        ws.set_preview_width_cap.set(0);
+    });
 
     view! {
         <div class="flex h-full min-h-0 flex-col overflow-hidden animate-fade-in">

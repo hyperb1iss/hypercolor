@@ -52,8 +52,12 @@ pub fn EffectsPage() -> impl IntoView {
 
     Effect::new(move |_| {
         ws.set_preview_cap.set(EFFECTS_PREVIEW_FPS_CAP);
+        ws.set_preview_width_cap.set(0);
     });
-    on_cleanup(move || ws.set_preview_cap.set(crate::ws::DEFAULT_PREVIEW_FPS_CAP));
+    on_cleanup(move || {
+        ws.set_preview_cap.set(crate::ws::DEFAULT_PREVIEW_FPS_CAP);
+        ws.set_preview_width_cap.set(0);
+    });
 
     // Restore persisted filter state from localStorage
     let (search, set_search) = signal(String::new());
