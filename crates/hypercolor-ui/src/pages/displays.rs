@@ -1618,102 +1618,219 @@ fn FaceCompositionSection(
 
     view! {
         <Show when=move || has_face.get() fallback=|| ()>
-            <div class="rounded-xl border border-t-2 border-edge-subtle border-t-coral/20 bg-surface-raised/80 p-3 edge-glow">
+            <div
+                class="rounded-xl bg-surface-raised/80 border border-edge-subtle p-3 edge-glow"
+                style="border-top: 2px solid rgba(255, 106, 193, 0.2)"
+            >
                 <div class="mb-3 flex items-center gap-2 border-b border-edge-subtle/50 pb-2">
-                    <div class="flex h-6 w-6 items-center justify-center rounded-md bg-coral/10 text-coral/70">
-                        <Icon icon=LuSlidersHorizontal width="13" height="13" />
+                    <div
+                        class="flex h-6 w-6 items-center justify-center rounded-md"
+                        style="background: rgba(255, 106, 193, 0.1); box-shadow: 0 0 8px rgba(255, 106, 193, 0.08)"
+                    >
+                        <span style="color: rgba(255, 106, 193, 0.7)">
+                            <Icon icon=LuSlidersHorizontal width="13" height="13" />
+                        </span>
                     </div>
                     <h3 class="text-[11px] font-semibold uppercase tracking-wide text-fg-secondary">
                         "Composition"
                     </h3>
+                    <div class="flex-1" />
+                    <span class="text-[10px] text-fg-tertiary">
+                        {move || selected_blend_option.get().label}
+                    </span>
                 </div>
-                <p class="text-[11px] leading-relaxed text-fg-secondary">
-                    "Replace isolates the face so you can judge its styling on its own. Cutout and the fusion modes let the live effect come through when you actually want interaction."
+
+                <FaceBlendModeSelect
+                    local_blend_mode=local_blend_mode
+                    set_mode=set_mode
+                />
+
+                <p class="mt-2 px-1 text-[10px] leading-relaxed text-fg-tertiary/80">
+                    {move || selected_blend_option.get().blurb}
                 </p>
-                <div class="mt-3 grid grid-cols-2 gap-2">
-                    {FACE_BLEND_OPTIONS
+
+                <Show when=move || local_blend_mode.get().blends_with_effect() fallback=|| ()>
+                    <div class="mt-3 flex items-center gap-2.5 rounded-lg px-3 py-2 hover:bg-surface-hover/20 transition-colors duration-200">
+                        <Icon
+                            icon=LuGauge
+                            width="15px"
+                            height="15px"
+                            style="color: rgba(255, 106, 193, 0.6); flex-shrink: 0"
+                        />
+                        <label class="text-xs text-fg-secondary font-medium shrink-0 min-w-[80px] max-w-[120px] truncate">
+                            "Blend Amount"
+                        </label>
+                        <div class="flex-1 min-w-0 flex items-center gap-2">
+                            <input
+                                type="range"
+                                min="0"
+                                max="100"
+                                step="1"
+                                class="flex-1 accent-coral"
+                                prop:value=move || format!("{:.0}", local_opacity.get() * 100.0)
+                                on:input=move |event| on_opacity_input.run(event)
+                            />
+                            <span class="text-[11px] font-mono text-fg-primary tabular-nums w-10 text-right">
+                                {move || format!("{:.0}%", local_opacity.get() * 100.0)}
+                            </span>
+                        </div>
+                    </div>
+                </Show>
+
+                <div class="mt-2 flex items-center gap-2.5 mb-1.5 px-1">
+                    <div
+                        style="background: linear-gradient(to right, transparent, rgba(255, 106, 193, 0.25), transparent)"
+                        class="h-px flex-1"
+                    />
+                    <span
+                        style="color: rgba(255, 106, 193, 0.5)"
+                        class="text-[9px] font-mono uppercase tracking-[0.15em] shrink-0"
+                    >
+                        "Quick Looks"
+                    </span>
+                    <div
+                        style="background: linear-gradient(to right, transparent, rgba(255, 106, 193, 0.25), transparent)"
+                        class="h-px flex-1"
+                    />
+                </div>
+                <div class="flex flex-wrap gap-1.5 px-1">
+                    {FACE_BLEND_PRESETS
                         .iter()
                         .copied()
-                        .map(|option| {
-                            let mode = option.mode;
+                        .map(|preset| {
                             view! {
                                 <button
                                     type="button"
                                     class=move || {
-                                        if local_blend_mode.get() == mode {
-                                            "rounded-md border border-coral/45 bg-coral/12 px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-coral transition"
+                                        if local_blend_mode.get() == preset.mode
+                                            && (local_opacity.get() - preset.opacity).abs() <= 0.01
+                                        {
+                                            "inline-flex items-center rounded-md border border-coral/50 bg-coral/12 px-2.5 py-1 text-[10px] font-medium text-coral transition"
                                         } else {
-                                            "rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-[11px] uppercase tracking-wider text-fg-tertiary transition hover:border-coral/30 hover:text-fg-primary"
+                                            "inline-flex items-center rounded-md border border-edge-subtle bg-surface-overlay/50 px-2.5 py-1 text-[10px] text-fg-secondary transition hover:border-coral/40 hover:text-fg-primary"
                                         }
                                     }
-                                    on:click=move |_| set_mode.run(mode)
+                                    on:click=move |_| apply_preset.run(preset)
                                 >
-                                    {option.label}
+                                    {preset.label}
                                 </button>
                             }
                         })
                         .collect_view()}
                 </div>
-                <div class="mt-3 rounded-lg border border-edge-subtle/60 bg-surface-overlay/45 px-3 py-3">
-                    <div class="flex items-center justify-between gap-2 text-[11px] uppercase tracking-wider text-fg-tertiary">
-                        <span>"Selected Look"</span>
-                        <span class="text-coral">{move || selected_blend_option.get().label}</span>
-                    </div>
-                    <p class="mt-2 text-[11px] leading-relaxed text-fg-secondary">
-                        {move || selected_blend_option.get().blurb}
-                    </p>
-                </div>
-                <div class="mt-3">
-                    <div class="mb-2 text-[11px] uppercase tracking-wider text-fg-tertiary">
-                        "Quick Looks"
-                    </div>
-                    <div class="flex flex-wrap gap-2">
-                        {FACE_BLEND_PRESETS
-                            .iter()
-                            .copied()
-                            .map(|preset| {
-                                view! {
-                                    <button
-                                        type="button"
-                                        class=move || {
-                                            if local_blend_mode.get() == preset.mode
-                                                && (local_opacity.get() - preset.opacity).abs() <= 0.01
-                                            {
-                                                "rounded-full border border-coral/45 bg-coral/12 px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.18em] text-coral transition"
-                                            } else {
-                                                "rounded-full border border-edge-subtle bg-surface-overlay px-3 py-1.5 text-[10px] uppercase tracking-[0.18em] text-fg-tertiary transition hover:border-coral/30 hover:text-fg-primary"
-                                            }
-                                        }
-                                        on:click=move |_| apply_preset.run(preset)
-                                    >
-                                        {preset.label}
-                                    </button>
-                                }
-                            })
-                            .collect_view()}
-                    </div>
-                </div>
-                <Show when=move || local_blend_mode.get().blends_with_effect() fallback=|| ()>
-                    <div class="mt-3 rounded-lg border border-edge-subtle/60 bg-surface-overlay/45 px-3 py-3">
-                        <div class="mb-2 flex items-center justify-between gap-2 text-[11px] uppercase tracking-wider text-fg-tertiary">
-                            <span>"Blend amount"</span>
-                            <span class="text-coral">
-                                {move || format!("{:.0}%", local_opacity.get() * 100.0)}
-                            </span>
-                        </div>
-                        <input
-                            type="range"
-                            min="0"
-                            max="100"
-                            step="1"
-                            class="w-full accent-[rgb(255,106,193)]"
-                            prop:value=move || format!("{:.0}", local_opacity.get() * 100.0)
-                            on:input=move |event| on_opacity_input.run(event)
-                        />
-                    </div>
-                </Show>
             </div>
         </Show>
+    }
+}
+
+#[component]
+fn FaceBlendModeSelect(
+    local_blend_mode: ReadSignal<DisplayFaceBlendMode>,
+    set_mode: Callback<DisplayFaceBlendMode>,
+) -> impl IntoView {
+    let (dropdown_open, set_dropdown_open) = signal(false);
+    let trigger_ref = NodeRef::<leptos::html::Button>::new();
+    let dropdown_class = "control-dropdown-face-blend".to_owned();
+    let dropdown_wrapper_class = dropdown_class.clone();
+    let dropdown_class_value = StoredValue::new(dropdown_class.clone());
+
+    view! {
+        <div
+            class="flex items-center gap-2.5 rounded-lg px-3 py-2 hover:bg-surface-hover/20 transition-colors duration-200 group"
+            class=("relative", move || dropdown_open.get())
+            class=("z-[100]", move || dropdown_open.get())
+        >
+            <Icon
+                icon=LuLayers
+                width="15px"
+                height="15px"
+                style="color: rgba(255, 106, 193, 0.6); flex-shrink: 0"
+            />
+            <label class="text-xs text-fg-secondary font-medium shrink-0 min-w-[80px] max-w-[120px] truncate">
+                "Blend Mode"
+            </label>
+            <div class=format!("relative flex-1 min-w-0 {dropdown_wrapper_class}")>
+                <button
+                    type="button"
+                    node_ref=trigger_ref
+                    class="w-full flex items-center gap-1.5 bg-surface-sunken border px-2.5 py-1.5
+                           text-xs cursor-pointer select-silk-trigger"
+                    class=("rounded-t-lg", move || dropdown_open.get())
+                    class=("rounded-lg", move || !dropdown_open.get())
+                    class=("border-accent-muted", move || dropdown_open.get())
+                    class=("border-edge-subtle", move || !dropdown_open.get())
+                    on:click=move |_| set_dropdown_open.update(|v| *v = !*v)
+                    on:keydown=move |ev: web_sys::KeyboardEvent| {
+                        if ev.key() == "Escape" && dropdown_open.get_untracked() {
+                            set_dropdown_open.set(false);
+                            ev.prevent_default();
+                        }
+                    }
+                >
+                    <span class="flex-1 min-w-0 text-left truncate text-fg-primary">
+                        {move || face_blend_option(local_blend_mode.get()).label}
+                    </span>
+                    <svg
+                        class="w-3 h-3 shrink-0 transition-transform duration-200"
+                        class=("rotate-180", move || dropdown_open.get())
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                    >
+                        <path d="m6 9 6 6 6-6" />
+                    </svg>
+                </button>
+
+                <Show when=move || dropdown_open.get()>
+                    <crate::components::control_panel::ControlDropdownDismissHandlers
+                        class_name=dropdown_class.clone()
+                        is_open=dropdown_open
+                        set_open=set_dropdown_open
+                    />
+                    <leptos::portal::Portal>
+                        <div class=move || dropdown_class_value.get_value()>
+                            <div
+                                class="fixed z-[9999]
+                                       rounded-b-xl overflow-hidden
+                                       bg-surface-overlay/98 backdrop-blur-xl
+                                       border border-t-0 border-edge-subtle
+                                       dropdown-glow animate-slide-down
+                                       overflow-y-auto scrollbar-dropdown"
+                                style=move || crate::components::control_panel::dropdown_panel_style(trigger_ref.get())
+                                on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()
+                            >
+                                {FACE_BLEND_OPTIONS.iter().copied().map(|option| {
+                                    let mode = option.mode;
+                                    view! {
+                                        <button
+                                            type="button"
+                                            class="dropdown-option w-full text-left px-3 py-[7px] text-xs cursor-pointer
+                                                   flex items-center gap-2"
+                                            class=("dropdown-option-active", move || local_blend_mode.get() == mode)
+                                            class=("text-fg-tertiary", move || local_blend_mode.get() != mode)
+                                            on:click=move |_| {
+                                                set_mode.run(mode);
+                                                set_dropdown_open.set(false);
+                                            }
+                                        >
+                                            <span
+                                                class="w-1 h-1 rounded-full shrink-0 transition-all duration-200"
+                                                class=("bg-accent-muted scale-100 opacity-100", move || local_blend_mode.get() == mode)
+                                                class=("scale-0 opacity-0", move || local_blend_mode.get() != mode)
+                                            />
+                                            <span class="truncate">{option.label}</span>
+                                        </button>
+                                    }
+                                }).collect_view()}
+                            </div>
+                        </div>
+                    </leptos::portal::Portal>
+                </Show>
+            </div>
+        </div>
     }
 }
 
@@ -2262,9 +2379,9 @@ fn FacePresetBar(
                         let preset_controls = preset.controls.clone();
                         let name = preset.name;
                         let pill_class = if is_active {
-                            "inline-flex items-center rounded-full border border-coral/50 bg-coral/15 px-2.5 py-1 text-[10px] font-medium text-coral transition"
+                            "inline-flex items-center rounded-md border border-coral/50 bg-coral/12 px-2.5 py-1 text-[10px] font-medium text-coral transition"
                         } else {
-                            "inline-flex items-center rounded-full border border-edge-subtle bg-surface-overlay/50 px-2.5 py-1 text-[10px] text-fg-secondary transition hover:border-coral/40 hover:text-fg-primary"
+                            "inline-flex items-center rounded-md border border-edge-subtle bg-surface-overlay/50 px-2.5 py-1 text-[10px] text-fg-secondary transition hover:border-coral/40 hover:text-fg-primary"
                         };
                         view! {
                             <button

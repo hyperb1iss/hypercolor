@@ -23,6 +23,7 @@ mod boolean;
 mod color;
 mod enum_select;
 mod number;
+mod sensor;
 mod text;
 mod viewport_picker;
 
@@ -246,7 +247,7 @@ fn ColorPickerDismissHandlers(
 }
 
 #[component]
-pub(super) fn ControlDropdownDismissHandlers(
+pub fn ControlDropdownDismissHandlers(
     class_name: String,
     is_open: ReadSignal<bool>,
     set_open: WriteSignal<bool>,
@@ -323,16 +324,31 @@ fn ControlWidget(
             on_change,
         )
         .into_any(),
-        ControlType::TextInput => text::render_text_input(
-            name,
-            control_id,
-            tooltip,
-            icon,
-            icon_style,
-            value,
-            on_change,
-        )
-        .into_any(),
+        ControlType::TextInput => {
+            if matches!(def.kind, ControlKind::Sensor) {
+                sensor::render_sensor_dropdown(
+                    name,
+                    control_id,
+                    tooltip,
+                    icon,
+                    icon_style,
+                    value,
+                    on_change,
+                )
+                .into_any()
+            } else {
+                text::render_text_input(
+                    name,
+                    control_id,
+                    tooltip,
+                    icon,
+                    icon_style,
+                    value,
+                    on_change,
+                )
+                .into_any()
+            }
+        }
         ControlType::GradientEditor => view! {
             <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 opacity-40">
                 <Icon icon=icon width="15px" height="15px" style=icon_style.clone() />
@@ -576,7 +592,7 @@ pub(super) fn install_scroll_close_handler_for_picker(
     );
 }
 
-pub(super) fn dropdown_panel_style(trigger: Option<web_sys::HtmlButtonElement>) -> String {
+pub fn dropdown_panel_style(trigger: Option<web_sys::HtmlButtonElement>) -> String {
     trigger
         .map(|el| {
             let rect = el.get_bounding_client_rect();
