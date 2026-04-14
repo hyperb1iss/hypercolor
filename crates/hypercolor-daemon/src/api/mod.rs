@@ -218,15 +218,6 @@ pub struct AppState {
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn configured_render_acceleration_mode(
-    config_manager: Option<&Arc<ConfigManager>>,
-) -> RenderAccelerationMode {
-    config_manager.map_or(RenderAccelerationMode::Cpu, |manager| {
-        manager.get().effect_engine.render_acceleration_mode
-    })
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const fn effect_renderer_acceleration_mode(
     requested_mode: RenderAccelerationMode,
 ) -> RenderAccelerationMode {
@@ -234,13 +225,6 @@ pub(crate) const fn effect_renderer_acceleration_mode(
         RenderAccelerationMode::Gpu => RenderAccelerationMode::Cpu,
         mode => mode,
     }
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn configured_effect_renderer_acceleration_mode(
-    config_manager: Option<&Arc<ConfigManager>>,
-) -> RenderAccelerationMode {
-    effect_renderer_acceleration_mode(configured_render_acceleration_mode(config_manager))
 }
 
 #[cfg(test)]

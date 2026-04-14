@@ -209,7 +209,6 @@ impl ProfileStore {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::fs;
 
     use tempfile::tempdir;
@@ -217,7 +216,7 @@ mod tests {
 
     use super::ProfileStore;
     use hypercolor_types::device::DeviceId;
-    use hypercolor_types::effect::{ControlValue, EffectId};
+    use hypercolor_types::effect::EffectId;
     use hypercolor_types::library::PresetId;
 
     #[test]
@@ -239,7 +238,13 @@ mod tests {
         .expect("profile json should be written");
 
         let error = ProfileStore::load(&path).expect_err("old profile shapes should fail");
-        assert!(error.to_string().contains("unknown field"));
+        let causes = error.chain().map(ToString::to_string).collect::<Vec<_>>();
+        assert!(
+            causes
+                .iter()
+                .any(|cause| cause.contains("unknown field `effect_id`")),
+            "expected unknown-field parse failure, got error chain {causes:?}"
+        );
     }
 
     #[test]

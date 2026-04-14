@@ -10,7 +10,9 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use tokio::sync::{Mutex, RwLock, oneshot, watch};
+#[cfg(feature = "wgpu")]
+use tokio::sync::oneshot;
+use tokio::sync::{Mutex, RwLock, watch};
 
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
@@ -339,12 +341,14 @@ impl InputSource for MockScreenPreviewSource {
     }
 }
 
+#[cfg(feature = "wgpu")]
 struct SequencedScreenPreviewSource {
     running: bool,
     pending_frames: VecDeque<ScreenData>,
     last_frame: ScreenData,
 }
 
+#[cfg(feature = "wgpu")]
 impl SequencedScreenPreviewSource {
     fn new(frames: Vec<ScreenData>) -> Self {
         let pending_frames: VecDeque<_> = frames.into();
@@ -360,6 +364,7 @@ impl SequencedScreenPreviewSource {
     }
 }
 
+#[cfg(feature = "wgpu")]
 impl InputSource for SequencedScreenPreviewSource {
     fn name(&self) -> &'static str {
         "sequenced_screen_preview"
@@ -697,6 +702,7 @@ async fn wait_for_next_frame(
     .expect("expected the next frame within 2 seconds")
 }
 
+#[cfg(feature = "wgpu")]
 async fn wait_for_next_frame_with_watchdog<F>(
     rx: &mut watch::Receiver<FrameData>,
     previous_frame_number: u32,
@@ -786,6 +792,7 @@ async fn wait_for_next_canvas_frame(
     .expect("expected the next canvas frame within 2 seconds")
 }
 
+#[cfg(feature = "wgpu")]
 async fn wait_for_render_loop_frame_number(
     state: &RenderThreadState,
     minimum_frame_number: u64,
@@ -807,6 +814,7 @@ async fn wait_for_render_loop_frame_number(
     }
 }
 
+#[cfg(feature = "wgpu")]
 fn preview_screen_data(left: [u8; 3], right: [u8; 3], frame_number: u32) -> ScreenData {
     let mut preview_canvas = Canvas::new(320, 200);
     for y in 0..200 {

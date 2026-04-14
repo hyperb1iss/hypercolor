@@ -1224,7 +1224,7 @@ fn canvas_binary_encoder_writes_jpeg_payload() {
 }
 
 #[test]
-fn canvas_binary_encoder_scales_rgb_payload_and_updates_header() {
+fn canvas_binary_encoder_bilinear_scales_rgb_payload_and_updates_header() {
     let mut canvas = Canvas::new(2, 2);
     canvas.set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
     canvas.set_pixel(1, 0, Rgba::new(40, 50, 60, 255));
@@ -1243,7 +1243,7 @@ fn canvas_binary_encoder_scales_rgb_payload_and_updates_header() {
 
     assert_eq!(u16::from_le_bytes([encoded[9], encoded[10]]), 1);
     assert_eq!(u16::from_le_bytes([encoded[11], encoded[12]]), 1);
-    assert_eq!(&encoded[14..17], &[10, 20, 30]);
+    assert_eq!(&encoded[14..17], &[55, 65, 75]);
 }
 
 #[test]

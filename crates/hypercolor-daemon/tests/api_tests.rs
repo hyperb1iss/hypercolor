@@ -913,32 +913,6 @@ fn test_display_face_effect_metadata(name: &str) -> EffectMetadata {
     metadata
 }
 
-async fn insert_test_html_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
-    let metadata = test_html_effect_metadata(name);
-    let entry = EffectEntry {
-        metadata: metadata.clone(),
-        source_path: format!("/tmp/{name}.html").into(),
-        modified: SystemTime::now(),
-        state: EffectState::Loading,
-    };
-    let mut registry = state.effect_registry.write().await;
-    let _ = registry.register(entry);
-    metadata
-}
-
-async fn activate_test_html_scene_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
-    let metadata = insert_test_html_effect(state, name).await;
-    let layout = {
-        let spatial = state.spatial_engine.read().await;
-        spatial.layout().as_ref().clone()
-    };
-    let mut scene_manager = state.scene_manager.write().await;
-    scene_manager
-        .upsert_primary_group(&metadata, HashMap::new(), None, layout)
-        .expect("html test effect should populate the primary scene group");
-    metadata
-}
-
 async fn insert_test_display_face_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
     let metadata = test_display_face_effect_metadata(name);
     let entry = EffectEntry {

@@ -162,19 +162,6 @@ async fn insert_test_display_face_effect(state: &Arc<AppState>, name: &str) -> E
     metadata
 }
 
-async fn insert_test_html_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
-    let metadata = test_html_effect_metadata(name);
-    let entry = hypercolor_core::effect::EffectEntry {
-        metadata: metadata.clone(),
-        source_path: format!("/tmp/{name}.html").into(),
-        modified: std::time::SystemTime::now(),
-        state: hypercolor_types::effect::EffectState::Loading,
-    };
-    let mut registry = state.effect_registry.write().await;
-    let _ = registry.register(entry);
-    metadata
-}
-
 async fn insert_test_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
     let metadata = EffectMetadata {
         id: EffectId::new(Uuid::now_v7()),
