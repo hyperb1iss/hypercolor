@@ -541,6 +541,7 @@ fn trimmed_servo_preferences() -> Preferences {
         js_offthread_compilation_enabled: false,
         js_ion_unsafe_eager_compilation_enabled: false,
         media_glvideo_enabled: false,
+        shell_background_color_rgba: [0.0, 0.0, 0.0, 0.0],
         ..Preferences::default()
     }
 }
@@ -1622,6 +1623,14 @@ mod tests {
         assert!(snippet.contains("-2: line2"));
         assert!(snippet.contains(">3: line3"));
         assert!(snippet.contains("-4: line4"));
+    }
+
+    #[test]
+    fn trimmed_servo_preferences_use_transparent_shell_background() {
+        assert_eq!(
+            trimmed_servo_preferences().shell_background_color_rgba,
+            [0.0, 0.0, 0.0, 0.0]
+        );
     }
 
     #[test]
