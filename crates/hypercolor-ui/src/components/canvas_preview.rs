@@ -22,11 +22,39 @@ type PresentCallback = Rc<dyn Fn()>;
 type PresentScheduler = Rc<RefCell<Option<PresentCallback>>>;
 const PREVIEW_RUNTIME_RETRY_DELAY_FRAMES: u32 = 30;
 const CANVAS2D_FALLBACK_THRESHOLD: u8 = 3;
+const PREVIEW_TELEMETRY_INTERVAL_MS: f64 = 250.0;
 
 fn browser_now_ms() -> f64 {
     web_sys::window()
         .and_then(|window| window.performance())
         .map_or_else(js_sys::Date::now, |performance| performance.now())
+}
+
+fn quantize_present_fps(value: f32) -> f32 {
+    (value * 10.0).round() / 10.0
+}
+
+fn quantize_arrival_to_present_ms(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
+fn should_publish_preview_telemetry(
+    previous: &PreviewPresenterTelemetry,
+    next: &PreviewPresenterTelemetry,
+    last_published_at_ms: Option<f64>,
+    now_ms: f64,
+) -> bool {
+    if previous.runtime_mode != next.runtime_mode || previous.skipped_frames != next.skipped_frames
+    {
+        return true;
+    }
+
+    if last_published_at_ms.is_none() {
+        return true;
+    }
+
+    previous != next
+        && now_ms - last_published_at_ms.unwrap_or_default() >= PREVIEW_TELEMETRY_INTERVAL_MS
 }
 
 enum PresenterState {
@@ -152,6 +180,8 @@ pub fn CanvasPreview(
     let schedule_present: PresentScheduler = Rc::new(RefCell::new(None));
     let presented_fps = RwSignal::new(0.0_f32);
     let runtime_mode = RwSignal::new(None::<&'static str>);
+    let last_published_telemetry = Rc::new(RefCell::new(PreviewPresenterTelemetry::default()));
+    let last_telemetry_published_at = Rc::new(RefCell::new(None::<f64>));
     let ws = use_context::<WsContext>();
     let preview_telemetry = use_context::<PreviewTelemetryContext>()
         .filter(|_| report_presenter_telemetry)
@@ -173,6 +203,8 @@ pub fn CanvasPreview(
         let presented_fps = presented_fps;
         let preview_telemetry = preview_telemetry;
         let runtime_mode = runtime_mode;
+        let last_published_telemetry = Rc::clone(&last_published_telemetry);
+        let last_telemetry_published_at = Rc::clone(&last_telemetry_published_at);
 
         let schedule = Rc::new(move || {
             if animation.borrow().is_some() {
@@ -197,6 +229,9 @@ pub fn CanvasPreview(
             let skipped_frames = Rc::clone(&skipped_frames);
             let canvas_handle = canvas.clone();
             let smooth_scaling = smooth_scaling;
+            let show_fps = show_fps;
+            let last_published_telemetry = Rc::clone(&last_published_telemetry);
+            let last_telemetry_published_at = Rc::clone(&last_telemetry_published_at);
 
             let callback = Closure::<dyn FnMut(f64)>::new(move |raf_time_ms| {
                 animation_frame_id_handle.borrow_mut().take();
@@ -206,8 +241,14 @@ pub fn CanvasPreview(
                     last_presented_frame.borrow_mut().take();
                     last_presented_at.borrow_mut().take();
                     *skipped_frames.borrow_mut() = 0;
-                    presented_fps.set(0.0);
-                    runtime_mode.set(None);
+                    if show_fps {
+                        presented_fps.set(0.0);
+                    }
+                    if runtime_mode.get_untracked().is_some() {
+                        runtime_mode.set(None);
+                    }
+                    *last_telemetry_published_at.borrow_mut() = None;
+                    *last_published_telemetry.borrow_mut() = PreviewPresenterTelemetry::default();
                     if let Some(telemetry) = preview_telemetry {
                         telemetry.set(PreviewPresenterTelemetry::default());
                     }
@@ -222,7 +263,9 @@ pub fn CanvasPreview(
                     let mut presenter_state = presenter_handle.borrow_mut();
                     if presenter_state.ensure_runtime(&canvas_handle, frame, smooth_scaling) {
                         let mode = presenter_state.mode_label();
-                        runtime_mode.set(mode);
+                        if runtime_mode.get_untracked() != mode {
+                            runtime_mode.set(mode);
+                        }
                         if let PresenterState::Ready {
                             runtime: presenter,
                             webgl_unavailable_streak,
@@ -271,7 +314,9 @@ pub fn CanvasPreview(
                                     } else {
                                         0.0
                                     };
-                                    presented_fps.set(next_present_fps);
+                                    if show_fps {
+                                        presented_fps.set(next_present_fps);
+                                    }
 
                                     if let Some(telemetry) = preview_telemetry {
                                         let arrival_to_present_ms = latest_frame_received_at
@@ -279,13 +324,30 @@ pub fn CanvasPreview(
                                             .map_or(0.0, |received_at_ms| {
                                                 (raf_time_ms - received_at_ms).max(0.0)
                                             });
-                                        telemetry.set(PreviewPresenterTelemetry {
+                                        let next_telemetry = PreviewPresenterTelemetry {
                                             runtime_mode: mode,
-                                            present_fps: next_present_fps,
-                                            arrival_to_present_ms,
+                                            present_fps: quantize_present_fps(next_present_fps),
+                                            arrival_to_present_ms: quantize_arrival_to_present_ms(
+                                                arrival_to_present_ms,
+                                            ),
                                             skipped_frames: *skipped_frames.borrow(),
                                             last_frame_number: Some(frame.frame_number),
-                                        });
+                                        };
+                                        let previous_telemetry =
+                                            last_published_telemetry.borrow().clone();
+                                        let last_published_at_ms =
+                                            *last_telemetry_published_at.borrow();
+                                        if should_publish_preview_telemetry(
+                                            &previous_telemetry,
+                                            &next_telemetry,
+                                            last_published_at_ms,
+                                            raf_time_ms,
+                                        ) {
+                                            telemetry.set(next_telemetry.clone());
+                                            *last_published_telemetry.borrow_mut() = next_telemetry;
+                                            *last_telemetry_published_at.borrow_mut() =
+                                                Some(raf_time_ms);
+                                        }
                                     }
                                     *last_presented_frame.borrow_mut() = Some(frame.frame_number);
                                 }
@@ -296,8 +358,15 @@ pub fn CanvasPreview(
                                     last_presented_frame.borrow_mut().take();
                                     last_presented_at.borrow_mut().take();
                                     *skipped_frames.borrow_mut() = 0;
-                                    presented_fps.set(0.0);
-                                    runtime_mode.set(None);
+                                    if show_fps {
+                                        presented_fps.set(0.0);
+                                    }
+                                    if runtime_mode.get_untracked().is_some() {
+                                        runtime_mode.set(None);
+                                    }
+                                    *last_telemetry_published_at.borrow_mut() = None;
+                                    *last_published_telemetry.borrow_mut() =
+                                        PreviewPresenterTelemetry::default();
                                     if let Some(telemetry) = preview_telemetry {
                                         telemetry.set(PreviewPresenterTelemetry::default());
                                     }
@@ -401,6 +470,9 @@ pub fn CanvasPreview(
             let presented_fps = presented_fps;
             let preview_telemetry = preview_telemetry;
             let runtime_mode = runtime_mode;
+            let last_published_telemetry = Rc::clone(&last_published_telemetry);
+            let last_telemetry_published_at = Rc::clone(&last_telemetry_published_at);
+            let show_fps = show_fps;
 
             move |event: web_sys::Event| {
                 event.prevent_default();
@@ -408,8 +480,14 @@ pub fn CanvasPreview(
                 last_presented_frame.borrow_mut().take();
                 last_presented_at.borrow_mut().take();
                 *skipped_frames.borrow_mut() = 0;
-                presented_fps.set(0.0);
-                runtime_mode.set(None);
+                if show_fps {
+                    presented_fps.set(0.0);
+                }
+                if runtime_mode.get_untracked().is_some() {
+                    runtime_mode.set(None);
+                }
+                *last_telemetry_published_at.borrow_mut() = None;
+                *last_published_telemetry.borrow_mut() = PreviewPresenterTelemetry::default();
                 if let Some(telemetry) = preview_telemetry {
                     telemetry.set(PreviewPresenterTelemetry::default());
                 }
@@ -437,14 +515,23 @@ pub fn CanvasPreview(
             let presented_fps = presented_fps;
             let preview_telemetry = preview_telemetry;
             let runtime_mode = runtime_mode;
+            let last_published_telemetry = Rc::clone(&last_published_telemetry);
+            let last_telemetry_published_at = Rc::clone(&last_telemetry_published_at);
+            let show_fps = show_fps;
 
             move |_: web_sys::Event| {
                 presenter.borrow_mut().reset();
                 last_presented_frame.borrow_mut().take();
                 last_presented_at.borrow_mut().take();
                 *skipped_frames.borrow_mut() = 0;
-                presented_fps.set(0.0);
-                runtime_mode.set(None);
+                if show_fps {
+                    presented_fps.set(0.0);
+                }
+                if runtime_mode.get_untracked().is_some() {
+                    runtime_mode.set(None);
+                }
+                *last_telemetry_published_at.borrow_mut() = None;
+                *last_published_telemetry.borrow_mut() = PreviewPresenterTelemetry::default();
                 if let Some(telemetry) = preview_telemetry {
                     telemetry.set(PreviewPresenterTelemetry::default());
                 }
