@@ -71,6 +71,45 @@ fn try_finish_deferred_zone_sampling(
     }
 }
 
+fn try_finish_retired_zone_sampling(
+    render: &mut super::pipeline_runtime::RenderCaches,
+    error_message: &'static str,
+) {
+    if let Some(mut retired_sampling) = render.retired_zone_sampling.take() {
+        match render.sparkleflinger.try_finish_pending_zone_sampling(
+            &mut retired_sampling,
+            &mut render.deferred_zone_sampling_scratch,
+        ) {
+            Ok(true) => {}
+            Ok(false) => {
+                render.retired_zone_sampling = Some(retired_sampling);
+            }
+            Err(error) => {
+                warn!(%error, "{error_message}");
+            }
+        }
+    }
+}
+
+fn retire_stale_zone_sampling(
+    render: &mut super::pipeline_runtime::RenderCaches,
+    pending: super::sparkleflinger::PendingZoneSampling,
+) {
+    if let Some(mut retired_sampling) = render.retired_zone_sampling.take() {
+        match render.sparkleflinger.try_finish_pending_zone_sampling(
+            &mut retired_sampling,
+            &mut render.deferred_zone_sampling_scratch,
+        ) {
+            Ok(true) | Ok(false) => {}
+            Err(error) => {
+                warn!(%error, "Retired GPU spatial sampling cleanup failed; dropping stale deferred sample result");
+            }
+        }
+    }
+
+    render.retired_zone_sampling = Some(pending);
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "frame execution intentionally keeps the full pipeline in one ordered async function"
@@ -176,6 +215,10 @@ pub(crate) async fn execute_frame(
     let input_done_at = Instant::now();
     let input_us = micros_between(input_start, input_done_at);
     let input_done_us = micros_between(frame_start, input_done_at);
+    try_finish_retired_zone_sampling(
+        render,
+        "Retired GPU spatial sampling finalize failed; dropping stale deferred sample result",
+    );
     let mut stale_deferred_sampling = None;
     let mut completed_deferred_sampling = None;
     if let Some(mut deferred_sampling) = render.deferred_zone_sampling.take() {
@@ -349,6 +392,9 @@ pub(crate) async fn execute_frame(
                 false
             };
         }
+        if let Some(pending) = stale_deferred_sampling.take() {
+            retire_stale_zone_sampling(render, pending);
+        }
         layout
     };
 
@@ -436,19 +482,29 @@ pub(crate) async fn execute_frame(
     let sample_done_at = Instant::now();
     let sample_done_us = micros_between(frame_start, sample_done_at);
     let push_start = Instant::now();
+    let global_brightness = output_power.effective_brightness();
+    let global_brightness_bits = global_brightness.to_bits();
     let (write_stats, async_failures) = {
         let mut manager = if primed_backend_manager_lock {
             manager_lock.await
         } else {
             state.backend_manager.lock().await
         };
-        let write_stats = if render_stage.reuse_published_frame {
+        let device_brightness_generation = manager.output_brightness_generation();
+        let can_reuse_routed_outputs = render_stage.reuse_published_frame
+            && frame_loop.last_output_brightness_bits == Some(global_brightness_bits)
+            && frame_loop.last_device_output_brightness_generation
+                == Some(device_brightness_generation)
+            && manager.can_reuse_routed_frame_outputs(layout.as_ref());
+        let write_stats = if can_reuse_routed_outputs {
+            manager.reuse_routed_frame_outputs(layout.as_ref())
+        } else if render_stage.reuse_published_frame {
             let published_frame = state.event_bus.frame_sender().borrow();
             manager
                 .write_frame_with_brightness(
                     &published_frame.zones,
                     layout.as_ref(),
-                    output_power.effective_brightness(),
+                    global_brightness,
                     None,
                 )
                 .await
@@ -457,11 +513,13 @@ pub(crate) async fn execute_frame(
                 .write_frame_with_brightness(
                     &render.recycled_frame.zones,
                     layout.as_ref(),
-                    output_power.effective_brightness(),
+                    global_brightness,
                     None,
                 )
                 .await
         };
+        frame_loop.last_output_brightness_bits = Some(global_brightness_bits);
+        frame_loop.last_device_output_brightness_generation = Some(device_brightness_generation);
         let async_failures = manager.async_write_failures();
         (write_stats, async_failures)
     };
@@ -475,6 +533,10 @@ pub(crate) async fn execute_frame(
     try_finish_deferred_zone_sampling(
         render,
         "Deferred GPU spatial sampling late finalize failed; dropping deferred sample result",
+    );
+    try_finish_retired_zone_sampling(
+        render,
+        "Retired GPU spatial sampling late finalize failed; dropping stale deferred sample result",
     );
 
     let postprocess_start = Instant::now();

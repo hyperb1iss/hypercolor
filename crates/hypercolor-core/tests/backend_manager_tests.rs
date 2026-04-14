@@ -224,6 +224,78 @@ impl DeviceBackend for DirectControlRecordingBackend {
     }
 }
 
+struct FailOnceRecordingBackend {
+    expected_device_id: DeviceId,
+    writes: Arc<Mutex<Vec<Vec<[u8; 3]>>>>,
+    attempts: Arc<AtomicUsize>,
+}
+
+impl FailOnceRecordingBackend {
+    fn new(
+        expected_device_id: DeviceId,
+        writes: Arc<Mutex<Vec<Vec<[u8; 3]>>>>,
+        attempts: Arc<AtomicUsize>,
+    ) -> Self {
+        Self {
+            expected_device_id,
+            writes,
+            attempts,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for FailOnceRecordingBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "fail_once".to_owned(),
+            name: "Fail Once Recording Backend".to_owned(),
+            description: "Fails the first write, then records retries".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(vec![DeviceInfo {
+            id: self.expected_device_id,
+            name: "Fail Once Device".to_owned(),
+            vendor: "Test".to_owned(),
+            family: DeviceFamily::Custom("Test".to_owned()),
+            model: None,
+            connection_type: ConnectionType::Network,
+            zones: vec![ZoneInfo {
+                name: "Main".to_owned(),
+                led_count: 4,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+            }],
+            firmware_version: None,
+            capabilities: DeviceCapabilities::default(),
+        }])
+    }
+
+    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        let attempt = self.attempts.fetch_add(1, Ordering::Relaxed);
+        if attempt == 0 {
+            bail!("transient write failure");
+        }
+
+        self.writes.lock().await.push(colors.to_vec());
+        Ok(())
+    }
+}
+
 struct MetadataRefreshingBackend {
     expected_device_id: DeviceId,
     connected: bool,
@@ -2726,6 +2798,180 @@ async fn write_frame_drops_stale_intermediate_payloads() {
         "debug snapshot should track dropped stale frames"
     );
     assert_eq!(queue.mapped_layout_ids, vec!["slow:strip".to_string()]);
+}
+
+#[tokio::test]
+async fn write_frame_suppresses_identical_payloads_after_successful_send() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::ZERO,
+        Arc::clone(&writes),
+        Arc::clone(&write_count),
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device("slow:strip", "slow", device_id);
+
+    let layout = make_layout(vec![make_zone("zone_0", "slow:strip", 4)]);
+    let frame = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[12, 34, 56]; 4],
+    }];
+
+    manager.write_frame(&frame, &layout).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    manager.write_frame(&frame, &layout).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    assert_eq!(write_count.load(Ordering::Relaxed), 1);
+    assert_eq!(writes.lock().await.len(), 1);
+
+    let snapshot = manager.debug_snapshot();
+    let queue = snapshot
+        .queues
+        .first()
+        .expect("expected one queue snapshot");
+    assert_eq!(queue.frames_received, 1);
+    assert_eq!(queue.frames_sent, 1);
+    assert_eq!(queue.frames_dropped, 0);
+}
+
+#[tokio::test]
+async fn write_frame_retries_identical_payload_after_async_write_error() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let attempts = Arc::new(AtomicUsize::new(0));
+
+    let backend = FailOnceRecordingBackend::new(
+        device_id,
+        Arc::clone(&writes),
+        Arc::clone(&attempts),
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device("fail_once:strip", "fail_once", device_id);
+
+    let layout = make_layout(vec![make_zone("zone_0", "fail_once:strip", 4)]);
+    let frame = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[90, 45, 180]; 4],
+    }];
+
+    manager.write_frame(&frame, &layout).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    manager.write_frame(&frame, &layout).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let expected_colors = vec![expected_led_color([90, 45, 180]); 4];
+
+    assert_eq!(attempts.load(Ordering::Relaxed), 2);
+    assert_eq!(writes.lock().await.as_slice(), &[expected_colors]);
+
+    let snapshot = manager.debug_snapshot();
+    let queue = snapshot
+        .queues
+        .first()
+        .expect("expected one queue snapshot");
+    assert_eq!(queue.frames_received, 2);
+    assert_eq!(queue.frames_sent, 1);
+    assert_eq!(queue.last_error, None);
+}
+
+#[tokio::test]
+async fn reuse_routed_frame_outputs_keeps_identical_successful_payload_quiet() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::ZERO,
+        Arc::clone(&writes),
+        Arc::clone(&write_count),
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device("slow:strip", "slow", device_id);
+
+    let layout = make_layout(vec![make_zone("zone_0", "slow:strip", 4)]);
+    let frame = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[12, 34, 56]; 4],
+    }];
+
+    manager.write_frame(&frame, &layout).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    assert!(manager.can_reuse_routed_frame_outputs(&layout));
+    let stats = manager.reuse_routed_frame_outputs(&layout);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    assert_eq!(stats.devices_written, 0);
+    assert_eq!(stats.total_leds, 0);
+    assert_eq!(write_count.load(Ordering::Relaxed), 1);
+    assert_eq!(writes.lock().await.len(), 1);
+
+    let snapshot = manager.debug_snapshot();
+    let queue = snapshot
+        .queues
+        .first()
+        .expect("expected one queue snapshot");
+    assert_eq!(queue.frames_received, 1);
+    assert_eq!(queue.frames_sent, 1);
+    assert_eq!(queue.frames_dropped, 0);
+}
+
+#[tokio::test]
+async fn reuse_routed_frame_outputs_retries_latest_payload_after_async_write_error() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let attempts = Arc::new(AtomicUsize::new(0));
+
+    let backend = FailOnceRecordingBackend::new(
+        device_id,
+        Arc::clone(&writes),
+        Arc::clone(&attempts),
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device("fail_once:strip", "fail_once", device_id);
+
+    let layout = make_layout(vec![make_zone("zone_0", "fail_once:strip", 4)]);
+    let frame = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[90, 45, 180]; 4],
+    }];
+
+    manager.write_frame(&frame, &layout).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    assert!(manager.can_reuse_routed_frame_outputs(&layout));
+    let stats = manager.reuse_routed_frame_outputs(&layout);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let expected_colors = vec![expected_led_color([90, 45, 180]); 4];
+
+    assert_eq!(stats.devices_written, 1);
+    assert_eq!(stats.total_leds, 4);
+    assert_eq!(attempts.load(Ordering::Relaxed), 2);
+    assert_eq!(writes.lock().await.as_slice(), &[expected_colors]);
+
+    let snapshot = manager.debug_snapshot();
+    let queue = snapshot
+        .queues
+        .first()
+        .expect("expected one queue snapshot");
+    assert_eq!(queue.frames_received, 2);
+    assert_eq!(queue.frames_sent, 1);
+    assert_eq!(queue.last_error, None);
 }
 
 #[tokio::test]

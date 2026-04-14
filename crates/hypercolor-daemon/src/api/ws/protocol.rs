@@ -749,6 +749,10 @@ pub(super) struct MetricsPacing {
     pub(super) retained_effect: u32,
     pub(super) retained_screen: u32,
     pub(super) composition_bypassed: u32,
+    pub(super) gpu_zone_sampling: u32,
+    pub(super) gpu_sample_deferred: u32,
+    pub(super) gpu_sample_retry_hit: u32,
+    pub(super) gpu_sample_wait_blocked: u32,
 }
 
 #[derive(Debug, Serialize)]

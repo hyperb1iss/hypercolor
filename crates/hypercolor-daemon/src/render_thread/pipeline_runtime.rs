@@ -85,6 +85,8 @@ pub(crate) struct FrameLoopState {
     pub(crate) last_audio_capture_active: Option<bool>,
     pub(crate) last_screen_capture_active: Option<bool>,
     pub(crate) last_render_group_demand: Option<CachedRenderGroupDemand>,
+    pub(crate) last_output_brightness_bits: Option<u32>,
+    pub(crate) last_device_output_brightness_generation: Option<u64>,
 }
 
 pub(crate) struct RenderCaches {
@@ -92,6 +94,7 @@ pub(crate) struct RenderCaches {
     pub(crate) composition_planner: CompositionPlanner,
     pub(crate) sparkleflinger: SparkleFlinger,
     pub(crate) deferred_zone_sampling: Option<PendingZoneSampling>,
+    pub(crate) retired_zone_sampling: Option<PendingZoneSampling>,
     pub(crate) deferred_zone_sampling_scratch: Vec<hypercolor_types::event::ZoneColors>,
     pub(crate) render_group_runtime: RenderGroupRuntime,
     pub(crate) render_surface_pool: RenderSurfacePool,
@@ -123,6 +126,7 @@ impl RenderCaches {
         self.render_group_runtime = RenderGroupRuntime::new(width, height);
         self.composition_planner = CompositionPlanner::new();
         self.deferred_zone_sampling = None;
+        self.retired_zone_sampling = None;
         self.deferred_zone_sampling_scratch.clear();
         self.static_surface_cache = None;
     }
@@ -187,12 +191,15 @@ impl PipelineRuntime {
                 last_audio_capture_active: None,
                 last_screen_capture_active: None,
                 last_render_group_demand: None,
+                last_output_brightness_bits: None,
+                last_device_output_brightness_generation: None,
             },
             render: RenderCaches {
                 screen_queue: ProducerQueue::new(),
                 composition_planner: CompositionPlanner::new(),
                 sparkleflinger: SparkleFlinger::new(render_acceleration_mode)?,
                 deferred_zone_sampling: None,
+                retired_zone_sampling: None,
                 deferred_zone_sampling_scratch: Vec::new(),
                 render_group_runtime: RenderGroupRuntime::new(canvas_width, canvas_height),
                 render_surface_pool: RenderSurfacePool::with_slot_count(

@@ -3008,6 +3008,147 @@ async fn pipeline_gpu_fresh_screen_preview_publishes_latest_colors_after_deferre
     assert_eq!(latest_right, [255, 0, 255]);
 }
 
+#[cfg(feature = "wgpu")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "sustained fresh-frame GPU latest-wins coverage needs full render-thread setup"
+)]
+#[tokio::test]
+async fn pipeline_gpu_fresh_screen_preview_keeps_latest_wins_under_sustained_updates() {
+    let layout = test_layout(vec![
+        point_zone("zone_left", "mock:left", 0.25, 0.5),
+        point_zone("zone_right", "mock:right", 0.75, 0.5),
+    ]);
+
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(layout),
+        BackendManager::new(),
+    );
+    state.screen_capture_configured = true;
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+
+    let screens = vec![
+        preview_screen_data([255, 0, 0], [0, 255, 0], 1),
+        preview_screen_data([0, 0, 255], [255, 255, 0], 2),
+        preview_screen_data([0, 255, 255], [255, 0, 255], 3),
+        preview_screen_data([255, 128, 0], [0, 128, 255], 4),
+        preview_screen_data([32, 224, 96], [224, 32, 160], 5),
+        preview_screen_data([255, 255, 255], [16, 32, 48], 6),
+    ];
+
+    {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager.add_source(Box::new(SequencedScreenPreviewSource::new(screens)));
+        input_manager
+            .start_all()
+            .expect("input manager should start");
+    }
+
+    let mut frame_rx = state.event_bus.frame_receiver();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
+        .await
+        .expect("expected initial sampled GPU frame within 2 seconds")
+        .expect("frame sender should remain connected");
+
+    let initial_frame = frame_rx.borrow().clone();
+    wait_for_render_loop_frame_number(&state, 6).await;
+    let expected_left = [255, 255, 255];
+    let expected_right = [16, 32, 48];
+
+    let latest_frame = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            frame_rx
+                .changed()
+                .await
+                .expect("frame sender should remain connected");
+            let frame = frame_rx.borrow().clone();
+            let left = frame
+                .zones
+                .iter()
+                .find(|zone| zone.zone_id == "zone_left")
+                .and_then(|zone| zone.colors.first().copied());
+            let right = frame
+                .zones
+                .iter()
+                .find(|zone| zone.zone_id == "zone_right")
+                .and_then(|zone| zone.colors.first().copied());
+            if frame.frame_number > initial_frame.frame_number
+                && left == Some(expected_left)
+                && right == Some(expected_right)
+            {
+                break frame;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        let loop_frame_number = state
+            .render_loop
+            .try_read()
+            .map_or(0, |render_loop| render_loop.frame_number());
+        let last_frame = frame_rx.borrow().clone();
+        panic!(
+            "expected sustained deferred GPU sampling to publish the newest screen colors within 2 seconds: render_loop.frame_number={} last_watch_frame_number={} last_watch_zone_count={}",
+            loop_frame_number,
+            last_frame.frame_number,
+            last_frame.zones.len(),
+        );
+    });
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    let (deadline_tx, mut deadline_rx) = oneshot::channel();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(2));
+        let _ = deadline_tx.send(());
+    });
+    tokio::select! {
+        shutdown = rt.shutdown() => shutdown.expect("shutdown"),
+        _ = &mut deadline_rx => panic!("render thread should stop within 2 seconds"),
+    }
+
+    let initial_left = initial_frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_left")
+        .and_then(|zone| zone.colors.first().copied())
+        .expect("initial left sample should exist");
+    let initial_right = initial_frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_right")
+        .and_then(|zone| zone.colors.first().copied())
+        .expect("initial right sample should exist");
+    let latest_left = latest_frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_left")
+        .and_then(|zone| zone.colors.first().copied())
+        .expect("latest left sample should exist");
+    let latest_right = latest_frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_right")
+        .and_then(|zone| zone.colors.first().copied())
+        .expect("latest right sample should exist");
+
+    assert_eq!(initial_left, [255, 0, 0]);
+    assert_eq!(initial_right, [0, 255, 0]);
+    assert_eq!(latest_left, expected_left);
+    assert_eq!(latest_right, expected_right);
+}
+
 #[tokio::test]
 async fn pipeline_applies_queued_layout_changes_on_the_next_frame() {
     let mut state = make_render_state(

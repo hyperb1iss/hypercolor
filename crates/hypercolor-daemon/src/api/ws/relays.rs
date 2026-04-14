@@ -1060,6 +1060,10 @@ pub(super) async fn build_metrics_message(
                 retained_effect: performance_snapshot.pacing.retained_effect,
                 retained_screen: performance_snapshot.pacing.retained_screen,
                 composition_bypassed: performance_snapshot.pacing.composition_bypassed,
+                gpu_zone_sampling: performance_snapshot.pacing.gpu_zone_sampling,
+                gpu_sample_deferred: performance_snapshot.pacing.gpu_sample_deferred,
+                gpu_sample_retry_hit: performance_snapshot.pacing.gpu_sample_retry_hit,
+                gpu_sample_wait_blocked: performance_snapshot.pacing.gpu_sample_wait_blocked,
             },
             timeline: MetricsTimeline {
                 frame_token: latest_frame.timeline.frame_token,

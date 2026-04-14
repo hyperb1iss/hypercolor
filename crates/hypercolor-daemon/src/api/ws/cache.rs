@@ -16,12 +16,11 @@ use serde::Serialize;
 use serde::ser::SerializeSeq;
 use tracing::warn;
 
-use hypercolor_types::canvas::{
-    PublishedSurfaceStorageIdentity, linear_to_srgb_u8, srgb_u8_to_linear,
-};
+use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 
-use super::preview_encode::{PreviewJpegEncoder, encode_canvas_jpeg_payload_scaled_stateless};
-use super::preview_scale::{PreviewScaleFormat, scale_rgba_bilinear};
+use super::preview_encode::{
+    PreviewJpegEncoder, PreviewRawEncoder, encode_canvas_jpeg_payload_scaled_stateless,
+};
 use super::protocol::{ActiveFramesConfig, CanvasFormat, FrameFormat, FrameZoneSelection};
 use crate::api::AppState;
 
@@ -38,7 +37,6 @@ pub(super) const WS_DISPLAY_PREVIEW_HEADER: u8 = 0x07;
 const WS_CANVAS_BINARY_CACHE_CAPACITY: usize = 32;
 const WS_FRAME_PAYLOAD_CACHE_CAPACITY: usize = 64;
 const WS_SPECTRUM_PAYLOAD_CACHE_CAPACITY: usize = 32;
-const WS_PREVIEW_SCALE_LUT_CACHE_CAPACITY: usize = 8;
 const WS_CACHE_SHARD_COUNT: usize = 8;
 
 pub(super) static WS_CLIENT_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -60,7 +58,7 @@ type CanvasJpegBodyCacheShard = StdMutex<VecDeque<(CanvasJpegBodyCacheKey, Bytes
 type FramePayloadCacheShard = StdMutex<VecDeque<(FramePayloadCacheKey, FrameRelayMessage)>>;
 type SpectrumPayloadCacheShard = StdMutex<VecDeque<(SpectrumPayloadCacheKey, Bytes)>>;
 type PreviewJpegEncoderShard = StdMutex<PreviewJpegEncoderState>;
-type PreviewScaleLutCache = StdMutex<VecDeque<(u32, Arc<[u8; 256]>)>>;
+type PreviewRawEncoderShard = StdMutex<PreviewRawEncoder>;
 type CommandRouterCache = StdMutex<Option<(usize, axum::Router)>>;
 
 pub(super) static WS_CANVAS_BINARY_CACHE: LazyLock<Vec<CanvasBinaryCacheShard>> =
@@ -116,8 +114,11 @@ static WS_PREVIEW_JPEG_ENCODERS: LazyLock<Vec<PreviewJpegEncoderShard>> = LazyLo
         .map(|_| StdMutex::new(PreviewJpegEncoderState::Uninitialized))
         .collect()
 });
-static WS_PREVIEW_SCALE_LUT_CACHE: LazyLock<PreviewScaleLutCache> =
-    LazyLock::new(|| StdMutex::new(VecDeque::with_capacity(WS_PREVIEW_SCALE_LUT_CACHE_CAPACITY)));
+static WS_PREVIEW_RAW_ENCODERS: LazyLock<Vec<PreviewRawEncoderShard>> = LazyLock::new(|| {
+    (0..WS_CACHE_SHARD_COUNT)
+        .map(|_| StdMutex::new(PreviewRawEncoder::new()))
+        .collect()
+});
 
 /// Single-slot cache of the router used for WebSocket command dispatch. Keyed by
 /// the `AppState` pointer so parallel tests with distinct states invalidate the
@@ -662,123 +663,14 @@ fn encode_canvas_binary_with_header_and_brightness(
         return build_canvas_rgba_payload_from_source(canvas, header, output_size);
     }
 
-    let body = encode_canvas_body(canvas, format, brightness, output_size);
+    let body = PreviewRawEncoder::new().encode_scaled_body(
+        canvas,
+        format,
+        brightness,
+        output_size.width,
+        output_size.height,
+    );
     build_canvas_binary_payload(canvas, header, format, &body, output_size)
-}
-
-fn encode_canvas_body(
-    canvas: &hypercolor_core::bus::CanvasFrame,
-    format: CanvasFormat,
-    brightness: f32,
-    output_size: CanvasOutputSize,
-) -> Vec<u8> {
-    let brightness = brightness.clamp(0.0, 1.0);
-    let width_u16 = u16::try_from(output_size.width).unwrap_or(u16::MAX);
-    let height_u16 = u16::try_from(output_size.height).unwrap_or(u16::MAX);
-    let width = usize::from(width_u16);
-    let height = usize::from(height_u16);
-    let px_count = width.saturating_mul(height);
-    let source_width = usize::try_from(canvas.width).unwrap_or(0);
-
-    let bpp = match format {
-        CanvasFormat::Rgb => 3_usize,
-        CanvasFormat::Rgba => 4_usize,
-        CanvasFormat::Jpeg => 0_usize,
-    };
-    let payload_len = px_count.saturating_mul(bpp);
-    let mut body = vec![0; payload_len];
-
-    let rgba = canvas.rgba_bytes();
-    let scale_lut = (brightness < 0.999).then(|| preview_scale_lut(brightness));
-    match format {
-        CanvasFormat::Rgb => {
-            if brightness >= 0.999
-                && output_size.width == canvas.width
-                && output_size.height == canvas.height
-            {
-                for (pixel, out) in rgba
-                    .chunks_exact(4)
-                    .take(px_count)
-                    .zip(body.chunks_exact_mut(3))
-                {
-                    out.copy_from_slice(&pixel[..3]);
-                }
-            } else if output_size.width != canvas.width || output_size.height != canvas.height {
-                scale_rgba_bilinear(
-                    rgba,
-                    canvas.width,
-                    canvas.height,
-                    output_size.width,
-                    output_size.height,
-                    scale_lut.as_deref(),
-                    PreviewScaleFormat::Rgb,
-                    &mut body,
-                );
-            } else {
-                for y in 0..height {
-                    for x in 0..width {
-                        let source_offset = y
-                            .saturating_mul(source_width)
-                            .saturating_add(x)
-                            .saturating_mul(4);
-                        let out_offset =
-                            y.saturating_mul(width).saturating_add(x).saturating_mul(3);
-                        let pixel = &rgba[source_offset..source_offset + 4];
-                        if let Some(scale_lut) = scale_lut.as_ref() {
-                            body[out_offset] = scale_lut[usize::from(pixel[0])];
-                            body[out_offset + 1] = scale_lut[usize::from(pixel[1])];
-                            body[out_offset + 2] = scale_lut[usize::from(pixel[2])];
-                        } else {
-                            body[out_offset..out_offset + 3].copy_from_slice(&pixel[..3]);
-                        }
-                    }
-                }
-            }
-        }
-        CanvasFormat::Rgba => {
-            if brightness >= 0.999
-                && output_size.width == canvas.width
-                && output_size.height == canvas.height
-            {
-                body.copy_from_slice(&rgba[..payload_len]);
-            } else if output_size.width != canvas.width || output_size.height != canvas.height {
-                scale_rgba_bilinear(
-                    rgba,
-                    canvas.width,
-                    canvas.height,
-                    output_size.width,
-                    output_size.height,
-                    scale_lut.as_deref(),
-                    PreviewScaleFormat::Rgba,
-                    &mut body,
-                );
-            } else {
-                for y in 0..height {
-                    for x in 0..width {
-                        let source_offset = y
-                            .saturating_mul(source_width)
-                            .saturating_add(x)
-                            .saturating_mul(4);
-                        let out_offset =
-                            y.saturating_mul(width).saturating_add(x).saturating_mul(4);
-                        let pixel = &rgba[source_offset..source_offset + 4];
-                        if let Some(scale_lut) = scale_lut.as_ref() {
-                            body[out_offset] = scale_lut[usize::from(pixel[0])];
-                            body[out_offset + 1] = scale_lut[usize::from(pixel[1])];
-                            body[out_offset + 2] = scale_lut[usize::from(pixel[2])];
-                            body[out_offset + 3] = pixel[3];
-                        } else {
-                            body[out_offset..out_offset + 4].copy_from_slice(pixel);
-                        }
-                    }
-                }
-            }
-        }
-        CanvasFormat::Jpeg => unreachable!("JPEG previews return early"),
-    }
-
-    debug_assert_eq!(body.len(), payload_len);
-    body
 }
 
 fn build_canvas_binary_payload(
@@ -837,7 +729,7 @@ fn try_encode_cached_canvas_binary_from_body(
     output_size: CanvasOutputSize,
 ) -> Option<Bytes> {
     let brightness = brightness.clamp(0.0, 1.0);
-    if !should_cache_canvas_raw_body(format, brightness) {
+    if !should_cache_canvas_raw_body(canvas, format, brightness, output_size) {
         return None;
     }
 
@@ -953,10 +845,35 @@ fn cached_canvas_raw_body(
         return Some(cached);
     }
 
-    let body = Bytes::from(encode_canvas_body(canvas, format, brightness, output_size));
+    let shard_index = cache_shard_index(&key);
+    let body =
+        try_encode_canvas_raw_body_shared(canvas, format, brightness, output_size, shard_index)?;
     WS_CANVAS_RAW_BODY_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
     canvas_raw_body_cache_put(key, body.clone());
     Some(body)
+}
+
+fn try_encode_canvas_raw_body_shared(
+    canvas: &hypercolor_core::bus::CanvasFrame,
+    format: CanvasFormat,
+    brightness: f32,
+    output_size: CanvasOutputSize,
+    shard_index: usize,
+) -> Option<Bytes> {
+    if matches!(format, CanvasFormat::Jpeg) {
+        return None;
+    }
+
+    let mut encoder = WS_PREVIEW_RAW_ENCODERS[shard_index]
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    Some(Bytes::from(encoder.encode_scaled_body(
+        canvas,
+        format,
+        brightness,
+        output_size.width,
+        output_size.height,
+    )))
 }
 
 fn try_encode_canvas_jpeg_body_shared(
@@ -1051,60 +968,6 @@ pub(super) fn reset_canvas_raw_body_cache_for_tests() {
     for shard in WS_CANVAS_RAW_BODY_CACHE.iter() {
         shard.lock().unwrap_or_else(PoisonError::into_inner).clear();
     }
-}
-
-fn preview_scale_lut(brightness: f32) -> Arc<[u8; 256]> {
-    let brightness_bits = brightness.to_bits();
-    {
-        let mut cache = WS_PREVIEW_SCALE_LUT_CACHE
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if let Some(index) = cache
-            .iter()
-            .position(|(cached_bits, _)| *cached_bits == brightness_bits)
-        {
-            let (cached_bits, lut) = cache
-                .remove(index)
-                .expect("cached preview LUT should exist");
-            let cached_lut = Arc::clone(&lut);
-            cache.push_front((cached_bits, lut));
-            return cached_lut;
-        }
-    }
-
-    let mut lut = [0_u8; 256];
-    if brightness <= 0.0 {
-        return remember_preview_scale_lut(brightness_bits, Arc::new(lut));
-    }
-
-    for channel in 0_u16..=255 {
-        let channel_u8 = u8::try_from(channel).expect("preview LUT indices fit in u8");
-        lut[usize::from(channel)] = linear_to_srgb_u8(srgb_u8_to_linear(channel_u8) * brightness);
-    }
-
-    remember_preview_scale_lut(brightness_bits, Arc::new(lut))
-}
-
-fn remember_preview_scale_lut(brightness_bits: u32, lut: Arc<[u8; 256]>) -> Arc<[u8; 256]> {
-    let mut cache = WS_PREVIEW_SCALE_LUT_CACHE
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    if let Some(index) = cache
-        .iter()
-        .position(|(cached_bits, _)| *cached_bits == brightness_bits)
-    {
-        let _ = cache.remove(index);
-    }
-    cache.push_front((brightness_bits, lut));
-    while cache.len() > WS_PREVIEW_SCALE_LUT_CACHE_CAPACITY {
-        let _ = cache.pop_back();
-    }
-    Arc::clone(
-        &cache
-            .front()
-            .expect("preview LUT cache should contain the inserted entry")
-            .1,
-    )
 }
 
 fn cached_canvas_binary<F>(
@@ -1285,8 +1148,21 @@ const fn canvas_format_tag(format: CanvasFormat) -> u8 {
     }
 }
 
-fn should_cache_canvas_raw_body(format: CanvasFormat, brightness: f32) -> bool {
-    matches!(format, CanvasFormat::Rgb) || brightness < 0.999
+fn should_cache_canvas_raw_body(
+    canvas: &hypercolor_core::bus::CanvasFrame,
+    format: CanvasFormat,
+    brightness: f32,
+    output_size: CanvasOutputSize,
+) -> bool {
+    match format {
+        CanvasFormat::Rgb => true,
+        CanvasFormat::Rgba => {
+            brightness < 0.999
+                || output_size.width != canvas.width
+                || output_size.height != canvas.height
+        }
+        CanvasFormat::Jpeg => false,
+    }
 }
 
 fn resolve_canvas_output_size(

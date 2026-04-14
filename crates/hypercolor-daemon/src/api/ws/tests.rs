@@ -28,7 +28,7 @@ use super::command::{
     command_response_from_http, dispatch_command, normalize_command_path, parse_command_method,
 };
 use super::preview_encode::{
-    PreviewJpegEncoder, encode_canvas_jpeg_binary_stateless,
+    PreviewJpegEncoder, PreviewRawEncoder, encode_canvas_jpeg_binary_stateless,
     encode_canvas_jpeg_payload_scaled_stateless,
 };
 use super::protocol::{
@@ -214,6 +214,10 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["timeline"]["cpu_readback_skipped"], true);
     assert_eq!(json["timeline"]["budget_ms"], 16.67);
     assert_eq!(json["timeline"]["wake_late_ms"], 0.22);
+    assert_eq!(json["pacing"]["gpu_zone_sampling"], 1);
+    assert_eq!(json["pacing"]["gpu_sample_deferred"], 1);
+    assert_eq!(json["pacing"]["gpu_sample_retry_hit"], 1);
+    assert_eq!(json["pacing"]["gpu_sample_wait_blocked"], 1);
     assert_eq!(json["timeline"]["logical_layer_count"], 2);
     assert_eq!(json["timeline"]["render_group_count"], 1);
     assert_eq!(json["timeline"]["scene_active"], true);
@@ -1395,6 +1399,51 @@ fn cached_canvas_preview_rgb_reuses_body_for_metadata_only_updates() {
 }
 
 #[test]
+fn cached_canvas_preview_scaled_rgba_reuses_body_for_metadata_only_updates() {
+    let _guard = WS_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    reset_ws_payload_caches();
+
+    let mut canvas = Canvas::new(2, 2);
+    canvas.set_pixel(0, 0, Rgba::new(12, 34, 56, 255));
+    canvas.set_pixel(1, 0, Rgba::new(78, 90, 12, 255));
+    canvas.set_pixel(0, 1, Rgba::new(34, 56, 78, 255));
+    canvas.set_pixel(1, 1, Rgba::new(90, 12, 34, 200));
+    let surface = PublishedSurface::from_owned_canvas(canvas, 7010, 9910);
+    let first = CanvasFrame::from_surface(surface.with_frame_metadata(7010, 9910));
+    let second = CanvasFrame::from_surface(surface.with_frame_metadata(7011, 9911));
+
+    let first_payload = super::cache::try_encode_cached_canvas_preview_binary(
+        &first,
+        CanvasFormat::Rgba,
+        1.0,
+        1,
+        0,
+    )
+    .expect("scaled RGBA preview should encode");
+    let second_payload = super::cache::try_encode_cached_canvas_preview_binary(
+        &second,
+        CanvasFormat::Rgba,
+        1.0,
+        1,
+        0,
+    )
+    .expect("scaled RGBA preview should encode");
+
+    assert_ne!(&first_payload[..14], &second_payload[..14]);
+    assert_eq!(&first_payload[14..], &second_payload[14..]);
+    assert!(
+        WS_CANVAS_RAW_BODY_BUILD_COUNT.load(std::sync::atomic::Ordering::Relaxed) >= 1,
+        "expected at least one scaled RGBA raw body build"
+    );
+    assert!(
+        WS_CANVAS_RAW_BODY_CACHE_HIT_COUNT.load(std::sync::atomic::Ordering::Relaxed) >= 1,
+        "expected at least one scaled RGBA raw body cache hit"
+    );
+}
+
+#[test]
 fn cached_canvas_preview_rgb_reuses_body_across_headers() {
     let _guard = WS_CACHE_TEST_LOCK
         .lock()
@@ -1440,6 +1489,26 @@ fn preview_jpeg_encoder_reuses_state_across_frames() {
         .expect("second JPEG preview encode should succeed");
 
     assert_ne!(first, second);
+}
+
+#[test]
+fn preview_raw_encoder_reuses_state_across_formats_and_sizes() {
+    let mut canvas = Canvas::new(2, 2);
+    canvas.set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
+    canvas.set_pixel(1, 0, Rgba::new(40, 50, 60, 255));
+    canvas.set_pixel(0, 1, Rgba::new(70, 80, 90, 255));
+    canvas.set_pixel(1, 1, Rgba::new(100, 110, 120, 200));
+    let frame = CanvasFrame::from_canvas(&canvas, 8, 45);
+    let mut encoder = PreviewRawEncoder::new();
+
+    let scaled_rgb = encoder.encode_scaled_body(&frame, CanvasFormat::Rgb, 1.0, 1, 0);
+    let dimmed_rgba = encoder.encode_scaled_body(&frame, CanvasFormat::Rgba, 0.5, 0, 0);
+
+    assert_eq!(scaled_rgb.len(), 3);
+    assert_eq!(dimmed_rgba.len(), 16);
+    assert_eq!(dimmed_rgba[3], 255);
+    assert_eq!(dimmed_rgba[15], 200);
+    assert_ne!(dimmed_rgba[..3], frame.rgba_bytes()[..3]);
 }
 
 #[test]

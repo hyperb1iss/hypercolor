@@ -124,6 +124,10 @@ pub(crate) struct PacingSummary {
     pub retained_effect: u32,
     pub retained_screen: u32,
     pub composition_bypassed: u32,
+    pub gpu_zone_sampling: u32,
+    pub gpu_sample_deferred: u32,
+    pub gpu_sample_retry_hit: u32,
+    pub gpu_sample_wait_blocked: u32,
 }
 
 /// Snapshot exported to API/WebSocket consumers.
@@ -157,6 +161,10 @@ impl PerformanceTracker {
             retained_effect: metrics.retained_effect,
             retained_screen: metrics.retained_screen,
             composition_bypassed: metrics.composition_bypassed,
+            gpu_zone_sampling: metrics.gpu_zone_sampling,
+            gpu_sample_deferred: metrics.gpu_sample_deferred,
+            gpu_sample_retry_hit: metrics.gpu_sample_retry_hit,
+            gpu_sample_wait_blocked: metrics.gpu_sample_wait_blocked,
         });
 
         if self.frame_times_us.len() > FRAME_HISTORY_CAPACITY {
@@ -206,6 +214,10 @@ struct FrameReuseSample {
     retained_effect: bool,
     retained_screen: bool,
     composition_bypassed: bool,
+    gpu_zone_sampling: bool,
+    gpu_sample_deferred: bool,
+    gpu_sample_retry_hit: bool,
+    gpu_sample_wait_blocked: bool,
 }
 
 fn summarize_frame_times(samples: &VecDeque<u32>) -> FrameTimeSummary {
@@ -267,6 +279,34 @@ fn summarize_pacing(
             reuse_history
                 .iter()
                 .filter(|sample| sample.composition_bypassed)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+        gpu_zone_sampling: u32::try_from(
+            reuse_history
+                .iter()
+                .filter(|sample| sample.gpu_zone_sampling)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+        gpu_sample_deferred: u32::try_from(
+            reuse_history
+                .iter()
+                .filter(|sample| sample.gpu_sample_deferred)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+        gpu_sample_retry_hit: u32::try_from(
+            reuse_history
+                .iter()
+                .filter(|sample| sample.gpu_sample_retry_hit)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+        gpu_sample_wait_blocked: u32::try_from(
+            reuse_history
+                .iter()
+                .filter(|sample| sample.gpu_sample_wait_blocked)
                 .count(),
         )
         .unwrap_or(u32::MAX),

@@ -673,6 +673,10 @@ impl OutputQueue {
 
     /// Push the latest payload for this device.
     fn push(&mut self, colors: Vec<[u8; 3]>) -> Option<Vec<[u8; 3]>> {
+        if self.should_suppress_duplicate(&colors) {
+            return Some(colors);
+        }
+
         self.next_sequence = self.next_sequence.saturating_add(1);
         let sequence = self.next_sequence;
         let produced_at = Instant::now();
@@ -702,6 +706,46 @@ impl OutputQueue {
         });
 
         recycled
+    }
+
+    fn should_suppress_duplicate(&self, colors: &[[u8; 3]]) -> bool {
+        let current = self.tx.borrow();
+        let Some(payload) = current.as_ref() else {
+            return false;
+        };
+        if payload.colors.as_slice() != colors {
+            return false;
+        }
+
+        let last_success_sequence = self.metrics.last_success_sequence.load(Ordering::Relaxed);
+        let last_error_sequence = self.metrics.last_error_sequence.load(Ordering::Relaxed);
+
+        if payload.sequence == last_error_sequence && last_error_sequence > last_success_sequence {
+            return false;
+        }
+
+        payload.sequence > last_success_sequence
+            || payload.sequence == last_success_sequence
+                && last_success_sequence >= last_error_sequence
+    }
+
+    fn retry_latest_after_error(&mut self) -> Option<usize> {
+        let current = self.tx.borrow();
+        let Some(payload) = current.as_ref() else {
+            return None;
+        };
+
+        let last_success_sequence = self.metrics.last_success_sequence.load(Ordering::Relaxed);
+        let last_error_sequence = self.metrics.last_error_sequence.load(Ordering::Relaxed);
+        if payload.sequence != last_error_sequence || last_error_sequence <= last_success_sequence {
+            return None;
+        }
+
+        let led_count = payload.colors.len();
+        let colors = payload.colors.clone();
+        drop(current);
+        let _ = self.push(colors);
+        Some(led_count)
     }
 
     fn snapshot(
@@ -753,6 +797,9 @@ pub struct BackendManager {
     /// User-configured per-device output brightness scalar.
     device_brightness: HashMap<DeviceId, f32>,
 
+    /// Incremented whenever software output brightness state changes.
+    device_brightness_generation: u64,
+
     /// Reference-counted direct-control locks that suppress queued frame writes.
     direct_control_locks: HashMap<BackendDeviceKey, usize>,
 
@@ -793,6 +840,7 @@ struct RoutingPlan {
     layout_signature: u64,
     mapping_generation: u64,
     active_layout_device_ids: HashSet<String>,
+    active_target_keys: Vec<BackendDeviceKey>,
     zone_routes: HashMap<String, PlannedZoneRoute>,
     ordered_zone_routes: Vec<OrderedZoneRoute>,
     inactive_devices: Vec<BackendDeviceKey>,
@@ -1080,11 +1128,17 @@ impl BackendManager {
     /// Configure software output brightness for a physical device.
     pub fn set_device_output_brightness(&mut self, device_id: DeviceId, brightness: f32) {
         let normalized = brightness.clamp(0.0, 1.0);
-        if normalized >= 0.999 {
-            self.device_brightness.remove(&device_id);
-            return;
+        let changed = if normalized >= 0.999 {
+            self.device_brightness.remove(&device_id).is_some()
+        } else {
+            self.device_brightness
+                .insert(device_id, normalized)
+                .is_none_or(|previous| previous.to_bits() != normalized.to_bits())
+        };
+        if changed {
+            self.device_brightness_generation =
+                self.device_brightness_generation.saturating_add(1);
         }
-        self.device_brightness.insert(device_id, normalized);
     }
 
     /// Read the configured software output brightness for a physical device.
@@ -1094,6 +1148,12 @@ impl BackendManager {
             .get(&device_id)
             .copied()
             .unwrap_or(1.0)
+    }
+
+    /// Monotonic generation for software output-brightness state changes.
+    #[must_use]
+    pub fn output_brightness_generation(&self) -> u64 {
+        self.device_brightness_generation
     }
 
     /// Write one immediate JPEG display payload to a specific physical device.
@@ -1391,6 +1451,15 @@ impl BackendManager {
             layout_signature,
             mapping_generation: self.routing_mapping_generation,
             active_layout_device_ids,
+            active_target_keys: {
+                let mut active_target_keys = active_target_keys.into_iter().collect::<Vec<_>>();
+                active_target_keys.sort_by(|left, right| {
+                    left.0
+                        .cmp(&right.0)
+                        .then_with(|| left.1.to_string().cmp(&right.1.to_string()))
+                });
+                active_target_keys
+            },
             zone_routes,
             ordered_zone_routes,
             inactive_devices,
@@ -1618,6 +1687,45 @@ impl BackendManager {
         }
 
         self.active_staging_keys = active_staging_keys;
+
+        stats
+    }
+
+    /// Whether existing queued outputs can be reused for the active layout.
+    ///
+    /// Returns `true` when every active physical target already has an output
+    /// queue, so a retained frame can skip re-routing and reuse the latest
+    /// queued payloads.
+    #[must_use]
+    pub fn can_reuse_routed_frame_outputs(&mut self, layout: &SpatialLayout) -> bool {
+        let plan = self.routing_plan(layout);
+        plan.active_target_keys.iter().all(|key| {
+            self.is_direct_control_active_key(key) || self.output_queues.contains_key(key)
+        })
+    }
+
+    /// Reuse the latest routed outputs for the active layout.
+    ///
+    /// This only nudges queues that need a retry after an asynchronous write
+    /// failure; successfully queued or in-flight identical payloads are left
+    /// untouched.
+    pub fn reuse_routed_frame_outputs(&mut self, layout: &SpatialLayout) -> FrameWriteStats {
+        let plan = self.routing_plan(layout);
+        let mut stats = FrameWriteStats::default();
+
+        for key in &plan.active_target_keys {
+            if self.is_direct_control_active_key(key) {
+                continue;
+            }
+
+            let Some(queue) = self.output_queues.get_mut(key) else {
+                continue;
+            };
+            if let Some(led_count) = queue.retry_latest_after_error() {
+                stats.devices_written = stats.devices_written.saturating_add(1);
+                stats.total_leds = stats.total_leds.saturating_add(led_count);
+            }
+        }
 
         stats
     }
