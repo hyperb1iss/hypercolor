@@ -119,8 +119,6 @@ function createFaceContext(
     const scale = Math.min(width / designBasis.width, height / designBasis.height)
 
     container.style.position = 'relative'
-    container.style.width = '100%'
-    container.style.height = '100%'
     container.style.background = 'transparent'
     canvas.style.position = 'absolute'
     canvas.style.inset = '0'
@@ -281,10 +279,24 @@ export function face(
         startFaceLoop(ctx, setupFn, resolved)
     }
 
-    // Wait for DOM ready
-    if (document.readyState === 'complete' || document.readyState === 'interactive') {
-        init()
-    } else {
-        window.addEventListener('DOMContentLoaded', init, { once: true })
+    let started = false
+    const start = () => {
+        if (started) return
+        const container = document.getElementById('faceContainer')
+        const canvas = document.getElementById('faceCanvas')
+        if (!container || !canvas) return
+        started = true
+        void init()
+    }
+
+    // Inline face bundles are emitted after the container markup, so try to
+    // start immediately. Some headless embedders lag or skip DOMContentLoaded.
+    start()
+    if (!started) {
+        if (document.readyState === 'complete' || document.readyState === 'interactive') {
+            start()
+        } else {
+            window.addEventListener('DOMContentLoaded', start, { once: true })
+        }
     }
 }

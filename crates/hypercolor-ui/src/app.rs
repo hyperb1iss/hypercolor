@@ -22,6 +22,7 @@ use crate::pages::settings::SettingsPage;
 use crate::preferences::{EffectPreferences, PreferencesStore};
 use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
 use crate::thumbnails::{self, ThumbnailStore};
+use crate::ws::messages::scene_event_affects_active_effect;
 use crate::ws::{
     AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, DeviceEventHint,
     PerformanceMetrics, SceneEventHint, WsManager,
@@ -714,7 +715,12 @@ pub fn App() -> impl IntoView {
                     }
                 }
             }
-            effects_ctx.refresh_active_effect();
+            if current_scene_event
+                .as_ref()
+                .is_none_or(scene_event_affects_active_effect)
+            {
+                effects_ctx.refresh_active_effect();
+            }
 
             current_scene_event
         },

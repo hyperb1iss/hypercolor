@@ -61,8 +61,8 @@ pub fn DisplaysPage() -> impl IntoView {
     let (face_catalog, set_face_catalog) = signal(None::<Result<Vec<api::EffectSummary>, String>>);
     let (face_picker_open, set_face_picker_open) = signal(false);
     let (face_assignment_pending, set_face_assignment_pending) = signal(false);
-    // Monotonic counter bumped whenever a face mutation lands so the
-    // selected display's face assignment can be reloaded explicitly.
+    // Monotonic counter used when external scene changes require an explicit
+    // face reload for the selected display.
     let (face_refresh_tick, set_face_refresh_tick) = signal(0_u64);
     // Panel sizing — persisted to localStorage so the column width
     // survives reloads.
@@ -101,9 +101,9 @@ pub fn DisplaysPage() -> impl IntoView {
         items.iter().find(|display| display.id == id).cloned()
     });
 
-    // Refetch the assigned face whenever the selected display changes or a
-    // mutation lands. Last-good is preserved while the request is in flight
-    // so the face card doesn't flash empty state during swaps.
+    // Refetch the assigned face whenever the selected display changes or an
+    // external scene mutation lands. Last-good is preserved while the request
+    // is in flight so the face card doesn't flash empty state during swaps.
     Effect::new(move |_| {
         let Some(display) = selected_display.get() else {
             set_display_face.set(None);
@@ -165,7 +165,6 @@ pub fn DisplaysPage() -> impl IntoView {
                     set_display_face.set(Some(Ok(Some(face))));
                     set_face_picker_open.set(false);
                     set_face_assignment_pending.set(false);
-                    set_face_refresh_tick.update(|value| *value = value.wrapping_add(1));
                     toasts::toast_success(&format!("Assigned {assigned_name} to {display_name}"));
                 }
                 Err(error) => {
@@ -191,7 +190,6 @@ pub fn DisplaysPage() -> impl IntoView {
                 Ok(()) => {
                     set_display_face.set(Some(Ok(None)));
                     set_face_assignment_pending.set(false);
-                    set_face_refresh_tick.update(|value| *value = value.wrapping_add(1));
                     toasts::toast_success(&format!("Cleared face from {display_name}"));
                 }
                 Err(error) => {
@@ -345,7 +343,6 @@ pub fn DisplaysPage() -> impl IntoView {
                             display_face=display_face
                             set_display_face=set_display_face
                             face_assignment_pending=face_assignment_pending
-                            set_face_refresh_tick=set_face_refresh_tick
                             on_choose_face=open_face_picker
                             on_clear_face=clear_face
                         />
@@ -1275,7 +1272,6 @@ fn DisplayRightPanel(
     display_face: ReadSignal<Option<Result<Option<api::DisplayFaceResponse>, String>>>,
     set_display_face: WriteSignal<Option<Result<Option<api::DisplayFaceResponse>, String>>>,
     face_assignment_pending: ReadSignal<bool>,
-    set_face_refresh_tick: WriteSignal<u64>,
     on_choose_face: Callback<()>,
     on_clear_face: Callback<()>,
 ) -> impl IntoView {
@@ -1292,13 +1288,11 @@ fn DisplayRightPanel(
                 selected_display=selected_display
                 display_face=display_face
                 set_display_face=set_display_face
-                set_face_refresh_tick=set_face_refresh_tick
             />
             <FaceControlsSection
                 selected_display=selected_display
                 display_face=display_face
                 set_display_face=set_display_face
-                set_face_refresh_tick=set_face_refresh_tick
             />
         </div>
     }
@@ -1411,7 +1405,6 @@ fn FaceCompositionSection(
     selected_display: Memo<Option<api::DisplaySummary>>,
     display_face: ReadSignal<Option<Result<Option<api::DisplayFaceResponse>, String>>>,
     set_display_face: WriteSignal<Option<Result<Option<api::DisplayFaceResponse>, String>>>,
-    set_face_refresh_tick: WriteSignal<u64>,
 ) -> impl IntoView {
     let effects_ctx = use_context::<EffectsContext>();
     let (local_blend_mode, set_local_blend_mode) = signal(DisplayFaceBlendMode::Replace);
@@ -1443,7 +1436,6 @@ fn FaceCompositionSection(
                 match api::update_display_face_composition(&display_id, blend_mode, opacity).await {
                     Ok(face) => {
                         set_display_face.set(Some(Ok(Some(face))));
-                        set_face_refresh_tick.update(|value| *value = value.wrapping_add(1));
                     }
                     Err(error) => {
                         sync_face_composition_from_server(
@@ -1564,7 +1556,6 @@ fn FaceControlsSection(
     selected_display: Memo<Option<api::DisplaySummary>>,
     display_face: ReadSignal<Option<Result<Option<api::DisplayFaceResponse>, String>>>,
     set_display_face: WriteSignal<Option<Result<Option<api::DisplayFaceResponse>, String>>>,
-    set_face_refresh_tick: WriteSignal<u64>,
 ) -> impl IntoView {
     let effects_ctx = use_context::<EffectsContext>();
     // Derived view of the face's control definitions for ControlPanel.
@@ -1649,7 +1640,6 @@ fn FaceControlsSection(
                 match api::update_display_face_controls(&display_id, &controls_json).await {
                     Ok(face) => {
                         set_display_face.set(Some(Ok(Some(face))));
-                        set_face_refresh_tick.update(|value| *value = value.wrapping_add(1));
                     }
                     Err(error) => {
                         toasts::toast_error(&format!("Face control update failed: {error}"));
@@ -1724,7 +1714,6 @@ fn FaceControlsSection(
                 match api::update_display_face_controls(&display_id, &controls_json).await {
                     Ok(face) => {
                         set_display_face.set(Some(Ok(Some(face))));
-                        set_face_refresh_tick.update(|value| *value = value.wrapping_add(1));
                     }
                     Err(error) => {
                         // Restore pre-apply state so the "Assigned" pill

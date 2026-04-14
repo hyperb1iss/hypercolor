@@ -299,7 +299,7 @@ function generateFaceHTML(
 ): string {
     const presetBlock = presetMetas.length > 0 ? `\n${presetMetas.join('\n')}` : ''
     return `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" style="width:100%;height:100%;background:transparent">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -309,7 +309,7 @@ function generateFaceHTML(
   <meta category="display"/>
 ${controlMetas.join('\n')}${presetBlock}
 </head>
-<body style="margin:0;overflow:hidden;background:transparent;-webkit-user-select:none;user-select:none">
+<body style="margin:0;width:100%;height:100%;overflow:hidden;background:transparent;-webkit-user-select:none;user-select:none">
   <div id="faceContainer" style="position:relative;overflow:hidden;width:100vw;height:100vh;background:transparent">
     <canvas id="faceCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2"></canvas>
   </div>

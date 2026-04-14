@@ -1,6 +1,7 @@
 //! JSON and binary message handlers for the daemon WebSocket protocol.
 
-use hypercolor_types::scene::{SceneKind, SceneMutationMode};
+use hypercolor_types::event::RenderGroupChangeKind;
+use hypercolor_types::scene::{RenderGroupRole, SceneKind, SceneMutationMode};
 use leptos::prelude::*;
 use serde::Deserialize;
 
@@ -260,6 +261,8 @@ pub struct SceneEventHint {
     pub scene_kind: Option<SceneKind>,
     pub scene_mutation_mode: Option<SceneMutationMode>,
     pub scene_snapshot_locked: Option<bool>,
+    pub render_group_role: Option<RenderGroupRole>,
+    pub render_group_change_kind: Option<RenderGroupChangeKind>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -485,35 +488,8 @@ pub(super) fn handle_json_message(
                     }
                 } else if SCENE_EVENTS.contains(&event_type) {
                     let scene_data = msg.get("data").unwrap_or(&serde_json::Value::Null);
-                    set_last_scene_event.set(Some(SceneEventHint {
-                        event_type: event_type.to_owned(),
-                        scene_id: scene_data
-                            .get("current")
-                            .or_else(|| scene_data.get("scene_id"))
-                            .or_else(|| scene_data.get("id"))
-                            .and_then(serde_json::Value::as_str)
-                            .map(ToOwned::to_owned),
-                        scene_name: scene_data
-                            .get("current_name")
-                            .or_else(|| scene_data.get("scene_name"))
-                            .or_else(|| scene_data.get("name"))
-                            .and_then(serde_json::Value::as_str)
-                            .map(ToOwned::to_owned),
-                        scene_kind: scene_data
-                            .get("current_kind")
-                            .or_else(|| scene_data.get("kind"))
-                            .cloned()
-                            .and_then(|value| serde_json::from_value(value).ok()),
-                        scene_mutation_mode: scene_data
-                            .get("current_mutation_mode")
-                            .or_else(|| scene_data.get("mutation_mode"))
-                            .cloned()
-                            .and_then(|value| serde_json::from_value(value).ok()),
-                        scene_snapshot_locked: scene_data
-                            .get("current_snapshot_locked")
-                            .or_else(|| scene_data.get("snapshot_locked"))
-                            .and_then(serde_json::Value::as_bool),
-                    }));
+                    set_last_scene_event
+                        .set(Some(extract_scene_event_hint(event_type, scene_data)));
                 } else if DEVICE_LIFECYCLE_EVENTS.contains(&event_type)
                     && let Some(hint) = extract_device_event_hint(event_type, msg.get("data"))
                 {
@@ -523,6 +499,54 @@ pub(super) fn handle_json_message(
         }
         _ => {}
     }
+}
+
+pub(crate) fn extract_scene_event_hint(
+    event_type: &str,
+    scene_data: &serde_json::Value,
+) -> SceneEventHint {
+    SceneEventHint {
+        event_type: event_type.to_owned(),
+        scene_id: scene_data
+            .get("current")
+            .or_else(|| scene_data.get("scene_id"))
+            .or_else(|| scene_data.get("id"))
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        scene_name: scene_data
+            .get("current_name")
+            .or_else(|| scene_data.get("scene_name"))
+            .or_else(|| scene_data.get("name"))
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        scene_kind: scene_data
+            .get("current_kind")
+            .or_else(|| scene_data.get("kind"))
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
+        scene_mutation_mode: scene_data
+            .get("current_mutation_mode")
+            .or_else(|| scene_data.get("mutation_mode"))
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
+        scene_snapshot_locked: scene_data
+            .get("current_snapshot_locked")
+            .or_else(|| scene_data.get("snapshot_locked"))
+            .and_then(serde_json::Value::as_bool),
+        render_group_role: scene_data
+            .get("role")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
+        render_group_change_kind: scene_data
+            .get("kind")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
+    }
+}
+
+pub(crate) fn scene_event_affects_active_effect(hint: &SceneEventHint) -> bool {
+    hint.event_type != "render_group_changed"
+        || hint.render_group_role != Some(RenderGroupRole::Display)
 }
 
 fn extract_active_effect_name(state: &serde_json::Value) -> Option<String> {
