@@ -215,14 +215,13 @@ pub fn ComponentPicker(
         let list_ref = list_ref.clone();
         let selected_template_id = selected_template_id.get_untracked();
         if let Some(window) = web_sys::window() {
-            let cb = Closure::once(move || {
+            let cb = Closure::once_into_js(move || {
                 if let Some(input) = search_ref.get() {
                     let _ = input.focus();
                 }
                 restore_selected_component_scroll(list_ref, selected_template_id);
             });
-            let _ = window.set_timeout_with_callback(cb.as_ref().unchecked_ref());
-            cb.forget();
+            let _ = window.set_timeout_with_callback(cb.unchecked_ref());
         }
     });
 

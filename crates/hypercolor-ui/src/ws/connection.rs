@@ -30,6 +30,13 @@ fn quantize_preview_fps(value: f64) -> f32 {
     }
 }
 
+struct SocketCallbacks {
+    _on_open: Closure<dyn FnMut()>,
+    _on_close: Closure<dyn FnMut()>,
+    _on_error: Closure<dyn FnMut()>,
+    _on_message: Closure<dyn FnMut(MessageEvent)>,
+}
+
 // ── WebSocket Manager ───────────────────────────────────────────────────────
 
 /// Reactive WebSocket connection to the daemon.
@@ -99,6 +106,8 @@ impl WsManager {
 
         // Shared WebSocket handle for preview subscription effect.
         let ws_handle: StoredValue<Option<web_sys::WebSocket>> = StoredValue::new(None);
+        let socket_callbacks: StoredValue<Option<SocketCallbacks>, LocalStorage> =
+            StoredValue::new_local(None);
         let reconnect_timeout_id: StoredValue<Option<i32>> = StoredValue::new(None);
 
         // Reconnection attempt counter for exponential backoff.
@@ -117,7 +126,7 @@ impl WsManager {
 
         let connect_fn: Rc<dyn Fn()> = Rc::new(move || {
             clear_reconnect_timer(reconnect_timeout_id);
-            dispose_existing_socket(ws_handle);
+            dispose_existing_socket(ws_handle, socket_callbacks);
             set_connection_state.set(ConnectionState::Connecting);
 
             // Reset frame-tracking state so FPS doesn't glitch after reconnect
@@ -156,7 +165,6 @@ impl WsManager {
                 let _ = ws_clone.send_with_str(&subscribe_msg.to_string());
             });
             ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
-            on_open.forget();
 
             // onclose — schedule reconnect with backoff
             let on_close = Closure::<dyn FnMut()>::new(move || {
@@ -180,7 +188,6 @@ impl WsManager {
                 schedule_reconnect(reconnect_attempts, reconnect_timeout_id, connect);
             });
             ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
-            on_close.forget();
 
             // onerror (browser fires close after error, so reconnect triggers there)
             let on_error = Closure::<dyn FnMut()>::new(move || {
@@ -188,7 +195,6 @@ impl WsManager {
                 ws_handle.set_value(None);
             });
             ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
-            on_error.forget();
 
             // onmessage — handle both JSON and binary frames
             let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
@@ -273,7 +279,12 @@ impl WsManager {
                 }
             });
             ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-            on_message.forget();
+            socket_callbacks.set_value(Some(SocketCallbacks {
+                _on_open: on_open,
+                _on_close: on_close,
+                _on_error: on_error,
+                _on_message: on_message,
+            }));
         });
 
         connect.set_value(Some(connect_fn));
@@ -445,7 +456,7 @@ fn schedule_reconnect(
     #[allow(clippy::cast_possible_truncation)]
     let final_delay = (f64::from(delay) + jitter).max(100.0) as i32;
 
-    let callback = Closure::<dyn FnMut()>::new(move || {
+    let callback = Closure::once_into_js(move || {
         if let Some(connect_fn) = connect.get_value() {
             connect_fn();
         }
@@ -453,13 +464,12 @@ fn schedule_reconnect(
 
     if let Some(window) = web_sys::window() {
         if let Ok(timeout_id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-            callback.as_ref().unchecked_ref(),
+            callback.unchecked_ref(),
             final_delay,
         ) {
             reconnect_timeout_id.set_value(Some(timeout_id));
         }
     }
-    callback.forget();
 }
 
 fn clear_reconnect_timer(reconnect_timeout_id: StoredValue<Option<i32>>) {
@@ -473,8 +483,12 @@ fn clear_reconnect_timer(reconnect_timeout_id: StoredValue<Option<i32>>) {
     reconnect_timeout_id.set_value(None);
 }
 
-fn dispose_existing_socket(ws_handle: StoredValue<Option<web_sys::WebSocket>>) {
+fn dispose_existing_socket(
+    ws_handle: StoredValue<Option<web_sys::WebSocket>>,
+    socket_callbacks: StoredValue<Option<SocketCallbacks>, LocalStorage>,
+) {
     let Some(existing_ws) = ws_handle.get_value() else {
+        socket_callbacks.set_value(None);
         return;
     };
 
@@ -484,6 +498,7 @@ fn dispose_existing_socket(ws_handle: StoredValue<Option<web_sys::WebSocket>>) {
     existing_ws.set_onmessage(None);
     let _ = existing_ws.close();
     ws_handle.set_value(None);
+    socket_callbacks.set_value(None);
 }
 
 /// Build WS URL from current page origin.

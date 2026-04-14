@@ -2,8 +2,8 @@
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use leptos_use::{UseIntersectionObserverOptions, use_intersection_observer_with_options};
 use wasm_bindgen::JsCast;
-use wasm_bindgen::prelude::*;
 
 use hypercolor_types::config::HypercolorConfig;
 
@@ -55,63 +55,15 @@ fn apply_config_key(config: &mut HypercolorConfig, key: &str, value: &serde_json
     }
 }
 
-/// Set up an IntersectionObserver via JS interop to track which section is visible.
-/// Uses a negative top margin to account for the sticky tab header (~100px).
-fn setup_scroll_spy(set_active: WriteSignal<String>) {
-    let Some(window) = web_sys::window() else {
-        return;
+fn settings_section_targets() -> Vec<web_sys::Element> {
+    let Some(doc) = web_sys::window().and_then(|window| window.document()) else {
+        return Vec::new();
     };
-    let Some(doc) = window.document() else { return };
 
-    let callback = Closure::wrap(Box::new(move |entries: wasm_bindgen::JsValue| {
-        let entries = js_sys::Array::from(&entries);
-        for entry in entries.iter() {
-            let is_intersecting = js_sys::Reflect::get(&entry, &"isIntersecting".into())
-                .ok()
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if is_intersecting && let Ok(target) = js_sys::Reflect::get(&entry, &"target".into()) {
-                let id = js_sys::Reflect::get(&target, &"id".into())
-                    .ok()
-                    .and_then(|v| v.as_string())
-                    .unwrap_or_default();
-                if let Some(section) = id.strip_prefix("section-") {
-                    set_active.set(section.to_string());
-                }
-            }
-        }
-    }) as Box<dyn FnMut(wasm_bindgen::JsValue)>);
-
-    let opts = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(&opts, &"threshold".into(), &0.2.into());
-    // Offset top for sticky header height
-    let _ = js_sys::Reflect::set(&opts, &"rootMargin".into(), &"-100px 0px -60% 0px".into());
-
-    let ctor = js_sys::Reflect::get(
-        &wasm_bindgen::JsValue::from(&window),
-        &"IntersectionObserver".into(),
-    )
-    .ok()
-    .and_then(|v| v.dyn_into::<js_sys::Function>().ok());
-
-    if let Some(ctor) = ctor
-        && let Ok(observer) =
-            js_sys::Reflect::construct(&ctor, &js_sys::Array::of2(callback.as_ref(), &opts))
-    {
-        let observe_fn = js_sys::Reflect::get(&observer, &"observe".into())
-            .ok()
-            .and_then(|v| v.dyn_into::<js_sys::Function>().ok());
-
-        if let Some(observe) = observe_fn {
-            for id in SECTION_IDS {
-                if let Some(el) = doc.get_element_by_id(&format!("section-{id}")) {
-                    let _ = observe.call1(&observer, &el);
-                }
-            }
-        }
-    }
-
-    callback.forget();
+    SECTION_IDS
+        .iter()
+        .filter_map(|id| doc.get_element_by_id(&format!("section-{id}")))
+        .collect()
 }
 
 /// Smooth-scroll an element into view via JS interop.
@@ -144,19 +96,29 @@ pub fn SettingsPage() -> impl IntoView {
         }
     });
 
-    // Install scroll spy once content is in the DOM
-    let spy_installed = StoredValue::new(false);
-    Effect::new(move |_| {
-        if config_loaded.get() && !spy_installed.get_value() {
-            spy_installed.set_value(true);
-            let set_section = set_active_section;
-            if let Some(w) = web_sys::window() {
-                let cb = Closure::once(move || setup_scroll_spy(set_section));
-                let _ = w.set_timeout_with_callback(cb.as_ref().unchecked_ref());
-                cb.forget();
-            }
+    let section_targets = Signal::derive(move || {
+        if config_loaded.get() {
+            settings_section_targets()
+        } else {
+            Vec::new()
         }
     });
+    let _scroll_spy = use_intersection_observer_with_options(
+        section_targets,
+        move |entries, _| {
+            for entry in entries {
+                if entry.is_intersecting() {
+                    let id = entry.target().id();
+                    if let Some(section) = id.strip_prefix("section-") {
+                        set_active_section.set(section.to_string());
+                    }
+                }
+            }
+        },
+        UseIntersectionObserverOptions::default()
+            .root_margin("-100px 0px -60% 0px")
+            .thresholds(vec![0.2]),
+    );
 
     // Audio device options for dropdown
     let audio_devices = Memo::new(move |_| {
