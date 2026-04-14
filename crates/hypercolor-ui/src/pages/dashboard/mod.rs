@@ -16,6 +16,7 @@ use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::app::WsContext;
+use crate::components::page_header::PageHeader;
 use crate::components::perf_charts::PhaseFrame;
 use crate::components::preview_cabinet::PreviewCabinet;
 use crate::components::resize_handle::ResizeHandle;
@@ -283,78 +284,61 @@ pub fn DashboardPage() -> impl IntoView {
             // gear menu can pop down past the header edge and float
             // over the hero row instead of being clipped behind it.
             <header class="relative z-30 shrink-0 glass-subtle border-b border-edge-default">
-                <div class="px-6 py-4 flex items-center gap-5 min-w-0">
-                    // ── Title cluster: icon + "Dashboard" ──
-                    <div class="flex items-center gap-2.5 shrink-0">
-                        <span
-                            class="shrink-0 inline-flex items-center justify-center"
-                            style="color: rgb(128, 255, 234); \
-                                   filter: drop-shadow(0 0 10px rgba(128, 255, 234, 0.55))"
-                        >
-                            <Icon icon=LuActivity width="20px" height="20px" />
-                        </span>
-                        <h1
-                            class="leading-none logo-gradient-text whitespace-nowrap"
-                            style="font-family:'Orbitron',sans-serif; font-weight:900; \
-                                   font-size:22px; letter-spacing:-0.01em; \
-                                   background-image:linear-gradient(105deg,#80ffea 0%,#d4eaff 50%,#50fa7b 100%)"
-                        >
-                            "Dashboard"
-                        </h1>
-                    </div>
+                <div class="px-6 pt-5 pb-4">
+                    <div class="flex items-end justify-between gap-4">
+                        <PageHeader
+                            icon=LuActivity
+                            title="Dashboard"
+                            subtitle="Live preview, system health, and pipeline telemetry."
+                            accent_rgb="128, 255, 234"
+                            gradient="linear-gradient(105deg,#80ffea 0%,#d4eaff 50%,#50fa7b 100%)"
+                        />
 
-                    // Vertical divider between title and tagline.
-                    <div class="w-px h-6 bg-edge-subtle/30 shrink-0" />
+                        <div class="flex items-center gap-3 shrink-0">
+                            // ── Status pills ──
+                            <Suspense fallback=move || view! { <StatusSkeleton /> }>
+                                {move || status_resource.get().map(|result| {
+                                    match result {
+                                        Ok(status) => view! { <StatusStrip status=status metrics=ws.metrics /> }.into_any(),
+                                        Err(e) => view! {
+                                            <div class="text-[11px] text-status-error shrink-0">
+                                                "Failed to connect: " {e}
+                                            </div>
+                                        }.into_any(),
+                                    }
+                                })}
+                            </Suspense>
 
-                    // ── Tagline (truncates before pills) ──
-                    <p class="text-[12px] text-fg-tertiary/75 truncate min-w-0 flex-1">
-                        "Live render preview, system health, and frame pipeline telemetry."
-                    </p>
-
-                    // ── Status pills (right-aligned, shrink-0) ──
-                    <Suspense fallback=move || view! { <StatusSkeleton /> }>
-                        {move || status_resource.get().map(|result| {
-                            match result {
-                                Ok(status) => view! { <StatusStrip status=status metrics=ws.metrics /> }.into_any(),
-                                Err(e) => view! {
-                                    <div class="text-[11px] text-status-error shrink-0">
-                                        "Failed to connect: " {e}
-                                    </div>
-                                }.into_any(),
-                            }
-                        })}
-                    </Suspense>
-
-                    // Layout gear — opens the panel visibility / reset menu.
-                    // A small coral dot badges the icon when one or more
-                    // panels are currently hidden from the grid, so the
-                    // gear is the only way to get them back.
-                    <div class="layout-menu-anchor relative shrink-0">
-                        <button
-                            type="button"
-                            class="relative p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary \
-                                   hover:bg-surface-hover/40 transition-all"
-                            class=("text-electric-purple", move || layout_menu_open.get())
-                            title="Dashboard layout"
-                            on:click=move |_| set_layout_menu_open.update(|v| *v = !*v)
-                        >
-                            <Icon icon=LuLayoutDashboard width="15px" height="15px" />
-                            {move || dash_layout.read().has_hidden().then(|| view! {
-                                <span
-                                    class="absolute top-1 right-1 w-1.5 h-1.5 rounded-full"
-                                    style="background: var(--color-coral); \
-                                           box-shadow: 0 0 6px rgba(255, 106, 193, 0.9)"
-                                />
-                            })}
-                        </button>
-                        <Show when=move || layout_menu_open.get()>
-                            <LayoutMenu
-                                layout=dash_layout
-                                on_show=on_panel_show
-                                on_hide=on_panel_hide
-                                on_reset=on_layout_reset
-                            />
-                        </Show>
+                            // Layout gear — opens the panel visibility / reset menu.
+                            // Coral dot badges the icon when one or more panels are hidden.
+                            <div class="layout-menu-anchor relative shrink-0">
+                                <button
+                                    type="button"
+                                    class="relative p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary \
+                                           hover:bg-surface-hover/40 transition-all"
+                                    class=("text-electric-purple", move || layout_menu_open.get())
+                                    title="Dashboard layout"
+                                    on:click=move |_| set_layout_menu_open.update(|v| *v = !*v)
+                                >
+                                    <Icon icon=LuLayoutDashboard width="15px" height="15px" />
+                                    {move || dash_layout.read().has_hidden().then(|| view! {
+                                        <span
+                                            class="absolute top-1 right-1 w-1.5 h-1.5 rounded-full"
+                                            style="background: var(--color-coral); \
+                                                   box-shadow: 0 0 6px rgba(255, 106, 193, 0.9)"
+                                        />
+                                    })}
+                                </button>
+                                <Show when=move || layout_menu_open.get()>
+                                    <LayoutMenu
+                                        layout=dash_layout
+                                        on_show=on_panel_show
+                                        on_hide=on_panel_hide
+                                        on_reset=on_layout_reset
+                                    />
+                                </Show>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </header>

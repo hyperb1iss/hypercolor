@@ -243,7 +243,7 @@ pub fn DevicesPage() -> impl IntoView {
                         <PageHeader
                             icon=LuCpu
                             title="Devices"
-                            subtitle="Your hardware — pair, identify, and tune."
+                            subtitle="Your hardware. Pair, identify, tune."
                             accent_rgb="128, 255, 234"
                             gradient="linear-gradient(105deg,#80ffea 0%,#e8f4ff 55%,#80ffea 100%)"
                         />

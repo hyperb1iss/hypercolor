@@ -753,7 +753,7 @@ pub fn WiringPanel(
                                                                         <span
                                                                             class="text-[9px] font-mono"
                                                                             style="color: rgb(255, 99, 99)"
-                                                                            title="This channel's hardware capacity is exceeded — reduce the component(s) or remove one."
+                                                                            title="This channel's hardware capacity is exceeded. Reduce the component(s) or remove one."
                                                                         >
                                                                             {s.total_leds} "/" {s.available_leds} " LEDs"
                                                                         </span>
