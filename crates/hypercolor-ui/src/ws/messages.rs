@@ -382,7 +382,8 @@ pub(super) fn handle_json_message(
     set_engine_preview_target: &WriteSignal<u32>,
     set_preview_target_fps: &WriteSignal<u32>,
     set_preview_transport_cap: &WriteSignal<u32>,
-    set_backpressure_epoch: &WriteSignal<u64>,
+    set_last_backpressure_at_ms: &WriteSignal<Option<f64>>,
+    set_backpressure_probe_epoch: &WriteSignal<u64>,
 ) {
     let msg_type = msg.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
@@ -420,6 +421,7 @@ pub(super) fn handle_json_message(
         }
         "metrics" => {
             if let Ok(message) = serde_json::from_value::<MetricsMessage>(msg.clone()) {
+                set_backpressure_probe_epoch.update(|epoch| *epoch = epoch.saturating_add(1));
                 if message.data.fps.target > 0 {
                     set_engine_preview_target.set(message.data.fps.target.min(60));
                 }
@@ -449,7 +451,7 @@ pub(super) fn handle_json_message(
                 {
                     set_preview_transport_cap
                         .update(|current| *current = (*current).min(message.suggested_fps));
-                    set_backpressure_epoch.update(|epoch| *epoch = epoch.saturating_add(1));
+                    set_last_backpressure_at_ms.set(Some(js_sys::Date::now()));
                 }
                 let notice = BackpressureNotice {
                     dropped_frames: message.dropped_frames,
