@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::fmt;
 use uuid::{Uuid, uuid};
 
+use crate::canvas::BlendMode;
 use crate::device::DeviceId;
 use crate::effect::{ControlBinding, ControlValue, EffectId};
 use crate::library::PresetId;
@@ -137,6 +138,35 @@ pub enum DisplayFaceBlendMode {
     #[default]
     Replace,
     Alpha,
+    Add,
+    Screen,
+    Multiply,
+    Overlay,
+    SoftLight,
+    ColorDodge,
+    Difference,
+}
+
+impl DisplayFaceBlendMode {
+    #[must_use]
+    pub fn blends_with_effect(self) -> bool {
+        !matches!(self, Self::Replace)
+    }
+
+    #[must_use]
+    pub fn canvas_blend_mode(self) -> Option<BlendMode> {
+        match self {
+            Self::Replace => None,
+            Self::Alpha => Some(BlendMode::Normal),
+            Self::Add => Some(BlendMode::Add),
+            Self::Screen => Some(BlendMode::Screen),
+            Self::Multiply => Some(BlendMode::Multiply),
+            Self::Overlay => Some(BlendMode::Overlay),
+            Self::SoftLight => Some(BlendMode::SoftLight),
+            Self::ColorDodge => Some(BlendMode::ColorDodge),
+            Self::Difference => Some(BlendMode::Difference),
+        }
+    }
 }
 
 fn is_default_display_face_blend_mode(value: &DisplayFaceBlendMode) -> bool {
@@ -160,7 +190,7 @@ pub struct DisplayFaceTarget {
     /// How the face layer should compose with the effect layer beneath it.
     #[serde(default, skip_serializing_if = "is_default_display_face_blend_mode")]
     pub blend_mode: DisplayFaceBlendMode,
-    /// Face-layer opacity used when alpha blending with the effect layer.
+    /// Face-layer opacity used when compositing with the effect layer.
     #[serde(
         default = "default_display_face_opacity",
         skip_serializing_if = "is_default_display_face_opacity"
@@ -186,7 +216,7 @@ impl DisplayFaceTarget {
 
     #[must_use]
     pub fn blends_with_effect(&self) -> bool {
-        matches!(self.blend_mode, DisplayFaceBlendMode::Alpha)
+        self.blend_mode.blends_with_effect()
     }
 }
 

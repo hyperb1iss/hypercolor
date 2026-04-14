@@ -236,7 +236,7 @@ fn upsert_display_group_uniqueness_per_device() {
 }
 
 #[test]
-fn patch_display_group_target_updates_blend_mode_and_normalizes_replace_opacity() {
+fn patch_display_group_target_preserves_opacity_for_effect_blends_and_normalizes_replace() {
     let mut manager = SceneManager::with_default();
     let device_id = DeviceId::new();
     let effect = sample_effect("Monitor");
@@ -251,16 +251,16 @@ fn patch_display_group_target_updates_blend_mode_and_normalizes_replace_opacity(
         .expect("display upsert should succeed")
         .id;
 
-    let alpha_group = manager
-        .patch_display_group_target(group_id, Some(DisplayFaceBlendMode::Alpha), Some(0.42))
-        .expect("alpha patch should update the display target");
-    let alpha_target = alpha_group
+    let screen_group = manager
+        .patch_display_group_target(group_id, Some(DisplayFaceBlendMode::Screen), Some(0.42))
+        .expect("screen patch should update the display target");
+    let screen_target = screen_group
         .display_target
         .clone()
         .expect("display target should remain present");
-    assert_eq!(alpha_target.device_id, device_id);
-    assert_eq!(alpha_target.blend_mode, DisplayFaceBlendMode::Alpha);
-    assert!((alpha_target.opacity - 0.42).abs() < f32::EPSILON);
+    assert_eq!(screen_target.device_id, device_id);
+    assert_eq!(screen_target.blend_mode, DisplayFaceBlendMode::Screen);
+    assert!((screen_target.opacity - 0.42).abs() < f32::EPSILON);
 
     let replace_group = manager
         .patch_display_group_target(group_id, Some(DisplayFaceBlendMode::Replace), Some(0.08))

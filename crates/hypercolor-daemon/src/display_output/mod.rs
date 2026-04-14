@@ -184,13 +184,16 @@ impl DisplayTarget {
             brightness_bits: self.brightness.to_bits(),
             geometry: self.geometry.clone(),
             canvas_source: self.canvas_source.signature(),
-            face_blend_mode: self
-                .display_target
-                .as_ref()
-                .map_or(DisplayFaceBlendMode::Replace, |target| target.blend_mode),
+            face_blend_mode: self.face_blend_mode(),
             face_opacity_bits: self.face_opacity().to_bits(),
             viewport: display_viewport_signature(&self.viewport),
         }
+    }
+
+    fn face_blend_mode(&self) -> DisplayFaceBlendMode {
+        self.display_target
+            .as_ref()
+            .map_or(DisplayFaceBlendMode::Replace, |target| target.blend_mode)
     }
 
     fn blends_with_effect(&self) -> bool {

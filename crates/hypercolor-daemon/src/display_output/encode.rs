@@ -9,7 +9,9 @@ use turbojpeg::{
     compressed_buf_len as turbojpeg_compressed_buf_len,
 };
 
+use hypercolor_core::blend_math::{RgbaBlendMode, blend_rgba_pixels_in_place};
 use hypercolor_core::bus::CanvasFrame;
+use hypercolor_types::scene::DisplayFaceBlendMode;
 
 use super::render::{
     PreparedDisplayPlan, apply_circular_mask, apply_circular_mask_rgba, fast_display_crop,
@@ -153,6 +155,7 @@ pub(super) fn encode_face_effect_blend(
     viewport: &DisplayViewport,
     geometry: &DisplayGeometry,
     brightness: f32,
+    face_blend_mode: DisplayFaceBlendMode,
     face_opacity: f32,
     encode_state: &mut DisplayEncodeState,
 ) -> Result<Vec<u8>> {
@@ -163,9 +166,10 @@ pub(super) fn encode_face_effect_blend(
     }
 
     render_direct_canvas_frame_rgba(face_source, geometry, encode_state, true)?;
-    blend_face_rgba_over_opaque_rgba(
+    blend_face_rgba_with_effect(
         &mut encode_state.rgba_buffer,
         &encode_state.scratch_rgba_buffer,
+        face_blend_mode,
         face_opacity,
     );
     encode_prepared_rgba_frame(geometry, brightness, encode_state)
@@ -570,42 +574,24 @@ fn prepare_black_rgba_frame(geometry: &DisplayGeometry, rgba_buffer: &mut Vec<u8
     }
 }
 
-fn blend_face_rgba_over_opaque_rgba(target_rgba: &mut [u8], source_rgba: &[u8], opacity: f32) {
-    let opacity_weight = round_unit_to_u16(opacity.clamp(0.0, 1.0));
-    if opacity_weight == 0 {
+fn blend_face_rgba_with_effect(
+    target_rgba: &mut [u8],
+    source_rgba: &[u8],
+    blend_mode: DisplayFaceBlendMode,
+    opacity: f32,
+) {
+    let Some(canvas_blend_mode) = blend_mode.canvas_blend_mode() else {
         return;
-    }
+    };
 
-    for (dst, src) in target_rgba
-        .chunks_exact_mut(4)
-        .zip(source_rgba.chunks_exact(4))
-    {
-        let alpha = (u32::from(src[3]) * u32::from(opacity_weight) + 127) / 255;
-        if alpha == 0 {
-            continue;
-        }
-        if alpha >= u32::from(u8::MAX) {
-            dst[0] = src[0];
-            dst[1] = src[1];
-            dst[2] = src[2];
-            dst[3] = u8::MAX;
-            continue;
-        }
-
-        let inverse_alpha = u32::from(u8::MAX) - alpha;
-        dst[0] = u8::try_from(
-            ((u32::from(dst[0]) * inverse_alpha) + (u32::from(src[0]) * alpha) + 127) / 255,
-        )
-        .expect("alpha blend should remain within byte range");
-        dst[1] = u8::try_from(
-            ((u32::from(dst[1]) * inverse_alpha) + (u32::from(src[1]) * alpha) + 127) / 255,
-        )
-        .expect("alpha blend should remain within byte range");
-        dst[2] = u8::try_from(
-            ((u32::from(dst[2]) * inverse_alpha) + (u32::from(src[2]) * alpha) + 127) / 255,
-        )
-        .expect("alpha blend should remain within byte range");
-        dst[3] = u8::MAX;
+    blend_rgba_pixels_in_place(
+        target_rgba,
+        source_rgba,
+        RgbaBlendMode::from(canvas_blend_mode),
+        opacity,
+    );
+    for pixel in target_rgba.chunks_exact_mut(4) {
+        pixel[3] = u8::MAX;
     }
 }
 

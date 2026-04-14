@@ -384,6 +384,7 @@ async fn run_display_worker(
         let geometry = target.geometry;
         let brightness = target.brightness;
         let canvas_source = target.canvas_source.clone();
+        let face_blend_mode = target.face_blend_mode();
         let face_opacity = target.face_opacity();
         let blend_face_with_effect = target.blends_with_effect();
         let encode_result = tokio::task::spawn_blocking(move || {
@@ -411,6 +412,7 @@ async fn run_display_worker(
                                 &viewport,
                                 &geometry,
                                 brightness,
+                                face_blend_mode,
                                 face_opacity,
                                 &mut encode_state,
                             )

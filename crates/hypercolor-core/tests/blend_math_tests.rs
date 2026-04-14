@@ -18,33 +18,26 @@ fn single_pixel_blend_matches_canvas_reference() {
     let dst = [255, 0, 0, 255];
     let src = [0, 0, 255, 255];
 
-    assert_eq!(
-        blend_rgba_pixel(dst, src, RgbaBlendMode::Normal, 0.25),
-        expected_blend(
-            Rgba::new(dst[0], dst[1], dst[2], dst[3]),
-            Rgba::new(src[0], src[1], src[2], src[3]),
-            BlendMode::Normal,
-            0.25,
-        )
-    );
-    assert_eq!(
-        blend_rgba_pixel(dst, src, RgbaBlendMode::Add, 1.0),
-        expected_blend(
-            Rgba::new(dst[0], dst[1], dst[2], dst[3]),
-            Rgba::new(src[0], src[1], src[2], src[3]),
-            BlendMode::Add,
-            1.0,
-        )
-    );
-    assert_eq!(
-        blend_rgba_pixel(dst, src, RgbaBlendMode::Screen, 1.0),
-        expected_blend(
-            Rgba::new(dst[0], dst[1], dst[2], dst[3]),
-            Rgba::new(src[0], src[1], src[2], src[3]),
-            BlendMode::Screen,
-            1.0,
-        )
-    );
+    for (rgba_mode, canvas_mode, opacity) in [
+        (RgbaBlendMode::Normal, BlendMode::Normal, 0.25),
+        (RgbaBlendMode::Add, BlendMode::Add, 1.0),
+        (RgbaBlendMode::Screen, BlendMode::Screen, 1.0),
+        (RgbaBlendMode::Multiply, BlendMode::Multiply, 1.0),
+        (RgbaBlendMode::Overlay, BlendMode::Overlay, 1.0),
+        (RgbaBlendMode::SoftLight, BlendMode::SoftLight, 1.0),
+        (RgbaBlendMode::ColorDodge, BlendMode::ColorDodge, 1.0),
+        (RgbaBlendMode::Difference, BlendMode::Difference, 1.0),
+    ] {
+        assert_eq!(
+            blend_rgba_pixel(dst, src, rgba_mode, opacity),
+            expected_blend(
+                Rgba::new(dst[0], dst[1], dst[2], dst[3]),
+                Rgba::new(src[0], src[1], src[2], src[3]),
+                canvas_mode,
+                opacity,
+            )
+        );
+    }
 }
 
 #[test]

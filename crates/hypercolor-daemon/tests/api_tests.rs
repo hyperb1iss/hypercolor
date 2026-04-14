@@ -5317,7 +5317,7 @@ async fn display_face_endpoints_assign_get_and_delete_face() {
 }
 
 #[tokio::test]
-async fn patch_face_composition_updates_blend_mode_and_opacity() {
+async fn patch_face_composition_updates_fusion_blend_mode_and_normalizes_replace() {
     let state = Arc::new(isolated_state());
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
     let face = insert_test_display_face_effect(&state, "System Monitor").await;
@@ -5338,26 +5338,26 @@ async fn patch_face_composition_updates_blend_mode_and_opacity() {
         .expect("failed to execute request");
     assert_eq!(assign_response.status(), StatusCode::OK);
 
-    let alpha_response = app
+    let screen_response = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("PATCH")
                 .uri(format!("/api/v1/displays/{display_id}/face/composition"))
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"blend_mode":"alpha","opacity":0.35}"#))
+                .body(Body::from(r#"{"blend_mode":"screen","opacity":0.35}"#))
                 .expect("failed to build request"),
         )
         .await
         .expect("failed to execute request");
-    assert_eq!(alpha_response.status(), StatusCode::OK);
-    let alpha_json = body_json(alpha_response).await;
+    assert_eq!(screen_response.status(), StatusCode::OK);
+    let screen_json = body_json(screen_response).await;
     assert_eq!(
-        alpha_json["data"]["group"]["display_target"]["blend_mode"],
-        "alpha"
+        screen_json["data"]["group"]["display_target"]["blend_mode"],
+        "screen"
     );
     assert_eq!(
-        alpha_json["data"]["group"]["display_target"]["opacity"],
+        screen_json["data"]["group"]["display_target"]["opacity"],
         0.35
     );
 

@@ -1,7 +1,7 @@
 use std::array;
 use std::sync::LazyLock;
 
-use crate::types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
+use crate::types::canvas::{BlendMode, linear_to_srgb_u8, srgb_u8_to_linear};
 
 const LINEAR_ENCODE_LUT_SCALE: f32 = 65_535.0;
 
@@ -10,6 +10,26 @@ pub enum RgbaBlendMode {
     Normal,
     Add,
     Screen,
+    Multiply,
+    Overlay,
+    SoftLight,
+    ColorDodge,
+    Difference,
+}
+
+impl From<BlendMode> for RgbaBlendMode {
+    fn from(value: BlendMode) -> Self {
+        match value {
+            BlendMode::Normal => Self::Normal,
+            BlendMode::Add => Self::Add,
+            BlendMode::Screen => Self::Screen,
+            BlendMode::Multiply => Self::Multiply,
+            BlendMode::Overlay => Self::Overlay,
+            BlendMode::SoftLight => Self::SoftLight,
+            BlendMode::ColorDodge => Self::ColorDodge,
+            BlendMode::Difference => Self::Difference,
+        }
+    }
 }
 
 static SRGB_TO_LINEAR_LUT: LazyLock<[f32; 256]> = LazyLock::new(|| {
@@ -127,7 +147,13 @@ pub fn blend_rgba_pixels_in_place(
                 }
             }
         }
-        RgbaBlendMode::Add | RgbaBlendMode::Screen => {
+        RgbaBlendMode::Add
+        | RgbaBlendMode::Screen
+        | RgbaBlendMode::Multiply
+        | RgbaBlendMode::Overlay
+        | RgbaBlendMode::SoftLight
+        | RgbaBlendMode::ColorDodge
+        | RgbaBlendMode::Difference => {
             for (dst_px, src_px) in target_pixels
                 .chunks_exact_mut(4)
                 .zip(source_pixels.chunks_exact(4))
@@ -205,6 +231,29 @@ pub fn blend_rgba_pixel(dst: [u8; 4], src: [u8; 4], mode: RgbaBlendMode, opacity
             RgbaBlendMode::Normal => src_channel,
             RgbaBlendMode::Add => (dst_channel + src_channel).min(1.0),
             RgbaBlendMode::Screen => screen_blend(dst_channel, src_channel),
+            RgbaBlendMode::Multiply => dst_channel * src_channel,
+            RgbaBlendMode::Overlay => {
+                if dst_channel < 0.5 {
+                    2.0 * dst_channel * src_channel
+                } else {
+                    1.0 - 2.0 * (1.0 - dst_channel) * (1.0 - src_channel)
+                }
+            }
+            RgbaBlendMode::SoftLight => {
+                if src_channel < 0.5 {
+                    dst_channel - (1.0 - 2.0 * src_channel) * dst_channel * (1.0 - dst_channel)
+                } else {
+                    dst_channel + (2.0 * src_channel - 1.0) * (dst_channel.sqrt() - dst_channel)
+                }
+            }
+            RgbaBlendMode::ColorDodge => {
+                if src_channel >= 1.0 {
+                    1.0
+                } else {
+                    (dst_channel / (1.0 - src_channel)).min(1.0)
+                }
+            }
+            RgbaBlendMode::Difference => (dst_channel - src_channel).abs(),
         };
         encode_srgb_channel(dst_channel.mul_add(inverse_alpha, blended * source_alpha))
     };
