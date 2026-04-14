@@ -1,11 +1,16 @@
 use std::array;
 use std::sync::LazyLock;
 
-use hypercolor_types::overlay::OverlayBlendMode;
-
 use crate::types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
 
 const LINEAR_ENCODE_LUT_SCALE: f32 = 65_535.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RgbaBlendMode {
+    Normal,
+    Add,
+    Screen,
+}
 
 static SRGB_TO_LINEAR_LUT: LazyLock<[f32; 256]> = LazyLock::new(|| {
     array::from_fn(|index| {
@@ -22,7 +27,7 @@ static LINEAR_TO_SRGB_LUT: LazyLock<Vec<u8>> = LazyLock::new(|| {
 pub fn blend_rgba_pixels_in_place(
     target_pixels: &mut [u8],
     source_pixels: &[u8],
-    mode: OverlayBlendMode,
+    mode: RgbaBlendMode,
     opacity: f32,
 ) {
     let opacity = opacity.clamp(0.0, 1.0);
@@ -31,7 +36,7 @@ pub fn blend_rgba_pixels_in_place(
     }
 
     match mode {
-        OverlayBlendMode::Normal => {
+        RgbaBlendMode::Normal => {
             let len = target_pixels.len().min(source_pixels.len());
             if opacity >= 1.0 {
                 let mut offset = 0;
@@ -62,7 +67,7 @@ pub fn blend_rgba_pixels_in_place(
                             source_pixels[offset + 2],
                             source_pixels[offset + 3],
                         ],
-                        OverlayBlendMode::Normal,
+                        RgbaBlendMode::Normal,
                         opacity,
                     );
                     target_pixels[offset..offset + 4].copy_from_slice(&blended);
@@ -114,7 +119,7 @@ pub fn blend_rgba_pixels_in_place(
                             source_pixels[offset + 2],
                             source_pixels[offset + 3],
                         ],
-                        OverlayBlendMode::Normal,
+                        RgbaBlendMode::Normal,
                         opacity,
                     );
                     target_pixels[offset..offset + 4].copy_from_slice(&blended);
@@ -122,7 +127,7 @@ pub fn blend_rgba_pixels_in_place(
                 }
             }
         }
-        OverlayBlendMode::Add | OverlayBlendMode::Screen => {
+        RgbaBlendMode::Add | RgbaBlendMode::Screen => {
             for (dst_px, src_px) in target_pixels
                 .chunks_exact_mut(4)
                 .zip(source_pixels.chunks_exact(4))
@@ -149,7 +154,7 @@ pub fn blend_opaque_normal_rgba_pixels_in_place(
         return;
     }
     if opacity >= 1.0 {
-        blend_rgba_pixels_in_place(target_pixels, source_pixels, OverlayBlendMode::Normal, 1.0);
+        blend_rgba_pixels_in_place(target_pixels, source_pixels, RgbaBlendMode::Normal, 1.0);
         return;
     }
 
@@ -177,12 +182,7 @@ pub fn blend_opaque_normal_rgba_pixels_in_place(
 }
 
 #[must_use]
-pub fn blend_rgba_pixel(
-    dst: [u8; 4],
-    src: [u8; 4],
-    mode: OverlayBlendMode,
-    opacity: f32,
-) -> [u8; 4] {
+pub fn blend_rgba_pixel(dst: [u8; 4], src: [u8; 4], mode: RgbaBlendMode, opacity: f32) -> [u8; 4] {
     let source_alpha_channel = src[3];
     if source_alpha_channel == 0 || opacity <= 0.0 {
         return dst;
@@ -202,9 +202,9 @@ pub fn blend_rgba_pixel(
     let src_blue = decode_srgb_channel(src[2]);
     let blend_channel = |dst_channel: f32, src_channel: f32| -> u8 {
         let blended = match mode {
-            OverlayBlendMode::Normal => src_channel,
-            OverlayBlendMode::Add => (dst_channel + src_channel).min(1.0),
-            OverlayBlendMode::Screen => screen_blend(dst_channel, src_channel),
+            RgbaBlendMode::Normal => src_channel,
+            RgbaBlendMode::Add => (dst_channel + src_channel).min(1.0),
+            RgbaBlendMode::Screen => screen_blend(dst_channel, src_channel),
         };
         encode_srgb_channel(dst_channel.mul_add(inverse_alpha, blended * source_alpha))
     };

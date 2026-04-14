@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
 use leptos_meta::*;
-use leptos_router::hooks::use_location;
 use leptos_router::components::{Route, Router, Routes};
+use leptos_router::hooks::use_location;
 use leptos_router::path;
 
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
@@ -13,8 +13,8 @@ use crate::api;
 use crate::components::preset_matching::controls_to_json;
 use crate::components::shell::Shell;
 use crate::pages::dashboard::DashboardPage;
-use crate::pages::display_preview::DisplayPreviewPage;
 use crate::pages::devices::DevicesPage;
+use crate::pages::display_preview::DisplayPreviewPage;
 use crate::pages::displays::DisplaysPage;
 use crate::pages::effects::EffectsPage;
 use crate::pages::layout::LayoutPage;

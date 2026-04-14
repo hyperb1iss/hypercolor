@@ -26,6 +26,25 @@ const MAX_RIGHT_WIDTH: f64 = 600.0;
 const DEFAULT_RIGHT_WIDTH: f64 = 360.0;
 const LS_KEY_RIGHT_WIDTH: &str = "hc-disp-right-width";
 
+fn sync_face_composition_from_server(
+    display_face: ReadSignal<Option<Result<Option<api::DisplayFaceResponse>, String>>>,
+    set_local_blend_mode: WriteSignal<DisplayFaceBlendMode>,
+    set_local_opacity: WriteSignal<f32>,
+) {
+    let target = display_face
+        .get_untracked()
+        .and_then(Result::ok)
+        .flatten()
+        .and_then(|face| face.group.display_target);
+    if let Some(target) = target {
+        set_local_blend_mode.set(target.blend_mode);
+        set_local_opacity.set(target.opacity.clamp(0.0, 1.0));
+    } else {
+        set_local_blend_mode.set(DisplayFaceBlendMode::Replace);
+        set_local_opacity.set(1.0);
+    }
+}
+
 #[component]
 pub fn DisplaysPage() -> impl IntoView {
     let fx = expect_context::<EffectsContext>();
@@ -1399,29 +1418,20 @@ fn FaceCompositionSection(
     let (local_opacity, set_local_opacity) = signal(1.0_f32);
     let has_face = Signal::derive(move || matches!(display_face.get(), Some(Ok(Some(_)))));
 
-    let sync_from_server = move || {
-        let target = display_face
-            .get_untracked()
-            .and_then(Result::ok)
-            .flatten()
-            .and_then(|face| face.group.display_target);
-        if let Some(target) = target {
-            set_local_blend_mode.set(target.blend_mode);
-            set_local_opacity.set(target.opacity.clamp(0.0, 1.0));
-        } else {
-            set_local_blend_mode.set(DisplayFaceBlendMode::Replace);
-            set_local_opacity.set(1.0);
-        }
-    };
+    Effect::new(move |_| {
+        sync_face_composition_from_server(display_face, set_local_blend_mode, set_local_opacity);
+    });
 
-    Effect::new(move |_| sync_from_server());
-
-    let commit_composition =
-        Callback::new(move |(blend_mode, opacity): (Option<DisplayFaceBlendMode>, Option<f32>)| {
+    let commit_composition = Callback::new(
+        move |(blend_mode, opacity): (Option<DisplayFaceBlendMode>, Option<f32>)| {
             if let Some(message) =
                 snapshot_scene_lock_message(effects_ctx, "changing display face composition")
             {
-                sync_from_server();
+                sync_face_composition_from_server(
+                    display_face,
+                    set_local_blend_mode,
+                    set_local_opacity,
+                );
                 toasts::toast_error(&message);
                 return;
             }
@@ -1436,12 +1446,17 @@ fn FaceCompositionSection(
                         set_face_refresh_tick.update(|value| *value = value.wrapping_add(1));
                     }
                     Err(error) => {
-                        sync_from_server();
+                        sync_face_composition_from_server(
+                            display_face,
+                            set_local_blend_mode,
+                            set_local_opacity,
+                        );
                         toasts::toast_error(&format!("Face composition update failed: {error}"));
                     }
                 }
             });
-        });
+        },
+    );
 
     let commit_opacity = use_debounce_fn(
         move || {
@@ -1463,13 +1478,13 @@ fn FaceCompositionSection(
         commit_composition.run((Some(mode), Some(opacity)));
     });
 
-    let on_opacity_input = move |event| {
+    let on_opacity_input = Callback::new(move |event| {
         let Ok(raw) = event_target_value(&event).parse::<f32>() else {
             return;
         };
         set_local_opacity.set((raw / 100.0).clamp(0.0, 1.0));
         commit_opacity();
-    };
+    });
 
     view! {
         <Show when=move || has_face.get() fallback=|| ()>
@@ -1528,7 +1543,7 @@ fn FaceCompositionSection(
                             step="1"
                             class="w-full accent-[rgb(255,106,193)]"
                             prop:value=move || format!("{:.0}", local_opacity.get() * 100.0)
-                            on:input=on_opacity_input
+                            on:input=move |event| on_opacity_input.run(event)
                         />
                     </div>
                 </Show>

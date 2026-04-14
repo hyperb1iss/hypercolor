@@ -15,8 +15,8 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::encode::{
-    DisplayEncodeState, display_brightness_factor, encode_canvas_frame,
-    encode_direct_canvas_frame, encode_face_effect_blend,
+    DisplayEncodeState, display_brightness_factor, encode_canvas_frame, encode_direct_canvas_frame,
+    encode_face_effect_blend,
 };
 use super::render::display_viewport_signature;
 use super::{
@@ -109,12 +109,10 @@ impl DisplayFrameInputState {
             && self.brightness_factor == display_brightness_factor(target.brightness)
             && self.geometry == target.geometry
             && self.face_blend_mode
-                == target
-                    .display_target
-                    .as_ref()
-                    .map_or(hypercolor_types::scene::DisplayFaceBlendMode::Replace, |display| {
-                        display.blend_mode
-                    })
+                == target.display_target.as_ref().map_or(
+                    hypercolor_types::scene::DisplayFaceBlendMode::Replace,
+                    |display| display.blend_mode,
+                )
             && self.face_opacity_bits == target.face_opacity().to_bits()
             && (self.canvas_source != DisplayCanvasSourceSignature::Global
                 || self.viewport == display_viewport_signature(&target.viewport))
@@ -128,12 +126,10 @@ impl DisplayFrameInputState {
             brightness_factor: display_brightness_factor(target.brightness),
             geometry: target.geometry.clone(),
             viewport: display_viewport_signature(&target.viewport),
-            face_blend_mode: target
-                .display_target
-                .as_ref()
-                .map_or(hypercolor_types::scene::DisplayFaceBlendMode::Replace, |display| {
-                    display.blend_mode
-                }),
+            face_blend_mode: target.display_target.as_ref().map_or(
+                hypercolor_types::scene::DisplayFaceBlendMode::Replace,
+                |display| display.blend_mode,
+            ),
             face_opacity_bits: target.face_opacity().to_bits(),
         }
     }

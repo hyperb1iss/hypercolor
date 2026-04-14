@@ -1,9 +1,8 @@
 use hypercolor_core::blend_math::{
-    blend_opaque_normal_rgba_pixels_in_place, blend_rgba_pixels_in_place,
+    RgbaBlendMode, blend_opaque_normal_rgba_pixels_in_place, blend_rgba_pixels_in_place,
 };
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
-use hypercolor_types::overlay::OverlayBlendMode;
 
 use super::{
     ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, PreviewSurfaceRequest,
@@ -236,12 +235,12 @@ fn compose_layer(target: &mut Canvas, target_opaque: bool, layer: CompositionLay
     }
 
     let blend_mode = match layer.mode {
-        CompositionMode::Replace | CompositionMode::Alpha => OverlayBlendMode::Normal,
-        CompositionMode::Add => OverlayBlendMode::Add,
-        CompositionMode::Screen => OverlayBlendMode::Screen,
+        CompositionMode::Replace | CompositionMode::Alpha => RgbaBlendMode::Normal,
+        CompositionMode::Add => RgbaBlendMode::Add,
+        CompositionMode::Screen => RgbaBlendMode::Screen,
     };
     let result_opaque = target_opaque && layer.opaque_hint;
-    if blend_mode == OverlayBlendMode::Normal && result_opaque {
+    if blend_mode == RgbaBlendMode::Normal && result_opaque {
         blend_opaque_normal_rgba_pixels_in_place(
             target.as_rgba_bytes_mut(),
             source_canvas.as_rgba_bytes(),

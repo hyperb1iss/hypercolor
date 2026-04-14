@@ -18,8 +18,8 @@ use hypercolor_types::device::{
 };
 use hypercolor_types::effect::EffectId;
 use hypercolor_types::scene::{
-    ColorInterpolation, DisplayFaceTarget, RenderGroup, RenderGroupId, Scene, SceneId,
-    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
+    ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, RenderGroup, RenderGroupId, Scene,
+    SceneId, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
 };
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{
@@ -352,6 +352,23 @@ async fn activate_display_face_scene(
     width: u32,
     height: u32,
 ) {
+    activate_display_face_scene_with_target(
+        scene_manager,
+        DisplayFaceTarget::new(device_id),
+        group_id,
+        width,
+        height,
+    )
+    .await;
+}
+
+async fn activate_display_face_scene_with_target(
+    scene_manager: &Arc<RwLock<SceneManager>>,
+    display_target: DisplayFaceTarget,
+    group_id: RenderGroupId,
+    width: u32,
+    height: u32,
+) {
     let scene = Scene {
         id: SceneId::new(),
         name: "Display Face Scene".to_owned(),
@@ -381,7 +398,7 @@ async fn activate_display_face_scene(
             brightness: 1.0,
             enabled: true,
             color: None,
-            display_target: Some(DisplayFaceTarget { device_id }),
+            display_target: Some(display_target.normalized()),
             role: hypercolor_types::scene::RenderGroupRole::Display,
         }],
         transition: TransitionSpec {
@@ -1052,6 +1069,93 @@ async fn automatic_display_output_updates_direct_faces_without_global_canvas_tic
     assert!(
         second_pixel[2] < 80,
         "expected the newer green face frame to replace the stale blue frame, got {second_pixel:?}"
+    );
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
+async fn display_group_alpha_blends_face_with_effect_canvas() {
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let scene_manager = default_scene_manager();
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+    let group_id = RenderGroupId::new();
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 320, 320, true))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    activate_display_face_scene_with_target(
+        &scene_manager,
+        DisplayFaceTarget {
+            device_id,
+            blend_mode: DisplayFaceBlendMode::Alpha,
+            opacity: 0.5,
+        },
+        group_id,
+        320,
+        320,
+    )
+    .await;
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        scene_manager: Arc::clone(&scene_manager),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
+    });
+
+    let _ = event_bus.canvas_sender().send(CanvasFrame::from_canvas(
+        &solid_canvas(Rgba::new(255, 0, 0, 255)),
+        1,
+        16,
+    ));
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    display_writes.lock().await.clear();
+    event_bus
+        .group_canvas_sender(group_id)
+        .send_replace(CanvasFrame::from_canvas(
+            &solid_canvas(Rgba::new(0, 0, 255, 255)),
+            2,
+            32,
+        ));
+
+    let writes = wait_for_display_writes(&display_writes).await;
+    let image = decode_jpeg(&writes[0]);
+    let pixel = image.get_pixel(image.width() / 2, image.height() / 2);
+
+    assert!(
+        pixel[0] > 70 && pixel[2] > 70,
+        "expected alpha blend to preserve both effect and face colors, got {pixel:?}"
+    );
+    assert!(
+        pixel[1] < 60,
+        "expected the red/blue blend to stay magenta rather than drifting green, got {pixel:?}"
     );
 
     thread.shutdown().await.expect("display thread should stop");

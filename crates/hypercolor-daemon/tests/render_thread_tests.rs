@@ -245,7 +245,7 @@ fn display_group(
         brightness: 1.0,
         enabled: true,
         color: None,
-        display_target: Some(DisplayFaceTarget { device_id }),
+        display_target: Some(DisplayFaceTarget::new(device_id)),
         role: RenderGroupRole::Display,
     }
 }

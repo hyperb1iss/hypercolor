@@ -7,7 +7,8 @@ use hypercolor_types::effect::{
     ControlBinding, ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
 use hypercolor_types::scene::{
-    DisplayFaceTarget, RenderGroup, RenderGroupId, RenderGroupRole, SceneId, SceneKind,
+    DisplayFaceBlendMode, DisplayFaceTarget, RenderGroup, RenderGroupId, RenderGroupRole, SceneId,
+    SceneKind,
 };
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -235,6 +236,45 @@ fn upsert_display_group_uniqueness_per_device() {
 }
 
 #[test]
+fn patch_display_group_target_updates_blend_mode_and_normalizes_replace_opacity() {
+    let mut manager = SceneManager::with_default();
+    let device_id = DeviceId::new();
+    let effect = sample_effect("Monitor");
+    let group_id = manager
+        .upsert_display_group(
+            device_id,
+            "Pump LCD",
+            &effect,
+            HashMap::new(),
+            sample_layout("display"),
+        )
+        .expect("display upsert should succeed")
+        .id;
+
+    let alpha_group = manager
+        .patch_display_group_target(group_id, Some(DisplayFaceBlendMode::Alpha), Some(0.42))
+        .expect("alpha patch should update the display target");
+    let alpha_target = alpha_group
+        .display_target
+        .clone()
+        .expect("display target should remain present");
+    assert_eq!(alpha_target.device_id, device_id);
+    assert_eq!(alpha_target.blend_mode, DisplayFaceBlendMode::Alpha);
+    assert!((alpha_target.opacity - 0.42).abs() < f32::EPSILON);
+
+    let replace_group = manager
+        .patch_display_group_target(group_id, Some(DisplayFaceBlendMode::Replace), Some(0.08))
+        .expect("replace patch should update the display target");
+    let replace_target = replace_group
+        .display_target
+        .clone()
+        .expect("display target should remain present");
+    assert_eq!(replace_target.device_id, device_id);
+    assert_eq!(replace_target.blend_mode, DisplayFaceBlendMode::Replace);
+    assert!((replace_target.opacity - 1.0).abs() < f32::EPSILON);
+}
+
+#[test]
 fn remove_display_group_is_idempotent() {
     let mut manager = SceneManager::with_default();
     let device_id = DeviceId::new();
@@ -293,7 +333,7 @@ fn remove_display_groups_for_device_prunes_named_scenes_too() {
             brightness: 1.0,
             enabled: true,
             color: None,
-            display_target: Some(DisplayFaceTarget { device_id }),
+            display_target: Some(DisplayFaceTarget::new(device_id)),
             role: RenderGroupRole::Display,
         },
         RenderGroup {
@@ -308,9 +348,7 @@ fn remove_display_groups_for_device_prunes_named_scenes_too() {
             brightness: 1.0,
             enabled: true,
             color: None,
-            display_target: Some(DisplayFaceTarget {
-                device_id: other_device_id,
-            }),
+            display_target: Some(DisplayFaceTarget::new(other_device_id)),
             role: RenderGroupRole::Display,
         },
     ];

@@ -42,9 +42,9 @@ use hypercolor_types::event::{
 };
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
-    ColorInterpolation, DisplayFaceTarget, EasingFunction, RenderGroup, RenderGroupRole, Scene,
-    SceneId, SceneKind, SceneMutationMode, ScenePriority, SceneScope, TransitionSpec,
-    UnassignedBehavior,
+    ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, RenderGroup,
+    RenderGroupRole, Scene, SceneId, SceneKind, SceneMutationMode, ScenePriority, SceneScope,
+    TransitionSpec, UnassignedBehavior,
 };
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -1026,7 +1026,7 @@ async fn activate_display_face_test_scene(
             brightness: 1.0,
             enabled: true,
             color: None,
-            display_target: Some(DisplayFaceTarget { device_id }),
+            display_target: Some(DisplayFaceTarget::new(device_id)),
             role: RenderGroupRole::Display,
         }],
         transition: TransitionSpec {
@@ -5314,6 +5314,88 @@ async fn display_face_endpoints_assign_get_and_delete_face() {
     let manager = state.scene_manager.read().await;
     let active_scene = manager.active_scene().expect("scene should remain active");
     assert!(active_scene.groups.is_empty());
+}
+
+#[tokio::test]
+async fn patch_face_composition_updates_blend_mode_and_opacity() {
+    let state = Arc::new(isolated_state());
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    activate_empty_test_scene(&state, "Desk Scene").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let assign_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"effect_id":"{}"}}"#, face.id)))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(assign_response.status(), StatusCode::OK);
+
+    let alpha_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/displays/{display_id}/face/composition"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"blend_mode":"alpha","opacity":0.35}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(alpha_response.status(), StatusCode::OK);
+    let alpha_json = body_json(alpha_response).await;
+    assert_eq!(
+        alpha_json["data"]["group"]["display_target"]["blend_mode"],
+        "alpha"
+    );
+    assert_eq!(
+        alpha_json["data"]["group"]["display_target"]["opacity"],
+        0.35
+    );
+
+    let replace_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/displays/{display_id}/face/composition"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"blend_mode":"replace","opacity":0.05}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(replace_response.status(), StatusCode::OK);
+    let replace_json = body_json(replace_response).await;
+    assert!(
+        replace_json["data"]["group"]["display_target"]["blend_mode"].is_null(),
+        "replace mode should serialize as the compact default"
+    );
+    assert!(
+        replace_json["data"]["group"]["display_target"]["opacity"].is_null(),
+        "replace mode should normalize opacity back to the default"
+    );
+
+    let manager = state.scene_manager.read().await;
+    let group = manager
+        .active_scene()
+        .and_then(|scene| scene.display_group_for(display_id))
+        .expect("display face should remain assigned");
+    let target = group
+        .display_target
+        .clone()
+        .expect("display target should remain present");
+    assert_eq!(target.device_id, display_id);
+    assert_eq!(target.blend_mode, DisplayFaceBlendMode::Replace);
+    assert!((target.opacity - 1.0).abs() < f32::EPSILON);
 }
 
 #[tokio::test]

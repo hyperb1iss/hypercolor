@@ -21,7 +21,10 @@ pub fn DisplayPreviewPage() -> impl IntoView {
         let snapshot = displays.get();
         let items = snapshot.as_ref()?.as_ref().ok()?;
         if let Some(requested) = requested_display_id.get_value() {
-            return items.iter().find(|display| display.id == requested).cloned();
+            return items
+                .iter()
+                .find(|display| display.id == requested)
+                .cloned();
         }
         items.first().cloned()
     });
@@ -36,7 +39,8 @@ pub fn DisplayPreviewPage() -> impl IntoView {
     });
 
     Effect::new(move |_| {
-        let device_id = selected_display.with(|display| display.as_ref().map(|item| item.id.clone()));
+        let device_id =
+            selected_display.with(|display| display.as_ref().map(|item| item.id.clone()));
         ws.set_display_preview_device.set(device_id);
     });
     on_cleanup(move || {

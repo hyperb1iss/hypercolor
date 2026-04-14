@@ -22,6 +22,7 @@ use super::preview::{
 /// Reconnection delay bounds (milliseconds).
 const RECONNECT_BASE_MS: i32 = 500;
 const RECONNECT_MAX_MS: i32 = 15_000;
+const BACKPRESSURE_RECOVERY_MS: i32 = 2_000;
 
 fn quantize_preview_fps(value: f64) -> f32 {
     #[allow(clippy::cast_possible_truncation)]
@@ -97,6 +98,7 @@ impl WsManager {
         let (web_viewport_preview_consumers, set_web_viewport_preview_consumers) = signal(0_u32);
         let (preview_transport_cap, set_preview_transport_cap) = signal(DEFAULT_PREVIEW_FPS_CAP);
         let (page_visible, set_page_visible) = signal(document_is_visible());
+        let (backpressure_epoch, set_backpressure_epoch) = signal(0_u64);
 
         // Track authoritative canvas cadence from backend frame metadata.
         let last_frame_number = StoredValue::new(None::<u32>);
@@ -113,6 +115,7 @@ impl WsManager {
         let visibility_change_callback: StoredValue<Option<Closure<dyn FnMut()>>, LocalStorage> =
             StoredValue::new_local(None);
         let reconnect_timeout_id: StoredValue<Option<i32>> = StoredValue::new(None);
+        let backpressure_recovery_timeout_id: StoredValue<Option<i32>> = StoredValue::new(None);
 
         // Reconnection attempt counter for exponential backoff.
         let reconnect_attempts = StoredValue::new(0_u32);
@@ -130,8 +133,11 @@ impl WsManager {
 
         let connect_fn: Rc<dyn Fn()> = Rc::new(move || {
             clear_reconnect_timer(reconnect_timeout_id);
+            clear_timeout_handle(backpressure_recovery_timeout_id);
             dispose_existing_socket(ws_handle, socket_callbacks);
             set_connection_state.set(ConnectionState::Connecting);
+            set_backpressure_notice.set(None);
+            set_preview_transport_cap.set(preview_page_cap.get_untracked());
 
             // Reset frame-tracking state so FPS doesn't glitch after reconnect
             last_frame_number.set_value(None);
@@ -279,6 +285,7 @@ impl WsManager {
                         &set_engine_preview_target,
                         &set_preview_target_fps,
                         &set_preview_transport_cap,
+                        &set_backpressure_epoch,
                     );
                 }
             });
@@ -378,6 +385,29 @@ impl WsManager {
 
         Effect::new(move |_| {
             set_preview_transport_cap.set(preview_page_cap.get());
+        });
+
+        Effect::new(move |_| {
+            let epoch = backpressure_epoch.get();
+            if epoch == 0 {
+                return;
+            }
+
+            clear_timeout_handle(backpressure_recovery_timeout_id);
+            let callback = Closure::once_into_js(move || {
+                set_preview_transport_cap.set(preview_page_cap.get_untracked());
+                set_backpressure_notice.set(None);
+            });
+
+            if let Some(window) = web_sys::window()
+                && let Ok(timeout_id) = window
+                    .set_timeout_with_callback_and_timeout_and_arguments_0(
+                        callback.unchecked_ref(),
+                        BACKPRESSURE_RECOVERY_MS,
+                    )
+            {
+                backpressure_recovery_timeout_id.set_value(Some(timeout_id));
+            }
         });
 
         // Display-preview subscription effect.
@@ -482,14 +512,18 @@ fn schedule_reconnect(
 }
 
 fn clear_reconnect_timer(reconnect_timeout_id: StoredValue<Option<i32>>) {
-    let Some(timeout_id) = reconnect_timeout_id.get_value() else {
+    clear_timeout_handle(reconnect_timeout_id);
+}
+
+fn clear_timeout_handle(timeout_handle: StoredValue<Option<i32>>) {
+    let Some(timeout_id) = timeout_handle.get_value() else {
         return;
     };
 
     if let Some(window) = web_sys::window() {
         window.clear_timeout_with_handle(timeout_id);
     }
-    reconnect_timeout_id.set_value(None);
+    timeout_handle.set_value(None);
 }
 
 fn dispose_existing_socket(

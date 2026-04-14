@@ -651,7 +651,10 @@ mod tests {
         let preview_surface = composed
             .preview_surface
             .expect("full-size preview-only path should reuse the existing surface");
-        assert_eq!(preview_surface.storage_identity(), source.storage_identity());
+        assert_eq!(
+            preview_surface.storage_identity(),
+            source.storage_identity()
+        );
         assert!(composed.bypassed);
         assert!(composed.sampling_canvas.is_none());
         assert!(composed.sampling_surface.is_none());

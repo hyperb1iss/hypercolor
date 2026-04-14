@@ -533,12 +533,7 @@ fn try_render_canvas_frame_rgba_fast(
     Ok(true)
 }
 
-fn promote_rgb_to_rgba(
-    rgb_buffer: &[u8],
-    rgba_buffer: &mut Vec<u8>,
-    width: u32,
-    height: u32,
-) {
+fn promote_rgb_to_rgba(rgb_buffer: &[u8], rgba_buffer: &mut Vec<u8>, width: u32, height: u32) {
     let Some(render_len) = rgba_buffer_len(width, height) else {
         rgba_buffer.clear();
         return;
@@ -547,7 +542,10 @@ fn promote_rgb_to_rgba(
         rgba_buffer.resize(render_len, 0);
     }
 
-    for (rgba, rgb) in rgba_buffer.chunks_exact_mut(4).zip(rgb_buffer.chunks_exact(3)) {
+    for (rgba, rgb) in rgba_buffer
+        .chunks_exact_mut(4)
+        .zip(rgb_buffer.chunks_exact(3))
+    {
         rgba[0] = rgb[0];
         rgba[1] = rgb[1];
         rgba[2] = rgb[2];
@@ -572,11 +570,7 @@ fn prepare_black_rgba_frame(geometry: &DisplayGeometry, rgba_buffer: &mut Vec<u8
     }
 }
 
-fn blend_face_rgba_over_opaque_rgba(
-    target_rgba: &mut [u8],
-    source_rgba: &[u8],
-    opacity: f32,
-) {
+fn blend_face_rgba_over_opaque_rgba(target_rgba: &mut [u8], source_rgba: &[u8], opacity: f32) {
     let opacity_weight = round_unit_to_u16(opacity.clamp(0.0, 1.0));
     if opacity_weight == 0 {
         return;

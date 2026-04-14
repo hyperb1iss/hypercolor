@@ -382,6 +382,7 @@ pub(super) fn handle_json_message(
     set_engine_preview_target: &WriteSignal<u32>,
     set_preview_target_fps: &WriteSignal<u32>,
     set_preview_transport_cap: &WriteSignal<u32>,
+    set_backpressure_epoch: &WriteSignal<u64>,
 ) {
     let msg_type = msg.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
@@ -448,6 +449,7 @@ pub(super) fn handle_json_message(
                 {
                     set_preview_transport_cap
                         .update(|current| *current = (*current).min(message.suggested_fps));
+                    set_backpressure_epoch.update(|epoch| *epoch = epoch.saturating_add(1));
                 }
                 let notice = BackpressureNotice {
                     dropped_frames: message.dropped_frames,

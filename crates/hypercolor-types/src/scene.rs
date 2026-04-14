@@ -158,10 +158,7 @@ pub struct DisplayFaceTarget {
     /// Physical display-capable device that should consume this group's canvas.
     pub device_id: DeviceId,
     /// How the face layer should compose with the effect layer beneath it.
-    #[serde(
-        default,
-        skip_serializing_if = "is_default_display_face_blend_mode"
-    )]
+    #[serde(default, skip_serializing_if = "is_default_display_face_blend_mode")]
     pub blend_mode: DisplayFaceBlendMode,
     /// Face-layer opacity used when alpha blending with the effect layer.
     #[serde(
