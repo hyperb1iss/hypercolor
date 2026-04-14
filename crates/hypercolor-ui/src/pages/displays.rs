@@ -402,6 +402,39 @@ fn drag_callbacks(
     (on_start, on_drag, on_end)
 }
 
+#[component]
+fn DisplaysModalBackdrop(
+    #[prop(optional)] wide: bool,
+    #[prop(into)] on_close: Callback<()>,
+    children: Children,
+) -> impl IntoView {
+    let close_backdrop = on_close.clone();
+
+    view! {
+        <div class="fixed inset-0 z-50 grid place-items-center p-4 animate-fade-in">
+            <div
+                class="absolute inset-0 bg-black/65 backdrop-blur-sm"
+                on:click=move |_| close_backdrop.run(())
+            />
+            <div
+                class="relative"
+                style=move || {
+                    let width_style = if wide {
+                        "width: min(64rem, calc(100vw - 2rem));"
+                    } else {
+                        "width: min(28rem, calc(100vw - 2rem));"
+                    };
+                    format!(
+                        "position: relative; max-height: calc(100vh - 2rem); {width_style}"
+                    )
+                }
+            >
+                {children()}
+            </div>
+        </div>
+    }
+}
+
 fn snapshot_scene_lock_message(ctx: Option<EffectsContext>, action: &str) -> Option<String> {
     let ctx = ctx?;
     if ctx.active_scene_kind.get_untracked() != Some(SceneKind::Named)
@@ -662,14 +695,10 @@ fn CreateSimulatorModal(
         }
     };
 
-    let close_backdrop = on_close.clone();
     let close_button = on_close.clone();
 
     view! {
-        <div
-            class="absolute inset-0 z-20 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
-            on:click=move |_| close_backdrop.run(())
-        >
+        <DisplaysModalBackdrop on_close=on_close>
             <div
                 class="w-full max-w-md rounded-xl border border-edge-subtle bg-surface-raised p-4 shadow-2xl"
                 on:click=|event| event.stop_propagation()
@@ -794,7 +823,7 @@ fn CreateSimulatorModal(
                     </div>
                 </form>
             </div>
-        </div>
+        </DisplaysModalBackdrop>
     }
 }
 
@@ -888,14 +917,10 @@ fn EditSimulatorModal(
         }
     };
 
-    let close_backdrop = on_close.clone();
     let close_button = on_close.clone();
 
     view! {
-        <div
-            class="absolute inset-0 z-20 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
-            on:click=move |_| close_backdrop.run(())
-        >
+        <DisplaysModalBackdrop on_close=on_close>
             <div
                 class="w-full max-w-md rounded-xl border border-edge-subtle bg-surface-raised p-4 shadow-2xl"
                 on:click=|event| event.stop_propagation()
@@ -1031,7 +1056,7 @@ fn EditSimulatorModal(
                     </div>
                 </form>
             </div>
-        </div>
+        </DisplaysModalBackdrop>
     }
 }
 
@@ -1580,15 +1605,11 @@ fn DisplayFacePickerModal(
 ) -> impl IntoView {
     let (search, set_search) = signal(String::new());
     let thumbnails = use_context::<crate::thumbnails::ThumbnailStore>();
-    let close_backdrop = on_close.clone();
     let close_button = on_close.clone();
     let clear_button = on_clear.clone();
 
     view! {
-        <div
-            class="absolute inset-0 z-20 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm animate-fade-in"
-            on:click=move |_| close_backdrop.run(())
-        >
+        <DisplaysModalBackdrop wide=true on_close=on_close>
             <div
                 class="flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-edge-subtle bg-surface-raised shadow-2xl edge-glow-accent accent-coral"
                 on:click=|event| event.stop_propagation()
@@ -1715,7 +1736,7 @@ fn DisplayFacePickerModal(
                     }}
                 </div>
             </div>
-        </div>
+        </DisplaysModalBackdrop>
     }
 }
 
