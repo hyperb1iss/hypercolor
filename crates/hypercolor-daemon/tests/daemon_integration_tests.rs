@@ -18,6 +18,7 @@ use hypercolor_types::device::{
     DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::effect::EffectSource;
+use hypercolor_types::scene::SceneId;
 use hypercolor_types::sensor::SystemSnapshot;
 use tempfile::NamedTempFile;
 use tokio::sync::{Mutex, watch};
@@ -143,7 +144,7 @@ async fn daemon_lifecycle_initialize_start_shutdown() {
     {
         let scenes = state.scene_manager.read().await;
         assert_eq!(scenes.scene_count(), 1);
-        assert!(scenes.active_scene_id().is_some_and(|id| id.is_default()));
+        assert!(scenes.active_scene_id().is_some_and(SceneId::is_default));
         assert!(scenes.active_render_groups().is_empty());
     }
     {
@@ -172,7 +173,7 @@ async fn daemon_lifecycle_initialize_start_shutdown() {
     // Verify scene-backed runtime state returns to the empty default scene
     {
         let scenes = state.scene_manager.read().await;
-        assert!(scenes.active_scene_id().is_some_and(|id| id.is_default()));
+        assert!(scenes.active_scene_id().is_some_and(SceneId::is_default));
         assert!(scenes.active_render_groups().is_empty());
     }
 }
@@ -437,7 +438,7 @@ async fn api_state_default_scene_starts_without_active_groups() {
     // Verify the default scene is active and empty until something applies a group.
     {
         let scenes = state.scene_manager.read().await;
-        assert!(scenes.active_scene_id().is_some_and(|id| id.is_default()));
+        assert!(scenes.active_scene_id().is_some_and(SceneId::is_default));
         assert!(scenes.active_render_groups().is_empty());
     }
 }

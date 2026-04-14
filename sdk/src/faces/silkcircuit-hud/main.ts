@@ -1,25 +1,31 @@
-import {
-    color,
-    combo,
-    face,
-    font,
-    lerpColor,
-    num,
-    palette,
-    sensor,
-    toggle,
-} from '@hypercolor/sdk'
+import { color, combo, face, font, lerpColor, num, palette, sensor, toggle } from '@hypercolor/sdk'
 
 import {
-    DISPLAY_FONT_FAMILIES,
-    UI_FONT_FAMILIES,
     createFaceRoot,
+    DISPLAY_FONT_FAMILIES,
     ensureFaceStyles,
     mixFaceAccent,
     resolveFaceInk,
+    UI_FONT_FAMILIES,
 } from '../shared/dom'
 
 const STYLE_ID = 'hc-face-silkcircuit-hud'
+
+function requireElement<T extends Element>(root: ParentNode, selector: string): T {
+    const element = root.querySelector<T>(selector)
+    if (!element) {
+        throw new Error(`Missing required SilkCircuit HUD element: ${selector}`)
+    }
+    return element
+}
+
+function requireParentElement(element: Element, selector: string): HTMLElement {
+    const parent = element.parentElement
+    if (!parent) {
+        throw new Error(`Missing required parent element for: ${selector}`)
+    }
+    return parent
+}
 
 const STYLES = `
 .hc-silk-hud {
@@ -204,113 +210,113 @@ function setHudDigit(slot: HTMLSpanElement, value: string | null): void {
 export default face(
     'SilkCircuit HUD',
     {
-        cpuTempSensor: sensor('CPU Temp Sensor', 'cpu_temp', { group: 'Sensors' }),
-        gpuTempSensor: sensor('GPU Temp Sensor', 'gpu_temp', { group: 'Sensors' }),
-        cpuLoadSensor: sensor('CPU Load Sensor', 'cpu_load', { group: 'Sensors' }),
-        ramSensor: sensor('RAM Sensor', 'ram_used', { group: 'Sensors' }),
         accent: color('Accent', palette.neonCyan, { group: 'Style' }),
-        secondaryAccent: color('Secondary', palette.coral, { group: 'Style' }),
-        heroFont: font('Hero Font', 'Rajdhani', { group: 'Typography', families: [...DISPLAY_FONT_FAMILIES] }),
-        uiFont: font('UI Font', 'Inter', { group: 'Typography', families: [...UI_FONT_FAMILIES] }),
         clockSize: num('Clock Size', [48, 128], 84, { group: 'Typography' }),
-        metricSize: num('Metric Size', [28, 92], 56, { group: 'Typography' }),
+        cpuLoadSensor: sensor('CPU Load Sensor', 'cpu_load', { group: 'Sensors' }),
+        cpuTempSensor: sensor('CPU Temp Sensor', 'cpu_temp', { group: 'Sensors' }),
         detailSize: num('Detail Size', [9, 20], 11, { group: 'Typography' }),
+        gpuTempSensor: sensor('GPU Temp Sensor', 'gpu_temp', { group: 'Sensors' }),
+        heroFont: font('Hero Font', 'Rajdhani', { families: [...DISPLAY_FONT_FAMILIES], group: 'Typography' }),
         hourFormat: combo('Clock Format', ['24h', '12h'], { group: 'Clock' }),
+        metricSize: num('Metric Size', [28, 92], 56, { group: 'Typography' }),
+        ramSensor: sensor('RAM Sensor', 'ram_used', { group: 'Sensors' }),
+        secondaryAccent: color('Secondary', palette.coral, { group: 'Style' }),
+        showBarLabels: toggle('Show Bar Labels', true, { group: 'Elements' }),
+        showBars: toggle('Show Bars', true, { group: 'Elements' }),
         showClock: toggle('Show Clock', true, { group: 'Elements' }),
         showDate: toggle('Show Date', true, { group: 'Elements' }),
-        showMetrics: toggle('Show Metrics', true, { group: 'Elements' }),
         showMetricLabels: toggle('Show Metric Labels', true, { group: 'Elements' }),
-        showBars: toggle('Show Bars', true, { group: 'Elements' }),
-        showBarLabels: toggle('Show Bar Labels', true, { group: 'Elements' }),
+        showMetrics: toggle('Show Metrics', true, { group: 'Elements' }),
+        uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography' }),
     },
     {
-        description: 'A clean command-center face. Every element is independently toggleable.',
         author: 'Hypercolor',
-        designBasis: { width: 480, height: 480 },
+        description: 'A clean command-center face. Every element is independently toggleable.',
+        designBasis: { height: 480, width: 480 },
         presets: [
             {
-                name: 'Signature HUD',
-                description: 'The classic SilkCircuit cyan/coral command deck.',
                 controls: {
                     accent: palette.neonCyan,
-                    secondaryAccent: palette.coral,
                     heroFont: 'Rajdhani',
+                    secondaryAccent: palette.coral,
                     uiFont: 'Inter',
                 },
+                description: 'The classic SilkCircuit cyan/coral command deck.',
+                name: 'Signature HUD',
             },
             {
-                name: 'Forge Deck',
-                description: 'Warm amber chrome and bold numerals.',
                 controls: {
                     accent: '#ffb347',
-                    secondaryAccent: '#ff6b6b',
                     heroFont: 'Roboto Condensed',
+                    secondaryAccent: '#ff6b6b',
                     uiFont: 'Inter',
                 },
+                description: 'Warm amber chrome and bold numerals.',
+                name: 'Forge Deck',
             },
             {
-                name: 'Arctic Rail',
-                description: 'Cool blue minimal HUD with airy type.',
                 controls: {
                     accent: '#9ae7ff',
-                    secondaryAccent: '#c8d5ff',
                     heroFont: 'Exo 2',
+                    secondaryAccent: '#c8d5ff',
                     uiFont: 'Inter',
                 },
+                description: 'Cool blue minimal HUD with airy type.',
+                name: 'Arctic Rail',
             },
             {
-                name: 'Rose Protocol',
-                description: 'Coral-forward variant with soft contrast.',
                 controls: {
                     accent: palette.coral,
-                    secondaryAccent: '#ffb8dd',
                     heroFont: 'Exo 2',
+                    secondaryAccent: '#ffb8dd',
                     uiFont: 'DM Sans',
                 },
+                description: 'Coral-forward variant with soft contrast.',
+                name: 'Rose Protocol',
             },
             {
-                name: 'Mono Grid',
-                description: 'Sharper monospaced telemetry.',
                 controls: {
                     accent: palette.electricYellow,
-                    secondaryAccent: '#ffa166',
                     heroFont: 'Space Mono',
+                    secondaryAccent: '#ffa166',
                     uiFont: 'JetBrains Mono',
                 },
+                description: 'Sharper monospaced telemetry.',
+                name: 'Mono Grid',
             },
             {
-                name: 'Clock Only',
-                description: 'Just the clock, centered and clean.',
                 controls: {
                     accent: palette.neonCyan,
-                    secondaryAccent: palette.electricPurple,
                     heroFont: 'Rajdhani',
-                    uiFont: 'Inter',
-                    showMetrics: false,
+                    secondaryAccent: palette.electricPurple,
                     showBars: false,
+                    showMetrics: false,
+                    uiFont: 'Inter',
                 },
+                description: 'Just the clock, centered and clean.',
+                name: 'Clock Only',
             },
             {
-                name: 'Signal Bridge',
-                description: 'Blue-cyan bridge with calm utility text.',
                 controls: {
                     accent: '#8fe8ff',
-                    secondaryAccent: '#7fa2ff',
                     heroFont: 'Orbitron',
+                    secondaryAccent: '#7fa2ff',
                     uiFont: 'DM Sans',
                 },
+                description: 'Blue-cyan bridge with calm utility text.',
+                name: 'Signal Bridge',
             },
             {
-                name: 'Metrics Only',
-                description: 'Just the metric tiles with bars.',
                 controls: {
                     accent: '#ffb25f',
-                    secondaryAccent: '#ff7d8e',
                     heroFont: 'Roboto Condensed',
-                    uiFont: 'Space Grotesk',
+                    secondaryAccent: '#ff7d8e',
                     showClock: false,
                     showDate: false,
+                    uiFont: 'Space Grotesk',
                 },
+                description: 'Just the metric tiles with bars.',
+                name: 'Metrics Only',
             },
         ],
     },
@@ -356,26 +362,26 @@ export default face(
             </div>
         `
 
-        const clockEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__clock')!
-        const hoursTensEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__hours-tens')!
-        const hoursOnesEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__hours-ones')!
-        const minutesTensEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__minutes-tens')!
-        const minutesOnesEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__minutes-ones')!
-        const dateEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__date')!
-        const metricsEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__metrics')!
-        const cpuLabelEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__cpu .hc-silk-hud__metric-label')!
-        const gpuLabelEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__gpu .hc-silk-hud__metric-label')!
-        const cpuValueEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__cpu .hc-silk-hud__metric-value')!
-        const gpuValueEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__gpu .hc-silk-hud__metric-value')!
-        const loadLabelEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__load-label')!
-        const loadValueEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__load-value')!
-        const ramLabelEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__ram-label')!
-        const ramValueEl = root.querySelector<HTMLSpanElement>('.hc-silk-hud__ram-value')!
-        const loadFillEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__load-fill')!
-        const ramFillEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__ram-fill')!
-        const barsEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__bars')!
-        const loadHeadEl = loadLabelEl.parentElement!
-        const ramHeadEl = ramLabelEl.parentElement!
+        const clockEl = requireElement<HTMLDivElement>(root, '.hc-silk-hud__clock')
+        const hoursTensEl = requireElement<HTMLSpanElement>(root, '.hc-silk-hud__hours-tens')
+        const hoursOnesEl = requireElement<HTMLSpanElement>(root, '.hc-silk-hud__hours-ones')
+        const minutesTensEl = requireElement<HTMLSpanElement>(root, '.hc-silk-hud__minutes-tens')
+        const minutesOnesEl = requireElement<HTMLSpanElement>(root, '.hc-silk-hud__minutes-ones')
+        const dateEl = requireElement<HTMLDivElement>(root, '.hc-silk-hud__date')
+        const metricsEl = requireElement<HTMLDivElement>(root, '.hc-silk-hud__metrics')
+        const cpuLabelEl = requireElement<HTMLDivElement>(root, '.hc-silk-hud__cpu .hc-silk-hud__metric-label')
+        const gpuLabelEl = requireElement<HTMLDivElement>(root, '.hc-silk-hud__gpu .hc-silk-hud__metric-label')
+        const cpuValueEl = requireElement<HTMLDivElement>(root, '.hc-silk-hud__cpu .hc-silk-hud__metric-value')
+        const gpuValueEl = requireElement<HTMLDivElement>(root, '.hc-silk-hud__gpu .hc-silk-hud__metric-value')
+        const loadLabelEl = requireElement<HTMLSpanElement>(root, '.hc-silk-hud__load-label')
+        const loadValueEl = requireElement<HTMLSpanElement>(root, '.hc-silk-hud__load-value')
+        const ramLabelEl = requireElement<HTMLSpanElement>(root, '.hc-silk-hud__ram-label')
+        const ramValueEl = requireElement<HTMLSpanElement>(root, '.hc-silk-hud__ram-value')
+        const loadFillEl = requireElement<HTMLDivElement>(root, '.hc-silk-hud__load-fill')
+        const ramFillEl = requireElement<HTMLDivElement>(root, '.hc-silk-hud__ram-fill')
+        const barsEl = requireElement<HTMLDivElement>(root, '.hc-silk-hud__bars')
+        const loadHeadEl = requireParentElement(loadLabelEl, '.hc-silk-hud__load-label')
+        const ramHeadEl = requireParentElement(ramLabelEl, '.hc-silk-hud__ram-label')
 
         return (_time, controls, sensors) => {
             const accent = lerpColor(controls.accent as string, palette.fg.primary, 0.05)
@@ -399,12 +405,12 @@ export default face(
             if (controls.hourFormat === '12h') hours = hours % 12 || 12
             const hourText = hours.toString()
             const minuteText = minutes.toString().padStart(2, '0')
-            setHudDigit(hoursTensEl, hourText.length > 1 ? hourText[0] ?? null : null)
+            setHudDigit(hoursTensEl, hourText.length > 1 ? (hourText[0] ?? null) : null)
             setHudDigit(hoursOnesEl, hourText[hourText.length - 1] ?? '0')
             setHudDigit(minutesTensEl, minuteText[0] ?? '0')
             setHudDigit(minutesOnesEl, minuteText[1] ?? '0')
             dateEl.textContent = now
-                .toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+                .toLocaleDateString('en-US', { day: 'numeric', month: 'short', weekday: 'short' })
                 .toUpperCase()
 
             const cpuLoad = sensors.normalized(controls.cpuLoadSensor as string)

@@ -13,14 +13,14 @@ import {
 } from '@hypercolor/sdk'
 
 import {
-    DISPLAY_FONT_FAMILIES,
-    UI_FONT_FAMILIES,
     clamp01,
     createFaceRoot,
+    DISPLAY_FONT_FAMILIES,
     ensureFaceStyles,
     humanizeSensorLabel,
     mixFaceAccent,
     resolveFaceInk,
+    UI_FONT_FAMILIES,
 } from '../shared/dom'
 
 const STYLE_ID = 'hc-face-sensor-grid'
@@ -159,112 +159,112 @@ const STYLES = `
 export default face(
     'Sensor Grid',
     {
+        accent: color('Accent', palette.neonCyan, { group: 'Style' }),
+        colorMode: combo('Colors', ['Auto', 'Accent'], { group: 'Style' }),
+        heroFont: font('Hero Font', 'Rajdhani', { families: [...DISPLAY_FONT_FAMILIES], group: 'Typography' }),
+        labelSize: num('Label Size', [9, 20], 11, { group: 'Typography' }),
         sensor1: sensor('Top Left', 'cpu_temp', { group: 'Sensors' }),
         sensor2: sensor('Top Right', 'gpu_temp', { group: 'Sensors' }),
         sensor3: sensor('Bottom Left', 'cpu_load', { group: 'Sensors' }),
         sensor4: sensor('Bottom Right', 'ram_used', { group: 'Sensors' }),
-        colorMode: combo('Colors', ['Auto', 'Accent'], { group: 'Style' }),
-        accent: color('Accent', palette.neonCyan, { group: 'Style' }),
-        heroFont: font('Hero Font', 'Rajdhani', { group: 'Typography', families: [...DISPLAY_FONT_FAMILIES] }),
-        uiFont: font('UI Font', 'Inter', { group: 'Typography', families: [...UI_FONT_FAMILIES] }),
-        valueSize: num('Value Size', [28, 84], 50, { group: 'Typography' }),
-        labelSize: num('Label Size', [9, 20], 11, { group: 'Typography' }),
         showLabels: toggle('Show Labels', true, { group: 'Elements' }),
-        showValues: toggle('Show Values', true, { group: 'Elements' }),
         showPercents: toggle('Show Percents', false, { group: 'Elements' }),
         showTracks: toggle('Show Tracks', true, { group: 'Elements' }),
+        showValues: toggle('Show Values', true, { group: 'Elements' }),
+        uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography' }),
+        valueSize: num('Value Size', [28, 84], 50, { group: 'Typography' }),
     },
     {
-        description: 'A readable four-panel dashboard. Every element is independently toggleable.',
         author: 'Hypercolor',
-        designBasis: { width: 480, height: 480 },
+        description: 'A readable four-panel dashboard. Every element is independently toggleable.',
+        designBasis: { height: 480, width: 480 },
         presets: [
             {
-                name: 'System Vitals',
-                description: 'Balanced cyan dashboard for CPU, GPU, load, and memory.',
                 controls: {
+                    colorMode: 'Auto',
+                    heroFont: 'Rajdhani',
                     sensor1: 'cpu_temp',
                     sensor2: 'gpu_temp',
                     sensor3: 'cpu_load',
                     sensor4: 'ram_used',
-                    colorMode: 'Auto',
-                    heroFont: 'Rajdhani',
                     uiFont: 'Inter',
                 },
+                description: 'Balanced cyan dashboard for CPU, GPU, load, and memory.',
+                name: 'System Vitals',
             },
             {
-                name: 'Thermal Club',
-                description: 'All-temperature layout with compact condensed numerals.',
                 controls: {
+                    colorMode: 'Auto',
+                    heroFont: 'Roboto Condensed',
                     sensor1: 'cpu_temp',
                     sensor2: 'gpu_temp',
                     sensor3: 'cpu_temp',
                     sensor4: 'gpu_temp',
-                    colorMode: 'Auto',
-                    heroFont: 'Roboto Condensed',
                     uiFont: 'Inter',
                 },
+                description: 'All-temperature layout with compact condensed numerals.',
+                name: 'Thermal Club',
             },
             {
-                name: 'Arctic Rail',
-                description: 'Cool blue accent with airy type.',
                 controls: {
-                    colorMode: 'Accent',
                     accent: '#9ae7ff',
+                    colorMode: 'Accent',
                     heroFont: 'Exo 2',
                     uiFont: 'Inter',
                 },
+                description: 'Cool blue accent with airy type.',
+                name: 'Arctic Rail',
             },
             {
-                name: 'Signal Pink',
-                description: 'Coral matrix with softer, clearer hierarchy.',
                 controls: {
-                    colorMode: 'Accent',
                     accent: palette.coral,
+                    colorMode: 'Accent',
                     heroFont: 'Exo 2',
                     uiFont: 'DM Sans',
                 },
+                description: 'Coral matrix with softer, clearer hierarchy.',
+                name: 'Signal Pink',
             },
             {
-                name: 'Mono Ops',
-                description: 'Sharp monospaced telemetry.',
                 controls: {
                     colorMode: 'Auto',
                     heroFont: 'Space Mono',
                     uiFont: 'JetBrains Mono',
                 },
+                description: 'Sharp monospaced telemetry.',
+                name: 'Mono Ops',
             },
             {
-                name: 'Gold Deck',
-                description: 'Warm gold accent with restrained chrome.',
                 controls: {
-                    colorMode: 'Accent',
                     accent: palette.electricYellow,
+                    colorMode: 'Accent',
                     heroFont: 'Rajdhani',
                     uiFont: 'Space Grotesk',
                 },
+                description: 'Warm gold accent with restrained chrome.',
+                name: 'Gold Deck',
             },
             {
-                name: 'Naked Numbers',
-                description: 'Just the big values, no labels or chrome.',
                 controls: {
                     colorMode: 'Auto',
                     heroFont: 'Rajdhani',
-                    uiFont: 'Inter',
                     showLabels: false,
                     showPercents: false,
                     showTracks: false,
+                    uiFont: 'Inter',
                 },
+                description: 'Just the big values, no labels or chrome.',
+                name: 'Naked Numbers',
             },
             {
-                name: 'Amber Atlas',
-                description: 'Warm amber survey deck with centered readings.',
                 controls: {
-                    colorMode: 'Accent',
                     accent: '#ffb45f',
+                    colorMode: 'Accent',
                     heroFont: 'Roboto Condensed',
                     uiFont: 'Space Grotesk',
                 },
+                description: 'Warm amber survey deck with centered readings.',
+                name: 'Amber Atlas',
             },
         ],
     },
@@ -274,7 +274,9 @@ export default face(
         root.innerHTML = `
             <div class="hc-sensor-grid__frame">
                 <div class="hc-sensor-grid__cards">
-                    ${Array.from({ length: 4 }, () => `
+                    ${Array.from(
+                        { length: 4 },
+                        () => `
                         <div class="hc-sensor-grid__card">
                             <div class="hc-sensor-grid__card-inner">
                                 <div class="hc-sensor-grid__label">UNASSIGNED</div>
@@ -283,7 +285,8 @@ export default face(
                                 <div class="hc-sensor-grid__track"><div class="hc-sensor-grid__track-fill"></div></div>
                             </div>
                         </div>
-                    `).join('')}
+                    `,
+                    ).join('')}
                 </div>
             </div>
         `
@@ -323,13 +326,14 @@ export default face(
                 const rawValue = sensors.normalized(sensorLabel)
                 smoothValues[index] += (rawValue - smoothValues[index]) * 0.08
 
-                const baseColor = colorMode === 'Auto'
-                    ? (reading?.unit === '°C' || reading?.unit === '°F'
-                        ? colorByValue(smoothValues[index], sensorColors.temperature.gradient)
-                        : reading?.unit === 'MB'
-                          ? colorByValue(smoothValues[index], sensorColors.memory.gradient)
-                          : colorByValue(smoothValues[index], sensorColors.load.gradient))
-                    : accent
+                const baseColor =
+                    colorMode === 'Auto'
+                        ? reading?.unit === '°C' || reading?.unit === '°F'
+                            ? colorByValue(smoothValues[index], sensorColors.temperature.gradient)
+                            : reading?.unit === 'MB'
+                              ? colorByValue(smoothValues[index], sensorColors.memory.gradient)
+                              : colorByValue(smoothValues[index], sensorColors.load.gradient)
+                        : accent
                 const cardColor = lerpColor(baseColor, palette.fg.primary, 0.04)
                 const cardSecondary = mixFaceAccent(cardColor, secondary, 0.32)
                 const cardInk = resolveFaceInk(cardColor)

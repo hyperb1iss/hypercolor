@@ -357,7 +357,7 @@ pub(super) async fn relay_canvas(
                 let _ = subscriptions.borrow_and_update();
                 active_canvas_config = None;
             }
-            _ = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
+            () = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
                 let latest_canvas = canvas_rx.borrow();
                 let surface_identity = preview_surface_identity(&latest_canvas);
                 if last_sent_surface == Some(surface_identity) {
@@ -465,7 +465,7 @@ pub(super) async fn relay_screen_canvas(
                 let _ = subscriptions.borrow_and_update();
                 active_canvas_config = None;
             }
-            _ = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
+            () = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
                 let latest_canvas = canvas_rx.borrow();
                 let surface_identity = preview_surface_identity(&latest_canvas);
                 if last_sent_surface == Some(surface_identity) {
@@ -570,7 +570,7 @@ pub(super) async fn relay_web_viewport_canvas(
                 let _ = subscriptions.borrow_and_update();
                 active_canvas_config = None;
             }
-            _ = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
+            () = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
                 let latest_canvas = canvas_rx.borrow();
                 let surface_identity = preview_surface_identity(&latest_canvas);
                 if last_sent_surface == Some(surface_identity) {
@@ -668,15 +668,15 @@ pub(super) async fn relay_display_preview(
         // to re-arm the relay.
         let desired = {
             let subs = subscriptions.borrow();
-            if !subs.channels.contains(WsChannel::DisplayPreview) {
-                None
-            } else {
+            if subs.channels.contains(WsChannel::DisplayPreview) {
                 subs.config
                     .display_preview
                     .device_id
                     .as_ref()
                     .and_then(|raw| DeviceId::from_str(raw).ok())
                     .map(|id| (id, subs.config.display_preview.fps.max(1)))
+            } else {
+                None
             }
         };
 
@@ -752,7 +752,7 @@ pub(super) async fn relay_display_preview(
                 dead_target_id = None;
                 continue;
             }
-            _ = tokio::time::sleep(preview_send_delay(target.last_sent_at, target.fps, Instant::now())), if target.pending_send => {
+            () = tokio::time::sleep(preview_send_delay(target.last_sent_at, target.fps, Instant::now())), if target.pending_send => {
                 let snapshot = target.rx.borrow().as_ref().map(Arc::clone);
                 let Some(snapshot) = snapshot else {
                     // Sender signaled device removal via None. Clear

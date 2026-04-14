@@ -1,3 +1,5 @@
+#![allow(clippy::float_cmp)]
+
 use hypercolor_types::sensor::{SensorReading, SensorUnit, SystemSnapshot};
 
 #[test]

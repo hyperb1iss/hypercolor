@@ -1,5 +1,4 @@
 import {
-    ValueHistory,
     arcGauge,
     color,
     colorByValue,
@@ -10,25 +9,26 @@ import {
     palette,
     sensor,
     toggle,
+    ValueHistory,
     withAlpha,
 } from '@hypercolor/sdk'
 
 import {
-    DISPLAY_FONT_FAMILIES,
-    UI_FONT_FAMILIES,
     clamp01,
     createFaceRoot,
+    DISPLAY_FONT_FAMILIES,
     ensureFaceStyles,
     humanizeSensorLabel,
     mixFaceAccent,
     resolveFaceInk,
+    UI_FONT_FAMILIES,
 } from '../shared/dom'
 
 const STYLE_ID = 'hc-face-pulse-temp'
 const FACE_SCHEMES = {
-    temperature: ['#7ce9ff', '#ffb35f', '#ff6b7a'] as const,
     load: ['#50fa7b', '#00d4ff', '#ff5ca8'] as const,
     memory: ['#77ecff', '#8f70ff'] as const,
+    temperature: ['#7ce9ff', '#ffb35f', '#ff6b7a'] as const,
 }
 
 const STYLES = `
@@ -131,127 +131,127 @@ const STYLES = `
 export default face(
     'Pulse Temp',
     {
-        targetSensor: sensor('Sensor', 'cpu_temp', { group: 'Data' }),
         colorScheme: combo('Color Scheme', ['Temperature', 'Load', 'Memory', 'Custom'], { group: 'Style' }),
         customColor: color('Custom Color', palette.neonCyan, { group: 'Style' }),
-        meterStyle: combo('Meter Style', ['Halo', 'Vector', 'Scope'], { group: 'Layout' }),
-        heroFont: font('Hero Font', 'Rajdhani', { group: 'Typography', families: [...DISPLAY_FONT_FAMILIES] }),
-        uiFont: font('UI Font', 'Inter', { group: 'Typography', families: [...UI_FONT_FAMILIES] }),
-        heroSize: num('Hero Size', [72, 164], 132, { group: 'Typography' }),
         detailSize: num('Detail Size', [9, 24], 12, { group: 'Typography' }),
         glowIntensity: num('Glow', [0, 100], 54, { group: 'Style' }),
-        showNumber: toggle('Show Number', true, { group: 'Elements' }),
-        showUnit: toggle('Show Unit', true, { group: 'Elements' }),
-        showLabel: toggle('Show Label', true, { group: 'Elements' }),
-        showTrend: toggle('Show Trend', false, { group: 'Elements' }),
-        showPeak: toggle('Show Peak', false, { group: 'Elements' }),
+        heroFont: font('Hero Font', 'Rajdhani', { families: [...DISPLAY_FONT_FAMILIES], group: 'Typography' }),
+        heroSize: num('Hero Size', [72, 164], 132, { group: 'Typography' }),
+        meterStyle: combo('Meter Style', ['Halo', 'Vector', 'Scope'], { group: 'Layout' }),
         showArc: toggle('Show Arc', true, { group: 'Elements' }),
+        showLabel: toggle('Show Label', true, { group: 'Elements' }),
+        showNumber: toggle('Show Number', true, { group: 'Elements' }),
+        showPeak: toggle('Show Peak', false, { group: 'Elements' }),
+        showTrend: toggle('Show Trend', false, { group: 'Elements' }),
+        showUnit: toggle('Show Unit', true, { group: 'Elements' }),
+        targetSensor: sensor('Sensor', 'cpu_temp', { group: 'Data' }),
+        uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography' }),
     },
     {
-        description: 'A centered single-sensor readout. Every element is independently toggleable.',
         author: 'Hypercolor',
-        designBasis: { width: 480, height: 480 },
+        description: 'A centered single-sensor readout. Every element is independently toggleable.',
+        designBasis: { height: 480, width: 480 },
         presets: [
             {
-                name: 'CPU Siren',
-                description: 'Cyan-to-hot thermal watch with clear tech numerals.',
                 controls: {
-                    targetSensor: 'cpu_temp',
                     colorScheme: 'Temperature',
-                    meterStyle: 'Halo',
-                    heroFont: 'Rajdhani',
-                    uiFont: 'Inter',
                     glowIntensity: 60,
-                },
-            },
-            {
-                name: 'GPU Ember',
-                description: 'Warm overclock mood with bold condensed numerals.',
-                controls: {
-                    targetSensor: 'gpu_temp',
-                    colorScheme: 'Temperature',
-                    meterStyle: 'Vector',
-                    heroFont: 'Roboto Condensed',
-                    uiFont: 'Inter',
-                    glowIntensity: 54,
-                },
-            },
-            {
-                name: 'Load Bloom',
-                description: 'Green-magenta load readout with compact secondary detail.',
-                controls: {
-                    targetSensor: 'cpu_load',
-                    colorScheme: 'Load',
-                    meterStyle: 'Scope',
-                    heroFont: 'Exo 2',
-                    uiFont: 'DM Sans',
-                    glowIntensity: 58,
-                },
-            },
-            {
-                name: 'Memory Core',
-                description: 'Clean violet memory monitor.',
-                controls: {
-                    targetSensor: 'ram_used',
-                    colorScheme: 'Memory',
-                    meterStyle: 'Halo',
                     heroFont: 'Rajdhani',
+                    meterStyle: 'Halo',
+                    targetSensor: 'cpu_temp',
                     uiFont: 'Inter',
-                    glowIntensity: 42,
                 },
+                description: 'Cyan-to-hot thermal watch with clear tech numerals.',
+                name: 'CPU Siren',
             },
             {
-                name: 'Coral Signal',
-                description: 'Custom coral readout with softer chrome.',
                 controls: {
-                    targetSensor: 'cpu_temp',
-                    colorScheme: 'Custom',
-                    meterStyle: 'Scope',
-                    customColor: palette.coral,
-                    heroFont: 'Exo 2',
-                    uiFont: 'Space Grotesk',
-                    glowIntensity: 52,
-                },
-            },
-            {
-                name: 'Mono Luxe',
-                description: 'Sharper monospaced numerals.',
-                controls: {
-                    targetSensor: 'gpu_load',
-                    colorScheme: 'Load',
+                    colorScheme: 'Temperature',
+                    glowIntensity: 54,
+                    heroFont: 'Roboto Condensed',
                     meterStyle: 'Vector',
-                    heroFont: 'Space Mono',
-                    uiFont: 'JetBrains Mono',
-                    glowIntensity: 34,
+                    targetSensor: 'gpu_temp',
+                    uiFont: 'Inter',
                 },
+                description: 'Warm overclock mood with bold condensed numerals.',
+                name: 'GPU Ember',
             },
             {
-                name: 'Amber Core',
-                description: 'Warm gold thermal halo with clean sans meta.',
                 controls: {
+                    colorScheme: 'Load',
+                    glowIntensity: 58,
+                    heroFont: 'Exo 2',
+                    meterStyle: 'Scope',
+                    targetSensor: 'cpu_load',
+                    uiFont: 'DM Sans',
+                },
+                description: 'Green-magenta load readout with compact secondary detail.',
+                name: 'Load Bloom',
+            },
+            {
+                controls: {
+                    colorScheme: 'Memory',
+                    glowIntensity: 42,
+                    heroFont: 'Rajdhani',
+                    meterStyle: 'Halo',
+                    targetSensor: 'ram_used',
+                    uiFont: 'Inter',
+                },
+                description: 'Clean violet memory monitor.',
+                name: 'Memory Core',
+            },
+            {
+                controls: {
+                    colorScheme: 'Custom',
+                    customColor: palette.coral,
+                    glowIntensity: 52,
+                    heroFont: 'Exo 2',
+                    meterStyle: 'Scope',
                     targetSensor: 'cpu_temp',
+                    uiFont: 'Space Grotesk',
+                },
+                description: 'Custom coral readout with softer chrome.',
+                name: 'Coral Signal',
+            },
+            {
+                controls: {
+                    colorScheme: 'Load',
+                    glowIntensity: 34,
+                    heroFont: 'Space Mono',
+                    meterStyle: 'Vector',
+                    targetSensor: 'gpu_load',
+                    uiFont: 'JetBrains Mono',
+                },
+                description: 'Sharper monospaced numerals.',
+                name: 'Mono Luxe',
+            },
+            {
+                controls: {
                     colorScheme: 'Custom',
                     customColor: '#ffb35c',
-                    meterStyle: 'Halo',
-                    heroFont: 'Rajdhani',
-                    uiFont: 'DM Sans',
                     glowIntensity: 50,
+                    heroFont: 'Rajdhani',
+                    meterStyle: 'Halo',
+                    targetSensor: 'cpu_temp',
+                    uiFont: 'DM Sans',
                 },
+                description: 'Warm gold thermal halo with clean sans meta.',
+                name: 'Amber Core',
             },
             {
-                name: 'Naked Digit',
-                description: 'Just the number. No chrome, no arc, no meta.',
                 controls: {
-                    targetSensor: 'cpu_temp',
                     colorScheme: 'Temperature',
                     heroFont: 'Rajdhani',
-                    uiFont: 'Inter',
-                    showUnit: false,
-                    showLabel: false,
-                    showTrend: false,
-                    showPeak: false,
                     showArc: false,
+                    showLabel: false,
+                    showPeak: false,
+                    showTrend: false,
+                    showUnit: false,
+                    targetSensor: 'cpu_temp',
+                    uiFont: 'Inter',
                 },
+                description: 'Just the number. No chrome, no arc, no meta.',
+                name: 'Naked Digit',
             },
         ],
     },
@@ -303,18 +303,20 @@ export default face(
             }
 
             const scheme = controls.colorScheme as string
-            const baseAccent = scheme === 'Temperature'
-                ? colorByValue(smoothValue, FACE_SCHEMES.temperature)
-                : scheme === 'Load'
-                  ? colorByValue(smoothValue, FACE_SCHEMES.load)
-                  : scheme === 'Memory'
-                    ? colorByValue(smoothValue, FACE_SCHEMES.memory)
-                    : (controls.customColor as string)
-            const secondary = scheme === 'Temperature'
-                ? mixFaceAccent(baseAccent, palette.coral, 0.34)
-                : scheme === 'Memory'
-                  ? mixFaceAccent(baseAccent, palette.electricPurple, 0.48)
-                  : mixFaceAccent(baseAccent)
+            const baseAccent =
+                scheme === 'Temperature'
+                    ? colorByValue(smoothValue, FACE_SCHEMES.temperature)
+                    : scheme === 'Load'
+                      ? colorByValue(smoothValue, FACE_SCHEMES.load)
+                      : scheme === 'Memory'
+                        ? colorByValue(smoothValue, FACE_SCHEMES.memory)
+                        : (controls.customColor as string)
+            const secondary =
+                scheme === 'Temperature'
+                    ? mixFaceAccent(baseAccent, palette.coral, 0.34)
+                    : scheme === 'Memory'
+                      ? mixFaceAccent(baseAccent, palette.electricPurple, 0.48)
+                      : mixFaceAccent(baseAccent)
             const ink = resolveFaceInk(baseAccent)
             const glow = clamp01((controls.glowIntensity as number) / 100)
             const meterStyle = (controls.meterStyle as string).toLowerCase()
@@ -375,40 +377,40 @@ export default face(
                 arcGauge(c, {
                     cx,
                     cy,
-                    radius: 134,
-                    thickness: 10,
-                    value: smoothValue,
                     fillColor: [baseAccent, secondary],
-                    trackColor: withAlpha(ink.ui, 0.1),
+                    glow: 0.18 + glow * 0.24,
+                    radius: 134,
                     startAngle: Math.PI * 0.98,
                     sweep: Math.PI * 0.86,
-                    glow: 0.18 + glow * 0.24,
+                    thickness: 10,
+                    trackColor: withAlpha(ink.ui, 0.1),
+                    value: smoothValue,
                 })
             } else if (meterStyle === 'scope') {
                 arcGauge(c, {
                     cx,
                     cy,
-                    radius: 146,
-                    thickness: 12,
-                    value: smoothValue,
                     fillColor: [baseAccent, secondary],
-                    trackColor: withAlpha(ink.ui, 0.1),
+                    glow: 0.2 + glow * 0.28,
+                    radius: 146,
                     startAngle: Math.PI * 0.74,
                     sweep: Math.PI * 1.12,
-                    glow: 0.2 + glow * 0.28,
+                    thickness: 12,
+                    trackColor: withAlpha(ink.ui, 0.1),
+                    value: smoothValue,
                 })
             } else {
                 arcGauge(c, {
                     cx,
                     cy,
-                    radius: 156,
-                    thickness: 16,
-                    value: smoothValue,
                     fillColor: [baseAccent, secondary],
-                    trackColor: withAlpha(ink.ui, 0.12),
+                    glow: 0.24 + glow * 0.32,
+                    radius: 156,
                     startAngle: Math.PI * 0.72,
                     sweep: Math.PI * 1.42,
-                    glow: 0.24 + glow * 0.32,
+                    thickness: 16,
+                    trackColor: withAlpha(ink.ui, 0.12),
+                    value: smoothValue,
                 })
             }
 

@@ -29,18 +29,7 @@ export interface SparklineOptions {
 }
 
 export function sparkline(ctx: CanvasRenderingContext2D, opts: SparklineOptions): void {
-    const {
-        x,
-        y,
-        width,
-        height,
-        values,
-        range,
-        color,
-        lineWidth = 1.5,
-        fill = true,
-        fillOpacity = 0.15,
-    } = opts
+    const { x, y, width, height, values, range, color, lineWidth = 1.5, fill = true, fillOpacity = 0.15 } = opts
 
     if (values.length < 2) return
 
@@ -65,7 +54,12 @@ export function sparkline(ctx: CanvasRenderingContext2D, opts: SparklineOptions)
         ctx.closePath()
 
         const grad = ctx.createLinearGradient(x, y, x, y + height)
-        grad.addColorStop(0, `${color}${Math.round(fillOpacity * 255).toString(16).padStart(2, '0')}`)
+        grad.addColorStop(
+            0,
+            `${color}${Math.round(fillOpacity * 255)
+                .toString(16)
+                .padStart(2, '0')}`,
+        )
         grad.addColorStop(1, `${color}00`)
         ctx.fillStyle = grad
         ctx.fill()

@@ -1,23 +1,13 @@
-import {
-    color,
-    combo,
-    face,
-    font,
-    lerpColor,
-    num,
-    palette,
-    toggle,
-    withAlpha,
-} from '@hypercolor/sdk'
+import { color, combo, face, font, lerpColor, num, palette, toggle, withAlpha } from '@hypercolor/sdk'
 
 import {
-    DISPLAY_FONT_FAMILIES,
-    UI_FONT_FAMILIES,
     clamp01,
     createFaceRoot,
+    DISPLAY_FONT_FAMILIES,
     ensureFaceStyles,
     mixFaceAccent,
     resolveFaceInk,
+    UI_FONT_FAMILIES,
 } from '../shared/dom'
 
 const STYLE_ID = 'hc-face-neon-clock'
@@ -133,123 +123,123 @@ export default face(
     'Neon Clock',
     {
         accent: color('Accent', palette.neonCyan, { group: 'Style' }),
-        secondaryAccent: color('Secondary', palette.electricPurple, { group: 'Style' }),
         dialStyle: combo('Dial Style', ['Orbit', 'Split', 'Pulse'], { group: 'Clock' }),
-        headlineFont: font('Headline Font', 'Rajdhani', { group: 'Typography', families: [...DISPLAY_FONT_FAMILIES] }),
-        uiFont: font('UI Font', 'Inter', { group: 'Typography', families: [...UI_FONT_FAMILIES] }),
-        timeSize: num('Time Size', [72, 164], 120, { group: 'Typography' }),
-        metaSize: num('Meta Size', [8, 24], 12, { group: 'Typography' }),
-        hourFormat: combo('Format', ['24h', '12h'], { group: 'Clock' }),
         glowIntensity: num('Glow', [0, 100], 56, { group: 'Style' }),
-        showTime: toggle('Show Time', true, { group: 'Elements' }),
-        showSeparator: toggle('Show Separator', true, { group: 'Elements' }),
-        showDate: toggle('Show Date', true, { group: 'Elements' }),
-        showSeconds: toggle('Show Seconds', false, { group: 'Elements' }),
+        headlineFont: font('Headline Font', 'Rajdhani', { families: [...DISPLAY_FONT_FAMILIES], group: 'Typography' }),
+        hourFormat: combo('Format', ['24h', '12h'], { group: 'Clock' }),
+        metaSize: num('Meta Size', [8, 24], 12, { group: 'Typography' }),
+        secondaryAccent: color('Secondary', palette.electricPurple, { group: 'Style' }),
         showAmPm: toggle('Show AM/PM', true, { group: 'Elements' }),
+        showDate: toggle('Show Date', true, { group: 'Elements' }),
         showDial: toggle('Show Dial', true, { group: 'Elements' }),
+        showSeconds: toggle('Show Seconds', false, { group: 'Elements' }),
+        showSeparator: toggle('Show Separator', true, { group: 'Elements' }),
+        showTime: toggle('Show Time', true, { group: 'Elements' }),
+        timeSize: num('Time Size', [72, 164], 120, { group: 'Typography' }),
+        uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography' }),
     },
     {
-        description: 'A centered digital clock. Every element is independently toggleable.',
         author: 'Hypercolor',
-        designBasis: { width: 480, height: 480 },
+        description: 'A centered digital clock. Every element is independently toggleable.',
+        designBasis: { height: 480, width: 480 },
         presets: [
             {
-                name: 'Electric Midnight',
-                description: 'Cyan-violet clock with balanced tech numerals.',
                 controls: {
                     accent: palette.neonCyan,
-                    secondaryAccent: palette.electricPurple,
                     dialStyle: 'Orbit',
-                    headlineFont: 'Rajdhani',
-                    uiFont: 'Inter',
                     glowIntensity: 60,
+                    headlineFont: 'Rajdhani',
+                    secondaryAccent: palette.electricPurple,
+                    uiFont: 'Inter',
                 },
+                description: 'Cyan-violet clock with balanced tech numerals.',
+                name: 'Electric Midnight',
             },
             {
-                name: 'Blush Circuit',
-                description: 'Soft coral and purple with crisp modern type.',
                 controls: {
                     accent: palette.coral,
-                    secondaryAccent: '#ffb3f2',
                     dialStyle: 'Pulse',
-                    headlineFont: 'Exo 2',
-                    uiFont: 'DM Sans',
                     glowIntensity: 54,
+                    headlineFont: 'Exo 2',
+                    secondaryAccent: '#ffb3f2',
+                    uiFont: 'DM Sans',
                 },
+                description: 'Soft coral and purple with crisp modern type.',
+                name: 'Blush Circuit',
             },
             {
-                name: 'Arcade Mono',
-                description: 'Monospaced clock with clean amber accents.',
                 controls: {
                     accent: palette.electricYellow,
-                    secondaryAccent: '#ff8d4d',
                     dialStyle: 'Split',
-                    headlineFont: 'Space Mono',
-                    uiFont: 'JetBrains Mono',
                     glowIntensity: 48,
+                    headlineFont: 'Space Mono',
+                    secondaryAccent: '#ff8d4d',
+                    uiFont: 'JetBrains Mono',
                 },
+                description: 'Monospaced clock with clean amber accents.',
+                name: 'Arcade Mono',
             },
             {
-                name: 'Afterglow',
-                description: 'Warm rose-gold with compact numerals.',
                 controls: {
                     accent: '#ffb38a',
-                    secondaryAccent: '#ffd2c3',
                     dialStyle: 'Pulse',
-                    headlineFont: 'Rajdhani',
-                    uiFont: 'Roboto Condensed',
                     glowIntensity: 42,
+                    headlineFont: 'Rajdhani',
+                    secondaryAccent: '#ffd2c3',
+                    uiFont: 'Roboto Condensed',
                 },
+                description: 'Warm rose-gold with compact numerals.',
+                name: 'Afterglow',
             },
             {
-                name: 'Frostline',
-                description: 'Cool blue-white with airy accents.',
                 controls: {
                     accent: '#9ae7ff',
-                    secondaryAccent: '#d6ecff',
                     dialStyle: 'Orbit',
-                    headlineFont: 'Exo 2',
-                    uiFont: 'Inter',
                     glowIntensity: 44,
+                    headlineFont: 'Exo 2',
+                    secondaryAccent: '#d6ecff',
+                    uiFont: 'Inter',
                 },
+                description: 'Cool blue-white with airy accents.',
+                name: 'Frostline',
             },
             {
-                name: 'Night Drive',
-                description: 'Magenta-blue contrast with strong readable rhythm.',
                 controls: {
                     accent: '#ff4da6',
-                    secondaryAccent: '#6a8bff',
                     dialStyle: 'Split',
-                    headlineFont: 'Rajdhani',
-                    uiFont: 'Space Grotesk',
                     glowIntensity: 58,
+                    headlineFont: 'Rajdhani',
+                    secondaryAccent: '#6a8bff',
+                    uiFont: 'Space Grotesk',
                 },
+                description: 'Magenta-blue contrast with strong readable rhythm.',
+                name: 'Night Drive',
             },
             {
-                name: 'Signal Drift',
-                description: 'Cyan and amber with subtle orbit accent.',
                 controls: {
                     accent: '#8ef4ff',
-                    secondaryAccent: '#ffc76b',
                     dialStyle: 'Orbit',
-                    headlineFont: 'Orbitron',
-                    uiFont: 'DM Sans',
                     glowIntensity: 50,
+                    headlineFont: 'Orbitron',
+                    secondaryAccent: '#ffc76b',
+                    uiFont: 'DM Sans',
                 },
+                description: 'Cyan and amber with subtle orbit accent.',
+                name: 'Signal Drift',
             },
             {
-                name: 'Naked Time',
-                description: 'Just the digits. No meta, no dial.',
                 controls: {
                     accent: palette.neonCyan,
-                    secondaryAccent: palette.electricPurple,
                     headlineFont: 'Rajdhani',
-                    uiFont: 'Inter',
-                    showDate: false,
-                    showSeconds: false,
+                    secondaryAccent: palette.electricPurple,
                     showAmPm: false,
+                    showDate: false,
                     showDial: false,
+                    showSeconds: false,
+                    uiFont: 'Inter',
                 },
+                description: 'Just the digits. No meta, no dial.',
+                name: 'Naked Time',
             },
         ],
     },
@@ -324,14 +314,14 @@ export default face(
 
             const hoursText = hours.toString()
             const minutesText = minutes.toString().padStart(2, '0')
-            setClockDigit(hoursTensEl, hoursText.length > 1 ? hoursText[0] ?? null : null)
+            setClockDigit(hoursTensEl, hoursText.length > 1 ? (hoursText[0] ?? null) : null)
             setClockDigit(hoursOnesEl, hoursText[hoursText.length - 1] ?? '0')
             setClockDigit(minutesTensEl, minutesText[0] ?? '0')
             setClockDigit(minutesOnesEl, minutesText[1] ?? '0')
             secondsEl.textContent = `SEC ${seconds.toString().padStart(2, '0')}`
             ampmEl.textContent = is12h ? ampm : ''
             dateEl.textContent = now
-                .toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+                .toLocaleDateString('en-US', { day: 'numeric', month: 'short', weekday: 'short' })
                 .toUpperCase()
 
             timeEl.classList.toggle('hc-neon-clock__hidden', !showTime)
@@ -339,10 +329,7 @@ export default face(
             dateEl.classList.toggle('hc-neon-clock__hidden', !showDate)
             secondsEl.classList.toggle('hc-neon-clock__hidden', !showSeconds)
             ampmEl.classList.toggle('hc-neon-clock__hidden', !is12h || !showAmPm)
-            metaEl.classList.toggle(
-                'hc-neon-clock__hidden',
-                !showDate && !showSeconds && !(is12h && showAmPm),
-            )
+            metaEl.classList.toggle('hc-neon-clock__hidden', !showDate && !showSeconds && !(is12h && showAmPm))
 
             const c = ctx.ctx
             c.clearRect(0, 0, W, H)

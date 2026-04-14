@@ -124,8 +124,8 @@ export {
 
 // ── Faces ───────────────────────────────────────────────────────────────
 
-export { face } from './faces'
 export type { FaceContext, FaceOptions, FaceUpdateFn, SensorAccessor, SensorReading } from './faces'
+export { face } from './faces'
 export {
     colorByValue,
     lerpColor,
@@ -146,7 +146,7 @@ export type {
     RingGaugeOptions,
     SparklineOptions,
 } from './gauges'
-export { ValueHistory, arcGauge, barGauge, ringGauge, sparkline } from './gauges'
+export { arcGauge, barGauge, ringGauge, sparkline, ValueHistory } from './gauges'
 
 // ── Initialization ──────────────────────────────────────────────────────
 

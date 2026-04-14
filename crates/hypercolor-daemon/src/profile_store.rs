@@ -63,7 +63,8 @@ impl Profile {
 
     #[must_use]
     pub fn normalized(mut self) -> Self {
-        self.name = self.name.trim().to_owned();
+        let trimmed_name = self.name.trim().to_owned();
+        self.name.clone_from(&trimmed_name);
         self.description = self
             .description
             .map(|description| description.trim().to_owned())

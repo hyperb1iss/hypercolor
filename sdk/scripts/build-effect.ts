@@ -416,7 +416,9 @@ async function buildEffect(entryPath: string, outDir: string) {
         throw new Error(`${effectId}: effect() found in src/faces/ — move to src/effects/`)
     }
     if (!isFaceSource && metadataType === 'face') {
-        console.warn(`  \x1b[38;2;241;250;140mWarning:\x1b[0m ${effectId} uses face() but lives outside src/faces/ — building as face anyway`)
+        console.warn(
+            `  \x1b[38;2;241;250;140mWarning:\x1b[0m ${effectId} uses face() but lives outside src/faces/ — building as face anyway`,
+        )
     }
 
     // 2. Generate control meta tags

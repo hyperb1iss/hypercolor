@@ -149,6 +149,7 @@ impl CompositionPlan {
         }
     }
 
+    #[must_use]
     pub fn with_cpu_replay_cacheable(mut self, cacheable: bool) -> Self {
         self.cpu_replay_cacheable = cacheable;
         self
@@ -300,6 +301,10 @@ impl SparkleFlinger {
         }
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the public wrapper mirrors the GPU backend signature even when only the CPU path is compiled"
+    )]
     pub(crate) fn begin_sample_zone_plan_into(
         &mut self,
         prepared_zones: &[PreparedZonePlan],
@@ -325,6 +330,10 @@ impl SparkleFlinger {
         }
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the public wrapper mirrors the GPU backend signature even when only the CPU path is compiled"
+    )]
     pub(crate) fn finish_pending_zone_sampling(
         &mut self,
         pending: PendingZoneSampling,
@@ -346,6 +355,10 @@ impl SparkleFlinger {
         }
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the public wrapper mirrors the GPU backend signature even when only the CPU path is compiled"
+    )]
     pub(crate) fn try_finish_pending_zone_sampling(
         &mut self,
         pending: &mut PendingZoneSampling,

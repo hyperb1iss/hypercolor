@@ -1,5 +1,5 @@
 {
-    "$schema": "https://biomejs.dev/schemas/2.4.6/schema.json",
+    "$schema": "https://biomejs.dev/schemas/2.4.7/schema.json",
 
     "vcs": {
         "enabled": true,
@@ -97,6 +97,17 @@
                 "actions": {
                     "source": {
                         "useSortedKeys": "off"
+                    }
+                }
+            }
+        },
+        {
+            // Face templates create a fixed DOM skeleton up front, so the follow-on queries are intentionally strict.
+            "includes": ["src/faces/**/main.ts"],
+            "linter": {
+                "rules": {
+                    "style": {
+                        "noNonNullAssertion": "off"
                     }
                 }
             }

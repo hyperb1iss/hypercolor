@@ -102,8 +102,8 @@ struct DisplaySourceIdentity {
 
 impl DisplayFrameInputState {
     fn matches(&self, frames: &DisplayWorkerFrameSet, target: &DisplayTarget) -> bool {
-        display_source_matches(&self.effect_source, &frames.effect_frame)
-            && display_source_matches(&self.face_source, &frames.face_frame)
+        display_source_matches(self.effect_source.as_ref(), frames.effect_frame.as_ref())
+            && display_source_matches(self.face_source.as_ref(), frames.face_frame.as_ref())
             && self.canvas_source == target.canvas_source.signature()
             && self.brightness_factor == display_brightness_factor(target.brightness)
             && self.geometry == target.geometry
@@ -119,11 +119,11 @@ impl DisplayFrameInputState {
 
     fn capture(frames: &DisplayWorkerFrameSet, target: &DisplayTarget) -> Self {
         Self {
-            effect_source: capture_display_source(&frames.effect_frame),
-            face_source: capture_display_source(&frames.face_frame),
+            effect_source: capture_display_source(frames.effect_frame.as_ref()),
+            face_source: capture_display_source(frames.face_frame.as_ref()),
             canvas_source: target.canvas_source.signature(),
             brightness_factor: display_brightness_factor(target.brightness),
-            geometry: target.geometry.clone(),
+            geometry: target.geometry,
             viewport: display_viewport_signature(&target.viewport),
             face_blend_mode: target.display_target.as_ref().map_or(
                 hypercolor_types::scene::DisplayFaceBlendMode::Replace,
@@ -135,8 +135,8 @@ impl DisplayFrameInputState {
 }
 
 fn display_source_matches(
-    captured: &Option<CapturedDisplaySource>,
-    source: &Option<Arc<CanvasFrame>>,
+    captured: Option<&CapturedDisplaySource>,
+    source: Option<&Arc<CanvasFrame>>,
 ) -> bool {
     match (captured, source) {
         (None, None) => true,
@@ -152,8 +152,8 @@ fn display_source_matches(
     }
 }
 
-fn capture_display_source(source: &Option<Arc<CanvasFrame>>) -> Option<CapturedDisplaySource> {
-    source.as_ref().map(|source| CapturedDisplaySource {
+fn capture_display_source(source: Option<&Arc<CanvasFrame>>) -> Option<CapturedDisplaySource> {
+    source.map(|source| CapturedDisplaySource {
         identity: display_source_identity(source.as_ref()),
         snapshot: Arc::clone(source),
     })
@@ -169,7 +169,7 @@ fn display_source_identity(source: &CanvasFrame) -> DisplaySourceIdentity {
 }
 
 impl DisplayWorkerHandle {
-    #[expect(
+    #[allow(
         clippy::too_many_arguments,
         reason = "worker spawn plumbs every shared subsystem it consumes"
     )]
@@ -216,7 +216,7 @@ impl DisplayWorkerHandle {
     clippy::too_many_lines,
     reason = "display worker is a self-contained event loop"
 )]
-#[expect(
+#[allow(
     clippy::too_many_arguments,
     reason = "display worker borrows every subsystem it drives"
 )]

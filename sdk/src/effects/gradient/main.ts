@@ -1,14 +1,6 @@
 import { canvas, color, combo, num, scaleContext, toggle } from '@hypercolor/sdk'
 
-import {
-    BUILTIN_DESIGN_BASIS,
-    clamp01,
-    hexToRgb,
-    hslCss,
-    mixRgb,
-    rgbToCss,
-    scaleRgb,
-} from '../_builtin/common'
+import { BUILTIN_DESIGN_BASIS, clamp01, hexToRgb, hslCss, mixRgb, rgbToCss, scaleRgb } from '../_builtin/common'
 
 function repeatOffset(value: number, mode: string): number {
     if (mode === 'Repeat') return ((((value + 1) % 2) + 2) % 2) - 1
@@ -100,7 +92,9 @@ export default canvas(
 
         if ((controls.mode as string) === 'Radial') {
             const cx = width * clamp01((controls.center_x as number) + animatedOffset * 0.18)
-            const cy = height * clamp01((controls.center_y as number) + Math.sin(time * 0.33) * (controls.speed as number) * 0.08)
+            const cy =
+                height *
+                clamp01((controls.center_y as number) + Math.sin(time * 0.33) * (controls.speed as number) * 0.08)
             const radius = (Math.max(width, height) * 0.62) / Math.max(scale, 0.1)
             const gradient = ctx.createRadialGradient(cx, cy, width * 0.02, cx, cy, radius)
             gradient.addColorStop(0, startCss)
@@ -122,9 +116,19 @@ export default canvas(
             gradient.addColorStop(0, startCss)
             if (useMid) {
                 const easedMid = ease(midpoint, easing)
-                gradient.addColorStop(clamp01(easedMid - 0.06), controls.interpolation === 'Direct' ? rgbToCss(mixRgb(start, mid, 0.65)) : saturateRgb(mixRgb(start, mid, 0.65), saturation))
+                gradient.addColorStop(
+                    clamp01(easedMid - 0.06),
+                    controls.interpolation === 'Direct'
+                        ? rgbToCss(mixRgb(start, mid, 0.65))
+                        : saturateRgb(mixRgb(start, mid, 0.65), saturation),
+                )
                 gradient.addColorStop(easedMid, midCss)
-                gradient.addColorStop(clamp01(easedMid + 0.06), controls.interpolation === 'Direct' ? rgbToCss(mixRgb(mid, end, 0.55)) : saturateRgb(mixRgb(mid, end, 0.55), saturation))
+                gradient.addColorStop(
+                    clamp01(easedMid + 0.06),
+                    controls.interpolation === 'Direct'
+                        ? rgbToCss(mixRgb(mid, end, 0.55))
+                        : saturateRgb(mixRgb(mid, end, 0.55), saturation),
+                )
             }
             gradient.addColorStop(1, endCss)
             ctx.fillStyle = gradient
@@ -144,7 +148,8 @@ export default canvas(
         author: 'Hypercolor',
         builtinId: 'gradient',
         category: 'ambient',
-        description: 'Adaptive linear and radial gradients with animated drift, shaped mid-stops, and presets tuned for LED hardware.',
+        description:
+            'Adaptive linear and radial gradients with animated drift, shaped mid-stops, and presets tuned for LED hardware.',
         designBasis: BUILTIN_DESIGN_BASIS,
         presets: [
             {

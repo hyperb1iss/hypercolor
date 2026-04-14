@@ -125,14 +125,16 @@ impl SystemSnapshot {
             Some(100.0),
             None,
         ));
-        readings.push(SensorReading::new(
-            "ram_used_mb",
-            self.ram_used_mb as f32,
-            SensorUnit::Megabytes,
-            Some(0.0),
-            Some(self.ram_total_mb as f32),
-            None,
-        ));
+        if let Some(ram_used_mb) = narrow_sensor_scalar(self.ram_used_mb) {
+            readings.push(SensorReading::new(
+                "ram_used_mb",
+                ram_used_mb,
+                SensorUnit::Megabytes,
+                Some(0.0),
+                narrow_sensor_scalar(self.ram_total_mb),
+                None,
+            ));
+        }
 
         readings.extend(self.components.iter().cloned());
         readings
@@ -206,7 +208,7 @@ pub enum SensorUnit {
 }
 
 impl SensorUnit {
-    /// Human-readable unit symbol used by the REST API and LightScript.
+    /// Human-readable unit symbol used by the REST API and `LightScript`.
     #[must_use]
     pub const fn symbol(self) -> &'static str {
         match self {
@@ -232,4 +234,13 @@ fn normalize_sensor_label(label: &str) -> String {
             }
         })
         .collect()
+}
+
+#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+fn narrow_sensor_scalar(value: f64) -> Option<f32> {
+    if value.is_finite() && value >= f64::from(f32::MIN) && value <= f64::from(f32::MAX) {
+        Some(value as f32)
+    } else {
+        None
+    }
 }

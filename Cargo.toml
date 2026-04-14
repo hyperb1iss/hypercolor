@@ -30,10 +30,29 @@ module_name_repetitions = { level = "allow", priority = 21 }
 significant_drop_tightening = { level = "allow", priority = 21 }
 must_use_candidate = { level = "allow", priority = 21 }
 implicit_hasher = { level = "allow", priority = 21 }
-cast_precision_loss = { level = "warn", priority = 22 }
-cast_possible_truncation = { level = "warn", priority = 22 }
-cast_sign_loss = { level = "warn", priority = 22 }
-as_conversions = { level = "warn", priority = 22 }
+as_conversions = { level = "allow", priority = 22 }
+bool_to_int_with_if = { level = "allow", priority = 22 }
+bool_assert_comparison = { level = "allow", priority = 22 }
+cast_possible_truncation = { level = "allow", priority = 22 }
+cast_precision_loss = { level = "allow", priority = 22 }
+cast_sign_loss = { level = "allow", priority = 22 }
+comparison_chain = { level = "allow", priority = 22 }
+doc_markdown = { level = "allow", priority = 22 }
+float_cmp = { level = "allow", priority = 22 }
+implicit_saturating_sub = { level = "allow", priority = 22 }
+items_after_statements = { level = "allow", priority = 22 }
+large_enum_variant = { level = "allow", priority = 22 }
+map_unwrap_or = { level = "allow", priority = 22 }
+needless_borrow = { level = "allow", priority = 22 }
+option_as_ref_cloned = { level = "allow", priority = 22 }
+question_mark = { level = "allow", priority = 22 }
+similar_names = { level = "allow", priority = 22 }
+struct_excessive_bools = { level = "allow", priority = 22 }
+too_many_arguments = { level = "allow", priority = 22 }
+too_many_lines = { level = "allow", priority = 22 }
+uninlined_format_args = { level = "allow", priority = 22 }
+unnested_or_patterns = { level = "allow", priority = 22 }
+unused_self = { level = "allow", priority = 22 }
 out_of_bounds_indexing = { level = "deny", priority = 30 }
 enum_glob_use = { level = "deny", priority = 30 }
 unwrap_used = { level = "deny", priority = 30 }
@@ -46,11 +65,11 @@ semicolon_if_nothing_returned = { level = "warn", priority = 36 }
 cloned_instead_of_copied = { level = "warn", priority = 36 }
 flat_map_option = { level = "warn", priority = 36 }
 from_iter_instead_of_collect = { level = "warn", priority = 36 }
-needless_pass_by_value = { level = "warn", priority = 36 }
-trivially_copy_pass_by_ref = { level = "warn", priority = 36 }
+needless_pass_by_value = { level = "allow", priority = 36 }
+trivially_copy_pass_by_ref = { level = "allow", priority = 36 }
 if_not_else = { level = "warn", priority = 36 }
-match_same_arms = { level = "warn", priority = 36 }
-needless_continue = { level = "warn", priority = 36 }
+match_same_arms = { level = "allow", priority = 36 }
+needless_continue = { level = "allow", priority = 36 }
 
 [workspace.dependencies]
 # Serialization

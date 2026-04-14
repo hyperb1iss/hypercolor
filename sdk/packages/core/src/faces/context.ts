@@ -59,11 +59,7 @@ export interface FaceContext {
 }
 
 /** Signature of the update function returned by a face's setup function. */
-export type FaceUpdateFn = (
-    time: number,
-    controls: Record<string, unknown>,
-    sensors: SensorAccessor,
-) => void
+export type FaceUpdateFn = (time: number, controls: Record<string, unknown>, sensors: SensorAccessor) => void
 
 // ── SensorAccessor implementation ──────────────────────────────────────
 
@@ -92,12 +88,10 @@ function formatSensorValue(reading: SensorReading): string {
 /** Build a SensorAccessor from the current engine.sensors state. */
 export function buildSensorAccessor(): SensorAccessor {
     return {
-        read(label: string): SensorReading | null {
-            if (typeof engine === 'undefined') return null
-            if (typeof engine.getSensorValue === 'function') {
-                return engine.getSensorValue(label)
-            }
-            return engine.sensors?.[label] ?? null
+        formatted(label: string): string {
+            const reading = this.read(label)
+            if (!reading) return '--'
+            return formatSensorValue(reading)
         },
 
         list(): string[] {
@@ -112,11 +106,12 @@ export function buildSensorAccessor(): SensorAccessor {
             if (range <= 0) return 0
             return Math.max(0, Math.min(1, (reading.value - reading.min) / range))
         },
-
-        formatted(label: string): string {
-            const reading = this.read(label)
-            if (!reading) return '--'
-            return formatSensorValue(reading)
+        read(label: string): SensorReading | null {
+            if (typeof engine === 'undefined') return null
+            if (typeof engine.getSensorValue === 'function') {
+                return engine.getSensorValue(label)
+            }
+            return engine.sensors?.[label] ?? null
         },
     }
 }

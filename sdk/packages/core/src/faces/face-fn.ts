@@ -166,7 +166,8 @@ function googleFontsUrl(families: Iterable<string>): string {
  */
 async function loadFaceFonts(controls: ResolvedFaceControl[]): Promise<void> {
     const fontControls = controls.filter(
-        (c) => c.spec.__type === 'combobox' && (c.spec.meta.values as string[] | undefined)?.some((v) => v.includes(' ')),
+        (c) =>
+            c.spec.__type === 'combobox' && (c.spec.meta.values as string[] | undefined)?.some((v) => v.includes(' ')),
     )
     if (fontControls.length === 0) return
 
@@ -193,11 +194,7 @@ async function loadFaceFonts(controls: ResolvedFaceControl[]): Promise<void> {
     }
 }
 
-function startFaceLoop(
-    ctx: FaceContext,
-    setupFn: FaceSetupFn,
-    resolvedControls: ResolvedFaceControl[],
-): void {
+function startFaceLoop(ctx: FaceContext, setupFn: FaceSetupFn, resolvedControls: ResolvedFaceControl[]): void {
     const updateFn = setupFn(ctx)
     const sensorAccessor = buildSensorAccessor()
 
@@ -232,14 +229,9 @@ function startFaceLoop(
  * canvas overlay. It returns an update function called every frame with
  * the current time, resolved controls, and a sensor accessor.
  */
-export function face(
-    name: string,
-    controls: ControlMap,
-    options: FaceOptions,
-    setupFn: FaceSetupFn,
-): void {
+export function face(name: string, controls: ControlMap, options: FaceOptions, setupFn: FaceSetupFn): void {
     const resolved = resolveFaceControls(controls)
-    const designBasis = options.designBasis ?? { width: 480, height: 480 }
+    const designBasis = options.designBasis ?? { height: 480, width: 480 }
     const circular = options.circular ?? false
 
     // Build-time metadata extraction — bail before any DOM access

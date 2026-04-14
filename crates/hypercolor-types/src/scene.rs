@@ -171,6 +171,7 @@ impl DisplayFaceBlendMode {
     }
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_default_display_face_blend_mode(value: &DisplayFaceBlendMode) -> bool {
     matches!(value, DisplayFaceBlendMode::Alpha)
 }
@@ -179,6 +180,7 @@ fn default_display_face_opacity() -> f32 {
     1.0
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_default_display_face_opacity(value: &f32) -> bool {
     (*value - default_display_face_opacity()).abs() <= f32::EPSILON
 }
@@ -205,7 +207,7 @@ impl DisplayFaceTarget {
     pub fn new(device_id: DeviceId) -> Self {
         Self {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Alpha,
+            blend_mode: DisplayFaceBlendMode::Replace,
             opacity: default_display_face_opacity(),
         }
     }

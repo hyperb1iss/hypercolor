@@ -312,11 +312,7 @@ impl ComposeContext<'_> {
                     true,
                 );
                 let preview_request = self.preview_surface_request();
-                let composed = if !compiled_plan.metadata.transition_active {
-                    self.render
-                        .sparkleflinger
-                        .preview_only_frame(render_group_result.preview_frame, preview_request)
-                } else {
+                let composed = if compiled_plan.metadata.transition_active {
                     self.render.sparkleflinger.compose_for_outputs(
                         compiled_plan.plan.with_cpu_replay_cacheable(
                             effect_retained && !compiled_plan.metadata.transition_active,
@@ -324,6 +320,10 @@ impl ComposeContext<'_> {
                         self.requires_cpu_sampling_canvas(),
                         preview_request,
                     )
+                } else {
+                    self.render
+                        .sparkleflinger
+                        .preview_only_frame(render_group_result.preview_frame, preview_request)
                 };
                 let composition_bypassed = composed.bypassed;
                 let composition_done_at = Instant::now();
@@ -479,6 +479,10 @@ fn requires_cpu_sampling_canvas(can_gpu_sample: bool) -> bool {
     !can_gpu_sample
 }
 
+#[allow(
+    clippy::fn_params_excessive_bools,
+    reason = "preview publication depends on a small fixed matrix of boolean runtime states"
+)]
 fn requires_published_surface(
     publish_canvas_preview: bool,
     publish_screen_canvas_preview: bool,
@@ -489,9 +493,13 @@ fn requires_published_surface(
         || (publish_screen_canvas_preview && !effect_running && screen_capture_active)
 }
 
-#[expect(
+#[allow(
     clippy::too_many_arguments,
     reason = "preview request sizing depends on tracked demand and receiver topology"
+)]
+#[allow(
+    clippy::fn_params_excessive_bools,
+    reason = "preview request sizing combines a fixed set of orthogonal publication switches"
 )]
 fn preview_surface_request(
     canvas_width: u32,

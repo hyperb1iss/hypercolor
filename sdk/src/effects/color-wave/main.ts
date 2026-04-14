@@ -1,14 +1,6 @@
 import { canvas, color, combo, num, scaleContext } from '@hypercolor/sdk'
 
-import {
-    BUILTIN_DESIGN_BASIS,
-    hexToRgb,
-    hslCss,
-    mixRgb,
-    rgbToCss,
-    scaleRgb,
-    withLift,
-} from '../_builtin/common'
+import { BUILTIN_DESIGN_BASIS, hexToRgb, hslCss, mixRgb, rgbToCss, scaleRgb, withLift } from '../_builtin/common'
 
 function fract(value: number): number {
     return value - Math.floor(value)
@@ -149,11 +141,28 @@ export default canvas(
                 const signedPhase = mode === 'Counterflow' && i % 2 === 1 ? 1 - basePhase : basePhase
                 const drift = Math.sin(time * 0.8 + i * 1.4) * warp * span * 0.08
                 const position = signedPhase * travel - travel * 0.5 + drift
-                const color = waveColor(colorMode, basePhase + i * 0.1, primary, secondary, accent, brightness, saturation)
-                const haloColor = rgbToCss(withLift(hexToRgb(color.startsWith('#') ? color : controls.accentColor as string), 0.18))
+                const color = waveColor(
+                    colorMode,
+                    basePhase + i * 0.1,
+                    primary,
+                    secondary,
+                    accent,
+                    brightness,
+                    saturation,
+                )
+                const haloColor = rgbToCss(
+                    withLift(hexToRgb(color.startsWith('#') ? color : (controls.accentColor as string)), 0.18),
+                )
 
                 bandGradient(ctx, position, bandWidth, span, color, 0.18 + trail * 0.42)
-                bandGradient(ctx, position - bandWidth * (0.55 + trail * 0.35), bandWidth * 0.75, span, haloColor, 0.07 + trail * 0.12)
+                bandGradient(
+                    ctx,
+                    position - bandWidth * (0.55 + trail * 0.35),
+                    bandWidth * 0.75,
+                    span,
+                    haloColor,
+                    0.07 + trail * 0.12,
+                )
             }
         }
 
@@ -169,8 +178,7 @@ export default canvas(
         author: 'Hypercolor',
         builtinId: 'color_wave',
         category: 'ambient',
-        description:
-            'Traveling light bands with sweep, counterflow, and tunnel modes across curated palettes.',
+        description: 'Traveling light bands with sweep, counterflow, and tunnel modes across curated palettes.',
         designBasis: BUILTIN_DESIGN_BASIS,
         presets: [
             {
@@ -227,7 +235,8 @@ export default canvas(
                     warp: 26,
                     width: 26,
                 },
-                description: 'Sharper diagonal rainbow traffic with enough darkness around it to keep the spectrum vivid.',
+                description:
+                    'Sharper diagonal rainbow traffic with enough darkness around it to keep the spectrum vivid.',
                 name: 'Prism Drift',
             },
             {

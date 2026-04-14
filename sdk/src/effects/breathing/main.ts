@@ -1,13 +1,6 @@
 import { canvas, color, combo, num, scaleContext } from '@hypercolor/sdk'
 
-import {
-    BUILTIN_DESIGN_BASIS,
-    easeInOutSine,
-    hexToRgb,
-    mixRgb,
-    rgbToCss,
-    scaleRgb,
-} from '../_builtin/common'
+import { BUILTIN_DESIGN_BASIS, easeInOutSine, hexToRgb, mixRgb, rgbToCss, scaleRgb } from '../_builtin/common'
 
 export default canvas(
     'Breathing',
@@ -51,7 +44,10 @@ export default canvas(
             const outer = s.ds(112 + glow * 64 + pulse * 26)
             const gradient = ctx.createRadialGradient(cx, cy, s.ds(8), cx, cy, outer)
             gradient.addColorStop(0, rgbToCss(scaleRgb(primary, brightness)))
-            gradient.addColorStop(0.48, rgbToCss(scaleRgb(mode === 'Aurora' ? mixRgb(primary, secondary, 0.5) : primary, brightness * 0.55)))
+            gradient.addColorStop(
+                0.48,
+                rgbToCss(scaleRgb(mode === 'Aurora' ? mixRgb(primary, secondary, 0.5) : primary, brightness * 0.55)),
+            )
             gradient.addColorStop(1, rgbToCss(scaleRgb(mode === 'Aurora' ? secondary : primary, brightness * 0.08), 0))
             ctx.fillStyle = gradient
             ctx.fillRect(0, 0, width, height)
@@ -70,7 +66,8 @@ export default canvas(
         author: 'Hypercolor',
         builtinId: 'breathing',
         category: 'ambient',
-        description: 'Soft pulse lighting with shaped glow, dual-color crossfades, and an aurora mode for layered ambient scenes.',
+        description:
+            'Soft pulse lighting with shaped glow, dual-color crossfades, and an aurora mode for layered ambient scenes.',
         designBasis: BUILTIN_DESIGN_BASIS,
         presets: [
             {
@@ -130,4 +127,3 @@ export default canvas(
         ],
     },
 )
-

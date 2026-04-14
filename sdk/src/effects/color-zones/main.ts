@@ -1,13 +1,6 @@
 import { canvas, color, combo, num, scaleContext } from '@hypercolor/sdk'
 
-import {
-    BUILTIN_DESIGN_BASIS,
-    hexToRgb,
-    mixRgb,
-    rgbToCss,
-    scaleRgb,
-    withLift,
-} from '../_builtin/common'
+import { BUILTIN_DESIGN_BASIS, hexToRgb, mixRgb, rgbToCss, scaleRgb, withLift } from '../_builtin/common'
 
 interface ZoneRect {
     x: number
@@ -187,7 +180,14 @@ export default canvas(
         }
 
         if (vignette > 0) {
-            const shadow = ctx.createRadialGradient(width / 2, height / 2, Math.min(width, height) * 0.2, width / 2, height / 2, Math.max(width, height) * 0.72)
+            const shadow = ctx.createRadialGradient(
+                width / 2,
+                height / 2,
+                Math.min(width, height) * 0.2,
+                width / 2,
+                height / 2,
+                Math.max(width, height) * 0.72,
+            )
             shadow.addColorStop(0, 'rgba(0, 0, 0, 0)')
             shadow.addColorStop(1, `rgba(0, 0, 0, ${0.08 + vignette * 0.38})`)
             ctx.fillStyle = shadow
@@ -230,7 +230,8 @@ export default canvas(
                     zone4: '#80ffea',
                     zoneCount: '4',
                 },
-                description: 'Top-to-bottom status colors that stay readable when zones need to communicate at a glance.',
+                description:
+                    'Top-to-bottom status colors that stay readable when zones need to communicate at a glance.',
                 name: 'Status Ladder',
             },
             {

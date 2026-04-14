@@ -1,3 +1,5 @@
+#![allow(clippy::float_cmp)]
+
 use std::collections::HashMap;
 
 use hypercolor_types::event::{

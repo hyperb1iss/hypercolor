@@ -481,11 +481,10 @@ async fn snapshot_profile(
         id,
         name,
         description,
-        brightness,
         primary,
         displays,
+        brightness,
         layout_id,
-        ..Profile::default()
     }
     .normalized())
 }

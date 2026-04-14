@@ -50,7 +50,13 @@ function orbitPoint(direction: string, phase: number, width: number, height: num
     return [t * width, cy]
 }
 
-function drawGrid(ctx: CanvasRenderingContext2D, width: number, height: number, gridScale: number, color: string): void {
+function drawGrid(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    gridScale: number,
+    color: string,
+): void {
     const columns = Math.max(2, Math.round(gridScale))
     const rows = Math.max(2, Math.round(gridScale * (height / width)))
     ctx.save()
@@ -163,10 +169,14 @@ function drawRingSweep(
 export default canvas(
     'Calibration',
     {
-        pattern: combo('Pattern', ['Sweep', 'Opposing Sweeps', 'Crosshair', 'Quadrant Cycle', 'Corner Cycle', 'Rings'], {
-            default: 'Sweep',
-            group: 'Pattern',
-        }),
+        pattern: combo(
+            'Pattern',
+            ['Sweep', 'Opposing Sweeps', 'Crosshair', 'Quadrant Cycle', 'Corner Cycle', 'Rings'],
+            {
+                default: 'Sweep',
+                group: 'Pattern',
+            },
+        ),
         direction: combo(
             'Direction',
             [
@@ -218,7 +228,16 @@ export default canvas(
             if (direction === 'Outward' || direction === 'Inward') {
                 drawRingSweep(ctx, width, height, phase, direction === 'Inward', bandWidth, primary, secondary)
                 if (pattern === 'Opposing Sweeps') {
-                    drawRingSweep(ctx, width, height, fract(phase + 0.5), direction === 'Inward', bandWidth, secondary, primary)
+                    drawRingSweep(
+                        ctx,
+                        width,
+                        height,
+                        fract(phase + 0.5),
+                        direction === 'Inward',
+                        bandWidth,
+                        secondary,
+                        primary,
+                    )
                 }
             } else {
                 drawLinearSweep(ctx, width, height, phase, direction, bandWidth, primary, secondary)
@@ -322,7 +341,13 @@ export default canvas(
         ctx.fillRect(width / 2 - 1, 0, 2, height)
 
         if (controls.show_grid as boolean) {
-            drawGrid(ctx, width, height, controls.grid_scale as number, rgbToCss(hexToRgb(controls.accent_color as string), 0.28))
+            drawGrid(
+                ctx,
+                width,
+                height,
+                controls.grid_scale as number,
+                rgbToCss(hexToRgb(controls.accent_color as string), 0.28),
+            )
         }
 
         drawCornerMarkers(ctx, width, height, bandWidth)

@@ -1,3 +1,5 @@
+#![allow(clippy::float_cmp)]
+
 //! Tests for effect metadata, controls, and lifecycle types.
 
 use std::path::{Path, PathBuf};

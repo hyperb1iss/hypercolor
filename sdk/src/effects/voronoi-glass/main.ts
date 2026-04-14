@@ -532,7 +532,9 @@ export default canvas.stateful(
                 ctx.restore()
 
                 const shardCenter = {
-                    x: cell.centroid.x + Math.cos(time * (0.72 + speedMix * 0.35) + cell.seed.phase) * cell.radius * 0.16,
+                    x:
+                        cell.centroid.x +
+                        Math.cos(time * (0.72 + speedMix * 0.35) + cell.seed.phase) * cell.radius * 0.16,
                     y:
                         cell.centroid.y +
                         Math.sin(time * (0.58 + speedMix * 0.28) + cell.seed.phase * 1.3) * cell.radius * 0.16,
@@ -542,9 +544,7 @@ export default canvas.stateful(
                     const current = shardPolygon[i]
                     const next = shardPolygon[(i + 1) % shardPolygon.length]
                     const shardPulse =
-                        0.5 +
-                        0.5 *
-                            Math.sin(time * (0.85 + speedMix * 0.45) + cell.seed.phase * 1.1 + i * 1.4)
+                        0.5 + 0.5 * Math.sin(time * (0.85 + speedMix * 0.45) + cell.seed.phase * 1.1 + i * 1.4)
 
                     if (shardPulse <= 0.2) {
                         continue
@@ -604,12 +604,7 @@ export default canvas.stateful(
                 glow.addColorStop(0.55, toRgba(palette.edge, 0.014 + edgeGlowMix * 0.016))
                 glow.addColorStop(1, 'rgba(0,0,0,0)')
                 ctx.fillStyle = glow
-                ctx.fillRect(
-                    glowX - cell.radius * 0.7,
-                    glowY - cell.radius * 0.7,
-                    cell.radius * 1.4,
-                    cell.radius * 1.4,
-                )
+                ctx.fillRect(glowX - cell.radius * 0.7, glowY - cell.radius * 0.7, cell.radius * 1.4, cell.radius * 1.4)
             }
 
             ctx.save()
@@ -617,8 +612,7 @@ export default canvas.stateful(
             ctx.rotate(-0.58 + Math.sin(time * (0.05 + speedMix * 0.03)) * 0.1)
             for (let band = 0; band < 3; band++) {
                 const bandWidth = minDim * (0.09 + band * 0.018 + refractionMix * 0.03)
-                const travel =
-                    ((time * (28 + speedMix * 24) + band * minDim * 0.55) % (minDim * 2.8)) - minDim * 1.4
+                const travel = ((time * (28 + speedMix * 24) + band * minDim * 0.55) % (minDim * 2.8)) - minDim * 1.4
                 const ribbonColor = band % 2 === 0 ? palette.glint : palette.edge
                 const ribbon = ctx.createLinearGradient(0, travel - bandWidth, 0, travel + bandWidth)
                 ribbon.addColorStop(0, 'rgba(0,0,0,0)')
@@ -632,7 +626,10 @@ export default canvas.stateful(
             const glazeOverlay = ctx.createLinearGradient(0, 0, w, h)
             const shimmerStop = clamp(0.38 + Math.sin(time * (0.05 + speedMix * 0.04)) * 0.18, 0.16, 0.84)
             glazeOverlay.addColorStop(0, toRgba(palette.glint, 0.005 + glazeMix * 0.008))
-            glazeOverlay.addColorStop(shimmerStop, toRgba(palette.edge, 0.012 + glazeMix * 0.012 + refractionMix * 0.01))
+            glazeOverlay.addColorStop(
+                shimmerStop,
+                toRgba(palette.edge, 0.012 + glazeMix * 0.012 + refractionMix * 0.01),
+            )
             glazeOverlay.addColorStop(1, 'rgba(0,0,0,0)')
             ctx.fillStyle = glazeOverlay
             ctx.fillRect(0, 0, w, h)

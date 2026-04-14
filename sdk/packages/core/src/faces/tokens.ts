@@ -8,66 +8,65 @@
 // ── Core Palette ───────────────────────────────────────────────────────
 
 export const palette = {
-    electricPurple: '#e135ff',
-    neonCyan: '#80ffea',
-    coral: '#ff6ac1',
-    electricYellow: '#f1fa8c',
-    successGreen: '#50fa7b',
-    errorRed: '#ff6363',
-
     bg: {
         deep: '#0a0a12',
-        surface: '#12121f',
         overlay: '#1a1a2e',
         raised: '#242440',
+        surface: '#12121f',
     },
+    coral: '#ff6ac1',
+    electricPurple: '#e135ff',
+    electricYellow: '#f1fa8c',
+    errorRed: '#ff6363',
 
     fg: {
         primary: '#e8e6f0',
         secondary: '#9d9bb0',
         tertiary: '#6b6980',
     },
+    neonCyan: '#80ffea',
+    successGreen: '#50fa7b',
 } as const
 
 // ── Spacing Scale ──────────────────────────────────────────────────────
 
 export const spacing = {
-    xs: 4,
-    sm: 8,
-    md: 16,
     lg: 24,
+    md: 16,
+    sm: 8,
     xl: 32,
+    xs: 4,
     xxl: 48,
 } as const
 
 // ── Border Radius ──────────────────────────────────────────────────────
 
 export const radius = {
-    sm: 4,
-    md: 8,
-    lg: 16,
     full: 9999,
+    lg: 16,
+    md: 8,
+    sm: 4,
 } as const
 
 // ── Sensor Color Schemes ───────────────────────────────────────────────
 
 export const sensorColors = {
-    temperature: {
-        cool: '#80ffea' as const,
-        warm: '#f1fa8c' as const,
-        hot: '#ff6363' as const,
-        gradient: ['#80ffea', '#f1fa8c', '#ff6363'] as const,
-    },
     load: {
+        gradient: ['#50fa7b', '#f1fa8c', '#ff6ac1'] as const,
+        high: '#ff6ac1' as const,
         low: '#50fa7b' as const,
         mid: '#f1fa8c' as const,
-        high: '#ff6ac1' as const,
-        gradient: ['#50fa7b', '#f1fa8c', '#ff6ac1'] as const,
     },
     memory: {
         free: '#80ffea' as const,
-        used: '#e135ff' as const,
         gradient: ['#80ffea', '#e135ff'] as const,
+        used: '#e135ff' as const,
+    },
+    temperature: {
+        cool: '#80ffea' as const,
+        gradient: ['#80ffea', '#f1fa8c', '#ff6363'] as const,
+        hot: '#ff6363' as const,
+        warm: '#f1fa8c' as const,
     },
 } as const
 
@@ -85,7 +84,12 @@ export function parseHex(hex: string): [number, number, number, number] {
         ]
     }
     if (h.length === 6) {
-        return [Number.parseInt(h.slice(0, 2), 16), Number.parseInt(h.slice(2, 4), 16), Number.parseInt(h.slice(4, 6), 16), 255]
+        return [
+            Number.parseInt(h.slice(0, 2), 16),
+            Number.parseInt(h.slice(2, 4), 16),
+            Number.parseInt(h.slice(4, 6), 16),
+            255,
+        ]
     }
     return [
         Number.parseInt(h.slice(0, 2), 16),

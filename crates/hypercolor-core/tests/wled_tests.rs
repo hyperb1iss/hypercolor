@@ -2,9 +2,12 @@
 //!
 //! Tests use parsing/unit checks plus local loopback UDP for streaming behavior.
 
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::net::IpAddr;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, Once, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hypercolor_core::device::DiscoveryConnectBehavior;
 use hypercolor_core::device::wled::{
@@ -1001,7 +1004,7 @@ async fn backend_disconnect_unknown_fails() {
 
 #[tokio::test]
 async fn backend_disconnect_unused_device_sends_no_packets() {
-    let _guard = ddp_test_port_lock().lock().await;
+    let _guard = ddp_test_port_guard().await;
     let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
         .expect("bind loopback DDP receiver");
@@ -1035,7 +1038,7 @@ async fn backend_disconnect_unused_device_sends_no_packets() {
 
 #[tokio::test]
 async fn backend_disconnect_sends_final_black_frame_after_output() {
-    let _guard = ddp_test_port_lock().lock().await;
+    let _guard = ddp_test_port_guard().await;
     let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
         .expect("bind loopback DDP receiver");
@@ -1137,7 +1140,7 @@ async fn backend_connect_reuses_shared_socket_and_allocates_e131_universes() {
 
 #[tokio::test]
 async fn backend_write_colors_pads_dedups_and_keeps_alive() {
-    let _guard = ddp_test_port_lock().lock().await;
+    let _guard = ddp_test_port_guard().await;
     let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
         .expect("bind loopback DDP receiver");
@@ -1198,7 +1201,7 @@ async fn backend_write_colors_pads_dedups_and_keeps_alive() {
 
 #[tokio::test]
 async fn backend_write_colors_allows_duplicate_frames_when_dedup_is_disabled() {
-    let _guard = ddp_test_port_lock().lock().await;
+    let _guard = ddp_test_port_guard().await;
     let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
         .expect("bind loopback DDP receiver");
@@ -1243,7 +1246,7 @@ async fn backend_write_colors_allows_duplicate_frames_when_dedup_is_disabled() {
 
 #[tokio::test]
 async fn backend_write_colors_preserves_chroma_on_rgbw_devices() {
-    let _guard = ddp_test_port_lock().lock().await;
+    let _guard = ddp_test_port_guard().await;
     let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
         .expect("bind loopback DDP receiver");
@@ -1283,7 +1286,7 @@ async fn backend_write_colors_preserves_chroma_on_rgbw_devices() {
 
 #[tokio::test]
 async fn backend_write_colors_truncates_oversized_frames() {
-    let _guard = ddp_test_port_lock().lock().await;
+    let _guard = ddp_test_port_guard().await;
     let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
         .expect("bind loopback DDP receiver");
@@ -1384,6 +1387,9 @@ static MDNS_TEST_LOGGER_INIT: Once = Once::new();
 static DDP_TEST_PORT_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
 static MDNS_TEST_LOG_MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static MDNS_TEST_LOG_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
+const TEST_LOCK_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(90);
+const TEST_LOCK_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const TEST_LOCK_STALE_AFTER: Duration = Duration::from_secs(300);
 
 struct MdnsTestLogger;
 
@@ -1425,9 +1431,75 @@ fn mdns_test_log_lock() -> &'static AsyncMutex<()> {
     MDNS_TEST_LOG_LOCK.get_or_init(|| AsyncMutex::new(()))
 }
 
+struct CrossProcessTestLock {
+    path: PathBuf,
+}
+
+impl Drop for CrossProcessTestLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+struct TestLockGuard {
+    _local_guard: tokio::sync::MutexGuard<'static, ()>,
+    _cross_process_guard: CrossProcessTestLock,
+}
+
+async fn ddp_test_port_guard() -> TestLockGuard {
+    TestLockGuard {
+        _local_guard: ddp_test_port_lock().lock().await,
+        _cross_process_guard: acquire_cross_process_test_lock("hypercolor-wled-ddp-4048").await,
+    }
+}
+
+async fn mdns_test_guard() -> TestLockGuard {
+    TestLockGuard {
+        _local_guard: mdns_test_log_lock().lock().await,
+        _cross_process_guard: acquire_cross_process_test_lock("hypercolor-wled-mdns").await,
+    }
+}
+
+async fn acquire_cross_process_test_lock(name: &str) -> CrossProcessTestLock {
+    let path = std::env::temp_dir().join(format!("{name}.lock"));
+    let started_at = Instant::now();
+
+    loop {
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                let _ = writeln!(file, "pid={}", std::process::id());
+                return CrossProcessTestLock { path };
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                clear_stale_test_lock(&path);
+                assert!(
+                    started_at.elapsed() < TEST_LOCK_ACQUIRE_TIMEOUT,
+                    "timed out waiting for test lock at {}",
+                    path.display()
+                );
+                tokio::time::sleep(TEST_LOCK_POLL_INTERVAL).await;
+            }
+            Err(error) => panic!("failed to acquire test lock at {}: {error}", path.display()),
+        }
+    }
+}
+
+fn clear_stale_test_lock(path: &Path) {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return;
+    };
+    let Ok(modified_at) = metadata.modified() else {
+        return;
+    };
+    if modified_at.elapsed().unwrap_or_default() <= TEST_LOCK_STALE_AFTER {
+        return;
+    }
+    let _ = std::fs::remove_file(path);
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn scanner_shutdown_drains_mdns_status_receiver() {
-    let _guard = mdns_test_log_lock().lock().await;
+    let _guard = mdns_test_guard().await;
     init_mdns_test_logger();
     mdns_test_log_messages()
         .lock()
@@ -1466,7 +1538,7 @@ async fn scanner_skips_stale_known_ip_without_enrichment() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn scanner_surfaces_mdns_only_wled_as_deferred_placeholder() {
-    let _guard = mdns_test_log_lock().lock().await;
+    let _guard = mdns_test_guard().await;
     let mdns = ServiceDaemon::new().expect("mDNS daemon should start");
     let service_info = ServiceInfo::new(
         "_wled._tcp.local.",

@@ -486,7 +486,7 @@ fn blend_face_rgba_with_effect(
 ) {
     match blend_mode {
         DisplayFaceBlendMode::Replace => {
-            blend_rgba_pixels_in_place(target_rgba, source_rgba, RgbaBlendMode::Normal, opacity);
+            replace_face_rgba_in_place(target_rgba, source_rgba, opacity);
         }
         DisplayFaceBlendMode::Tint => {
             blend_face_material_tint_rgba(target_rgba, source_rgba, opacity);
@@ -509,6 +509,20 @@ fn blend_face_rgba_with_effect(
 
     for pixel in target_rgba.chunks_exact_mut(4) {
         pixel[3] = u8::MAX;
+    }
+}
+
+fn replace_face_rgba_in_place(target_rgba: &mut [u8], source_rgba: &[u8], opacity: f32) {
+    let opacity = opacity.clamp(0.0, 1.0);
+    for (target_pixel, source_pixel) in target_rgba
+        .chunks_exact_mut(4)
+        .zip(source_rgba.chunks_exact(4))
+    {
+        let source_alpha = (f32::from(source_pixel[3]) / 255.0) * opacity;
+        target_pixel[0] = encode_srgb_channel(decode_srgb_channel(source_pixel[0]) * source_alpha);
+        target_pixel[1] = encode_srgb_channel(decode_srgb_channel(source_pixel[1]) * source_alpha);
+        target_pixel[2] = encode_srgb_channel(decode_srgb_channel(source_pixel[2]) * source_alpha);
+        target_pixel[3] = u8::MAX;
     }
 }
 
@@ -639,10 +653,10 @@ fn prepare_black_frame(geometry: &DisplayGeometry, rgb_buffer: &mut Vec<u8>) {
         return;
     };
 
-    if rgb_buffer.len() != render_len {
-        rgb_buffer.resize(render_len, 0);
-    } else {
+    if rgb_buffer.len() == render_len {
         rgb_buffer.fill(0);
+    } else {
+        rgb_buffer.resize(render_len, 0);
     }
 }
 

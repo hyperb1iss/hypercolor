@@ -77,10 +77,7 @@ export abstract class BaseEffect<T> {
      * construction is the idiomatic pattern.
      */
     protected scaleContext(): ScaleContext {
-        return scaleContext(
-            this.canvas ?? { height: this.canvasHeight, width: this.canvasWidth },
-            this.designBasis,
-        )
+        return scaleContext(this.canvas ?? { height: this.canvasHeight, width: this.canvasWidth }, this.designBasis)
     }
 
     /** Initialize the effect — canvas, renderer, controls, animation. */

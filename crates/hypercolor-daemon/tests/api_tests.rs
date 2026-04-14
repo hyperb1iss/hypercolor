@@ -3718,37 +3718,40 @@ async fn profile_crud_lifecycle() {
 
 #[tokio::test]
 async fn pre_final_profile_shape_is_rejected_on_load() {
-    let _lock = DATA_DIR_LOCK
-        .lock()
-        .expect("data dir lock should not be poisoned");
-    let tempdir = tempfile::tempdir().expect("tempdir should be created");
-    let data_dir = tempdir.path().join("data");
-    fs::create_dir_all(&data_dir).expect("temp data dir should be created");
+    let state = {
+        let _lock = DATA_DIR_LOCK
+            .lock()
+            .expect("data dir lock should not be poisoned");
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let data_dir = tempdir.path().join("data");
+        fs::create_dir_all(&data_dir).expect("temp data dir should be created");
 
-    let effect_id = EffectId::new(Uuid::now_v7());
-    let preset_id = PresetId(Uuid::now_v7());
-    let profiles_path = data_dir.join("profiles.json");
-    fs::write(
-        &profiles_path,
-        serde_json::to_string_pretty(&serde_json::json!({
-            "prof_evening": {
-                "id": "prof_evening",
-                "name": "Evening",
-                "effect_id": effect_id,
-                "effect_name": "solid_color",
-                "active_preset_id": preset_id,
-                "controls": {
-                    "speed": { "float": 12.5 }
+        let effect_id = EffectId::new(Uuid::now_v7());
+        let preset_id = PresetId(Uuid::now_v7());
+        let profiles_path = data_dir.join("profiles.json");
+        fs::write(
+            &profiles_path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "prof_evening": {
+                    "id": "prof_evening",
+                    "name": "Evening",
+                    "effect_id": effect_id,
+                    "effect_name": "solid_color",
+                    "active_preset_id": preset_id,
+                    "controls": {
+                        "speed": { "float": 12.5 }
+                    }
                 }
-            }
-        }))
-        .expect("pre-final profile json should serialize"),
-    )
-    .expect("pre-final profile json should be written");
+            }))
+            .expect("pre-final profile json should serialize"),
+        )
+        .expect("pre-final profile json should be written");
 
-    ConfigManager::set_data_dir_override(Some(data_dir.clone()));
-    let state = AppState::new();
-    ConfigManager::set_data_dir_override(None);
+        ConfigManager::set_data_dir_override(Some(data_dir));
+        let state = AppState::new();
+        ConfigManager::set_data_dir_override(None);
+        state
+    };
 
     {
         let profiles = state.profiles.read().await;
@@ -5458,8 +5461,7 @@ async fn patch_face_composition_updates_material_blend_mode_and_normalizes_repla
     assert_eq!(replace_response.status(), StatusCode::OK);
     let replace_json = body_json(replace_response).await;
     assert_eq!(
-        replace_json["data"]["group"]["display_target"]["blend_mode"],
-        "replace",
+        replace_json["data"]["group"]["display_target"]["blend_mode"], "replace",
         "explicit replace mode should serialize since it is no longer the default"
     );
     assert!(

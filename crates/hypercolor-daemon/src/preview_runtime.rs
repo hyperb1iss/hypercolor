@@ -392,7 +392,7 @@ impl PreviewRuntimeDemandState {
         let entries = self.entries(kind);
         let mut entries = entries
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         entries.push((id, demand));
         store_preview_demand_summary(
             self.summary_state(kind),
@@ -405,7 +405,7 @@ impl PreviewRuntimeDemandState {
         let entries = self.entries(kind);
         let mut entries = entries
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some((_, current)) = entries.iter_mut().find(|(entry_id, _)| *entry_id == id) {
             *current = demand;
             store_preview_demand_summary(
@@ -419,7 +419,7 @@ impl PreviewRuntimeDemandState {
         let entries = self.entries(kind);
         let mut entries = entries
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         entries.retain(|(entry_id, _)| *entry_id != id);
         store_preview_demand_summary(
             self.summary_state(kind),

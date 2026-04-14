@@ -1,13 +1,6 @@
 import { canvas, color, combo, num, scaleContext } from '@hypercolor/sdk'
 
-import {
-    BUILTIN_DESIGN_BASIS,
-    clamp01,
-    hexToRgb,
-    mixRgb,
-    rgbToCss,
-    scaleRgb,
-} from '../_builtin/common'
+import { BUILTIN_DESIGN_BASIS, clamp01, hexToRgb, mixRgb, rgbToCss, scaleRgb } from '../_builtin/common'
 
 export default canvas(
     'Solid Color',
@@ -97,7 +90,14 @@ export default canvas(
 
         const vignette = (controls.vignette as number) / 100
         if (vignette > 0) {
-            const overlay = ctx.createRadialGradient(width / 2, height / 2, width * 0.15, width / 2, height / 2, width * 0.78)
+            const overlay = ctx.createRadialGradient(
+                width / 2,
+                height / 2,
+                width * 0.15,
+                width / 2,
+                height / 2,
+                width * 0.78,
+            )
             overlay.addColorStop(0, 'rgba(0, 0, 0, 0)')
             overlay.addColorStop(1, `rgba(0, 0, 0, ${clamp01(vignette * 0.8)})`)
             ctx.fillStyle = overlay

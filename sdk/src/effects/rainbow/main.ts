@@ -81,7 +81,8 @@ export default canvas(
         author: 'Hypercolor',
         builtinId: 'rainbow',
         category: 'ambient',
-        description: 'Rainbow sweeps with dense bands, a tunnel mode, a controllable black floor, and shimmer that stays vivid on LEDs.',
+        description:
+            'Rainbow sweeps with dense bands, a tunnel mode, a controllable black floor, and shimmer that stays vivid on LEDs.',
         designBasis: BUILTIN_DESIGN_BASIS,
         presets: [
             {
@@ -126,4 +127,3 @@ export default canvas(
         ],
     },
 )
-

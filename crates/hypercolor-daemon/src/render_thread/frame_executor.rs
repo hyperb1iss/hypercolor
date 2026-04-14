@@ -375,11 +375,11 @@ pub(crate) async fn execute_frame(
             gpu_sample_deferred = true;
             render_stage.reuse_published_frame = true;
             refresh_reused_frame_metadata = render_stage.screen_retained;
-        } else if let Some(pending) = stale_deferred_sampling.take() {
-            if let Some(pending) = try_retire_stale_zone_sampling(render, pending) {
-                stale_deferred_sampling = Some(pending);
-                gpu_sample_queue_saturated = true;
-            }
+        } else if let Some(pending) = stale_deferred_sampling.take()
+            && let Some(pending) = try_retire_stale_zone_sampling(render, pending)
+        {
+            stale_deferred_sampling = Some(pending);
+            gpu_sample_queue_saturated = true;
         }
         if !gpu_zone_sampling && gpu_sample_queue_saturated {
             render.deferred_zone_sampling = stale_deferred_sampling.take();
@@ -410,7 +410,9 @@ pub(crate) async fn execute_frame(
                             .sampled_us
                             .saturating_add(micros_between(gpu_sample_start, Instant::now()));
                         gpu_sample_queue_saturated = true;
-                        if !can_hold_published_frame {
+                        if can_hold_published_frame {
+                            false
+                        } else {
                             discard_zone_sampling_backlog(render);
                             match render.sparkleflinger.begin_sample_zone_plan_into(
                                 prepared_zones.as_ref(),
@@ -428,8 +430,6 @@ pub(crate) async fn execute_frame(
                                     false
                                 }
                             }
-                        } else {
-                            false
                         }
                     }
                     Ok(ZoneSamplingDispatch::Pending(pending)) => {
@@ -501,18 +501,16 @@ pub(crate) async fn execute_frame(
             gpu_zone_sampling = false;
             gpu_sample_deferred = true;
             render_stage.reuse_published_frame = true;
+        } else if let Err(error) = render
+            .sparkleflinger
+            .finish_pending_zone_sampling(pending, &mut render.recycled_frame.zones)
+        {
+            warn!(%error, "GPU spatial sampling finalize failed; falling back to CPU");
+            gpu_zone_sampling = false;
         } else {
-            if let Err(error) = render
+            gpu_sample_wait_blocked = render
                 .sparkleflinger
-                .finish_pending_zone_sampling(pending, &mut render.recycled_frame.zones)
-            {
-                warn!(%error, "GPU spatial sampling finalize failed; falling back to CPU");
-                gpu_zone_sampling = false;
-            } else {
-                gpu_sample_wait_blocked = render
-                    .sparkleflinger
-                    .take_last_sample_readback_wait_blocked();
-            }
+                .take_last_sample_readback_wait_blocked();
         }
         render_stage.sampled_us = render_stage
             .sampled_us

@@ -356,7 +356,9 @@ impl DaemonState {
                 let Some(mut default_scene) = scene_manager.get(&SceneId::DEFAULT).cloned() else {
                     anyhow::bail!("default scene is missing during runtime restore");
                 };
-                default_scene.groups = snapshot.default_scene_groups.clone();
+                default_scene
+                    .groups
+                    .clone_from(&snapshot.default_scene_groups);
                 scene_manager
                     .update(default_scene)
                     .context("failed to restore default scene groups")?;

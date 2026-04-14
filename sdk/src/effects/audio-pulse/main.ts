@@ -100,7 +100,9 @@ export default canvas.stateful(
 
             const levelTarget = Math.max(data.levelShort, data.level * 0.88, fallbackLevel)
             const bassTarget = Math.max(data.bassEnv, data.bass * 0.92, fallbackBass)
-            const pulseTarget = clamp01(Math.max(data.beatPulse, data.onsetPulse * 0.8, data.spectralFlux * 0.32, fallbackPulse))
+            const pulseTarget = clamp01(
+                Math.max(data.beatPulse, data.onsetPulse * 0.8, data.spectralFlux * 0.32, fallbackPulse),
+            )
 
             level = smoothApproach(level, levelTarget, 6.5, dt)
             bass = smoothApproach(bass, bassTarget, 7.5, dt)
@@ -247,7 +249,8 @@ export default canvas.stateful(
                     speed: 68,
                     style: 'Pulse Rays',
                 },
-                description: 'Sharper, hotter transient response for alarms, industrial techno, and dramatic chorus hits.',
+                description:
+                    'Sharper, hotter transient response for alarms, industrial techno, and dramatic chorus hits.',
                 name: 'Neon Siren',
             },
             {

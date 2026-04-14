@@ -70,7 +70,7 @@ impl PreviewRawEncoder {
         if target_width == frame.width && target_height == frame.height {
             match format {
                 CanvasFormat::Rgb => {
-                    copy_rgba_to_rgb(frame.rgba_bytes(), brightness_lut, &mut body)
+                    copy_rgba_to_rgb(frame.rgba_bytes(), brightness_lut, &mut body);
                 }
                 CanvasFormat::Rgba => {
                     if brightness_lut.is_some() {

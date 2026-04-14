@@ -1,6 +1,6 @@
 import { hslToRgb } from '@hypercolor/sdk'
 
-export const BUILTIN_DESIGN_BASIS = { width: 320, height: 200 } as const
+export const BUILTIN_DESIGN_BASIS = { height: 200, width: 320 } as const
 
 export interface Rgb {
     r: number
@@ -38,7 +38,7 @@ export function scaleRgb(rgb: Rgb, scale: number): Rgb {
 }
 
 export function withLift(rgb: Rgb, amount: number): Rgb {
-    return mixRgb(rgb, { r: 255, g: 255, b: 255 }, clamp01(amount))
+    return mixRgb(rgb, { b: 255, g: 255, r: 255 }, clamp01(amount))
 }
 
 export function rgbToCss(rgb: Rgb, alpha = 1): string {
@@ -48,7 +48,7 @@ export function rgbToCss(rgb: Rgb, alpha = 1): string {
 export function hexToRgb(hex: string): Rgb {
     const normalized = hex.trim().replace(/^#/, '')
     if (normalized.length !== 6) {
-        return { r: 255, g: 255, b: 255 }
+        return { b: 255, g: 255, r: 255 }
     }
 
     return {
@@ -60,7 +60,7 @@ export function hexToRgb(hex: string): Rgb {
 
 export function hslCss(hue: number, saturation: number, lightness: number, alpha = 1): string {
     const [r, g, b] = hslToRgb(wrapHue(hue), clamp01(saturation / 100), clamp01(lightness / 100))
-    return rgbToCss({ r: r * 255, g: g * 255, b: b * 255 }, alpha)
+    return rgbToCss({ b: b * 255, g: g * 255, r: r * 255 }, alpha)
 }
 
 export function wrapHue(hue: number): number {
@@ -79,4 +79,3 @@ export function seededNoise(seed: number): number {
     const x = Math.sin(seed * 91.345 + 0.123) * 43758.5453
     return x - Math.floor(x)
 }
-

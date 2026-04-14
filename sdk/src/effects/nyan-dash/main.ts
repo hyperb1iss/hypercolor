@@ -2,6 +2,7 @@ import type { DrawFn } from '@hypercolor/sdk'
 import { canvas, combo, normalizeSpeed, num, scaleContext } from '@hypercolor/sdk'
 
 const NYAN_DESIGN_BASIS = { height: 200, width: 320 } as const
+
 import { CAT_FRAME_SVG_TEMPLATES, CAT_SPRITE_HEIGHT, CAT_SPRITE_WIDTH } from './cat-frames'
 
 type MotionMode = 'Original' | 'Dash' | 'Hyper'

@@ -1,5 +1,5 @@
-import { lerpColor, palette, withAlpha } from '@hypercolor/sdk'
 import type { FaceContext } from '@hypercolor/sdk'
+import { lerpColor, palette, withAlpha } from '@hypercolor/sdk'
 
 export const DISPLAY_FONT_FAMILIES = [
     'Orbitron',
@@ -11,14 +11,7 @@ export const DISPLAY_FONT_FAMILIES = [
     'JetBrains Mono',
 ] as const
 
-export const UI_FONT_FAMILIES = [
-    'Sora',
-    'Space Grotesk',
-    'DM Sans',
-    'Inter',
-    'Roboto Condensed',
-    'Exo 2',
-] as const
+export const UI_FONT_FAMILIES = ['Sora', 'Space Grotesk', 'DM Sans', 'Inter', 'Roboto Condensed', 'Exo 2'] as const
 
 export function ensureFaceStyles(id: string, css: string): void {
     if (document.getElementById(id)) return
@@ -53,9 +46,7 @@ export function createFaceRoot(ctx: FaceContext, className: string): HTMLDivElem
 
 export function humanizeSensorLabel(label: string): string {
     if (!label) return 'Unassigned'
-    return label
-        .replace(/[_-]+/g, ' ')
-        .replace(/\b\w/g, (match) => match.toUpperCase())
+    return label.replace(/[_-]+/g, ' ').replace(/\b\w/g, (match) => match.toUpperCase())
 }
 
 export function clamp01(value: number): number {
@@ -79,10 +70,10 @@ export function resolveFaceInk(accent: string): FaceInk {
     const ui = lerpColor(accent, palette.fg.secondary, 0.46)
     const dim = lerpColor(accent, palette.fg.tertiary, 0.68)
     return {
-        hero,
-        ui,
         dim,
         edge: withAlpha(lerpColor(accent, palette.fg.secondary, 0.58), 0.24),
         glow: withAlpha(accent, 0.24),
+        hero,
+        ui,
     }
 }

@@ -130,8 +130,13 @@ fn sample_axis(
     source_origin: u32,
     source_extent: u32,
 ) -> f32 {
-    let normalized = (target_index as f32 + 0.5) / target_extent.max(1) as f32;
-    sample_axis_normalized(normalized, source_origin, source_extent)
+    let source_span = source_extent.saturating_sub(1) as f32;
+    if target_extent <= 1 {
+        return source_origin as f32 + source_span * 0.5;
+    }
+
+    source_origin as f32
+        + (target_index as f32 * source_span) / target_extent.saturating_sub(1) as f32
 }
 
 #[allow(clippy::cast_precision_loss, clippy::as_conversions)]

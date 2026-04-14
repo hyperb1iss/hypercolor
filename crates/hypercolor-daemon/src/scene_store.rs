@@ -71,6 +71,11 @@ impl SceneStore {
         self.scenes.len()
     }
 
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.scenes.is_empty()
+    }
+
     pub fn list(&self) -> impl Iterator<Item = &Scene> {
         self.scenes.values()
     }

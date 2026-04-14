@@ -122,9 +122,13 @@ impl InputSource for InteractionInput {
             })
             .context("failed to spawn host input capture worker")?;
 
-        ready_rx
-            .recv_timeout(READY_TIMEOUT)
-            .context("timed out waiting for host input capture worker readiness")?;
+        if ready_rx.recv_timeout(READY_TIMEOUT).is_err() {
+            warn!(
+                source = %self.name,
+                "Host input capture worker did not become ready in time; interactive LightScript input will stay idle"
+            );
+            return Ok(());
+        }
 
         self.worker = Some(worker);
         self.running = true;
@@ -280,6 +284,9 @@ fn canonical_key_name(key: Keycode) -> String {
 fn try_create_device_state() -> Option<DeviceState> {
     #[cfg(target_os = "linux")]
     {
+        if !host_input_session_available() {
+            return None;
+        }
         DeviceState::checked_new()
     }
 
@@ -287,6 +294,11 @@ fn try_create_device_state() -> Option<DeviceState> {
     {
         std::panic::catch_unwind(DeviceState::new).ok()
     }
+}
+
+#[cfg(target_os = "linux")]
+fn host_input_session_available() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some()
 }
 
 #[cfg(test)]

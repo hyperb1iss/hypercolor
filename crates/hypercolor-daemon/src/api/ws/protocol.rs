@@ -571,6 +571,10 @@ pub(super) struct DisplayPreviewConfigPatch {
         deserialize_with = "deserialize_double_option_string",
         skip_serializing_if = "Option::is_none"
     )]
+    #[allow(
+        clippy::option_option,
+        reason = "the patch protocol needs distinct states for missing, null, and string values"
+    )]
     pub(super) device_id: Option<Option<String>>,
     #[serde(default)]
     pub(super) fps: Option<u32>,
@@ -579,6 +583,10 @@ pub(super) struct DisplayPreviewConfigPatch {
 /// Deserialize a double-Option so `null` maps to `Some(None)` (explicit
 /// clear) and a missing key keeps the outer `None` (via `#[serde(default)]`).
 /// Without this helper serde's default collapses both into `None`.
+#[allow(
+    clippy::option_option,
+    reason = "serde needs the tri-state shape to preserve missing-vs-null during patch application"
+)]
 fn deserialize_double_option_string<'de, D>(
     deserializer: D,
 ) -> Result<Option<Option<String>>, D::Error>

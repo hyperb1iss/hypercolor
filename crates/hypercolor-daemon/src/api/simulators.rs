@@ -255,6 +255,10 @@ fn jpeg_response(body: Bytes) -> Response {
         .into_response()
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "Axum handlers already return Response values directly, so this helper keeps the hot path linear"
+)]
 fn parse_simulator_id(raw: &str) -> Result<DeviceId, Response> {
     raw.parse::<DeviceId>()
         .map_err(|_| ApiError::validation(format!("Invalid simulator id: {raw}")))

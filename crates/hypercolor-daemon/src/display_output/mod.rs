@@ -79,6 +79,10 @@ struct DisplayGeometry {
 }
 
 #[derive(Clone, Debug)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "display routing vocabulary mirrors the scene model and keeps the mappings explicit"
+)]
 struct DisplayTarget {
     worker_key: DisplayWorkerKey,
     backend_id: String,
@@ -181,7 +185,7 @@ impl DisplayTarget {
         DisplayWorkerConfigSignature {
             target_fps: self.target_fps,
             brightness_bits: self.brightness.to_bits(),
-            geometry: self.geometry.clone(),
+            geometry: self.geometry,
             canvas_source: self.canvas_source.signature(),
             face_blend_mode: self.face_blend_mode(),
             face_opacity_bits: self.face_opacity().to_bits(),

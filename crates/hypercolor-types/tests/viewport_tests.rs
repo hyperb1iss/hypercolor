@@ -1,3 +1,5 @@
+#![allow(clippy::float_cmp)]
+
 use hypercolor_types::viewport::{MIN_VIEWPORT_EDGE, PixelRect, ViewportRect};
 
 #[test]

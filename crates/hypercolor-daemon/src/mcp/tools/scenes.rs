@@ -252,15 +252,14 @@ pub(super) async fn handle_activate_scene_with_state(
         != current_active_scene
             .as_ref()
             .map(|active_scene| active_scene.id)
+        && let Some(current_active_scene) = current_active_scene.as_ref()
     {
-        if let Some(current_active_scene) = current_active_scene.as_ref() {
-            publish_active_scene_changed(
-                state,
-                previous_active_scene,
-                current_active_scene,
-                SceneChangeReason::UserActivate,
-            );
-        }
+        publish_active_scene_changed(
+            state,
+            previous_active_scene,
+            current_active_scene,
+            SceneChangeReason::UserActivate,
+        );
     }
 
     Ok(json!({

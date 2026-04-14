@@ -1,3 +1,5 @@
+#![allow(clippy::float_cmp)]
+
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::scene::{

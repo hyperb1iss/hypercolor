@@ -35,7 +35,10 @@ function fitRect(
     const sourceAspect = sourceWidth / Math.max(sourceHeight, 0.0001)
     const targetAspect = targetWidth / Math.max(targetHeight, 0.0001)
 
-    if ((fitMode === 'Contain' && targetAspect > sourceAspect) || (fitMode === 'Cover' && targetAspect < sourceAspect)) {
+    if (
+        (fitMode === 'Contain' && targetAspect > sourceAspect) ||
+        (fitMode === 'Cover' && targetAspect < sourceAspect)
+    ) {
         const height = targetHeight
         const width = height * sourceAspect
         return [(targetWidth - width) * 0.5, 0, width, height]
@@ -49,10 +52,14 @@ function fitRect(
 export default canvas.stateful(
     'Screen Cast',
     {
-        viewport: rect('Viewport', { x: 0, y: 0, width: 1, height: 1 }, {
-            group: 'Frame',
-            preview: 'screen',
-        }),
+        viewport: rect(
+            'Viewport',
+            { x: 0, y: 0, width: 1, height: 1 },
+            {
+                group: 'Frame',
+                preview: 'screen',
+            },
+        ),
         fit_mode: combo('Fit Mode', ['Contain', 'Cover', 'Stretch'], {
             default: 'Contain',
             group: 'Frame',

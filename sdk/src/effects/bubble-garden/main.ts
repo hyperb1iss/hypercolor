@@ -1,4 +1,4 @@
-import { canvas, color, combo, num, scaleContext, type ScaleContext } from '@hypercolor/sdk'
+import { canvas, color, combo, num, type ScaleContext, scaleContext } from '@hypercolor/sdk'
 
 const BUBBLE_DESIGN_BASIS = { height: 200, width: 320 } as const
 

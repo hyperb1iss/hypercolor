@@ -434,7 +434,7 @@ fn should_publish_preview_frame(
         return true;
     };
     let interval_ms = 1000_u32.div_ceil(target_fps.max(1));
-    !last_publish_ms.is_some_and(|last_sent| elapsed_ms.saturating_sub(last_sent) < interval_ms)
+    last_publish_ms.is_none_or(|last_sent| elapsed_ms.saturating_sub(last_sent) >= interval_ms)
 }
 
 pub(crate) fn preview_publication_due(

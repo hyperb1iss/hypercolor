@@ -1,7 +1,7 @@
 //! Display-face and preview endpoints — `/api/v1/displays/*`.
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::Json;
 use axum::body::Bytes;
@@ -219,10 +219,19 @@ pub async fn set_display_face(
         effect
     };
 
-    let mut display_target = DisplayFaceTarget {
-        blend_mode: body.blend_mode.unwrap_or(DisplayFaceBlendMode::Alpha),
-        device_id,
-        opacity: body.opacity.unwrap_or(1.0),
+    let composition_explicit = body.blend_mode.is_some() || body.opacity.is_some();
+    let mut display_target = if composition_explicit {
+        DisplayFaceTarget {
+            blend_mode: body.blend_mode.unwrap_or(DisplayFaceBlendMode::Alpha),
+            device_id,
+            opacity: body.opacity.unwrap_or(1.0),
+        }
+    } else {
+        DisplayFaceTarget {
+            blend_mode: DisplayFaceBlendMode::Replace,
+            device_id,
+            opacity: 1.0,
+        }
     }
     .normalized();
     if !display_target.clone().blends_with_effect() {
@@ -264,13 +273,19 @@ pub async fn set_display_face(
             return ApiError::internal("Failed to update display face composition");
         };
 
+        let response_group = if composition_explicit {
+            group.clone()
+        } else {
+            compact_display_face_assignment_group(group.clone())
+        };
+
         (
             active_scene_id,
             DisplayFaceResponse {
                 device_id: device_id.to_string(),
                 scene_id: active_scene_id.to_string(),
                 effect,
-                group: group.clone(),
+                group: response_group,
             },
             change_kind,
         )
@@ -566,12 +581,7 @@ fn http_date(time: SystemTime) -> String {
 }
 
 fn parse_http_date(value: &str) -> Option<SystemTime> {
-    httpdate::parse_http_date(value).ok().map(|time| {
-        // httpdate rounds to whole seconds, so we round-trip through Duration
-        // to keep arithmetic deterministic in tests.
-        let _ = Duration::from_secs(0);
-        time
-    })
+    httpdate::parse_http_date(value).ok()
 }
 
 async fn resolve_display_device_id_or_response(
@@ -634,6 +644,16 @@ async fn current_display_face_assignment(
         effect,
         group,
     })
+}
+
+fn compact_display_face_assignment_group(mut group: RenderGroup) -> RenderGroup {
+    if let Some(target) = group.display_target.as_mut()
+        && target.blend_mode == DisplayFaceBlendMode::Replace
+        && (target.opacity - 1.0).abs() <= f32::EPSILON
+    {
+        target.blend_mode = DisplayFaceBlendMode::Alpha;
+    }
+    group
 }
 
 pub(crate) fn display_face_layout(
