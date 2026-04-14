@@ -15,7 +15,6 @@ pub mod effects;
 pub mod envelope;
 pub mod layouts;
 pub mod library;
-pub mod overlays;
 pub mod preview;
 pub mod profiles;
 pub mod scenes;
@@ -65,7 +64,6 @@ use crate::api::envelope::ApiError;
 use crate::attachment_profiles::AttachmentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
 use crate::display_frames::DisplayFrameRuntime;
-use crate::display_overlays::{DisplayOverlayRegistry, DisplayOverlayRuntimeRegistry};
 use crate::layout_auto_exclusions;
 use crate::library::{InMemoryLibraryStore, JsonLibraryStore, LibraryStore};
 use crate::logical_devices::LogicalDevice;
@@ -157,12 +155,6 @@ pub struct AppState {
 
     /// Latest captured simulator frames for inspection surfaces.
     pub simulated_display_runtime: Arc<RwLock<SimulatedDisplayRuntime>>,
-
-    /// Live per-display overlay configs shared with the display-output workers.
-    pub display_overlays: Arc<DisplayOverlayRegistry>,
-
-    /// Live per-slot overlay runtime state published by display workers.
-    pub display_overlay_runtime: Arc<DisplayOverlayRuntimeRegistry>,
 
     /// Latest composited display frames captured per device for preview surfaces.
     pub display_frames: Arc<RwLock<DisplayFrameRuntime>>,
@@ -404,8 +396,6 @@ impl AppState {
         let device_settings = Arc::new(RwLock::new(device_settings));
         let simulated_displays = Arc::new(RwLock::new(simulated_displays));
         let simulated_display_runtime = Arc::new(RwLock::new(SimulatedDisplayRuntime::new()));
-        let display_overlays = Arc::new(DisplayOverlayRegistry::new());
-        let display_overlay_runtime = Arc::new(DisplayOverlayRuntimeRegistry::new());
         let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
         let layouts = Arc::new(RwLock::new(HashMap::new()));
         let layouts_path = ConfigManager::data_dir().join("layouts.json");
@@ -477,8 +467,6 @@ impl AppState {
             device_settings,
             simulated_displays,
             simulated_display_runtime,
-            display_overlays,
-            display_overlay_runtime,
             display_frames,
             credential_store,
             driver_host,
@@ -562,8 +550,6 @@ impl AppState {
             device_settings: Arc::clone(&daemon.device_settings),
             simulated_displays: Arc::clone(&daemon.simulated_displays),
             simulated_display_runtime: Arc::clone(&daemon.simulated_display_runtime),
-            display_overlays: Arc::clone(&daemon.display_overlays),
-            display_overlay_runtime: Arc::clone(&daemon.display_overlay_runtime),
             display_frames: Arc::clone(&daemon.display_frames),
             credential_store: Arc::clone(&daemon.credential_store),
             driver_host,
@@ -841,10 +827,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::post(devices::pair_device).delete(devices::delete_pairing),
         )
         // ── Displays ─────────────────────────────────────────────────
-        .route(
-            "/overlays/catalog",
-            axum::routing::get(overlays::get_overlay_catalog),
-        )
         .route("/displays", axum::routing::get(displays::list_displays))
         .route(
             "/displays/{id}/preview.jpg",
@@ -859,26 +841,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route(
             "/displays/{id}/face/controls",
             axum::routing::patch(displays::patch_display_face_controls),
-        )
-        .route(
-            "/displays/{id}/overlays",
-            axum::routing::get(displays::list_overlays)
-                .put(displays::replace_overlays)
-                .post(displays::add_overlay),
-        )
-        .route(
-            "/displays/{id}/overlays/runtime",
-            axum::routing::get(displays::list_overlay_runtimes),
-        )
-        .route(
-            "/displays/{id}/overlays/reorder",
-            axum::routing::post(displays::reorder_overlays),
-        )
-        .route(
-            "/displays/{id}/overlays/{slot_id}",
-            axum::routing::get(displays::get_overlay)
-                .patch(displays::patch_overlay)
-                .delete(displays::delete_overlay),
         )
         .route(
             "/simulators/displays",

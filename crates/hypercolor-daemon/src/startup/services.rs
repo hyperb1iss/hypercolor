@@ -39,7 +39,6 @@ use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
 use crate::attachment_profiles::AttachmentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
-use crate::display_overlays::{DisplayOverlayRegistry, DisplayOverlayRuntimeRegistry};
 use crate::effect_layouts;
 use crate::layout_auto_exclusions;
 use crate::network::{self, DaemonDriverHost};
@@ -466,8 +465,6 @@ impl DaemonState {
             device_settings,
             simulated_displays,
             simulated_display_runtime,
-            display_overlays: Arc::new(DisplayOverlayRegistry::new()),
-            display_overlay_runtime: Arc::new(DisplayOverlayRuntimeRegistry::new()),
             display_frames: Arc::new(RwLock::new(
                 crate::display_frames::DisplayFrameRuntime::new(),
             )),

@@ -355,10 +355,6 @@ pub(super) async fn handle_set_effect_with_state(
             .clone();
         (scene_id, group, change_kind)
     };
-    let warnings =
-        crate::api::displays::auto_disable_html_overlays_for_effect(state, &best_match.effect)
-            .await;
-
     state.event_bus.publish(HypercolorEvent::EffectStarted {
         effect: effect_ref(&best_match.effect),
         trigger: ChangeTrigger::Mcp,
@@ -386,7 +382,7 @@ pub(super) async fn handle_set_effect_with_state(
         "applied_controls": normalized_controls,
         "rejected_controls": rejected_controls,
         "transition_ms": transition_ms,
-        "warnings": warnings,
+        "warnings": [],
         "layout": applied_layout
     }))
 }
@@ -615,9 +611,6 @@ pub(super) async fn handle_set_color_with_state(
             .clone();
         (scene_id, group, change_kind)
     };
-    let warnings =
-        crate::api::displays::auto_disable_html_overlays_for_effect(state, &solid_effect).await;
-
     state.event_bus.publish(HypercolorEvent::EffectStarted {
         effect: effect_ref(&solid_effect),
         trigger: ChangeTrigger::Mcp,
@@ -642,7 +635,7 @@ pub(super) async fn handle_set_color_with_state(
         "applied": true,
         "applied_controls": controls,
         "device_count": device_count,
-        "warnings": warnings,
+        "warnings": [],
         "layout": applied_layout
     }))
 }

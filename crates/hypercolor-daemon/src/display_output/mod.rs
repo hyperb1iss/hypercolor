@@ -20,23 +20,24 @@ use tracing::{debug, info, warn};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
+use hypercolor_core::overlay::OverlayError;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::device::{DeviceId, DeviceTopologyHint};
+use hypercolor_types::overlay::OverlaySlot;
 use hypercolor_types::scene::RenderGroupId;
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
 
+use self::overlay::OverlayRendererFactory;
+use self::render::display_viewport_signature;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::backend_id_for_device;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_overlays::{DisplayOverlayRegistry, DisplayOverlayRuntimeRegistry};
 use crate::logical_devices::LogicalDevice;
 use crate::session::OutputPowerState;
-
-use self::overlay::OverlayRendererFactory;
-use self::render::display_viewport_signature;
 use worker::DisplayWorkerHandle;
 
 const DISPLAY_ERROR_WARN_INTERVAL: Duration = Duration::from_secs(5);
@@ -68,7 +69,7 @@ pub struct DisplayOutputState {
     pub scene_manager: Arc<RwLock<SceneManager>>,
     /// Logical-device aliases used to match physical devices to layout zones.
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
-    /// Persisted per-device settings used to hydrate overlay config on worker spawn.
+    /// Legacy test-only compatibility field retained while overlay tests are pruned.
     pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
     /// Event bus canvas stream produced by the render thread.
     pub event_bus: Arc<HypercolorBus>,
@@ -76,13 +77,13 @@ pub struct DisplayOutputState {
     pub power_state: watch::Receiver<OutputPowerState>,
     /// How often unchanged display frames should be reasserted during static hold.
     pub static_hold_refresh_interval: Duration,
-    /// Per-device overlay configs distributed to display workers.
+    /// Legacy test-only compatibility field retained while overlay tests are pruned.
     pub display_overlays: Arc<DisplayOverlayRegistry>,
-    /// Live per-slot overlay runtime state published by display workers.
+    /// Legacy test-only compatibility field retained while overlay tests are pruned.
     pub display_overlay_runtime: Arc<DisplayOverlayRuntimeRegistry>,
-    /// Latest-value sensor stream shared with overlay renderers.
+    /// Legacy test-only compatibility field retained while overlay tests are pruned.
     pub sensor_snapshot_rx: watch::Receiver<Arc<SystemSnapshot>>,
-    /// Overlay renderer factory for display workers.
+    /// Legacy test-only compatibility field retained while overlay tests are pruned.
     pub overlay_factory: Arc<dyn OverlayRendererFactory>,
     /// Latest composited JPEG frames published per device for preview surfaces.
     pub display_frames: Arc<RwLock<DisplayFrameRuntime>>,
@@ -401,7 +402,6 @@ async fn reconcile_display_workers(
 
         match backend_io {
             Some(backend_io) => {
-                hydrate_persisted_display_overlays(state, target.device_id).await;
                 workers.insert(
                     key,
                     DisplayWorkerHandle::spawn(
@@ -409,10 +409,6 @@ async fn reconcile_display_workers(
                         backend_io,
                         state.power_state.clone(),
                         state.static_hold_refresh_interval,
-                        state.display_overlays.receiver_for(target.device_id).await,
-                        Arc::clone(&state.display_overlay_runtime),
-                        state.sensor_snapshot_rx.clone(),
-                        Arc::clone(&state.overlay_factory),
                         Arc::clone(&state.display_frames),
                     ),
                 );
@@ -427,33 +423,6 @@ async fn reconcile_display_workers(
             }
         }
     }
-}
-
-async fn hydrate_persisted_display_overlays(state: &DisplayOutputState, device_id: DeviceId) {
-    if !state.display_overlays.get(device_id).await.is_empty() {
-        return;
-    }
-
-    let key = state
-        .device_registry
-        .fingerprint_for_id(&device_id)
-        .await
-        .map_or_else(
-            || device_id.to_string(),
-            |fingerprint| fingerprint.to_string(),
-        );
-    let persisted = state
-        .device_settings
-        .read()
-        .await
-        .display_overlays_for_key(&key)
-        .unwrap_or_default()
-        .normalized();
-    if persisted.is_empty() {
-        return;
-    }
-
-    state.display_overlays.set(device_id, persisted).await;
 }
 
 async fn display_targets(

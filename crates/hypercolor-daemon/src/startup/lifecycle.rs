@@ -17,6 +17,7 @@ use crate::display_output::overlay::DefaultOverlayRendererFactory;
 use crate::display_output::{
     DEFAULT_STATIC_HOLD_REFRESH_INTERVAL, DisplayOutputState, DisplayOutputThread,
 };
+use crate::display_overlays::{DisplayOverlayRegistry, DisplayOverlayRuntimeRegistry};
 use crate::render_thread::{CanvasDims, RenderThread, RenderThreadState};
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
 use crate::scene_transactions::apply_layout_update;
@@ -117,8 +118,8 @@ impl DaemonState {
             event_bus: Arc::clone(&self.event_bus),
             power_state: self.power_state.subscribe(),
             static_hold_refresh_interval: DEFAULT_STATIC_HOLD_REFRESH_INTERVAL,
-            display_overlays: Arc::clone(&self.display_overlays),
-            display_overlay_runtime: Arc::clone(&self.display_overlay_runtime),
+            display_overlays: Arc::new(DisplayOverlayRegistry::new()),
+            display_overlay_runtime: Arc::new(DisplayOverlayRuntimeRegistry::new()),
             sensor_snapshot_rx,
             overlay_factory: Arc::new(DefaultOverlayRendererFactory::new()),
             display_frames: Arc::clone(&self.display_frames),

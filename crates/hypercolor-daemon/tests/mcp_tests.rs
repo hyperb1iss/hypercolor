@@ -357,18 +357,8 @@ async fn mcp_http_tools_list_and_call_return_structured_results() {
     let tools = list_payload["result"]["tools"]
         .as_array()
         .expect("tools list array");
-    assert_eq!(tools.len(), 18);
+    assert_eq!(tools.len(), 16);
     assert!(tools.iter().all(|tool| tool["outputSchema"].is_object()));
-    assert!(
-        tools
-            .iter()
-            .any(|tool| tool["name"] == "list_display_overlays")
-    );
-    assert!(
-        tools
-            .iter()
-            .any(|tool| tool["name"] == "set_display_overlay")
-    );
     assert!(tools.iter().any(|tool| tool["name"] == "set_display_face"));
 
     let call_response = post_json(
@@ -595,85 +585,6 @@ async fn api_router_mounts_mcp_when_enabled_in_config() {
     let (_session_id, payload, content_type, _body) = parse_jsonrpc_response(response).await;
     assert!(content_type.contains("application/json"));
     assert_eq!(payload["result"]["serverInfo"]["name"], "hypercolor");
-}
-
-#[tokio::test]
-async fn stateful_overlay_tools_manage_display_configs() {
-    let (state, _tmp) = isolated_state_with_tempdir();
-    let state = Arc::new(state);
-    let display_id = insert_test_display_device(&state, "Pump LCD").await;
-
-    let create_result = execute_tool_with_state(
-        "set_display_overlay",
-        &json!({
-            "device": display_id.to_string(),
-            "slot": {
-                "name": "CPU Temp",
-                "source": {
-                    "type": "text",
-                    "text": "CPU {sensor:cpu_temp}\u{00b0}C",
-                    "font_size": 20,
-                    "color": "#ffffff",
-                    "align": "center"
-                },
-                "position": "full_screen",
-                "opacity": 0.85
-            }
-        }),
-        state.as_ref(),
-    )
-    .await
-    .expect("append overlay should succeed");
-    assert_eq!(create_result["applied"], true);
-    assert_eq!(create_result["overlay_count"], 1);
-    let slot_id = create_result["affected_slot"]["id"]
-        .as_str()
-        .expect("slot id should be returned")
-        .to_owned();
-
-    let list_result = execute_tool_with_state(
-        "list_display_overlays",
-        &json!({
-            "device": display_id.to_string(),
-        }),
-        state.as_ref(),
-    )
-    .await
-    .expect("list overlays should succeed");
-    assert_eq!(list_result["total"], 1);
-    assert_eq!(
-        list_result["displays"][0]["device"]["id"],
-        display_id.to_string()
-    );
-    assert_eq!(
-        list_result["displays"][0]["overlays"][0]["slot"]["id"],
-        slot_id
-    );
-    assert_eq!(
-        list_result["displays"][0]["overlays"][0]["runtime"]["status"],
-        "active"
-    );
-
-    let update_result = execute_tool_with_state(
-        "set_display_overlay",
-        &json!({
-            "device": display_id.to_string(),
-            "operation": "update",
-            "slot_id": slot_id,
-            "slot": {
-                "name": "CPU Label",
-                "opacity": 0.5
-            }
-        }),
-        state.as_ref(),
-    )
-    .await
-    .expect("update overlay should succeed");
-    assert_eq!(update_result["affected_slot"]["name"], "CPU Label");
-    assert_eq!(
-        update_result["config"]["overlays"][0]["opacity"],
-        json!(0.5)
-    );
 }
 
 #[tokio::test]
@@ -1147,76 +1058,10 @@ async fn stateful_set_profile_persists_runtime_snapshot() {
     );
 }
 
-#[tokio::test]
-async fn list_display_overlays_reports_html_gated_runtime() {
-    let (state, _tmp) = isolated_state_with_tempdir();
-    let state = Arc::new(state);
-    let display_id = insert_test_display_device(&state, "Pump LCD").await;
-
-    let create_result = execute_tool_with_state(
-        "set_display_overlay",
-        &json!({
-            "device": display_id.to_string(),
-            "slot": {
-                "name": "HTML Face",
-                "source": {
-                    "type": "html",
-                    "path": "/tmp/face.html",
-                    "properties": {
-                        "label": "cpu"
-                    },
-                    "render_interval_ms": 1000
-                },
-                "position": "full_screen"
-            }
-        }),
-        state.as_ref(),
-    )
-    .await
-    .expect("append html overlay should succeed");
-    assert_eq!(create_result["applied"], true);
-
-    let active_effect = insert_test_html_effect(&state, "Servo Aurora").await;
-    let layout = {
-        let spatial = state.spatial_engine.read().await;
-        spatial.layout().as_ref().clone()
-    };
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(&active_effect, HashMap::new(), None, layout)
-            .expect("html test effect should populate the primary scene group");
-    }
-    let warnings = hypercolor_daemon::api::displays::auto_disable_html_overlays_for_effect(
-        state.as_ref(),
-        &active_effect,
-    )
-    .await;
-    assert_eq!(warnings.len(), 1);
-
-    let list_result = execute_tool_with_state(
-        "list_display_overlays",
-        &json!({
-            "device": display_id.to_string(),
-        }),
-        state.as_ref(),
-    )
-    .await
-    .expect("list overlays should succeed");
-    assert_eq!(
-        list_result["displays"][0]["overlays"][0]["slot"]["enabled"],
-        false
-    );
-    assert_eq!(
-        list_result["displays"][0]["overlays"][0]["runtime"]["status"],
-        "html_gated"
-    );
-}
-
 #[test]
 fn tool_definitions_have_valid_schemas() {
     let tools = build_tool_definitions();
-    assert_eq!(tools.len(), 18);
+    assert_eq!(tools.len(), 16);
     assert!(
         tools
             .iter()

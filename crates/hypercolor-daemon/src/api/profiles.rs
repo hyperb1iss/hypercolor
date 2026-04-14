@@ -292,7 +292,7 @@ pub async fn apply_profile(
 pub(crate) async fn apply_profile_snapshot(
     state: &AppState,
     profile: &Profile,
-) -> Result<Vec<crate::api::displays::OverlayCompatibilityWarning>, ProfileApplyError> {
+) -> Result<Vec<String>, ProfileApplyError> {
     {
         let scene_manager = state.scene_manager.read().await;
         crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
@@ -313,7 +313,6 @@ pub(crate) async fn apply_profile_snapshot(
     let prepared_displays = prepare_profile_displays(state, &profile.displays)
         .await
         .map_err(ProfileApplyError::Internal)?;
-    let mut warnings = Vec::new();
     let current_layout = {
         let spatial = state.spatial_engine.read().await;
         spatial.layout().as_ref().clone()
@@ -359,13 +358,6 @@ pub(crate) async fn apply_profile_snapshot(
                 "Migrated legacy screencast profile controls to the viewport rect"
             );
         }
-        warnings.extend(
-            crate::api::displays::auto_disable_html_overlays_for_effect(
-                state,
-                &prepared_primary.metadata,
-            )
-            .await,
-        );
     }
 
     if !prepared_displays.is_empty() {
@@ -431,7 +423,7 @@ pub(crate) async fn apply_profile_snapshot(
         set_global_brightness(&state.power_state, normalized);
     }
 
-    Ok(warnings)
+    Ok(Vec::new())
 }
 
 async fn snapshot_profile(
