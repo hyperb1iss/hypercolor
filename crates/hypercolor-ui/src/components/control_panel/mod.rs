@@ -122,7 +122,8 @@ pub fn ControlPanel(
     // Global click-outside handler — closes any open color picker when clicking
     // outside its popover. Uses document-level mousedown so it works regardless
     // of sidebar stacking contexts / overflow clipping.
-    install_click_outside_handler(set_expanded_picker_id);
+    install_click_outside_handler(expanded_picker_id, set_expanded_picker_id);
+    install_scroll_close_handler_for_picker(expanded_picker_id, set_expanded_picker_id);
 
     // Group by definition structure only — NOT by control_values.
     // This prevents the entire widget tree from being torn down on every value change.
@@ -395,7 +396,10 @@ fn ControlWidget(
 
 /// Install a window-level mousedown listener that closes the color picker when
 /// clicking outside `.color-picker-popover` or `.swatch-glow`.
-fn install_click_outside_handler(set_expanded: WriteSignal<Option<String>>) {
+fn install_click_outside_handler(
+    expanded_picker_id: ReadSignal<Option<String>>,
+    set_expanded: WriteSignal<Option<String>>,
+) {
     let Some(win) = web_sys::window() else {
         return;
     };
@@ -404,6 +408,9 @@ fn install_click_outside_handler(set_expanded: WriteSignal<Option<String>>) {
         win,
         ev::mousedown,
         move |ev: leptos::ev::MouseEvent| {
+            if expanded_picker_id.get_untracked().is_none() {
+                return;
+            }
             let inside = ev
                 .target()
                 .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
@@ -425,6 +432,7 @@ fn install_click_outside_handler(set_expanded: WriteSignal<Option<String>>) {
 /// control dropdown when clicking outside its container.
 pub(super) fn install_control_dropdown_outside_handler(
     class_name: String,
+    is_open: ReadSignal<bool>,
     set_open: WriteSignal<bool>,
 ) {
     let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
@@ -435,6 +443,9 @@ pub(super) fn install_control_dropdown_outside_handler(
         doc,
         ev::mousedown,
         move |ev: leptos::ev::MouseEvent| {
+            if !is_open.get_untracked() {
+                return;
+            }
             let inside = ev
                 .target()
                 .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
@@ -452,7 +463,7 @@ pub(super) fn install_control_dropdown_outside_handler(
 /// Close a dropdown when any ancestor scrolls. The menu is portaled and uses
 /// viewport-relative positioning, so scrolling should dismiss it rather than
 /// leaving it visually detached from the trigger.
-pub(super) fn install_scroll_close_handler(set_open: WriteSignal<bool>) {
+pub(super) fn install_scroll_close_handler(is_open: ReadSignal<bool>, set_open: WriteSignal<bool>) {
     let Some(win) = web_sys::window() else {
         return;
     };
@@ -462,6 +473,9 @@ pub(super) fn install_scroll_close_handler(set_open: WriteSignal<bool>) {
         win,
         ev::scroll,
         move |_: web_sys::Event| {
+            if !is_open.get_untracked() {
+                return;
+            }
             set_open.set(false);
         },
         UseEventListenerOptions::default()
@@ -518,7 +532,10 @@ pub(super) fn color_picker_panel_style(trigger: Option<web_sys::HtmlButtonElemen
 
 /// Close the color picker popover on any ancestor scroll (same rationale as
 /// `install_scroll_close_handler` but targets the expanded-picker signal).
-pub(super) fn install_scroll_close_handler_for_picker(set_expanded: WriteSignal<Option<String>>) {
+pub(super) fn install_scroll_close_handler_for_picker(
+    expanded_picker_id: ReadSignal<Option<String>>,
+    set_expanded: WriteSignal<Option<String>>,
+) {
     let Some(win) = web_sys::window() else {
         return;
     };
@@ -527,6 +544,9 @@ pub(super) fn install_scroll_close_handler_for_picker(set_expanded: WriteSignal<
         win,
         ev::scroll,
         move |_: web_sys::Event| {
+            if expanded_picker_id.get_untracked().is_none() {
+                return;
+            }
             set_expanded.set(None);
         },
         UseEventListenerOptions::default()

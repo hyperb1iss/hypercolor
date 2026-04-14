@@ -10,7 +10,7 @@ use crate::components::color_wheel::ColorWheel;
 
 use super::{
     QUICK_COLOR_SWATCHES, color_picker_panel_style, control_value_to_hex, hex_to_rgba,
-    install_scroll_close_handler_for_picker, normalize_hex,
+    normalize_hex,
 };
 
 pub(super) fn render_color_picker(
@@ -40,10 +40,6 @@ pub(super) fn render_color_picker(
             set_hex_input.set(next);
         }
     });
-
-    // Close on scroll — the popover is portaled with fixed positioning,
-    // so scrolling would leave it visually detached from the swatch.
-    install_scroll_close_handler_for_picker(set_expanded_picker_id);
 
     // Wheel callback — receives hex from ColorWheel, propagates to engine
     let on_wheel_change = Callback::new(move |hex: String| {

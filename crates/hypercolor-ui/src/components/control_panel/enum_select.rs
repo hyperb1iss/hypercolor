@@ -50,9 +50,9 @@ pub(super) fn render_dropdown(
     // Click-outside handler
     {
         let dropdown_class = dropdown_class.clone();
-        install_control_dropdown_outside_handler(dropdown_class, set_dropdown_open);
+        install_control_dropdown_outside_handler(dropdown_class, dropdown_open, set_dropdown_open);
     }
-    install_scroll_close_handler(set_dropdown_open);
+    install_scroll_close_handler(dropdown_open, set_dropdown_open);
 
     view! {
         <div
