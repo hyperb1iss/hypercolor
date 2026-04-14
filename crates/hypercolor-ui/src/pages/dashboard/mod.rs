@@ -11,8 +11,8 @@ use std::collections::VecDeque;
 use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
 use wasm_bindgen::JsCast;
-use wasm_bindgen::prelude::*;
 
 use crate::api;
 use crate::app::WsContext;
@@ -593,18 +593,23 @@ fn LayoutMenu(
 /// layout menu when the user clicks outside its anchor. Mirrors the
 /// pattern used in `preset_panel::install_dropdown_outside_handler`.
 fn install_layout_menu_outside_handler(set_open: WriteSignal<bool>) {
-    let handler = Closure::<dyn Fn(web_sys::Event)>::new(move |ev: web_sys::Event| {
-        let inside = ev
-            .target()
-            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-            .map(|el| el.closest(".layout-menu-anchor").ok().flatten().is_some())
-            .unwrap_or(false);
-        if !inside {
-            set_open.set(false);
-        }
-    });
-    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-        let _ = doc.add_event_listener_with_callback("mousedown", handler.as_ref().unchecked_ref());
-    }
-    handler.forget();
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+
+    let _ = use_event_listener_with_options(
+        doc,
+        ev::mousedown,
+        move |ev: leptos::ev::MouseEvent| {
+            let inside = ev
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                .map(|el| el.closest(".layout-menu-anchor").ok().flatten().is_some())
+                .unwrap_or(false);
+            if !inside {
+                set_open.set(false);
+            }
+        },
+        UseEventListenerOptions::default().capture(true),
+    );
 }
