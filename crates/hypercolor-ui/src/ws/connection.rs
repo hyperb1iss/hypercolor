@@ -23,6 +23,13 @@ use super::preview::{
 const RECONNECT_BASE_MS: i32 = 500;
 const RECONNECT_MAX_MS: i32 = 15_000;
 
+fn quantize_preview_fps(value: f64) -> f32 {
+    #[allow(clippy::cast_possible_truncation)]
+    {
+        ((value * 10.0).round() / 10.0) as f32
+    }
+}
+
 // ── WebSocket Manager ───────────────────────────────────────────────────────
 
 /// Reactive WebSocket connection to the daemon.
@@ -221,8 +228,10 @@ impl WsManager {
                                             previous * 0.82 + instant_fps * 0.18
                                         };
                                         smoothed_fps.set_value(next);
-                                        #[allow(clippy::cast_possible_truncation)]
-                                        set_preview_fps.set(next as f32);
+                                        let quantized_fps = quantize_preview_fps(next);
+                                        if preview_fps.get_untracked() != quantized_fps {
+                                            set_preview_fps.set(quantized_fps);
+                                        }
                                     }
                                 }
 
