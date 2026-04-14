@@ -5482,6 +5482,80 @@ async fn patch_face_composition_updates_material_blend_mode_and_normalizes_repla
 }
 
 #[tokio::test]
+async fn reassigning_display_face_resets_composition_to_replace() {
+    let state = Arc::new(isolated_state());
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face_a = insert_test_display_face_effect(&state, "System Monitor").await;
+    let face_b = insert_test_display_face_effect(&state, "Minimal Clock").await;
+    activate_empty_test_scene(&state, "Desk Scene").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let assign_a = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"effect_id":"{}"}}"#, face_a.id)))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(assign_a.status(), StatusCode::OK);
+
+    let tint_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/displays/{display_id}/face/composition"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"blend_mode":"screen","opacity":0.42}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(tint_response.status(), StatusCode::OK);
+
+    let assign_b = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"effect_id":"{}"}}"#, face_b.id)))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(assign_b.status(), StatusCode::OK);
+    let assign_b_json = body_json(assign_b).await;
+    assert_eq!(assign_b_json["data"]["effect"]["id"], face_b.id.to_string());
+    assert!(
+        assign_b_json["data"]["group"]["display_target"]["blend_mode"].is_null(),
+        "reassigning a face should reset composition mode to replace"
+    );
+    assert!(
+        assign_b_json["data"]["group"]["display_target"]["opacity"].is_null(),
+        "reassigning a face should reset opacity to the replace default"
+    );
+
+    let manager = state.scene_manager.read().await;
+    let group = manager
+        .active_scene()
+        .and_then(|scene| scene.display_group_for(display_id))
+        .expect("display face should remain assigned");
+    let target = group
+        .display_target
+        .clone()
+        .expect("display target should remain present");
+    assert_eq!(target.blend_mode, DisplayFaceBlendMode::Replace);
+    assert!((target.opacity - 1.0).abs() < f32::EPSILON);
+}
+
+#[tokio::test]
 async fn face_survives_effect_swap() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "Aurora").await;

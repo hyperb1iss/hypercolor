@@ -151,12 +151,19 @@ fn set_display_face_request_skips_empty_controls() {
     let payload = serde_json::to_value(SetDisplayFaceRequest {
         effect_id: "face-1".to_owned(),
         controls: std::collections::HashMap::new(),
-        blend_mode: None,
-        opacity: None,
+        blend_mode: Some(hypercolor_types::scene::DisplayFaceBlendMode::Replace),
+        opacity: Some(1.0),
     })
     .expect("display-face request should serialize");
 
-    assert_eq!(payload, serde_json::json!({ "effect_id": "face-1" }));
+    assert_eq!(
+        payload,
+        serde_json::json!({
+            "effect_id": "face-1",
+            "blend_mode": "replace",
+            "opacity": 1.0
+        })
+    );
 }
 
 #[test]
@@ -167,8 +174,8 @@ fn set_display_face_request_serializes_present_controls() {
             "accent".to_owned(),
             ControlValue::Float(0.75),
         )]),
-        blend_mode: None,
-        opacity: None,
+        blend_mode: Some(hypercolor_types::scene::DisplayFaceBlendMode::Replace),
+        opacity: Some(1.0),
     })
     .expect("display-face request should serialize");
 
@@ -176,7 +183,9 @@ fn set_display_face_request_serializes_present_controls() {
         payload,
         serde_json::json!({
             "effect_id": "face-2",
-            "controls": { "accent": { "float": 0.75 } }
+            "controls": { "accent": { "float": 0.75 } },
+            "blend_mode": "replace",
+            "opacity": 1.0
         })
     );
 }

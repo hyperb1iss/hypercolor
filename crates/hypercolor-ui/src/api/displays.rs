@@ -107,8 +107,8 @@ pub async fn set_display_face(
     let body = SetDisplayFaceRequest {
         effect_id: effect_id.to_owned(),
         controls: HashMap::new(),
-        blend_mode: None,
-        opacity: None,
+        blend_mode: Some(DisplayFaceBlendMode::Replace),
+        opacity: Some(1.0),
     };
     client::put_json::<SetDisplayFaceRequest, DisplayFaceResponse>(&url, &body)
         .await
