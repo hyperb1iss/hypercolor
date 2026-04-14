@@ -19,7 +19,6 @@ use super::producer_queue::ProducerFrame;
 
 #[derive(Clone)]
 pub(crate) enum GroupCanvasFrame {
-    Canvas(Canvas),
     Surface(PublishedSurface),
 }
 
@@ -46,6 +45,7 @@ pub(crate) struct RenderGroupRuntime {
     effect_pool: EffectPool,
     target_canvases: HashMap<RenderGroupId, Canvas>,
     spatial_engines: HashMap<RenderGroupId, SpatialEngine>,
+    direct_surface_pools: HashMap<RenderGroupId, RenderSurfacePool>,
     preview_surface_pool: RenderSurfacePool,
     reconciled_groups_revision: Option<u64>,
     retained_frame: Option<RetainedRenderGroupFrame>,
@@ -60,6 +60,7 @@ impl RenderGroupRuntime {
             effect_pool: EffectPool::new(),
             target_canvases: HashMap::new(),
             spatial_engines: HashMap::new(),
+            direct_surface_pools: HashMap::new(),
             preview_surface_pool: RenderSurfacePool::new(SurfaceDescriptor::rgba8888(
                 preview_width,
                 preview_height,
@@ -120,7 +121,45 @@ impl RenderGroupRuntime {
             return Ok(result);
         }
 
+        let mut next_index = 0;
+        let mut sample_us = 0_u32;
+        let mut group_canvases = Vec::new();
+        let mut active_group_canvas_ids = Vec::new();
         for group in groups {
+            if !group.enabled || group.effect_id.is_none() {
+                continue;
+            }
+
+            let Some(spatial_engine) = self.spatial_engines.get(&group.id) else {
+                continue;
+            };
+            if group_publishes_direct_canvas(group) {
+                let Some(surface_pool) = self.direct_surface_pools.get_mut(&group.id) else {
+                    continue;
+                };
+                let Some(mut lease) = surface_pool.dequeue() else {
+                    continue;
+                };
+                self.effect_pool.render_group_into(
+                    group,
+                    delta_secs,
+                    audio,
+                    interaction,
+                    screen,
+                    sensors,
+                    lease.canvas_mut(),
+                )?;
+                if !group.layout.zones.is_empty() {
+                    let sample_start = Instant::now();
+                    next_index =
+                        spatial_engine.sample_append_into_at(lease.canvas_mut(), zones, next_index);
+                    sample_us = sample_us.saturating_add(micros_u32(sample_start.elapsed()));
+                }
+                active_group_canvas_ids.push(group.id);
+                group_canvases.push((group.id, GroupCanvasFrame::Surface(lease.submit(0, 0))));
+                continue;
+            }
+
             let Some(target) = self.target_canvases.get_mut(&group.id) else {
                 continue;
             };
@@ -133,25 +172,13 @@ impl RenderGroupRuntime {
                 sensors,
                 target,
             )?;
-        }
-
-        let sample_start = Instant::now();
-        let mut next_index = 0;
-        for group in groups {
-            if !group.enabled || group.effect_id.is_none() || group.layout.zones.is_empty() {
-                continue;
+            if !group.layout.zones.is_empty() {
+                let sample_start = Instant::now();
+                next_index = spatial_engine.sample_append_into_at(target, zones, next_index);
+                sample_us = sample_us.saturating_add(micros_u32(sample_start.elapsed()));
             }
-
-            let Some(target) = self.target_canvases.get(&group.id) else {
-                continue;
-            };
-            let Some(spatial_engine) = self.spatial_engines.get(&group.id) else {
-                continue;
-            };
-            next_index = spatial_engine.sample_append_into_at(target, zones, next_index);
         }
         zones.truncate(next_index);
-        let sample_us = micros_u32(sample_start.elapsed());
         let logical_layer_count = u32::try_from(
             groups
                 .iter()
@@ -160,19 +187,6 @@ impl RenderGroupRuntime {
         )
         .unwrap_or(u32::MAX);
         let preview_frame = self.compose_preview(groups);
-        let active_group_canvas_ids = groups
-            .iter()
-            .filter(|group| group_publishes_direct_canvas(group))
-            .map(|group| group.id)
-            .collect::<Vec<_>>();
-        let group_canvases = active_group_canvas_ids
-            .iter()
-            .filter_map(|group| {
-                self.target_canvases
-                    .get(group)
-                    .map(|canvas| (*group, GroupCanvasFrame::Canvas(canvas.clone())))
-            })
-            .collect();
         let layout = Arc::clone(&self.combined_layout);
 
         let result = RenderGroupResult {
@@ -201,13 +215,30 @@ impl RenderGroupRuntime {
         self.effect_pool.reconcile(groups, registry)?;
 
         let desired_ids = groups.iter().map(|group| group.id).collect::<HashSet<_>>();
+        let preview_group_ids = groups
+            .iter()
+            .filter(|group| group_contributes_to_preview(group))
+            .map(|group| group.id)
+            .collect::<HashSet<_>>();
+        let direct_group_ids = groups
+            .iter()
+            .filter(|group| group_publishes_direct_canvas(group))
+            .map(|group| group.id)
+            .collect::<HashSet<_>>();
         self.target_canvases
-            .retain(|group_id, _| desired_ids.contains(group_id));
+            .retain(|group_id, _| preview_group_ids.contains(group_id));
         self.spatial_engines
             .retain(|group_id, _| desired_ids.contains(group_id));
+        self.direct_surface_pools
+            .retain(|group_id, _| direct_group_ids.contains(group_id));
 
         for group in groups {
-            self.ensure_group_canvas(group);
+            if group_contributes_to_preview(group) {
+                self.ensure_group_canvas(group);
+            }
+            if group_publishes_direct_canvas(group) {
+                self.ensure_direct_surface_pool(group);
+            }
             self.ensure_spatial_engine(group);
         }
 
@@ -231,6 +262,19 @@ impl RenderGroupRuntime {
                 group.id,
                 Canvas::new(group.layout.canvas_width, group.layout.canvas_height),
             );
+        }
+    }
+
+    fn ensure_direct_surface_pool(&mut self, group: &RenderGroup) {
+        let descriptor =
+            SurfaceDescriptor::rgba8888(group.layout.canvas_width, group.layout.canvas_height);
+        let needs_pool = self
+            .direct_surface_pools
+            .get(&group.id)
+            .is_none_or(|pool| pool.descriptor() != descriptor);
+        if needs_pool {
+            self.direct_surface_pools
+                .insert(group.id, RenderSurfacePool::new(descriptor));
         }
     }
 
@@ -749,14 +793,11 @@ mod tests {
         let [(_, group_canvas_frame)] = &result.group_canvases[..] else {
             panic!("display group should publish a surface-backed direct canvas");
         };
-        let group_canvas_pixel = match group_canvas_frame {
-            GroupCanvasFrame::Canvas(canvas) => canvas.get_pixel(0, 0),
-            GroupCanvasFrame::Surface(surface) => surface.get_pixel(0, 0),
-        };
+        let GroupCanvasFrame::Surface(surface) = group_canvas_frame;
 
         assert_eq!(result.logical_layer_count, 0);
         assert_eq!(preview_surface.get_pixel(0, 0), Rgba::new(0, 0, 0, 255));
-        assert_eq!(group_canvas_pixel, Rgba::new(0, 0, 255, 255));
+        assert_eq!(surface.get_pixel(0, 0), Rgba::new(0, 0, 255, 255));
     }
 
     #[test]
@@ -841,6 +882,59 @@ mod tests {
             .expect("multiple groups should render");
 
         assert_eq!(result.logical_layer_count, 2);
+        assert_eq!(zones.len(), 2);
+        assert_eq!(zones[0].zone_id, "zone_left");
+        assert_eq!(zones[0].colors.first().copied(), Some([255, 0, 0]));
+        assert_eq!(zones[1].zone_id, "zone_right");
+        assert_eq!(zones[1].colors.first().copied(), Some([0, 0, 255]));
+    }
+
+    #[test]
+    fn multiple_display_groups_publish_surface_backed_direct_canvases() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let registry = builtin_registry();
+        let solid_id = builtin_effect_id(&registry, "solid_color");
+        let mut left = sample_display_group(4, 4);
+        left.name = "Left Display".into();
+        left.effect_id = Some(solid_id);
+        left.controls = HashMap::from([(
+            "color".into(),
+            ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
+        )]);
+        left.layout.zones = vec![point_zone("zone_left")];
+        let mut right = sample_display_group(4, 4);
+        right.name = "Right Display".into();
+        right.effect_id = Some(solid_id);
+        right.controls = HashMap::from([(
+            "color".into(),
+            ControlValue::Color([0.0, 0.0, 1.0, 1.0]),
+        )]);
+        right.layout.zones = vec![point_zone("zone_right")];
+        let groups = vec![left.clone(), right.clone()];
+        let mut zones = Vec::new();
+
+        let result = runtime
+            .render_scene(
+                &groups,
+                1,
+                &registry,
+                1.0 / 60.0,
+                &AudioData::silence(),
+                &InteractionData::default(),
+                None,
+                &SystemSnapshot::empty(),
+                &mut zones,
+            )
+            .expect("display groups should render");
+
+        assert!(runtime.target_canvases.is_empty());
+        assert_eq!(result.group_canvases.len(), 2);
+        assert!(
+            result
+                .group_canvases
+                .iter()
+                .all(|(_, frame)| matches!(frame, GroupCanvasFrame::Surface(_)))
+        );
         assert_eq!(zones.len(), 2);
         assert_eq!(zones[0].zone_id, "zone_left");
         assert_eq!(zones[0].colors.first().copied(), Some([255, 0, 0]));
