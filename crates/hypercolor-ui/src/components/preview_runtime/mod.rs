@@ -47,12 +47,11 @@ impl PreviewRuntime {
     ) -> Result<Self, PreviewRuntimeInitError> {
         prepare_canvas(canvas, frame);
 
-        if let Ok(runtime) = PreviewWorkerRuntime::new(canvas, frame) {
-            return Ok(Self(PreviewRuntimeBackend::Worker(runtime)));
-        }
-
         if frame.pixel_format() == CanvasPixelFormat::Jpeg {
-            return Err(PreviewRuntimeInitError::WebGlUnavailable);
+            return PreviewWorkerRuntime::new(canvas, frame)
+                .map(PreviewRuntimeBackend::Worker)
+                .map(Self)
+                .map_err(|_| PreviewRuntimeInitError::WebGlUnavailable);
         }
 
         match WebGlPreviewRuntime::new(canvas, smooth_scaling) {
@@ -60,15 +59,17 @@ impl PreviewRuntime {
             Err(WebGlInitError::InitializationFailed) => {
                 Err(PreviewRuntimeInitError::WebGlInitializationFailed)
             }
-            Err(WebGlInitError::ContextUnavailable) if allow_canvas2d_fallback => {
-                Canvas2dPreviewRuntime::new(canvas)
-                    .map(PreviewRuntimeBackend::Canvas2d)
-                    .map(Self)
-                    .ok_or(PreviewRuntimeInitError::WebGlUnavailable)
-            }
-            Err(WebGlInitError::ContextUnavailable) => {
-                Err(PreviewRuntimeInitError::WebGlUnavailable)
-            }
+            Err(WebGlInitError::ContextUnavailable) => PreviewWorkerRuntime::new(canvas, frame)
+                .map(PreviewRuntimeBackend::Worker)
+                .map(Self)
+                .or_else(|_| {
+                    allow_canvas2d_fallback
+                        .then(|| Canvas2dPreviewRuntime::new(canvas))
+                        .flatten()
+                        .map(PreviewRuntimeBackend::Canvas2d)
+                        .map(Self)
+                        .ok_or(PreviewRuntimeInitError::WebGlUnavailable)
+                }),
         }
     }
 
