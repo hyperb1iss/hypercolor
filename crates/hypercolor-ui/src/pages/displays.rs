@@ -384,7 +384,7 @@ pub fn DisplaysPage() -> impl IntoView {
                     <PageHeader
                         icon=LuMonitor
                         title="Displays"
-                        subtitle="Assign HTML faces to LCD devices and tune them live."
+                        subtitle="HTML faces for LCD devices."
                         accent_rgb="225, 53, 255"
                         gradient="linear-gradient(105deg,#e135ff 0%,#e8f4ff 55%,#80ffea 100%)"
                     />

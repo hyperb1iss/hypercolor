@@ -251,7 +251,7 @@ pub fn SettingsPage() -> impl IntoView {
                     <PageHeader
                         icon=LuSettings2
                         title="Settings"
-                        subtitle="Tune engine behavior, capture sources, and diagnostics with the same chrome as the rest of the app."
+                        subtitle="Engine, capture sources, and diagnostics."
                         accent_rgb="241, 250, 140"
                         gradient="linear-gradient(105deg,#80ffea 0%,#e8f0ff 50%,#f1fa8c 100%)"
                     />

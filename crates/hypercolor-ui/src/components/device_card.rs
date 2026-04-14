@@ -1,4 +1,4 @@
-//! Device card — hardware showcase card with device-type identity, metadata, and zone topology.
+//! Device card — hardware showcase card with brand identity, metadata, and zone topology.
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -6,14 +6,121 @@ use leptos_icons::Icon;
 use crate::api::DeviceSummary;
 use crate::icons::*;
 
+// ── Brand identity ──────────────────────────────────────────────────────────
+//
+// Vendor families get distinct SilkCircuit-harmonized accents so the grid reads
+// like a lineup of hardware instead of a wall of grey rectangles. The color is
+// the vendor's spirit (Razer green, Corsair gold, ASUS red) nudged toward the
+// SilkCircuit palette so nothing clashes with the dark theme.
+
+/// Vendor family — detected from device name first, backend second.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DeviceBrand {
+    Razer,
+    Corsair,
+    Asus,
+    LianLi,
+    Ableton,
+    Roli,
+    Dygma,
+    PrismRgb,
+    Nanoleaf,
+    Hue,
+    Wled,
+    Generic,
+}
+
+/// Detect vendor family. Name beats backend because backends group multiple
+/// vendors (e.g. the HAL serves Razer, ASUS, Corsair — all under "hid-bridge").
+pub fn classify_brand(device: &DeviceSummary) -> DeviceBrand {
+    let name = device.name.to_lowercase();
+    let backend = device.backend.to_lowercase();
+
+    if backend == "wled" {
+        return DeviceBrand::Wled;
+    }
+    if backend == "hue" {
+        return DeviceBrand::Hue;
+    }
+    if backend == "nanoleaf" {
+        return DeviceBrand::Nanoleaf;
+    }
+
+    if name.contains("razer") {
+        return DeviceBrand::Razer;
+    }
+    if name.contains("corsair") || name.contains("icue") {
+        return DeviceBrand::Corsair;
+    }
+    if name.contains("asus") || name.contains("aura") || name.contains("rog ") {
+        return DeviceBrand::Asus;
+    }
+    if name.contains("lian li") || name.contains("lian-li") || name.contains("ene ") {
+        return DeviceBrand::LianLi;
+    }
+    if name.contains("ableton") || name.contains("push") {
+        return DeviceBrand::Ableton;
+    }
+    if name.contains("lumi") || name.contains("lightpad") || name.contains("roli") {
+        return DeviceBrand::Roli;
+    }
+    if name.contains("dygma") || name.contains("defy") || name.contains("raise") {
+        return DeviceBrand::Dygma;
+    }
+    if name.contains("prism") {
+        return DeviceBrand::PrismRgb;
+    }
+
+    DeviceBrand::Generic
+}
+
+/// Brand → (primary RGB, secondary RGB). Primary drives glow/text accents,
+/// secondary blends into the hero gradient so each card reads as a duotone.
+pub fn brand_colors(brand: DeviceBrand) -> (&'static str, &'static str) {
+    match brand {
+        DeviceBrand::Razer => ("96, 240, 120", "30, 200, 180"),
+        DeviceBrand::Corsair => ("245, 208, 70", "255, 140, 60"),
+        DeviceBrand::Asus => ("255, 80, 120", "225, 53, 255"),
+        DeviceBrand::LianLi => ("150, 130, 255", "225, 53, 255"),
+        DeviceBrand::Ableton => ("255, 150, 80", "255, 106, 193"),
+        DeviceBrand::Roli => ("110, 180, 255", "180, 120, 255"),
+        DeviceBrand::Dygma => ("200, 130, 255", "128, 255, 234"),
+        DeviceBrand::PrismRgb => ("225, 53, 255", "128, 255, 234"),
+        DeviceBrand::Nanoleaf => ("140, 230, 120", "128, 255, 234"),
+        DeviceBrand::Hue => ("255, 183, 77", "255, 106, 193"),
+        DeviceBrand::Wled => ("128, 255, 234", "225, 53, 255"),
+        DeviceBrand::Generic => ("180, 165, 220", "128, 255, 234"),
+    }
+}
+
+/// Short all-caps vendor label for the brand chip. `None` for Generic (no chip).
+pub fn brand_label(brand: DeviceBrand) -> Option<&'static str> {
+    match brand {
+        DeviceBrand::Razer => Some("RAZER"),
+        DeviceBrand::Corsair => Some("CORSAIR"),
+        DeviceBrand::Asus => Some("ASUS"),
+        DeviceBrand::LianLi => Some("LIAN LI"),
+        DeviceBrand::Ableton => Some("ABLETON"),
+        DeviceBrand::Roli => Some("ROLI"),
+        DeviceBrand::Dygma => Some("DYGMA"),
+        DeviceBrand::PrismRgb => Some("PRISM"),
+        DeviceBrand::Nanoleaf => Some("NANOLEAF"),
+        DeviceBrand::Hue => Some("HUE"),
+        DeviceBrand::Wled => Some("WLED"),
+        DeviceBrand::Generic => None,
+    }
+}
+
 /// Backend → accent RGB string for inline styles (case-insensitive).
+/// Kept as a stable surface for other components that key off backend name.
 pub fn backend_accent_rgb(backend: &str) -> &'static str {
     match backend.to_lowercase().as_str() {
-        "razer" => "225, 53, 255",
+        "razer" => "96, 240, 120",
         "wled" => "128, 255, 234",
-        "corsair" | "corsair-bridge" => "255, 153, 255",
+        "corsair" | "corsair-bridge" => "245, 208, 70",
         "hue" => "255, 183, 77",
-        _ => "139, 133, 160",
+        "nanoleaf" => "140, 230, 120",
+        _ => "180, 165, 220",
     }
 }
 
@@ -167,21 +274,6 @@ pub fn device_class_label(class: &DeviceClass) -> &'static str {
     }
 }
 
-/// Device class → type-specific accent RGB (layered over backend color).
-fn device_class_tint(class: &DeviceClass) -> &'static str {
-    match class {
-        DeviceClass::Keyboard => "255, 200, 120",
-        DeviceClass::Mouse => "130, 180, 255",
-        DeviceClass::Hub => "100, 220, 200",
-        DeviceClass::Controller => "180, 170, 200",
-        DeviceClass::WledController => "128, 255, 234",
-        DeviceClass::SmartLight => "255, 183, 77",
-        DeviceClass::Audio => "200, 130, 255",
-        DeviceClass::Display => "140, 200, 255",
-        DeviceClass::Other => "139, 133, 160",
-    }
-}
-
 /// Infer connection type from device metadata.
 fn connection_type(device: &DeviceSummary) -> &'static str {
     if device.network_ip.is_some() || device.network_hostname.is_some() {
@@ -198,46 +290,6 @@ fn connection_icon(conn: &str) -> icondata_core::Icon {
     match conn {
         "Network" => LuGlobe,
         _ => LuCable,
-    }
-}
-
-/// Device class → subtle accent tint for card identity (overlays on backend color).
-fn device_class_pattern(class: &DeviceClass) -> &'static str {
-    match class {
-        DeviceClass::Keyboard => {
-            "repeating-linear-gradient(90deg, rgba(255,255,255,0.02) 0px, rgba(255,255,255,0.02) 2px, transparent 2px, transparent 6px)"
-        }
-        DeviceClass::Mouse => {
-            "radial-gradient(ellipse at 60% 30%, rgba(255,255,255,0.03), transparent 70%)"
-        }
-        DeviceClass::Hub => {
-            "conic-gradient(from 0deg, rgba(255,255,255,0.02), transparent 30%, rgba(255,255,255,0.02) 50%, transparent 80%)"
-        }
-        DeviceClass::Controller | DeviceClass::WledController => {
-            "repeating-linear-gradient(135deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 4px)"
-        }
-        DeviceClass::SmartLight => {
-            "radial-gradient(ellipse at 50% 20%, rgba(255,183,77,0.04), transparent 60%)"
-        }
-        DeviceClass::Audio => {
-            "radial-gradient(circle at 30% 50%, rgba(255,255,255,0.03), transparent 60%)"
-        }
-        DeviceClass::Display => {
-            "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, transparent 40%)"
-        }
-        DeviceClass::Other => "none",
-    }
-}
-
-/// Compact connection label.
-fn compact_label(device: &DeviceSummary) -> Option<String> {
-    if let Some(label) = &device.connection_label {
-        return Some(label.clone());
-    }
-    match (&device.network_hostname, &device.network_ip) {
-        (Some(hostname), _) => Some(hostname.clone()),
-        (None, Some(ip)) => Some(ip.clone()),
-        _ => None,
     }
 }
 
@@ -272,7 +324,7 @@ fn status_label(status: &str) -> &'static str {
     }
 }
 
-/// Hardware showcase device card with rich metadata.
+/// Hardware showcase device card with brand identity and metric-forward layout.
 #[component]
 pub fn DeviceCard(
     device: DeviceSummary,
@@ -283,13 +335,19 @@ pub fn DeviceCard(
 ) -> impl IntoView {
     let device_id = device.id.clone();
     let device_id_for_pair = device.id.clone();
-    let rgb = backend_accent_rgb(&device.backend).to_string();
+
+    // Brand identity → duotone accents + vendor chip
+    let brand = classify_brand(&device);
+    let (primary_rgb, secondary_rgb) = brand_colors(brand);
+    let primary = primary_rgb.to_string();
+    let secondary = secondary_rgb.to_string();
+    let vendor_label = brand_label(brand);
+
+    let primary_sel = primary.clone();
     let status_rgb = status_dot_rgb(&device.status).to_string();
     let device_class = classify_device(&device);
     let icon = device_class_icon(&device_class);
     let type_label = device_class_label(&device_class);
-    let type_tint = device_class_tint(&device_class);
-    let pattern = device_class_pattern(&device_class);
     let device_name = device.name.clone();
     let zone_count = device.zones.len();
     let total_leds = device.total_leds;
@@ -297,7 +355,6 @@ pub fn DeviceCard(
     let conn_icon = connection_icon(conn_type);
     let firmware = device.firmware_version.clone();
     let brightness = device.brightness;
-    let endpoint = compact_label(&device);
     let status = status_label(&device.status);
     let is_active = device.status.to_lowercase() == "active";
     let is_disabled = device.status.to_lowercase() == "disabled";
@@ -305,38 +362,60 @@ pub fn DeviceCard(
     // Pairing badge info
     let auth_badge = crate::components::device_pairing_modal::auth_badge_info(&device.auth);
 
-    // Zone topology previews — collect unique topology types with LED totals
-    let zone_previews: Vec<(&'static str, usize)> = device
+    // Zone topology previews — cycle the SilkCircuit palette so each zone
+    // reads as its own thing instead of a wall of grey chips.
+    let zone_palette = [
+        "128, 255, 234",
+        "255, 106, 193",
+        "80, 250, 123",
+        "241, 250, 140",
+        "225, 53, 255",
+        "110, 180, 255",
+    ];
+    let zone_previews: Vec<(&'static str, usize, &'static str)> = device
         .zones
         .iter()
         .take(5)
-        .map(|z| (topology_shape_svg(&z.topology), z.led_count))
+        .enumerate()
+        .map(|(i, z)| {
+            (
+                topology_shape_svg(&z.topology),
+                z.led_count,
+                zone_palette[i % zone_palette.len()],
+            )
+        })
         .collect();
     let remaining_zones = zone_count.saturating_sub(5);
 
-    let accent_gradient = format!(
-        "background: linear-gradient(170deg, rgba({rgb}, 0.18) 0%, rgba({rgb}, 0.06) 40%, transparent 70%)"
+    // Hero background — duotone gradient tied to brand, richer than a wash
+    let hero_bg = format!(
+        "background: \
+         radial-gradient(ellipse at 18% 0%, rgba({primary}, 0.28) 0%, transparent 55%), \
+         radial-gradient(ellipse at 95% 10%, rgba({secondary}, 0.20) 0%, transparent 60%), \
+         linear-gradient(180deg, rgba({primary}, 0.08) 0%, transparent 62%)"
     );
-    // Secondary radial glow from device-class tint (blends with backend accent)
-    let class_glow = format!(
-        "background: radial-gradient(ellipse at 50% -10%, rgba({type_tint}, 0.10), transparent 65%)"
-    );
-    let icon_bg = format!(
-        "background: rgba({type_tint}, 0.12); border: 1px solid rgba({type_tint}, 0.18); color: rgba({type_tint}, 0.85)"
+    // Inner glow surface that breathes on active, stays calm otherwise
+    let ambient_glow = format!(
+        "box-shadow: inset 0 0 32px rgba({primary}, 0.06), 0 0 18px rgba({primary}, 0.05)"
     );
     let dot_style =
-        format!("background: rgb({status_rgb}); box-shadow: 0 0 8px rgba({status_rgb}, 0.6)");
-    let accent_bar = format!(
-        "background: linear-gradient(90deg, rgba({rgb}, 0.4), rgba({rgb}, 0.1)); box-shadow: 0 1px 6px rgba({rgb}, 0.15)"
+        format!("background: rgb({status_rgb}); box-shadow: 0 0 10px rgba({status_rgb}, 0.7)");
+    // Icon gets the brand primary — the glyph feels owned by the vendor
+    let icon_bg = format!(
+        "background: linear-gradient(140deg, rgba({primary}, 0.18), rgba({secondary}, 0.10)); \
+         border: 1px solid rgba({primary}, 0.28); color: rgba({primary}, 0.95); \
+         box-shadow: 0 0 10px rgba({primary}, 0.15), inset 0 0 8px rgba({primary}, 0.08)"
     );
-    // Active devices get a persistent ambient glow
-    let active_glow = if is_active {
-        Some(format!(
-            "box-shadow: inset 0 0 20px rgba({rgb}, 0.05), 0 0 14px rgba({rgb}, 0.06)"
-        ))
-    } else {
-        None
-    };
+    // Glowing LED count — this is the hero stat on each card
+    let led_count_style = format!(
+        "color: rgb({primary}); \
+         text-shadow: 0 0 14px rgba({primary}, 0.45), 0 0 2px rgba({primary}, 0.9)"
+    );
+    let brightness_bar_style = format!(
+        "width: {brightness}%; \
+         background: linear-gradient(90deg, rgba({primary}, 0.9), rgba({secondary}, 0.7)); \
+         box-shadow: 0 0 8px rgba({primary}, 0.45)"
+    );
 
     let stagger = (index.min(12) + 1).to_string();
 
@@ -346,91 +425,101 @@ pub fn DeviceCard(
                 let base = "relative rounded-xl border text-left w-full group overflow-hidden \
                             card-hover animate-fade-in-up cursor-pointer";
                 let state = if is_selected.get() {
-                    "border-accent-muted bg-surface-overlay ring-1 ring-accent-muted/20"
+                    "bg-surface-overlay"
                 } else if is_disabled {
                     "border-edge-subtle/50 bg-surface-overlay/40 opacity-60 hover:opacity-80"
                 } else {
-                    "border-edge-subtle bg-surface-overlay/80 hover:border-edge-default"
+                    "border-edge-subtle bg-surface-overlay/70 hover:border-edge-default"
                 };
                 format!("{base} {state} stagger-{}", stagger)
             }
-            style:--glow-rgb=rgb.clone()
+            style:--glow-rgb=primary.clone()
+            // Selected ring uses the brand accent, not a universal purple — keeps
+            // the highlight from fighting the card's hero gradient.
+            style=move || {
+                if is_selected.get() {
+                    format!("border-color: rgba({primary}, 0.55)", primary = primary_sel.clone())
+                } else {
+                    String::new()
+                }
+            }
             on:click=move |_| on_select.run(device_id.clone())
         >
-            // Accent bar at top (thicker, with glow)
-            <div class="absolute top-0 left-0 right-0 h-[3px] rounded-t-xl" style=accent_bar />
+            // Hero duotone gradient (brand-coded)
+            <div class="absolute inset-0 pointer-events-none rounded-xl" style=hero_bg />
 
-            // Device-class texture pattern
+            // Subtle grid-texture cross-hatch for depth
+            <div class="absolute inset-0 pointer-events-none rounded-xl opacity-40"
+                 style="background-image: repeating-linear-gradient(135deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 6px)" />
+
+            // Ambient inner glow — always on, breathes when active
             <div
-                class="absolute inset-0 pointer-events-none rounded-xl"
-                style=format!("background-image: {pattern}; opacity: {}", if is_active { 0.8 } else { 0.5 })
+                class=move || {
+                    if is_active {
+                        "absolute inset-0 rounded-xl pointer-events-none animate-breathe"
+                    } else {
+                        "absolute inset-0 rounded-xl pointer-events-none"
+                    }
+                }
+                style=ambient_glow
             />
 
-            // Backend accent wash (stronger)
-            <div class="absolute inset-0 pointer-events-none rounded-xl" style=accent_gradient.clone() />
-
-            // Device-class secondary glow (differentiates types within same backend)
-            <div class="absolute inset-0 pointer-events-none rounded-xl" style=class_glow />
-
-            // Active device ambient glow (persistent, breathing)
-            {active_glow.map(|glow| view! {
-                <div
-                    class="absolute inset-0 rounded-xl pointer-events-none animate-breathe"
-                    style=glow
-                />
-            })}
-
-            // Selected glow (on top of active glow)
+            // Selected ring (breathing halo)
             {
-                let glow_rgb = rgb.clone();
+                let glow_rgb = primary.clone();
                 move || is_selected.get().then(|| {
                     let r = glow_rgb.clone();
                     view! {
                         <div
                             class="absolute inset-0 rounded-xl pointer-events-none animate-breathe"
                             style=format!(
-                                "box-shadow: inset 0 0 28px rgba({r}, 0.08), 0 0 24px rgba({r}, 0.10)"
+                                "box-shadow: inset 0 0 28px rgba({r}, 0.14), 0 0 26px rgba({r}, 0.18)"
                             )
                         />
                     }
                 })
             }
 
-            <div class="relative flex flex-col justify-between h-full px-4 py-3">
-                // ── Row 1: Icon + Name + Type + Status ────────────────────
+            <div class="relative flex flex-col h-full p-3.5 gap-2.5">
+                // ── Row 1: Icon + device name + vendor/type + status dot ──
                 <div class="flex items-start gap-2.5">
-                    <div class="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style=icon_bg>
-                        <Icon icon=icon width="18px" height="18px" />
+                    <div class="w-10 h-10 rounded-lg flex items-center justify-center shrink-0" style=icon_bg>
+                        <Icon icon=icon width="20px" height="20px" />
                     </div>
                     <div class="flex-1 min-w-0">
                         <div class="flex items-center gap-2">
-                            <h3 class="text-[14px] font-medium text-fg-primary truncate leading-tight">
+                            <h3 class="text-[14px] font-semibold text-fg-primary truncate leading-tight flex-1">
                                 {device_name}
                             </h3>
                             <div
                                 class={if is_active {
-                                    "w-2 h-2 rounded-full shrink-0 dot-alive transition-transform duration-150 group-hover:scale-[1.4]"
+                                    "w-2 h-2 rounded-full shrink-0 dot-alive"
                                 } else {
-                                    "w-2 h-2 rounded-full shrink-0 transition-transform duration-150 group-hover:scale-[1.3]"
+                                    "w-2 h-2 rounded-full shrink-0"
                                 }}
-                                style=dot_style.clone()
+                                style=dot_style
                                 title=status
                             />
                         </div>
-                        // Type · Connection type · endpoint
-                        <div class="flex items-center gap-1 mt-0.5">
-                            <span class="text-[10px] font-semibold" style=format!("color: rgba({}, 0.7)", rgb)>
+                        // Brand · type · connection — single meta line
+                        <div class="flex items-center gap-1.5 mt-1">
+                            {vendor_label.map(|label| view! {
+                                <span class="text-[9px] font-mono font-bold tracking-[0.14em]"
+                                      style=format!("color: rgba({primary}, 0.9)", primary = primary.clone())>
+                                    {label}
+                                </span>
+                            })}
+                            {vendor_label.map(|_| view! {
+                                <span class="text-[8px] text-fg-tertiary/25">{"\u{b7}"}</span>
+                            })}
+                            <span class="text-[10px]" style=format!("color: rgba({primary}, 0.60)", primary = primary.clone())>
                                 {type_label}
                             </span>
-                            <span class="text-[8px] text-fg-tertiary/30">{"\u{b7}"}</span>
-                            <span class="flex items-center gap-0.5 text-[10px] text-fg-tertiary/50">
+                            <span class="text-[8px] text-fg-tertiary/25">{"\u{b7}"}</span>
+                            <span class="flex items-center gap-0.5 text-[10px] text-fg-tertiary/45">
                                 <Icon icon=conn_icon width="9px" height="9px" />
                                 {conn_type}
                             </span>
-                            {endpoint.map(|ep| view! {
-                                <span class="text-[8px] text-fg-tertiary/30">{"\u{b7}"}</span>
-                                <span class="text-[9px] font-mono text-fg-tertiary/40 truncate max-w-[90px]">{ep}</span>
-                            })}
                         </div>
                     </div>
                 </div>
@@ -439,44 +528,43 @@ pub fn DeviceCard(
                 {auth_badge.map(|(label, badge_rgb)| {
                     let pair_id = device_id_for_pair.clone();
                     view! {
-                        <div class="flex items-center gap-1.5 mt-0.5">
-                            <button
-                                class="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium transition-all btn-press"
-                                style=format!(
-                                    "background: rgba({badge_rgb}, 0.1); color: rgb({badge_rgb}); border: 1px solid rgba({badge_rgb}, 0.15)"
-                                )
-                                on:click=move |ev: web_sys::MouseEvent| {
-                                    ev.stop_propagation();
-                                    on_pair.run(pair_id.clone());
-                                }
-                            >
-                                <Icon icon=LuKeyRound width="10px" height="10px" />
-                                {label}
-                            </button>
-                        </div>
+                        <button
+                            class="self-start flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium transition-all btn-press"
+                            style=format!(
+                                "background: rgba({badge_rgb}, 0.10); color: rgb({badge_rgb}); border: 1px solid rgba({badge_rgb}, 0.22)"
+                            )
+                            on:click=move |ev: web_sys::MouseEvent| {
+                                ev.stop_propagation();
+                                on_pair.run(pair_id.clone());
+                            }
+                        >
+                            <Icon icon=LuKeyRound width="10px" height="10px" />
+                            {label}
+                        </button>
                     }
                 })}
 
-                // ── Row 2: Zone topology preview / Hue setup hint ──────────
+                // ── Row 2: Zone topology pills (colored, subtle) ──────────
                 {if zone_count > 0 {
-                    let zone_rgb = rgb.clone();
                     Some(view! {
-                        <div class="flex items-center gap-1 mt-0.5">
-                            {zone_previews.into_iter().map(|(svg, led_count)| {
-                                let zr = zone_rgb.clone();
+                        <div class="flex items-center gap-1 flex-wrap">
+                            {zone_previews.into_iter().map(|(svg, led_count, zrgb)| {
                                 view! {
-                                    <div class="flex items-center gap-0.5 px-1.5 py-0.5 rounded-full transition-all duration-200
-                                                bg-surface-overlay/20 group-hover:bg-surface-overlay/30"
-                                         style=format!("border: 1px solid transparent; transition: border-color 200ms")
+                                    <div class="flex items-center gap-1 px-1.5 py-[2px] rounded"
+                                         style=format!(
+                                             "background: rgba({zrgb}, 0.06); \
+                                              border: 1px solid rgba({zrgb}, 0.15)"
+                                         )
                                          title=format!("{led_count} LEDs")>
-                                        <div class="w-3 h-3 shrink-0" style=format!("color: rgba({zr}, 0.5)")
+                                        <div class="w-3 h-3 shrink-0" style=format!("color: rgba({zrgb}, 0.85)")
                                              inner_html=format!(r#"<svg viewBox="0 0 16 16" width="12" height="12">{svg}</svg>"#) />
-                                        <span class="text-[8px] font-mono tabular-nums" style=format!("color: rgba({zr}, 0.45)")>{led_count}</span>
+                                        <span class="text-[9px] font-mono tabular-nums"
+                                              style=format!("color: rgba({zrgb}, 0.75)")>{led_count}</span>
                                     </div>
                                 }
                             }).collect_view()}
                             {(remaining_zones > 0).then(|| view! {
-                                <span class="text-[8px] font-mono text-fg-tertiary/25">
+                                <span class="text-[9px] font-mono text-fg-tertiary/50 px-1">
                                     "+" {remaining_zones}
                                 </span>
                             })}
@@ -484,11 +572,11 @@ pub fn DeviceCard(
                     }.into_any())
                 } else if device.backend.to_lowercase() == "hue" {
                     Some(view! {
-                        <div class="flex items-center gap-1.5 mt-1 px-2 py-1.5 rounded-lg"
-                             style="background: rgba(255, 183, 77, 0.05); border: 1px solid rgba(255, 183, 77, 0.08)">
-                            <Icon icon=LuInfo width="10px" height="10px" style="color: rgba(255, 183, 77, 0.5); flex-shrink: 0" />
-                            <span class="text-[9px] leading-tight" style="color: rgba(255, 183, 77, 0.55)">
-                                "Set up an Entertainment Area in the Hue app to enable streaming"
+                        <div class="flex items-center gap-1.5 px-2 py-1.5 rounded-lg"
+                             style="background: rgba(255, 183, 77, 0.05); border: 1px solid rgba(255, 183, 77, 0.15)">
+                            <Icon icon=LuInfo width="10px" height="10px" style="color: rgba(255, 183, 77, 0.6); flex-shrink: 0" />
+                            <span class="text-[9px] leading-tight" style="color: rgba(255, 183, 77, 0.7)">
+                                "Set up an Entertainment Area to enable streaming"
                             </span>
                         </div>
                     }.into_any())
@@ -496,28 +584,33 @@ pub fn DeviceCard(
                     None
                 }}
 
-                // ── Row 3: LED count + firmware + brightness ──────────────
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center gap-1.5">
-                        <span class="text-[10px] font-mono font-semibold tabular-nums" style=format!("color: rgba({}, 0.55)", rgb)>
-                            {total_leds} " LEDs"
+                // ── Row 3: Hero LED count + brightness meter ──────────────
+                <div class="flex items-end justify-between gap-2 mt-auto pt-1">
+                    <div class="flex items-baseline gap-1">
+                        <span class="text-[22px] font-bold tabular-nums leading-none tracking-tight"
+                              style=led_count_style>
+                            {total_leds}
+                        </span>
+                        <span class="text-[10px] font-mono uppercase tracking-widest"
+                              style=format!("color: rgba({primary}, 0.45)", primary = primary.clone())>
+                            "LEDs"
                         </span>
                         {firmware.map(|fw| view! {
-                            <span class="text-[8px] text-fg-tertiary/25">{"\u{b7}"}</span>
-                            <span class="text-[9px] font-mono text-fg-tertiary/40">"v" {fw}</span>
+                            <span class="text-[8px] font-mono text-fg-tertiary/30 ml-1">"v" {fw}</span>
                         })}
                     </div>
-                    // Mini brightness bar
-                    <div class="flex items-center gap-1 opacity-50 group-hover:opacity-100 transition-opacity duration-200">
-                        <div class="w-12 h-[3px] rounded-full bg-surface-overlay/30 overflow-hidden">
+                    <div class="flex items-center gap-1.5">
+                        <Icon icon=LuSun width="10px" height="10px" style=format!("color: rgba({primary}, 0.4)", primary = primary.clone()) />
+                        <div class="w-14 h-[3px] rounded-full bg-surface-overlay/40 overflow-hidden">
                             <div
                                 class="h-full rounded-full transition-all duration-200"
-                                style=format!(
-                                    "width: {brightness}%; background: rgba({rgb}, 0.4); box-shadow: 0 0 4px rgba({rgb}, 0.2)"
-                                )
+                                style=brightness_bar_style
                             />
                         </div>
-                        <span class="text-[8px] font-mono text-fg-tertiary/35 tabular-nums">{brightness} "%"</span>
+                        <span class="text-[9px] font-mono tabular-nums"
+                              style=format!("color: rgba({primary}, 0.60)", primary = primary.clone())>
+                            {brightness} "%"
+                        </span>
                     </div>
                 </div>
             </div>

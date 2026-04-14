@@ -87,18 +87,32 @@ pub fn WiringPanel(
         }
     });
 
+    // Palette cycled per channel — each slot gets its own accent so a long
+    // channel list reads as a spectrum, not a grey stack.
+    const CHANNEL_PALETTE: &[&str] = &[
+        "128, 255, 234", // cyan
+        "255, 106, 193", // coral
+        "80, 250, 123",  // green
+        "241, 250, 140", // yellow
+        "225, 53, 255",  // purple
+        "110, 180, 255", // blue
+    ];
+
     view! {
-        <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-visible edge-glow">
-            <div class="flex items-center justify-between px-4 py-2.5 border-b border-edge-subtle">
+        <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden edge-glow">
+            <div class="relative flex items-center justify-between px-4 py-2.5 border-b border-edge-subtle">
                 <div class="flex items-center gap-2">
-                    <Icon icon=LuLayers width="12px" height="12px" style="color: rgba(128, 255, 234, 0.7)" />
-                    <h3 class="text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">"Channels"</h3>
+                    <Icon icon=LuLayers width="12px" height="12px" style="color: rgba(128, 255, 234, 0.85)" />
+                    <h3 class="text-[10px] font-mono uppercase tracking-[0.16em] font-semibold text-fg-secondary">"Channels"</h3>
                 </div>
+                // Animated accent bar across the header bottom
+                <div class="absolute bottom-0 left-0 right-0 h-[1px]"
+                     style="background: linear-gradient(90deg, rgba(128, 255, 234, 0.35), rgba(225, 53, 255, 0.25), rgba(255, 106, 193, 0.20), transparent)" />
             </div>
 
-            <div class="p-2">
+            <div>
                 <Suspense fallback=|| view! {
-                    <div class="text-[10px] text-fg-tertiary animate-pulse py-2 px-1">"Loading..."</div>
+                    <div class="text-[10px] text-fg-tertiary animate-pulse py-3 px-4">"Loading..."</div>
                 }>
                     {move || {
                         let all_templates = templates.get().map(|t| t.to_vec()).unwrap_or_default();
@@ -113,15 +127,16 @@ pub fn WiringPanel(
 
                                 if slots.is_empty() {
                                     return view! {
-                                        <div class="text-[10px] text-fg-tertiary/50 text-center py-3">
+                                        <div class="text-[10px] text-fg-tertiary/50 text-center py-4 px-4">
                                             "No channels"
                                         </div>
                                     }.into_any();
                                 }
 
                                 view! {
-                                    <div class="space-y-2">
-                                        {slots.into_iter().map(|slot| {
+                                    // Stronger dividers — each channel reads as its own band
+                                    <div class="divide-y divide-edge-subtle/60">
+                                        {slots.into_iter().enumerate().map(|(slot_idx, slot)| {
                                             let slot_id = slot.id.clone();
 
                                             // Match zone for topology + identify
@@ -181,7 +196,7 @@ pub fn WiringPanel(
                                                 &slot.id, &bindings, &all_templates,
                                             );
 
-                                            let accent = "128, 255, 234";
+                                            let accent = CHANNEL_PALETTE[slot_idx % CHANNEL_PALETTE.len()];
                                             let did_for_identify = did.clone();
 
                                             // Expand channels with existing components, collapse empties.
@@ -189,20 +204,33 @@ pub fn WiringPanel(
                                             let (expanded, set_expanded) = signal(has_components);
 
                                             view! {
-                                                <div class="rounded-lg border border-edge-subtle bg-surface-overlay/10 overflow-visible">
-                                                    // Channel header
-                                                    <div class="px-3 py-2 flex items-center gap-2 group/slot cursor-pointer select-none"
+                                                <div class="relative group/channel">
+                                                    // Left accent bar — brand the channel without a nested card
+                                                    <div class="absolute left-0 top-0 bottom-0 w-[3px] transition-opacity"
+                                                         style=format!(
+                                                             "background: linear-gradient(180deg, rgba({accent}, 0.75), rgba({accent}, 0.35)); \
+                                                              box-shadow: 0 0 8px rgba({accent}, 0.35)"
+                                                         ) />
+                                                    // Channel header — flat row, no border, subtle hover tint
+                                                    <div class="pl-4 pr-3 py-2.5 flex items-center gap-2 group/slot cursor-pointer select-none
+                                                                transition-colors hover:bg-white/[0.02]"
                                                          on:click=move |_| set_expanded.update(|v| *v = !*v)>
                                                         // Expand/collapse chevron
                                                         <div
-                                                            class="w-3 h-3 shrink-0 text-fg-tertiary/30 transition-transform duration-150"
+                                                            class="w-3 h-3 shrink-0 text-fg-tertiary/40 transition-transform duration-150"
                                                             class=("rotate-90", move || expanded.get())
                                                         >
                                                             <Icon icon=LuChevronRight width="12px" height="12px" />
                                                         </div>
-                                                        // Topology icon
-                                                        <div class="w-4 h-4 shrink-0" style=format!("color: rgba({accent}, 0.5)")
-                                                             inner_html=format!(r#"<svg viewBox="0 0 16 16" width="16" height="16">{zone_svg}</svg>"#) />
+                                                        // Topology icon — glows in the channel accent
+                                                        <div class="w-5 h-5 shrink-0 flex items-center justify-center rounded"
+                                                             style=format!(
+                                                                 "color: rgba({accent}, 0.95); \
+                                                                  background: rgba({accent}, 0.08); \
+                                                                  box-shadow: inset 0 0 8px rgba({accent}, 0.12)"
+                                                             )
+                                                             inner_html=format!(r#"<svg viewBox="0 0 16 16" width="14" height="14">{zone_svg}</svg>"#) />
+
 
                                                         // Editable name
                                                         <div class="flex-1 min-w-0">
@@ -250,9 +278,14 @@ pub fn WiringPanel(
                                                             }}
                                                         </div>
 
-                                                        // LED count
-                                                        <span class="text-[10px] font-mono text-fg-tertiary/50 tabular-nums shrink-0">
-                                                            {slot.led_count} " LEDs"
+                                                        // LED count — glows in the channel accent
+                                                        <span class="text-[10px] font-mono tabular-nums font-semibold shrink-0"
+                                                              style=format!(
+                                                                  "color: rgba({accent}, 0.85); \
+                                                                   text-shadow: 0 0 8px rgba({accent}, 0.25)"
+                                                              )>
+                                                            {slot.led_count}
+                                                            <span class="text-[8px] opacity-60 ml-0.5">"LED"</span>
                                                         </span>
 
                                                         // Component count badge (collapsed only)
@@ -261,7 +294,11 @@ pub fn WiringPanel(
                                                             (component_count > 0).then(|| view! {
                                                                 <Show when=move || !expanded.get()>
                                                                     <span class="text-[9px] font-mono tabular-nums px-1.5 py-0.5 rounded-full shrink-0"
-                                                                          style="color: rgba(128, 255, 234, 0.45); background: rgba(128, 255, 234, 0.06)">
+                                                                          style=format!(
+                                                                              "color: rgba({accent}, 0.7); \
+                                                                               background: rgba({accent}, 0.10); \
+                                                                               border: 1px solid rgba({accent}, 0.18)"
+                                                                          )>
                                                                         {component_count}
                                                                     </span>
                                                                 </Show>
@@ -442,7 +479,7 @@ pub fn WiringPanel(
 
                                                     view! {
                                                     <div
-                                                        class="border-t border-edge-subtle/50 px-3 py-2.5 space-y-2"
+                                                        class="pl-9 pr-3 pb-3 pt-1"
                                                         class=("hidden", move || !expanded.get())
                                                     >
                                                         // Component rows — <For> keyed on row_id keeps existing row DOM
@@ -520,16 +557,15 @@ pub fn WiringPanel(
                                                                 });
 
                                                                 view! {
-                                                                    <div class="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-surface-overlay/10
-                                                                                border border-edge-subtle/50 hover:border-edge-subtle transition-all group/row">
-                                                                        // Type icon
-                                                                        <div class="w-5 h-5 rounded flex items-center justify-center shrink-0"
-                                                                             style="color: rgba(128, 255, 234, 0.6)">
+                                                                    <div class="flex items-center gap-2 py-1.5 transition-colors group/row">
+                                                                        // Type icon (hollow bullet, tinted in channel accent)
+                                                                        <div class="w-4 h-4 shrink-0 flex items-center justify-center"
+                                                                             style=format!("color: rgba({accent}, 0.65)")>
                                                                             <Icon icon={match &initial_kind {
                                                                                 attachment_editor::ComponentDraft::Strip { .. } => LuMinus,
                                                                                 attachment_editor::ComponentDraft::Matrix { .. } => LuGrid2x2,
                                                                                 attachment_editor::ComponentDraft::Component { .. } => LuCircleDot,
-                                                                            }} width="14px" height="14px" />
+                                                                            }} width="13px" height="13px" />
                                                                         </div>
 
                                                                         // Name field
@@ -628,8 +664,8 @@ pub fn WiringPanel(
                                                                             attachment_editor::ComponentDraft::Component { template_id } => {
                                                                                 let count = templates_for_summary.with_value(|ts| ts.iter().find(|t| t.id == *template_id).map(|t| t.led_count)).unwrap_or(0);
                                                                                 view! {
-                                                                                    <span class="text-[10px] font-mono tabular-nums shrink-0 px-1.5 py-0.5 rounded bg-surface-overlay/20"
-                                                                                          style="color: rgba(128, 255, 234, 0.5)">
+                                                                                    <span class="text-[10px] font-mono tabular-nums shrink-0"
+                                                                                          style=format!("color: rgba({accent}, 0.7)")>
                                                                                         {count} " LEDs"
                                                                                     </span>
                                                                                 }.into_any()
@@ -683,23 +719,23 @@ pub fn WiringPanel(
                                                             }
                                                         />
                                                         <Show when=move || drafts.with(Vec::is_empty)>
-                                                            <div class="text-[10px] text-fg-tertiary/40 text-center py-2">"No components"</div>
+                                                            <div class="text-[10px] text-fg-tertiary/40 py-1.5">"No components"</div>
                                                         </Show>
 
-                                                        // Add + save buttons
-                                                        <div class="flex items-center justify-between pt-1">
-                                                            <div class="flex items-center gap-1.5">
+                                                        // Add + save buttons — compact inline strip
+                                                        <div class="flex items-center justify-between pt-1.5 mt-1 border-t border-edge-subtle/20">
+                                                            <div class="flex items-center gap-1">
                                                                 <button
-                                                                    class="text-[10px] font-medium px-2.5 py-1 rounded-lg transition-all btn-press flex items-center gap-1"
-                                                                    style="color: rgba(128, 255, 234, 0.7); background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.12)"
+                                                                    class="text-[10px] font-medium px-2 py-1 rounded-md transition-all btn-press flex items-center gap-1"
+                                                                    style=format!("color: rgba({accent}, 0.75); background: rgba({accent}, 0.06)")
                                                                     on:click=add_strip
                                                                 >
                                                                     <Icon icon=LuPlus width="10px" height="10px" />
                                                                     "Strip"
                                                                 </button>
                                                                 <button
-                                                                    class="text-[10px] font-medium px-2.5 py-1 rounded-lg transition-all btn-press flex items-center gap-1"
-                                                                    style="color: rgba(128, 255, 234, 0.7); background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.12)"
+                                                                    class="text-[10px] font-medium px-2 py-1 rounded-md transition-all btn-press flex items-center gap-1"
+                                                                    style=format!("color: rgba({accent}, 0.75); background: rgba({accent}, 0.06)")
                                                                     on:click=add_matrix
                                                                 >
                                                                     <Icon icon=LuPlus width="10px" height="10px" />
@@ -725,9 +761,14 @@ pub fn WiringPanel(
                                                                 }}
                                                                 <Show when=move || is_dirty.get()>
                                                                     <button
-                                                                        class="text-[10px] font-medium px-2.5 py-1 rounded-lg transition-all btn-press disabled:opacity-30
+                                                                        class="text-[10px] font-semibold px-2.5 py-1 rounded-md transition-all btn-press disabled:opacity-30
                                                                                flex items-center gap-1"
-                                                                        style="color: rgba(128, 255, 234, 0.8); background: rgba(128, 255, 234, 0.1); border: 1px solid rgba(128, 255, 234, 0.2)"
+                                                                        style=format!(
+                                                                            "color: rgb({accent}); \
+                                                                             background: rgba({accent}, 0.14); \
+                                                                             border: 1px solid rgba({accent}, 0.30); \
+                                                                             box-shadow: 0 0 10px rgba({accent}, 0.15)"
+                                                                        )
                                                                         disabled=move || { let s = summary.get(); save_in_flight.get() || !s.is_valid() }
                                                                         on:click=do_save
                                                                     >

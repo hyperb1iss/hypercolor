@@ -376,7 +376,7 @@ pub fn EffectsPage() -> impl IntoView {
                         <PageHeader
                             icon=LuZap
                             title="Effects"
-                            subtitle="Browse, preview, and tune the active effect from one consistent workspace."
+                            subtitle="Browse effects and tune the active one."
                             accent_rgb="225, 53, 255"
                             gradient="linear-gradient(105deg,#80ffea 0%,#c8d4ff 48%,#e135ff 100%)"
                         />

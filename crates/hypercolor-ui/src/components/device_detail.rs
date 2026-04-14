@@ -9,8 +9,8 @@ use crate::api::{self, DeviceAuthState};
 use crate::app::DevicesContext;
 use crate::components::attachment_panel::WiringPanel;
 use crate::components::device_card::{
-    ALL_DEVICE_CLASSES, backend_accent_rgb, classify_device, device_class_icon, device_class_label,
-    save_category_override,
+    ALL_DEVICE_CLASSES, brand_colors, brand_label, classify_brand, classify_device,
+    device_class_icon, device_class_label, save_category_override,
 };
 use crate::components::device_pairing_modal::needs_pairing;
 use crate::icons::*;
@@ -131,7 +131,11 @@ pub fn DeviceDetail(
     view! {
         <div class="space-y-2.5">
             {move || device.get().map(|dev| {
-                let rgb = backend_accent_rgb(&dev.backend).to_string();
+                let brand = classify_brand(&dev);
+                let (primary, secondary) = brand_colors(brand);
+                let rgb = primary.to_string();
+                let secondary_rgb = secondary.to_string();
+                let vendor_label = brand_label(brand);
                 let rgb_for_border = rgb.clone();
                 let rgb_for_slider = rgb.clone();
                 let rgb_for_identify = rgb.clone();
@@ -153,14 +157,48 @@ pub fn DeviceDetail(
                 let push_brightness = push_brightness.clone();
                 let dev_for_category = dev.clone();
 
+                let hero_bg = format!(
+                    "background: \
+                     radial-gradient(ellipse at 15% 0%, rgba({rgb_for_border}, 0.32) 0%, transparent 55%), \
+                     radial-gradient(ellipse at 95% 15%, rgba({secondary_rgb}, 0.22) 0%, transparent 60%), \
+                     linear-gradient(180deg, rgba({rgb_for_border}, 0.10) 0%, transparent 58%)"
+                );
+
+                let zone_count = dev.zones.len();
+                let connection_endpoint = dev.connection_label.clone()
+                    .or_else(|| dev.network_hostname.clone())
+                    .or_else(|| dev.network_ip.clone());
+                let is_network = dev.network_ip.is_some() || dev.network_hostname.is_some();
+
                 view! {
-                    // ── Header: Name + status + actions ──────────────────────
-                    <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden edge-glow"
-                         style=format!("border-top: 3px solid rgba({rgb_for_border}, 0.3); box-shadow: 0 1px 8px rgba({rgb_for_border}, 0.06)")>
-                        <div class="px-4 py-3">
+                    // ── Header: Brand chip + Name + status + actions ──────────
+                    // No border-top accent strip — the hero gradient does the branding.
+                    <div class="relative rounded-xl bg-surface-raised border border-edge-subtle/60 overflow-hidden"
+                         style:--glow-rgb=rgb.clone()
+                         style=format!("box-shadow: 0 0 18px rgba({rgb_for_border}, 0.08), inset 0 1px 0 rgba(255,255,255,0.03)")>
+                        // Hero duotone wash
+                        <div class="absolute inset-0 pointer-events-none rounded-xl" style=hero_bg />
+                        // Cross-hatch for depth
+                        <div class="absolute inset-0 pointer-events-none rounded-xl opacity-40"
+                             style="background-image: repeating-linear-gradient(135deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 6px)" />
+
+                        <div class="relative px-4 py-3">
+                            // Brand chip (single, subtle — status lives in the dot next to the name)
+                            {vendor_label.map(|label| {
+                                let chip_rgb = rgb.clone();
+                                view! {
+                                    <div class="mb-2">
+                                        <span class="text-[9px] font-mono font-bold tracking-[0.16em]"
+                                              style=format!("color: rgba({chip_rgb}, 0.9)")>
+                                            {label}
+                                        </span>
+                                    </div>
+                                }
+                            })}
+
                             <div class="flex items-center gap-2.5 mb-2">
                                 <div class="w-2 h-2 rounded-full shrink-0 dot-alive"
-                                     style=format!("background: rgb({dot_rgb}); box-shadow: 0 0 8px rgba({dot_rgb}, 0.5)") />
+                                     style=format!("background: rgb({dot_rgb}); box-shadow: 0 0 10px rgba({dot_rgb}, 0.7)") />
                                 {move || if editing_name.get() {
                                     view! {
                                         <input
@@ -198,15 +236,42 @@ pub fn DeviceDetail(
                                 }}
                             </div>
 
-                            <div class="flex items-center gap-3 text-[10px] font-mono text-fg-tertiary mb-2">
+                            <div class="flex items-center gap-2 text-[10px] font-mono text-fg-tertiary/65 mb-3">
                                 <span class="capitalize">{dev.backend.clone()}</span>
-                                <span class="w-px h-3 bg-border-subtle" />
-                                <span>{dev.total_leds} " LEDs"</span>
-                                <span class="w-px h-3 bg-border-subtle" />
-                                <span class="capitalize">{dev.status.clone()}</span>
                                 {dev.firmware_version.clone().map(|fw| view! {
-                                    <span class="w-px h-3 bg-border-subtle" />
+                                    <span class="text-fg-tertiary/30">{"\u{b7}"}</span>
                                     <span>"v" {fw}</span>
+                                })}
+                            </div>
+
+                            // ── Stats chips: LEDs · channels · connection ──
+                            <div class="flex items-center gap-1.5 flex-wrap mb-3">
+                                <span class="inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded-md"
+                                      style=format!(
+                                          "color: rgba({rgb_for_border}, 0.9); \
+                                           background: rgba({rgb_for_border}, 0.10); \
+                                           border: 1px solid rgba({rgb_for_border}, 0.22)"
+                                      )>
+                                    <span class="font-bold tabular-nums">{dev.total_leds}</span>
+                                    <span class="opacity-70">"LEDs"</span>
+                                </span>
+                                <span class="inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded-md
+                                             text-fg-tertiary bg-surface-overlay/25 border border-edge-subtle/35">
+                                    <span class="font-bold tabular-nums text-fg-secondary">{zone_count}</span>
+                                    <span>{if zone_count == 1 { "channel" } else { "channels" }}</span>
+                                </span>
+                                {connection_endpoint.clone().map(|ep| {
+                                    let ep_title = ep.clone();
+                                    view! {
+                                        <span class="inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded-md
+                                                     text-fg-tertiary bg-surface-overlay/25 border border-edge-subtle/35 max-w-[180px]"
+                                              title=ep_title>
+                                            <Icon icon={if is_network { LuGlobe } else { LuCable }}
+                                                  width="10px" height="10px"
+                                                  style=format!("color: rgba({rgb_for_border}, 0.7)") />
+                                            <span class="truncate">{ep}</span>
+                                        </span>
+                                    }
                                 })}
                             </div>
 
@@ -365,7 +430,7 @@ pub fn DeviceDetail(
                             </div>
                         </div>
 
-                        <div class="px-4 py-2 bg-surface-overlay/10 border-t border-edge-subtle flex items-center gap-2">
+                        <div class="relative px-4 py-2 bg-surface-overlay/10 border-t border-edge-subtle flex items-center gap-2">
                             <button
                                 class="text-[10px] font-medium px-2 py-1 rounded-md transition-all btn-press flex items-center gap-1"
                                 style=move || {

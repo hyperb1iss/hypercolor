@@ -149,13 +149,23 @@ pub fn PreviewCabinet(
             style:border-top-color=move || format!("rgba({}, 0.45)", accent_rgb.get())
         >
             // ── Top: canvas + scrim + overlay info ─────────────────────────
-            <div class=canvas_wrapper_class class:animate-canvas-ignite=move || igniting.get()>
+            <div class=canvas_wrapper_class>
                 <CanvasPreview
                     frame=ws.canvas_frame
                     fps=ws.preview_fps
                     show_fps=false
                     fps_target=ws.preview_target_fps
                     report_presenter_telemetry=report_telemetry
+                />
+
+                // Ignition curtain — absolute overlay that fades out over the
+                // canvas on each effect swap. Uses opacity animation only so
+                // it never triggers a stacking-context change on the canvas
+                // itself (applying `filter` to the wrapper caused layer
+                // reshuffling that made the preset strip jump a few frames).
+                <div
+                    class="absolute inset-0 pointer-events-none opacity-0"
+                    class:animate-canvas-ignite=move || igniting.get()
                 />
 
                 // Scrim — transparent at top, fades dark at bottom for legible overlay text

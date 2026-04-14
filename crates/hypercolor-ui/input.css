@@ -500,20 +500,25 @@ input[type="range"].slider-silk::-moz-range-track {
 }
 
 /* Cinematic overlay-text swap — used by the preview cabinet when the
-   active effect changes. Fades up from below with a brief blur release
-   so the new title settles into focus instead of hard-cutting. */
+   active effect changes. Fades up from below so the new title settles
+   into focus instead of hard-cutting. Uses opacity + transform only;
+   `filter` would create a stacking context around each text block and
+   trigger compositor reshuffling on canvas siblings. */
 @keyframes effectSwap {
-    0%   { opacity: 0; transform: translateY(8px); filter: blur(3px); }
-    55%  { opacity: 1; filter: blur(0); }
-    100% { opacity: 1; transform: translateY(0); filter: blur(0); }
+    0%   { opacity: 0; transform: translateY(8px); }
+    100% { opacity: 1; transform: translateY(0); }
 }
 
-/* Canvas ignition — lets the preview bloom in from a dim/desaturated
-   state so the effect swap feels like a focus pull instead of a pop. */
+/* Canvas ignition — dark curtain that fades out over the canvas so the
+   preview appears to bloom in from dim. Applied to a dedicated absolute
+   overlay rather than the canvas wrapper, so `filter` never touches the
+   canvas element or its absolute siblings (that caused stacking-context
+   churn and layer reshuffling on effect swap). Mid-way the curtain tints
+   to the new accent for a brief ignition flash. */
 @keyframes canvasIgnite {
-    0%   { filter: brightness(0.55) saturate(0.85) blur(2px); }
-    45%  { filter: brightness(1.12) saturate(1.15) blur(0); }
-    100% { filter: brightness(1) saturate(1) blur(0); }
+    0%   { opacity: 0.62; background-color: rgba(0, 0, 0, 1); }
+    35%  { opacity: 0.38; background-color: rgba(var(--glow-rgb, 225, 53, 255), 1); }
+    100% { opacity: 0; background-color: rgba(0, 0, 0, 1); }
 }
 
 /* Cabinet ignition — ambient glow bloom layered behind the cabinet

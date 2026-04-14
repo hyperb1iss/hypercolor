@@ -139,7 +139,7 @@ pub fn DevicesPage() -> impl IntoView {
         let status = status_filter.get();
         let backend = backend_filter.get();
 
-        devices
+        let mut filtered: Vec<_> = devices
             .into_iter()
             .filter(|d| {
                 if status != "all" && d.status.to_lowercase() != status {
@@ -155,7 +155,28 @@ pub fn DevicesPage() -> impl IntoView {
                 }
                 true
             })
-            .collect::<Vec<_>>()
+            .collect();
+
+        // Sort: active > connected > reconnecting > known > disabled,
+        // alphabetical inside each tier. Disconnected gear drops to the bottom
+        // so the grid leads with what's live right now.
+        filtered.sort_by(|a, b| {
+            let tier = |status: &str| -> u8 {
+                match status.to_lowercase().as_str() {
+                    "active" => 0,
+                    "connected" => 1,
+                    "reconnecting" => 2,
+                    "known" => 3,
+                    "disabled" => 4,
+                    _ => 5,
+                }
+            };
+            tier(&a.status)
+                .cmp(&tier(&b.status))
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+
+        filtered
     });
 
     let device_count = Memo::new(move |_| {
@@ -222,7 +243,7 @@ pub fn DevicesPage() -> impl IntoView {
                         <PageHeader
                             icon=LuCpu
                             title="Devices"
-                            subtitle="Scan, inspect, and pair hardware without losing the thread of the page."
+                            subtitle="Your hardware — pair, identify, and tune."
                             accent_rgb="128, 255, 234"
                             gradient="linear-gradient(105deg,#80ffea 0%,#e8f4ff 55%,#80ffea 100%)"
                         />
