@@ -1,4 +1,4 @@
-import { withAlpha } from '@hypercolor/sdk'
+import { lerpColor, palette, withAlpha } from '@hypercolor/sdk'
 import type { FaceContext } from '@hypercolor/sdk'
 
 export const DISPLAY_FONT_FAMILIES = [
@@ -60,6 +60,31 @@ export function humanizeSensorLabel(label: string): string {
 
 export function clamp01(value: number): number {
     return Math.max(0, Math.min(1, value))
+}
+
+export interface FaceInk {
+    hero: string
+    ui: string
+    dim: string
+    edge: string
+    glow: string
+}
+
+export function mixFaceAccent(base: string, target: string = palette.electricPurple, amount = 0.42): string {
+    return lerpColor(base, target, clamp01(amount))
+}
+
+export function resolveFaceInk(accent: string): FaceInk {
+    const hero = lerpColor(accent, palette.fg.primary, 0.22)
+    const ui = lerpColor(accent, palette.fg.secondary, 0.46)
+    const dim = lerpColor(accent, palette.fg.tertiary, 0.68)
+    return {
+        hero,
+        ui,
+        dim,
+        edge: withAlpha(lerpColor(accent, palette.fg.secondary, 0.58), 0.24),
+        glow: withAlpha(accent, 0.24),
+    }
 }
 
 function faceBackdropStrength(backdrop: string, opaque: number, glass: number, clear: number): number {

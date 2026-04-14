@@ -4,9 +4,11 @@ import {
     combo,
     face,
     font,
+    lerpColor,
     num,
     palette,
     sensor,
+    sparkline,
     toggle,
     withAlpha,
 } from '@hypercolor/sdk'
@@ -17,7 +19,8 @@ import {
     clamp01,
     createFaceRoot,
     ensureFaceStyles,
-    resolveFaceCanvasWash,
+    mixFaceAccent,
+    resolveFaceInk,
     resolveFaceSurface,
 } from '../shared/dom'
 
@@ -30,35 +33,18 @@ const STYLES = `
     --hero-font: 'Orbitron', sans-serif;
     --ui-font: 'Sora', sans-serif;
     --panel: transparent;
+    --hero-ink: ${palette.fg.primary};
+    --ui-ink: ${palette.fg.secondary};
+    --dim-ink: ${palette.fg.tertiary};
+    --edge-ink: rgba(255,255,255,0.12);
     position: absolute;
     inset: 0;
     overflow: hidden;
-    color: ${palette.fg.primary};
+    color: var(--hero-ink);
 }
 
 .hc-silk-hud__panel {
-    position: absolute;
-    inset: 18px;
-    border-radius: 34px;
-    border: 1px solid transparent;
-    background: transparent;
-    box-shadow: none;
-}
-
-.hc-silk-hud[data-panel='on'] .hc-silk-hud__panel {
-    border-color: rgba(255,255,255,0.08);
-    background:
-        radial-gradient(circle at 16% 18%, rgba(255,255,255,0.08), transparent 30%),
-        linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01)),
-        var(--panel);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 24px 64px rgba(0,0,0,0.42);
-}
-
-.hc-silk-hud[data-panel='on'][data-backdrop='clear'] .hc-silk-hud__panel {
-    background:
-        linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)),
-        var(--panel);
-    box-shadow: none;
+    display: none;
 }
 
 .hc-silk-hud__layout {
@@ -66,21 +52,52 @@ const STYLES = `
     inset: 0;
     display: grid;
     grid-template-rows: auto auto 1fr;
-    gap: 20px;
+    gap: 18px;
     padding: 32px;
+}
+
+.hc-silk-hud__topline {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.hc-silk-hud__chip {
+    padding: 8px 14px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--accent) 18%, rgba(255,255,255,0.08));
+    background: rgba(7, 8, 14, 0.24);
+    font-family: var(--ui-font);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--ui-ink);
+}
+
+.hc-silk-hud__chip--accent {
+    color: var(--hero-ink);
+    border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+    box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
 .hc-silk-hud__clock {
     display: grid;
     gap: 4px;
+    justify-items: end;
 }
 
 .hc-silk-hud__time {
     font-family: var(--hero-font);
-    font-size: 60px;
+    font-size: 56px;
     line-height: 0.94;
     letter-spacing: 0.08em;
     text-transform: uppercase;
+    color: var(--hero-ink);
+    text-shadow:
+        0 0 18px color-mix(in srgb, var(--accent) 14%, transparent),
+        0 8px 24px rgba(0,0,0,0.28);
 }
 
 .hc-silk-hud__date {
@@ -88,18 +105,25 @@ const STYLES = `
     font-size: 12px;
     letter-spacing: 0.2em;
     text-transform: uppercase;
-    color: rgba(232,230,240,0.6);
+    color: var(--ui-ink);
 }
 
 .hc-silk-hud__hero {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 28px;
+    gap: 18px;
 }
 
 .hc-silk-hud__metric {
     display: grid;
-    gap: 4px;
+    gap: 10px;
+    padding: 18px 18px 16px;
+    border-radius: 28px;
+    border: 1px solid color-mix(in srgb, var(--accent) 12%, rgba(255,255,255,0.06));
+    background:
+        linear-gradient(180deg, rgba(9, 10, 18, 0.26), rgba(9, 10, 18, 0.08)),
+        color-mix(in srgb, var(--accent) 5%, transparent);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
 }
 
 .hc-silk-hud__metric-label {
@@ -107,24 +131,29 @@ const STYLES = `
     font-size: 11px;
     letter-spacing: 0.2em;
     text-transform: uppercase;
-    color: rgba(232,230,240,0.6);
+    color: var(--ui-ink);
 }
 
 .hc-silk-hud__metric-value {
     font-family: var(--hero-font);
-    font-size: 64px;
+    font-size: 58px;
     line-height: 0.94;
+    color: var(--hero-ink);
 }
 
 .hc-silk-hud__bars {
     display: grid;
-    gap: 16px;
+    gap: 14px;
     align-content: end;
 }
 
 .hc-silk-hud__bar {
     display: grid;
-    gap: 6px;
+    gap: 8px;
+    padding: 12px 14px;
+    border-radius: 22px;
+    border: 1px solid color-mix(in srgb, var(--accent) 8%, rgba(255,255,255,0.05));
+    background: rgba(8, 10, 18, 0.18);
 }
 
 .hc-silk-hud__bar-head {
@@ -135,7 +164,7 @@ const STYLES = `
     font-size: 11px;
     letter-spacing: 0.2em;
     text-transform: uppercase;
-    color: rgba(232,230,240,0.7);
+    color: var(--ui-ink);
 }
 
 .hc-silk-hud__bar-rail {
@@ -153,6 +182,14 @@ const STYLES = `
     border-radius: 999px;
     background: linear-gradient(90deg, var(--accent), var(--secondary));
 }
+
+.hc-silk-hud[data-style='matrix'] .hc-silk-hud__metric {
+    border-radius: 32px 18px 32px 18px;
+}
+
+.hc-silk-hud[data-style='pulse'] .hc-silk-hud__metric-value {
+    letter-spacing: 0.08em;
+}
 `
 
 export default face(
@@ -164,6 +201,7 @@ export default face(
         ramSensor: sensor('RAM Sensor', 'ram_used', { group: 'Sensors' }),
         accent: color('Accent', palette.neonCyan, { group: 'Style' }),
         secondaryAccent: color('Secondary', palette.coral, { group: 'Style' }),
+        deckStyle: combo('Deck Style', ['Bridge', 'Pulse', 'Matrix'], { group: 'Layout' }),
         heroFont: font('Hero Font', 'Orbitron', { group: 'Typography', families: [...DISPLAY_FONT_FAMILIES] }),
         uiFont: font('UI Font', 'Sora', { group: 'Typography', families: [...UI_FONT_FAMILIES] }),
         panelColor: color('Panel Color', palette.bg.deep, { group: 'Style' }),
@@ -184,6 +222,7 @@ export default face(
                 controls: {
                     accent: palette.neonCyan,
                     secondaryAccent: palette.coral,
+                    deckStyle: 'Bridge',
                     heroFont: 'Orbitron',
                     uiFont: 'Sora',
                 },
@@ -194,6 +233,7 @@ export default face(
                 controls: {
                     accent: '#ffb347',
                     secondaryAccent: '#ff6b6b',
+                    deckStyle: 'Pulse',
                     heroFont: 'Bebas Neue',
                     uiFont: 'Roboto Condensed',
                 },
@@ -204,6 +244,7 @@ export default face(
                 controls: {
                     accent: '#9ae7ff',
                     secondaryAccent: '#c8d5ff',
+                    deckStyle: 'Bridge',
                     heroFont: 'Exo 2',
                     uiFont: 'Inter',
                 },
@@ -214,6 +255,7 @@ export default face(
                 controls: {
                     accent: palette.coral,
                     secondaryAccent: '#ffb8dd',
+                    deckStyle: 'Matrix',
                     heroFont: 'Audiowide',
                     uiFont: 'DM Sans',
                 },
@@ -224,6 +266,7 @@ export default face(
                 controls: {
                     accent: palette.electricYellow,
                     secondaryAccent: '#ffa166',
+                    deckStyle: 'Pulse',
                     heroFont: 'Space Mono',
                     uiFont: 'JetBrains Mono',
                 },
@@ -234,7 +277,30 @@ export default face(
                 controls: {
                     accent: '#ff4da6',
                     secondaryAccent: '#6a8bff',
+                    deckStyle: 'Matrix',
                     heroFont: 'Rajdhani',
+                    uiFont: 'Space Grotesk',
+                },
+            },
+            {
+                name: 'Signal Bridge',
+                description: 'Blue-cyan bridge with calm utility text.',
+                controls: {
+                    accent: '#8fe8ff',
+                    secondaryAccent: '#7fa2ff',
+                    deckStyle: 'Bridge',
+                    heroFont: 'Orbitron',
+                    uiFont: 'DM Sans',
+                },
+            },
+            {
+                name: 'Solar Mesh',
+                description: 'Amber coral command mesh with sharper modules.',
+                controls: {
+                    accent: '#ffb25f',
+                    secondaryAccent: '#ff7d8e',
+                    deckStyle: 'Matrix',
+                    heroFont: 'Bebas Neue',
                     uiFont: 'Space Grotesk',
                 },
             },
@@ -246,9 +312,12 @@ export default face(
         root.innerHTML = `
             <div class="hc-silk-hud__panel"></div>
             <div class="hc-silk-hud__layout">
-                <div class="hc-silk-hud__clock">
-                    <div class="hc-silk-hud__time">00:00</div>
-                    <div class="hc-silk-hud__date">MON MAY 15</div>
+                <div class="hc-silk-hud__topline">
+                    <div class="hc-silk-hud__chip hc-silk-hud__chip--accent hc-silk-hud__mode">BRIDGE</div>
+                    <div class="hc-silk-hud__clock">
+                        <div class="hc-silk-hud__time">00:00</div>
+                        <div class="hc-silk-hud__date">MON MAY 15</div>
+                    </div>
                 </div>
                 <div class="hc-silk-hud__hero">
                     <div class="hc-silk-hud__metric hc-silk-hud__cpu">
@@ -282,6 +351,7 @@ export default face(
         const loadFillEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__load-fill')!
         const ramFillEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__ram-fill')!
         const barsEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__bars')!
+        const modeEl = root.querySelector<HTMLDivElement>('.hc-silk-hud__mode')!
 
         const cpuHistory = new ValueHistory(72)
         const gpuHistory = new ValueHistory(72)
@@ -296,19 +366,27 @@ export default face(
         const cy = H * 0.58
 
         return (time, controls, sensors) => {
-            const accent = controls.accent as string
-            const secondary = controls.secondaryAccent as string
+            const accent = lerpColor(controls.accent as string, palette.fg.primary, 0.05)
+            const secondary = mixFaceAccent(controls.secondaryAccent as string, accent, 0.14)
+            const ink = resolveFaceInk(accent)
             const panelColor = controls.panelColor as string
             const panelAlpha = controls.panelAlpha as number
             const backdrop = controls.backdrop as string
+            const deckStyle = (controls.deckStyle as string).toLowerCase()
 
             root.dataset.backdrop = backdrop.toLowerCase()
             root.dataset.panel = panelAlpha > 0 ? 'on' : 'off'
+            root.dataset.style = deckStyle
             root.style.setProperty('--accent', accent)
             root.style.setProperty('--secondary', secondary)
+            root.style.setProperty('--hero-ink', ink.hero)
+            root.style.setProperty('--ui-ink', ink.ui)
+            root.style.setProperty('--dim-ink', ink.dim)
+            root.style.setProperty('--edge-ink', ink.edge)
             root.style.setProperty('--hero-font', `"${controls.heroFont as string}", sans-serif`)
             root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
             root.style.setProperty('--panel', resolveFaceSurface(backdrop, panelColor, panelAlpha))
+            modeEl.textContent = deckStyle.toUpperCase()
 
             const cpuTemp = sensors.normalized(controls.cpuTempSensor as string)
             const gpuTemp = sensors.normalized(controls.gpuTempSensor as string)
@@ -354,18 +432,36 @@ export default face(
             const c = ctx.ctx
             c.clearRect(0, 0, W, H)
 
-            const wash = resolveFaceCanvasWash(backdrop, panelColor, panelAlpha)
-            if (wash) {
-                c.fillStyle = wash
-                c.fillRect(0, 0, W, H)
-            }
+            c.strokeStyle = withAlpha(ink.ui, 0.08)
+            c.lineWidth = deckStyle === 'pulse' ? 2.2 : 1.5
+            c.beginPath()
+            c.moveTo(96, 130)
+            c.lineTo(cx, cy - 14)
+            c.lineTo(W - 96, 130)
+            c.stroke()
 
-            const ambient = c.createRadialGradient(cx, cy, 18, cx, cy, W * 0.6)
-            ambient.addColorStop(0, withAlpha(accent, 0.14))
-            ambient.addColorStop(0.55, withAlpha(secondary, 0.06))
-            ambient.addColorStop(1, withAlpha(secondary, 0))
-            c.fillStyle = ambient
-            c.fillRect(0, 0, W, H)
+            sparkline(c, {
+                x: 56,
+                y: cy + 34,
+                width: 144,
+                height: deckStyle === 'pulse' ? 44 : 34,
+                values: cpuHistory.values(),
+                range: [0, 1],
+                color: accent,
+                lineWidth: deckStyle === 'pulse' ? 2.4 : 1.8,
+                fillOpacity: 0.1,
+            })
+            sparkline(c, {
+                x: W - 200,
+                y: cy + 34,
+                width: 144,
+                height: deckStyle === 'pulse' ? 44 : 34,
+                values: gpuHistory.values(),
+                range: [0, 1],
+                color: secondary,
+                lineWidth: deckStyle === 'pulse' ? 2.4 : 1.8,
+                fillOpacity: 0.1,
+            })
         }
     },
 )
