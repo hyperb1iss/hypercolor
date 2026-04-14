@@ -1,8 +1,8 @@
 use std::hint::black_box;
-use std::sync::{Arc, LazyLock};
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::sync::LazyLock;
+use std::time::Duration;
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
 #[path = "../../hypercolor-core/tests/support/effect_engine.rs"]
 mod effect_engine;
@@ -11,13 +11,7 @@ use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig, MockEffectRenderer};
 use hypercolor_core::device::{BackendManager, DeviceBackend};
 use hypercolor_core::input::InteractionData;
-use hypercolor_core::overlay::{
-    OverlayBuffer, OverlayError, OverlayInput, OverlayRenderer, OverlaySize,
-};
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_daemon::display_output::overlay::{
-    OverlayComposer, OverlayRendererBinding, OverlayRendererFactory, PremulStaging,
-};
 #[cfg(feature = "wgpu")]
 use hypercolor_daemon::render_thread::sparkleflinger::PreviewSurfaceRequest;
 use hypercolor_daemon::render_thread::sparkleflinger::{
@@ -31,11 +25,6 @@ use hypercolor_types::canvas::{
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::FrameData;
-use hypercolor_types::overlay::{
-    Anchor, DisplayOverlayConfig, OverlayBlendMode, OverlayPosition, OverlaySlot, OverlaySlotId,
-    OverlaySource, TextAlign, TextOverlayConfig,
-};
-use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
@@ -43,24 +32,19 @@ use hypercolor_types::spatial::{
 use tokio::runtime::Runtime;
 
 use effect_engine::EffectEngine;
-use uuid::Uuid;
 
 const CANVAS_WIDTH: u32 = 320;
 const CANVAS_HEIGHT: u32 = 200;
 const PREVIEW_WIDTH: u32 = 640;
 const PREVIEW_HEIGHT: u32 = 480;
-const DISPLAY_BENCH_WIDTH: u32 = 480;
-const DISPLAY_BENCH_HEIGHT: u32 = 480;
 const FRAME_DT_SECONDS: f32 = 1.0 / 60.0;
 const FRAME_INTERVAL_MS: u32 = 16;
 const BENCH_DEVICE_COUNT: usize = 3;
 const BENCH_LEDS_PER_DEVICE: u32 = 120;
 const CANVAS_RGBA_BYTES: u64 = 320_u64 * 200_u64 * 4;
-const DISPLAY_RGB_BYTES: u64 = 480_u64 * 480_u64 * 3;
 
 static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
 static DEFAULT_INTERACTION: LazyLock<InteractionData> = LazyLock::new(InteractionData::default);
-static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
 
 fn benchmark_config() -> Criterion {
     Criterion::default()
@@ -244,179 +228,6 @@ fn preview_fresh_plans() -> Vec<CompositionPlan> {
             )
         })
         .collect()
-}
-
-fn patterned_rgb_frame(width: u32, height: u32) -> Vec<u8> {
-    let mut rgb = vec![
-        0;
-        usize::try_from(width)
-            .unwrap_or_default()
-            .saturating_mul(usize::try_from(height).unwrap_or_default())
-            .saturating_mul(3)
-    ];
-    for y in 0..height {
-        for x in 0..width {
-            let red = u8::try_from((x * 255) / width.saturating_sub(1).max(1)).expect("red fits");
-            let green =
-                u8::try_from((y * 255) / height.saturating_sub(1).max(1)).expect("green fits");
-            let blue = u8::try_from(
-                ((x + y) * 255)
-                    / (width
-                        .saturating_sub(1)
-                        .saturating_add(height.saturating_sub(1))
-                        .max(1)),
-            )
-            .expect("blue fits");
-            let offset = usize::try_from(y)
-                .unwrap_or_default()
-                .saturating_mul(usize::try_from(width).unwrap_or_default())
-                .saturating_add(usize::try_from(x).unwrap_or_default())
-                .saturating_mul(3);
-            rgb[offset] = red;
-            rgb[offset + 1] = green;
-            rgb[offset + 2] = blue;
-        }
-    }
-    rgb
-}
-
-struct CachedSolidRenderer {
-    color: [u8; 4],
-}
-
-impl OverlayRenderer for CachedSolidRenderer {
-    fn init(&mut self, _target_size: OverlaySize) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn resize(&mut self, _target_size: OverlaySize) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn render_into(
-        &mut self,
-        _input: &OverlayInput<'_>,
-        target: &mut OverlayBuffer,
-    ) -> std::result::Result<(), OverlayError> {
-        for pixel in target.pixels.chunks_exact_mut(4) {
-            pixel.copy_from_slice(&self.color);
-        }
-        Ok(())
-    }
-
-    fn content_changed(&self, _input: &OverlayInput<'_>) -> bool {
-        false
-    }
-}
-
-struct CachedSolidFactory {
-    color: [u8; 4],
-}
-
-impl OverlayRendererFactory for CachedSolidFactory {
-    fn build(
-        &self,
-        _slot: &OverlaySlot,
-        _target_size: OverlaySize,
-    ) -> std::result::Result<OverlayRendererBinding, OverlayError> {
-        Ok(OverlayRendererBinding {
-            renderer: Box::new(CachedSolidRenderer { color: self.color }),
-            render_interval: Duration::from_secs(3_600),
-        })
-    }
-}
-
-fn bench_overlay_slot(index: usize) -> OverlaySlot {
-    let anchor = match index {
-        0 => Anchor::TopLeft,
-        1 => Anchor::TopRight,
-        2 => Anchor::BottomLeft,
-        _ => Anchor::BottomRight,
-    };
-    OverlaySlot {
-        id: OverlaySlotId::from(Uuid::now_v7()),
-        name: format!("Bench Overlay {index}"),
-        source: OverlaySource::Text(TextOverlayConfig {
-            text: "Bench".to_owned(),
-            font_family: None,
-            font_size: 24.0,
-            color: "#ffffff".to_owned(),
-            align: TextAlign::Center,
-            scroll: false,
-            scroll_speed: 30.0,
-        }),
-        position: OverlayPosition::Anchored {
-            anchor,
-            offset_x: 16,
-            offset_y: 16,
-            width: 120,
-            height: 120,
-        },
-        blend_mode: OverlayBlendMode::Normal,
-        opacity: 0.5,
-        enabled: true,
-    }
-}
-
-fn overlay_config(layer_count: usize) -> DisplayOverlayConfig {
-    DisplayOverlayConfig {
-        overlays: (0..layer_count).map(bench_overlay_slot).collect(),
-    }
-}
-
-struct CachedOverlayBench {
-    composer: OverlayComposer,
-    start: Instant,
-    frame_number: u64,
-}
-
-impl CachedOverlayBench {
-    fn new(layer_count: usize, base_rgb: &[u8], start_system: std::time::SystemTime) -> Self {
-        let mut composer = OverlayComposer::new(
-            DISPLAY_BENCH_WIDTH,
-            DISPLAY_BENCH_HEIGHT,
-            false,
-            Arc::new(CachedSolidFactory {
-                color: [255, 64, 64, 255],
-            }),
-        );
-        composer.reconcile(&overlay_config(layer_count));
-        let start = Instant::now();
-        let warm_staging = composer
-            .compose_rgb_frame(base_rgb, &EMPTY_SENSORS, 1, start_system, start)
-            .expect("cached overlays should render during warm-up");
-        black_box(warm_staging.pixels().as_ptr());
-
-        Self {
-            composer,
-            start,
-            frame_number: 2,
-        }
-    }
-
-    fn compose<'a>(
-        &'a mut self,
-        base_rgb: &[u8],
-        start_system: std::time::SystemTime,
-    ) -> &'a PremulStaging {
-        let frame_offset = Duration::from_millis(self.frame_number.saturating_mul(16));
-        let now_system = start_system
-            .checked_add(frame_offset)
-            .unwrap_or(start_system);
-        let now_instant = self.start.checked_add(frame_offset).unwrap_or(self.start);
-        let staging = self
-            .composer
-            .compose_rgb_frame(
-                base_rgb,
-                &EMPTY_SENSORS,
-                self.frame_number,
-                now_system,
-                now_instant,
-            )
-            .expect("overlay layers should stay active");
-        self.frame_number = self.frame_number.saturating_add(1);
-        staging
-    }
 }
 
 fn bench_publish_handoff(c: &mut Criterion) {
@@ -985,95 +796,9 @@ fn bench_sparkleflinger(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_display_overlays(c: &mut Criterion) {
-    let mut group = c.benchmark_group("daemon_display_overlays");
-    group.throughput(Throughput::Bytes(DISPLAY_RGB_BYTES));
-
-    let base_rgb = patterned_rgb_frame(DISPLAY_BENCH_WIDTH, DISPLAY_BENCH_HEIGHT);
-    let start_system = UNIX_EPOCH + Duration::from_secs(13 * 3_600 + 5 * 60 + 42);
-
-    let baseline_start = Instant::now();
-    let mut baseline_frame = 0_u64;
-    group.bench_function("overlay_disabled_baseline", |b| {
-        b.iter(|| {
-            let frame_offset = Duration::from_millis(baseline_frame.saturating_mul(16));
-            let now_system = start_system
-                .checked_add(frame_offset)
-                .unwrap_or(start_system);
-            let now_instant = baseline_start
-                .checked_add(frame_offset)
-                .unwrap_or(baseline_start);
-            black_box(now_system);
-            black_box(now_instant);
-            black_box(base_rgb.as_ptr());
-            baseline_frame = baseline_frame.saturating_add(1);
-        });
-    });
-
-    let mut bypass_composer = OverlayComposer::new(
-        DISPLAY_BENCH_WIDTH,
-        DISPLAY_BENCH_HEIGHT,
-        false,
-        Arc::new(CachedSolidFactory {
-            color: [255, 64, 64, 255],
-        }),
-    );
-    bypass_composer.reconcile(&overlay_config(0));
-    let bypass_start = Instant::now();
-    let mut bypass_frame = 0_u64;
-    group.bench_function("zero_overlay_bypass", |b| {
-        b.iter(|| {
-            let frame_offset = Duration::from_millis(bypass_frame.saturating_mul(16));
-            let now_system = start_system
-                .checked_add(frame_offset)
-                .unwrap_or(start_system);
-            let now_instant = bypass_start
-                .checked_add(frame_offset)
-                .unwrap_or(bypass_start);
-            let staging = bypass_composer.compose_rgb_frame(
-                black_box(&base_rgb),
-                black_box(&*EMPTY_SENSORS),
-                bypass_frame,
-                now_system,
-                now_instant,
-            );
-            black_box(staging.is_none());
-            bypass_frame = bypass_frame.saturating_add(1);
-        });
-    });
-
-    for layer_count in [1_usize, 2, 4] {
-        let mut compose_only = CachedOverlayBench::new(layer_count, &base_rgb, start_system);
-        group.bench_function(
-            BenchmarkId::new("cached_overlay_compose_only", layer_count),
-            |b| {
-                b.iter(|| {
-                    let staging = compose_only.compose(black_box(&base_rgb), start_system);
-                    black_box(staging.pixels().as_ptr());
-                });
-            },
-        );
-
-        let mut compose_writeback = CachedOverlayBench::new(layer_count, &base_rgb, start_system);
-        let mut composed_rgb = Vec::new();
-        group.bench_function(
-            BenchmarkId::new("cached_overlay_compose_writeback", layer_count),
-            |b| {
-                b.iter(|| {
-                    let staging = compose_writeback.compose(black_box(&base_rgb), start_system);
-                    staging.write_into_rgb(black_box(&mut composed_rgb));
-                    black_box(composed_rgb.as_ptr());
-                });
-            },
-        );
-    }
-
-    group.finish();
-}
-
 criterion_group! {
     name = benches;
     config = benchmark_config();
-    targets = bench_render_pipeline, bench_publish_handoff, bench_sparkleflinger, bench_display_overlays
+    targets = bench_render_pipeline, bench_publish_handoff, bench_sparkleflinger
 }
 criterion_main!(benches);

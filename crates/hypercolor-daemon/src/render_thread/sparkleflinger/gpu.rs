@@ -820,6 +820,10 @@ impl GpuSparkleFlinger {
         self.discard_pending_preview_map();
     }
 
+    pub(crate) fn discard_preview_work(&mut self) {
+        self.discard_superseded_preview_work();
+    }
+
     fn preview_submission_ready(
         &mut self,
         submission_index: wgpu::SubmissionIndex,

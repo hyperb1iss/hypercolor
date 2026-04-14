@@ -28,8 +28,9 @@ use crate::types::device::DeviceId;
 use crate::types::effect::{ControlBinding, ControlValue, EffectMetadata};
 use crate::types::library::PresetId;
 use crate::types::scene::{
-    ColorInterpolation, DisplayFaceTarget, EasingFunction, RenderGroup, RenderGroupId,
-    RenderGroupRole, Scene, SceneId, SceneKind, SceneMutationMode, ScenePriority, TransitionSpec,
+    ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, RenderGroup,
+    RenderGroupId, RenderGroupRole, Scene, SceneId, SceneKind, SceneMutationMode, ScenePriority,
+    TransitionSpec,
 };
 use crate::types::spatial::SpatialLayout;
 
@@ -411,7 +412,7 @@ impl SceneManager {
                 group.control_bindings.clear();
             }
             group.layout = layout;
-            group.display_target = Some(DisplayFaceTarget { device_id });
+            group.display_target = Some(DisplayFaceTarget::new(device_id));
             group.enabled = true;
             group.role = RenderGroupRole::Display;
             if group.name.trim().is_empty() {
@@ -430,7 +431,7 @@ impl SceneManager {
                 brightness: 1.0,
                 enabled: true,
                 color: None,
-                display_target: Some(DisplayFaceTarget { device_id }),
+                display_target: Some(DisplayFaceTarget::new(device_id)),
                 role: RenderGroupRole::Display,
             });
         }
@@ -459,6 +460,33 @@ impl SceneManager {
             self.refresh_active_render_groups();
         }
         Ok(removed)
+    }
+
+    pub fn patch_display_group_target(
+        &mut self,
+        group_id: RenderGroupId,
+        blend_mode: Option<DisplayFaceBlendMode>,
+        opacity: Option<f32>,
+    ) -> Option<&RenderGroup> {
+        let scene = self.active_scene_mut()?;
+        let group = scene.groups.iter_mut().find(|group| group.id == group_id)?;
+        let current_target = group
+            .display_target
+            .clone()
+            .unwrap_or_else(|| DisplayFaceTarget::new(DeviceId::new()));
+        let mut next_target = DisplayFaceTarget {
+            blend_mode: blend_mode.unwrap_or(current_target.blend_mode),
+            device_id: current_target.device_id,
+            opacity: opacity.unwrap_or(current_target.opacity),
+        }
+        .normalized();
+        if !next_target.blends_with_effect() {
+            next_target.opacity = 1.0;
+        }
+        group.display_target = Some(next_target);
+        self.refresh_active_render_groups();
+        self.active_scene()
+            .and_then(|active| active.groups.iter().find(|group| group.id == group_id))
     }
 
     #[must_use]

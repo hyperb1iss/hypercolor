@@ -4,7 +4,6 @@
 //! disturbing the existing LED frame routing path.
 
 mod encode;
-pub mod overlay;
 mod render;
 mod worker;
 
@@ -20,22 +19,16 @@ use tracing::{debug, info, warn};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
-use hypercolor_core::overlay::OverlayError;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::device::{DeviceId, DeviceTopologyHint};
-use hypercolor_types::overlay::OverlaySlot;
 use hypercolor_types::scene::RenderGroupId;
-use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
 
-use self::overlay::OverlayRendererFactory;
 use self::render::display_viewport_signature;
-use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::backend_id_for_device;
 use crate::display_frames::DisplayFrameRuntime;
-use crate::display_overlays::{DisplayOverlayRegistry, DisplayOverlayRuntimeRegistry};
 use crate::logical_devices::LogicalDevice;
 use crate::session::OutputPowerState;
 use worker::DisplayWorkerHandle;
@@ -69,22 +62,12 @@ pub struct DisplayOutputState {
     pub scene_manager: Arc<RwLock<SceneManager>>,
     /// Logical-device aliases used to match physical devices to layout zones.
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
-    /// Legacy test-only compatibility field retained while overlay tests are pruned.
-    pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
     /// Event bus canvas stream produced by the render thread.
     pub event_bus: Arc<HypercolorBus>,
     /// Session power policy used to decide whether static hold refresh is active.
     pub power_state: watch::Receiver<OutputPowerState>,
     /// How often unchanged display frames should be reasserted during static hold.
     pub static_hold_refresh_interval: Duration,
-    /// Legacy test-only compatibility field retained while overlay tests are pruned.
-    pub display_overlays: Arc<DisplayOverlayRegistry>,
-    /// Legacy test-only compatibility field retained while overlay tests are pruned.
-    pub display_overlay_runtime: Arc<DisplayOverlayRuntimeRegistry>,
-    /// Legacy test-only compatibility field retained while overlay tests are pruned.
-    pub sensor_snapshot_rx: watch::Receiver<Arc<SystemSnapshot>>,
-    /// Legacy test-only compatibility field retained while overlay tests are pruned.
-    pub overlay_factory: Arc<dyn OverlayRendererFactory>,
     /// Latest composited JPEG frames published per device for preview surfaces.
     pub display_frames: Arc<RwLock<DisplayFrameRuntime>>,
 }

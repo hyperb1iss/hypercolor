@@ -456,7 +456,7 @@ async fn activate_playlist_item(state: &Arc<AppState>, item: &PlaylistItem) -> R
                     effect_id = %metadata.id,
                     effect = %metadata.name,
                     warnings = ?activation.warnings,
-                    "Auto-disabled HTML overlays while activating playlist effect item"
+                    "Effect activation emitted warnings while activating playlist effect item"
                 );
             }
         }
@@ -481,7 +481,7 @@ async fn activate_playlist_item(state: &Arc<AppState>, item: &PlaylistItem) -> R
                     preset_id = %preset.id,
                     preset = %preset.name,
                     warnings = ?activation.warnings,
-                    "Auto-disabled HTML overlays while activating playlist preset item"
+                    "Effect activation emitted warnings while activating playlist preset item"
                 );
             }
         }

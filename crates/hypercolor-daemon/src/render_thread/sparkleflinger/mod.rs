@@ -254,6 +254,27 @@ impl SparkleFlinger {
         }
     }
 
+    pub(crate) fn preview_only_frame(
+        &mut self,
+        frame: ProducerFrame,
+        preview_surface_request: Option<PreviewSurfaceRequest>,
+    ) -> ComposedFrameSet {
+        let backend = self.backend_kind();
+        match &mut self.backend {
+            SparkleFlingerBackend::Cpu(_) => {}
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.discard_preview_work(),
+        }
+
+        ComposedFrameSet {
+            sampling_canvas: None,
+            sampling_surface: None,
+            preview_surface: preview_surface_for_frame(&frame, preview_surface_request),
+            bypassed: true,
+            backend,
+        }
+    }
+
     pub fn sample_zone_plan(
         &mut self,
         prepared_zones: &[PreparedZonePlan],
@@ -410,6 +431,14 @@ impl SparkleFlinger {
             SparkleFlingerBackend::Gpu { gpu, .. } => gpu.take_last_sample_readback_wait_blocked(),
         }
     }
+
+    fn backend_kind(&self) -> CompositorBackendKind {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => CompositorBackendKind::Cpu,
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { .. } => CompositorBackendKind::Gpu,
+        }
+    }
 }
 
 #[cfg(feature = "wgpu")]
@@ -469,6 +498,91 @@ pub(super) fn publish_composed_frame(
     }
 }
 
+fn preview_surface_for_frame(
+    frame: &ProducerFrame,
+    preview_surface_request: Option<PreviewSurfaceRequest>,
+) -> Option<PublishedSurface> {
+    let request = preview_surface_request?;
+    match frame {
+        ProducerFrame::Surface(surface) => {
+            if preview_request_matches_dimensions(request, surface.width(), surface.height()) {
+                return Some(surface.clone());
+            }
+            scaled_preview_surface_from_rgba(
+                surface.rgba_bytes(),
+                surface.width(),
+                surface.height(),
+                request,
+            )
+        }
+        ProducerFrame::Canvas(canvas) => {
+            if preview_request_matches_dimensions(request, canvas.width(), canvas.height()) {
+                return Some(PublishedSurface::from_owned_canvas(canvas.clone(), 0, 0));
+            }
+            scaled_preview_surface_from_rgba(
+                canvas.as_rgba_bytes(),
+                canvas.width(),
+                canvas.height(),
+                request,
+            )
+        }
+    }
+}
+
+fn preview_request_matches_dimensions(
+    request: PreviewSurfaceRequest,
+    width: u32,
+    height: u32,
+) -> bool {
+    request.width == width && request.height == height
+}
+
+pub(super) fn scaled_preview_surface_from_rgba(
+    rgba: &[u8],
+    source_width: u32,
+    source_height: u32,
+    request: PreviewSurfaceRequest,
+) -> Option<PublishedSurface> {
+    if request.width == 0
+        || request.height == 0
+        || preview_request_matches_dimensions(request, source_width, source_height)
+    {
+        return None;
+    }
+
+    let mut preview = Canvas::new(request.width, request.height);
+    let preview_bytes = preview.as_rgba_bytes_mut();
+    let source_width_usize = usize::try_from(source_width).ok()?;
+    let source_height_usize = usize::try_from(source_height).ok()?;
+    let target_width_usize = usize::try_from(request.width).ok()?;
+    let target_height_usize = usize::try_from(request.height).ok()?;
+
+    for y in 0..target_height_usize {
+        let source_y = y
+            .saturating_mul(source_height_usize)
+            .checked_div(target_height_usize.max(1))?
+            .min(source_height_usize.saturating_sub(1));
+        for x in 0..target_width_usize {
+            let source_x = x
+                .saturating_mul(source_width_usize)
+                .checked_div(target_width_usize.max(1))?
+                .min(source_width_usize.saturating_sub(1));
+            let source_offset = source_y
+                .checked_mul(source_width_usize)?
+                .checked_add(source_x)?
+                .checked_mul(4)?;
+            let target_offset = y
+                .checked_mul(target_width_usize)?
+                .checked_add(x)?
+                .checked_mul(4)?;
+            preview_bytes[target_offset..target_offset + 4]
+                .copy_from_slice(&rgba[source_offset..source_offset + 4]);
+        }
+    }
+
+    Some(PublishedSurface::from_owned_canvas(preview, 0, 0))
+}
+
 #[cfg(test)]
 mod tests {
     use hypercolor_core::types::canvas::{BlendMode, Canvas, PublishedSurface, Rgba, RgbaF32};
@@ -518,6 +632,54 @@ mod tests {
                 .as_ptr(),
             source.rgba_bytes().as_ptr()
         );
+    }
+
+    #[test]
+    fn sparkleflinger_preview_only_frame_reuses_full_size_surface() {
+        let source =
+            PublishedSurface::from_owned_canvas(solid_canvas(Rgba::new(32, 64, 96, 255)), 7, 11);
+        let mut sparkleflinger = SparkleFlinger::cpu();
+
+        let composed = sparkleflinger.preview_only_frame(
+            ProducerFrame::Surface(source.clone()),
+            Some(PreviewSurfaceRequest {
+                width: 2,
+                height: 2,
+            }),
+        );
+
+        let preview_surface = composed
+            .preview_surface
+            .expect("full-size preview-only path should reuse the existing surface");
+        assert_eq!(preview_surface.storage_identity(), source.storage_identity());
+        assert!(composed.bypassed);
+        assert!(composed.sampling_canvas.is_none());
+        assert!(composed.sampling_surface.is_none());
+    }
+
+    #[test]
+    fn sparkleflinger_preview_only_frame_scales_surface_preview() {
+        let mut source_canvas = Canvas::new(2, 2);
+        source_canvas.set_pixel(0, 0, Rgba::new(255, 0, 0, 255));
+        source_canvas.set_pixel(1, 0, Rgba::new(0, 255, 0, 255));
+        source_canvas.set_pixel(0, 1, Rgba::new(0, 0, 255, 255));
+        source_canvas.set_pixel(1, 1, Rgba::new(255, 255, 0, 255));
+        let source = PublishedSurface::from_owned_canvas(source_canvas, 7, 11);
+        let mut sparkleflinger = SparkleFlinger::cpu();
+
+        let composed = sparkleflinger.preview_only_frame(
+            ProducerFrame::Surface(source),
+            Some(PreviewSurfaceRequest {
+                width: 1,
+                height: 1,
+            }),
+        );
+
+        let preview_surface = composed
+            .preview_surface
+            .expect("scaled preview-only path should materialize a preview surface");
+        assert_eq!(preview_surface.width(), 1);
+        assert_eq!(preview_surface.height(), 1);
     }
 
     #[test]

@@ -13,11 +13,9 @@ use hypercolor_types::event::{HypercolorEvent, SceneChangeReason};
 use hypercolor_types::scene::SceneId;
 
 use crate::discovery::{self, DiscoveryBackend};
-use crate::display_output::overlay::DefaultOverlayRendererFactory;
 use crate::display_output::{
     DEFAULT_STATIC_HOLD_REFRESH_INTERVAL, DisplayOutputState, DisplayOutputThread,
 };
-use crate::display_overlays::{DisplayOverlayRegistry, DisplayOverlayRuntimeRegistry};
 use crate::render_thread::{CanvasDims, RenderThread, RenderThreadState};
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
 use crate::scene_transactions::apply_layout_update;
@@ -102,26 +100,15 @@ impl DaemonState {
             RenderThread::try_spawn(rt_state)
                 .context("failed to spawn render thread with resolved compositor mode")?,
         );
-        let sensor_snapshot_rx = self
-            .input_manager
-            .lock()
-            .await
-            .sensor_snapshot_receiver()
-            .expect("display output requires a configured sensor snapshot receiver");
         self.display_output_thread = Some(DisplayOutputThread::spawn(DisplayOutputState {
             backend_manager: Arc::clone(&self.backend_manager),
             device_registry: self.device_registry.clone(),
             spatial_engine: Arc::clone(&self.spatial_engine),
             scene_manager: Arc::clone(&self.scene_manager),
             logical_devices: Arc::clone(&self.logical_devices),
-            device_settings: Arc::clone(&self.device_settings),
             event_bus: Arc::clone(&self.event_bus),
             power_state: self.power_state.subscribe(),
             static_hold_refresh_interval: DEFAULT_STATIC_HOLD_REFRESH_INTERVAL,
-            display_overlays: Arc::new(DisplayOverlayRegistry::new()),
-            display_overlay_runtime: Arc::new(DisplayOverlayRuntimeRegistry::new()),
-            sensor_snapshot_rx,
-            overlay_factory: Arc::new(DefaultOverlayRendererFactory::new()),
             display_frames: Arc::clone(&self.display_frames),
         }));
 

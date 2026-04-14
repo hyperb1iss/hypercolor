@@ -1,7 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -11,9 +9,6 @@ use uuid::Uuid;
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend, DeviceRegistry};
-use hypercolor_core::overlay::{
-    OverlayBuffer, OverlayError, OverlayInput, OverlayRenderer, OverlaySize,
-};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
@@ -22,30 +17,17 @@ use hypercolor_types::device::{
     DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::effect::EffectId;
-use hypercolor_types::overlay::{
-    Anchor, ClockConfig, ClockStyle, DisplayOverlayConfig, HourFormat, HtmlOverlayConfig, ImageFit,
-    ImageOverlayConfig, OverlayBlendMode, OverlayPosition, OverlaySlot, OverlaySlotId,
-    OverlaySource, SensorDisplayStyle, SensorOverlayConfig, TextAlign, TextOverlayConfig,
-};
 use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceTarget, RenderGroup, RenderGroupId, Scene, SceneId,
     ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
 };
-use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
 };
 
-use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
-use hypercolor_daemon::display_output::overlay::{
-    DefaultOverlayRendererFactory, OverlayRendererBinding, OverlayRendererFactory,
-};
 use hypercolor_daemon::display_output::{DisplayOutputState, DisplayOutputThread};
-use hypercolor_daemon::display_overlays::{
-    DisplayOverlayRegistry, DisplayOverlayRuntimeRegistry, OverlaySlotRuntime, OverlaySlotStatus,
-};
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_daemon::session::OutputPowerState;
 
@@ -294,37 +276,8 @@ fn default_power_state_rx() -> watch::Receiver<OutputPowerState> {
     rx
 }
 
-fn default_sensor_snapshot_rx() -> watch::Receiver<Arc<SystemSnapshot>> {
-    let (tx, rx) = watch::channel(Arc::new(SystemSnapshot::empty()));
-    let _ = Box::leak(Box::new(tx));
-    rx
-}
-
-fn default_display_overlays() -> Arc<DisplayOverlayRegistry> {
-    Arc::new(DisplayOverlayRegistry::new())
-}
-
-fn default_display_overlay_runtime() -> Arc<DisplayOverlayRuntimeRegistry> {
-    Arc::new(DisplayOverlayRuntimeRegistry::new())
-}
-
-fn default_device_settings() -> Arc<RwLock<DeviceSettingsStore>> {
-    Arc::new(RwLock::new(DeviceSettingsStore::new(
-        std::path::PathBuf::from("device-settings.json"),
-    )))
-}
-
 fn default_scene_manager() -> Arc<RwLock<SceneManager>> {
     Arc::new(RwLock::new(SceneManager::new()))
-}
-
-fn default_overlay_factory() -> Arc<dyn OverlayRendererFactory> {
-    Arc::new(DefaultOverlayRendererFactory::new())
-}
-
-fn default_text_overlay_test_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 const TEST_STATIC_HOLD_REFRESH_INTERVAL: Duration = Duration::from_millis(60);
@@ -453,49 +406,6 @@ async fn activate_display_face_scene(
         .expect("display face test scene should activate");
 }
 
-struct SolidOverlayRenderer {
-    color: [u8; 4],
-}
-
-impl OverlayRenderer for SolidOverlayRenderer {
-    fn init(&mut self, _target_size: OverlaySize) -> Result<()> {
-        Ok(())
-    }
-
-    fn resize(&mut self, _target_size: OverlaySize) -> Result<()> {
-        Ok(())
-    }
-
-    fn render_into(
-        &mut self,
-        _input: &OverlayInput<'_>,
-        target: &mut OverlayBuffer,
-    ) -> std::result::Result<(), OverlayError> {
-        for pixel in target.pixels.chunks_exact_mut(4) {
-            pixel.copy_from_slice(&self.color);
-        }
-        Ok(())
-    }
-}
-
-struct SolidOverlayFactory {
-    color: [u8; 4],
-    interval: Duration,
-}
-
-impl OverlayRendererFactory for SolidOverlayFactory {
-    fn build(
-        &self,
-        _slot: &OverlaySlot,
-        _target_size: OverlaySize,
-    ) -> std::result::Result<OverlayRendererBinding, OverlayError> {
-        Ok(OverlayRendererBinding {
-            renderer: Box::new(SolidOverlayRenderer { color: self.color }),
-            render_interval: self.interval,
-        })
-    }
-}
-
 async fn wait_for_display_writes(display_writes: &Arc<Mutex<Vec<Vec<u8>>>>) -> Vec<Vec<u8>> {
     wait_for_display_writes_with_timeout(display_writes, Duration::from_secs(1)).await
 }
@@ -553,55 +463,10 @@ async fn wait_for_display_frame_snapshot(
     .expect("display preview frame should arrive within timeout")
 }
 
-async fn wait_for_overlay_runtime(
-    runtime_registry: &Arc<DisplayOverlayRuntimeRegistry>,
-    device_id: DeviceId,
-    slot_id: OverlaySlotId,
-) -> OverlaySlotRuntime {
-    tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            if let Some(runtime) = runtime_registry.get(device_id).await.slot(slot_id).cloned() {
-                return runtime;
-            }
-
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("overlay runtime should arrive within timeout")
-}
-
 fn decode_jpeg(bytes: &[u8]) -> image::RgbaImage {
     image::load_from_memory(bytes)
         .expect("display output should decode as an image")
         .into_rgba8()
-}
-
-fn write_png(path: &Path, color: [u8; 4], width: u32, height: u32) {
-    image::ImageBuffer::from_pixel(width, height, image::Rgba(color))
-        .save(path)
-        .expect("png should save");
-}
-
-fn region_contains_visible_pixels(
-    image: &image::RgbaImage,
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-) -> bool {
-    let max_x = (x + width).min(image.width());
-    let max_y = (y + height).min(image.height());
-    for sample_y in y..max_y {
-        for sample_x in x..max_x {
-            let pixel = image.get_pixel(sample_x, sample_y);
-            if pixel[0] > 20 || pixel[1] > 20 || pixel[2] > 20 {
-                return true;
-            }
-        }
-    }
-
-    false
 }
 
 fn mixed_led_display_device_info(device_id: DeviceId, width: u32, height: u32) -> DeviceInfo {
@@ -688,14 +553,9 @@ async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_device
         spatial_engine: Arc::clone(&spatial_engine),
         scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: default_display_overlays(),
-        display_overlay_runtime: default_display_overlay_runtime(),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -742,14 +602,9 @@ async fn automatic_display_output_skips_devices_without_display_capabilities() {
         spatial_engine: Arc::clone(&spatial_engine),
         scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: default_display_overlays(),
-        display_overlay_runtime: default_display_overlay_runtime(),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -799,14 +654,9 @@ async fn automatic_display_output_skips_display_devices_that_are_not_in_layout()
         spatial_engine: Arc::clone(&spatial_engine),
         scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: default_display_overlays(),
-        display_overlay_runtime: default_display_overlay_runtime(),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -865,14 +715,9 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
         spatial_engine: Arc::clone(&spatial_engine),
         scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: default_display_overlays(),
-        display_overlay_runtime: default_display_overlay_runtime(),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -958,14 +803,9 @@ async fn automatic_display_output_uses_logical_device_viewport_alias() {
         spatial_engine: Arc::clone(&spatial_engine),
         scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: default_display_overlays(),
-        display_overlay_runtime: default_display_overlay_runtime(),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -1035,14 +875,9 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
         spatial_engine: Arc::clone(&spatial_engine),
         scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: default_display_overlays(),
-        display_overlay_runtime: default_display_overlay_runtime(),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -1107,14 +942,9 @@ async fn display_group_canvas_routes_to_device_worker() {
         spatial_engine: Arc::clone(&spatial_engine),
         scene_manager: Arc::clone(&scene_manager),
         logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: default_display_overlays(),
-        display_overlay_runtime: default_display_overlay_runtime(),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -1186,14 +1016,9 @@ async fn automatic_display_output_updates_direct_faces_without_global_canvas_tic
         spatial_engine: Arc::clone(&spatial_engine),
         scene_manager: Arc::clone(&scene_manager),
         logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: default_display_overlays(),
-        display_overlay_runtime: default_display_overlay_runtime(),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -1276,14 +1101,9 @@ async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
         spatial_engine: Arc::clone(&spatial_engine),
         scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: default_display_overlays(),
-        display_overlay_runtime: default_display_overlay_runtime(),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -1377,14 +1197,9 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
         spatial_engine: Arc::clone(&spatial_engine),
         scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: default_display_overlays(),
-        display_overlay_runtime: default_display_overlay_runtime(),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -1431,457 +1246,6 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
 }
 
 #[tokio::test]
-async fn automatic_display_output_composites_mock_overlay_into_display_frame() {
-    let event_bus = Arc::new(HypercolorBus::new());
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(
-        Vec::new(),
-    ))));
-    let logical_devices = Arc::new(RwLock::new(HashMap::new()));
-    let display_writes = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-    let device_registry = DeviceRegistry::new();
-    let overlays = default_display_overlays();
-    let device_id = DeviceId::new();
-
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
-
-    let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
-        device_id,
-        Arc::clone(&display_writes),
-    )));
-    backend_manager
-        .connect_device("usb", device_id, "corsair:test-display")
-        .await
-        .expect("backend should connect");
-
-    let tracked_id = device_registry
-        .add(display_device_info(device_id, true, 480, 480, true))
-        .await;
-    assert_eq!(tracked_id, device_id);
-    assert!(
-        device_registry
-            .set_state(&device_id, DeviceState::Active)
-            .await
-    );
-
-    overlays
-        .set(
-            device_id,
-            DisplayOverlayConfig {
-                overlays: vec![OverlaySlot {
-                    id: OverlaySlotId::from(Uuid::now_v7()),
-                    name: "Mock Overlay".to_owned(),
-                    source: OverlaySource::Text(TextOverlayConfig {
-                        text: "mock".to_owned(),
-                        font_family: None,
-                        font_size: 12.0,
-                        color: "#ffffff".to_owned(),
-                        align: TextAlign::Center,
-                        scroll: false,
-                        scroll_speed: 30.0,
-                    }),
-                    position: OverlayPosition::Anchored {
-                        anchor: Anchor::TopLeft,
-                        offset_x: 60,
-                        offset_y: 60,
-                        width: 120,
-                        height: 120,
-                    },
-                    blend_mode: OverlayBlendMode::Normal,
-                    opacity: 0.5,
-                    enabled: true,
-                }],
-            },
-        )
-        .await;
-
-    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
-        backend_manager: Arc::new(Mutex::new(backend_manager)),
-        device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
-        scene_manager: default_scene_manager(),
-        logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
-        event_bus: Arc::clone(&event_bus),
-        power_state: default_power_state_rx(),
-        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: Arc::clone(&overlays),
-        display_overlay_runtime: default_display_overlay_runtime(),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: Arc::new(SolidOverlayFactory {
-            color: [255, 0, 0, 255],
-            interval: Duration::from_secs(1),
-        }),
-        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
-    });
-
-    let canvas = solid_canvas(Rgba::BLACK);
-    let _ = event_bus
-        .canvas_sender()
-        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
-
-    let writes = wait_for_display_writes(&display_writes).await;
-    let image = decode_jpeg(&writes[0]);
-    let inside_overlay = image.get_pixel(120, 120);
-    let outside_overlay = image.get_pixel(16, 16);
-
-    assert!(
-        inside_overlay[0] > 80 && inside_overlay[1] < 40 && inside_overlay[2] < 40,
-        "expected red-tinted overlay pixel, got {inside_overlay:?}"
-    );
-    assert!(
-        outside_overlay[0] < 30 && outside_overlay[1] < 30 && outside_overlay[2] < 30,
-        "expected untouched black background outside overlay, got {outside_overlay:?}"
-    );
-
-    thread.shutdown().await.expect("display thread should stop");
-}
-
-#[tokio::test]
-async fn automatic_display_output_hydrates_persisted_overlay_config_on_worker_spawn() {
-    let event_bus = Arc::new(HypercolorBus::new());
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(
-        Vec::new(),
-    ))));
-    let logical_devices = Arc::new(RwLock::new(HashMap::new()));
-    let display_writes = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-    let device_registry = DeviceRegistry::new();
-    let overlays = default_display_overlays();
-    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    let device_settings = Arc::new(RwLock::new(DeviceSettingsStore::new(
-        temp_dir.path().join("device-settings.json"),
-    )));
-    let device_id = DeviceId::new();
-
-    {
-        let mut store = device_settings.write().await;
-        store.set_display_overlays(
-            &device_id.to_string(),
-            Some(DisplayOverlayConfig {
-                overlays: vec![OverlaySlot {
-                    id: OverlaySlotId::from(Uuid::now_v7()),
-                    name: "Persisted Overlay".to_owned(),
-                    source: OverlaySource::Text(TextOverlayConfig {
-                        text: "persisted".to_owned(),
-                        font_family: None,
-                        font_size: 12.0,
-                        color: "#ffffff".to_owned(),
-                        align: TextAlign::Center,
-                        scroll: false,
-                        scroll_speed: 30.0,
-                    }),
-                    position: OverlayPosition::Anchored {
-                        anchor: Anchor::TopLeft,
-                        offset_x: 60,
-                        offset_y: 60,
-                        width: 120,
-                        height: 120,
-                    },
-                    blend_mode: OverlayBlendMode::Normal,
-                    opacity: 0.5,
-                    enabled: true,
-                }],
-            }),
-        );
-    }
-
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
-
-    let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
-        device_id,
-        Arc::clone(&display_writes),
-    )));
-    backend_manager
-        .connect_device("usb", device_id, "corsair:test-display")
-        .await
-        .expect("backend should connect");
-
-    let tracked_id = device_registry
-        .add(display_device_info(device_id, true, 480, 480, true))
-        .await;
-    assert_eq!(tracked_id, device_id);
-    assert!(
-        device_registry
-            .set_state(&device_id, DeviceState::Active)
-            .await
-    );
-
-    assert!(overlays.get(device_id).await.is_empty());
-
-    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
-        backend_manager: Arc::new(Mutex::new(backend_manager)),
-        device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
-        scene_manager: default_scene_manager(),
-        logical_devices: Arc::clone(&logical_devices),
-        device_settings: Arc::clone(&device_settings),
-        event_bus: Arc::clone(&event_bus),
-        power_state: default_power_state_rx(),
-        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: Arc::clone(&overlays),
-        display_overlay_runtime: default_display_overlay_runtime(),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: Arc::new(SolidOverlayFactory {
-            color: [255, 0, 0, 255],
-            interval: Duration::from_secs(1),
-        }),
-        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
-    });
-
-    let canvas = solid_canvas(Rgba::BLACK);
-    let _ = event_bus
-        .canvas_sender()
-        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
-
-    let writes = wait_for_display_writes(&display_writes).await;
-    let image = decode_jpeg(&writes[0]);
-    let inside_overlay = image.get_pixel(120, 120);
-
-    assert!(
-        inside_overlay[0] > 80 && inside_overlay[1] < 40 && inside_overlay[2] < 40,
-        "expected persisted overlay pixel to be tinted red, got {inside_overlay:?}"
-    );
-    assert_eq!(overlays.get(device_id).await.overlays.len(), 1);
-
-    thread.shutdown().await.expect("display thread should stop");
-}
-
-#[tokio::test]
-async fn automatic_display_output_publishes_overlay_runtime_failures() {
-    let event_bus = Arc::new(HypercolorBus::new());
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(
-        Vec::new(),
-    ))));
-    let logical_devices = Arc::new(RwLock::new(HashMap::new()));
-    let display_writes = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-    let device_registry = DeviceRegistry::new();
-    let overlays = default_display_overlays();
-    let overlay_runtime = default_display_overlay_runtime();
-    let device_id = DeviceId::new();
-    let slot_id = OverlaySlotId::from(Uuid::now_v7());
-
-    overlays
-        .set(
-            device_id,
-            DisplayOverlayConfig {
-                overlays: vec![OverlaySlot {
-                    id: slot_id,
-                    name: "Broken Overlay".to_owned(),
-                    source: OverlaySource::Html(HtmlOverlayConfig {
-                        path: "overlay.html".to_owned(),
-                        properties: HashMap::new(),
-                        render_interval_ms: 1_000,
-                    }),
-                    position: OverlayPosition::Anchored {
-                        anchor: Anchor::TopLeft,
-                        offset_x: 16,
-                        offset_y: 16,
-                        width: 120,
-                        height: 48,
-                    },
-                    blend_mode: OverlayBlendMode::Normal,
-                    opacity: 1.0,
-                    enabled: true,
-                }],
-            },
-        )
-        .await;
-
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
-
-    let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
-        device_id,
-        Arc::clone(&display_writes),
-    )));
-    backend_manager
-        .connect_device("usb", device_id, "corsair:test-display")
-        .await
-        .expect("backend should connect");
-
-    let tracked_id = device_registry
-        .add(display_device_info(device_id, true, 480, 480, true))
-        .await;
-    assert_eq!(tracked_id, device_id);
-    assert!(
-        device_registry
-            .set_state(&device_id, DeviceState::Active)
-            .await
-    );
-
-    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
-        backend_manager: Arc::new(Mutex::new(backend_manager)),
-        device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
-        scene_manager: default_scene_manager(),
-        logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
-        event_bus: Arc::clone(&event_bus),
-        power_state: default_power_state_rx(),
-        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: Arc::clone(&overlays),
-        display_overlay_runtime: Arc::clone(&overlay_runtime),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
-        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
-    });
-
-    let canvas = solid_canvas(Rgba::BLACK);
-    let _ = event_bus
-        .canvas_sender()
-        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
-
-    let runtime = wait_for_overlay_runtime(&overlay_runtime, device_id, slot_id).await;
-    assert_eq!(runtime.status, OverlaySlotStatus::Failed);
-    let error = runtime.last_error.as_deref().expect("error should exist");
-    assert!(error.contains("overlay renderer is not implemented yet"));
-    assert!(runtime.last_rendered_at.is_none());
-
-    thread.shutdown().await.expect("display thread should stop");
-    assert!(
-        overlay_runtime.get(device_id).await.slot(slot_id).is_none(),
-        "worker shutdown should clear runtime state"
-    );
-}
-
-#[tokio::test]
-async fn automatic_display_output_renders_clock_overlay_with_default_factory() {
-    let _guard = default_text_overlay_test_lock().lock().await;
-    let event_bus = Arc::new(HypercolorBus::new());
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(
-        Vec::new(),
-    ))));
-    let logical_devices = Arc::new(RwLock::new(HashMap::new()));
-    let display_writes = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-    let device_registry = DeviceRegistry::new();
-    let overlays = default_display_overlays();
-    let overlay_runtime = default_display_overlay_runtime();
-    let device_id = DeviceId::new();
-    let slot_id = OverlaySlotId::from(Uuid::now_v7());
-
-    overlays
-        .set(
-            device_id,
-            DisplayOverlayConfig {
-                overlays: vec![OverlaySlot {
-                    id: slot_id,
-                    name: "Clock Overlay".to_owned(),
-                    source: OverlaySource::Clock(ClockConfig {
-                        style: ClockStyle::Digital,
-                        hour_format: HourFormat::TwentyFour,
-                        show_seconds: true,
-                        show_date: true,
-                        date_format: Some("%Y-%m-%d".to_owned()),
-                        font_family: None,
-                        color: "#ffffff".to_owned(),
-                        secondary_color: Some("#80ffea".to_owned()),
-                        template: None,
-                    }),
-                    position: OverlayPosition::Anchored {
-                        anchor: Anchor::TopLeft,
-                        offset_x: 72,
-                        offset_y: 48,
-                        width: 240,
-                        height: 120,
-                    },
-                    blend_mode: OverlayBlendMode::Normal,
-                    opacity: 1.0,
-                    enabled: true,
-                }],
-            },
-        )
-        .await;
-
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
-
-    let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
-        device_id,
-        Arc::clone(&display_writes),
-    )));
-    backend_manager
-        .connect_device("usb", device_id, "corsair:test-display")
-        .await
-        .expect("backend should connect");
-
-    let tracked_id = device_registry
-        .add(display_device_info(device_id, true, 480, 480, true))
-        .await;
-    assert_eq!(tracked_id, device_id);
-    assert!(
-        device_registry
-            .set_state(&device_id, DeviceState::Active)
-            .await
-    );
-
-    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
-        backend_manager: Arc::new(Mutex::new(backend_manager)),
-        device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
-        scene_manager: default_scene_manager(),
-        logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
-        event_bus: Arc::clone(&event_bus),
-        power_state: default_power_state_rx(),
-        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: Arc::clone(&overlays),
-        display_overlay_runtime: Arc::clone(&overlay_runtime),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
-        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
-    });
-
-    let canvas = solid_canvas(Rgba::BLACK);
-    let _ = event_bus
-        .canvas_sender()
-        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
-
-    let writes =
-        wait_for_display_writes_with_timeout(&display_writes, Duration::from_secs(5)).await;
-    let image = decode_jpeg(&writes[0]);
-    assert!(
-        region_contains_visible_pixels(&image, 72, 48, 240, 120),
-        "expected clock overlay to paint visible pixels inside its bounds"
-    );
-
-    let runtime = wait_for_overlay_runtime(&overlay_runtime, device_id, slot_id).await;
-    assert_eq!(runtime.status, OverlaySlotStatus::Active);
-    assert!(runtime.last_error.is_none());
-    assert!(runtime.last_rendered_at.is_some());
-
-    thread.shutdown().await.expect("display thread should stop");
-}
-
-#[tokio::test]
 async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails() {
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
@@ -1922,14 +1286,9 @@ async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails()
         spatial_engine: Arc::clone(&spatial_engine),
         scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: default_display_overlays(),
-        display_overlay_runtime: default_display_overlay_runtime(),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
         display_frames: Arc::clone(&display_frames),
     });
 
@@ -1947,363 +1306,6 @@ async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails()
     );
     assert_eq!(frame.width, 320);
     assert_eq!(frame.height, 200);
-
-    thread.shutdown().await.expect("display thread should stop");
-}
-
-#[tokio::test]
-async fn automatic_display_output_renders_text_overlay_with_default_factory() {
-    let _guard = default_text_overlay_test_lock().lock().await;
-    let event_bus = Arc::new(HypercolorBus::new());
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(
-        Vec::new(),
-    ))));
-    let logical_devices = Arc::new(RwLock::new(HashMap::new()));
-    let display_writes = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-    let device_registry = DeviceRegistry::new();
-    let overlays = default_display_overlays();
-    let overlay_runtime = default_display_overlay_runtime();
-    let device_id = DeviceId::new();
-    let slot_id = OverlaySlotId::from(Uuid::now_v7());
-
-    overlays
-        .set(
-            device_id,
-            DisplayOverlayConfig {
-                overlays: vec![OverlaySlot {
-                    id: slot_id,
-                    name: "Text Overlay".to_owned(),
-                    source: OverlaySource::Text(TextOverlayConfig {
-                        text: "CPU {sensor:cpu_temp}".to_owned(),
-                        font_family: None,
-                        font_size: 32.0,
-                        color: "#ffffff".to_owned(),
-                        align: TextAlign::Center,
-                        scroll: false,
-                        scroll_speed: 30.0,
-                    }),
-                    position: OverlayPosition::Anchored {
-                        anchor: Anchor::TopLeft,
-                        offset_x: 72,
-                        offset_y: 72,
-                        width: 240,
-                        height: 96,
-                    },
-                    blend_mode: OverlayBlendMode::Normal,
-                    opacity: 1.0,
-                    enabled: true,
-                }],
-            },
-        )
-        .await;
-
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
-
-    let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
-        device_id,
-        Arc::clone(&display_writes),
-    )));
-    backend_manager
-        .connect_device("usb", device_id, "corsair:test-display")
-        .await
-        .expect("backend should connect");
-
-    let tracked_id = device_registry
-        .add(display_device_info(device_id, true, 480, 480, true))
-        .await;
-    assert_eq!(tracked_id, device_id);
-    assert!(
-        device_registry
-            .set_state(&device_id, DeviceState::Active)
-            .await
-    );
-
-    let (sensor_tx, sensor_rx) = watch::channel(Arc::new(SystemSnapshot {
-        cpu_temp_celsius: Some(72.0),
-        ..SystemSnapshot::empty()
-    }));
-    let _ = Box::leak(Box::new(sensor_tx));
-
-    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
-        backend_manager: Arc::new(Mutex::new(backend_manager)),
-        device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
-        scene_manager: default_scene_manager(),
-        logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
-        event_bus: Arc::clone(&event_bus),
-        power_state: default_power_state_rx(),
-        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: Arc::clone(&overlays),
-        display_overlay_runtime: Arc::clone(&overlay_runtime),
-        sensor_snapshot_rx: sensor_rx,
-        overlay_factory: default_overlay_factory(),
-        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
-    });
-
-    let canvas = solid_canvas(Rgba::BLACK);
-    let _ = event_bus
-        .canvas_sender()
-        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
-
-    let writes =
-        wait_for_display_writes_with_timeout(&display_writes, Duration::from_secs(5)).await;
-    let image = decode_jpeg(&writes[0]);
-    assert!(
-        region_contains_visible_pixels(&image, 72, 72, 240, 96),
-        "expected text overlay to paint visible pixels inside its bounds"
-    );
-
-    let runtime = wait_for_overlay_runtime(&overlay_runtime, device_id, slot_id).await;
-    assert_eq!(runtime.status, OverlaySlotStatus::Active);
-    assert!(runtime.last_error.is_none());
-    assert!(runtime.last_rendered_at.is_some());
-
-    thread.shutdown().await.expect("display thread should stop");
-}
-
-#[tokio::test]
-async fn automatic_display_output_renders_sensor_overlay_with_default_factory() {
-    let _guard = default_text_overlay_test_lock().lock().await;
-    let event_bus = Arc::new(HypercolorBus::new());
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(
-        Vec::new(),
-    ))));
-    let logical_devices = Arc::new(RwLock::new(HashMap::new()));
-    let display_writes = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-    let device_registry = DeviceRegistry::new();
-    let overlays = default_display_overlays();
-    let overlay_runtime = default_display_overlay_runtime();
-    let device_id = DeviceId::new();
-    let slot_id = OverlaySlotId::from(Uuid::now_v7());
-
-    overlays
-        .set(
-            device_id,
-            DisplayOverlayConfig {
-                overlays: vec![OverlaySlot {
-                    id: slot_id,
-                    name: "Sensor Overlay".to_owned(),
-                    source: OverlaySource::Sensor(SensorOverlayConfig {
-                        sensor: "cpu_temp".to_owned(),
-                        style: SensorDisplayStyle::Gauge,
-                        unit_label: None,
-                        range_min: 20.0,
-                        range_max: 100.0,
-                        color_min: "#80ffea".to_owned(),
-                        color_max: "#ff6ac1".to_owned(),
-                        font_family: None,
-                        template: None,
-                    }),
-                    position: OverlayPosition::Anchored {
-                        anchor: Anchor::TopLeft,
-                        offset_x: 88,
-                        offset_y: 56,
-                        width: 176,
-                        height: 176,
-                    },
-                    blend_mode: OverlayBlendMode::Normal,
-                    opacity: 1.0,
-                    enabled: true,
-                }],
-            },
-        )
-        .await;
-
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
-
-    let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
-        device_id,
-        Arc::clone(&display_writes),
-    )));
-    backend_manager
-        .connect_device("usb", device_id, "corsair:test-display")
-        .await
-        .expect("backend should connect");
-
-    let tracked_id = device_registry
-        .add(display_device_info(device_id, true, 480, 480, true))
-        .await;
-    assert_eq!(tracked_id, device_id);
-    assert!(
-        device_registry
-            .set_state(&device_id, DeviceState::Active)
-            .await
-    );
-
-    let (sensor_tx, sensor_rx) = watch::channel(Arc::new(SystemSnapshot {
-        cpu_temp_celsius: Some(72.0),
-        ..SystemSnapshot::empty()
-    }));
-    let _ = Box::leak(Box::new(sensor_tx));
-
-    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
-        backend_manager: Arc::new(Mutex::new(backend_manager)),
-        device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
-        scene_manager: default_scene_manager(),
-        logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
-        event_bus: Arc::clone(&event_bus),
-        power_state: default_power_state_rx(),
-        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: Arc::clone(&overlays),
-        display_overlay_runtime: Arc::clone(&overlay_runtime),
-        sensor_snapshot_rx: sensor_rx,
-        overlay_factory: default_overlay_factory(),
-        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
-    });
-
-    let canvas = solid_canvas(Rgba::BLACK);
-    let _ = event_bus
-        .canvas_sender()
-        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
-
-    let writes =
-        wait_for_display_writes_with_timeout(&display_writes, Duration::from_secs(5)).await;
-    let image = decode_jpeg(&writes[0]);
-    assert!(
-        region_contains_visible_pixels(&image, 88, 56, 176, 176),
-        "expected sensor overlay to paint visible pixels inside its bounds"
-    );
-
-    let runtime = wait_for_overlay_runtime(&overlay_runtime, device_id, slot_id).await;
-    assert_eq!(runtime.status, OverlaySlotStatus::Active);
-    assert!(runtime.last_error.is_none());
-    assert!(runtime.last_rendered_at.is_some());
-
-    thread.shutdown().await.expect("display thread should stop");
-}
-
-#[tokio::test]
-async fn automatic_display_output_renders_image_overlay_with_default_factory() {
-    let event_bus = Arc::new(HypercolorBus::new());
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(
-        Vec::new(),
-    ))));
-    let logical_devices = Arc::new(RwLock::new(HashMap::new()));
-    let display_writes = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-    let device_registry = DeviceRegistry::new();
-    let overlays = default_display_overlays();
-    let overlay_runtime = default_display_overlay_runtime();
-    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    let image_path = temp_dir.path().join("overlay.png");
-    let device_id = DeviceId::new();
-    let slot_id = OverlaySlotId::from(Uuid::now_v7());
-
-    write_png(&image_path, [255, 0, 0, 160], 1, 1);
-    overlays
-        .set(
-            device_id,
-            DisplayOverlayConfig {
-                overlays: vec![OverlaySlot {
-                    id: slot_id,
-                    name: "Image Overlay".to_owned(),
-                    source: OverlaySource::Image(ImageOverlayConfig {
-                        path: image_path.to_string_lossy().into_owned(),
-                        speed: 1.0,
-                        fit: ImageFit::Stretch,
-                    }),
-                    position: OverlayPosition::Anchored {
-                        anchor: Anchor::TopLeft,
-                        offset_x: 96,
-                        offset_y: 96,
-                        width: 120,
-                        height: 120,
-                    },
-                    blend_mode: OverlayBlendMode::Normal,
-                    opacity: 1.0,
-                    enabled: true,
-                }],
-            },
-        )
-        .await;
-
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
-
-    let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
-        device_id,
-        Arc::clone(&display_writes),
-    )));
-    backend_manager
-        .connect_device("usb", device_id, "corsair:test-display")
-        .await
-        .expect("backend should connect");
-
-    let tracked_id = device_registry
-        .add(display_device_info(device_id, true, 480, 480, true))
-        .await;
-    assert_eq!(tracked_id, device_id);
-    assert!(
-        device_registry
-            .set_state(&device_id, DeviceState::Active)
-            .await
-    );
-
-    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
-        backend_manager: Arc::new(Mutex::new(backend_manager)),
-        device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
-        scene_manager: default_scene_manager(),
-        logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
-        event_bus: Arc::clone(&event_bus),
-        power_state: default_power_state_rx(),
-        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: Arc::clone(&overlays),
-        display_overlay_runtime: Arc::clone(&overlay_runtime),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
-        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
-    });
-
-    let canvas = solid_canvas(Rgba::BLACK);
-    let _ = event_bus
-        .canvas_sender()
-        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
-
-    let writes = wait_for_display_writes(&display_writes).await;
-    let image = decode_jpeg(&writes[0]);
-    let inside_overlay = image.get_pixel(120, 120);
-    let outside_overlay = image.get_pixel(16, 16);
-
-    assert!(
-        inside_overlay[0] > 90 && inside_overlay[1] < 40 && inside_overlay[2] < 40,
-        "expected red-tinted image overlay pixel, got {inside_overlay:?}"
-    );
-    assert!(
-        outside_overlay[0] < 30 && outside_overlay[1] < 30 && outside_overlay[2] < 30,
-        "expected untouched black background outside overlay, got {outside_overlay:?}"
-    );
-
-    let runtime = wait_for_overlay_runtime(&overlay_runtime, device_id, slot_id).await;
-    assert_eq!(runtime.status, OverlaySlotStatus::Active);
-    assert!(runtime.last_error.is_none());
-    assert!(runtime.last_rendered_at.is_some());
 
     thread.shutdown().await.expect("display thread should stop");
 }
@@ -2352,14 +1354,9 @@ async fn automatic_display_output_skips_unchanged_frames() {
         spatial_engine: Arc::clone(&spatial_engine),
         scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: default_display_overlays(),
-        display_overlay_runtime: default_display_overlay_runtime(),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -2442,14 +1439,9 @@ async fn automatic_display_output_skips_metadata_only_owned_surface_updates() {
         spatial_engine: Arc::clone(&spatial_engine),
         scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: default_display_overlays(),
-        display_overlay_runtime: default_display_overlay_runtime(),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -2518,14 +1510,9 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
         spatial_engine: Arc::clone(&spatial_engine),
         scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: default_display_overlays(),
-        display_overlay_runtime: default_display_overlay_runtime(),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -2614,14 +1601,9 @@ async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
         spatial_engine: Arc::clone(&spatial_engine),
         scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: default_display_overlays(),
-        display_overlay_runtime: default_display_overlay_runtime(),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -2694,14 +1676,9 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
         spatial_engine: Arc::clone(&spatial_engine),
         scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: default_display_overlays(),
-        display_overlay_runtime: default_display_overlay_runtime(),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -2785,14 +1762,9 @@ async fn automatic_display_output_refreshes_static_hold_frames_while_sleeping() 
         spatial_engine: Arc::clone(&spatial_engine),
         scene_manager: default_scene_manager(),
         logical_devices: Arc::clone(&logical_devices),
-        device_settings: default_device_settings(),
         event_bus: Arc::clone(&event_bus),
         power_state,
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_overlays: default_display_overlays(),
-        display_overlay_runtime: default_display_overlay_runtime(),
-        sensor_snapshot_rx: default_sensor_snapshot_rx(),
-        overlay_factory: default_overlay_factory(),
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 

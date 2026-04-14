@@ -145,28 +145,6 @@ pub(super) fn encode_direct_canvas_frame(
     encode_prepared_rgb_frame(geometry, brightness, encode_state)
 }
 
-pub(super) fn render_canvas_frame_rgb(
-    source: &CanvasFrame,
-    viewport: &DisplayViewport,
-    geometry: &DisplayGeometry,
-    encode_state: &mut DisplayEncodeState,
-) {
-    if geometry.width == 0 || geometry.height == 0 {
-        encode_state.rgb_buffer.clear();
-        return;
-    }
-
-    render_display_view(
-        source,
-        viewport,
-        geometry.width,
-        geometry.height,
-        &mut encode_state.rgb_buffer,
-        &mut encode_state.axis_plan,
-        None,
-    );
-}
-
 pub(super) fn render_direct_canvas_frame_rgb(
     source: &CanvasFrame,
     geometry: &DisplayGeometry,

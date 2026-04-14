@@ -263,7 +263,7 @@ impl DeviceBackend for SimulatedDisplayBackend {
         BackendInfo {
             id: SIMULATED_DISPLAY_BACKEND_ID.to_owned(),
             name: "Virtual Display Simulator".to_owned(),
-            description: "Daemon-local virtual LCD devices for layout and overlay workflows"
+            description: "Daemon-local virtual LCD devices for layout and display-face workflows"
                 .to_owned(),
         }
     }

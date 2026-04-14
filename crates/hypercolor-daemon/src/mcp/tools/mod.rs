@@ -9,9 +9,9 @@ use serde_json::{Value, json};
 use crate::api::AppState;
 
 mod devices;
+mod displays;
 mod effects;
 mod library;
-mod overlays;
 mod scenes;
 mod system;
 
@@ -49,7 +49,7 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
         scenes::build_create_scene(),
         system::build_get_audio_state(),
         system::build_get_sensor_data(),
-        overlays::build_set_display_face(),
+        displays::build_set_display_face(),
         library::build_set_profile(),
         system::build_get_layout(),
         system::build_diagnose(),
@@ -78,7 +78,7 @@ pub fn execute_tool(name: &str, params: &Value) -> Result<Value, ToolError> {
         "create_scene" => scenes::handle_create_scene(params),
         "get_audio_state" => system::handle_get_audio_state(params),
         "get_sensor_data" => system::handle_get_sensor_data(params),
-        "set_display_face" => overlays::handle_set_display_face(params),
+        "set_display_face" => displays::handle_set_display_face(params),
         "set_profile" => library::handle_set_profile(params),
         "get_layout" => system::handle_get_layout(params),
         "diagnose" => system::handle_diagnose(params),
@@ -105,7 +105,7 @@ pub async fn execute_tool_with_state(
         "create_scene" => scenes::handle_create_scene_with_state(params, state).await,
         "get_audio_state" => Ok(system::handle_get_audio_state_with_state(state)),
         "get_sensor_data" => system::handle_get_sensor_data_with_state(params, state).await,
-        "set_display_face" => overlays::handle_set_display_face_with_state(params, state).await,
+        "set_display_face" => displays::handle_set_display_face_with_state(params, state).await,
         "set_profile" => library::handle_set_profile_with_state(params, state).await,
         "get_layout" => system::handle_get_layout_with_state(state).await,
         "diagnose" => system::handle_diagnose_with_state(params, state).await,

@@ -28,6 +28,8 @@ fn dropdown_control(id: &str) -> ControlDefinition {
         labels: vec!["a".to_owned(), "b".to_owned()],
         group: None,
         tooltip: None,
+        aspect_lock: None,
+        preview_source: None,
         binding: None,
     }
 }
@@ -45,6 +47,8 @@ fn color_control(id: &str) -> ControlDefinition {
         labels: Vec::new(),
         group: None,
         tooltip: None,
+        aspect_lock: None,
+        preview_source: None,
         binding: None,
     }
 }
@@ -58,8 +62,6 @@ fn display_summary(family: &str) -> DisplaySummary {
         width: 480,
         height: 480,
         circular: true,
-        overlay_count: 2,
-        enabled_overlay_count: 1,
     }
 }
 
@@ -156,7 +158,7 @@ fn set_display_face_request_serializes_present_controls() {
         payload,
         serde_json::json!({
             "effect_id": "face-2",
-            "controls": { "accent": 0.75 }
+            "controls": { "accent": { "float": 0.75 } }
         })
     );
 }

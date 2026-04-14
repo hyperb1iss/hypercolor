@@ -7,7 +7,7 @@ use hypercolor_types::overlay::OverlayBlendMode;
 
 use super::{
     ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, PreviewSurfaceRequest,
-    publish_composed_frame,
+    publish_composed_frame, scaled_preview_surface_from_rgba,
 };
 use crate::render_thread::producer_queue::ProducerFrame;
 
@@ -204,49 +204,6 @@ fn preview_request_matches_plan(
     height: u32,
 ) -> bool {
     request.is_some_and(|request| request.width == width && request.height == height)
-}
-
-fn scaled_preview_surface_from_rgba(
-    rgba: &[u8],
-    source_width: u32,
-    source_height: u32,
-    request: PreviewSurfaceRequest,
-) -> Option<PublishedSurface> {
-    if request.width == 0
-        || request.height == 0
-        || request.width == source_width && request.height == source_height
-    {
-        return None;
-    }
-    let mut preview = Canvas::new(request.width, request.height);
-    let preview_bytes = preview.as_rgba_bytes_mut();
-    let source_width_usize = usize::try_from(source_width).ok()?;
-    let source_height_usize = usize::try_from(source_height).ok()?;
-    let target_width_usize = usize::try_from(request.width).ok()?;
-    let target_height_usize = usize::try_from(request.height).ok()?;
-    for y in 0..target_height_usize {
-        let source_y = y
-            .saturating_mul(source_height_usize)
-            .checked_div(target_height_usize.max(1))?
-            .min(source_height_usize.saturating_sub(1));
-        for x in 0..target_width_usize {
-            let source_x = x
-                .saturating_mul(source_width_usize)
-                .checked_div(target_width_usize.max(1))?
-                .min(source_width_usize.saturating_sub(1));
-            let source_offset = source_y
-                .checked_mul(source_width_usize)?
-                .checked_add(source_x)?
-                .checked_mul(4)?;
-            let target_offset = y
-                .checked_mul(target_width_usize)?
-                .checked_add(x)?
-                .checked_mul(4)?;
-            preview_bytes[target_offset..target_offset + 4]
-                .copy_from_slice(&rgba[source_offset..source_offset + 4]);
-        }
-    }
-    Some(PublishedSurface::from_owned_canvas(preview, 0, 0))
 }
 
 fn take_base_canvas(layer: CompositionLayer, width: u32, height: u32) -> (Canvas, bool) {

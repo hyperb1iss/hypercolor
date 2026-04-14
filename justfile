@@ -154,10 +154,6 @@ tray *args='':
 daemon-release *args='':
     ./scripts/cargo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --release -- {{ args }}
 
-# Apply or refresh the Spec 40 clock+sensor overlay demo on a display-capable device
-overlay-demo *args='':
-    ./scripts/manual-verify-display-overlays.sh {{ args }}
-
 # Create or update a virtual display simulator, apply an effect, and print a browser preview URL
 simulator-demo *args='':
     ./scripts/simulator-demo.sh {{ args }}
@@ -165,10 +161,6 @@ simulator-demo *args='':
 # Create or update a simulator and wait for its frame endpoint to produce image data
 simulator-smoke *args='':
     ./scripts/simulator-demo.sh --ephemeral --wait-frame {{ args }}
-
-# Report whether connected displays satisfy Spec 40's Wave 2 hardware verification matrix
-overlay-matrix:
-    ./scripts/check-display-overlay-matrix.sh
 
 # Run Servo daemon (dev profile) with cache wrapper
 daemon-servo *args='':
