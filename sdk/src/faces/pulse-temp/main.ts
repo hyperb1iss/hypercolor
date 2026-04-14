@@ -37,6 +37,8 @@ const STYLES = `
     --secondary: ${palette.coral};
     --hero-font: 'Rajdhani', sans-serif;
     --ui-font: 'Inter', sans-serif;
+    --hero-size: 132;
+    --detail-size: 12;
     --hero-ink: ${palette.fg.primary};
     --ui-ink: ${palette.fg.secondary};
     --dim-ink: ${palette.fg.tertiary};
@@ -61,7 +63,7 @@ const STYLES = `
 
 .hc-pulse-temp__number {
     font-family: var(--hero-font);
-    font-size: 132px;
+    font-size: calc(var(--hero-size) * 1px);
     font-weight: 600;
     line-height: 1;
     letter-spacing: 0.015em;
@@ -88,7 +90,7 @@ const STYLES = `
     left: 50%;
     transform: translateX(-50%);
     font-family: var(--ui-font);
-    font-size: 12px;
+    font-size: calc(var(--detail-size) * 1px);
     font-weight: 600;
     letter-spacing: 0.18em;
     text-transform: uppercase;
@@ -107,7 +109,7 @@ const STYLES = `
     gap: 18px;
     flex-wrap: nowrap;
     font-family: var(--ui-font);
-    font-size: 11px;
+    font-size: calc((var(--detail-size) - 1) * 1px);
     font-weight: 600;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -135,6 +137,8 @@ export default face(
         meterStyle: combo('Meter Style', ['Halo', 'Vector', 'Scope'], { group: 'Layout' }),
         heroFont: font('Hero Font', 'Rajdhani', { group: 'Typography', families: [...DISPLAY_FONT_FAMILIES] }),
         uiFont: font('UI Font', 'Inter', { group: 'Typography', families: [...UI_FONT_FAMILIES] }),
+        heroSize: num('Hero Size', [72, 164], 132, { group: 'Typography' }),
+        detailSize: num('Detail Size', [9, 24], 12, { group: 'Typography' }),
         glowIntensity: num('Glow', [0, 100], 54, { group: 'Style' }),
         showNumber: toggle('Show Number', true, { group: 'Elements' }),
         showUnit: toggle('Show Unit', true, { group: 'Elements' }),
@@ -320,6 +324,8 @@ export default face(
             root.style.setProperty('--secondary', secondary)
             root.style.setProperty('--hero-font', `"${controls.heroFont as string}", sans-serif`)
             root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
+            root.style.setProperty('--hero-size', `${controls.heroSize as number}`)
+            root.style.setProperty('--detail-size', `${controls.detailSize as number}`)
             root.style.setProperty('--hero-ink', ink.hero)
             root.style.setProperty('--ui-ink', ink.ui)
             root.style.setProperty('--dim-ink', ink.dim)

@@ -4,6 +4,7 @@ import {
     face,
     font,
     lerpColor,
+    num,
     palette,
     sensor,
     toggle,
@@ -26,6 +27,9 @@ const STYLES = `
     --secondary: ${palette.coral};
     --hero-font: 'Rajdhani', sans-serif;
     --ui-font: 'Inter', sans-serif;
+    --clock-size: 84;
+    --metric-size: 56;
+    --detail-size: 11;
     --hero-ink: ${palette.fg.primary};
     --ui-ink: ${palette.fg.secondary};
     --dim-ink: ${palette.fg.tertiary};
@@ -59,7 +63,7 @@ const STYLES = `
     justify-content: center;
     gap: 8px;
     font-family: var(--hero-font);
-    font-size: 84px;
+    font-size: calc(var(--clock-size) * 1px);
     font-weight: 600;
     line-height: 0.86;
     letter-spacing: 0.015em;
@@ -95,7 +99,7 @@ const STYLES = `
 
 .hc-silk-hud__date {
     font-family: var(--ui-font);
-    font-size: 12px;
+    font-size: calc((var(--detail-size) + 1) * 1px);
     font-weight: 600;
     letter-spacing: 0.18em;
     text-transform: uppercase;
@@ -124,7 +128,7 @@ const STYLES = `
 
 .hc-silk-hud__metric-label {
     font-family: var(--ui-font);
-    font-size: 11px;
+    font-size: calc(var(--detail-size) * 1px);
     font-weight: 600;
     letter-spacing: 0.18em;
     text-transform: uppercase;
@@ -133,7 +137,7 @@ const STYLES = `
 
 .hc-silk-hud__metric-value {
     font-family: var(--hero-font);
-    font-size: 56px;
+    font-size: calc(var(--metric-size) * 1px);
     font-weight: 600;
     line-height: 0.9;
     text-align: center;
@@ -162,7 +166,7 @@ const STYLES = `
     justify-content: space-between;
     gap: 12px;
     font-family: var(--ui-font);
-    font-size: 11px;
+    font-size: calc(var(--detail-size) * 1px);
     font-weight: 600;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -208,6 +212,9 @@ export default face(
         secondaryAccent: color('Secondary', palette.coral, { group: 'Style' }),
         heroFont: font('Hero Font', 'Rajdhani', { group: 'Typography', families: [...DISPLAY_FONT_FAMILIES] }),
         uiFont: font('UI Font', 'Inter', { group: 'Typography', families: [...UI_FONT_FAMILIES] }),
+        clockSize: num('Clock Size', [48, 128], 84, { group: 'Typography' }),
+        metricSize: num('Metric Size', [28, 92], 56, { group: 'Typography' }),
+        detailSize: num('Detail Size', [9, 20], 11, { group: 'Typography' }),
         hourFormat: combo('Clock Format', ['24h', '12h'], { group: 'Clock' }),
         showClock: toggle('Show Clock', true, { group: 'Elements' }),
         showDate: toggle('Show Date', true, { group: 'Elements' }),
@@ -382,6 +389,9 @@ export default face(
             root.style.setProperty('--dim-ink', ink.dim)
             root.style.setProperty('--hero-font', `"${controls.heroFont as string}", sans-serif`)
             root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
+            root.style.setProperty('--clock-size', `${controls.clockSize as number}`)
+            root.style.setProperty('--metric-size', `${controls.metricSize as number}`)
+            root.style.setProperty('--detail-size', `${controls.detailSize as number}`)
 
             const now = new Date()
             let hours = now.getHours()

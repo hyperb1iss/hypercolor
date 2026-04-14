@@ -28,6 +28,8 @@ const STYLES = `
     --secondary: ${palette.electricPurple};
     --headline-font: 'Rajdhani', sans-serif;
     --ui-font: 'Inter', sans-serif;
+    --time-size: 120;
+    --meta-size: 12;
     --hero-ink: ${palette.fg.primary};
     --ui-ink: ${palette.fg.secondary};
     --dim-ink: ${palette.fg.tertiary};
@@ -41,13 +43,14 @@ const STYLES = `
     position: absolute;
     top: 50%;
     left: 50%;
-    transform: translate(-50%, -50%);
-    display: inline-flex;
-    align-items: baseline;
+    transform: translate(-50%, -58%);
+    display: inline-grid;
+    grid-auto-flow: column;
+    align-items: end;
     justify-content: center;
-    gap: 10px;
+    column-gap: 10px;
     font-family: var(--headline-font);
-    font-size: 120px;
+    font-size: calc(var(--time-size) * 1px);
     font-weight: 600;
     line-height: 1;
     letter-spacing: 0.015em;
@@ -84,15 +87,16 @@ const STYLES = `
 
 .hc-neon-clock__meta {
     position: absolute;
-    top: calc(50% + 88px);
+    top: calc(50% + 22px);
     left: 50%;
     transform: translateX(-50%);
     display: flex;
     justify-content: center;
     align-items: center;
     gap: 14px;
+    min-height: 1em;
     font-family: var(--ui-font);
-    font-size: 12px;
+    font-size: calc(var(--meta-size) * 1px);
     font-weight: 600;
     letter-spacing: 0.18em;
     text-transform: uppercase;
@@ -110,6 +114,14 @@ const STYLES = `
 .hc-neon-clock__hidden {
     display: none !important;
 }
+
+.hc-neon-clock[data-style='split'] .hc-neon-clock__time {
+    transform: translate(-50%, -56%);
+}
+
+.hc-neon-clock[data-style='pulse'] .hc-neon-clock__meta {
+    top: calc(50% + 26px);
+}
 `
 
 function setClockDigit(slot: HTMLSpanElement, value: string | null): void {
@@ -125,6 +137,8 @@ export default face(
         dialStyle: combo('Dial Style', ['Orbit', 'Split', 'Pulse'], { group: 'Clock' }),
         headlineFont: font('Headline Font', 'Rajdhani', { group: 'Typography', families: [...DISPLAY_FONT_FAMILIES] }),
         uiFont: font('UI Font', 'Inter', { group: 'Typography', families: [...UI_FONT_FAMILIES] }),
+        timeSize: num('Time Size', [72, 164], 120, { group: 'Typography' }),
+        metaSize: num('Meta Size', [8, 24], 12, { group: 'Typography' }),
         hourFormat: combo('Format', ['24h', '12h'], { group: 'Clock' }),
         glowIntensity: num('Glow', [0, 100], 56, { group: 'Style' }),
         showTime: toggle('Show Time', true, { group: 'Elements' }),
@@ -298,6 +312,8 @@ export default face(
             root.style.setProperty('--dim-ink', ink.dim)
             root.style.setProperty('--headline-font', `"${controls.headlineFont as string}", sans-serif`)
             root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
+            root.style.setProperty('--time-size', `${controls.timeSize as number}`)
+            root.style.setProperty('--meta-size', `${controls.metaSize as number}`)
 
             const now = new Date()
             let hours = now.getHours()

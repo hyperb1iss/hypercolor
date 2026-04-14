@@ -5,6 +5,7 @@ import {
     face,
     font,
     lerpColor,
+    num,
     palette,
     sensor,
     sensorColors,
@@ -30,6 +31,8 @@ const STYLES = `
     --secondary: ${palette.electricPurple};
     --hero-font: 'Rajdhani', sans-serif;
     --ui-font: 'Inter', sans-serif;
+    --value-size: 50;
+    --label-size: 11;
     --hero-ink: ${palette.fg.primary};
     --ui-ink: ${palette.fg.secondary};
     --dim-ink: ${palette.fg.tertiary};
@@ -96,7 +99,7 @@ const STYLES = `
 
 .hc-sensor-grid__label {
     font-family: var(--ui-font);
-    font-size: 11px;
+    font-size: calc(var(--label-size) * 1px);
     font-weight: 600;
     letter-spacing: 0.18em;
     text-transform: uppercase;
@@ -106,7 +109,7 @@ const STYLES = `
 
 .hc-sensor-grid__value {
     font-family: var(--hero-font);
-    font-size: 50px;
+    font-size: calc(var(--value-size) * 1px);
     font-weight: 600;
     line-height: 0.9;
     letter-spacing: 0.015em;
@@ -121,7 +124,7 @@ const STYLES = `
 
 .hc-sensor-grid__percent {
     font-family: var(--ui-font);
-    font-size: 11px;
+    font-size: calc(var(--label-size) * 1px);
     font-weight: 600;
     letter-spacing: 0.18em;
     text-transform: uppercase;
@@ -164,6 +167,8 @@ export default face(
         accent: color('Accent', palette.neonCyan, { group: 'Style' }),
         heroFont: font('Hero Font', 'Rajdhani', { group: 'Typography', families: [...DISPLAY_FONT_FAMILIES] }),
         uiFont: font('UI Font', 'Inter', { group: 'Typography', families: [...UI_FONT_FAMILIES] }),
+        valueSize: num('Value Size', [28, 84], 50, { group: 'Typography' }),
+        labelSize: num('Label Size', [9, 20], 11, { group: 'Typography' }),
         showLabels: toggle('Show Labels', true, { group: 'Elements' }),
         showValues: toggle('Show Values', true, { group: 'Elements' }),
         showPercents: toggle('Show Percents', false, { group: 'Elements' }),
@@ -304,6 +309,8 @@ export default face(
             root.style.setProperty('--dim-ink', ink.dim)
             root.style.setProperty('--hero-font', `"${controls.heroFont as string}", sans-serif`)
             root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
+            root.style.setProperty('--value-size', `${controls.valueSize as number}`)
+            root.style.setProperty('--label-size', `${controls.labelSize as number}`)
 
             const showLabels = controls.showLabels as boolean
             const showValues = controls.showValues as boolean
