@@ -19,7 +19,7 @@ concurrency:
 env:
   # System deps shared across Linux jobs
   LINUX_DEPS: >-
-    libudev-dev libdbus-1-dev libasound2-dev
+    libudev-dev libdbus-1-dev libasound2-dev libpulse0
     libpipewire-0.3-dev
     cmake nasm pkg-config lld
     libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev

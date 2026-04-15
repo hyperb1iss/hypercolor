@@ -12,8 +12,11 @@ use std::thread;
 
 use anyhow::{Context, anyhow};
 use ashpd::desktop::{
-    PersistMode, Session,
-    screencast::{CursorMode, Screencast, SelectSourcesOptions, SourceType, Stream},
+    CreateSessionOptions, PersistMode, Session,
+    screencast::{
+        CursorMode, OpenPipeWireRemoteOptions, Screencast, SelectSourcesOptions, SourceType,
+        StartCastOptions, Stream,
+    },
 };
 use pipewire as pw;
 use pw::properties::properties;
@@ -129,7 +132,7 @@ impl WaylandScreenCaptureInput {
 }
 
 impl InputSource for WaylandScreenCaptureInput {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "wayland_screen_capture"
     }
 
@@ -222,7 +225,7 @@ impl WaylandCaptureUserData {
 
         Self {
             analyzer,
-            format: Default::default(),
+            format: spa::param::video::VideoInfoRaw::default(),
             latest_snapshot,
             rgba_frame: Vec::new(),
         }
@@ -272,7 +275,7 @@ async fn open_portal_session(config: &CaptureConfig) -> anyhow::Result<PortalCap
         .await
         .context("failed to connect to xdg-desktop-portal screencast interface")?;
     let session = proxy
-        .create_session(Default::default())
+        .create_session(CreateSessionOptions::default())
         .await
         .context("failed to create screencast portal session")?;
 
@@ -289,7 +292,7 @@ async fn open_portal_session(config: &CaptureConfig) -> anyhow::Result<PortalCap
         .context("failed to open screencast source picker")?;
 
     let response = proxy
-        .start(&session, None, Default::default())
+        .start(&session, None, StartCastOptions::default())
         .await
         .context("failed to start screencast portal session")?
         .response()
@@ -300,7 +303,7 @@ async fn open_portal_session(config: &CaptureConfig) -> anyhow::Result<PortalCap
         .cloned()
         .context("portal did not return a monitor stream")?;
     let fd = proxy
-        .open_pipe_wire_remote(&session, Default::default())
+        .open_pipe_wire_remote(&session, OpenPipeWireRemoteOptions::default())
         .await
         .context("failed to open PipeWire remote for screencast session")?;
 
