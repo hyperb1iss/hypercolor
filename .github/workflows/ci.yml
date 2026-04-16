@@ -23,6 +23,7 @@ env:
     libpipewire-0.3-dev
     cmake nasm pkg-config lld
     libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
+    libxdo-dev
     libgtk-3-dev libappindicator3-dev
   # Tauri desktop shell is intentionally out of the default CI path for now.
   RUST_WORKSPACE_ARGS: >-
