@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use anyhow::{Result, bail};
 use hypercolor_core::config::ConfigManager;
@@ -897,8 +898,21 @@ async fn event_bus_receives_startup_event() {
 
     state.start().await.expect("start should succeed");
 
-    // The startup event should be receivable.
-    let event = rx.recv().await.expect("should receive startup event");
+    // Runtime restoration may publish scene events first; keep receiving until
+    // the startup marker arrives.
+    let event = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let event = rx.recv().await.expect("should receive startup event");
+            if matches!(
+                event.event,
+                hypercolor_types::event::HypercolorEvent::DaemonStarted { .. }
+            ) {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for DaemonStarted event");
     assert!(
         matches!(
             event.event,
