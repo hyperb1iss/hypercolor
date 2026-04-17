@@ -683,20 +683,27 @@ pub async fn update_effect_controls(
     let applied = normalized.clone();
     let previous_values = resolved_control_values(&active_meta, &group);
 
+    // Resolve -> verify -> patch is one write-lock section so the
+    // TOCTOU window between "I looked up this effect" and "I'm
+    // patching the group that used to load it" is closed. Passing
+    // `expected_effect_id` to the scene manager turns a concurrent
+    // effect-swap into a `GroupMissing` error instead of a silent
+    // overwrite. See `SceneManager::patch_effect_controls_with_precondition`.
     let (scene_id, updated_group, new_version) = {
         let mut scene_manager = state.scene_manager.write().await;
         let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
             Ok(scene_id) => scene_id,
             Err(error) => return error.api_response("updating effect controls"),
         };
-        match scene_manager.patch_group_controls_with_precondition(
+        match scene_manager.patch_effect_controls_with_precondition(
             group.id,
+            Some(effect_id),
             normalized,
             expected_version,
         ) {
             Ok((updated, version)) => (scene_id, updated.clone(), version),
             Err(ControlsVersionMismatch::NoActiveScene | ControlsVersionMismatch::GroupMissing) => {
-                return ApiError::not_found("render group no longer exists");
+                return ApiError::not_found("render group no longer loads that effect");
             }
             Err(ControlsVersionMismatch::Stale { current }) => {
                 return controls_version_mismatch_response(current);

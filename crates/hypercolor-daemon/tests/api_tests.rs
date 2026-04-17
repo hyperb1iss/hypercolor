@@ -2006,6 +2006,77 @@ async fn patch_effect_controls_by_id_accepts_missing_if_match_as_no_precondition
 }
 
 #[tokio::test]
+async fn patch_effect_controls_by_id_rejects_apply_after_effect_swap() {
+    // TOCTOU guard: the modal captures effect A's id and version,
+    // an apply() swaps the primary to effect B in between, and the
+    // stale PATCH must NOT silently land on B.
+    //
+    // The scene manager's primary-group reuse ([upsert_primary_group])
+    // keeps the same `RenderGroupId` across effect swaps, so
+    // patching by group id alone is unsafe — the handler verifies
+    // `effect_id` still matches before writing.
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "Aurora").await;
+    insert_test_effect(&state, "Sunset").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/Aurora/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    let stale_body = body_json(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/effects/active")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request"),
+    )
+    .await;
+    let stale_effect_id = stale_body["data"]["id"]
+        .as_str()
+        .expect("Aurora id")
+        .to_owned();
+
+    // Swap to a different effect. Same render group slot; different
+    // effect_id.
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/Sunset/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    // Modal's stale PATCH against Aurora's id must not mutate Sunset.
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/effects/{stale_effect_id}/controls"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"speed":6.0}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn apply_effect_swap_replaces_primary_effect_id() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "Aurora").await;

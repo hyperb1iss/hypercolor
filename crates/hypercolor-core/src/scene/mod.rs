@@ -25,7 +25,7 @@ use std::sync::Arc;
 use anyhow::{Result, bail};
 
 use crate::types::device::DeviceId;
-use crate::types::effect::{ControlBinding, ControlValue, EffectMetadata};
+use crate::types::effect::{ControlBinding, ControlValue, EffectId, EffectMetadata};
 use crate::types::library::PresetId;
 use crate::types::scene::{
     ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, RenderGroup,
@@ -384,6 +384,13 @@ impl SceneManager {
             group.enabled = true;
             group.display_target = None;
             group.role = RenderGroupRole::Primary;
+            // An effect swap is the classic trigger for the modal's
+            // TOCTOU race: the group id stays the same but `effect_id`
+            // has changed out from under an open modal. Bumping the
+            // version makes that modal's Apply fail its `If-Match`,
+            // forcing it to re-seed against the new effect instead of
+            // quietly overwriting controls for the wrong effect.
+            group.controls_version = group.controls_version.saturating_add(1);
         } else {
             scene.groups.push(RenderGroup {
                 id: RenderGroupId::new(),
@@ -564,6 +571,27 @@ impl SceneManager {
         updates: HashMap<String, ControlValue>,
         expected_version: Option<u64>,
     ) -> Result<(&RenderGroup, u64), ControlsVersionMismatch> {
+        self.patch_effect_controls_with_precondition(group_id, None, updates, expected_version)
+    }
+
+    /// Patch a render group's controls, optionally requiring the group
+    /// to currently be bound to a specific `expected_effect_id`.
+    ///
+    /// The `expected_effect_id` gate closes the TOCTOU window the
+    /// Viewport Designer modal would otherwise hit: a GET resolves an
+    /// `effect_id → group_id` mapping, the modal edits, and later
+    /// issues a PATCH. If another client swaps the primary effect in
+    /// between, `group_id` will be reused ([`upsert_primary_group`])
+    /// but `effect_id` will have changed — so the PATCH would land on
+    /// the wrong effect. Requiring `effect_id` to match at write time
+    /// turns that silent drift into a clean `GroupMissing` error.
+    pub fn patch_effect_controls_with_precondition(
+        &mut self,
+        group_id: RenderGroupId,
+        expected_effect_id: Option<EffectId>,
+        updates: HashMap<String, ControlValue>,
+        expected_version: Option<u64>,
+    ) -> Result<(&RenderGroup, u64), ControlsVersionMismatch> {
         let scene = self
             .active_scene_mut()
             .ok_or(ControlsVersionMismatch::NoActiveScene)?;
@@ -572,6 +600,17 @@ impl SceneManager {
             .iter_mut()
             .find(|group| group.id == group_id)
             .ok_or(ControlsVersionMismatch::GroupMissing)?;
+        if let Some(expected_effect_id) = expected_effect_id
+            && group.effect_id != Some(expected_effect_id)
+        {
+            // The group no longer loads the effect the caller thought
+            // it was editing. Reporting `GroupMissing` (vs a new
+            // "effect changed" variant) keeps the API surface small
+            // and routes clients into the same "re-seed your draft
+            // from /effects/active" recovery path as a true
+            // missing-group case.
+            return Err(ControlsVersionMismatch::GroupMissing);
+        }
         if let Some(expected) = expected_version
             && expected != group.controls_version
         {
@@ -600,6 +639,11 @@ impl SceneManager {
         let group = scene.groups.iter_mut().find(|group| group.id == group_id)?;
         group.controls = defaults;
         group.preset_id = None;
+        // Reset is a controls mutation from a concurrency standpoint
+        // — any modal that opened before this call is holding a
+        // stale snapshot, so its next `If-Match` PATCH must fail.
+        // Same treatment as `patch_group_controls_with_precondition`.
+        group.controls_version = group.controls_version.saturating_add(1);
         self.refresh_active_render_groups();
         self.active_scene()
             .and_then(|active| active.groups.iter().find(|group| group.id == group_id))
@@ -612,6 +656,10 @@ impl SceneManager {
         group.controls.clear();
         group.control_bindings.clear();
         group.preset_id = None;
+        // Clearing the effect zeros every control; that is by far the
+        // most dramatic controls mutation and must invalidate every
+        // outstanding modal draft.
+        group.controls_version = group.controls_version.saturating_add(1);
         self.refresh_active_render_groups();
         self.active_scene()
             .and_then(|active| active.groups.iter().find(|group| group.id == group_id))
@@ -627,6 +675,11 @@ impl SceneManager {
         let group = scene.groups.iter_mut().find(|group| group.id == group_id)?;
         group.control_bindings.insert(control_id, binding);
         group.preset_id = None;
+        // Bindings surface as control values at render time, so a
+        // new binding changes what the user would see if they opened
+        // the modal — version must advance alongside raw control
+        // mutations.
+        group.controls_version = group.controls_version.saturating_add(1);
         self.refresh_active_render_groups();
         self.active_scene()
             .and_then(|active| active.groups.iter().find(|group| group.id == group_id))
