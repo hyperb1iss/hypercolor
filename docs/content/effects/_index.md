@@ -1,23 +1,37 @@
 +++
 title = "Effects"
-description = "Understanding and creating visual effects for RGB lighting"
+description = "Author lighting effects for Hypercolor with TypeScript, GLSL, or raw HTML"
 sort_by = "weight"
 template = "section.html"
 +++
 
-Effects are the visual core of Hypercolor, and they're wild. Each effect renders to a configurable pixel canvas (640x480 by default, tunable in Settings → Rendering) at up to 60fps. The spatial engine samples that canvas at each LED's physical position, translating pixels into colors that get pushed to real hardware. With 30+ built-in effects and a TypeScript SDK that makes authoring new ones a breeze, the creative possibilities are basically limitless.
+Effects are web pages. Your desk is the canvas.
 
-Hypercolor supports two rendering paths:
+Every Hypercolor effect renders into a canvas, and the daemon samples that canvas at each LED's physical position before pushing colors to hardware. The default render surface is 640x480 at up to 60 FPS, adaptively retuned live. Effects stay resolution-independent by reading `ctx.canvas.width` / `ctx.canvas.height` every frame; spatial coordinates are normalized `[0, 1]`, so the same effect lights a 60-LED strip, a 600-LED matrix, and a 24-LED ring.
 
-- **HTML/Canvas/WebGL effects** built with TypeScript using the `@hypercolor/sdk`, compiled to single-file HTML. This is the primary authoring path. Effects can use Canvas 2D for particle systems and procedural animation, or WebGL fragment shaders for GPU-accelerated noise, fractals, and mathematical visualizations.
+## Three authoring paths
 
-- **Native effects** rendered server-side via wgpu for maximum performance. These bypass the browser engine entirely and run as WGSL compute/render pipelines.
+Pick one based on what you're making.
 
-Both paths produce the same output: an RGBA pixel buffer that feeds into the spatial sampler. Effects can consume real-time audio data (FFT bins, beat detection, mel bands, spectral analysis) to create audio-reactive lighting.
+**[TypeScript canvas effects](@/effects/typescript-effects.md).** The primary path. Write a draw function, declare controls, ship. The `@hypercolor/sdk` gives you palette sampling, audio analysis, typed controls, and a live preview studio. Choose this for particle systems, procedural animation, state-driven motion, or anything that feels like "code I would write in a demoscene party."
 
-In this section:
+**[GLSL shader effects](@/effects/glsl-effects.md).** A fragment shader runs on the GPU for every canvas pixel. Controls turn into uniforms automatically (`speed` becomes `iSpeed`), audio bands become uniforms (`iAudioBass`, `iAudioBeatPulse`), and the SDK wraps it all into a WebGL2 pipeline. Choose this for noise fields, domain-warped fractals, kaleidoscopes, and anything where you'd rather describe "what every pixel is" than "what to draw next."
 
-- **[Creating Effects](@/effects/creating-effects.md)** — Write your first effect with the TypeScript SDK
-- **[Color Science](@/effects/color-science.md)** — Why RGB LEDs are different from screens, and how to make colors look great
-- **[SDK Reference](@/effects/sdk.md)** — Full API documentation for `@hypercolor/sdk`
-- **[AI Prompt Template](@/effects/ai-prompt-template.md)** — Generate effect code with the right SDK and hardware constraints
+**[Raw LightScript HTML](@/effects/raw-html.md).** A standalone HTML file with one canvas, one script tag, and a few meta tags. No SDK, no build step, no TypeScript. Hypercolor reads LightScript's wire format directly, so these effects work with zero tooling. This is the least-encouraged path for new work because you give up palettes, typed audio data, and the preview studio, but it's the right call for porting, for one-file oddities, and for effects that must travel without a workspace.
+
+## Before you write anything
+
+Even the most ambitious effect starts with a workspace and the dev studio.
+
+- [Setup](@/effects/setup.md) covers installing Bun, scaffolding a workspace, pointing at `@hypercolor/sdk`, and the standalone-vs-monorepo split.
+- [Dev Workflow](@/effects/dev-workflow.md) walks through the studio, live rebuilds, building, validating, and installing to the running daemon.
+
+## Reference
+
+Once you've picked a path, pair it with the reference pages for anything deeper.
+
+- [Controls](@/effects/controls.md). Sliders, dropdowns, colors, toggles, viewports. Shorthand inference and explicit factories. Presets.
+- [Audio](@/effects/audio.md). The full `AudioData` surface, which fields matter for what mood, and shader uniform mappings.
+- [Palettes](@/effects/palettes.md). The palette registry, Oklab-interpolated sampling, canvas vs shader integration, and the one gotcha about `palette` vs `combo('Palette', ...)`.
+- [Color Science for RGB LEDs](@/effects/color-science.md). Why LED lighting is different from screens, and how to make colors look great.
+- [AI Prompt Template](@/effects/ai-prompt-template.md). A drop-in prompt for asking Claude, GPT, or another model to write an effect that actually fits the SDK and the hardware.

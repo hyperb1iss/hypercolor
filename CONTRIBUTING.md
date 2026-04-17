@@ -21,7 +21,8 @@ just verify        # fmt + lint + test — run this after every change
 ## What to Work On
 
 **Effects** are the easiest way to contribute. The SDK makes it straightforward to create something
-beautiful without touching Rust. See [`docs/sdk-effect-guide.md`](docs/sdk-effect-guide.md).
+beautiful without touching Rust. See the [effects documentation](docs/content/effects/_index.md) for
+the authoring paths, setup, dev workflow, and API references.
 
 **Device drivers** are where we need the most help. If you own RGB hardware that Hypercolor
 doesn't support yet, you're in a unique position to contribute. We provide AI-assisted driver

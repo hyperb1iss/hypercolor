@@ -154,4 +154,5 @@ Testing:
 For deeper information, consult:
 - **`references/color-science.md`** — Full LED color science: saturation ranges, hue tiers, gamma correction, blowout prevention, yellow/brown problem, gradient transitions, per-channel calibration
 - **`references/effect-design.md`** — Complete effect design theory: noise functions, Voronoi, metaballs, temporal patterns, palette design, shader porting, rendering pipeline details
-- **Project root: `docs/creating-great-rgb-effects.md`** — Synthesis guide with community palette catalog, audio reactivity, property system, composition rules
+- **`docs/content/effects/color-science.md`** — The shipping guide: hue tiers, saturation strategy, whiteness ratio test, gamma, composite modes, community patterns
+- **`docs/content/effects/typescript-effects.md`**, **`glsl-effects.md`**, **`raw-html.md`** — Authoring references for each rendering path
