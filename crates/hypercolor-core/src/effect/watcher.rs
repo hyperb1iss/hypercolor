@@ -142,11 +142,45 @@ fn bridge_events_debounced(
 }
 
 /// Record an event in the debounce accumulator.
+///
+/// Filters out non-lifecycle events such as `Access` (emitted for every
+/// `CLOSE_WRITE` on Linux inotify) and `Metadata` (chmod/chown). Without this
+/// filter the latest-event-wins debounce would often settle on the trailing
+/// `Access(Close(Write))` event and drop real content changes on the floor.
+///
+/// When multiple relevant events arrive for the same path within the debounce
+/// window, the most significant one is kept (`Remove` > `Create` > `Modify`)
+/// so the emitted `EffectWatchEvent` reflects the net state transition rather
+/// than whichever inotify event happened to arrive last.
 fn accumulate(last_seen: &mut HashMap<PathBuf, (Instant, EventKind)>, event: &notify::Event) {
+    let incoming_priority = kind_priority(event.kind);
+    if incoming_priority == 0 {
+        return;
+    }
     for path in &event.paths {
-        if is_html_file(path) {
-            last_seen.insert(path.clone(), (Instant::now(), event.kind));
+        if !is_html_file(path) {
+            continue;
         }
+        let retain_existing = last_seen
+            .get(path)
+            .is_some_and(|(_, existing)| kind_priority(*existing) > incoming_priority);
+        if retain_existing {
+            continue;
+        }
+        last_seen.insert(path.clone(), (Instant::now(), event.kind));
+    }
+}
+
+/// Priority ordering for lifecycle events in the debounce window.
+///
+/// Returns `0` for events we don't forward (access, metadata, unknown).
+fn kind_priority(kind: EventKind) -> u8 {
+    match kind {
+        EventKind::Remove(_) => 3,
+        EventKind::Create(_) => 2,
+        EventKind::Modify(notify::event::ModifyKind::Metadata(_)) => 0,
+        EventKind::Modify(_) => 1,
+        _ => 0,
     }
 }
 
@@ -174,4 +208,110 @@ fn is_html_file(path: &Path) -> bool {
     path.extension()
         .and_then(OsStr::to_str)
         .is_some_and(|ext| ext.eq_ignore_ascii_case(HTML_EXTENSION))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::time::Instant;
+
+    use notify::event::{
+        AccessKind, AccessMode, CreateKind, DataChange, Event, EventKind, MetadataKind, ModifyKind, RemoveKind,
+    };
+
+    use super::{accumulate, kind_priority};
+
+    fn html_event(kind: EventKind, path: &str) -> Event {
+        Event {
+            kind,
+            paths: vec![PathBuf::from(path)],
+            attrs: notify::event::EventAttributes::default(),
+        }
+    }
+
+    #[test]
+    fn access_events_are_ignored() {
+        // inotify emits CLOSE_WRITE after every successful write, mapped to
+        // EventKind::Access(Close(Write)). That must not overwrite a preceding
+        // Modify event in the debounce window — otherwise the watcher never
+        // fires a reload.
+        let mut acc: HashMap<PathBuf, (Instant, EventKind)> = HashMap::new();
+        let path = "/tmp/neon-city.html";
+
+        accumulate(
+            &mut acc,
+            &html_event(EventKind::Modify(ModifyKind::Data(DataChange::Any)), path),
+        );
+        accumulate(
+            &mut acc,
+            &html_event(
+                EventKind::Access(AccessKind::Close(AccessMode::Write)),
+                path,
+            ),
+        );
+
+        let (_, stored) = acc.get(&PathBuf::from(path)).expect("modify event retained");
+        assert!(
+            matches!(stored, EventKind::Modify(_)),
+            "trailing Access event must not clobber the Modify event: {stored:?}"
+        );
+    }
+
+    #[test]
+    fn remove_beats_create_beats_modify() {
+        let path = "/tmp/neon-city.html";
+
+        let mut acc: HashMap<PathBuf, (Instant, EventKind)> = HashMap::new();
+        accumulate(
+            &mut acc,
+            &html_event(EventKind::Create(CreateKind::File), path),
+        );
+        accumulate(
+            &mut acc,
+            &html_event(EventKind::Modify(ModifyKind::Data(DataChange::Any)), path),
+        );
+        let (_, retained) = acc
+            .get(&PathBuf::from(path))
+            .expect("path should be tracked after accumulate");
+        assert!(
+            matches!(retained, EventKind::Create(_)),
+            "Create should outrank a subsequent Modify: {retained:?}"
+        );
+
+        accumulate(
+            &mut acc,
+            &html_event(EventKind::Remove(RemoveKind::File), path),
+        );
+        let (_, retained) = acc
+            .get(&PathBuf::from(path))
+            .expect("path should be tracked after accumulate");
+        assert!(
+            matches!(retained, EventKind::Remove(_)),
+            "Remove should outrank everything else: {retained:?}"
+        );
+    }
+
+    #[test]
+    fn non_html_paths_are_skipped() {
+        let mut acc: HashMap<PathBuf, (Instant, EventKind)> = HashMap::new();
+        accumulate(
+            &mut acc,
+            &html_event(
+                EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+                "/tmp/not-an-effect.txt",
+            ),
+        );
+        assert!(acc.is_empty());
+    }
+
+    #[test]
+    fn metadata_changes_do_not_trigger_reload() {
+        assert_eq!(
+            kind_priority(EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any))),
+            0,
+            "chmod/chown should not trigger an effect reload"
+        );
+        assert_eq!(kind_priority(EventKind::Any), 0);
+    }
 }
