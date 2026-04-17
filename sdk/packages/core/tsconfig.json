@@ -1,6 +1,7 @@
 {
     "extends": "../../tsconfig.json",
     "compilerOptions": {
+        "types": ["bun-types", "node"],
         "rootDir": "src",
         "outDir": "dist"
     },
