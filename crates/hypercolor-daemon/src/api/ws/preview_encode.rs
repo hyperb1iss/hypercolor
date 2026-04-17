@@ -397,7 +397,7 @@ fn resolve_preview_dimensions(
         return (source_width, source_height);
     }
     if requested_width == 0 {
-        let height = requested_height.max(1);
+        let height = requested_height.max(1).min(source_height);
         let width = u32::try_from(
             (u64::from(source_width) * u64::from(height))
                 .checked_div(u64::from(source_height))
@@ -408,7 +408,7 @@ fn resolve_preview_dimensions(
         return (width, height);
     }
     if requested_height == 0 {
-        let width = requested_width.max(1);
+        let width = requested_width.max(1).min(source_width);
         let height = u32::try_from(
             (u64::from(source_height) * u64::from(width))
                 .checked_div(u64::from(source_width))
@@ -418,5 +418,14 @@ fn resolve_preview_dimensions(
         .max(1);
         return (width, height);
     }
-    (requested_width.max(1), requested_height.max(1))
+    // Cap requested dimensions at the source resolution — never upscale on
+    // the daemon side. The browser's CSS scaling renders sharper than a
+    // bilinear daemon-side upscale under `image-rendering: pixelated`, and
+    // for smooth rendering the quality is indistinguishable. Either way
+    // daemon CPU and WebSocket bandwidth drop proportionally to the
+    // avoided upscale ratio.
+    (
+        requested_width.max(1).min(source_width),
+        requested_height.max(1).min(source_height),
+    )
 }

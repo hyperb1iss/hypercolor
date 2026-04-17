@@ -1184,7 +1184,7 @@ fn resolve_canvas_output_size(
         };
     }
     if requested_width == 0 {
-        let height = requested_height.max(1);
+        let height = requested_height.max(1).min(source_height);
         let width = u32::try_from(
             (u64::from(source_width) * u64::from(height))
                 .checked_div(u64::from(source_height))
@@ -1195,7 +1195,7 @@ fn resolve_canvas_output_size(
         return CanvasOutputSize { width, height };
     }
     if requested_height == 0 {
-        let width = requested_width.max(1);
+        let width = requested_width.max(1).min(source_width);
         let height = u32::try_from(
             (u64::from(source_height) * u64::from(width))
                 .checked_div(u64::from(source_width))
@@ -1205,9 +1205,14 @@ fn resolve_canvas_output_size(
         .max(1);
         return CanvasOutputSize { width, height };
     }
+    // Cap dimensions at the source resolution. Upscaling a 320×200 effect
+    // canvas to 960-wide adds no detail — the browser's CSS scaling handles
+    // display-size upscaling at zero daemon cost, and for `image-rendering:
+    // pixelated` the native source actually renders sharper than a
+    // daemon-side bilinear upscale.
     CanvasOutputSize {
-        width: requested_width.max(1),
-        height: requested_height.max(1),
+        width: requested_width.max(1).min(source_width),
+        height: requested_height.max(1).min(source_height),
     }
 }
 
