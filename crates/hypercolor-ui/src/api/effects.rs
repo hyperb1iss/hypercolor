@@ -178,6 +178,70 @@ pub async fn update_controls(controls: &serde_json::Value) -> Result<(), String>
         .map_err(Into::into)
 }
 
+/// Outcome of a scoped control PATCH against an effect id.
+///
+/// The `Stale` variant is surfaced separately from generic errors so
+/// the Viewport Designer modal can drive its reconciliation dialog off
+/// a real type rather than HTTP-status string-matching.
+pub enum UpdateControlsOutcome {
+    /// Applied; the `new_version` is what the caller should echo as the
+    /// next `If-Match` header on a subsequent PATCH.
+    Applied { new_version: u64 },
+    /// Server's current version no longer matches the `If-Match` we
+    /// sent. `current` is the fresh version token to rebase against.
+    Stale { current: u64 },
+}
+
+/// Scoped control PATCH against a specific effect id with optional
+/// optimistic-concurrency precondition.
+///
+/// See Spec 46 § 9.1. Pass `None` for `expected_version` to skip the
+/// `If-Match` header (the server then applies unconditionally).
+pub async fn update_effect_controls(
+    effect_id: &str,
+    controls: &serde_json::Value,
+    expected_version: Option<u64>,
+) -> Result<UpdateControlsOutcome, String> {
+    use gloo_net::http::Request;
+
+    let url = format!("/api/v1/effects/{effect_id}/controls");
+    let body_str = serde_json::to_string(&serde_json::json!({ "controls": controls }))
+        .map_err(|e| e.to_string())?;
+    let mut req = Request::patch(&url).header("Content-Type", "application/json");
+    if let Some(version) = expected_version {
+        req = req.header("If-Match", &version.to_string());
+    }
+    let resp = req
+        .body(body_str)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    match resp.status() {
+        200..=299 => {
+            // Successful response carries the new `controls_version`
+            // both in the body (nested under the envelope's `data`)
+            // and in the `ETag` header. Prefer the body because the
+            // `gloo_net` Response type makes header parsing marginally
+            // clunkier than JSON extraction.
+            let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+            let new_version = body["data"]["controls_version"]
+                .as_u64()
+                .ok_or_else(|| "response missing controls_version".to_owned())?;
+            Ok(UpdateControlsOutcome::Applied { new_version })
+        }
+        412 => {
+            let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+            let current = body["current"]
+                .as_u64()
+                .ok_or_else(|| "412 body missing `current`".to_owned())?;
+            Ok(UpdateControlsOutcome::Stale { current })
+        }
+        status => Err(format!("HTTP {status}")),
+    }
+}
+
 /// Reset all controls on the active effect to their defaults.
 pub async fn reset_controls() -> Result<(), String> {
     client::post_empty("/api/v1/effects/current/reset")
