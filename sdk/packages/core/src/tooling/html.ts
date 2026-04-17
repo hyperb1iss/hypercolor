@@ -133,7 +133,8 @@ export function parseHtmlArtifact(html: string): ParsedHtmlArtifact {
         }
 
         description ??= attr(attrs, 'description')
-        publisher ??= attr(attrs, 'publisher') ?? (attr(attrs, 'name') === 'author' ? attr(attrs, 'content') : undefined)
+        publisher ??=
+            attr(attrs, 'publisher') ?? (attr(attrs, 'name') === 'author' ? attr(attrs, 'content') : undefined)
         version ??=
             (attr(attrs, 'name') === 'hypercolor-version' ? attr(attrs, 'content') : undefined) ??
             attr(attrs, 'hypercolor-version')

@@ -27,7 +27,8 @@ export default effect(
         flow: num('Flow', [0, 100], 45, {
             group: 'Motion',
             step: 1,
-            tooltip: 'Outward tunnel intensity. At 0 the concentric shells and radial waves drop out so the kaleidoscope fold reads on its own.',
+            tooltip:
+                'Outward tunnel intensity. At 0 the concentric shells and radial waves drop out so the kaleidoscope fold reads on its own.',
             uniform: 'iFlow',
         }),
         pulse: num('Pulse', [0, 100], 55, {

@@ -69,13 +69,7 @@ export function validateHtmlArtifact(html: string, filePath: string): Validation
             seenControls.add(control.property)
         }
         if (control.min != null && control.max != null && control.min >= control.max) {
-            errors.push(
-                error(
-                    'control_range',
-                    'INVALID_CONTROL_RANGE',
-                    `Control "${control.property}" has min >= max`,
-                ),
-            )
+            errors.push(error('control_range', 'INVALID_CONTROL_RANGE', `Control "${control.property}" has min >= max`))
         }
         if (control.defaultValue != null && control.min != null && control.max != null) {
             const defaultNumber = Number(control.defaultValue)

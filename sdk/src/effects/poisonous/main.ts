@@ -300,8 +300,7 @@ export default canvas.stateful(
                     speedRaw: 38,
                     theme: 'Cotton Candy',
                 },
-                description:
-                    "Hot pink potions bubble in a candy witch's workshop. Sweet, menacing, impossibly bright.",
+                description: "Hot pink potions bubble in a candy witch's workshop. Sweet, menacing, impossibly bright.",
                 name: 'Bubblegum Cauldron',
             },
             {
