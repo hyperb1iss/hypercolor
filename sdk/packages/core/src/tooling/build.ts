@@ -166,50 +166,65 @@ async function bundleEntry(entryPath: string, sdkAliasPath: string | undefined, 
     return output.text()
 }
 
+export async function buildArtifactDocument(options: {
+    entryPath: string
+    outDir: string
+    minify?: boolean
+    sdkAliasPath?: string
+}): Promise<BuildArtifactResult> {
+    const id = artifactIdFromEntry(options.entryPath)
+    const metadata = await extractArtifactMetadata(options.entryPath)
+    const jsBundle = await bundleEntry(options.entryPath, options.sdkAliasPath, options.minify ?? false)
+    const controlMetas = metadata.controls.map(controlToMeta)
+    const presetMetas = metadata.presets.map(presetToMeta)
+    const html =
+        metadata.kind === 'face'
+            ? faceHtml({
+                  author: metadata.author,
+                  controlMetas,
+                  description: metadata.description,
+                  jsBundle,
+                  name: metadata.name,
+                  presets: presetMetas,
+              })
+            : effectHtml({
+                  audioReactive: metadata.audioReactive,
+                  author: metadata.author,
+                  builtinId: metadata.builtinId,
+                  category: metadata.category,
+                  controlMetas,
+                  description: metadata.description,
+                  jsBundle,
+                  name: metadata.name,
+                  presets: presetMetas,
+                  renderer: metadata.renderer,
+                  screenReactive: metadata.screenReactive,
+              })
+
+    return {
+        bytes: new TextEncoder().encode(html).length,
+        entryPath: options.entryPath,
+        html,
+        id,
+        kind: metadata.kind,
+        metadata,
+        outputPath: join(options.outDir, `${id}.html`),
+    }
+}
+
 export async function buildArtifacts(options: BuildArtifactsOptions): Promise<BuildArtifactResult[]> {
     mkdirSync(options.outDir, { recursive: true })
 
     const results: BuildArtifactResult[] = []
     for (const entryPath of options.entryPaths) {
-        const id = artifactIdFromEntry(entryPath)
-        const metadata = await extractArtifactMetadata(entryPath)
-        const jsBundle = await bundleEntry(entryPath, options.sdkAliasPath, options.minify ?? false)
-        const controlMetas = metadata.controls.map(controlToMeta)
-        const presetMetas = metadata.presets.map(presetToMeta)
-        const html =
-            metadata.kind === 'face'
-                ? faceHtml({
-                      author: metadata.author,
-                      controlMetas,
-                      description: metadata.description,
-                      jsBundle,
-                      name: metadata.name,
-                      presets: presetMetas,
-                  })
-                : effectHtml({
-                      audioReactive: metadata.audioReactive,
-                      author: metadata.author,
-                      builtinId: metadata.builtinId,
-                      category: metadata.category,
-                      controlMetas,
-                      description: metadata.description,
-                      jsBundle,
-                      name: metadata.name,
-                      presets: presetMetas,
-                      renderer: metadata.renderer,
-                      screenReactive: metadata.screenReactive,
-                  })
-
-        const outputPath = join(options.outDir, `${id}.html`)
-        await Bun.write(outputPath, html)
-        results.push({
-            bytes: new TextEncoder().encode(html).length,
+        const artifact = await buildArtifactDocument({
             entryPath,
-            id,
-            kind: metadata.kind,
-            metadata,
-            outputPath,
+            minify: options.minify,
+            outDir: options.outDir,
+            sdkAliasPath: options.sdkAliasPath,
         })
+        await Bun.write(artifact.outputPath, artifact.html)
+        results.push(artifact)
     }
 
     return results

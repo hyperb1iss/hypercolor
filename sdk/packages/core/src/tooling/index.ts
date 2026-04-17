@@ -1,9 +1,8 @@
-export { buildArtifacts, discoverWorkspaceEntries } from './build'
+export { buildArtifactDocument, buildArtifacts, discoverWorkspaceEntries } from './build'
 export { HYPERCOLOR_FORMAT_VERSION } from './constants'
+export { parseHtmlArtifact } from './html'
 export { installArtifactsLocally, resolveInstallInputs } from './install'
 export { artifactIdFromEntry, extractArtifactMetadata } from './metadata'
-export { parseHtmlArtifact } from './html'
-export { validateHtmlArtifact, validateHtmlArtifactFile } from './validate'
 export type {
     BuildArtifactResult,
     BuildArtifactsOptions,
@@ -11,3 +10,4 @@ export type {
     InstallArtifactsResult,
     ValidationResult,
 } from './types'
+export { validateHtmlArtifact, validateHtmlArtifactFile } from './validate'

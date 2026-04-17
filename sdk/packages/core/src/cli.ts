@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path'
 import { addEffect, promptAddEffectOptions } from '@hypercolor/create-effect'
 import type { TemplateKind } from '@hypercolor/create-effect'
 
+import { runDevServer } from './dev'
 import { buildArtifacts, discoverWorkspaceEntries, installArtifactsLocally, validateHtmlArtifactFile } from './tooling'
 
 interface CliContext {
@@ -209,11 +210,35 @@ async function runAdd(args: string[], context: CliContext): Promise<number> {
     return 0
 }
 
-const NOT_IMPLEMENTED = new Set(['dev'])
+async function runDev(args: string[], context: CliContext): Promise<number> {
+    const [entryArg] = positionalArgs(args)
+    const workspaceRoot = resolve(context.cwd, optionValue(args, '--workspace-root') ?? '.')
+    const entryRoots = takeRepeatedValues(args, '--entry-root')
+    const sdkAliasPath = optionValue(args, '--sdk-alias-path')
+        ? resolve(context.cwd, optionValue(args, '--sdk-alias-path')!)
+        : undefined
+    const port = Number.parseInt(optionValue(args, '--port') ?? '4200', 10)
+
+    await runDevServer({
+        cwd: context.cwd,
+        entryPath: entryArg ? resolve(context.cwd, entryArg) : undefined,
+        entryRoots: entryRoots.length > 0 ? entryRoots : ['effects'],
+        open: args.includes('--open'),
+        port: Number.isFinite(port) ? port : 4200,
+        sdkAliasPath,
+        stdout: context.stdout,
+        workspaceRoot,
+    })
+
+    return 0
+}
+
+const NOT_IMPLEMENTED = new Set<string>()
 
 const COMMANDS = new Map<string, CommandHandler>([
     ['add', runAdd],
     ['build', runBuild],
+    ['dev', runDev],
     ['install', runInstall],
     ['validate', runValidate],
 ])
@@ -222,11 +247,11 @@ function printHelp(context: CliContext): void {
     context.stdout.log(`hypercolor <command>
 
 Commands:
+  dev        Start the Bun preview server
   build      Build effect entrypoints into HTML artifacts
   validate   Validate built HTML artifacts
   install    Install HTML artifacts into the user effects directory
   add        Scaffold a new effect inside the workspace
-  dev        Reserved for the Bun preview server
 `)
 }
 

@@ -68,6 +68,7 @@ export interface ExtractedArtifactMetadata {
 export interface BuildArtifactResult {
     bytes: number
     entryPath: string
+    html: string
     id: string
     kind: ArtifactKind
     metadata: ExtractedArtifactMetadata
