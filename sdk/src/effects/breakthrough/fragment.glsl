@@ -7,6 +7,7 @@ uniform vec2 iResolution;
 uniform float iTime;
 
 uniform float iSpeed;
+uniform float iFlow;
 uniform int iSegments;
 uniform float iTwist;
 uniform int iColorMode;
@@ -111,6 +112,7 @@ vec3 palette(float t, int mode) {
 void main() {
     vec2 uv = (gl_FragCoord.xy - 0.5 * iResolution.xy) / iResolution.y;
     float speedControl = clamp((iSpeed - 1.0) / 19.0, 0.0, 1.0);
+    float flowControl = clamp(iFlow / 100.0, 0.0, 1.0);
 
     float speed;
     if (iSpeed <= 10.0) {
@@ -147,13 +149,13 @@ void main() {
     float radius = length(uv) + 1e-6;
     vec2 radialDir = uv / radius;
     float depth = -log(radius + 0.06);
-    float flowRate = 0.9 + speedControl * 1.4 + pulseControl * 0.8 + warp * 0.35;
+    float flowRate = 0.45 + flowControl * 1.25 + speedControl * 1.0 + pulseControl * 0.8 + warp * 0.35;
     float shellPhase = fract(depth * (2.4 + warp * 2.4) + time * flowRate);
     float shell = exp(-16.0 * abs(shellPhase - 0.5));
     float shellPhaseAlt = fract(depth * (3.6 + warp * 3.1) + time * (flowRate * 1.22 + 0.35));
     float shellAlt = exp(-20.0 * abs(shellPhaseAlt - 0.5));
-    uv += radialDir * (shell * (0.018 + 0.028 * pulseControl) + shellAlt * 0.012);
-    uv *= 1.0 + shell * (0.04 + 0.03 * pulseControl);
+    uv += radialDir * flowControl * (shell * (0.018 + 0.028 * pulseControl) + shellAlt * 0.012);
+    uv *= 1.0 + flowControl * shell * (0.04 + 0.03 * pulseControl);
 
     radius = length(uv) + 1e-6;
     float baseAngle = atan(uv.y, uv.x);
@@ -180,7 +182,7 @@ void main() {
     float waveAngular = sin(twistedAngle * (7.0 + segments * 0.9) - time * (1.6 + pulseControl * 1.2));
     float waveRadial = sin(radius * (18.0 + segments * 1.2 + warp * 18.0) - time * (1.4 + pulseControl * 1.6));
     float waveNested = cos(nestedTwist * (5.0 + nestedSegments * 0.6) + radius * (10.0 + warp * 16.0) - time * (1.1 + warp * 1.8));
-    float waveFlow = sin(depth * (9.0 + warp * 8.0) + time * (flowRate * 1.7));
+    float waveFlow = sin(depth * (5.0 + flowControl * 6.0 + warp * 8.0) + time * (flowRate * (1.1 + flowControl * 0.6)));
     float lattice = sin((uv.x + uv.y) * (7.0 + warp * 12.0) + time * 1.25) *
         cos((uv.x - uv.y) * (6.5 + warp * 11.0) - time * 1.05);
     float blossom = sin((waveAngular + waveNested) * 2.4 + radius * (7.0 + segments) - time * (2.0 + pulseControl * 1.4));
@@ -190,13 +192,13 @@ void main() {
     pattern = pow(saturate(pattern), mix(1.5, 0.78, pulseControl));
     pattern *= 0.78 + 0.42 * spokes;
     pattern += portal * (0.12 + 0.18 * pulseControl);
-    pattern += shell * (0.08 + 0.18 * pulseControl) + shellAlt * 0.06;
+    pattern += flowControl * (shell * (0.08 + 0.18 * pulseControl) + shellAlt * 0.06);
 
     float hue = fract(
         twistedAngle / max(sector, 1e-4) * 0.11 +
         nestedAngle / max(nestedSector, 1e-4) * 0.09 +
         radius * (0.22 + warp * 0.28) +
-        depth * 0.07 +
+        depth * (0.03 + flowControl * 0.04) +
         blossom * 0.08 +
         time * (0.05 + pulseControl * 0.07)
     );
@@ -218,8 +220,8 @@ void main() {
 
     float colorEnergy = 1.12 + pulseControl * 0.30 + speedControl * 0.18 + warp * 0.10;
     vec3 color = chroma * pattern * colorEnergy * pulse * shimmer * depthGlow;
-    color += accent * portal * 0.19 * (0.48 + pulseControl);
-    color += mix(accent, ghost, 0.5) * shell * (0.07 + 0.14 * pulseControl);
+    color += accent * portal * (0.08 + 0.11 * flowControl) * (0.48 + pulseControl);
+    color += mix(accent, ghost, 0.5) * flowControl * shell * (0.07 + 0.14 * pulseControl);
 
     float vignette = smoothstep(1.3, 0.2, radius);
     color *= vignette;
