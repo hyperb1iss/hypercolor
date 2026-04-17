@@ -4,17 +4,21 @@
 
 **Status:** Draft
 **Scope:** SDK (npm packages), Daemon (install endpoint), CLI (install command), UI (upload)
-**Date:** 2026-03-12
+**Date:** 2026-04-16
+**Runtime:** Bun (primary); Node.js 24 LTS (minimum for library consumers)
 
 ---
 
 ## Table of Contents
 
 - [1. Overview](#1-overview)
+  - [1.1 Developer Personas](#11-developer-personas)
+  - [1.2 Design Principles](#12-design-principles)
+  - [1.3 Non-Goals](#13-non-goals-for-this-spec)
 - [2. Architecture](#2-architecture)
 - [3. The HTML Effect Contract](#3-the-html-effect-contract)
 - [4. Package: `@hypercolor/sdk`](#4-package-hypercolorsdk)
-- [5. Package: `create-hypercolor-effect`](#5-package-create-hypercolor-effect)
+- [5. Package: `@hypercolor/create-effect`](#5-package-hypercolorcreate-effect)
 - [6. CLI: `hypercolor` (SDK bin)](#6-cli-hypercolor-sdk-bin)
 - [7. Dev Server: `hypercolor dev`](#7-dev-server-hypercolor-dev)
 - [8. Build Tool: `hypercolor build`](#8-build-tool-hypercolor-build)
@@ -50,13 +54,38 @@ conforms to the effect contract (section 3).
 1. **HTML is the universal format.** The SDK is one way to produce it, not the
    only way.
 2. **Two packages, not three.** `@hypercolor/sdk` is both the library and the
-   CLI. `create-hypercolor-effect` is the scaffolder. Nothing else to install.
-3. **Node-compatible, Bun-optional.** All tooling runs on Node 20+. Bun is
-   faster but never required.
-4. **Zero config.** Scaffolded projects work out of the box with no
+   CLI. `@hypercolor/create-effect` is the scaffolder. Nothing else to install.
+3. **Bun-native tooling, Node 24 library compat.** The `hypercolor` CLI runs on
+   Bun (uses `Bun.build`, `Bun.serve`, native TypeScript, `.glsl` text loader).
+   Scaffolded projects are Bun projects. The published `@hypercolor/sdk`
+   library is plain ESM and consumable from Node 24+ toolchains (Vite, Next,
+   etc.) for authors who need to embed effects elsewhere, but effect
+   development itself assumes Bun.
+4. **Many effects per project, from day one.** Scaffolds produce a multi-effect
+   workspace (`effects/*/main.ts`), not a single-file template. Most authors
+   outgrow a one-effect project fast; the shape should not punish growth.
+5. **Zero config.** Scaffolded projects work out of the box with no
    configuration files to edit.
-5. **Version the contract.** The HTML format carries a version tag so the daemon
+6. **Version the contract.** The HTML format carries a version tag so the daemon
    can evolve the spec without breaking old effects.
+7. **Hardware bridge deferred.** MVP is browser-only preview. Live-on-LED
+   preview during dev is a future phase — see §1.3 Non-Goals.
+
+### 1.3 Non-Goals (for this spec)
+
+- **Live hardware preview during dev.** Streaming dev-server frames directly to
+  a running daemon's LEDs is explicitly out of scope. The MVP dev loop is
+  browser-only; hardware validation happens after `hypercolor install`. This
+  shortens the first implementation by ~4 weeks and keeps the daemon surface
+  stable.
+- **Audio simulation in dev.** Shipped as a stub (muted `audio` object).
+  Metronome/sweep/spectrum simulators land in a follow-up pass.
+- **WGSL / compute shaders.** The effect contract is GLSL-fragment only for
+  now. WGSL is a design-doc-17 aspiration, not a spec-31 commitment.
+- **Native Rust effects.** Out of scope — those ship in `hypercolor-core`
+  via the `EffectRenderer` trait and don't pass through this pipeline.
+- **Node-without-Bun effect development.** The library works on Node 24; the
+  CLI requires Bun. We do not ship a Node-only fork of the CLI.
 
 ---
 
@@ -64,10 +93,10 @@ conforms to the effect contract (section 3).
 
 ```mermaid
 graph TD
-    Scaffold["create-hypercolor-effect<br/>(npx scaffolder)"]
+    Scaffold["@hypercolor/create-effect<br/>(bun create scaffolder)"]
 
     subgraph Project["Effect Project"]
-        Sources["src/main.ts<br/>src/fragment.glsl<br/>package.json<br/>(depends on @hypercolor/sdk)"]
+        Sources["effects/&lt;name&gt;/main.ts<br/>effects/&lt;name&gt;/fragment.glsl<br/>package.json<br/>(depends on @hypercolor/sdk)"]
         Build["hypercolor build"]
         Dev["hypercolor dev"]
         Dist["dist/my-effect.html"]
@@ -338,14 +367,24 @@ library and the `hypercolor` CLI binary.
   },
   "files": ["dist", "bin", "templates"],
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=24.0.0",
+    "bun": ">=1.2.0"
   },
   "keywords": [
     "hypercolor", "rgb", "lighting", "effects",
-    "led", "webgl", "shader", "canvas"
+    "led", "webgl", "shader", "canvas", "bun"
   ]
 }
 ```
+
+**Runtime split.** The published library (`dist/index.js`) is plain ESM — it
+imports no runtime-specific APIs and works equally well when consumed by Node
+24+, Bun, or a downstream bundler (Vite, Next, esbuild-in-a-tool). The `bin`
+entry (`bin/hypercolor.js`) is a Bun-only CLI: it uses `Bun.build`,
+`Bun.serve`, native TypeScript loading, and the built-in `.glsl` text loader
+declared in `bunfig.toml`. The shebang is `#!/usr/bin/env bun`. Node users who
+want to consume the library (e.g. embed `effect()` in a Next.js app) can do so
+without ever invoking the CLI.
 
 ### 4.2 Library API
 
@@ -460,24 +499,48 @@ shape:
 
 ### 4.4 Publishing
 
-The SDK is built with `tsup` (ESM, tree-shaken, source maps, `.d.ts`). The
-`bin/hypercolor.js` entry point is a Node-compatible CLI (section 6). The
-`templates/` directory contains project scaffolding templates used by
-`create-hypercolor-effect`.
+The published artifact has two parts: the library (`dist/`) and the CLI
+(`bin/`). Both ship in a single tarball under `@hypercolor/sdk`.
 
-**Build command:**
+**Library build (ESM + `.d.ts`):**
+
+Bun builds the JS; `tsc --emitDeclarationOnly` emits types. Bun does not yet
+generate `.d.ts` natively, so the split is:
 
 ```bash
 cd sdk/packages/core
-tsup           # → dist/index.js, dist/index.d.ts
-tsc --noEmit   # type-check
+bun build ./src/index.ts \
+    --target=browser \
+    --format=esm \
+    --outdir=./dist \
+    --sourcemap=linked
+tsc --emitDeclarationOnly --outDir ./dist   # types only, no JS
 ```
+
+Target `browser` (not `node`) because effect code runs inside Servo's web
+context — not in Node's runtime. The library is pure compute + DOM APIs; it
+has no Node built-ins to preserve.
+
+**CLI build:** The `bin/hypercolor.js` entry is shipped un-bundled (it
+dynamically imports the metadata extractor and build pipeline at runtime).
+Minimal transformation — just the shebang and a thin argv dispatcher. Bun
+loads its `.ts` dependencies directly.
 
 **Publish command:**
 
 ```bash
-npm publish --access public
+bun publish --access public
+# (bun publish delegates to npm under the hood; npm publish also works.)
 ```
+
+**Versioning:**
+
+- `@hypercolor/sdk` follows semver against its public library API.
+- The HTML format version (`hypercolor-version` meta tag) is a separate integer
+  versioned independently (see §4.5).
+- The CLI version matches the SDK version — they ship together.
+- Release cadence is decoupled from the daemon. A daemon release does not
+  force an SDK release and vice versa.
 
 ### 4.5 Versioning Strategy
 
@@ -491,33 +554,47 @@ SDK 0.x → format version 1. SDK 1.0 release locks format version 1 as stable.
 
 ---
 
-## 5. Package: `create-hypercolor-effect`
+## 5. Package: `@hypercolor/create-effect`
 
-An `npm create` initializer. Scaffolds a new effect project.
+A `bun create` initializer. Scaffolds a new effect *workspace* — a directory
+structured to hold one or many effects. The first effect is generated from the
+chosen template; adding more is `hypercolor add <name>` (see §6.5).
 
 ### 5.1 Usage
 
 ```bash
-# Interactive
-npx create-hypercolor-effect
+# Interactive — Bun's native initializer
+bun create @hypercolor/effect my-effects
 
 # Non-interactive
-npx create-hypercolor-effect my-effect --template shader
+bun create @hypercolor/effect my-effects --template shader --first aurora
+
+# Also works via npm-style initializers (Bun is still required at runtime):
+npm init @hypercolor/effect my-effects
+pnpm create @hypercolor/effect my-effects
 ```
 
 ### 5.2 CLI Arguments
 
+The scaffolder binary (published as `@hypercolor/create-effect`) is invoked
+via `bun create @hypercolor/effect`. Bun's `create` resolves `@scope/foo` to
+the `@scope/create-foo` package, so the package name and the invocation
+command are related by that convention, not identity.
+
 ```
-create-hypercolor-effect [name] [options]
+bun create @hypercolor/effect [name] [options]
 
 Arguments:
-  name                    Project directory name (prompted if omitted)
+  name                    Workspace directory name (prompted if omitted)
 
 Options:
-  --template <type>       Template: canvas, shader, html (prompted if omitted)
-  --audio                 Include audio reactivity boilerplate
+  --template <type>       Starter template: canvas, shader, face, html
+                          (prompted if omitted)
+  --first <effect-name>   Name of the first effect inside the workspace
+                          (defaults to 'my-effect')
+  --audio                 Include audio reactivity boilerplate in the starter
   --no-git                Skip git init
-  --package-manager <pm>  npm | pnpm | yarn | bun (auto-detected)
+  --no-install            Skip `bun install` after scaffolding
 ```
 
 ### 5.3 Interactive Prompts
@@ -525,45 +602,99 @@ Options:
 When run without arguments:
 
 ```
-  What's your effect called? › my-effect
+  What's your workspace called? › my-effects
 
-  Pick a template:
+  Pick a starter template:
   ❯ Canvas (2D drawing with TypeScript)
     Shader (GLSL fragment shader + TypeScript)
-    HTML (no SDK — plain HTML skeleton)
+    Face   (device-mounted display / gauges)
+    HTML   (no SDK — plain HTML skeleton)
+
+  Name for your first effect? › aurora
 
   Audio reactive? (y/N) › N
 ```
 
-### 5.4 Generated Project: Canvas Template
+### 5.4 Generated Workspace Layout
+
+All templates produce the same shell. What differs is the contents of the
+first generated effect under `effects/<first-effect>/`.
 
 ```
-my-effect/
+my-effects/
 ├── package.json
+├── bunfig.toml
 ├── tsconfig.json
-├── src/
-│   └── main.ts
-└── .gitignore
+├── biome.jsonc
+├── .gitignore
+├── README.md
+├── effects/
+│   └── aurora/
+│       ├── main.ts
+│       └── fragment.glsl        # shader template only
+└── dist/                        # gitignored, created on first build
 ```
+
+The workspace holds as many effects as the author wants. Each effect is a
+self-contained directory under `effects/`. `hypercolor build` discovers them
+all by scanning for `effects/*/main.ts`.
 
 **`package.json`:**
 
 ```json
 {
-  "name": "my-effect",
+  "name": "my-effects",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "hypercolor dev",
-    "build": "hypercolor build",
+    "build": "hypercolor build --all",
+    "build:one": "hypercolor build",
     "validate": "hypercolor validate dist/*.html",
-    "install-effect": "hypercolor install"
+    "ship": "hypercolor install dist/*.html --daemon",
+    "ship:local": "hypercolor install dist/*.html",
+    "add": "hypercolor add",
+    "check": "biome check .",
+    "check:fix": "biome check --write ."
   },
   "devDependencies": {
-    "@hypercolor/sdk": "^0.1.0"
+    "@biomejs/biome": "^2.4.0",
+    "@hypercolor/sdk": "^0.1.0",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "bun": ">=1.2.0",
+    "node": ">=24.0.0"
   }
 }
+```
+
+`dev` with no argument opens a picker for the workspace's effects. `build`
+defaults to all effects; `build:one <path>` targets a single entry. Ship
+scripts have two modes: `ship` POSTs each built HTML to the daemon API
+(preferred; validates server-side), `ship:local` copies to
+`$XDG_DATA_HOME/hypercolor/effects/user/` (works without a running daemon).
+
+> **Why not `install`?** Bun and npm reserve `install` as a lifecycle script
+> name and run it automatically during `bun install`. Using it here would
+> trigger an effect deploy every time someone installs dependencies, before
+> `dist/` exists. `ship` sidesteps the collision.
+
+Both ship scripts accept a glob expanding to many HTML files; the underlying
+`hypercolor install` command iterates and handles each file independently,
+validating and uploading one by one. In multi-effect workspaces this is the
+common case. Pass a single file path to target one effect: `bunx hypercolor
+install dist/aurora.html --daemon`.
+
+**`bunfig.toml`:**
+
+```toml
+[loader]
+".glsl" = "text"
+
+[install]
+link = "hardlink"
 ```
 
 **`tsconfig.json`:**
@@ -578,19 +709,29 @@ my-effect/
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "esModuleInterop": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "types": ["bun-types"]
   },
-  "include": ["src"]
+  "include": ["effects/**/*"]
 }
 ```
 
-**`src/main.ts`:**
+**`biome.jsonc`:** Inherits the Hypercolor SilkCircuit style (4-space indent,
+single quotes, trailing commas, `arrowParentheses: always`).
+
+### 5.4.1 First Effect: Canvas Template
+
+**`effects/aurora/main.ts`:**
+
+The scaffolder substitutes the effect name you chose (`aurora` here) for the
+placeholder. The directory name and the display name are independent — the
+former becomes the built filename, the latter appears in the UI.
 
 ```typescript
 import { canvas, num, combo } from '@hypercolor/sdk'
 
 export default canvas(
-    'My Effect',
+    'Aurora',
     {
         speed: num('Speed', [1, 10], 5, { group: 'Motion' }),
         palette: combo('Palette', ['Aurora', 'Fire', 'Ocean'], {
@@ -606,7 +747,6 @@ export default canvas(
         ctx.fillStyle = '#000'
         ctx.fillRect(0, 0, width, height)
 
-        // Your effect here
         const hue = (time * speed * 36) % 360
         ctx.fillStyle = `hsla(${hue}, 100%, 50%, ${brightness})`
         ctx.fillRect(0, 0, width, height)
@@ -625,11 +765,18 @@ export default canvas(
 )
 ```
 
-### 5.5 Generated Project: Shader Template
+### 5.4.2 First Effect: Shader Template
 
-Same structure plus `src/fragment.glsl`:
+Same workspace layout. The effect directory contains `main.ts` plus
+`fragment.glsl`:
 
-**`src/main.ts`:**
+```
+effects/aurora/
+├── main.ts
+└── fragment.glsl
+```
+
+**`effects/aurora/main.ts`:**
 
 ```typescript
 import { effect, num, combo } from '@hypercolor/sdk'
@@ -654,7 +801,7 @@ export default effect('My Shader Effect', shader, {
 })
 ```
 
-**`src/fragment.glsl`:**
+**`effects/aurora/fragment.glsl`:**
 
 ```glsl
 #version 300 es
@@ -681,68 +828,144 @@ void main() {
 }
 ```
 
-### 5.6 Generated Project: HTML Template
+### 5.4.3 First Effect: Face Template
 
-No SDK dependency. Just the skeleton:
+Faces render to a device's onboard display (e.g. a Stream Deck, an
+LCD-equipped AIO). They use the `face()` function from the SDK and differ from
+standard effects in their metadata and render contract. See Spec 43 (Face
+SDK) for the full face contract.
 
 ```
-my-effect/
-├── my-effect.html
-└── .gitignore
+effects/hud/
+└── main.ts   # uses face(), not canvas()/effect()
 ```
 
-The HTML file follows the minimal viable effect pattern from section 3.8 with
-placeholder controls and a simple render loop. No `package.json`, no build step.
+### 5.4.4 First Effect: HTML Template (no SDK)
 
-### 5.7 Implementation
+For the "I just want to write HTML" path, the scaffolder generates a minimal
+workspace with a hand-written effect file — no `@hypercolor/sdk` dependency
+and no build step.
 
-`create-hypercolor-effect` is a standalone npm package. It has zero runtime
-dependencies — templates are inlined as string literals (no file system
-lookups). The interactive prompts use a lightweight prompt library
-(`@inquirer/prompts` or `@clack/prompts`).
+```
+my-effects/
+├── package.json         # scripts only use hypercolor validate + install
+├── .gitignore
+└── effects/
+    └── aurora.html      # a single file, ready to install
+```
 
-The package runs on Node 20+ and auto-detects the user's package manager from
-the invoking command (`npm create`, `pnpm create`, `bun create`, `yarn create`).
+`package.json` in this mode carries only the CLI dependency so
+`hypercolor validate` and `hypercolor install` still work:
+
+```json
+{
+  "scripts": {
+    "validate": "hypercolor validate effects/*.html",
+    "ship": "hypercolor install effects/*.html --daemon"
+  },
+  "devDependencies": {
+    "@hypercolor/sdk": "^0.1.0"
+  }
+}
+```
+
+The HTML file follows the minimal viable effect pattern from §3.8.
+
+### 5.5 Growing the Workspace
+
+After scaffolding, authors add effects with the CLI:
+
+```bash
+hypercolor add           # interactive: prompts for name + template
+hypercolor add fireball --template shader
+hypercolor add hud --template face
+```
+
+This creates a new `effects/<name>/` directory seeded from the chosen
+template. No edits to `package.json` required — the build tool auto-discovers.
+
+### 5.6 Implementation
+
+`@hypercolor/create-effect` is a small Bun package. Templates live in
+`templates/` as real files (not inlined strings) so contributors can iterate
+on them in the monorepo without a build step. The scaffolder copies and
+variable-substitutes them into the target directory.
+
+Interactive prompts use `@clack/prompts` (small, Bun-friendly, nice SilkCircuit-
+compatible output). The package depends on nothing else at runtime beyond
+`@clack/prompts` and Bun's stdlib.
+
+The scaffolder runs `bun install` at the end unless `--no-install` is passed,
+then prints a "Next steps" block pointing the user at `bun dev`.
 
 ---
 
 ## 6. CLI: `hypercolor` (SDK bin)
 
-The `hypercolor` command is a bin entry in `@hypercolor/sdk`. It provides three
-commands: `dev`, `build`, `validate`, and `install`.
+The `hypercolor` command is a bin entry in `@hypercolor/sdk`. It provides
+five commands for effect authoring: `dev`, `build`, `validate`, `install`,
+and `add`. The shebang is `#!/usr/bin/env bun`; invoking under Node exits
+with a clear "please use Bun" message plus install instructions.
 
 ### 6.1 Command: `hypercolor dev`
 
 Start a development server with live preview.
 
 ```
-hypercolor dev [options]
+hypercolor dev [entry] [options]
+
+Arguments:
+  entry               Effect entry (default: picker over effects/*/main.ts)
 
 Options:
   --port <port>       Dev server port (default: 4200)
   --open              Open browser automatically
-  --entry <path>      Effect entry point (default: src/main.ts)
 ```
 
-See section 7 for full dev server specification.
+With no `entry` argument, the dev server scans the workspace for
+`effects/*/main.ts` and shows a picker in the browser UI; switching effects
+does not restart the server. See section 7 for full dev server specification.
 
 ### 6.2 Command: `hypercolor build`
 
-Compile a TypeScript effect to a standalone HTML file.
+Compile a TypeScript effect (or all effects) into standalone HTML files.
 
 ```
-hypercolor build [options]
+hypercolor build [entry] [options]
+
+Arguments:
+  entry               Single effect entry to build (default: all)
 
 Options:
-  --entry <path>      Entry point (default: src/main.ts)
+  --all               Build every effects/*/main.ts in the workspace (default)
   --out <dir>         Output directory (default: dist/)
-  --name <name>       Output filename (default: derived from effect name)
   --minify            Minify the output (default: false)
+  --watch             Rebuild on source change (not the same as `dev`)
 ```
 
-See section 8 for full build specification.
+Output filenames are derived from each effect's name (kebab-cased). See
+section 8 for full build specification.
 
-### 6.3 Command: `hypercolor validate`
+### 6.3 Command: `hypercolor add`
+
+Generate a new effect inside an existing workspace.
+
+```
+hypercolor add [name] [options]
+
+Arguments:
+  name                Effect ID (prompted if omitted)
+
+Options:
+  --template <type>   canvas | shader | face | html (prompted if omitted)
+  --audio             Include audio reactivity scaffolding
+```
+
+Copies the appropriate template into `effects/<name>/` and opens the new
+`main.ts` in `$EDITOR` if set. Will not overwrite an existing directory —
+collision prints an error and exits non-zero.
+
+### 6.4 Command: `hypercolor validate`
 
 Validate an HTML effect file against the format contract.
 
@@ -756,7 +979,7 @@ Options:
 
 See section 9 for full validation specification.
 
-### 6.4 Command: `hypercolor install`
+### 6.5 Command: `hypercolor install`
 
 Install a built effect to the Hypercolor user effects directory.
 
@@ -776,9 +999,12 @@ See section 10 for full install specification.
 
 ### 7.1 Architecture
 
-The dev server is a Vite-based development environment. It serves a preview
-shell that loads the user's effect in an iframe and provides interactive
-controls.
+The dev server is built on `Bun.serve` — no Vite, no extra runtime. It serves
+a preview shell that loads the user's effect in an iframe and provides
+interactive controls. A WebSocket channel (also `Bun.serve` native) pushes
+reload signals on source changes. Bundling per reload uses `Bun.build` with
+the same options as `hypercolor build` (IIFE format, `.glsl` text loader),
+producing an in-memory blob served to the iframe without writing to disk.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -804,8 +1030,9 @@ controls.
 
 ### 7.2 Core Features
 
-**Hot reload:** File changes in `src/` trigger an esbuild rebuild and iframe
-reload. The control panel state is preserved across reloads.
+**Hot reload:** File changes in `effects/` trigger a `Bun.build` rebuild
+and iframe reload. The control panel state and audio-sim state are preserved
+across reloads.
 
 **Control panel:** Generated from the effect's declared controls. Sliders for
 numbers, dropdowns for comboboxes, toggles for booleans, color pickers for
@@ -818,16 +1045,25 @@ updates all controls to the preset values.
 **Canvas sizing:** Defaults to the daemon's configured canvas (640x480 by default).
 Configurable via the preview shell for testing different hardware layouts.
 
-### 7.3 Vite Integration
+### 7.3 Bun Integration
 
-The dev server uses Vite under the hood:
+The dev server uses Bun's native primitives:
 
-- **GLSL plugin:** `.glsl` files imported as strings (via `vite-plugin-glsl`
-  or a minimal esbuild loader)
-- **TypeScript:** Vite handles TS natively via esbuild
-- **HMR:** Vite's built-in hot module replacement for the preview shell; the
-  effect iframe does a full reload on source changes (effects are stateful,
-  partial HMR would corrupt state)
+- **`.glsl` loader:** Declared in `bunfig.toml` (`".glsl" = "text"`). No
+  plugin needed. `Bun.build` respects the workspace `bunfig.toml`.
+- **TypeScript:** Bun loads `.ts` files natively. No transpile step.
+- **Source change detection:** `Bun.$` → `fs.watch` on `effects/` with a
+  150ms debounce. File change triggers a `Bun.build` rebuild for the affected
+  entry.
+- **Reload signal:** A WebSocket (`Bun.serve({ websocket })`) broadcasts
+  `{ type: 'reload' }` to the preview shell after each successful rebuild.
+  The shell reloads the effect iframe (full reload — effects are stateful,
+  partial HMR would corrupt state). Control panel state and audio-sim state
+  are preserved across reloads.
+- **Effect picker:** When the dev server is started without an `entry` arg,
+  it serves the full workspace. The preview shell shows a dropdown of
+  discovered effects; switching re-bundles the selected entry without
+  restarting the server.
 
 ### 7.4 `window.engine` Stub
 
@@ -869,69 +1105,88 @@ showing how the effect maps to physical hardware:
 
 ### 8.1 Pipeline
 
-The build pipeline mirrors the existing `build-effect.ts` from the monorepo,
-adapted to work with external projects.
+The build pipeline is the spiritual successor to the monorepo's
+`sdk/scripts/build-effect.ts`, ported to `Bun.build` and made workspace-aware
+so it can run against external projects. Internally, the monorepo's own
+effects eventually migrate to this same CLI (see §12 Phase 1) — dogfooding
+the external path.
 
 ```
-src/main.ts ──┬──▶ Metadata Extraction ──▶ Meta Tags
-              │
-              └──▶ esbuild Bundle ────────▶ Inline JS
-                                               │
-                          HTML Template ◀───────┘
-                               │
-                               ▼
-                        dist/effect.html
+effects/<id>/main.ts ──┬──▶ Metadata Extraction ──▶ Meta Tags
+                        │
+                        └──▶ Bun.build Bundle ─────▶ Inline JS
+                                                        │
+                                HTML Template ◀─────────┘
+                                     │
+                                     ▼
+                              dist/<id>.html
 ```
 
 **Step 1: Metadata extraction**
 
-Import the effect module with `__HYPERCOLOR_METADATA_ONLY__` set. The SDK's
-`effect()` and `canvas()` functions detect this flag and store metadata instead
+Import the effect module with `__HYPERCOLOR_METADATA_ONLY__` set on
+`globalThis`. The SDK's `effect()` / `canvas()` / `face()` functions detect
+this flag and store metadata in `globalThis.__hypercolorEffectDefs__` instead
 of initializing a renderer. Extract: name, description, author, controls
-(with resolved specs), presets, audio reactivity.
+(with resolved specs), presets, audio reactivity, optional `builtinId`.
 
-**Step 2: esbuild bundle**
+Because Bun loads `.ts` natively, the extractor can just `await import(entry)`
+— no transpile step, no fake-DOM seeding beyond the minimal `window` +
+`document` stubs already in use.
 
-Bundle the effect source into an IIFE:
+**Step 2: Bun.build bundle**
+
+Bundle the effect source into a single IIFE-shaped string:
 
 ```typescript
-await esbuild.build({
-  entryPoints: [entryPath],
-  bundle: true,
+const result = await Bun.build({
+  entrypoints: [entryPath],
+  target: 'browser',
   format: 'iife',
-  target: 'es2024',
   minify: options.minify ?? false,
-  loader: { '.glsl': 'text' },
-  write: false,
-  // resolve @hypercolor/sdk from node_modules
+  sourcemap: 'none',
+  // .glsl is loaded as text via bunfig.toml [loader]
 })
+
+const jsBundle = await result.outputs[0].text()
 ```
 
-Key difference from monorepo build: no path alias override. `@hypercolor/sdk`
-resolves normally from `node_modules`.
+`@hypercolor/sdk` resolves from the workspace's `node_modules` via the usual
+resolution chain. No path alias is required in the external-project case —
+the alias the monorepo currently sets is only needed when building the
+monorepo's own effects against the in-tree source.
 
 **Step 3: HTML generation**
 
 Assemble the final HTML file from:
 - Meta tags generated from extracted metadata
 - `hypercolor-version` meta tag (value: `1`)
-- Canvas element (320x200)
+- Canvas element (320x200 for effects; face container for face effects)
 - Inline script with the bundled JS
 
 **Step 4: Output**
 
-Write to `dist/{effectId}.html`. The effect ID is derived from the effect name
-(kebab-cased, ASCII-safe).
+Write to `dist/<id>.html`. The effect ID is derived from the directory name
+(which is already kebab-cased by convention from `hypercolor add`). Multiple
+effects with the same declared name produce one file per directory — the
+directory wins for filename purposes.
 
 ### 8.2 GLSL Handling
 
-Fragment shaders are imported as text strings via esbuild's `text` loader:
+Fragment shaders are imported as text strings via Bun's `text` loader, which
+is configured once in the workspace's `bunfig.toml`:
 
-```typescript
-import shader from './fragment.glsl'
+```toml
+[loader]
+".glsl" = "text"
 ```
 
-esbuild resolves this at bundle time. No Vite plugin needed for the build step.
+```typescript
+import shader from './fragment.glsl'   // string
+```
+
+No per-tool configuration required. The scaffolder writes this file; both
+`bun build` and `Bun.build` (the API) pick it up automatically.
 
 ### 8.3 Shader Uniform Validation
 
@@ -948,7 +1203,7 @@ This catches typos and forgotten bindings at build time.
 ### 8.4 Error Reporting
 
 Build errors include:
-- TypeScript/esbuild compilation errors (with source locations)
+- TypeScript / `Bun.build` compilation errors (with source locations)
 - Metadata extraction failures (effect didn't register)
 - Shader uniform mismatches (warnings, not errors)
 - Missing entry point
@@ -1046,30 +1301,44 @@ No daemon restart required.
 
 ### 10.2 CLI Install
 
-`hypercolor install` copies the built HTML to the user effects directory:
+`hypercolor install` ships one or more HTML effects to the daemon or to the
+user effects directory. It accepts a file path, a glob, or no argument (in
+which case it defaults to `dist/*.html`).
 
 ```bash
-# Install from dist/ (default)
-npx hypercolor install
+# From within the scaffolded workspace:
+bun run ship                  # dist/*.html via daemon API (preferred)
+bun run ship:local            # dist/*.html copied to user effects dir
 
-# Install specific file
-npx hypercolor install dist/aurora.html
-
-# Install via daemon API (validates + copies server-side)
-npx hypercolor install --daemon
+# Direct invocation:
+bunx hypercolor install                        # everything in dist/
+bunx hypercolor install dist/aurora.html       # single file
+bunx hypercolor install dist/*.html --daemon   # many files, via API
 ```
 
-**Default behavior:**
-1. Find `dist/*.html` (error if zero or multiple without `--file`)
-2. Resolve user effects directory (`$XDG_DATA_HOME/hypercolor/effects/user/`)
-3. Create directory if it doesn't exist
-4. Copy file
-5. Print confirmation with the installed path
+**Argument semantics:** `hypercolor install` accepts zero, one, or many file
+paths. Zero args means "glob `dist/*.html` in the current directory." One arg
+installs that single file. Many args (or a glob that expands to many) install
+each file in sequence, with per-file success/failure reporting. A partial
+failure (some succeed, some don't) exits non-zero but continues processing so
+one broken effect does not block the rest.
+
+**Default behavior (no `--daemon`):**
+1. Resolve the list of source HTML files (from args, glob, or default).
+2. Resolve user effects directory (`$XDG_DATA_HOME/hypercolor/effects/user/`).
+3. Create directory if it does not exist.
+4. For each file: validate locally (same checks as `hypercolor validate`),
+   copy, print per-file confirmation.
+5. The daemon's filesystem watcher picks up new files within 300ms.
 
 **With `--daemon`:**
-1. Find the HTML file (same as above)
-2. `POST /api/v1/effects/install` with the file as multipart form data
-3. The daemon validates, copies, and returns the registered effect metadata
+1. Resolve the list of source HTML files (same as above).
+2. For each file: `POST /api/v1/effects/install` with the file as multipart
+   form data. The daemon validates server-side and returns registered
+   metadata.
+3. Print per-file confirmation.
+4. If any upload fails (validation error, 409 conflict, etc.), report it and
+   continue with the remaining files.
 
 ### 10.3 Daemon Install Endpoint
 
@@ -1253,13 +1522,14 @@ SETTINGS
 **Build-test-install loop:**
 
 ```
-1. Write/modify effect source in src/main.ts
-2. npx hypercolor build
-3. npx hypercolor validate dist/my-effect.html
-4. npx hypercolor install dist/my-effect.html
-5. hypercolor effects activate my-effect
-6. hypercolor effects activate my-effect -p speed=8 -p brightness=90
-7. Iterate on source, rebuild, re-install
+1. Write/modify effect source in effects/<name>/main.ts
+2. bunx hypercolor build
+3. bunx hypercolor validate dist/<name>.html
+4. bunx hypercolor install dist/<name>.html --daemon
+5. hypercolor effects activate <name>
+6. hypercolor effects activate <name> -p speed=8 -p brightness=90
+7. Iterate on source, rebuild, re-install (or keep `bun dev` running for
+   browser-only iteration, then install when ready for hardware)
 ```
 
 **Live tweaking:**
@@ -1300,35 +1570,40 @@ reference above as context, plus behavioral guidance:
 
 ### Phase 1: Foundation
 
-Publish the SDK and build the scaffolder.
+Publish the SDK, dogfood the CLI against the monorepo's own effects, then
+ship the scaffolder.
 
 | Task | Scope | Description |
 |------|-------|-------------|
-| 1.1 | SDK | Extract build logic from `build-effect.ts` into a standalone module that resolves `@hypercolor/sdk` from `node_modules` |
-| 1.2 | SDK | Add `bin/hypercolor.js` CLI entry with `build` and `validate` commands |
+| 1.1 | SDK | Port `sdk/scripts/build-effect.ts` to a workspace-aware `Bun.build` pipeline that lives inside `@hypercolor/sdk` (shared by the CLI and the monorepo) |
+| 1.2 | SDK | Add `bin/hypercolor.js` (Bun shebang) with `build`, `validate`, `install`, `add` subcommands |
 | 1.3 | SDK | Implement `hypercolor validate` (section 9) |
-| 1.4 | SDK | Implement `hypercolor install` — file copy to user effects dir |
-| 1.5 | SDK | Prepare `package.json` for npm publish (files, exports, bin, engines) |
-| 1.6 | SDK | Register `@hypercolor` scope on npm, publish `@hypercolor/sdk@0.1.0` |
-| 1.7 | Scaffolder | Implement `create-hypercolor-effect` with canvas, shader, html templates |
-| 1.8 | Scaffolder | Publish `create-hypercolor-effect@0.1.0` |
+| 1.4 | SDK | Implement `hypercolor install` — file copy to user effects dir; `--daemon` posts to API (see Phase 3) |
+| 1.5 | SDK | Flip `@hypercolor/sdk` off `"private": true`; add `bin`, `exports`, `files`, `engines` fields |
+| 1.6 | SDK | Dogfood: switch `just effects-build` / `just effect-build` recipes to call `hypercolor build` against the monorepo's `sdk/src/effects/` layout |
+| 1.7 | SDK | Register `@hypercolor` scope on npm, publish `@hypercolor/sdk@0.1.0` |
+| 1.8 | Scaffolder | Implement `@hypercolor/create-effect` with canvas, shader, face, html templates — all producing the multi-effect workspace layout |
+| 1.9 | Scaffolder | Publish `@hypercolor/create-effect@0.1.0` |
 
-**Verify:** `npx create-hypercolor-effect test-effect --template canvas && cd test-effect && npm install && npx hypercolor build` produces a valid HTML file.
+**Verify:** `bun create @hypercolor/effect test-effects --template canvas --first aurora && cd test-effects && bun run build` produces `dist/aurora.html`, which passes `hypercolor validate` without warnings.
+
+**Dogfood check:** `just effects-build` in the monorepo produces byte-identical output to the old `sdk/scripts/build-effect.ts --all`. If any diffs exist, they must be justified by the new tool or the old tool is updated first.
 
 ### Phase 2: Dev Server
 
-Build the live development experience.
+Build the live development experience on `Bun.serve`.
 
 | Task | Scope | Description |
 |------|-------|-------------|
-| 2.1 | SDK | Implement `hypercolor dev` using Vite as the underlying server |
-| 2.2 | SDK | Build the preview shell (HTML page with iframe + control panel) |
+| 2.1 | SDK | Implement `hypercolor dev` using `Bun.serve` + native WebSocket for reload signals |
+| 2.2 | SDK | Build the preview shell (HTML page with iframe + control panel) — plain HTML/CSS/JS, no framework |
 | 2.3 | SDK | Implement `window.engine` stub injection into effect iframe |
-| 2.4 | SDK | Wire control panel state to iframe's `getControlValue()` |
+| 2.4 | SDK | Wire control panel state to iframe's `getControlValue()`; preserve state across reloads |
 | 2.5 | SDK | Add preset switcher to preview shell |
-| 2.6 | SDK | File watcher: rebuild + iframe reload on `src/` changes |
+| 2.6 | SDK | File watcher (`fs.watch` on `effects/`, 150ms debounce) → `Bun.build` → WebSocket reload |
+| 2.7 | SDK | Effect picker: when started with no entry, list workspace effects and let the shell switch without restarting the server |
 
-**Verify:** `npx create-hypercolor-effect test && cd test && npm install && npx hypercolor dev` opens a browser with live-updating effect preview and working controls.
+**Verify:** `bun create @hypercolor/effect test && cd test && bun dev` opens a browser with live-updating effect preview and working controls. Editing a control's default in source rebuilds in under 300ms.
 
 ### Phase 3: Daemon Integration
 

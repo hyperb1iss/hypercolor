@@ -2,9 +2,12 @@
 
 > Delightful effect authoring for `@hypercolor/sdk` -- write a shader or a draw function, declare controls once, ship.
 
-**Status:** Draft
+**Status:** Implemented — declarative API (`effect()`, `canvas()`, `face()`,
+shape-is-type controls) shipped in `sdk/packages/core/`. All in-tree effects
+under `sdk/src/effects/` use this API. Spec is retained as reference.
 **Package:** `@hypercolor/sdk` (`sdk/packages/core/`)
-**Supersedes:** Current decorator-based pattern (reflect-metadata + manual 5-method override)
+**Supersedes:** Earlier decorator-based pattern (reflect-metadata + manual
+5-method override) — now removed.
 
 ---
 
