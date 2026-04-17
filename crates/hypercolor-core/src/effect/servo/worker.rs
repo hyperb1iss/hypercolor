@@ -508,12 +508,6 @@ fn trimmed_servo_preferences() -> Preferences {
         // Workshop effects require WebGL + OffscreenCanvas composition.
         dom_webgl2_enabled: true,
         dom_offscreen_canvas_enabled: true,
-        // Route the 2D canvas pipeline through Vello's wgpu-backed backend
-        // instead of the pure-CPU fallback. Servo's default ("" → vello_cpu)
-        // was dominating the Canvas thread with gradient fills; the GPU
-        // path shares the same wgpu instance Servo already owns for
-        // WebRender, so the extra overhead is near-zero.
-        dom_canvas_backend: "vello".to_owned(),
         // Hypercolor effects render a single offscreen document; parallel CSS
         // parsing and extra style workers are wasted overhead here.
         dom_parallel_css_parsing_enabled: false,
