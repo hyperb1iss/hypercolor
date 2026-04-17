@@ -122,6 +122,7 @@ pub struct WsContext {
 #[derive(Clone, Copy)]
 pub struct EffectsContext {
     pub effects_index: Memo<Vec<IndexedEffect>>,
+    pub refresh_effects: Callback<()>,
     pub active_effect_id: ReadSignal<Option<String>>,
     pub set_active_effect_id: WriteSignal<Option<String>>,
     pub active_effect_name: ReadSignal<Option<String>>,
@@ -591,6 +592,7 @@ pub fn App() -> impl IntoView {
 
     let effects_ctx = EffectsContext {
         effects_index,
+        refresh_effects: Callback::new(move |()| effects_resource.refetch()),
         active_effect_id,
         set_active_effect_id,
         active_effect_name,

@@ -11,6 +11,7 @@ pub mod device_card;
 pub mod device_detail;
 pub mod device_pairing_modal;
 pub mod effect_card;
+pub mod install_effect_panel;
 pub mod layout_builder;
 pub mod layout_canvas;
 pub mod layout_palette;

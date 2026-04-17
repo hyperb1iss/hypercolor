@@ -10,6 +10,7 @@ use crate::app::{EffectsContext, WsContext};
 use crate::components::calibration_guide::CalibrationGuide;
 use crate::components::control_panel::ControlPanel;
 use crate::components::effect_card::EffectCard;
+use crate::components::install_effect_panel::InstallEffectPanel;
 use crate::components::page_header::PageHeader;
 use crate::components::preview_cabinet::PreviewCabinet;
 use crate::components::resize_handle::ResizeHandle;
@@ -381,17 +382,20 @@ pub fn EffectsPage() -> impl IntoView {
                             gradient="linear-gradient(105deg,#80ffea 0%,#c8d4ff 48%,#e135ff 100%)"
                         />
 
-                        <span class="shrink-0 text-[11px] font-mono text-fg-tertiary/55">
-                            {move || {
-                                let total = total_effects.get();
-                                let filtered = filtered_effects.get().len();
-                                if filtered == total {
-                                    format!("{total} effects")
-                                } else {
-                                    format!("{filtered}/{total} effects")
-                                }
-                            }}
-                        </span>
+                        <div class="flex items-center gap-3">
+                            <span class="shrink-0 text-[11px] font-mono text-fg-tertiary/55">
+                                {move || {
+                                    let total = total_effects.get();
+                                    let filtered = filtered_effects.get().len();
+                                    if filtered == total {
+                                        format!("{total} effects")
+                                    } else {
+                                        format!("{filtered}/{total} effects")
+                                    }
+                                }}
+                            </span>
+                            <InstallEffectPanel />
+                        </div>
                     </div>
                 </div>
 

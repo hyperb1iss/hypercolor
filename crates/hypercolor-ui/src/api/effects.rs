@@ -3,7 +3,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use gloo_net::http::Request;
 use hypercolor_types::effect::{ControlDefinition, ControlValue, PresetTemplate};
+use web_sys::{File, FormData};
 
 use super::client;
 
@@ -89,6 +91,16 @@ pub struct EffectDetailResponse {
     pub presets: Vec<PresetTemplate>,
     #[serde(default)]
     pub active_control_values: Option<HashMap<String, ControlValue>>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct InstalledEffectResponse {
+    pub id: String,
+    pub name: String,
+    pub source: String,
+    pub path: String,
+    pub controls: usize,
+    pub presets: usize,
 }
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────
@@ -256,4 +268,49 @@ pub async fn reset_controls() -> Result<(), String> {
     client::post_empty("/api/v1/effects/current/reset")
         .await
         .map_err(Into::into)
+}
+
+pub async fn upload_effect(file: File) -> Result<InstalledEffectResponse, String> {
+    let form_data = FormData::new().map_err(|error| format!("{error:?}"))?;
+    form_data
+        .append_with_blob_and_filename("file", &file, &file.name())
+        .map_err(|error| format!("{error:?}"))?;
+
+    let response = Request::post("/api/v1/effects/install")
+        .body(form_data)
+        .map_err(|error| error.to_string())?
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    if !(200..300).contains(&response.status()) {
+        let fallback = format!("HTTP {}", response.status());
+        let payload = response.json::<serde_json::Value>().await.ok();
+        let detail_errors = payload
+            .as_ref()
+            .and_then(|value| value["error"]["details"]["errors"].as_array())
+            .map(|errors| {
+                errors
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .filter(|joined| !joined.is_empty());
+        let message = detail_errors
+            .or_else(|| {
+                payload
+                    .as_ref()
+                    .and_then(|value| value["error"]["message"].as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or(fallback);
+        return Err(message);
+    }
+
+    response
+        .json::<super::ApiEnvelope<InstalledEffectResponse>>()
+        .await
+        .map(|payload| payload.data)
+        .map_err(|error| error.to_string())
 }
