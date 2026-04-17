@@ -1,7 +1,7 @@
 export { buildArtifactDocument, buildArtifacts, discoverWorkspaceEntries } from './build'
 export { HYPERCOLOR_FORMAT_VERSION } from './constants'
 export { parseHtmlArtifact } from './html'
-export { installArtifactsLocally, resolveInstallInputs } from './install'
+export { installArtifactsLocally, installArtifactsViaDaemon, resolveInstallInputs } from './install'
 export { artifactIdFromEntry, extractArtifactMetadata } from './metadata'
 export type {
     BuildArtifactResult,

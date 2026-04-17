@@ -2,9 +2,8 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { cp, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, isAbsolute, join, resolve } from 'node:path'
-
-import { validateHtmlArtifact } from './validate'
 import type { InstallArtifactsOptions, InstallArtifactsResult } from './types'
+import { validateHtmlArtifact } from './validate'
 
 function defaultUserEffectsDir(): string {
     const dataHome = process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share')
@@ -75,8 +74,96 @@ export async function installArtifactsLocally(options: InstallArtifactsOptions =
         result.successes.push({
             file,
             installedPath,
+            source: 'local',
             warnings: validation.warnings,
         })
+    }
+
+    return result
+}
+
+function daemonInstallUrl(baseUrl: string): string {
+    return new URL('/api/v1/effects/install', baseUrl).toString()
+}
+
+function daemonBaseUrl(options: InstallArtifactsOptions): string {
+    return options.daemonUrl ?? process.env.HYPERCOLOR_DAEMON_URL ?? 'http://127.0.0.1:9420'
+}
+
+export async function installArtifactsViaDaemon(options: InstallArtifactsOptions = {}): Promise<InstallArtifactsResult> {
+    const cwd = options.cwd ?? process.cwd()
+    const inputs = await resolveInstallInputs(options.filePatterns, cwd)
+    const result: InstallArtifactsResult = { failures: [], successes: [] }
+    const url = daemonInstallUrl(daemonBaseUrl(options))
+
+    for (const file of inputs) {
+        const html = await readFile(file, 'utf8')
+        const validation = validateHtmlArtifact(html, file)
+        if (!validation.valid) {
+            result.failures.push({
+                errors: validation.errors.map((entry) => entry.message),
+                file,
+            })
+            continue
+        }
+
+        const formData = new FormData()
+        formData.append('file', new Blob([html], { type: 'text/html' }), basename(file))
+
+        try {
+            const response = await fetch(url, {
+                body: formData,
+                method: 'POST',
+            })
+
+            if (!response.ok) {
+                let message = `Daemon install failed with HTTP ${response.status}`
+                try {
+                    const payload = (await response.json()) as {
+                        error?: {
+                            message?: string
+                            details?: {
+                                errors?: string[]
+                            }
+                        }
+                    }
+                    const detailErrors = payload.error?.details?.errors
+                    if (detailErrors?.length) {
+                        message = detailErrors.join('; ')
+                    } else if (payload.error?.message) {
+                        message = payload.error.message
+                    }
+                } catch {
+                    // Ignore JSON parse failures and surface the HTTP status instead.
+                }
+
+                result.failures.push({ errors: [message], file })
+                continue
+            }
+
+            const payload = (await response.json()) as {
+                data: {
+                    controls: number
+                    name: string
+                    path: string
+                    presets: number
+                }
+            }
+            result.successes.push({
+                controls: payload.data.controls,
+                file,
+                installedName: payload.data.name,
+                installedPath: payload.data.path,
+                presets: payload.data.presets,
+                source: 'daemon',
+                warnings: validation.warnings,
+            })
+        } catch (error) {
+            result.failures.push({
+                errors: [error instanceof Error ? error.message : String(error)],
+                file,
+            })
+        }
     }
 
     return result

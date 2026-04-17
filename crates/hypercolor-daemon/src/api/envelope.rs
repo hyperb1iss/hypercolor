@@ -81,6 +81,8 @@ impl<T: Serialize> ApiResponse<T> {
 pub enum ErrorCode {
     /// 400 — Malformed request.
     BadRequest,
+    /// 413 — Payload too large.
+    PayloadTooLarge,
     /// 401 — Missing or invalid credentials.
     Unauthorized,
     /// 403 — Credentials valid but insufficient permissions.
@@ -102,6 +104,7 @@ impl ErrorCode {
     const fn status(&self) -> StatusCode {
         match self {
             Self::BadRequest => StatusCode::BAD_REQUEST,
+            Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
@@ -145,6 +148,19 @@ impl ApiError {
     /// 400 Bad Request.
     pub fn bad_request(message: impl Into<String>) -> Response {
         Self::build(ErrorCode::BadRequest, message.into(), None)
+    }
+
+    /// 400 Bad Request with details.
+    pub fn bad_request_with_details(
+        message: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Response {
+        Self::build(ErrorCode::BadRequest, message.into(), Some(details))
+    }
+
+    /// 413 Payload Too Large.
+    pub fn payload_too_large(message: impl Into<String>) -> Response {
+        Self::build(ErrorCode::PayloadTooLarge, message.into(), None)
     }
 
     /// 401 Unauthorized.

@@ -140,6 +140,10 @@ export interface ValidationResult {
 export interface InstallArtifactSuccess {
     file: string
     installedPath: string
+    installedName?: string
+    controls?: number
+    presets?: number
+    source?: 'daemon' | 'local'
     warnings: ValidationMessage[]
 }
 
@@ -150,6 +154,7 @@ export interface InstallArtifactFailure {
 
 export interface InstallArtifactsOptions {
     cwd?: string
+    daemonUrl?: string
     filePatterns?: string[]
     userEffectsDir?: string
 }

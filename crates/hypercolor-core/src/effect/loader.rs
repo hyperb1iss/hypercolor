@@ -113,70 +113,16 @@ pub fn register_html_effects(
                 continue;
             }
 
-            let raw_html = match fs::read_to_string(&file) {
-                Ok(content) => content,
-                Err(error) => {
-                    report.errors.push(HtmlDiscoveryError {
-                        path: file.clone(),
-                        message: format!("failed to read file: {error}"),
-                    });
+            let entry = match load_html_effect_file(&file) {
+                Ok(Some(entry)) => entry,
+                Ok(None) => {
+                    report.skipped_files += 1;
                     continue;
                 }
-            };
-
-            let parsed = parse_html_effect_metadata(&raw_html);
-            #[cfg(not(feature = "servo"))]
-            if parsed.builtin_id.is_some() {
-                report.skipped_files += 1;
-                continue;
-            }
-            let source_path = normalize_path(&file);
-            let effect_name = if parsed.title == "Unnamed Effect" {
-                fallback_effect_name(&file)
-            } else {
-                parsed.title.clone()
-            };
-
-            let modified = file
-                .metadata()
-                .and_then(|metadata| metadata.modified())
-                .unwrap_or_else(|_| SystemTime::now());
-
-            let controls: Vec<ControlDefinition> = parsed
-                .controls
-                .iter()
-                .filter_map(control_definition_from_html)
-                .collect();
-            let mut presets: Vec<_> = parsed
-                .presets
-                .iter()
-                .filter_map(|hp| preset_template_from_html(hp, &controls))
-                .collect();
-            presets.sort_by(|a, b| a.name.cmp(&b.name));
-
-            let metadata = EffectMetadata {
-                id: html_effect_id(&source_path, &parsed),
-                name: effect_name,
-                author: parsed.publisher,
-                version: "0.1.0".to_owned(),
-                description: parsed.description,
-                category: parsed.category,
-                tags: parsed.tags,
-                controls,
-                presets,
-                audio_reactive: parsed.audio_reactive,
-                screen_reactive: parsed.screen_reactive,
-                source: EffectSource::Html {
-                    path: source_path.clone(),
-                },
-                license: None,
-            };
-
-            let entry = EffectEntry {
-                metadata,
-                source_path: source_path.clone(),
-                modified,
-                state: EffectState::Loading,
+                Err(error) => {
+                    report.errors.push(error);
+                    continue;
+                }
             };
 
             if registry.register(entry).is_some() {
@@ -198,6 +144,69 @@ pub fn register_html_effects(
     }
 
     report
+}
+
+/// Load a single HTML effect file into a registry-ready entry.
+pub fn load_html_effect_file(file: &Path) -> Result<Option<EffectEntry>, HtmlDiscoveryError> {
+    let raw_html = fs::read_to_string(file).map_err(|error| HtmlDiscoveryError {
+        path: file.to_path_buf(),
+        message: format!("failed to read file: {error}"),
+    })?;
+
+    let parsed = parse_html_effect_metadata(&raw_html);
+    #[cfg(not(feature = "servo"))]
+    if parsed.builtin_id.is_some() {
+        return Ok(None);
+    }
+
+    let source_path = normalize_path(file);
+    let effect_name = if parsed.title == "Unnamed Effect" {
+        fallback_effect_name(file)
+    } else {
+        parsed.title.clone()
+    };
+
+    let modified = file
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .unwrap_or_else(|_| SystemTime::now());
+
+    let controls: Vec<ControlDefinition> = parsed
+        .controls
+        .iter()
+        .filter_map(control_definition_from_html)
+        .collect();
+    let mut presets: Vec<_> = parsed
+        .presets
+        .iter()
+        .filter_map(|hp| preset_template_from_html(hp, &controls))
+        .collect();
+    presets.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let metadata = EffectMetadata {
+        id: html_effect_id(&source_path, &parsed),
+        name: effect_name,
+        author: parsed.publisher,
+        version: "0.1.0".to_owned(),
+        description: parsed.description,
+        category: parsed.category,
+        tags: parsed.tags,
+        controls,
+        presets,
+        audio_reactive: parsed.audio_reactive,
+        screen_reactive: parsed.screen_reactive,
+        source: EffectSource::Html {
+            path: source_path.clone(),
+        },
+        license: None,
+    };
+
+    Ok(Some(EffectEntry {
+        metadata,
+        source_path,
+        modified,
+        state: EffectState::Loading,
+    }))
 }
 
 fn collect_html_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {

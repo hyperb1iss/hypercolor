@@ -1,16 +1,21 @@
 //! Effect endpoints — `/api/v1/effects/*`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Multipart, Path, State};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
+use tokio::fs;
 use tracing::{info, warn};
 
-use hypercolor_core::effect::EffectRegistry;
+use hypercolor_core::effect::{
+    EffectRegistry, HtmlControlKind, ParsedHtmlEffectMetadata, load_html_effect_file,
+    parse_html_effect_metadata,
+};
 use hypercolor_core::scene::ControlsVersionMismatch;
 use hypercolor_types::effect::{
     ControlBinding, ControlDefinition, ControlValue, EffectCategory, EffectId, EffectMetadata,
@@ -31,6 +36,8 @@ use crate::effect_layouts;
 use crate::scene_transactions::apply_layout_update;
 
 // ── Request / Response Types ─────────────────────────────────────────────
+
+const MAX_EFFECT_UPLOAD_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 pub struct ApplyEffectRequest {
@@ -154,6 +161,16 @@ pub struct EffectLayoutApplyResult {
     pub resolved: bool,
     pub applied: bool,
     pub layout: Option<LayoutLinkSummary>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InstalledEffectResponse {
+    pub id: String,
+    pub name: String,
+    pub source: String,
+    pub path: String,
+    pub controls: usize,
+    pub presets: usize,
 }
 
 #[derive(Debug)]
@@ -958,6 +975,114 @@ pub async fn rescan_effects(State(state): State<Arc<AppState>>) -> Response {
     })
 }
 
+/// `POST /api/v1/effects/install` — Validate and install a user HTML effect.
+pub async fn install_effect(
+    State(state): State<Arc<AppState>>,
+    mut multipart: Multipart,
+) -> Response {
+    let (file_name, file_bytes) = match next_uploaded_html_field(&mut multipart).await {
+        Ok(upload) => upload,
+        Err(response) => return response,
+    };
+
+    if file_bytes.len() > MAX_EFFECT_UPLOAD_BYTES {
+        return ApiError::payload_too_large(format!(
+            "Uploaded effect exceeds the 1 MB limit ({} bytes).",
+            file_bytes.len()
+        ));
+    }
+
+    let html = match String::from_utf8(file_bytes) {
+        Ok(html) => html,
+        Err(_) => return ApiError::bad_request("Uploaded effect must be valid UTF-8 HTML."),
+    };
+
+    let validated = match validate_uploaded_html(&html) {
+        Ok(validated) => validated,
+        Err(errors) => {
+            return ApiError::bad_request_with_details(
+                "Uploaded effect failed validation.",
+                serde_json::json!({ "errors": errors }),
+            );
+        }
+    };
+
+    let install_dir = user_effects_install_dir(state.as_ref());
+    if let Err(error) = fs::create_dir_all(&install_dir).await {
+        return ApiError::internal(format!(
+            "Failed to create user effects directory '{}': {error}",
+            install_dir.display()
+        ));
+    }
+
+    let preferred_stem = file_name
+        .as_deref()
+        .and_then(uploaded_file_stem)
+        .map_or_else(
+            || sanitize_effect_filename_stem(&validated.title),
+            sanitize_effect_filename_stem,
+        );
+    let installed_path = dedupe_install_path(&install_dir, &preferred_stem);
+
+    if let Err(error) = fs::write(&installed_path, html.as_bytes()).await {
+        return ApiError::internal(format!(
+            "Failed to write uploaded effect to '{}': {error}",
+            installed_path.display()
+        ));
+    }
+
+    let entry = match load_html_effect_file(&installed_path) {
+        Ok(Some(entry)) => entry,
+        Ok(None) => {
+            let _ = fs::remove_file(&installed_path).await;
+            return ApiError::bad_request(
+                "Uploaded effect is not supported by this daemon build.",
+            );
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&installed_path).await;
+            return ApiError::internal(format!(
+                "Failed to register uploaded effect '{}': {}",
+                error.path.display(),
+                error.message
+            ));
+        }
+    };
+
+    let (added, updated) = {
+        let mut registry = state.effect_registry.write().await;
+        let replaced = registry.register(entry.clone()).is_some();
+        if replaced {
+            (0, 1)
+        } else {
+            (1, 0)
+        }
+    };
+
+    state
+        .event_bus
+        .publish(HypercolorEvent::EffectRegistryUpdated {
+            added,
+            removed: 0,
+            updated,
+        });
+
+    info!(
+        effect = %entry.metadata.name,
+        path = %entry.source_path.display(),
+        "Installed uploaded effect"
+    );
+
+    ApiResponse::created(InstalledEffectResponse {
+        id: entry.metadata.id.to_string(),
+        name: entry.metadata.name,
+        source: "user".to_owned(),
+        path: entry.source_path.display().to_string(),
+        controls: entry.metadata.controls.len(),
+        presets: entry.metadata.presets.len(),
+    })
+}
+
 #[derive(Debug, Serialize)]
 pub struct RescanResponse {
     pub added: usize,
@@ -1373,4 +1498,452 @@ pub(crate) async fn apply_associated_layout(
         applied: false,
         layout: None,
     })
+}
+
+struct ValidatedUploadedHtml {
+    title: String,
+}
+
+async fn next_uploaded_html_field(
+    multipart: &mut Multipart,
+) -> Result<(Option<String>, Vec<u8>), Response> {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| ApiError::bad_request(format!("Failed to read multipart upload: {error}")))?
+    {
+        let file_name = field.file_name().map(ToOwned::to_owned);
+        let field_name = field.name().map(ToOwned::to_owned);
+        if file_name.is_none() && field_name.as_deref() != Some("file") {
+            continue;
+        }
+
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|error| ApiError::bad_request(format!("Failed to read uploaded file: {error}")))?;
+        return Ok((file_name, bytes.to_vec()));
+    }
+
+    Err(ApiError::bad_request(
+        "Missing multipart file field named \"file\".",
+    ))
+}
+
+fn validate_uploaded_html(html: &str) -> Result<ValidatedUploadedHtml, Vec<String>> {
+    let sanitized = strip_html_comments(html);
+    let parsed = parse_html_effect_metadata(&sanitized);
+    let mut errors = Vec::new();
+
+    if extract_html_title(&sanitized).is_none() {
+        errors.push("Missing <title> tag".to_owned());
+    }
+    if !has_render_surface(&sanitized) {
+        errors.push("Missing required render surface".to_owned());
+    }
+    if extract_start_tags(&sanitized, "script").is_empty() {
+        errors.push("Missing <script> tag".to_owned());
+    }
+
+    let mut seen_controls = HashSet::new();
+    for control in &parsed.controls {
+        if !seen_controls.insert(control.property.clone()) {
+            errors.push(format!(
+                "Duplicate control property \"{}\"",
+                control.property
+            ));
+        }
+
+        if let HtmlControlKind::Other(kind) = &control.kind {
+            errors.push(format!(
+                "Control \"{}\" uses unknown type \"{}\"",
+                control.property, kind
+            ));
+        }
+
+        if matches!(control.kind, HtmlControlKind::Combobox) && control.values.is_empty() {
+            errors.push(format!(
+                "Control \"{}\" is a combobox without values",
+                control.property
+            ));
+        }
+
+        if let (Some(min), Some(max)) = (control.min, control.max)
+            && min >= max
+        {
+            errors.push(format!(
+                "Control \"{}\" has min >= max",
+                control.property
+            ));
+        }
+    }
+
+    validate_preset_json(&sanitized, &parsed, &mut errors);
+
+    if errors.is_empty() {
+        Ok(ValidatedUploadedHtml {
+            title: parsed.title,
+        })
+    } else {
+        Err(errors)
+    }
+}
+
+fn validate_preset_json(
+    html: &str,
+    parsed: &ParsedHtmlEffectMetadata,
+    errors: &mut Vec<String>,
+) {
+    let known_controls = parsed
+        .controls
+        .iter()
+        .map(|control| control.property.as_str())
+        .collect::<HashSet<_>>();
+
+    for tag in extract_start_tags(html, "meta") {
+        let attrs = parse_tag_attributes(&tag);
+        let Some(preset_name) = attr_value(&attrs, "preset") else {
+            continue;
+        };
+
+        let Some(raw_controls) = attr_value(&attrs, "preset-controls") else {
+            errors.push(format!(
+                "Preset \"{}\" is missing preset-controls JSON",
+                normalize_whitespace(preset_name)
+            ));
+            continue;
+        };
+
+        let parsed_json = serde_json::from_str::<serde_json::Value>(raw_controls).map_err(|error| {
+            format!(
+                "Preset \"{}\" has invalid preset-controls JSON: {error}",
+                normalize_whitespace(preset_name)
+            )
+        });
+        let value = match parsed_json {
+            Ok(value) => value,
+            Err(error) => {
+                errors.push(error);
+                continue;
+            }
+        };
+
+        let Some(object) = value.as_object() else {
+            errors.push(format!(
+                "Preset \"{}\" preset-controls must be a JSON object",
+                normalize_whitespace(preset_name)
+            ));
+            continue;
+        };
+
+        for key in object.keys() {
+            if !known_controls.contains(key.as_str()) {
+                warn!(
+                    preset = %preset_name,
+                    control = %key,
+                    "Uploaded preset references unknown control"
+                );
+            }
+        }
+    }
+}
+
+fn user_effects_install_dir(state: &AppState) -> PathBuf {
+    state
+        .runtime_state_path
+        .parent()
+        .map(|dir| dir.join("effects").join("user"))
+        .unwrap_or_else(|| {
+            hypercolor_core::config::ConfigManager::data_dir()
+                .join("effects")
+                .join("user")
+        })
+}
+
+fn uploaded_file_stem(file_name: &str) -> Option<&str> {
+    FsPath::new(file_name).file_stem().and_then(|stem| stem.to_str())
+}
+
+fn sanitize_effect_filename_stem(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut prev_was_dash = false;
+
+    for ch in input.trim().chars() {
+        let mapped = if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            ch.to_ascii_lowercase()
+        } else {
+            '-'
+        };
+
+        if mapped == '-' {
+            if prev_was_dash {
+                continue;
+            }
+            prev_was_dash = true;
+            out.push(mapped);
+        } else {
+            prev_was_dash = false;
+            out.push(mapped);
+        }
+    }
+
+    while out.ends_with('-') {
+        out.pop();
+    }
+
+    if out.is_empty() {
+        "effect".to_owned()
+    } else {
+        out
+    }
+}
+
+fn dedupe_install_path(directory: &FsPath, preferred_stem: &str) -> PathBuf {
+    let mut attempt = 1usize;
+    loop {
+        let name = if attempt == 1 {
+            format!("{preferred_stem}.html")
+        } else {
+            format!("{preferred_stem}-{attempt}.html")
+        };
+        let candidate = directory.join(name);
+        if !candidate.exists() {
+            return candidate;
+        }
+        attempt += 1;
+    }
+}
+
+fn strip_html_comments(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut cursor = 0usize;
+
+    while let Some(start_rel) = input[cursor..].find("<!--") {
+        let start = cursor + start_rel;
+        out.push_str(&input[cursor..start]);
+
+        let body_start = start + 4;
+        if let Some(end_rel) = input[body_start..].find("-->") {
+            cursor = body_start + end_rel + 3;
+        } else {
+            cursor = input.len();
+            break;
+        }
+    }
+
+    out.push_str(&input[cursor..]);
+    out
+}
+
+fn extract_start_tags(input: &str, tag_name: &str) -> Vec<String> {
+    let mut tags = Vec::new();
+    let bytes = input.as_bytes();
+    let tag_bytes = tag_name.as_bytes();
+
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        if bytes[idx] != b'<' {
+            idx += 1;
+            continue;
+        }
+
+        let mut cursor = idx + 1;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+
+        if cursor >= bytes.len() || matches!(bytes[cursor], b'/' | b'!' | b'?') {
+            idx += 1;
+            continue;
+        }
+
+        let name_start = cursor;
+        while cursor < bytes.len()
+            && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'-')
+        {
+            cursor += 1;
+        }
+
+        if !eq_ignore_ascii_case_bytes(&bytes[name_start..cursor], tag_bytes) {
+            idx += 1;
+            continue;
+        }
+
+        let mut end = cursor;
+        let mut in_single = false;
+        let mut in_double = false;
+        while end < bytes.len() {
+            match bytes[end] {
+                b'\'' if !in_double => in_single = !in_single,
+                b'"' if !in_single => in_double = !in_double,
+                b'>' if !in_single && !in_double => {
+                    end += 1;
+                    break;
+                }
+                _ => {}
+            }
+            end += 1;
+        }
+
+        let clamped_end = end.min(input.len());
+        tags.push(input[idx..clamped_end].to_owned());
+        idx = clamped_end;
+    }
+
+    tags
+}
+
+fn parse_tag_attributes(tag: &str) -> HashMap<String, String> {
+    let mut attrs = HashMap::new();
+    let trimmed = tag
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim_end_matches('/')
+        .trim();
+    let body = trimmed
+        .find(char::is_whitespace)
+        .map_or("", |index| &trimmed[index..])
+        .trim();
+    let bytes = body.as_bytes();
+    let mut idx = 0usize;
+
+    while idx < bytes.len() {
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx >= bytes.len() {
+            break;
+        }
+
+        let key_start = idx;
+        while idx < bytes.len() {
+            let byte = bytes[idx];
+            if byte.is_ascii_whitespace() || byte == b'=' || byte == b'/' {
+                break;
+            }
+            idx += 1;
+        }
+        if idx == key_start {
+            idx += 1;
+            continue;
+        }
+
+        let key = body[key_start..idx].to_ascii_lowercase();
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+
+        let mut value = String::new();
+        if idx < bytes.len() && bytes[idx] == b'=' {
+            idx += 1;
+            while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                idx += 1;
+            }
+
+            if idx < bytes.len() {
+                if matches!(bytes[idx], b'"' | b'\'') {
+                    let quote = bytes[idx];
+                    idx += 1;
+                    let value_start = idx;
+                    while idx < bytes.len() && bytes[idx] != quote {
+                        idx += 1;
+                    }
+                    value.push_str(&body[value_start..idx]);
+                    if idx < bytes.len() {
+                        idx += 1;
+                    }
+                } else {
+                    let value_start = idx;
+                    while idx < bytes.len() {
+                        let byte = bytes[idx];
+                        if byte.is_ascii_whitespace() || byte == b'/' {
+                            break;
+                        }
+                        idx += 1;
+                    }
+                    value.push_str(&body[value_start..idx]);
+                }
+            }
+        }
+
+        attrs.insert(key, value);
+    }
+
+    attrs
+}
+
+fn attr_value<'a>(attrs: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
+    attrs
+        .get(key)
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn has_render_surface(html: &str) -> bool {
+    has_tag_with_id(html, "canvas", "exCanvas") || has_tag_with_id(html, "div", "faceContainer")
+}
+
+fn has_tag_with_id(html: &str, tag_name: &str, expected_id: &str) -> bool {
+    extract_start_tags(html, tag_name)
+        .into_iter()
+        .any(|tag| {
+            parse_tag_attributes(&tag)
+                .get("id")
+                .is_some_and(|value| value.eq_ignore_ascii_case(expected_id))
+        })
+}
+
+fn extract_html_title(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let start = find_ascii_case_insensitive(bytes, b"<title", 0)?;
+    let mut open_end = start;
+    while open_end < bytes.len() && bytes[open_end] != b'>' {
+        open_end += 1;
+    }
+    if open_end >= bytes.len() {
+        return None;
+    }
+    open_end += 1;
+
+    let close_start = find_ascii_case_insensitive(bytes, b"</title>", open_end)?;
+    let raw = &input[open_end..close_start];
+    let normalized = normalize_whitespace(raw);
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn normalize_whitespace(input: &str) -> String {
+    input.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn find_ascii_case_insensitive(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    if needle.is_empty() || from >= haystack.len() {
+        return None;
+    }
+
+    let max_start = haystack.len().checked_sub(needle.len())?;
+    let mut idx = from;
+    while idx <= max_start {
+        if eq_ignore_ascii_case_bytes(&haystack[idx..idx + needle.len()], needle) {
+            return Some(idx);
+        }
+        idx += 1;
+    }
+
+    None
+}
+
+fn eq_ignore_ascii_case_bytes(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+
+    a.iter()
+        .zip(b.iter())
+        .all(|(left, right)| left.eq_ignore_ascii_case(right))
 }

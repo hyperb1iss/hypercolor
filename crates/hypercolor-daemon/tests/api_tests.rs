@@ -198,6 +198,23 @@ async fn body_text(response: axum::response::Response) -> String {
     String::from_utf8(bytes.to_vec()).expect("failed to decode UTF-8 body")
 }
 
+fn multipart_upload_request(file_name: &str, html: &str) -> Request<Body> {
+    let boundary = "hypercolor-upload-boundary";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\nContent-Type: text/html\r\n\r\n{html}\r\n--{boundary}--\r\n"
+    );
+
+    Request::builder()
+        .method("POST")
+        .uri("/api/v1/effects/install")
+        .header(
+            http::header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(body))
+        .expect("failed to build multipart request")
+}
+
 // ── Health / Status ──────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -924,6 +941,127 @@ async fn insert_test_display_face_effect(state: &Arc<AppState>, name: &str) -> E
     let mut registry = state.effect_registry.write().await;
     let _ = registry.register(entry);
     metadata
+}
+
+#[tokio::test]
+async fn install_effect_upload_writes_file_and_registers_effect() {
+    let (state, tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let app = test_app_with_state(Arc::clone(&state));
+    let html = r#"<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="hypercolor-version" content="1" />
+    <title>Aurora</title>
+    <meta description="Northern lights" />
+    <meta publisher="Hypercolor" />
+    <meta property="speed" label="Speed" type="number" default="5" min="1" max="10" />
+    <meta preset="Default" preset-controls='{"speed":5}' />
+  </head>
+  <body>
+    <canvas id="exCanvas"></canvas>
+    <script>console.log("ok")</script>
+  </body>
+</html>"#;
+
+    let response = app
+        .oneshot(multipart_upload_request("aurora.html", html))
+        .await
+        .expect("failed to execute upload request");
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["name"], "Aurora");
+    assert_eq!(json["data"]["source"], "user");
+    assert_eq!(json["data"]["controls"], 1);
+    assert_eq!(json["data"]["presets"], 1);
+
+    let installed_path = tempdir.path().join("data/effects/user/aurora.html");
+    assert!(installed_path.exists(), "expected uploaded effect to be written");
+
+    let registry = state.effect_registry.read().await;
+    assert!(
+        registry
+            .iter()
+            .any(|(_, entry)| entry.metadata.name == "Aurora" && entry.source_path == fs::canonicalize(&installed_path).expect("canonical path should resolve"))
+    );
+}
+
+#[tokio::test]
+async fn install_effect_upload_rejects_invalid_html() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(state);
+    let html = r#"<html><body><canvas id="exCanvas"></canvas></body></html>"#;
+
+    let response = app
+        .oneshot(multipart_upload_request("broken.html", html))
+        .await
+        .expect("failed to execute upload request");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let json = body_json(response).await;
+    let errors = json["error"]["details"]["errors"]
+        .as_array()
+        .expect("validation errors should be present");
+    assert!(errors.iter().any(|entry| entry == "Missing <title> tag"));
+    assert!(errors.iter().any(|entry| entry == "Missing <script> tag"));
+}
+
+#[tokio::test]
+async fn install_effect_upload_rejects_oversized_payloads() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(state);
+    let script = "a".repeat((1024 * 1024) + 32);
+    let html = format!(
+        "<!DOCTYPE html><html><head><title>Huge</title></head><body><canvas id=\"exCanvas\"></canvas><script>{script}</script></body></html>"
+    );
+
+    let response = app
+        .oneshot(multipart_upload_request("huge.html", &html))
+        .await
+        .expect("failed to execute upload request");
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn install_effect_upload_dedupes_colliding_filenames() {
+    let (state, tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let app = test_app_with_state(state);
+    let user_effects_dir = tempdir.path().join("data/effects/user");
+    fs::create_dir_all(&user_effects_dir).expect("user effects dir should exist");
+    fs::write(
+        user_effects_dir.join("aurora.html"),
+        "<!DOCTYPE html><html><head><title>Existing</title></head><body><canvas id=\"exCanvas\"></canvas><script>1</script></body></html>",
+    )
+    .expect("existing effect should be written");
+    let html = r#"<!DOCTYPE html>
+<html>
+  <head>
+    <title>Aurora</title>
+  </head>
+  <body>
+    <canvas id="exCanvas"></canvas>
+    <script>console.log("ok")</script>
+  </body>
+</html>"#;
+
+    let response = app
+        .oneshot(multipart_upload_request("aurora.html", html))
+        .await
+        .expect("failed to execute upload request");
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let json = body_json(response).await;
+    let installed_path = json["data"]["path"]
+        .as_str()
+        .expect("installed path should be present");
+    assert!(
+        installed_path.ends_with("aurora-2.html"),
+        "expected deduped filename, got {installed_path}"
+    );
 }
 
 async fn activate_empty_test_scene(state: &Arc<AppState>, name: &str) -> SceneId {

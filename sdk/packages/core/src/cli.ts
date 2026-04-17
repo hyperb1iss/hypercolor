@@ -5,7 +5,13 @@ import { addEffect, promptAddEffectOptions } from '@hypercolor/create-effect'
 import type { TemplateKind } from '@hypercolor/create-effect'
 
 import { runDevServer } from './dev'
-import { buildArtifacts, discoverWorkspaceEntries, installArtifactsLocally, validateHtmlArtifactFile } from './tooling'
+import {
+    buildArtifacts,
+    discoverWorkspaceEntries,
+    installArtifactsLocally,
+    installArtifactsViaDaemon,
+    validateHtmlArtifactFile,
+} from './tooling'
 
 interface CliContext {
     cwd: string
@@ -145,18 +151,19 @@ async function runValidate(args: string[], context: CliContext): Promise<number>
 }
 
 async function runInstall(args: string[], context: CliContext): Promise<number> {
-    if (args.includes('--daemon')) {
-        context.stdout.error('Daemon upload is not implemented yet. Use local install for now.')
-        return 1
-    }
-
-    const result = await installArtifactsLocally({
+    const daemonMode = args.includes('--daemon')
+    const result = await (daemonMode ? installArtifactsViaDaemon : installArtifactsLocally)({
         cwd: context.cwd,
+        daemonUrl: optionValue(args, '--daemon-url'),
         filePatterns: positionalArgs(args),
     })
 
     for (const success of result.successes) {
-        context.stdout.log(`✓ ${success.file} → ${success.installedPath}`)
+        const summary =
+            success.source === 'daemon' && success.installedName
+                ? `✓ ${success.file} → ${success.installedPath} (${success.installedName}, ${success.controls ?? 0} controls)`
+                : `✓ ${success.file} → ${success.installedPath}`
+        context.stdout.log(summary)
         for (const warning of success.warnings) {
             context.stdout.log(`  WARN  ${warning.message}`)
         }

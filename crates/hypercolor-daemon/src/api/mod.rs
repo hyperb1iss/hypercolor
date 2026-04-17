@@ -899,6 +899,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             "/effects/rescan",
             axum::routing::post(effects::rescan_effects),
         )
+        .route(
+            "/effects/install",
+            axum::routing::post(effects::install_effect),
+        )
         .route("/effects/{id}", axum::routing::get(effects::get_effect))
         .route(
             "/effects/{id}/layout",
