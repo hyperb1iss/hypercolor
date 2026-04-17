@@ -23,7 +23,9 @@ describe('breakthrough shader motion stability', () => {
             'float blossom = sin((waveAngular + waveNested) * 2.4 + radius * (7.0 + segments) - time * (2.0 + pulseControl * 1.4));',
         )
         expect(shader).toContain('float depth = -log(radius + 0.06);')
-        expect(shader).toContain('uv += radialDir * (shell * (0.018 + 0.028 * pulseControl) + shellAlt * 0.012);')
+        expect(shader).toContain(
+            'uv += radialDir * flowControl * (shell * (0.018 + 0.028 * pulseControl) + shellAlt * 0.012);',
+        )
         expect(shader).not.toContain('uniform float iColorIntensity;')
         expect(shader).toContain('vec3 liftMids(vec3 color, float amount) {')
         expect(shader).toContain('// Fractal — recursive petal overlays and a secondary psychedelic bloom')
