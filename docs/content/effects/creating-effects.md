@@ -1,204 +1,236 @@
 +++
 title = "Creating Effects"
-description = "Write custom RGB effects using the Hypercolor TypeScript SDK"
+description = "Build Hypercolor effects in a Bun workspace and ship them to the daemon"
 weight = 1
 template = "page.html"
 +++
 
-Effects are self-contained visual programs that render to a canvas. One function call stands between your idea and a running light show. The `@hypercolor/sdk` provides a concise API for defining effects with controls, metadata, and render logic, and the build system compiles them to single-file HTML that the daemon loads and renders headlessly.
+Hypercolor effects are self-contained visual programs that render into a canvas, get sampled by the spatial engine, and land on real LEDs. The fastest path is a standalone Bun workspace powered by `@hypercolor/sdk` and the `hypercolor` authoring CLI.
 
-## Effect Lifecycle
+## Quick Start
 
-Every effect follows this flow:
-
-1. **Init** — The SDK bootstraps a canvas, parses control definitions, and sets up the render context (Canvas 2D or WebGL)
-2. **Render loop** — Your render function is called every frame (~60fps) with the current time, control values, and audio data
-3. **Control updates** — When a user adjusts a slider or picks a color, the new value is injected and available on the next frame
-4. **Cleanup** — When the effect is deactivated, resources are released
-
-## Setting Up the SDK
-
-The SDK lives in the `sdk/` directory at the project root:
+Create a fresh workspace:
 
 ```bash
-just sdk-install    # Install dependencies (uses Bun)
-just sdk-dev        # Start dev server with HMR
+bunx create-hypercolor-effect aurora-lab
+cd aurora-lab
 ```
 
-The dev server opens a preview environment where you can see your effect running live, adjust controls, and feed in audio.
+That gives you:
 
-## Your First Effect: Color Pulse
+```text
+aurora-lab/
+  effects/
+    aurora/
+      main.ts
+  dist/
+  package.json
+  bunfig.toml
+  tsconfig.json
+```
 
-Let's write a simple effect that cycles through colors with a pulsing brightness.
+Start the preview studio:
 
-Create a new file at `sdk/src/effects/color-pulse/main.ts`:
+```bash
+bun run dev
+```
+
+The studio opens at `http://localhost:4200` and includes:
+
+- Live iframe preview of the selected effect
+- Generated controls and preset buttons
+- Canvas size presets for daemon, strip, matrix, and ring layouts
+- Audio simulation controls with manual beat triggering
+- LED sampling preview for strip, matrix, and ring hardware shapes
+
+## Your First Effect
+
+Each effect lives at `effects/<id>/main.ts` and exports one default value.
 
 ```typescript
-import { canvas } from '@hypercolor/sdk'
+import { canvas, color, combo, num } from '@hypercolor/sdk'
 
-export default canvas('Color Pulse', {
-    speed: [1, 10, 5],
-    saturation: [50, 100, 90],
-}, (ctx, time, controls) => {
-    const w = ctx.canvas.width
-    const h = ctx.canvas.height
-    const speed = controls.speed as number
-    const sat = controls.saturation as number
+export default canvas(
+    'Aurora',
+    {
+        glow: num('Glow', [0, 100], 74, { group: 'Atmosphere' }),
+        palette: combo('Palette', ['Aurora', 'Fire', 'Ocean'], {
+            group: 'Color',
+        }),
+        tint: color('Tint', '#80ffea'),
+    },
+    (ctx, time, controls) => {
+        const width = ctx.canvas.width
+        const height = ctx.canvas.height
+        const glow = (controls.glow as number) / 100
 
-    // Cycle hue over time
-    const hue = (time * speed * 36) % 360
+        const gradient = ctx.createLinearGradient(0, 0, width, height)
+        gradient.addColorStop(0, controls.tint as string)
+        gradient.addColorStop(1, '#0a1020')
 
-    // Pulse brightness with a sine wave
-    const brightness = 50 + 30 * Math.sin(time * speed * 2)
+        ctx.fillStyle = gradient
+        ctx.fillRect(0, 0, width, height)
 
-    ctx.fillStyle = `hsl(${hue}, ${sat}%, ${brightness}%)`
-    ctx.fillRect(0, 0, w, h)
-}, {
-    description: 'Gentle color cycling with brightness pulse',
-    author: 'You',
-})
+        ctx.globalAlpha = 0.16 + glow * 0.24
+        ctx.fillStyle = '#e135ff'
+        ctx.beginPath()
+        ctx.arc(
+            width * (0.5 + Math.sin(time * 0.5) * 0.18),
+            height * (0.45 + Math.cos(time * 0.3) * 0.1),
+            Math.min(width, height) * (0.2 + glow * 0.14),
+            0,
+            Math.PI * 2
+        )
+        ctx.fill()
+        ctx.globalAlpha = 1
+    },
+    {
+        author: 'You',
+        description: 'A starter canvas effect',
+        presets: [
+            {
+                name: 'Default',
+                controls: {
+                    glow: 74,
+                    palette: 'Aurora',
+                    tint: '#80ffea',
+                },
+            },
+            {
+                name: 'Fire',
+                controls: {
+                    glow: 92,
+                    palette: 'Fire',
+                    tint: '#ff6a3d',
+                },
+            },
+        ],
+    }
+)
 ```
 
-## Adding Controls
+Always read `ctx.canvas.width` and `ctx.canvas.height` every frame. The daemon canvas is configurable, and the studio presets intentionally bounce between aspect ratios so resolution-dependent code breaks early.
 
-Controls are declared as a plain object. The SDK infers the control type from the value shape:
+## Controls and Metadata
 
-| Value Shape | Control Type | Example |
+The SDK supports both shorthand control declarations and explicit helpers.
+
+| Value shape | Control type | Example |
 |---|---|---|
 | `[min, max, default]` | Number slider | `speed: [1, 10, 5]` |
-| `string[]` | Dropdown | `palette: ['Fire', 'Ice', 'Aurora']` |
-| `'#rrggbb'` | Color picker | `color: '#ff0066'` |
+| `string[]` | Dropdown | `palette: ['Aurora', 'Fire', 'Ocean']` |
+| `'#rrggbb'` | Color picker | `tint: '#80ffea'` |
 | `boolean` | Toggle | `mirror: false` |
 
-The key name auto-derives the UI label: `warpStrength` becomes **"Warp Strength"** in the control panel.
-
-For more control over labels, tooltips, and defaults, use the explicit factory functions:
+Explicit helpers add labels, groups, defaults, and tooltips:
 
 ```typescript
-import { canvas, num, combo, color, toggle } from '@hypercolor/sdk'
-
-export default canvas('My Effect', {
-    density: num('Particle Density', [10, 1000], 200, {
-        step: 10,
-        tooltip: 'Number of particles in the field',
-    }),
-    palette: combo('Color Theme', ['SilkCircuit', 'Ice', 'Aurora'], {
-        default: 'Ice',
-    }),
-    bgColor: color('Background', '#0d0221'),
-    mirror: toggle('Mirror Mode', false),
-}, renderFunction)
+import { canvas, color, combo, num, toggle } from '@hypercolor/sdk'
 ```
 
-## Shader Effects (WebGL)
-
-For GPU-accelerated effects, write a GLSL fragment shader and use the `effect` function:
+Metadata matters because it becomes HTML artifact metadata and catalog data inside the daemon:
 
 ```typescript
-import { effect } from '@hypercolor/sdk'
+{
+    author: 'You',
+    description: 'Luminous curtains of color',
+    audio: true,
+    presets: [...],
+}
+```
+
+## Shader Effects
+
+Fragment shader effects use the same workspace flow:
+
+```typescript
+import { effect, combo, num } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
-export default effect('Borealis', shader, {
-    speed:     [1, 10, 5],
-    intensity: [0, 100, 82],
-    palette:   ['Northern Lights', 'SilkCircuit', 'Cyberpunk'],
-}, {
-    description: 'Aurora borealis with domain-warped fBm noise',
-})
-```
-
-Numeric controls are automatically mapped to GLSL uniforms with an `i` prefix and PascalCase naming (`speed` becomes `iSpeed`, `warpStrength` becomes `iWarpStrength`). The SDK also provides built-in uniforms:
-
-```glsl
-uniform float iTime;           // Elapsed seconds
-uniform vec2 iResolution;      // Canvas size (320, 200)
-uniform float iAudioLevel;     // Overall audio level (0-1)
-uniform float iAudioBass;      // Bass energy (0-1)
-uniform float iAudioMid;       // Mid energy (0-1)
-uniform float iAudioTreble;    // Treble energy (0-1)
-```
-
-## Stateful Canvas Effects
-
-For effects that need persistent state across frames (particle systems, physics simulations), use `canvas.stateful`:
-
-```typescript
-import { canvas } from '@hypercolor/sdk'
-
-export default canvas.stateful('Bubble Garden', {
-    speed: [0, 100, 10],
-    size:  [1, 10, 5],
-    color: '#ff0066',
-}, () => {
-    // Init: create state that persists across frames
-    const bubbles = Array.from({ length: 50 }, () => ({
-        x: Math.random() * 320,
-        y: Math.random() * 200,
-        vx: (Math.random() - 0.5) * 2,
-        vy: (Math.random() - 0.5) * 2,
-        r: Math.random() * 10 + 5,
-    }))
-
-    // Return the render function (called every frame)
-    return (ctx, time, controls) => {
-        ctx.fillStyle = '#000'
-        ctx.fillRect(0, 0, 320, 200)
-
-        for (const b of bubbles) {
-            b.x += b.vx * (controls.speed as number) / 10
-            b.y += b.vy * (controls.speed as number) / 10
-            // Wrap around edges
-            if (b.x < 0) b.x += 320
-            if (b.x > 320) b.x -= 320
-            if (b.y < 0) b.y += 200
-            if (b.y > 200) b.y -= 200
-
-            ctx.fillStyle = controls.color as string
-            ctx.beginPath()
-            ctx.arc(b.x, b.y, (controls.size as number) * b.r / 5, 0, Math.PI * 2)
-            ctx.fill()
-        }
+export default effect(
+    'Borealis',
+    shader,
+    {
+        intensity: num('Intensity', [0, 100], 82),
+        palette: combo('Palette', ['Aurora', 'SilkCircuit', 'Frost']),
+    },
+    {
+        description: 'Aurora curtains with layered shader motion',
     }
-})
+)
 ```
 
-## Metadata
+The workspace `bunfig.toml` already declares `.glsl` as `text`, so `import shader from './fragment.glsl'` just works in both `bun run dev` and `bun run build`.
 
-Effect metadata helps with discovery and categorization:
+## Studio Workflow
 
-```typescript
-export default effect('My Effect', shader, controls, {
-    description: 'A brief description of what this effect does',
-    author: 'Your Name',
-    audio: true,
-})
-```
-
-## Building Effects
-
-Build a single effect:
+The scaffolded scripts map straight to the authoring CLI:
 
 ```bash
-just effect-build color-pulse
+bun run dev
+bun run build
+bun run validate
+bun run ship
+bun run ship:daemon
 ```
 
-Build all effects:
+The underlying commands are:
 
 ```bash
+bunx hypercolor dev
+bunx hypercolor build --all
+bunx hypercolor validate dist/aurora.html
+bunx hypercolor install dist/aurora.html
+bunx hypercolor install dist/aurora.html --daemon
+```
+
+## Build, Validate, Install
+
+Build every effect in the workspace:
+
+```bash
+bun run build
+```
+
+Validate the generated artifacts:
+
+```bash
+bun run validate
+```
+
+Install locally with a filesystem copy:
+
+```bash
+bun run ship
+```
+
+Upload through the daemon API:
+
+```bash
+bun run ship:daemon
+```
+
+`ship` writes into the Hypercolor user effects directory. `ship:daemon` validates first, uploads via `POST /api/v1/effects/install`, and the daemon registers the effect immediately.
+
+## Adding More Effects
+
+Inside an existing workspace, scaffold another effect:
+
+```bash
+bunx hypercolor add ember --template canvas
+bunx hypercolor add skyline --template shader --audio
+```
+
+That creates a new `effects/<id>/` directory without touching your existing effects.
+
+## Monorepo Dogfooding
+
+Inside the Hypercolor monorepo itself, the old `just` shortcuts still work:
+
+```bash
+just sdk-dev
 just effects-build
+just effect-build borealis
 ```
 
-Built effects are output to `effects/hypercolor/` as single-file HTML. The daemon discovers and loads effects from this directory automatically.
-
-{% callout(type="warning", title="Generated output") %}
-The `effects/hypercolor/` directory is generated build output. Never hand-edit files there — make changes in `sdk/src/effects/` and rebuild.
-{% end %}
-
-## Testing in Preview
-
-With `just sdk-dev` running, your effect is available in the dev preview at `http://localhost:5173`. The preview provides:
-
-- Live rendering of your effect
-- Control panel for adjusting parameters in real time
-- Audio visualization when audio input is active
-- Hot module replacement — save your file and see changes instantly
+Those commands now dogfood the same Bun authoring core that standalone workspaces use.

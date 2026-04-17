@@ -5,21 +5,53 @@ weight = 3
 template = "page.html"
 +++
 
-The `@hypercolor/sdk` package provides everything you need to turn ideas into running light shows. Effects compile to single-file HTML that the daemon renders headlessly at 60fps.
+The `@hypercolor/sdk` package gives you the runtime API for effect code and the Bun-powered authoring CLI that builds, validates, previews, and installs those effects.
 
 ## Architecture Overview
 
 ```
-sdk/
-  packages/           # Published npm packages
-  shared/             # Shared utilities across SDK
-  src/
-    effects/          # Effect source files (one directory per effect)
-    core/             # SDK core — canvas, shader, controls
-  scripts/            # Build tooling (Bun)
+my-effect-pack/
+  effects/
+    aurora/
+      main.ts
+      fragment.glsl   # optional
+  dist/
+  package.json
+  bunfig.toml
 ```
 
-Effects are authored as TypeScript modules that export a single default value created by one of the SDK's entry-point functions (`effect`, `canvas`, or `canvas.stateful`). The build system bundles each effect into a standalone HTML file with all dependencies inlined.
+Effects are authored as TypeScript modules that export a single default value created by one of the SDK entry points (`effect`, `canvas`, or `canvas.stateful`). The authoring CLI bundles each effect into a standalone HTML artifact with all metadata, script code, and shader sources inlined.
+
+## Authoring CLI
+
+Inside a scaffolded workspace, the SDK ships a Bun-first `hypercolor` CLI:
+
+```bash
+bunx hypercolor dev
+bunx hypercolor build --all
+bunx hypercolor validate dist/aurora.html
+bunx hypercolor install dist/aurora.html
+bunx hypercolor install dist/aurora.html --daemon
+bunx hypercolor add ember --template canvas
+```
+
+Scaffolded workspaces expose the same flow through package scripts:
+
+```bash
+bun run dev
+bun run build
+bun run validate
+bun run ship
+bun run ship:daemon
+```
+
+`bun run dev` launches the preview studio with:
+
+- effect switching across the whole workspace
+- generated controls and preset switching
+- audio simulation with beat triggering
+- LED preview sampling for strip, matrix, and ring layouts
+- canvas presets for daemon, strip, matrix, and ring aspect ratios
 
 ## Entry Points
 
@@ -244,19 +276,32 @@ same way keeps them resolution-independent. Readback cost scales with the config
 ### Build a Single Effect
 
 ```bash
-just effect-build my-effect-name
+bunx hypercolor build effects/my-effect/main.ts
 ```
 
 ### Build All Effects
 
 ```bash
-just effects-build
+bunx hypercolor build --all
+```
+
+### Validate
+
+```bash
+bunx hypercolor validate dist/my-effect.html
+```
+
+### Install
+
+```bash
+bunx hypercolor install dist/my-effect.html
+bunx hypercolor install dist/my-effect.html --daemon
 ```
 
 ### Output
 
-Built effects land in `effects/hypercolor/` as self-contained HTML files. Each file includes all JavaScript, CSS, shader code, and metadata inlined. The daemon discovers effects in this directory at startup and when a rescan is triggered.
+Built effects land in `dist/` as self-contained HTML files. Each file includes all JavaScript, CSS, shader code, and metadata inlined. Local install copies them into the user effects directory. Daemon install uploads them through `POST /api/v1/effects/install` and registers them immediately.
 
 ### Effect Discovery
 
-Effects declare their metadata through the SDK's entry-point functions. The daemon parses this metadata (name, description, controls, tags) from the built HTML file. No separate manifest file is needed.
+Effects declare their metadata through the SDK entry points. The build pipeline resolves those definitions into HTML meta tags, including controls, presets, author, description, and `hypercolor-version`. The daemon reads that metadata directly from the HTML artifact. No separate manifest file is needed.

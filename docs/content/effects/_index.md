@@ -20,3 +20,4 @@ In this section:
 - **[Creating Effects](@/effects/creating-effects.md)** — Write your first effect with the TypeScript SDK
 - **[Color Science](@/effects/color-science.md)** — Why RGB LEDs are different from screens, and how to make colors look great
 - **[SDK Reference](@/effects/sdk.md)** — Full API documentation for `@hypercolor/sdk`
+- **[AI Prompt Template](@/effects/ai-prompt-template.md)** — Generate effect code with the right SDK and hardware constraints
