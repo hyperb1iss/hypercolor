@@ -275,6 +275,24 @@ ui-build:
 ui-dist: ui-build
     @echo '✅ UI built at crates/hypercolor-ui/dist/'
 
+# Install e2e harness dependencies
+e2e-install:
+    cd e2e && npm ci
+
+# Install Playwright browsers for the e2e harness
+e2e-browsers:
+    cd e2e && npx playwright install chromium
+
+# Build the daemon, CLI, generated effects, and production web UI for e2e
+e2e-build:
+    ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon -p hypercolor-cli
+    just effects-build
+    just ui-build
+
+# Run the Playwright e2e suite against a hermetic local stack
+e2e *args='':
+    cd e2e && npm test -- {{ args }}
+
 # Run the standalone UI crate tests
 ui-test:
     cd crates/hypercolor-ui && cargo test

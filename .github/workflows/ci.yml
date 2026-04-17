@@ -167,6 +167,73 @@ jobs:
         run: cargo install trunk --locked
       - run: env -u NO_COLOR trunk build --release
 
+  # ── End-to-End (Playwright) ──────────────────────────────────
+  e2e:
+    name: E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TARGET_DIR: target
+      HYPERCOLOR_E2E_KEEP_RUN_DIR: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ env.LINUX_DEPS }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install Trunk
+        run: cargo install trunk --locked
+
+      - name: Install SDK dependencies
+        working-directory: sdk
+        run: bun install
+
+      - name: Install UI dependencies
+        working-directory: crates/hypercolor-ui
+        run: bun install
+
+      - name: Install e2e dependencies
+        working-directory: e2e
+        run: npm ci
+
+      - name: Build e2e stack
+        run: just e2e-build
+
+      - name: Install Playwright Chromium
+        working-directory: e2e
+        run: npx playwright install --with-deps chromium
+
+      - name: Run e2e suite
+        run: just e2e
+
+      - name: Upload e2e artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+            /tmp/hypercolor-e2e-*
+
   # ── Docs (Zola → GitHub Pages) ─────────────────────────────────
   docs:
     name: Docs
