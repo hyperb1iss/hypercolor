@@ -1,7 +1,34 @@
-use hypercolor_types::canvas::{
-    BYTES_PER_PIXEL, Canvas, linear_to_srgb_u8, srgb_u8_to_linear,
-};
+use std::cell::RefCell;
+
+use fast_image_resize as fr;
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, srgb_u8_to_linear};
+use hypercolor_types::canvas::{linear_to_srgb_u8};
 use hypercolor_types::viewport::{FitMode, PixelRect, ViewportRect};
+
+/// Per-thread resizer + intermediate scratch for the `Contain` path. The
+/// resizer's internal scratch is rebuilt lazily the first time each
+/// resize ratio is requested, so keeping it alive across calls means
+/// every tokio worker pays the setup cost at most once per ratio.
+struct ViewportState {
+    resizer: fr::Resizer,
+    /// Holds the resized-but-not-yet-blitted crop when Contain letterboxes
+    /// the output. Stretch and Cover write straight into the target and
+    /// leave this buffer untouched.
+    contain_scratch: Vec<u8>,
+}
+
+impl ViewportState {
+    fn new() -> Self {
+        Self {
+            resizer: fr::Resizer::new(),
+            contain_scratch: Vec::new(),
+        }
+    }
+}
+
+thread_local! {
+    static VIEWPORT_STATE: RefCell<ViewportState> = RefCell::new(ViewportState::new());
+}
 
 pub fn sample_viewport(
     target: &mut Canvas,
@@ -18,245 +45,208 @@ pub fn sample_viewport(
     }
 }
 
-/// Raw-slice bilinear blit with gamma-correct interpolation.
-///
-/// Lifts `Arc::make_mut` out of the pixel loop (one call per frame instead
-/// of one per pixel), skips bounds-checked `get_pixel`/`set_pixel`, and
-/// reads sRGB bytes straight through the precomputed LUT. At 1280x1024
-/// this is the difference between ~60 ms and ~10 ms per viewport blit.
+#[allow(clippy::cast_lossless, clippy::as_conversions)]
+fn blit_stretch(target: &mut Canvas, source: &Canvas, crop: PixelRect, brightness: f32) {
+    let source_width = source.width();
+    let source_height = source.height();
+    let target_width = target.width();
+    let target_height = target.height();
+    if source_width == 0
+        || source_height == 0
+        || target_width == 0
+        || target_height == 0
+        || crop.width == 0
+        || crop.height == 0
+    {
+        return;
+    }
+
+    let expected_source_len = (source_width as usize)
+        .saturating_mul(source_height as usize)
+        .saturating_mul(BYTES_PER_PIXEL);
+    if source.as_rgba_bytes().len() < expected_source_len {
+        return;
+    }
+
+    VIEWPORT_STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let resizer = &mut state.resizer;
+
+        let Ok(src_image) = fr::images::ImageRef::new(
+            source_width,
+            source_height,
+            source.as_rgba_bytes(),
+            fr::PixelType::U8x4,
+        ) else {
+            return;
+        };
+
+        {
+            let target_bytes = target.as_rgba_bytes_mut();
+            let Ok(mut dst_image) = fr::images::Image::from_slice_u8(
+                target_width,
+                target_height,
+                target_bytes,
+                fr::PixelType::U8x4,
+            ) else {
+                return;
+            };
+            let options = fr::ResizeOptions::new()
+                .resize_alg(fr::ResizeAlg::Interpolation(fr::FilterType::Bilinear))
+                .crop(
+                    f64::from(crop.x),
+                    f64::from(crop.y),
+                    f64::from(crop.width),
+                    f64::from(crop.height),
+                );
+            if resizer.resize(&src_image, &mut dst_image, &options).is_err() {
+                return;
+            }
+        }
+
+        if brightness_needs_lut(brightness) {
+            let lut = build_brightness_lut(brightness);
+            apply_brightness_lut_rgb(target.as_rgba_bytes_mut(), &lut);
+        }
+    });
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions,
+    clippy::cast_lossless
+)]
+fn blit_contain(target: &mut Canvas, source: &Canvas, crop: PixelRect, brightness: f32) {
+    let source_width = source.width();
+    let source_height = source.height();
+    let target_width = target.width();
+    let target_height = target.height();
+    if source_width == 0
+        || source_height == 0
+        || target_width == 0
+        || target_height == 0
+        || crop.width == 0
+        || crop.height == 0
+    {
+        return;
+    }
+
+    let expected_source_len = (source_width as usize)
+        .saturating_mul(source_height as usize)
+        .saturating_mul(BYTES_PER_PIXEL);
+    if source.as_rgba_bytes().len() < expected_source_len {
+        return;
+    }
+
+    let crop_aspect = (crop.width.max(1) as f32) / (crop.height.max(1) as f32);
+    let out_width_f = target_width.max(1) as f32;
+    let out_height_f = target_height.max(1) as f32;
+    let out_aspect = out_width_f / out_height_f;
+
+    let (draw_width_f, draw_height_f) = if out_aspect > crop_aspect {
+        (out_height_f * crop_aspect, out_height_f)
+    } else {
+        (out_width_f, out_width_f / crop_aspect)
+    };
+    // Snap the drawable rect to integer pixels so the letterboxed region
+    // aligns with the canvas grid (preserving the existing contract that
+    // rows outside the draw rect are left untouched).
+    let draw_w_raw = draw_width_f.round().max(1.0) as u32;
+    let draw_h_raw = draw_height_f.round().max(1.0) as u32;
+    let offset_x = ((out_width_f - draw_width_f) * 0.5).round().max(0.0) as u32;
+    let offset_y = ((out_height_f - draw_height_f) * 0.5).round().max(0.0) as u32;
+    let draw_w = draw_w_raw.min(target_width.saturating_sub(offset_x));
+    let draw_h = draw_h_raw.min(target_height.saturating_sub(offset_y));
+    if draw_w == 0 || draw_h == 0 {
+        return;
+    }
+
+    let draw_w_usize = draw_w as usize;
+    let draw_h_usize = draw_h as usize;
+    let intermediate_len = draw_w_usize
+        .saturating_mul(draw_h_usize)
+        .saturating_mul(BYTES_PER_PIXEL);
+
+    VIEWPORT_STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let ViewportState {
+            resizer,
+            contain_scratch,
+        } = &mut *state;
+
+        if contain_scratch.len() != intermediate_len {
+            contain_scratch.resize(intermediate_len, 0);
+        }
+
+        let Ok(src_image) = fr::images::ImageRef::new(
+            source_width,
+            source_height,
+            source.as_rgba_bytes(),
+            fr::PixelType::U8x4,
+        ) else {
+            return;
+        };
+        {
+            let Ok(mut dst_image) = fr::images::Image::from_slice_u8(
+                draw_w,
+                draw_h,
+                contain_scratch.as_mut_slice(),
+                fr::PixelType::U8x4,
+            ) else {
+                return;
+            };
+            let options = fr::ResizeOptions::new()
+                .resize_alg(fr::ResizeAlg::Interpolation(fr::FilterType::Bilinear))
+                .crop(
+                    f64::from(crop.x),
+                    f64::from(crop.y),
+                    f64::from(crop.width),
+                    f64::from(crop.height),
+                );
+            if resizer.resize(&src_image, &mut dst_image, &options).is_err() {
+                return;
+            }
+        }
+
+        // Blit the intermediate into the target at the draw rect. Rows
+        // outside the draw rect are left as-is — the existing contract
+        // is "callers clear first if they want a clean letterbox," and
+        // production callers (`web_viewport.rs`, etc.) do exactly that.
+        let target_bytes = target.as_rgba_bytes_mut();
+        let target_stride = (target_width as usize) * BYTES_PER_PIXEL;
+        let intermediate_stride = draw_w_usize * BYTES_PER_PIXEL;
+        let offset_x_bytes = (offset_x as usize) * BYTES_PER_PIXEL;
+        for row in 0..draw_h_usize {
+            let dst_start = ((offset_y as usize) + row) * target_stride + offset_x_bytes;
+            let dst_end = dst_start + intermediate_stride;
+            let src_start = row * intermediate_stride;
+            let src_end = src_start + intermediate_stride;
+            target_bytes[dst_start..dst_end]
+                .copy_from_slice(&contain_scratch[src_start..src_end]);
+        }
+
+        if brightness_needs_lut(brightness) {
+            let lut = build_brightness_lut(brightness);
+            for row in 0..draw_h_usize {
+                let dst_start = ((offset_y as usize) + row) * target_stride + offset_x_bytes;
+                let dst_end = dst_start + intermediate_stride;
+                apply_brightness_lut_rgb(&mut target_bytes[dst_start..dst_end], &lut);
+            }
+        }
+    });
+}
+
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::as_conversions
 )]
-fn blit_stretch(target: &mut Canvas, source: &Canvas, crop: PixelRect, brightness: f32) {
-    let target_width = target.width();
-    let target_height = target.height();
-    let source_width = source.width();
-    let source_height = source.height();
-    if target_width == 0 || target_height == 0 || source_width == 0 || source_height == 0 {
-        return;
-    }
-
-    let source_bytes = source.as_rgba_bytes();
-    let expected_source_len = (source_width as usize)
-        .saturating_mul(source_height as usize)
-        .saturating_mul(BYTES_PER_PIXEL);
-    if source_bytes.len() < expected_source_len {
-        return;
-    }
-
-    let target_bytes = target.as_rgba_bytes_mut();
-    let expected_target_len = (target_width as usize)
-        .saturating_mul(target_height as usize)
-        .saturating_mul(BYTES_PER_PIXEL);
-    if target_bytes.len() < expected_target_len {
-        return;
-    }
-
-    let source_max_x = source_width.saturating_sub(1);
-    let source_max_y = source_height.saturating_sub(1);
-    let source_max_x_f = source_max_x as f32;
-    let source_max_y_f = source_max_y as f32;
-    let source_stride = (source_width as usize).saturating_mul(BYTES_PER_PIXEL);
-    let target_stride = (target_width as usize).saturating_mul(BYTES_PER_PIXEL);
-
-    let crop_x = crop.x as f32;
-    let crop_y = crop.y as f32;
-    let x_span = crop.width.saturating_sub(1) as f32;
-    let y_span = crop.height.saturating_sub(1) as f32;
-    let tx_divisor = (target_width.saturating_sub(1)).max(1) as f32;
-    let ty_divisor = (target_height.saturating_sub(1)).max(1) as f32;
-
-    for out_y in 0..target_height {
-        let source_y = if target_height <= 1 {
-            crop_y + y_span * 0.5
-        } else {
-            crop_y + (out_y as f32 * y_span) / ty_divisor
-        };
-        let clamped_y = source_y.clamp(0.0, source_max_y_f);
-        let y0 = clamped_y.floor() as u32;
-        let y1 = y0.saturating_add(1).min(source_max_y);
-        let fy = clamped_y - (y0 as f32);
-        let fy_inv = 1.0 - fy;
-
-        let row0_base = (y0 as usize) * source_stride;
-        let row1_base = (y1 as usize) * source_stride;
-        let out_row_base = (out_y as usize) * target_stride;
-
-        for out_x in 0..target_width {
-            let source_x = if target_width <= 1 {
-                crop_x + x_span * 0.5
-            } else {
-                crop_x + (out_x as f32 * x_span) / tx_divisor
-            };
-            let clamped_x = source_x.clamp(0.0, source_max_x_f);
-            let x0 = clamped_x.floor() as u32;
-            let x1 = x0.saturating_add(1).min(source_max_x);
-            let fx = clamped_x - (x0 as f32);
-            let fx_inv = 1.0 - fx;
-
-            let off00 = row0_base + (x0 as usize) * BYTES_PER_PIXEL;
-            let off10 = row0_base + (x1 as usize) * BYTES_PER_PIXEL;
-            let off01 = row1_base + (x0 as usize) * BYTES_PER_PIXEL;
-            let off11 = row1_base + (x1 as usize) * BYTES_PER_PIXEL;
-
-            // Bilinear weight for each tap — computing as inv/non-inv
-            // products keeps the inner math to three multiplies and one
-            // add per channel, and LLVM readily FMA's it on x86_64.
-            let w00 = fx_inv * fy_inv;
-            let w10 = fx * fy_inv;
-            let w01 = fx_inv * fy;
-            let w11 = fx * fy;
-
-            let r = w00 * srgb_u8_to_linear(source_bytes[off00])
-                + w10 * srgb_u8_to_linear(source_bytes[off10])
-                + w01 * srgb_u8_to_linear(source_bytes[off01])
-                + w11 * srgb_u8_to_linear(source_bytes[off11]);
-            let g = w00 * srgb_u8_to_linear(source_bytes[off00 + 1])
-                + w10 * srgb_u8_to_linear(source_bytes[off10 + 1])
-                + w01 * srgb_u8_to_linear(source_bytes[off01 + 1])
-                + w11 * srgb_u8_to_linear(source_bytes[off11 + 1]);
-            let b = w00 * srgb_u8_to_linear(source_bytes[off00 + 2])
-                + w10 * srgb_u8_to_linear(source_bytes[off10 + 2])
-                + w01 * srgb_u8_to_linear(source_bytes[off01 + 2])
-                + w11 * srgb_u8_to_linear(source_bytes[off11 + 2]);
-            let a = (w00 * f32::from(source_bytes[off00 + 3])
-                + w10 * f32::from(source_bytes[off10 + 3])
-                + w01 * f32::from(source_bytes[off01 + 3])
-                + w11 * f32::from(source_bytes[off11 + 3]))
-                / 255.0;
-
-            let out_off = out_row_base + (out_x as usize) * BYTES_PER_PIXEL;
-            target_bytes[out_off] = linear_to_srgb_u8(r * brightness);
-            target_bytes[out_off + 1] = linear_to_srgb_u8(g * brightness);
-            target_bytes[out_off + 2] = linear_to_srgb_u8(b * brightness);
-            target_bytes[out_off + 3] = (a * 255.0).round().clamp(0.0, 255.0) as u8;
-        }
-    }
-}
-
-#[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-fn blit_contain(canvas: &mut Canvas, source: &Canvas, crop: PixelRect, brightness: f32) {
-    let canvas_width = canvas.width();
-    let canvas_height = canvas.height();
-    let source_width = source.width();
-    let source_height = source.height();
-    if canvas_width == 0 || canvas_height == 0 || source_width == 0 || source_height == 0 {
-        return;
-    }
-
-    let crop_aspect = crop.width.max(1) as f32 / crop.height.max(1) as f32;
-    let out_width = canvas_width.max(1) as f32;
-    let out_height = canvas_height.max(1) as f32;
-    let out_aspect = out_width / out_height;
-
-    let (draw_width, draw_height) = if out_aspect > crop_aspect {
-        (out_height * crop_aspect, out_height)
-    } else {
-        (out_width, out_width / crop_aspect)
-    };
-    let offset_x = (out_width - draw_width) * 0.5;
-    let offset_y = (out_height - draw_height) * 0.5;
-
-    let source_bytes = source.as_rgba_bytes();
-    let expected_source_len = (source_width as usize)
-        .saturating_mul(source_height as usize)
-        .saturating_mul(BYTES_PER_PIXEL);
-    if source_bytes.len() < expected_source_len {
-        return;
-    }
-
-    let target_bytes = canvas.as_rgba_bytes_mut();
-    let expected_target_len = (canvas_width as usize)
-        .saturating_mul(canvas_height as usize)
-        .saturating_mul(BYTES_PER_PIXEL);
-    if target_bytes.len() < expected_target_len {
-        return;
-    }
-
-    let source_max_x = source_width.saturating_sub(1);
-    let source_max_y = source_height.saturating_sub(1);
-    let source_max_x_f = source_max_x as f32;
-    let source_max_y_f = source_max_y as f32;
-    let source_stride = (source_width as usize).saturating_mul(BYTES_PER_PIXEL);
-    let target_stride = (canvas_width as usize).saturating_mul(BYTES_PER_PIXEL);
-
-    let crop_x_f = crop.x as f32;
-    let crop_y_f = crop.y as f32;
-    let crop_w_f = crop.width.max(1) as f32;
-    let crop_h_f = crop.height.max(1) as f32;
-
-    for out_y in 0..canvas_height {
-        let yf = out_y as f32 + 0.5;
-        if yf < offset_y || yf > offset_y + draw_height {
-            continue;
-        }
-        let ny = ((yf - offset_y) / draw_height).clamp(0.0, 1.0);
-        let source_y = (crop_y_f + ny * crop_h_f - 0.5).clamp(0.0, source_max_y_f);
-        let y0 = source_y.floor() as u32;
-        let y1 = y0.saturating_add(1).min(source_max_y);
-        let fy = source_y - (y0 as f32);
-        let fy_inv = 1.0 - fy;
-
-        let row0_base = (y0 as usize) * source_stride;
-        let row1_base = (y1 as usize) * source_stride;
-        let out_row_base = (out_y as usize) * target_stride;
-
-        for out_x in 0..canvas_width {
-            let xf = out_x as f32 + 0.5;
-            if xf < offset_x || xf > offset_x + draw_width {
-                continue;
-            }
-            let nx = ((xf - offset_x) / draw_width).clamp(0.0, 1.0);
-            let source_x = (crop_x_f + nx * crop_w_f - 0.5).clamp(0.0, source_max_x_f);
-            let x0 = source_x.floor() as u32;
-            let x1 = x0.saturating_add(1).min(source_max_x);
-            let fx = source_x - (x0 as f32);
-            let fx_inv = 1.0 - fx;
-
-            let off00 = row0_base + (x0 as usize) * BYTES_PER_PIXEL;
-            let off10 = row0_base + (x1 as usize) * BYTES_PER_PIXEL;
-            let off01 = row1_base + (x0 as usize) * BYTES_PER_PIXEL;
-            let off11 = row1_base + (x1 as usize) * BYTES_PER_PIXEL;
-
-            let w00 = fx_inv * fy_inv;
-            let w10 = fx * fy_inv;
-            let w01 = fx_inv * fy;
-            let w11 = fx * fy;
-
-            let r = w00 * srgb_u8_to_linear(source_bytes[off00])
-                + w10 * srgb_u8_to_linear(source_bytes[off10])
-                + w01 * srgb_u8_to_linear(source_bytes[off01])
-                + w11 * srgb_u8_to_linear(source_bytes[off11]);
-            let g = w00 * srgb_u8_to_linear(source_bytes[off00 + 1])
-                + w10 * srgb_u8_to_linear(source_bytes[off10 + 1])
-                + w01 * srgb_u8_to_linear(source_bytes[off01 + 1])
-                + w11 * srgb_u8_to_linear(source_bytes[off11 + 1]);
-            let b = w00 * srgb_u8_to_linear(source_bytes[off00 + 2])
-                + w10 * srgb_u8_to_linear(source_bytes[off10 + 2])
-                + w01 * srgb_u8_to_linear(source_bytes[off01 + 2])
-                + w11 * srgb_u8_to_linear(source_bytes[off11 + 2]);
-            let a = (w00 * f32::from(source_bytes[off00 + 3])
-                + w10 * f32::from(source_bytes[off10 + 3])
-                + w01 * f32::from(source_bytes[off01 + 3])
-                + w11 * f32::from(source_bytes[off11 + 3]))
-                / 255.0;
-
-            let out_off = out_row_base + (out_x as usize) * BYTES_PER_PIXEL;
-            target_bytes[out_off] = linear_to_srgb_u8(r * brightness);
-            target_bytes[out_off + 1] = linear_to_srgb_u8(g * brightness);
-            target_bytes[out_off + 2] = linear_to_srgb_u8(b * brightness);
-            target_bytes[out_off + 3] = (a * 255.0).round().clamp(0.0, 255.0) as u8;
-        }
-    }
-}
-
-#[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-fn blit_cover(canvas: &mut Canvas, source: &Canvas, crop: PixelRect, brightness: f32) {
-    let out_aspect = canvas.width().max(1) as f32 / canvas.height().max(1) as f32;
-    let crop_aspect = crop.width.max(1) as f32 / crop.height.max(1) as f32;
+fn blit_cover(target: &mut Canvas, source: &Canvas, crop: PixelRect, brightness: f32) {
+    let out_aspect = (target.width().max(1) as f32) / (target.height().max(1) as f32);
+    let crop_aspect = (crop.width.max(1) as f32) / (crop.height.max(1) as f32);
     let mut fitted = crop;
 
     if out_aspect > crop_aspect {
@@ -271,5 +261,41 @@ fn blit_cover(canvas: &mut Canvas, source: &Canvas, crop: PixelRect, brightness:
             .saturating_add(crop.width.saturating_sub(fitted.width) / 2);
     }
 
-    blit_stretch(canvas, source, fitted, brightness);
+    blit_stretch(target, source, fitted, brightness);
+}
+
+/// True when `brightness` meaningfully differs from 1.0 (outside one LSB
+/// of typical rounding noise). Avoids spending 256 LUT builds when the
+/// control slider is sitting at full brightness.
+fn brightness_needs_lut(brightness: f32) -> bool {
+    (brightness - 1.0).abs() > 1.0e-3
+}
+
+/// Build a 256-entry LUT that applies `brightness` in linear light and
+/// re-encodes to sRGB bytes. This keeps the "brightness slider is
+/// gamma-correct" semantics from the old scalar blit even though the
+/// bilinear resize itself now runs in sRGB space for speed.
+fn build_brightness_lut(brightness: f32) -> [u8; 256] {
+    let mut lut = [0_u8; 256];
+    for (index, entry) in lut.iter_mut().enumerate() {
+        // `srgb_u8_to_linear` is already an inlined table read; the
+        // multiply happens in linear light so black→black regardless of
+        // the brightness value, and saturation at 1.0 is handled by
+        // `linear_to_srgb_u8`'s internal clamp.
+        #[allow(clippy::cast_possible_truncation)]
+        let srgb_byte = index as u8;
+        let linear = srgb_u8_to_linear(srgb_byte) * brightness;
+        *entry = linear_to_srgb_u8(linear);
+    }
+    lut
+}
+
+/// Apply a precomputed brightness LUT to the R/G/B bytes of an RGBA
+/// slice, leaving alpha untouched. Auto-vectorizes cleanly on AVX2.
+fn apply_brightness_lut_rgb(bytes: &mut [u8], lut: &[u8; 256]) {
+    for chunk in bytes.chunks_exact_mut(BYTES_PER_PIXEL) {
+        chunk[0] = lut[usize::from(chunk[0])];
+        chunk[1] = lut[usize::from(chunk[1])];
+        chunk[2] = lut[usize::from(chunk[2])];
+    }
 }

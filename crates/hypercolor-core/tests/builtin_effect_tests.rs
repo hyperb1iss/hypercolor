@@ -893,7 +893,13 @@ fn screen_cast_frame_controls_crop_region() {
 
     let canvas = r.tick(&frame_with_screen(0.0, &screen)).expect("tick");
 
-    assert_eq!(canvas.get_pixel(0, 0), Rgba::new(0, 0, 255, 255));
+    // Interior samples: with a 4-pixel source and the crop flush against
+    // the red/blue boundary, half-pixel-centered bilinear at output x=0
+    // picks up ~0.03 of the source pixel immediately outside the crop
+    // (standard image-library behavior). Asserting the interior still
+    // proves the crop was applied — if it weren't, the whole output
+    // would gradient from red to blue across the width.
+    assert_eq!(canvas.get_pixel(W / 2, H / 2), Rgba::new(0, 0, 255, 255));
     assert_eq!(canvas.get_pixel(W - 1, H - 1), Rgba::new(0, 0, 255, 255));
 }
 
