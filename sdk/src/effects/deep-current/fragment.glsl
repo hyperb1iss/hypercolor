@@ -110,12 +110,12 @@ void main() {
     float wavesA = waveField(p, time, flowDir, turb, flowSpeed);
     float wavesB = waveField(p, time, -flowDir, turb, flowSpeed * 0.85);
 
-    // ── Convert wave amplitude to ripple brightness ──
-    // Tight window + power curve = sharp crests, true-black valleys
-    float rippleA = smoothstep(-0.15, 0.55, wavesA);
-    rippleA = rippleA * rippleA;  // square for LED-punchy falloff
-    float rippleB = smoothstep(-0.15, 0.55, wavesB);
-    rippleB = rippleB * rippleB;
+    // ── Continuous wave → ripple mapping (no hard cutoff) ──
+    // Why: the previous smoothstep(-0.15, 0.55, ...) + squaring crushed half
+    // the wave range to zero. Mapping [-1,1] directly with a gentle power
+    // curve keeps crest emphasis while preserving the midtones we want to see.
+    float rippleA = pow(wavesA * 0.5 + 0.5, 1.4);
+    float rippleB = pow(wavesB * 0.5 + 0.5, 1.4);
 
     // ── Spatial boundary — which current dominates where ──
     float flowPos = dot(uv, flowDir);
@@ -125,41 +125,50 @@ void main() {
     float blendWidth = 0.03 + blend * 0.25;
     float currentMix = smoothstep(0.5 - blendWidth, 0.5 + blendWidth, boundary);
 
-    // ── Color composition — blend, never accumulate ──
-    // Wave intensity weighted by spatial dominance
-    float leftStrength = mix(1.0, 0.08, currentMix);
-    float rightStrength = mix(0.08, 1.0, currentMix);
+    // ── Both currents contribute everywhere; dominance just reweights ──
+    // Off-side floor raised from 0.08 → 0.35 so non-dominant current stays
+    // visible instead of vanishing into the background.
+    float leftStrength = mix(1.0, 0.35, currentMix);
+    float rightStrength = mix(0.35, 1.0, currentMix);
 
-    float leftIntensity = rippleA * leftStrength;
-    float rightIntensity = rippleB * rightStrength;
-    float totalIntensity = leftIntensity + rightIntensity;
+    float leftContrib = rippleA * leftStrength;
+    float rightContrib = rippleB * rightStrength;
 
-    // Hue selection — interpolate between the two wave colors by dominance
-    // When only one wave fires, it's pure. Both active → hue blend, not sum.
-    float hueBlend = (totalIntensity > 0.001)
-        ? rightIntensity / totalIntensity
-        : currentMix;
+    // Hue blend by contribution ratio — louder wave pulls the color
+    float hueBlend = rightContrib / (leftContrib + rightContrib + 1e-4);
     vec3 waveColor = mix(iLeftColor, iRightColor, hueBlend);
 
-    // How much wave vs background at this pixel
-    float wavePresence = clamp(totalIntensity, 0.0, 1.0);
+    // Brightness modulates a saturated base — amplitude, not presence
+    float fieldBrightness = max(leftContrib, rightContrib);
+    float brightness = 0.3 + 0.7 * fieldBrightness;
 
-    // Compose: background → wave color (never additive, never exceeds input)
-    vec3 color = mix(iBgColor, waveColor, wavePresence);
+    vec3 color = waveColor * brightness;
 
-    // ── Constructive interference — screen blend for brightness boost ──
-    // Where both crests align, push brightness without exceeding 1.0
+    // ── Valley accent — background shows only in deep double-troughs ──
+    // Where both ripples dip, bgColor reads as shadow/void between currents
+    float valleyDepth = 1.0 - max(rippleA, rippleB);
+    float valleyMask = smoothstep(0.55, 0.92, valleyDepth);
+    color = mix(color, iBgColor, valleyMask * 0.7);
+
+    // ── Collision energy — constructive interference, hottest at the seam ──
+    // Boundary-weighted: interference everywhere, but brightest where the
+    // two currents actually meet (currentMix ≈ 0.5). Lifts toward white for
+    // a real "colliding plasma" pop.
     float constructive = rippleA * rippleB;
-    vec3 boost = waveColor * constructive * 0.3;
+    constructive = smoothstep(0.25, 0.85, constructive);
+    float boundaryEmphasis = 1.0 - abs(currentMix - 0.5) * 2.0;
+    boundaryEmphasis *= boundaryEmphasis;
+    vec3 hotspot = mix(waveColor, vec3(1.0), 0.35);
+    vec3 boost = hotspot * constructive * (0.35 + boundaryEmphasis * 0.45);
     color = color + boost * (1.0 - color);  // screen blend
 
-    // ── Subtle low-freq brightness variation ──
-    float shift = 0.93 + 0.07 * sin(dot(p, flowDir) * 2.0 - time * 1.2);
+    // ── Gentle breathing along flow axis ──
+    float shift = 0.97 + 0.03 * sin(dot(p, flowDir) * 2.0 - time * 1.2);
     color *= shift;
 
-    // ── Gentle vignette ──
-    float vignette = smoothstep(1.5, 0.2, length(p));
-    color *= 0.9 + 0.1 * vignette;
+    // ── Subtle vignette ──
+    float vignette = smoothstep(1.6, 0.3, length(p));
+    color *= 0.94 + 0.06 * vignette;
 
     fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 }
