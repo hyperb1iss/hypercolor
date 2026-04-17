@@ -252,19 +252,8 @@ tui-dev *args='':
 prepare-dev-assets:
     cd sdk && bun scripts/build-effect.ts --all
 
-# Run daemon + UI dev server together (daemon on :9420, UI on :9430 proxying API)
+# Run Servo GPU daemon + UI dev server together (daemon on :9420, UI on :9430 proxying API)
 dev *args='':
-    #!/usr/bin/env bash
-    set -euo pipefail
-    trap 'kill 0' EXIT
-    just prepare-dev-assets
-    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features servo -- --log-level debug --bind 127.0.0.1:9420 {{ args }} &
-    sleep 2
-    cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev &
-    wait
-
-# Run Servo GPU daemon + UI dev server together
-dev-wgpu *args='':
     #!/usr/bin/env bash
     set -euo pipefail
     trap 'kill 0' EXIT
