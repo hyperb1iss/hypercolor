@@ -4116,6 +4116,7 @@ dependencies = [
  "dirs",
  "dpi",
  "evdev",
+ "fast_image_resize",
  "futures-core",
  "futures-util",
  "gif 0.14.2",
