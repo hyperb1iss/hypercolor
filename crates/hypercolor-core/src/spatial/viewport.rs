@@ -93,6 +93,11 @@ fn blit_stretch(target: &mut Canvas, source: &Canvas, crop: PixelRect, brightnes
             };
             let options = fr::ResizeOptions::new()
                 .resize_alg(fr::ResizeAlg::Interpolation(fr::FilterType::Bilinear))
+                // Servo/web/screen sources are always opaque (α=255). Skip
+                // the premultiply/un-premultiply passes that fast_image_resize
+                // runs by default for alpha-aware resizing — on profile those
+                // two passes eat ~6% of render-thread CPU for no visual gain.
+                .use_alpha(false)
                 .crop(
                     f64::from(crop.x),
                     f64::from(crop.y),
@@ -199,6 +204,11 @@ fn blit_contain(target: &mut Canvas, source: &Canvas, crop: PixelRect, brightnes
             };
             let options = fr::ResizeOptions::new()
                 .resize_alg(fr::ResizeAlg::Interpolation(fr::FilterType::Bilinear))
+                // Servo/web/screen sources are always opaque (α=255). Skip
+                // the premultiply/un-premultiply passes that fast_image_resize
+                // runs by default for alpha-aware resizing — on profile those
+                // two passes eat ~6% of render-thread CPU for no visual gain.
+                .use_alpha(false)
                 .crop(
                     f64::from(crop.x),
                     f64::from(crop.y),
