@@ -1,7 +1,8 @@
 {
     "$schema": "https://biomejs.dev/schemas/2.4.7/schema.json",
     "files": {
-        "ignoreUnknown": true
+        "ignoreUnknown": true,
+        "includes": ["**", "!dist", "!node_modules"]
     },
     "formatter": {
         "enabled": true,

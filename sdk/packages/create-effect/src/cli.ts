@@ -38,7 +38,10 @@ Options:
   --audio                 Include audio-reactive starter boilerplate
   --no-git                Skip git init
   --no-install            Skip bun install
-  --sdk-spec <spec>       Override the generated @hypercolor/sdk dependency
+  --sdk-spec <spec>       Override the generated @hypercolor/sdk dependency.
+                          While the SDK is pre-release, point at a local
+                          checkout: file:../hypercolor/sdk/packages/core
+                          (HYPERCOLOR_SDK_PACKAGE_SPEC env var also works).
 `)
 }
 
