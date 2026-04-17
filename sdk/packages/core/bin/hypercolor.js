@@ -5,7 +5,7 @@ if (!process.versions.bun) {
     process.exit(1)
 }
 
-const cliUrl = new URL('../dist/cli.js', import.meta.url)
+const cliUrl = new URL('../src/cli.ts', import.meta.url)
 
 try {
     const cli = await import(cliUrl.href)

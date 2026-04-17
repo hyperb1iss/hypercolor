@@ -69,6 +69,10 @@ describe('sdk dev server', () => {
                 const shellHtml = await fetch(handle.url).then((response) => response.text())
                 expect(shellHtml).toContain('Hypercolor Effect Studio')
                 expect(shellHtml).toContain('effect-select')
+                expect(shellHtml).toContain('Audio Simulation')
+                expect(shellHtml).toContain('LED Preview')
+                expect(shellHtml).toContain('Trigger Beat')
+                expect(shellHtml).toContain('Daemon 640 x 480')
 
                 const state = await fetch(`${handle.url}/api/state`).then((response) => response.json())
                 expect(state.entries).toHaveLength(1)
