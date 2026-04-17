@@ -538,6 +538,8 @@ mod tests {
                 render_surface_free_slots: 1,
                 render_surface_published_slots: 4,
                 render_surface_dequeued_slots: 1,
+                preview_pool_saturation_reallocs: 0,
+                direct_pool_saturation_reallocs: 0,
                 canvas_receiver_count: 2,
                 full_frame_copy_count: 1,
                 full_frame_copy_bytes: 256_000,

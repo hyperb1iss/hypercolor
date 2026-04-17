@@ -17,6 +17,19 @@ use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use super::micros_u32;
 use super::producer_queue::ProducerFrame;
 
+/// Slot count for the full-resolution preview surface pool. Sized to absorb
+/// typical downstream pins: the canvas watch channel, display-output
+/// dispatch, and one in-flight JPEG encode per HTML-face worker. Undersizing
+/// forces `begin_dequeue` to reallocate a fresh canvas every frame whenever
+/// all slots are still shared downstream, which shows up as producer-stage
+/// stalls proportional to `canvas_width * canvas_height * 4` bytes.
+const PREVIEW_SURFACE_POOL_SLOTS: usize = 6;
+
+/// Slot count for per-group direct-canvas pools (HTML-face render groups).
+/// Same failure mode as the preview pool, but at smaller canvas sizes; still
+/// needs room for watch channel + in-flight display encode.
+const DIRECT_SURFACE_POOL_SLOTS: usize = 4;
+
 #[derive(Clone)]
 pub(crate) enum GroupCanvasFrame {
     Surface(PublishedSurface),
@@ -71,16 +84,40 @@ impl RenderGroupRuntime {
             spatial_engines: HashMap::new(),
             direct_surface_pools: HashMap::new(),
             retained_direct_group_frames: HashMap::new(),
-            preview_surface_pool: RenderSurfacePool::new(SurfaceDescriptor::rgba8888(
-                preview_width,
-                preview_height,
-            )),
+            // 6 slots absorbs typical downstream fan-out (watch channel +
+            // display-output dispatch + one pin per display worker mid-
+            // encode). 3 is enough when the UI isn't running but starves
+            // as soon as HTML-face devices JPEG-encode in parallel,
+            // causing every dequeue to realloc a fresh full-res canvas.
+            preview_surface_pool: RenderSurfacePool::with_slot_count(
+                SurfaceDescriptor::rgba8888(preview_width, preview_height),
+                PREVIEW_SURFACE_POOL_SLOTS,
+            ),
             reconciled_groups_revision: None,
             retained_frame: None,
             combined_layout: Arc::new(empty_group_layout(preview_width, preview_height)),
             preview_width,
             preview_height,
         }
+    }
+
+    /// Total count of times `preview_surface_pool.dequeue()` had to reuse
+    /// a still-shared Published slot (and therefore allocate a fresh
+    /// canvas). Monotonically increasing; non-zero growth means the pool
+    /// is undersized for current downstream fan-out.
+    #[must_use]
+    pub(crate) fn preview_surface_pool_saturation_reallocs(&self) -> u64 {
+        self.preview_surface_pool.saturation_reallocs()
+    }
+
+    /// Same as `preview_surface_pool_saturation_reallocs` but summed across
+    /// every direct-canvas group pool (one per HTML-face render group).
+    #[must_use]
+    pub(crate) fn direct_surface_pool_saturation_reallocs(&self) -> u64 {
+        self.direct_surface_pools
+            .values()
+            .map(RenderSurfacePool::saturation_reallocs)
+            .sum()
     }
 
     pub(crate) fn reuse_scene(&self, groups_revision: u64) -> Option<RenderGroupResult> {
@@ -311,8 +348,10 @@ impl RenderGroupRuntime {
             .get(&group.id)
             .is_none_or(|pool| pool.descriptor() != descriptor);
         if needs_pool {
-            self.direct_surface_pools
-                .insert(group.id, RenderSurfacePool::new(descriptor));
+            self.direct_surface_pools.insert(
+                group.id,
+                RenderSurfacePool::with_slot_count(descriptor, DIRECT_SURFACE_POOL_SLOTS),
+            );
         }
     }
 

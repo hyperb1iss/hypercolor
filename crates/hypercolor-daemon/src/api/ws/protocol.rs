@@ -817,6 +817,15 @@ pub(super) struct MetricsRenderSurfaces {
     pub(super) published_slots: u32,
     pub(super) dequeued_slots: u32,
     pub(super) canvas_receivers: u32,
+    /// Monotonic counter: how many times the render-group preview pool
+    /// had to allocate a fresh canvas on dequeue because every slot was
+    /// still shared downstream. A steadily-rising value signals the pool
+    /// is undersized for current subscriber fan-out and is silently
+    /// inflating the producer stage with `canvas_size * 4` bytes of
+    /// alloc+zero per frame.
+    pub(super) preview_pool_saturation_reallocs: u64,
+    /// Same counter summed across per-group direct-canvas pools.
+    pub(super) direct_pool_saturation_reallocs: u64,
 }
 
 #[derive(Debug, Serialize)]

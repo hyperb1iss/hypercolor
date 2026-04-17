@@ -1081,15 +1081,20 @@ impl SurfaceSlot {
         }
     }
 
-    fn begin_dequeue(&mut self, descriptor: SurfaceDescriptor) {
-        if self.canvas.width() != descriptor.width
-            || self.canvas.height() != descriptor.height
-            || (self.state == SurfaceState::Published && self.canvas.is_shared())
-        {
+    /// Prepare the slot for a new producer write. Returns `true` if the pool
+    /// had to allocate a fresh canvas because the previous slot was still
+    /// shared downstream (a sign the pool is undersized for current load).
+    fn begin_dequeue(&mut self, descriptor: SurfaceDescriptor) -> bool {
+        let reused_shared = self.state == SurfaceState::Published && self.canvas.is_shared();
+        let needs_realloc = reused_shared
+            || self.canvas.width() != descriptor.width
+            || self.canvas.height() != descriptor.height;
+        if needs_realloc {
             self.canvas = Canvas::new(descriptor.width, descriptor.height);
         }
 
         self.state = SurfaceState::Dequeued;
+        reused_shared
     }
 }
 
@@ -1099,6 +1104,10 @@ pub struct RenderSurfacePool {
     descriptor: SurfaceDescriptor,
     slots: Vec<SurfaceSlot>,
     next_slot: usize,
+    /// Total count of dequeues that had to reuse a still-shared Published
+    /// slot and therefore allocated a fresh canvas. A non-zero growth rate
+    /// means the pool is undersized for the downstream fan-out.
+    saturation_reallocs: u64,
 }
 
 impl RenderSurfacePool {
@@ -1119,7 +1128,15 @@ impl RenderSurfacePool {
             descriptor,
             slots,
             next_slot: 0,
+            saturation_reallocs: 0,
         }
+    }
+
+    /// Cumulative count of dequeues that had to reuse a still-shared slot
+    /// and allocate a fresh canvas. Monotonically increasing.
+    #[must_use]
+    pub const fn saturation_reallocs(&self) -> u64 {
+        self.saturation_reallocs
     }
 
     /// Surface descriptor shared by all slots.
@@ -1180,7 +1197,7 @@ impl RenderSurfacePool {
                 continue;
             }
 
-            self.slots[index].begin_dequeue(self.descriptor);
+            let _ = self.slots[index].begin_dequeue(self.descriptor);
             self.next_slot = (index + 1) % self.slots.len();
             return Some(SurfaceLease {
                 descriptor: self.descriptor,
@@ -1194,7 +1211,9 @@ impl RenderSurfacePool {
                 continue;
             }
 
-            self.slots[index].begin_dequeue(self.descriptor);
+            if self.slots[index].begin_dequeue(self.descriptor) {
+                self.saturation_reallocs = self.saturation_reallocs.saturating_add(1);
+            }
             self.next_slot = (index + 1) % self.slots.len();
             return Some(SurfaceLease {
                 descriptor: self.descriptor,

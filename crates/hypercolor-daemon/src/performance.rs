@@ -97,6 +97,13 @@ pub(crate) struct LatestFrameMetrics {
     pub render_surface_free_slots: u32,
     pub render_surface_published_slots: u32,
     pub render_surface_dequeued_slots: u32,
+    /// Cumulative count of preview-pool dequeues that had to allocate a
+    /// fresh canvas because every slot was still shared downstream. A
+    /// steadily rising value signals pool undersizing relative to how many
+    /// subscribers are pinning published frames.
+    pub preview_pool_saturation_reallocs: u64,
+    /// Same as above but summed across per-group direct-canvas pools.
+    pub direct_pool_saturation_reallocs: u64,
     pub canvas_receiver_count: u32,
     pub full_frame_copy_count: u32,
     pub full_frame_copy_bytes: u32,
