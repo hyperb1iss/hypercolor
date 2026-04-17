@@ -28,12 +28,24 @@ pub struct WebViewportRenderer {
     refresh_interval_secs: f32,
     render_width: u32,
     render_height: u32,
+    scroll_x: i32,
+    scroll_y: i32,
+    /// Last `(scroll_x, scroll_y)` we dispatched to Servo. Lets us
+    /// skip injecting the `window.scrollTo` script on frames where
+    /// scroll hasn't changed — keeps the JS cost off the happy path
+    /// and avoids redundant work for pages sitting at the top.
+    last_applied_scroll: Option<(i32, i32)>,
     last_refresh_time_secs: Option<f32>,
     url_dirty_at: Option<Instant>,
     loaded_url: Option<String>,
     preview_canvas: Option<Canvas>,
     load_failed: bool,
 }
+
+/// Matches Spec 46 § 8.1 — both axes share the same 0..32768 upper
+/// bound so the control definition and the `set_control` clamp stay
+/// symmetric.
+const SCROLL_AXIS_MAX: f32 = 32768.0;
 
 impl WebViewportRenderer {
     #[must_use]
@@ -47,12 +59,41 @@ impl WebViewportRenderer {
             refresh_interval_secs: 0.0,
             render_width: 1280,
             render_height: 720,
+            scroll_x: 0,
+            scroll_y: 0,
+            last_applied_scroll: None,
             last_refresh_time_secs: None,
             url_dirty_at: None,
             loaded_url: None,
             preview_canvas: None,
             load_failed: false,
         }
+    }
+
+    /// Build the list of scripts to evaluate before Servo paints the
+    /// next frame. Today that's just scroll positioning; future controls
+    /// can add to this list without reshaping the call sites.
+    ///
+    /// Absolute scroll is the contract the spec promises the UI; Servo's
+    /// embedder only exposes relative scroll deltas, so we drive it
+    /// through `window.scrollTo({behavior: 'instant'})`. Skipping the
+    /// script when scroll hasn't changed AND is at the origin avoids
+    /// wasted JS execution on every paint for pages that never scroll.
+    fn pending_scripts_for_render(&self) -> Vec<String> {
+        // "Never dispatched" is semantically identical to "dispatched
+        // (0, 0)" — Servo starts every fresh page at the origin, so
+        // asking it to scrollTo(0, 0) right after load is redundant.
+        // Only emit when the requested scroll differs from the
+        // baseline we can prove Servo is already at.
+        let current = (self.scroll_x, self.scroll_y);
+        let baseline = self.last_applied_scroll.unwrap_or((0, 0));
+        if current == baseline {
+            return Vec::new();
+        }
+        vec![format!(
+            "window.scrollTo({{left: {}, top: {}, behavior: 'instant'}});",
+            self.scroll_x, self.scroll_y,
+        )]
     }
 
     fn session_config(&self) -> SessionConfig {
@@ -77,6 +118,9 @@ impl WebViewportRenderer {
                 self.loaded_url = Some(url);
                 self.load_failed = false;
                 self.url_dirty_at = None;
+                // Navigation resets Servo's scroll position. Force
+                // our scroll to be re-applied on the next paint.
+                self.last_applied_scroll = None;
                 Ok(())
             }
             Err(error) => {
@@ -203,11 +247,24 @@ impl EffectRenderer for WebViewportRenderer {
             );
         }
 
-        if let Some(session) = self.session.as_mut()
-            && let Err(error) = session.request_render(Vec::new())
-        {
-            note_servo_session_error("web viewport render request failed", &error);
-            return Err(error);
+        let scripts = self.pending_scripts_for_render();
+        let scroll_in_scripts = (!scripts.is_empty()).then_some((self.scroll_x, self.scroll_y));
+
+        if let Some(session) = self.session.as_mut() {
+            // `request_render` short-circuits (returns Ok without
+            // queuing) when a prior render is still pending. Check
+            // explicitly so we don't prematurely advance
+            // `last_applied_scroll` for scripts that were dropped.
+            let can_submit = !session.has_pending_render();
+            if let Err(error) = session.request_render(scripts) {
+                note_servo_session_error("web viewport render request failed", &error);
+                return Err(error);
+            }
+            if can_submit
+                && let Some(scroll) = scroll_in_scripts
+            {
+                self.last_applied_scroll = Some(scroll);
+            }
         }
 
         Ok(())
@@ -263,6 +320,16 @@ impl EffectRenderer for WebViewportRenderer {
                     }
                 }
             }
+            "scroll_x" => {
+                if let Some(v) = value.as_f32() {
+                    self.scroll_x = v.round().clamp(0.0, SCROLL_AXIS_MAX) as i32;
+                }
+            }
+            "scroll_y" => {
+                if let Some(v) = value.as_f32() {
+                    self.scroll_y = v.round().clamp(0.0, SCROLL_AXIS_MAX) as i32;
+                }
+            }
             _ => {}
         }
     }
@@ -281,6 +348,9 @@ impl EffectRenderer for WebViewportRenderer {
         self.loaded_url = None;
         self.url_dirty_at = None;
         self.load_failed = false;
+        // Scroll is bound to the session, so a fresh session must
+        // re-dispatch the current scroll on its first paint.
+        self.last_applied_scroll = None;
     }
 }
 
@@ -425,6 +495,26 @@ fn controls() -> Vec<ControlDefinition> {
             "Source",
             "Servo render height before viewport sampling.",
         ),
+        slider_control(
+            "scroll_x",
+            "Scroll X",
+            0.0,
+            0.0,
+            SCROLL_AXIS_MAX,
+            1.0,
+            "Source",
+            "Horizontal scroll offset in page pixels before sampling.",
+        ),
+        slider_control(
+            "scroll_y",
+            "Scroll Y",
+            0.0,
+            0.0,
+            SCROLL_AXIS_MAX,
+            1.0,
+            "Source",
+            "Vertical scroll offset in page pixels before sampling.",
+        ),
     ]
 }
 
@@ -458,7 +548,75 @@ pub(super) fn metadata() -> EffectMetadata {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_scheme_for_host_input, looks_like_host_input, normalize_web_url_input};
+    use super::{
+        WebViewportRenderer, default_scheme_for_host_input, looks_like_host_input,
+        normalize_web_url_input,
+    };
+    use crate::effect::traits::EffectRenderer;
+    use hypercolor_types::effect::ControlValue;
+
+    #[test]
+    fn pending_scripts_are_empty_at_origin_with_no_dispatch_history() {
+        let renderer = WebViewportRenderer::new();
+        // Fresh renderer: scroll is (0, 0) and nothing has been applied
+        // yet. Asking Servo to scrollTo(0, 0) every paint is wasted
+        // work — the helper should skip the injection entirely.
+        assert!(renderer.pending_scripts_for_render().is_empty());
+    }
+
+    #[test]
+    fn pending_scripts_inject_absolute_scroll_when_nonzero() {
+        let mut renderer = WebViewportRenderer::new();
+        renderer.set_control("scroll_y", &ControlValue::Float(240.0));
+        let scripts = renderer.pending_scripts_for_render();
+        assert_eq!(scripts.len(), 1);
+        // Absolute `scrollTo` with behaviour: 'instant' matches the
+        // spec's promise that slider commits produce non-animated
+        // scroll on the next Servo paint.
+        assert!(
+            scripts[0].contains("window.scrollTo(")
+                && scripts[0].contains("left: 0")
+                && scripts[0].contains("top: 240")
+                && scripts[0].contains("behavior: 'instant'"),
+            "script did not match expected shape: {:?}",
+            scripts[0]
+        );
+    }
+
+    #[test]
+    fn pending_scripts_skip_when_scroll_unchanged_after_dispatch() {
+        let mut renderer = WebViewportRenderer::new();
+        renderer.set_control("scroll_y", &ControlValue::Float(500.0));
+        // Simulate a previous successful dispatch (matches what
+        // `render_into` records once the scripts reach Servo).
+        renderer.last_applied_scroll = Some((0, 500));
+        // Same scroll, no navigation in between — re-injecting would
+        // just make Servo re-parse a no-op. Helper should return empty.
+        assert!(renderer.pending_scripts_for_render().is_empty());
+    }
+
+    #[test]
+    fn pending_scripts_re_inject_after_navigation_reset() {
+        let mut renderer = WebViewportRenderer::new();
+        renderer.set_control("scroll_y", &ControlValue::Float(500.0));
+        renderer.last_applied_scroll = Some((0, 500));
+        // Navigation (URL load / destroy) resets the dispatch memo;
+        // `last_applied_scroll` returning to None should force a
+        // re-inject on the next paint so the new page lands at the
+        // user's intended scroll rather than the page's top.
+        renderer.last_applied_scroll = None;
+        assert_eq!(renderer.pending_scripts_for_render().len(), 1);
+    }
+
+    #[test]
+    fn scroll_control_values_clamp_to_axis_max() {
+        let mut renderer = WebViewportRenderer::new();
+        renderer.set_control("scroll_x", &ControlValue::Float(-100.0));
+        renderer.set_control("scroll_y", &ControlValue::Float(99_999.0));
+        assert_eq!(renderer.scroll_x, 0);
+        assert_eq!(renderer.scroll_y, 32_768);
+    }
+
 
     #[test]
     fn normalize_web_url_input_trims_and_preserves_schemed_urls() {
