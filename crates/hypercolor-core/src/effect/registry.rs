@@ -9,7 +9,7 @@ use std::time::SystemTime;
 
 use tracing::{debug, info, warn};
 
-use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectState};
+use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState};
 
 // ── RescanReport ─────────────────────────────────────────────────────────────
 
@@ -291,7 +291,10 @@ impl EffectRegistry {
         let stale: Vec<EffectId> = self
             .effects
             .iter()
-            .filter(|(_, entry)| !entry.source_path.exists())
+            .filter(|(_, entry)| {
+                !matches!(entry.metadata.source, EffectSource::Native { .. })
+                    && !entry.source_path.exists()
+            })
             .map(|(id, _)| *id)
             .collect();
 

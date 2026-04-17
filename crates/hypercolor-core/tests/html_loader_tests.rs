@@ -6,7 +6,8 @@ use std::path::Path;
 use tempfile::TempDir;
 
 use hypercolor_core::effect::{
-    EffectRegistry, default_effect_search_paths, parse_html_effect_metadata, register_html_effects,
+    EffectRegistry, builtin::register_builtin_effects, default_effect_search_paths,
+    parse_html_effect_metadata, register_html_effects,
 };
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::{EffectCategory, EffectSource};
@@ -226,6 +227,53 @@ fn register_html_effects_respects_explicit_display_category() {
         .next()
         .expect("display face should be loaded");
     assert_eq!(effect.metadata.category, EffectCategory::Display);
+}
+
+#[test]
+fn registry_rescan_preserves_builtin_native_effects() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let root = temp.path().join("effects");
+
+    write_html(
+        &root.join("community/aurora.html"),
+        r#"
+<head>
+  <title>Aurora</title>
+  <meta description="Northern lights" />
+  <meta publisher="Hypercolor" />
+</head>
+"#,
+    );
+
+    let mut registry = EffectRegistry::new(vec![root.clone()]);
+    register_builtin_effects(&mut registry);
+    let builtin_count_before = registry
+        .iter()
+        .filter(|(_, entry)| matches!(entry.metadata.source, EffectSource::Native { .. }))
+        .count();
+
+    let initial_report = register_html_effects(&mut registry, &[root]);
+    assert_eq!(initial_report.loaded_effects, 1);
+
+    let rescan_report = registry.rescan();
+    assert_eq!(rescan_report.removed, 0);
+
+    let builtin_count_after = registry
+        .iter()
+        .filter(|(_, entry)| matches!(entry.metadata.source, EffectSource::Native { .. }))
+        .count();
+
+    assert_eq!(builtin_count_after, builtin_count_before);
+    assert!(
+        registry
+            .iter()
+            .any(|(_, entry)| entry.metadata.name == "Audio Pulse"),
+        "builtin audio pulse should survive a manual rescan"
+    );
+    assert!(
+        registry.iter().any(|(_, entry)| entry.metadata.name == "Aurora"),
+        "html effects should still be present after a manual rescan"
+    );
 }
 
 #[test]
