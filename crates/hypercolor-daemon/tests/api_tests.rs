@@ -1002,7 +1002,7 @@ async fn activate_display_face_test_scene(
             color: None,
             display_target: Some(DisplayFaceTarget::new(device_id)),
             role: RenderGroupRole::Display,
-                    controls_version: 0,
+            controls_version: 0,
         }],
         transition: TransitionSpec {
             duration_ms: 0,
@@ -1986,10 +1986,7 @@ async fn patch_effect_controls_by_id_accepts_missing_if_match_as_no_precondition
             .expect("failed to execute request"),
     )
     .await;
-    let effect_id = active_body["data"]["id"]
-        .as_str()
-        .expect("id")
-        .to_owned();
+    let effect_id = active_body["data"]["id"].as_str().expect("id").to_owned();
 
     let response = app
         .oneshot(

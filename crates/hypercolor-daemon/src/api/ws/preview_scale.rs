@@ -169,10 +169,14 @@ fn try_resize_rgba(
     out_rgba: &mut [u8],
 ) -> Result<(), fr::ImageBufferError> {
     let src = fr::images::ImageRef::new(source_width, source_height, rgba, fr::PixelType::U8x4)?;
-    let mut dst =
-        fr::images::Image::from_slice_u8(target_width, target_height, out_rgba, fr::PixelType::U8x4)?;
-    let options = fr::ResizeOptions::new()
-        .resize_alg(fr::ResizeAlg::Interpolation(fr::FilterType::Bilinear));
+    let mut dst = fr::images::Image::from_slice_u8(
+        target_width,
+        target_height,
+        out_rgba,
+        fr::PixelType::U8x4,
+    )?;
+    let options =
+        fr::ResizeOptions::new().resize_alg(fr::ResizeAlg::Interpolation(fr::FilterType::Bilinear));
     // `resize` can only fail on shape mismatch for a same-pixel-type pair,
     // which `ImageRef::new`/`Image::from_slice_u8` already reject above —
     // so any error past this point is a library-level bug. Ignore the
@@ -313,16 +317,7 @@ mod tests {
     fn bilinear_scaling_passthrough_strips_alpha_for_rgb_format() {
         let source = vec![10, 20, 30, 255, 40, 50, 60, 255];
         let mut out = Vec::new();
-        scale_rgba_bilinear(
-            &source,
-            2,
-            1,
-            2,
-            1,
-            None,
-            PreviewScaleFormat::Rgb,
-            &mut out,
-        );
+        scale_rgba_bilinear(&source, 2, 1, 2, 1, None, PreviewScaleFormat::Rgb, &mut out);
         assert_eq!(out, vec![10, 20, 30, 40, 50, 60]);
     }
 

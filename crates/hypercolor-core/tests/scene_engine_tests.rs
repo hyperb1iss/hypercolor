@@ -113,7 +113,7 @@ fn grouped_scene(name: &str, zone_id: &str, effect_id: EffectId) -> hypercolor_t
         color: None,
         display_target: None,
         role: RenderGroupRole::Custom,
-            controls_version: 0,
+        controls_version: 0,
     }];
     scene.unassigned_behavior = UnassignedBehavior::Off;
     scene

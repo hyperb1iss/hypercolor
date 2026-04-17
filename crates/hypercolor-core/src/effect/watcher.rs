@@ -217,7 +217,8 @@ mod tests {
     use std::time::Instant;
 
     use notify::event::{
-        AccessKind, AccessMode, CreateKind, DataChange, Event, EventKind, MetadataKind, ModifyKind, RemoveKind,
+        AccessKind, AccessMode, CreateKind, DataChange, Event, EventKind, MetadataKind, ModifyKind,
+        RemoveKind,
     };
 
     use super::{accumulate, kind_priority};
@@ -251,7 +252,9 @@ mod tests {
             ),
         );
 
-        let (_, stored) = acc.get(&PathBuf::from(path)).expect("modify event retained");
+        let (_, stored) = acc
+            .get(&PathBuf::from(path))
+            .expect("modify event retained");
         assert!(
             matches!(stored, EventKind::Modify(_)),
             "trailing Access event must not clobber the Modify event: {stored:?}"

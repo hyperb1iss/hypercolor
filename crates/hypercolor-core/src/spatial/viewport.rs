@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 
 use fast_image_resize as fr;
+use hypercolor_types::canvas::linear_to_srgb_u8;
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, srgb_u8_to_linear};
-use hypercolor_types::canvas::{linear_to_srgb_u8};
 use hypercolor_types::viewport::{FitMode, PixelRect, ViewportRect};
 
 /// Per-thread resizer + intermediate scratch for the `Contain` path. The
@@ -104,7 +104,10 @@ fn blit_stretch(target: &mut Canvas, source: &Canvas, crop: PixelRect, brightnes
                     f64::from(crop.width),
                     f64::from(crop.height),
                 );
-            if resizer.resize(&src_image, &mut dst_image, &options).is_err() {
+            if resizer
+                .resize(&src_image, &mut dst_image, &options)
+                .is_err()
+            {
                 return;
             }
         }
@@ -215,7 +218,10 @@ fn blit_contain(target: &mut Canvas, source: &Canvas, crop: PixelRect, brightnes
                     f64::from(crop.width),
                     f64::from(crop.height),
                 );
-            if resizer.resize(&src_image, &mut dst_image, &options).is_err() {
+            if resizer
+                .resize(&src_image, &mut dst_image, &options)
+                .is_err()
+            {
                 return;
             }
         }
@@ -233,8 +239,7 @@ fn blit_contain(target: &mut Canvas, source: &Canvas, crop: PixelRect, brightnes
             let dst_end = dst_start + intermediate_stride;
             let src_start = row * intermediate_stride;
             let src_end = src_start + intermediate_stride;
-            target_bytes[dst_start..dst_end]
-                .copy_from_slice(&contain_scratch[src_start..src_end]);
+            target_bytes[dst_start..dst_end].copy_from_slice(&contain_scratch[src_start..src_end]);
         }
 
         if brightness_needs_lut(brightness) {

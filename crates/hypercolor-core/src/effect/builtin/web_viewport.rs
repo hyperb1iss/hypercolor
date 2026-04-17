@@ -260,9 +260,7 @@ impl EffectRenderer for WebViewportRenderer {
                 note_servo_session_error("web viewport render request failed", &error);
                 return Err(error);
             }
-            if can_submit
-                && let Some(scroll) = scroll_in_scripts
-            {
+            if can_submit && let Some(scroll) = scroll_in_scripts {
                 self.last_applied_scroll = Some(scroll);
             }
         }
@@ -616,7 +614,6 @@ mod tests {
         assert_eq!(renderer.scroll_x, 0);
         assert_eq!(renderer.scroll_y, 32_768);
     }
-
 
     #[test]
     fn normalize_web_url_input_trims_and_preserves_schemed_urls() {

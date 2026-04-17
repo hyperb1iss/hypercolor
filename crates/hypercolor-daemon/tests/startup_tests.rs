@@ -781,7 +781,7 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
         color: None,
         display_target: None,
         role: RenderGroupRole::Primary,
-            controls_version: 0,
+        controls_version: 0,
     };
     runtime_state::save(
         &guard.runtime_state_path(),
@@ -850,7 +850,7 @@ async fn default_scene_contents_restore_on_restart() {
                 color: None,
                 display_target: None,
                 role: RenderGroupRole::Primary,
-                            controls_version: 0,
+                controls_version: 0,
             }],
             active_layout_id: None,
             global_brightness: 1.0,

@@ -271,7 +271,9 @@ fn registry_rescan_preserves_builtin_native_effects() {
         "builtin audio pulse should survive a manual rescan"
     );
     assert!(
-        registry.iter().any(|(_, entry)| entry.metadata.name == "Aurora"),
+        registry
+            .iter()
+            .any(|(_, entry)| entry.metadata.name == "Aurora"),
         "html effects should still be present after a manual rescan"
     );
 }

@@ -759,7 +759,9 @@ fn parse_if_match_version(headers: &HeaderMap) -> Result<Option<u64>, &'static s
     let Some(value) = headers.get(header::IF_MATCH) else {
         return Ok(None);
     };
-    let raw = value.to_str().map_err(|_| "If-Match header must be ASCII")?;
+    let raw = value
+        .to_str()
+        .map_err(|_| "If-Match header must be ASCII")?;
     let trimmed = raw.trim().trim_matches('"');
     if trimmed == "*" {
         // `*` traditionally means "any existing resource" — we honor

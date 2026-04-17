@@ -1114,7 +1114,7 @@ mod tests {
                 color: None,
                 display_target: None,
                 role: RenderGroupRole::Custom,
-                            controls_version: 0,
+                controls_version: 0,
             },
         ];
         let mut zones = Vec::new();

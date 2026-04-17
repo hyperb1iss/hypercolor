@@ -9,7 +9,9 @@ use std::time::SystemTime;
 
 use tracing::{debug, info, warn};
 
-use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState};
+use hypercolor_types::effect::{
+    EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
+};
 
 // ── RescanReport ─────────────────────────────────────────────────────────────
 
