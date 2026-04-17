@@ -190,6 +190,33 @@ fn from_srgb_u8_and_to_srgba_roundtrip() {
     assert_eq!(rgba.a, 255);
 }
 
+#[test]
+fn srgb_u8_linear_lut_roundtrip_holds_across_every_byte() {
+    // Every u8 sRGB value should survive a lossy linear round-trip through
+    // the LUTs within 1 LSB. Guards against accidentally shrinking the
+    // linear→srgb table below the resolution needed to recover the input.
+    for byte in 0_u8..=255 {
+        let rgba = RgbaF32::from_srgb_u8(byte, byte, byte, 255);
+        let out = rgba.to_srgb_u8();
+        assert!(
+            i16::from(out[0]).abs_diff(i16::from(byte)) <= 1,
+            "byte {byte} roundtripped to {out:?}"
+        );
+    }
+}
+
+#[test]
+fn linear_to_srgb_u8_clamps_out_of_range_inputs() {
+    use hypercolor_types::canvas::linear_to_srgb_u8;
+
+    // Below zero and NaN collapse to 0; above 1 saturates to 255.
+    assert_eq!(linear_to_srgb_u8(-1.0), 0);
+    assert_eq!(linear_to_srgb_u8(f32::NAN), 0);
+    assert_eq!(linear_to_srgb_u8(0.0), 0);
+    assert_eq!(linear_to_srgb_u8(1.0), 255);
+    assert_eq!(linear_to_srgb_u8(5.0), 255);
+}
+
 // ── Canvas Construction ────────────────────────────────────────────────────
 
 #[test]

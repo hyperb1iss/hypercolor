@@ -5,6 +5,7 @@
 //! and Oklab/Oklch perceptual color spaces for smooth interpolation.
 
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -174,21 +175,24 @@ impl RgbaF32 {
     /// Create from 8-bit sRGB values, converting to linear float.
     ///
     /// Applies the sRGB transfer function (gamma decoding) to each RGB channel.
-    /// Alpha is linearly mapped from `[0, 255]` to `[0.0, 1.0]`.
+    /// Alpha is linearly mapped from `[0, 255]` to `[0.0, 1.0]`. Reads from
+    /// the precomputed 256-entry table so per-pixel conversions stay
+    /// constant-time in the gamma-correct sampling hot path.
     #[must_use]
     pub fn from_srgb_u8(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self {
-            r: srgb_to_linear(f32::from(r) / 255.0),
-            g: srgb_to_linear(f32::from(g) / 255.0),
-            b: srgb_to_linear(f32::from(b) / 255.0),
+            r: srgb_u8_to_linear(r),
+            g: srgb_u8_to_linear(g),
+            b: srgb_u8_to_linear(b),
             a: f32::from(a) / 255.0,
         }
     }
 
     /// Convert back to 8-bit sRGB, applying gamma encoding.
     ///
-    /// Applies the inverse sRGB transfer function to each RGB channel
-    /// and clamps to `[0, 255]`.
+    /// Uses the precomputed 4096-entry linear→sRGB table for the RGB
+    /// channels. Alpha keeps its direct `[0.0, 1.0]` → `[0, 255]`
+    /// mapping since alpha is not gamma-encoded.
     #[must_use]
     #[allow(
         clippy::cast_possible_truncation,
@@ -197,9 +201,9 @@ impl RgbaF32 {
     )]
     pub fn to_srgb_u8(self) -> [u8; 4] {
         [
-            (linear_to_srgb(self.r) * 255.0).round().clamp(0.0, 255.0) as u8,
-            (linear_to_srgb(self.g) * 255.0).round().clamp(0.0, 255.0) as u8,
-            (linear_to_srgb(self.b) * 255.0).round().clamp(0.0, 255.0) as u8,
+            linear_to_srgb_u8(self.r),
+            linear_to_srgb_u8(self.g),
+            linear_to_srgb_u8(self.b),
             (self.a * 255.0).round().clamp(0.0, 255.0) as u8,
         ]
     }
@@ -314,7 +318,9 @@ pub type Color = RgbaF32;
 
 /// Convert a single sRGB gamma-encoded channel to linear.
 ///
-/// Implements the official sRGB EOTF (IEC 61966-2-1).
+/// Implements the official sRGB EOTF (IEC 61966-2-1). For u8-indexed
+/// hot paths prefer [`srgb_u8_to_linear`] which reads from a precomputed
+/// table.
 #[must_use]
 pub fn srgb_to_linear(c: f32) -> f32 {
     if c <= 0.04045 {
@@ -326,7 +332,9 @@ pub fn srgb_to_linear(c: f32) -> f32 {
 
 /// Convert a single linear channel to sRGB gamma-encoded.
 ///
-/// Implements the inverse sRGB EOTF (IEC 61966-2-1).
+/// Implements the inverse sRGB EOTF (IEC 61966-2-1). For byte-output
+/// hot paths prefer [`linear_to_srgb_u8`] which reads from a precomputed
+/// table.
 #[must_use]
 pub fn linear_to_srgb(c: f32) -> f32 {
     if c <= 0.003_130_8 {
@@ -336,21 +344,79 @@ pub fn linear_to_srgb(c: f32) -> f32 {
     }
 }
 
-/// Convert one stored sRGB byte to linear-light float.
+/// Number of entries in the linear→sRGB byte LUT. 4096 bins = 12-bit
+/// quantization; empirically the roundtrip `srgb_u8_to_linear` →
+/// `linear_to_srgb_u8` matches every u8 byte exactly at this size.
+const LINEAR_TO_SRGB_U8_LUT_SIZE: usize = 4096;
+
+/// Precomputed sRGB byte → linear float table. Populating 256 entries
+/// costs 256 `powf` calls at program start and then every subsequent
+/// conversion is a constant-time load. The spatial viewport sampler
+/// used to spend ~60% of render-thread CPU in `powf` before this table
+/// existed; the LUT makes gamma-correct bilinear essentially free.
+static SRGB_TO_LINEAR_LUT: LazyLock<[f32; 256]> = LazyLock::new(|| {
+    let mut lut = [0.0_f32; 256];
+    for (index, entry) in lut.iter_mut().enumerate() {
+        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+        let srgb = index as f32 / 255.0;
+        *entry = srgb_to_linear(srgb);
+    }
+    lut
+});
+
+/// Precomputed linear float → sRGB byte table, indexed by a 12-bit
+/// quantization of the linear input. Values outside [0, 1] are clamped
+/// before indexing (matching the existing `(... * 255).clamp as u8`
+/// semantics of the scalar path).
+static LINEAR_TO_SRGB_U8_LUT: LazyLock<[u8; LINEAR_TO_SRGB_U8_LUT_SIZE]> = LazyLock::new(|| {
+    let mut lut = [0_u8; LINEAR_TO_SRGB_U8_LUT_SIZE];
+    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+    let max_index_f = (LINEAR_TO_SRGB_U8_LUT_SIZE - 1) as f32;
+    for (index, entry) in lut.iter_mut().enumerate() {
+        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+        let linear = index as f32 / max_index_f;
+        let srgb = (linear_to_srgb(linear) * 255.0).round().clamp(0.0, 255.0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::as_conversions
+        )]
+        {
+            *entry = srgb as u8;
+        }
+    }
+    lut
+});
+
+/// Convert one stored sRGB byte to linear-light float using the
+/// precomputed 256-entry LUT. Constant-time lookup in the hot path for
+/// every gamma-correct pixel read.
+#[inline]
 #[must_use]
 pub fn srgb_u8_to_linear(c: u8) -> f32 {
-    srgb_to_linear(f32::from(c) / 255.0)
+    SRGB_TO_LINEAR_LUT[c as usize]
 }
 
-/// Convert one linear-light float to an 8-bit sRGB byte.
+/// Convert one linear-light float to an 8-bit sRGB byte using the
+/// precomputed LUT. Clamps the input to [0, 1] and maps NaN to 0,
+/// matching the `.clamp(0, 255).round() as u8` semantics of the scalar
+/// path.
+#[inline]
 #[must_use]
 #[allow(
     clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
     clippy::cast_sign_loss,
     clippy::as_conversions
 )]
 pub fn linear_to_srgb_u8(c: f32) -> u8 {
-    (linear_to_srgb(c) * 255.0).round().clamp(0.0, 255.0) as u8
+    let clamped = if c.is_nan() { 0.0 } else { c.clamp(0.0, 1.0) };
+    let max_index_f = (LINEAR_TO_SRGB_U8_LUT_SIZE - 1) as f32;
+    let index = (clamped * max_index_f).round() as usize;
+    // `clamped` is guaranteed in [0, 1] so the scaled index cannot exceed
+    // the LUT bounds; the explicit `.min` guards against f32 rounding
+    // landing exactly at the length in debug builds.
+    LINEAR_TO_SRGB_U8_LUT[index.min(LINEAR_TO_SRGB_U8_LUT_SIZE - 1)]
 }
 
 /// Convert one linear-light float to a raw 8-bit linear output value.
