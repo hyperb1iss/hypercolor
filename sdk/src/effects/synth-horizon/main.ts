@@ -43,7 +43,7 @@ export default effect(
     },
     {
         description:
-            'A chrome sun sinks behind a scrolling wireframe horizon — six scenes from winding canyons to twin-moon coasts, five motion personalities, and twelve palettes of pure 1984 synthwave geometry',
+            'A chrome sun sinks behind a scrolling wireframe horizon. Six scenes from winding canyons to twin-moon coasts, five motion personalities, twelve palettes of pure 1984 synthwave geometry.',
         presets: [
             {
                 controls: {
@@ -58,7 +58,7 @@ export default effect(
                     sunSize: 55,
                 },
                 description:
-                    'The signature run — coral sun bleeding over a neon cyan grid, amethyst sky holding its breath before midnight',
+                    'The signature run. Coral sun bleeds over a neon cyan grid, amethyst sky holding its breath before midnight.',
                 name: 'Outrun Horizon',
             },
             {
@@ -74,7 +74,7 @@ export default effect(
                     sunSize: 60,
                 },
                 description:
-                    'Kavinsky radio static at 3am — yellow sun breathing through its chrome bands, magenta grid rolling toward a city that burned down last year',
+                    'Kavinsky radio static at 3am. Yellow sun breathes through its chrome bands, magenta grid rolling toward a city that burned down last year.',
                 name: 'Midnight Arcade',
             },
             {
@@ -90,7 +90,7 @@ export default effect(
                     sunSize: 52,
                 },
                 description:
-                    'Timecop1983 coasting down a mountain pass — honey sun, lavender ridges, the road itself writing lazy S-curves through the dusk',
+                    'Timecop1983 coasting down a mountain pass. Honey sun, lavender ridges, the road itself writing lazy S-curves through the dusk.',
                 name: 'Dusk Drive',
             },
             {
@@ -106,7 +106,7 @@ export default effect(
                     sunSize: 50,
                 },
                 description:
-                    'Year 2007 XXII — cybernetic mountains flashing past at warp speed, amber sun trembling as the horizon strobes crimson',
+                    'Year 2007 XXII. Cybernetic mountains flash past at warp speed, amber sun trembling as the horizon strobes crimson.',
                 name: 'Blood Dragon',
             },
             {
@@ -122,7 +122,7 @@ export default effect(
                     sunSize: 82,
                 },
                 description:
-                    'Cassette-deck chillwave dream — fat pastel sun, stars sliding across a lavender sky, horizon shimmering like a memory trying to crystallize',
+                    'Cassette-deck chillwave dream. Fat pastel sun, stars sliding across a lavender sky, horizon shimmering like a memory trying to crystallize.',
                 name: 'Vapor Sunset',
             },
             {
@@ -138,7 +138,7 @@ export default effect(
                     sunSize: 70,
                 },
                 description:
-                    'A white chrome disc rising over a cyan digital sea — bands rolling upward through the sun like the first line of code ever written',
+                    'A white chrome disc rises over a cyan digital sea. Bands roll upward through the sun like the first line of code ever written.',
                 name: 'Tron Coast',
             },
             {
@@ -154,7 +154,7 @@ export default effect(
                     sunSize: 42,
                 },
                 description:
-                    'Frozen highway under FM-84 satellites — a minimal neon pulse crawling through the absolute cold, destination unknown',
+                    'Frozen highway under FM-84 satellites. A minimal neon pulse crawls through the absolute cold, destination unknown.',
                 name: 'Permafrost Causeway',
             },
             {
@@ -170,7 +170,7 @@ export default effect(
                     sunSize: 62,
                 },
                 description:
-                    'A corrupted VHS tape of a show that never aired — cycling hues bleed across the grid at warp speed, the signal degrading beautifully',
+                    'A corrupted VHS tape of a show that never aired. Cycling hues bleed across the grid at warp speed, the signal degrading beautifully.',
                 name: 'VHS Tracking Error',
             },
             {
@@ -186,7 +186,7 @@ export default effect(
                     sunSize: 58,
                 },
                 description:
-                    'A champagne sun sinking into a rose-gold gorge — canyon walls burning soft pink as the road threads between them',
+                    'A champagne sun sinks into a rose-gold gorge. Canyon walls burn soft pink as the road threads between them.',
                 name: 'Rose Gold Canyon',
             },
             {
@@ -202,7 +202,7 @@ export default effect(
                     sunSize: 65,
                 },
                 description:
-                    'An ice world at the edge of nowhere — two crystalline moons holding each other up, their cold chrome bands breathing in slow harmony',
+                    'An ice world at the edge of nowhere. Two crystalline moons hold each other up, their cold chrome bands breathing in slow harmony.',
                 name: 'Twin Moons Ascension',
             },
             {
@@ -218,7 +218,7 @@ export default effect(
                     sunSize: 44,
                 },
                 description:
-                    'Acid-green curtains rippling over a dead peak — the whole sky evolving through impossible hues as radioactive stars drift sideways',
+                    'Acid-green curtains ripple over a dead peak. The whole sky evolves through impossible hues as radioactive stars drift sideways.',
                 name: 'Aurora Borealis',
             },
             {
@@ -234,7 +234,7 @@ export default effect(
                     sunSize: 68,
                 },
                 description:
-                    'Sunset Boulevard melting into amber neon — the whole palette evolving through golden hour as the road writes cursive across the desert',
+                    'Sunset Boulevard melts into amber neon. The whole palette evolves through golden hour as the road writes cursive across the desert.',
                 name: 'Sunset Strip',
             },
         ],

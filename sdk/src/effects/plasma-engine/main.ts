@@ -19,7 +19,7 @@ export default effect(
     },
     {
         description:
-            'Layered demoscene plasma warps through interference fields — depth-separated sine waves drift, spiral, and collide with dark contrast valleys carving structure through saturated color',
+            'Layered demoscene plasma warps through interference fields. Depth-separated sine waves drift, spiral, and collide; dark contrast valleys carve structure through saturated color.',
         presets: [
             {
                 controls: {
@@ -34,7 +34,7 @@ export default effect(
                     theme: 'Inferno',
                 },
                 description:
-                    'Superheated hydrogen plasma arcs off the photosphere — million-degree filaments twist in magnetic fury',
+                    'Superheated hydrogen plasma arcs off the photosphere. Million-degree filaments twist in magnetic fury.',
                 name: 'Solar Corona Eruption',
             },
             {
@@ -50,7 +50,7 @@ export default effect(
                     theme: 'Aurora',
                 },
                 description:
-                    'Charged particles cascade through the magnetosphere — emerald and violet curtains ripple at the edge of space',
+                    'Charged particles cascade through the magnetosphere. Emerald and violet curtains ripple at the edge of space.',
                 name: 'Borealis Curtain',
             },
             {
@@ -66,7 +66,7 @@ export default effect(
                     theme: 'Oceanic',
                 },
                 description:
-                    'Mineral-laden plasma seeps from hydrothermal vents — bioluminescent chemicals pulse in the crushing dark',
+                    'Mineral-laden plasma seeps from hydrothermal vents. Bioluminescent chemicals pulse in the crushing dark.',
                 name: 'Hadal Chemosynthesis',
             },
             {
@@ -82,7 +82,7 @@ export default effect(
                     theme: 'Poison',
                 },
                 description:
-                    'Toxic interstellar clouds collapse under their own gravity — phosphorescent poison condenses into newborn stars',
+                    'Toxic interstellar clouds collapse under their own gravity. Phosphorescent poison condenses into newborn stars.',
                 name: 'Nerve Gas Nebula',
             },
             {
@@ -98,7 +98,7 @@ export default effect(
                     theme: 'Cyberpunk',
                 },
                 description:
-                    'The containment field pulses with retro-future energy — neon plasma oscillates between beautiful and catastrophic',
+                    'The containment field pulses with retro-future energy. Neon plasma oscillates between beautiful and catastrophic.',
                 name: 'Synthwave Reactor Core',
             },
             {
@@ -114,7 +114,7 @@ export default effect(
                     theme: 'Tropical',
                 },
                 description:
-                    'Molten sunset pours through a jungle canopy — phosphorescent flora ignites where amber light meets emerald shadow',
+                    'Molten sunset pours through a jungle canopy. Phosphorescent flora ignites where amber light meets emerald shadow.',
                 name: 'Equatorial Meltdown',
             },
             {
@@ -130,7 +130,7 @@ export default effect(
                     theme: 'Arcade',
                 },
                 description:
-                    'Dense plasma crawls through an unpowered arcade cabinet — ghost images of forgotten high scores burn in the phosphors',
+                    'Dense plasma crawls through an unpowered arcade cabinet. Ghost images of forgotten high scores burn in the phosphors.',
                 name: 'Dead Mall Attract Screen',
             },
         ],

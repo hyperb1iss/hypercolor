@@ -57,7 +57,7 @@ export default effect(
     },
     {
         description:
-            'Plunge through a neon-soaked skyline — raymarched towers scroll past as holographic signs flicker in the urban haze',
+            'Plunge through a neon-soaked skyline. Raymarched towers scroll past as holographic signs flicker in the urban haze.',
         presets: [
             {
                 controls: {
@@ -81,7 +81,7 @@ export default effect(
                     zoom: 3,
                 },
                 description:
-                    'Bullet-train POV through the Akira sprawl — red neon screaming past at terminal velocity, buildings a smear of crimson and chrome',
+                    'Bullet-train POV through the Akira sprawl. Red neon screams past at terminal velocity, buildings a smear of crimson and chrome.',
                 name: 'Neo-Tokyo Express',
             },
             {
@@ -106,7 +106,7 @@ export default effect(
                     zoom: 7,
                 },
                 description:
-                    'Slow vertical ascent through perpetual rain — Blade Runner amber cutting through fog, pyramidal towers materializing from the murk',
+                    'Slow vertical ascent through perpetual rain. Blade Runner amber cuts through fog, pyramidal towers materializing from the murk.',
                 name: 'Tyrell Tower Approach',
             },
             {
@@ -131,7 +131,7 @@ export default effect(
                     zoom: 5,
                 },
                 description:
-                    'The sky above the port — colorless noir cityscape dissolving into signal noise, monochrome towers fading at the edge of perception',
+                    'The sky above the port: colorless noir cityscape dissolving into signal noise, monochrome towers fading at the edge of perception.',
                 name: 'Dead Channel Static',
             },
             {
@@ -156,7 +156,7 @@ export default effect(
                     zoom: 4,
                 },
                 description:
-                    'Chemical runoff district at sewer level — acid green reflections on wet concrete, hazmat signs flickering in the poisoned dark',
+                    'Chemical runoff district at sewer level. Acid green reflections on wet concrete, hazmat signs flickering in the poisoned dark.',
                 name: 'Toxic Undercity',
             },
             {
@@ -181,7 +181,7 @@ export default effect(
                     zoom: 6,
                 },
                 description:
-                    'Retro-future cruise above a neon grid city — magenta sunset bleeding into chrome skyline, synth bass you can feel in your teeth',
+                    'Retro-future cruise above a neon grid city. Magenta sunset bleeds into chrome skyline, synth bass you can feel in your teeth.',
                 name: 'Synthwave Flyover',
             },
             {
@@ -206,7 +206,7 @@ export default effect(
                     zoom: 2,
                 },
                 description:
-                    'Hover over a circuit board city at rooftop level — phosphor-green signage pulses across squat data centers, the grid laid bare beneath you',
+                    'Hover over a circuit board city at rooftop level. Phosphor-green signage pulses across squat data centers, the grid laid bare beneath you.',
                 name: 'Motherboard District',
             },
             {
@@ -231,7 +231,7 @@ export default effect(
                     zoom: 10,
                 },
                 description:
-                    'Ghost towers materialize from a frozen whiteout — ice-blue monoliths standing in absolute stillness, all sound swallowed by the fog',
+                    'Ghost towers materialize from a frozen whiteout. Ice-blue monoliths stand in absolute stillness, all sound swallowed by the fog.',
                 name: 'Permafrost Megacity',
             },
             {
@@ -256,7 +256,7 @@ export default effect(
                     zoom: 4,
                 },
                 description:
-                    'Police spinners bank hard through the red-light district — crimson kanji blazing on every surface, the city a wound that refuses to close',
+                    'Police spinners bank hard through the red-light district. Crimson kanji blaze on every surface, the city a wound that refuses to close.',
                 name: 'Kabukicho Pursuit',
             },
         ],

@@ -51,7 +51,7 @@ export default effect(
     },
     {
         description:
-            'Unleash fractal lightning across a high-voltage field — white-hot cores split into chromatic tendrils that web and crackle through the dark',
+            'Fractal lightning rakes a high-voltage field. White-hot cores split into chromatic tendrils that web and crackle through the dark.',
         presets: [
             {
                 controls: {
@@ -64,7 +64,7 @@ export default effect(
                     speed: 4,
                 },
                 description:
-                    'A decommissioned lab at midnight — phantom arcs still crawling the cage, ozone thick enough to taste, purple discharge painting the walls',
+                    'A decommissioned lab at midnight. Phantom arcs still crawl the cage, ozone thick enough to taste, purple discharge painting the walls.',
                 name: 'Tesla Coil Museum',
             },
             {
@@ -78,7 +78,7 @@ export default effect(
                     speed: 7,
                 },
                 description:
-                    'A defibrillator surge frozen in time — crimson lightning webbing through a chest cavity of dark space, each branch a capillary of pure voltage',
+                    'A defibrillator surge frozen in time. Crimson lightning webs through a chest cavity of dark space, each branch a capillary of pure voltage.',
                 name: 'Cardiac Arrest',
             },
             {
@@ -92,7 +92,7 @@ export default effect(
                     speed: 2,
                 },
                 description:
-                    'Static discharge in a cryogenic chamber — ice-blue fissures crawling across frozen surfaces, slow and inevitable as glacial time',
+                    'Static discharge in a cryogenic chamber. Ice-blue fissures crawl across frozen surfaces, slow and inevitable as glacial time.',
                 name: 'Permafrost Fracture',
             },
             {
@@ -106,7 +106,7 @@ export default effect(
                     speed: 10,
                 },
                 description:
-                    'Containment breach at the solar forge — plasma tendrils lashing through ruptured conduits, the core going white-hot and unstoppable',
+                    'Containment breach at the solar forge. Plasma tendrils lash through ruptured conduits, the core going white-hot and unstoppable.',
                 name: 'Reactor Meltdown',
             },
             {
@@ -120,7 +120,7 @@ export default effect(
                     speed: 3,
                 },
                 description:
-                    'A dead motherboard dreaming of electricity — faint spectral discharges tracing forgotten pathways through silicon that will never wake',
+                    'A dead motherboard dreaming of electricity. Faint spectral discharges trace forgotten pathways through silicon that will never wake.',
                 name: 'Phantom Circuit',
             },
             {
@@ -134,7 +134,7 @@ export default effect(
                     speed: 3.5,
                 },
                 description:
-                    'Voltage bleeds through rose quartz veins in a cathedral wall — pink lightning illuminates stained glass nerves that pulse with devotion',
+                    'Voltage bleeds through rose quartz veins in a cathedral wall. Pink lightning illuminates stained glass nerves that pulse with devotion.',
                 name: 'Stained Glass Discharge',
             },
             {
@@ -148,7 +148,7 @@ export default effect(
                     speed: 1.5,
                 },
                 description:
-                    'A single arc hangs suspended in vacuum — prismatic halos bloom around its white-hot spine like light through a prism in zero gravity',
+                    'A single arc hangs suspended in vacuum. Prismatic halos bloom around its white-hot spine like light through a prism in zero gravity.',
                 name: 'Lonely Filament',
             },
             {
@@ -162,7 +162,7 @@ export default effect(
                     speed: 8,
                 },
                 description:
-                    'Radioactive discharge cascades through a ruptured cooling tower — acid-green arcs stutter and snap across contaminated steel',
+                    'Radioactive discharge cascades through a ruptured cooling tower. Acid-green arcs stutter and snap across contaminated steel.',
                 name: 'Chernobyl Fireflies',
             },
         ],

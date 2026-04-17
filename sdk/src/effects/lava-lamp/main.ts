@@ -361,7 +361,7 @@ export default canvas.stateful(
     },
     {
         description:
-            'Molten blobs rise and merge in slow convection — smooth organic contours glow with radiant gradient heat',
+            'Molten blobs rise and merge in slow convection. Smooth organic contours glow with radiant gradient heat.',
         presets: [
             {
                 controls: {
@@ -377,7 +377,7 @@ export default canvas.stateful(
                     theme: 'Molten',
                 },
                 description:
-                    "Molten silicate blobs churn in primordial magma — the young Earth's crust fractures and remelts in slow geological fury",
+                    "Molten silicate blobs churn in primordial magma. The young Earth's crust fractures and remelts in slow geological fury.",
                 name: 'Hadean Mantle Convection',
             },
             {
@@ -394,7 +394,7 @@ export default canvas.stateful(
                     theme: 'Lagoon',
                 },
                 description:
-                    'Translucent medusae drift upward through midnight water — their bells pulse with stolen bioluminescence',
+                    'Translucent medusae drift upward through midnight water. Their bells pulse with stolen bioluminescence.',
                 name: 'Abyssal Jellyfish Bloom',
             },
             {
@@ -411,7 +411,7 @@ export default canvas.stateful(
                     theme: 'Toxic',
                 },
                 description:
-                    'Alien cytoplasm divides in toxic green mitosis — each blob a living organelle in some vast extraterrestrial cell',
+                    'Alien cytoplasm divides in toxic green mitosis. Each blob a living organelle in some vast extraterrestrial cell.',
                 name: 'Xenobiological Specimen',
             },
             {
@@ -428,7 +428,7 @@ export default canvas.stateful(
                     theme: 'Synthwave',
                 },
                 description:
-                    'Liquid metal spheres collide and merge in freefall — rainbow-sheened quicksilver dances in the vacuum',
+                    'Liquid metal spheres collide and merge in freefall. Rainbow-sheened quicksilver dances in the vacuum.',
                 name: 'Mercury in Zero Gravity',
             },
             {
@@ -445,7 +445,7 @@ export default canvas.stateful(
                     theme: 'Bubblegum',
                 },
                 description:
-                    'Warm bubblegum globules rise through a candy-colored incubator — gentle, hypnotic, impossibly soft',
+                    'Warm bubblegum globules rise through a candy-colored incubator. Gentle, hypnotic, impossibly soft.',
                 name: 'Thermal Nursery',
             },
             {
@@ -462,7 +462,7 @@ export default canvas.stateful(
                     theme: 'Aurora',
                 },
                 description:
-                    'Three ancient glacial masses calve and collide in polar darkness — jade and sapphire light trapped inside the ice',
+                    'Three ancient glacial masses calve and collide in polar darkness. Jade and sapphire light trapped inside the ice.',
                 name: 'Glacial Convergence',
             },
             {
@@ -479,7 +479,7 @@ export default canvas.stateful(
                     theme: 'Citrus',
                 },
                 description:
-                    'A solar flare erupts across the chromosphere — tangerine plasma arcs and collapses in magnetic frenzy',
+                    'A solar flare erupts across the chromosphere. Tangerine plasma arcs and collapses in magnetic frenzy.',
                 name: 'Chromosphere Eruption',
             },
         ],

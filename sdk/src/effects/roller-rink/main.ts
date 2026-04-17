@@ -880,7 +880,7 @@ export default canvas.stateful(
     {
         author: 'Hypercolor',
         description:
-            'Step onto blacklight carpet geometry — retro arcade patterns glow under ultraviolet, pulsing and shifting in warm nostalgic haze',
+            'Step onto blacklight carpet geometry. Retro arcade patterns glow under ultraviolet, pulsing and shifting in warm nostalgic haze.',
         designBasis: ROLLER_DESIGN_BASIS,
         presets: [
             {
@@ -898,7 +898,7 @@ export default canvas.stateful(
                     theme: 'Blacklight',
                 },
                 description:
-                    'Crusty 1987 roller rink carpet under full UV — neon triangles, mystery stains, and pure nostalgic magic',
+                    'Crusty 1987 roller rink carpet under full UV. Neon triangles, mystery stains, and pure nostalgic magic.',
                 name: 'Carpet Burns & Arcade Tokens',
             },
             {
@@ -916,7 +916,7 @@ export default canvas.stateful(
                     theme: 'Cotton Candy',
                 },
                 description:
-                    'Saturated color cycling floods dense geometric confetti — the visual equivalent of a dolphin sticker sheet',
+                    'Saturated color cycling floods dense geometric confetti. The visual equivalent of a dolphin sticker sheet.',
                 name: 'Lisa Frank Trapper Keeper',
             },
             {
@@ -934,7 +934,7 @@ export default canvas.stateful(
                     theme: 'Bus Seat',
                 },
                 description:
-                    'Precisely placed pastels drift with deliberate symmetry — every shape knows exactly where it belongs',
+                    'Precisely placed pastels drift with deliberate symmetry. Every shape knows exactly where it belongs.',
                 name: 'Wes Anderson Lobby',
             },
             {
@@ -952,7 +952,7 @@ export default canvas.stateful(
                     theme: 'Laser Lime',
                 },
                 description:
-                    'Acid green squiggles and hot pink geometry vibrate in the dark — smells like fog machine and victory',
+                    'Acid green squiggles and hot pink geometry vibrate in the dark. Smells like fog machine and victory.',
                 name: 'Laser Tag Aftermath',
             },
             {
@@ -970,7 +970,7 @@ export default canvas.stateful(
                     theme: 'Arcade Heat',
                 },
                 description:
-                    'Warm arcade heat patterns hover in place — the exhausted glow of fast food neon through rain-streaked glass',
+                    'Warm arcade heat patterns hover in place. The exhausted glow of fast food neon through rain-streaked glass.',
                 name: 'Taco Bell 2am',
             },
             {
@@ -988,7 +988,7 @@ export default canvas.stateful(
                     theme: 'Cotton Candy',
                 },
                 description:
-                    'Every surface screams with color-shifting ribbons and maximum confetti — a birthday party inside a kaleidoscope',
+                    'Every surface screams with color-shifting ribbons and maximum confetti. A birthday party inside a kaleidoscope.',
                 name: 'Dopamine Rush',
             },
             {
@@ -1006,7 +1006,7 @@ export default canvas.stateful(
                     theme: 'Bus Seat',
                 },
                 description:
-                    'Bare geometric bones float on a near-black canvas — the rink after closing, lights dimmed, last song echoing',
+                    'Bare geometric bones float on a near-black canvas. The rink after closing, lights dimmed, last song echoing.',
                 name: 'Closing Time',
             },
         ],

@@ -33,7 +33,7 @@ export default effect(
     },
     {
         description:
-            'Punch through the light barrier — star lanes streak into infinite trails as the tunnel warps and twists around you',
+            'Punch through the light barrier. Star lanes streak into infinite trails as the tunnel warps and twists around you.',
         presets: [
             {
                 controls: {
@@ -44,7 +44,7 @@ export default effect(
                     warp: 35,
                 },
                 description:
-                    'Full-throttle smuggler sprint — maxed star density and screaming velocity through a cyberpunk corridor',
+                    'Full-throttle smuggler sprint. Maxed star density, screaming velocity, a cyberpunk corridor blurring past.',
                 name: 'Kessel Run',
             },
             {
@@ -56,7 +56,7 @@ export default effect(
                     warp: 78,
                 },
                 description:
-                    'Spectral afterimages of dead stars — ghostly trails dissipate through a haunted gate between dimensions',
+                    'Spectral afterimages of dead stars. Ghostly trails dissipate through a haunted gate between dimensions.',
                 name: 'Phantom Drift',
             },
             {
@@ -68,7 +68,7 @@ export default effect(
                     warp: 20,
                 },
                 description:
-                    'Riding the shockwave of a coronal mass ejection — gold and amber debris hurtling past the cockpit',
+                    'Riding the shockwave of a coronal mass ejection. Gold and amber debris hurtle past the cockpit.',
                 name: 'Solar Ejection',
             },
             {
@@ -80,7 +80,7 @@ export default effect(
                     warp: 92,
                 },
                 description:
-                    'Sensory deprivation at light speed — minimal starfield spiraling inward through absolute darkness',
+                    'Sensory deprivation at light speed. Minimal starfield spirals inward through absolute darkness.',
                 name: 'Void Meditation',
             },
             {
@@ -92,7 +92,7 @@ export default effect(
                     warp: 100,
                 },
                 description:
-                    'Containment failure — the tunnel collapses into an overdrive vortex of classic blue-white streaks',
+                    'Containment failure. The tunnel collapses into an overdrive vortex of classic blue-white streaks.',
                 name: 'Warp Core Breach',
             },
             {
@@ -104,7 +104,7 @@ export default effect(
                     warp: 55,
                 },
                 description:
-                    "Lean back in the captain's chair and watch the milky way unspool — steady cruise through a blue-white star corridor",
+                    "Lean back in the captain's chair and watch the Milky Way unspool. Steady cruise through a blue-white star corridor.",
                 name: 'Starliner Cruise',
             },
             {
@@ -115,7 +115,7 @@ export default effect(
                     streak: 25,
                     warp: 10,
                 },
-                description: 'A lone amber filament drifts across an empty sky — the last photon escaping a dying sun',
+                description: 'A lone amber filament drifts across an empty sky. The last photon escaping a dying sun.',
                 name: 'Last Light of Andromeda',
             },
         ],

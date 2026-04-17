@@ -260,7 +260,7 @@ export default canvas.stateful(
     {
         author: 'Hypercolor',
         description:
-            'Neon toxin rings pulse through dark chemical haze — luminous venom drifting in slow vertical procession',
+            'Neon toxin rings pulse through dark chemical haze. Luminous venom drifts in slow vertical procession.',
         designBasis: POISONOUS_DESIGN_BASIS,
         presets: [
             {
@@ -274,7 +274,7 @@ export default canvas.stateful(
                     theme: 'Radioactive',
                 },
                 description:
-                    'Bubbling toxic sludge in an abandoned reactor basement — rings surfacing through fluorescent green murk',
+                    'Bubbling toxic sludge in an abandoned reactor basement. Rings surface through fluorescent green murk.',
                 name: 'Radioactive Waste Pool',
             },
             {
@@ -301,7 +301,7 @@ export default canvas.stateful(
                     theme: 'Cotton Candy',
                 },
                 description:
-                    "Hot pink potions bubbling in a candy witch's workshop — sweet, menacing, impossibly bright",
+                    "Hot pink potions bubble in a candy witch's workshop. Sweet, menacing, impossibly bright.",
                 name: 'Bubblegum Cauldron',
             },
             {
@@ -315,7 +315,7 @@ export default canvas.stateful(
                     theme: 'Poison',
                 },
                 description:
-                    'Zero-speed suspended rings caught mid-drift — a museum display of crystallized neon toxins',
+                    'Zero-speed suspended rings caught mid-drift. A museum display of crystallized neon toxins.',
                 name: 'Frozen in Amber',
             },
             {
@@ -329,7 +329,7 @@ export default canvas.stateful(
                     theme: 'Blacklight',
                 },
                 description:
-                    'Blacklight rings expanding outward from invisible dancers — orange, cyan, and magenta halos in the dark',
+                    'Blacklight rings expand outward from invisible dancers. Orange, cyan, and magenta halos in the dark.',
                 name: 'UV Dance Floor',
             },
             {
@@ -343,7 +343,7 @@ export default canvas.stateful(
                     theme: 'Custom',
                 },
                 description:
-                    'Molten iron droplets launch from a forge and streak upward through the furnace draft — single rings, maximum velocity',
+                    'Molten iron droplets launch from a forge and streak upward through the furnace draft. Single rings, maximum velocity.',
                 name: 'Blacksmith Sparks',
             },
             {
@@ -357,7 +357,7 @@ export default canvas.stateful(
                     theme: 'Custom',
                 },
                 description:
-                    'Spectral orbs ascend through a cathedral of black glass — indigo and ultraviolet halos marking each vanished soul',
+                    'Spectral orbs ascend through a cathedral of black glass. Indigo and ultraviolet halos marking each vanished soul.',
                 name: 'Ghost Lantern Procession',
             },
         ],

@@ -180,7 +180,7 @@ const controls = {
 export default effect('Iris', shader, controls, {
     audio: true,
     description:
-        'Sacred geometry dances to the beat — Mobius inversions warp harmonic shapes as spectral flux drives color, form, and motion',
+        'Sacred geometry dances to the beat. Mobius inversions warp harmonic shapes as spectral flux drives color, form, and motion.',
 
     frame: (ctx, time) => {
         const dt = Math.min(lastTime > 0 ? time - lastTime : 0.016, 0.05)

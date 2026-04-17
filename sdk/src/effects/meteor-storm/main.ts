@@ -358,7 +358,7 @@ export default canvas.stateful(
     },
     {
         description:
-            'Blazing meteors tear across a gradient night sky — directional trails streak and fade as the cosmos rains light',
+            'Blazing meteors tear across a gradient night sky. Directional trails streak and fade as the cosmos rains light.',
         presets: [
             {
                 controls: {
@@ -373,7 +373,7 @@ export default canvas.stateful(
                     trail: 90,
                 },
                 description:
-                    'Peak meteor shower on a clear November night — fat streaks tearing through a blue-black sky over endless prairie',
+                    'Peak meteor shower on a clear November night. Fat streaks tear through a blue-black sky over endless prairie.',
                 name: 'Leonids Over Montana',
             },
             {
@@ -389,7 +389,7 @@ export default canvas.stateful(
                     trail: 85,
                 },
                 description:
-                    'Soft luminous streaks dissolving into a northern lights wash — the sky weeping color over a frozen lake',
+                    'Soft luminous streaks dissolve into a northern lights wash. The sky weeping color over a frozen lake.',
                 name: 'Aurora Teardrops',
             },
             {
@@ -405,7 +405,7 @@ export default canvas.stateful(
                     trail: 40,
                 },
                 description:
-                    'Tiny pinprick stars racing above the city glow — fast, clinical, the sky buzzing like fluorescent tubes',
+                    'Tiny pinprick stars race above the city glow. Fast, clinical, the sky buzzing like fluorescent tubes.',
                 name: 'Tokyo Rooftop 3am',
             },
             {
@@ -421,7 +421,7 @@ export default canvas.stateful(
                     trail: 100,
                 },
                 description:
-                    'Warm amber meteors crawling across a velvet desert sky — campfire smoke blurring the constellations',
+                    'Warm amber meteors crawl across a velvet desert sky. Campfire smoke blurs the constellations.',
                 name: 'Perseid Campfire',
             },
             {
@@ -437,7 +437,7 @@ export default canvas.stateful(
                     trail: 55,
                 },
                 description:
-                    'A dying star sheds its atmosphere in vertical streaks of magenta fire — gravity pulls the light straight down into oblivion',
+                    'A dying star sheds its atmosphere in vertical streaks of magenta fire. Gravity pulls the light straight down into oblivion.',
                 name: 'Supernova Curtain Call',
             },
             {
@@ -453,7 +453,7 @@ export default canvas.stateful(
                     trail: 100,
                 },
                 description:
-                    'Ancient light arrives from the edge of the observable universe — colossal golden bolides drift through aurora fog in geological slow motion',
+                    'Ancient light arrives from the edge of the observable universe. Colossal golden bolides drift through aurora fog in geological slow motion.',
                 name: 'Deep Time Observatory',
             },
         ],

@@ -23,7 +23,7 @@ export default effect(
     },
     {
         description:
-            'Luminous particles cascade through infinite black — each one trailing a comet glow as it falls through the dark',
+            'Luminous particles cascade through infinite black. Each one trails a comet glow as it falls through the dark.',
         presets: [
             {
                 controls: {
@@ -36,7 +36,7 @@ export default effect(
                     size: 30,
                     trails: 90,
                 },
-                description: 'Peak Perseid night in the high desert — blazing streaks tear across a moonless sky',
+                description: 'Peak Perseid night in the high desert. Blazing streaks tear across a moonless sky.',
                 name: 'Meteor Shower',
             },
             {
@@ -51,7 +51,7 @@ export default effect(
                     trails: 75,
                 },
                 description:
-                    'Ice crystals fall through the stratosphere — impossibly slow, catching starlight as they descend',
+                    'Ice crystals fall through the stratosphere, impossibly slow, catching starlight as they descend.',
                 name: 'Frozen Requiem',
             },
             {
@@ -65,7 +65,7 @@ export default effect(
                     size: 15,
                     trails: 45,
                 },
-                description: 'Rain hammers a Tokyo alley at 3AM — every droplet carries the glow of a thousand signs',
+                description: 'Rain hammers a Tokyo alley at 3AM. Every droplet carries the glow of a thousand signs.',
                 name: 'Neon Monsoon',
             },
             {
@@ -79,7 +79,7 @@ export default effect(
                     size: 45,
                     trails: 95,
                 },
-                description: 'Constellation fragments cross the meridian in silence — stately, ancient, unhurried',
+                description: 'Constellation fragments cross the meridian in silence. Stately, ancient, unhurried.',
                 name: 'Celestial Procession',
             },
             {
@@ -108,7 +108,7 @@ export default effect(
                     trails: 100,
                 },
                 description:
-                    'A single luminous thread unspools from the aurora — one solitary particle descends forever, dragging the entire sky behind it',
+                    'A single luminous thread unspools from the aurora. One solitary particle descends forever, dragging the entire sky behind it.',
                 name: 'Last Light of Thule',
             },
             {
@@ -123,7 +123,7 @@ export default effect(
                     trails: 0,
                 },
                 description:
-                    'The sky collapses — a hundred thousand particles plummet without trails, pure velocity, a white-noise waterfall of falling stars',
+                    'The sky collapses. A hundred thousand particles plummet without trails, pure velocity, a white-noise waterfall of falling stars.',
                 name: 'Extinction Event',
             },
             // ── New presets showcasing angle, size, and tail modes ──
@@ -139,7 +139,7 @@ export default effect(
                     trails: 80,
                 },
                 description:
-                    'Prismatic streaks cut diagonally through the void — each trail a spectrum unraveling behind it',
+                    'Prismatic streaks cut diagonally through the void. Each trail a spectrum unraveling behind it.',
                 name: 'Prism Wind',
             },
             {
@@ -154,7 +154,7 @@ export default effect(
                     trails: 90,
                 },
                 description:
-                    'Spectral wisps drift through a frozen cathedral — barely there, flickering at the edge of perception',
+                    'Spectral wisps drift through a frozen cathedral. Barely there, flickering at the edge of perception.',
                 name: 'Phantom Veil',
             },
             {
@@ -169,7 +169,7 @@ export default effect(
                     trails: 50,
                 },
                 description:
-                    'High-voltage discharge rains from a shattered grid — every particle crackles with raw energy',
+                    'High-voltage discharge rains from a shattered grid. Every particle crackles with raw energy.',
                 name: 'Arc Storm',
             },
             {
@@ -184,7 +184,7 @@ export default effect(
                     trails: 85,
                 },
                 description:
-                    'Massive golden fireballs descend in slow motion — ancient light burning through the atmosphere',
+                    'Massive golden fireballs descend in slow motion. Ancient light burning through the atmosphere.',
                 name: 'Bolide',
             },
             {
@@ -199,7 +199,7 @@ export default effect(
                     trails: 70,
                 },
                 description:
-                    'A diagonal deluge of chromatic rain — the aurora shattered into a thousand falling shards',
+                    'A diagonal deluge of chromatic rain. The aurora shattered into a thousand falling shards.',
                 name: 'Shattered Aurora',
             },
             {
@@ -214,7 +214,7 @@ export default effect(
                     trails: 60,
                 },
                 description:
-                    'Windblown sparks streak sideways from an unseen forge — crackling orange veins against the dark',
+                    'Windblown sparks streak sideways from an unseen forge. Crackling orange veins against the dark.',
                 name: 'Forge Wind',
             },
         ],

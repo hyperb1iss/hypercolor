@@ -75,7 +75,7 @@ export default effect(
     {
         audio: true,
         description:
-            'Feed it sound and watch the spectrum breathe — frequency bands rise in poised columns of light across a stable, luminous field',
+            'Feed it sound and watch the spectrum breathe. Frequency bands rise in poised columns of light across a stable, luminous field.',
         setup: (ctx) => {
             resetState()
             ctx.registerUniform('iCascadeLevel', 0)
@@ -196,7 +196,7 @@ export default effect(
                     speed: 7,
                 },
                 description:
-                    'Arena lights ignite on the chorus drop — towering spectral columns rise from a blazing horizon like crowd hands reaching for the hook',
+                    'Arena lights ignite on the chorus drop. Towering spectral columns rise from a blazing horizon like crowd hands reaching for the hook.',
                 name: 'Stadium Anthem',
             },
             {
@@ -210,7 +210,7 @@ export default effect(
                     speed: 4,
                 },
                 description:
-                    'Dubstep in a sweat-soaked basement — fat bars throb through a tunnel of pure low-end pressure',
+                    'Dubstep in a sweat-soaked basement. Fat bars throb through a tunnel of pure low-end pressure.',
                 name: 'Basement Frequencies',
             },
             {
@@ -224,7 +224,7 @@ export default effect(
                     speed: 3,
                 },
                 description:
-                    'Classical piano refracted through ice prisms — each note a delicate falling column of frozen light',
+                    'Classical piano refracted through ice prisms. Each note a delicate falling column of frozen light.',
                 name: 'Crystal Cascade',
             },
             {
@@ -238,7 +238,7 @@ export default effect(
                     speed: 7,
                 },
                 description:
-                    'Mission control monitors during a coronal mass ejection — bars surge from a burning horizon in solar orange and amber',
+                    'Mission control monitors during a coronal mass ejection. Bars surge from a burning horizon in solar orange and amber.',
                 name: 'Solar Flare Grid',
             },
             {
@@ -252,7 +252,7 @@ export default effect(
                     speed: 5,
                 },
                 description:
-                    'The machine is dreaming — cascading frequency analysis rendered in electric purple and neon cyan, smooth and sentient',
+                    'The machine is dreaming. Cascading frequency analysis rendered in electric purple and neon cyan, smooth and sentient.',
                 name: 'SilkCircuit Flux',
             },
             {
@@ -266,7 +266,7 @@ export default effect(
                     speed: 2,
                 },
                 description:
-                    'Whale song reverberates through a borealis-lit ice cave — thin spectral lines shimmer inside a tunnel of frozen green',
+                    'Whale song reverberates through a borealis-lit ice cave. Thin spectral lines shimmer inside a tunnel of frozen green.',
                 name: 'Whale Song Cavern',
             },
             {
@@ -280,7 +280,7 @@ export default effect(
                     speed: 10,
                 },
                 description:
-                    'A Tokyo arcade cabinet overloads on drum-and-bass — razor-wide columns slam the mirror line in magenta and cyan at 174 BPM',
+                    'A Tokyo arcade cabinet overloads on drum-and-bass. Razor-wide columns slam the mirror line in magenta and cyan at 174 BPM.',
                 name: 'Akihabara Overload',
             },
             {
@@ -294,7 +294,7 @@ export default effect(
                     speed: 3,
                 },
                 description:
-                    'A glass city skyline refracts ambient piano into pale blue towers — each note lifts a column of cold crystal light from still water',
+                    'A glass city skyline refracts ambient piano into pale blue towers. Each note lifts a column of cold crystal light from still water.',
                 name: 'Glass City Lullaby',
             },
         ],

@@ -15,7 +15,7 @@ export default effect(
     },
     {
         description:
-            'Drift through layered nebula ribbons in slow parallax — twinkling stars pierce luminous veils of cosmic gas and dust',
+            'Drift through layered nebula ribbons in slow parallax. Stars pierce veils of cosmic gas and dust.',
         presets: [
             {
                 controls: {
@@ -28,7 +28,7 @@ export default effect(
                     warpStrength: 55,
                 },
                 description:
-                    'Dense stellar nursery columns — massive gas clouds sculpted by newborn stars piercing through the dark',
+                    'Dense stellar nursery columns. Massive gas clouds sculpted by newborn stars piercing through the dark.',
                 name: 'Pillars of Creation',
             },
             {
@@ -42,7 +42,7 @@ export default effect(
                     warpStrength: 90,
                 },
                 description:
-                    'A lone supernova remnant expanding into the abyss — delicate tendrils of light in total darkness',
+                    'A lone supernova remnant expands into the abyss. Delicate tendrils of light in total darkness.',
                 name: 'Void Bloom',
             },
             {
@@ -56,7 +56,7 @@ export default effect(
                     warpStrength: 65,
                 },
                 description:
-                    'Bioluminescent coral translated to cosmic scale — warm pulsing clouds teeming with particle life',
+                    'Bioluminescent coral translated to cosmic scale. Warm pulsing clouds teeming with particle life.',
                 name: 'Astral Reef',
             },
             {
@@ -70,7 +70,7 @@ export default effect(
                     warpStrength: 100,
                 },
                 description:
-                    'Reality dissolving at the Planck scale — probability clouds shimmering between existence and void',
+                    'Reality dissolves at the Planck scale. Probability clouds shimmer between existence and void.',
                 name: 'Quantum Fog',
             },
             {
@@ -84,7 +84,7 @@ export default effect(
                     warpStrength: 82,
                 },
                 description:
-                    'The universe as seen through a CRT monitor in 2087 — saturated, scan-lined, impossibly vivid',
+                    'The universe as seen through a CRT monitor in 2087. Saturated, scan-lined, impossibly vivid.',
                 name: 'Synthwave Cosmos',
             },
             {
@@ -98,7 +98,7 @@ export default effect(
                     warpStrength: 10,
                 },
                 description:
-                    'Ten thousand frozen stars suspended in crystal-clear vacuum — the void between galaxies, silent and absolute',
+                    'Ten thousand frozen stars suspended in crystal-clear vacuum. The void between galaxies, silent and absolute.',
                 name: 'Intergalactic Corridor',
             },
             {
@@ -112,7 +112,7 @@ export default effect(
                     warpStrength: 100,
                 },
                 description:
-                    "Ionized plasma cascades through a gas giant's magnetosphere — emerald and violet storm bands tearing across a world with no surface",
+                    "Ionized plasma cascades through a gas giant's magnetosphere. Emerald and violet storm bands tear across a world with no surface.",
                 name: 'Jovian Storm Dive',
             },
         ],

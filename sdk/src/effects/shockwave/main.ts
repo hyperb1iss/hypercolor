@@ -548,7 +548,7 @@ export default canvas.stateful(
     },
     {
         description:
-            'Bass drops detonate concentric shockwaves — segmented bursts and cascade chevrons ripple outward on every impact',
+            'Bass drops detonate concentric shockwaves. Segmented bursts and cascade chevrons ripple outward on every impact.',
         presets: [
             {
                 controls: {
@@ -560,7 +560,7 @@ export default canvas.stateful(
                     speed: 7,
                 },
                 description:
-                    'Stand at ground zero of a tectonic rupture — massive concentric shockwaves tear outward from a single point as fire-colored rings decay into the abyss',
+                    'Stand at ground zero of a tectonic rupture. Massive concentric shockwaves tear outward from a single point as fire-colored rings decay into the abyss.',
                 name: 'Seismic Epicenter',
             },
             {
@@ -573,7 +573,7 @@ export default canvas.stateful(
                     speed: 3,
                 },
                 description:
-                    'An ice shelf fractures in slow motion — wide, cold shockwaves cascade downward like frozen thunder while sparse rings hold their shape before dissolving',
+                    'An ice shelf fractures in slow motion. Wide, cold shockwaves cascade downward like frozen thunder while sparse rings hold their shape before dissolving.',
                 name: 'Glacier Calving',
             },
             {
@@ -586,7 +586,7 @@ export default canvas.stateful(
                     speed: 8,
                 },
                 description:
-                    'Two containment fields fail simultaneously — mirrored shockwaves collide in a corridor of neon plasma as bridge bands sweep between the rupture points',
+                    'Two containment fields fail simultaneously. Mirrored shockwaves collide in a corridor of neon plasma as bridge bands sweep between the rupture points.',
                 name: 'Twin Reactor Breach',
             },
             {
@@ -599,7 +599,7 @@ export default canvas.stateful(
                     speed: 4,
                 },
                 description:
-                    'The northern lights break apart like stained glass — gentle waves ripple through green and violet as rings dissolve into the polar dark',
+                    'The northern lights break apart like stained glass. Gentle waves ripple through green and violet as rings dissolve into the polar dark.',
                 name: 'Aurora Shatter',
             },
             {
@@ -612,7 +612,7 @@ export default canvas.stateful(
                     speed: 10,
                 },
                 description:
-                    'A digital bomb detonates inside a circuit board — maximum ring density, rapid-fire bursts of electric purple and cyan, spoke patterns spinning through the debris',
+                    'A digital bomb detonates inside a circuit board. Maximum ring density, rapid-fire bursts of electric purple and cyan, spoke patterns spinning through the debris.',
                 name: 'SilkCircuit Detonation',
             },
             {
@@ -625,7 +625,7 @@ export default canvas.stateful(
                     speed: 1,
                 },
                 description:
-                    'Two frozen sigils pulse once and hold — glacial rings linger in the void like the last heartbeat of a dying star',
+                    'Two frozen sigils pulse once and hold. Glacial rings linger in the void like the last heartbeat of a dying star.',
                 name: 'Event Horizon',
             },
             {
@@ -638,7 +638,7 @@ export default canvas.stateful(
                     speed: 9,
                 },
                 description:
-                    'Molten chevrons pour down the screen in relentless waves — every beat hammers another cascade of burning geometry into the dark',
+                    'Molten chevrons pour down the screen in relentless waves. Every beat hammers another cascade of burning geometry into the dark.',
                 name: 'Forge Hammer',
             },
         ],

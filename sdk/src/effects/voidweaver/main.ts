@@ -111,12 +111,12 @@ export default effect(
     },
     {
         description:
-            'Raymarched infinite tunnel — 16 color palettes, 5 visual styles, camera physics, and surface detail. A void that pulls you in.',
+            'Raymarched infinite tunnel. Sixteen palettes, five visual styles, camera physics, surface detail. A void that pulls you in.',
         presets: [
             {
                 name: 'Infinite Descent',
                 description:
-                    'The classic — sapphire walls rushing past as you freefall through an endless geometric abyss, just enough fog to feel the depth',
+                    'The classic. Sapphire walls rush past as you freefall through an endless geometric abyss, just enough fog to feel the depth.',
                 controls: {
                     colorCycle: 40,
                     colorShift: true,
@@ -138,7 +138,7 @@ export default effect(
             {
                 name: 'Neon Gauntlet',
                 description:
-                    'Tight corridor at breakneck speed — neon walls split into prismatic streaks as you thread through a digital obstacle course of pure light',
+                    'Tight corridor at breakneck speed. Neon walls split into prismatic streaks as you thread through a digital obstacle course of pure light.',
                 controls: {
                     colorCycle: 70,
                     colorShift: true,
@@ -160,7 +160,7 @@ export default effect(
             {
                 name: 'Hellmouth',
                 description:
-                    'Reversed through a molten throat — fire licks the rough organic walls as you ascend from the depths of something alive and burning',
+                    'Reversed through a molten throat. Fire licks the rough organic walls as you ascend from the depths of something alive and burning.',
                 controls: {
                     colorCycle: 30,
                     colorShift: true,
@@ -182,7 +182,7 @@ export default effect(
             {
                 name: 'Ghost Ship',
                 description:
-                    'Spectral drift through impossible fog — ethereal pastels phase through phosphor glow as the tunnel breathes around you',
+                    'Spectral drift through impossible fog. Ethereal pastels phase through phosphor glow as the tunnel breathes around you.',
                 controls: {
                     colorCycle: 60,
                     colorShift: true,
@@ -204,7 +204,7 @@ export default effect(
             {
                 name: 'Toxic Drain',
                 description:
-                    'Industrial runoff channel — acid green walls pulse with chemical light as wave distortion warps the geometry into something alive',
+                    'Industrial runoff channel. Acid green walls pulse with chemical light as wave distortion warps the geometry into something alive.',
                 controls: {
                     colorCycle: 45,
                     colorShift: false,
@@ -226,7 +226,7 @@ export default effect(
             {
                 name: 'Midnight Express',
                 description:
-                    'Silver and shadow at dangerous speed — monochrome light fractures through chromatic edges as you hurtle through liquid mercury',
+                    'Silver and shadow at dangerous speed. Monochrome light fractures through chromatic edges as you hurtle through liquid mercury.',
                 controls: {
                     colorCycle: 10,
                     colorShift: false,
@@ -248,7 +248,7 @@ export default effect(
             {
                 name: 'Crystal Cavern',
                 description:
-                    'Slow drift through an amethyst geode — rough crystalline surfaces catch purple light as you glide through a gem the size of a cathedral',
+                    'Slow drift through an amethyst geode. Rough crystalline surfaces catch purple light as you glide through a gem the size of a cathedral.',
                 controls: {
                     colorCycle: 25,
                     colorShift: true,
@@ -270,7 +270,7 @@ export default effect(
             {
                 name: 'Electric Storm',
                 description:
-                    'Lightning cracks through a pulsing vortex — the tunnel writhes with wave distortion as electric blue and white flash in violent rhythm',
+                    'Lightning cracks through a pulsing vortex. The tunnel writhes with wave distortion as electric blue and white flash in violent rhythm.',
                 controls: {
                     colorCycle: 80,
                     colorShift: true,
@@ -292,7 +292,7 @@ export default effect(
             {
                 name: 'Coral Depths',
                 description:
-                    'Sinking through a living reef — warm coral hues drift through heavy underwater fog, the walls textured like ancient ocean stone',
+                    'Sinking through a living reef. Warm coral hues drift through heavy underwater fog, the walls textured like ancient ocean stone.',
                 controls: {
                     colorCycle: 35,
                     colorShift: true,
@@ -314,7 +314,7 @@ export default effect(
             {
                 name: 'Vapor Trail',
                 description:
-                    'Retro 80s aesthetic in tunnel form — pink and cyan vaporwave hues drift lazily through a wide passage with gentle camera sway',
+                    'Retro 80s aesthetic in tunnel form. Pink and cyan vaporwave hues drift lazily through a wide passage with gentle camera sway.',
                 controls: {
                     colorCycle: 50,
                     colorShift: true,
@@ -336,7 +336,7 @@ export default effect(
             {
                 name: 'Spectrum Warp',
                 description:
-                    'Every color at once at warp speed — rainbow light refracts off tight walls as the tunnel twists and writhes with maximum wave distortion',
+                    'Every color at once at warp speed. Rainbow light refracts off tight walls as the tunnel twists and writhes with maximum wave distortion.',
                 controls: {
                     colorCycle: 90,
                     colorShift: true,
@@ -358,7 +358,7 @@ export default effect(
             {
                 name: 'Abyssal Trench',
                 description:
-                    'The deepest dark — bioluminescent sparks pierce through maximum fog as you crawl through a vast underwater chasm at the edge of vision',
+                    'The deepest dark. Bioluminescent sparks pierce through maximum fog as you crawl through a vast underwater chasm at the edge of vision.',
                 controls: {
                     colorCycle: 20,
                     colorShift: true,

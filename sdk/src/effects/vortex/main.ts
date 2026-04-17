@@ -19,7 +19,7 @@ export default effect(
     },
     {
         description:
-            'Surrender to the spiral — logarithmic arms pull inward with differential rotation as vivid color drifts through the whorl',
+            'Surrender to the spiral. Logarithmic arms pull inward with differential rotation; color drifts through the whorl.',
         presets: [
             {
                 controls: {
@@ -32,7 +32,7 @@ export default effect(
                     twist: 95,
                 },
                 description:
-                    'The abyssal maw opens — six churning arms of deep ocean plasma drag everything into a howling singularity of bioluminescent chaos',
+                    'The abyssal maw opens. Six churning arms of deep-ocean plasma drag everything into a howling bioluminescent singularity.',
                 name: 'Charybdis',
             },
             {
@@ -46,7 +46,7 @@ export default effect(
                     twist: 40,
                 },
                 description:
-                    'Northern lights ripped from the magnetosphere and spun into a gravitational lens — aurora ribbons twist through turbulent plasma fields',
+                    'Northern lights ripped from the magnetosphere and spun into a gravitational lens. Aurora ribbons twist through turbulent plasma fields.',
                 name: 'Aurora Spiral',
             },
             {
@@ -60,7 +60,7 @@ export default effect(
                     twist: 100,
                 },
                 description:
-                    'Stellar core collapse at maximum violence — plasma tendrils rip apart as the accretion disk goes supercritical',
+                    'Stellar core collapse at maximum violence. Plasma tendrils rip apart as the accretion disk goes supercritical.',
                 name: 'Supernova Implosion',
             },
             {
@@ -74,7 +74,7 @@ export default effect(
                     twist: 65,
                 },
                 description:
-                    'A living circuit board spiraling through hyperspace — electric filaments arc between the arms as chromatic energy bleeds from the core',
+                    'A living circuit board spirals through hyperspace. Electric filaments arc between the arms as chromatic energy bleeds from the core.',
                 name: 'SilkCircuit Dynamo',
             },
             {
@@ -88,7 +88,7 @@ export default effect(
                     twist: 75,
                 },
                 description:
-                    'The neon grid folds into a retro singularity — twin arms of pink and amber plasma spiral inward trailing sparks and chromatic ghosts',
+                    'The neon grid folds into a retro singularity. Twin arms of pink and amber plasma spiral inward, trailing sparks and chromatic ghosts.',
                 name: 'Synthwave Drain',
             },
             {
@@ -102,7 +102,7 @@ export default effect(
                     twist: 80,
                 },
                 description:
-                    'Pure entropy — eight arms dissolving into turbulent plasma filaments, sparks cascading through a maelstrom of neon static',
+                    'Pure entropy. Eight arms dissolve into turbulent plasma filaments, sparks cascading through a maelstrom of neon static.',
                 name: 'Hyperstorm',
             },
             {
@@ -116,7 +116,7 @@ export default effect(
                     twist: 50,
                 },
                 description:
-                    'Data streams caught in a gravity well — cyan and magenta tendrils fragment into digital noise as they spiral past the event horizon',
+                    'Data streams caught in a gravity well. Cyan and magenta tendrils fragment into digital noise as they spiral past the event horizon.',
                 name: 'Event Horizon',
             },
             {
@@ -130,7 +130,7 @@ export default effect(
                     twist: 20,
                 },
                 description:
-                    'Twin glacial arms suspended in crystalline silence — the cold center of a dying star exhaling its last frozen breath',
+                    'Twin glacial arms suspended in crystalline silence. The cold center of a dying star exhaling its last frozen breath.',
                 name: 'Cryogenic Lullaby',
             },
             {
@@ -144,7 +144,7 @@ export default effect(
                     twist: 90,
                 },
                 description:
-                    'Seven petals of magnetosphere light twist open above the arctic — each arm a curtain of charged particles dancing to solar wind',
+                    'Seven petals of magnetosphere light twist open above the arctic. Each arm a curtain of charged particles dancing to solar wind.',
                 name: 'Polar Bloom',
             },
         ],

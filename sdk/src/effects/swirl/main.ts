@@ -157,7 +157,7 @@ export default canvas(
     {
         author: 'Hypercolor',
         description:
-            'Spiral into a candy-colored vortex — particle trails wind tight as HSL cycling paints each revolution in electric hues',
+            'Spiral into a candy-colored vortex. Particle trails wind tight as HSL cycling paints each revolution in electric hues.',
         presets: [
             {
                 controls: {
@@ -176,7 +176,7 @@ export default canvas(
                     spiralAmount: 3,
                 },
                 description:
-                    'Three candy-striped arms spinning in perfect formation — a barber pole from the astral plane',
+                    'Three candy-striped arms spinning in perfect formation. A barber pole from the astral plane.',
                 name: 'Hypnotic Peppermint',
             },
             {
@@ -196,7 +196,7 @@ export default canvas(
                     spiralAmount: 2,
                 },
                 description:
-                    'Twin stellar arms wind inward through deep space — lavender and ice blue spiraling into an invisible drain at the core',
+                    'Twin stellar arms wind inward through deep space. Lavender and ice blue spiral into an invisible drain at the core.',
                 name: 'Galaxy Drain',
             },
             {
@@ -216,7 +216,7 @@ export default canvas(
                     spiralAmount: 3,
                 },
                 description:
-                    'Maximum arms, maximum speed, maximum chaos — a lawn sprinkler at a warehouse party throwing neon everywhere',
+                    'Maximum arms, maximum speed, maximum chaos. A lawn sprinkler at a warehouse party throwing neon everywhere.',
                 name: 'Rave Sprinkler',
             },
             {
@@ -236,7 +236,7 @@ export default canvas(
                     spiralAmount: 3,
                 },
                 description:
-                    'Three arms breathing in deep rhythm — amber and indigo trails wind outward as the whole pattern inhales and exhales',
+                    'Three arms breathing in deep rhythm. Amber and indigo trails wind outward as the whole pattern inhales and exhales.',
                 name: 'Breathing Mandala',
             },
             {
@@ -256,7 +256,7 @@ export default canvas(
                     spiralAmount: 3,
                 },
                 description:
-                    'Neon green, hot magenta, and electric yellow flung outward by violent spin — a lab experiment gone beautifully wrong',
+                    'Neon green, hot magenta, and electric yellow flung outward by violent spin. A lab experiment gone beautifully wrong.',
                 name: 'Toxic Centrifuge',
             },
             {
@@ -276,7 +276,7 @@ export default canvas(
                     spiralAmount: 2,
                 },
                 description:
-                    'Twin luminous arms spiral inward and dissolve — bright orbs shrink to pinpoints as matter funnels into the singularity',
+                    'Twin luminous arms spiral inward and dissolve. Bright orbs shrink to pinpoints as matter funnels into the singularity.',
                 name: 'Singularity Drain',
             },
             {

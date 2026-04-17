@@ -486,7 +486,7 @@ export default canvas.stateful(
     },
     {
         description:
-            'Katakana glyphs cascade in phosphor-bright columns — discrete streaks step through darkness, each stream crowned in white heat',
+            'Katakana glyphs cascade in phosphor-bright columns. Discrete streaks step through darkness, each stream crowned in white heat.',
         designBasis: RAIN_DESIGN_BASIS,
         presets: [
             {
@@ -503,7 +503,7 @@ export default canvas.stateful(
                     trailLength: 38,
                 },
                 description:
-                    'A classified system compromised at 3 AM — frantic green columns racing down a black void, every glyph a stolen secret',
+                    'A classified system compromised at 3 AM. Frantic green columns race down a black void, every glyph a stolen secret.',
                 name: 'Mainframe Breach',
             },
             {
@@ -520,7 +520,7 @@ export default canvas.stateful(
                     trailLength: 85,
                 },
                 description:
-                    'Dust on the racks, one last terminal still scrolling — amber phosphor trails fading into a warm brown-black silence',
+                    'Dust on the racks, one last terminal still scrolling. Amber phosphor trails fade into a warm brown-black silence.',
                 name: 'Abandoned Server Room',
             },
             {
@@ -537,7 +537,7 @@ export default canvas.stateful(
                     trailLength: 62,
                 },
                 description:
-                    'Neon kanji reflected in wet asphalt — magenta and cyan streams bleeding through a purple haze at 2 AM',
+                    'Neon kanji reflected in wet asphalt. Magenta and cyan streams bleed through a purple haze at 2 AM.',
                 name: 'Shinjuku After Rain',
             },
             {
@@ -554,7 +554,7 @@ export default canvas.stateful(
                     trailLength: 95,
                 },
                 description:
-                    'Frozen data streams in a subterranean archive — glacial blue columns descending in slow crystalline silence',
+                    'Frozen data streams in a subterranean archive. Glacial blue columns descend in slow crystalline silence.',
                 name: 'Cryo Vault',
             },
             {
@@ -571,7 +571,7 @@ export default canvas.stateful(
                     trailLength: 22,
                 },
                 description:
-                    'A rogue AI splintering across the network — SilkCircuit violet pulses tearing through corrupted data at impossible speed',
+                    'A rogue AI splinters across the network. SilkCircuit violet pulses tear through corrupted data at impossible speed.',
                 name: 'Ghost in the Wire',
             },
             {
@@ -588,7 +588,7 @@ export default canvas.stateful(
                     trailLength: 72,
                 },
                 description:
-                    'The original signal — unhurried green streams descending through perfect darkness, the Construct loading one column at a time',
+                    'The original signal. Unhurried green streams descend through perfect darkness, the Construct loading one column at a time.',
                 name: 'Construct Bootstrap',
             },
             {
@@ -605,7 +605,7 @@ export default canvas.stateful(
                     trailLength: 12,
                 },
                 description:
-                    'Every firewall just failed at once — crimson micro-glyphs swarm the screen in a catastrophic cascade, the kill signal propagating everywhere',
+                    'Every firewall just failed at once. Crimson micro-glyphs swarm the screen in a catastrophic cascade, the kill signal propagating everywhere.',
                 name: 'Red Alert Cascade',
             },
             {
@@ -622,7 +622,7 @@ export default canvas.stateful(
                     trailLength: 100,
                 },
                 description:
-                    'Ancient kanji carved into a monolith — massive stone-grey glyphs descend with geological patience through monochrome silence',
+                    'Ancient kanji carved into a monolith. Massive stone-grey glyphs descend with geological patience through monochrome silence.',
                 name: 'Monument',
             },
         ],

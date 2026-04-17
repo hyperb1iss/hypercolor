@@ -471,7 +471,7 @@ export default canvas.stateful(
     },
     {
         description:
-            'Drift through a luminous bubble field — glossy spheres rise with colored rims catching light as they float, collide, and shimmer',
+            'Drift through a luminous bubble field. Glossy spheres rise with colored rims, catching light as they float, collide, and shimmer.',
         designBasis: BUBBLE_DESIGN_BASIS,
         presets: [
             {
@@ -487,7 +487,7 @@ export default canvas.stateful(
                     theme: 'Jellyfish',
                 },
                 description:
-                    'Colonial organisms drift in eternal darkness — each translucent bell a separate creature chained in bioluminescent congress',
+                    'Colonial organisms drift in eternal darkness; each translucent bell a separate creature chained in bioluminescent congress.',
                 name: 'Bathypelagic Siphonophore',
             },
             {
@@ -503,7 +503,7 @@ export default canvas.stateful(
                     theme: 'Citrus Pop',
                 },
                 description:
-                    'Golden effervescence erupts from the bottle — a billion tiny spheres racing upward through amber light',
+                    'Golden effervescence erupts from the bottle. A billion tiny spheres race upward through amber light.',
                 name: 'Champagne Supernova',
             },
             {
@@ -519,7 +519,7 @@ export default canvas.stateful(
                     theme: 'Neon Soda',
                 },
                 description:
-                    'Chemical bubbles surface through contaminated sediment — each one a pressurized capsule of fluorescent mutation',
+                    'Chemical bubbles surface through contaminated sediment, each one a pressurized capsule of fluorescent mutation.',
                 name: 'Toxic Waste Lagoon',
             },
             {
@@ -535,7 +535,7 @@ export default canvas.stateful(
                     theme: 'Lavender Fizz',
                 },
                 description:
-                    'Razor-thin membranes refract white light into impossible rainbows — each bubble a floating physics experiment',
+                    'Razor-thin membranes refract white light into impossible rainbows. Each bubble, a floating physics experiment.',
                 name: 'Soap Film Interference',
             },
             {
@@ -551,7 +551,7 @@ export default canvas.stateful(
                     theme: 'Bubblegum',
                 },
                 description:
-                    'Endosomes shuttle through cellular fluid — lipid bilayer spheres ferrying molecular cargo in warm biological pink',
+                    'Endosomes shuttle through cellular fluid, lipid bilayer spheres ferrying molecular cargo in warm biological pink.',
                 name: 'Cytoplasmic Vesicle Transport',
             },
             {
@@ -567,7 +567,7 @@ export default canvas.stateful(
                     theme: 'Lagoon',
                 },
                 description:
-                    'Ancient glass fishing floats drift in a midnight cove — massive teal orbs bob on black water, each one holding a trapped sunrise',
+                    'Ancient glass fishing floats drift in a midnight cove. Massive teal orbs bob on black water, each one holding a trapped sunrise.',
                 name: 'Moonlit Glass Floats',
             },
             {
@@ -583,7 +583,7 @@ export default canvas.stateful(
                     theme: 'Cyber Pop',
                 },
                 description:
-                    'Particle accelerator collision event — a hundred luminous fragments scatter from the impact point in cyan, magenta, and ultraviolet',
+                    'Particle accelerator collision event. A hundred luminous fragments scatter from the impact point in cyan, magenta, and ultraviolet.',
                 name: 'Hadron Splash',
             },
         ],

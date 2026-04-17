@@ -674,7 +674,7 @@ export default canvas.stateful(
     },
     {
         description:
-            'Crystalline hex lattice propagates in frost-growth waves — nodes breathe with cold light as the frozen field slowly rotates',
+            'Crystalline hex lattice propagates in frost-growth waves. Nodes breathe with cold light as the frozen field slowly rotates.',
         presets: [
             {
                 controls: {
@@ -687,7 +687,7 @@ export default canvas.stateful(
                     speed: 2,
                 },
                 description:
-                    'First light creeping across permafrost — vast hexagonal ice plates slowly pulsing with pale blue fire, the field barely turning like a frozen compass',
+                    'First light creeps across permafrost. Vast hexagonal ice plates pulse slowly with pale blue fire, the field barely turning like a frozen compass.',
                 name: 'Frozen Tundra at Dawn',
             },
             {
@@ -701,7 +701,7 @@ export default canvas.stateful(
                     speed: 4,
                 },
                 description:
-                    'Deep underground where quartz meets living light — prismatic hexagons breathing in aurora greens and purples, rippling outward from an invisible heart',
+                    'Deep underground where quartz meets living light. Prismatic hexagons breathe in aurora greens and purples, rippling outward from an invisible heart.',
                 name: 'Crystal Cave Bioluminescence',
             },
             {
@@ -715,7 +715,7 @@ export default canvas.stateful(
                     speed: 9,
                 },
                 description:
-                    'Volcanic glass exploding under pressure — sharp diamond shards spinning fast in hot magenta and cyan, edges crackling with electric discharge',
+                    'Volcanic glass explodes under pressure. Sharp diamond shards spin fast in hot magenta and cyan, edges crackling with electric discharge.',
                 name: 'Obsidian Shatter',
             },
             {
@@ -729,7 +729,7 @@ export default canvas.stateful(
                     speed: 3,
                 },
                 description:
-                    'Sacred geometry forming on a windowpane at absolute zero — concentric signal rings rippling through deep azure frost, spinning with meditative precision',
+                    'Sacred geometry forms on a windowpane at absolute zero. Concentric signal rings ripple through deep azure frost, spinning with meditative precision.',
                 name: 'Frost Mandala',
             },
             {
@@ -743,7 +743,7 @@ export default canvas.stateful(
                     speed: 6,
                 },
                 description:
-                    'A motherboard dreaming in crystalline geometry — electric purple hex cells breathing with neon nodes, the entire field rotating like a silicon prayer wheel',
+                    'A motherboard dreams in crystalline geometry. Electric purple hex cells breathe with neon nodes, the entire field rotating like a silicon prayer wheel.',
                 name: 'SilkCircuit Lattice',
             },
             {
@@ -757,7 +757,7 @@ export default canvas.stateful(
                     speed: 1,
                 },
                 description:
-                    'A continent of microscopic ice crystals forms on a telescope lens aimed at the aurora — infinite tiny hexagons pulse with captured starlight',
+                    'A continent of microscopic ice crystals forms on a telescope lens aimed at the aurora. Infinite tiny hexagons pulse with captured starlight.',
                 name: 'Polar Microscope',
             },
             {
@@ -771,7 +771,7 @@ export default canvas.stateful(
                     speed: 10,
                 },
                 description:
-                    'A rogue satellite broadcasts distress rings in hot magenta while spinning out of control — signal pulses scream into the void',
+                    'A rogue satellite broadcasts distress rings in hot magenta while spinning out of control. Signal pulses scream into the void.',
                 name: 'Rogue Satellite',
             },
             {
@@ -785,7 +785,7 @@ export default canvas.stateful(
                     speed: 4,
                 },
                 description:
-                    'Stained glass shatters in slow motion inside a collapsing ice cathedral — azure diamond shards tumble through pale blue fog',
+                    'Stained glass shatters in slow motion inside a collapsing ice cathedral. Azure diamond shards tumble through pale blue fog.',
                 name: 'Ice Cathedral Collapse',
             },
             {
@@ -799,7 +799,7 @@ export default canvas.stateful(
                     speed: 3,
                 },
                 description:
-                    'Microscopic ice crystals bloom in perfect hexagonal symmetry — six-armed dendrites branch and breathe with pale blue phosphorescence',
+                    'Microscopic ice crystals bloom in perfect hexagonal symmetry. Six-armed dendrites branch and breathe with pale blue phosphorescence.',
                 name: 'Snowflake Garden',
             },
             {
@@ -813,7 +813,7 @@ export default canvas.stateful(
                     speed: 5,
                 },
                 description:
-                    'Crystalline ferns unfurl in aurora light — recursive branches split and split again, each generation glowing a deeper green-violet',
+                    'Crystalline ferns unfurl in aurora light. Recursive branches split and split again, each generation glowing a deeper green-violet.',
                 name: 'Crystalline Bloom',
             },
             {
@@ -827,7 +827,7 @@ export default canvas.stateful(
                     speed: 2,
                 },
                 description:
-                    'Infinite fractal snowflakes tessellate in frozen geometry — Koch curves trace impossible coastlines of ice, each edge spawning smaller copies of itself',
+                    'Infinite fractal snowflakes tessellate in frozen geometry. Koch curves trace impossible coastlines of ice, each edge spawning smaller copies of itself.',
                 name: 'Fractal Permafrost',
             },
             {
@@ -841,7 +841,7 @@ export default canvas.stateful(
                     speed: 8,
                 },
                 description:
-                    'Neon snowflakes spin like throwing stars in a cyberpunk blizzard — hot magenta fractals with cyan cores rotating through electric darkness',
+                    'Neon snowflakes spin like throwing stars in a cyberpunk blizzard. Hot magenta fractals with cyan cores rotate through electric darkness.',
                 name: 'Neon Snowflake Dojo',
             },
             {
@@ -855,7 +855,7 @@ export default canvas.stateful(
                     speed: 3,
                 },
                 description:
-                    'Hexagonal wave fronts ripple outward from crystal nodes, overlapping into standing wave patterns — frozen sound made visible in deep azure',
+                    'Hexagonal wave fronts ripple outward from crystal nodes, overlapping into standing wave patterns. Frozen sound made visible in deep azure.',
                 name: 'Standing Waves',
             },
             {
@@ -869,7 +869,7 @@ export default canvas.stateful(
                     speed: 6,
                 },
                 description:
-                    'Electric purple wave sources pulse in crystalline symmetry — where hexagonal ripples collide, moiré ghosts shimmer in neon cyan',
+                    'Electric purple wave sources pulse in crystalline symmetry. Where hexagonal ripples collide, moiré ghosts shimmer in neon cyan.',
                 name: 'Crystal Resonance',
             },
         ],

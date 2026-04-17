@@ -143,7 +143,7 @@ export default canvas(
                     pattern: 'Solid',
                     vignette: 0,
                 },
-                description: 'Low-light amber for night use — visible without wrecking your dark adaptation.',
+                description: 'Low-light amber for night use. Visible without wrecking your dark adaptation.',
                 name: 'Night Amber',
             },
             {

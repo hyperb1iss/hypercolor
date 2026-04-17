@@ -64,7 +64,7 @@ export default effect(
     },
     {
         description:
-            'Lock into the tunnel — dopamine sparks, breathing halos, and orbital pulses collapse the world to a single blazing point',
+            'Lock into the tunnel. Dopamine sparks, breathing halos, and orbital pulses collapse the world to a single blazing point.',
         presets: [
             {
                 controls: {
@@ -80,7 +80,7 @@ export default effect(
                     tunnelSpeed: 140,
                 },
                 description:
-                    'That moment the meds kick in — razor-sharp focus, sparks firing everywhere, the world narrows to a single brilliant point',
+                    'That moment the meds kick in. Razor-sharp focus, sparks firing everywhere, the world narrows to a single brilliant point.',
                 name: 'Dopamine Rush',
             },
             {
@@ -97,7 +97,7 @@ export default effect(
                     tunnelSpeed: 15,
                 },
                 description:
-                    'Frozen in amber — the tunnel exists but you cannot move through it, sparks barely flicker at the periphery',
+                    'Frozen in amber. The tunnel exists but you cannot move through it; sparks barely flicker at the periphery.',
                 name: 'Executive Dysfunction',
             },
             {
@@ -114,7 +114,7 @@ export default effect(
                     tunnelSpeed: 60,
                 },
                 description:
-                    'Six hours vanished — the center is absolute, peripheral reality no longer exists, time has no meaning',
+                    'Six hours vanished. The center is absolute, peripheral reality no longer exists, time has no meaning.',
                 name: 'Hyperfocus Lock',
             },
             {
@@ -131,7 +131,7 @@ export default effect(
                     tunnelSpeed: 200,
                 },
                 description:
-                    'Everything at once — the tunnel screams with neon noise, sparks saturate every frequency, no filter remains',
+                    'Everything at once. The tunnel screams with neon noise, sparks saturate every frequency, no filter remains.',
                 name: 'Sensory Overload',
             },
             {
@@ -148,7 +148,7 @@ export default effect(
                     tunnelSpeed: 108,
                 },
                 description:
-                    'The rare equilibrium — focus is wide but clear, energy is sustained, the tunnel breathes in perfect rhythm',
+                    'The rare equilibrium. Focus is wide but clear, energy is sustained, the tunnel breathes in perfect rhythm.',
                 name: 'Flow State',
             },
             {
@@ -165,7 +165,7 @@ export default effect(
                     tunnelSpeed: 40,
                 },
                 description:
-                    'Soft warmth after the storm — the tunnel opens wide, colors cool to seafoam and teal, everything gentles',
+                    'Soft warmth after the storm. The tunnel opens wide, colors cool to seafoam and teal, everything gentles.',
                 name: 'Serotonin Blanket',
             },
             {
@@ -182,7 +182,7 @@ export default effect(
                     tunnelSpeed: 180,
                 },
                 description:
-                    'Deadline in five minutes — tunnel narrows to a burning point, everything outside is fire and urgency',
+                    'Deadline in five minutes. The tunnel narrows to a burning point, everything outside is fire and urgency.',
                 name: 'Adrenaline Spike',
             },
             {
@@ -199,7 +199,7 @@ export default effect(
                     tunnelSpeed: 18,
                 },
                 description:
-                    'Should have slept hours ago — melatonin whispers but the tunnel holds, deep indigo and midnight blue pulse slowly',
+                    'Should have slept hours ago. Melatonin whispers but the tunnel holds; deep indigo and midnight blue pulse slowly.',
                 name: '3 AM Doom Scroll',
             },
             {
@@ -216,7 +216,7 @@ export default effect(
                     tunnelSpeed: 148,
                 },
                 description:
-                    'The same thought circling — acid green and warning amber, everything too fast and too bright, cannot look away',
+                    'The same thought circling. Acid green and warning amber, everything too fast and too bright, cannot look away.',
                 name: 'Anxiety Loop',
             },
             {
@@ -233,7 +233,7 @@ export default effect(
                     tunnelSpeed: 10,
                 },
                 description:
-                    'The dissociative pause — everything fades to near-nothing, subtle violet pulses are the only proof you still exist',
+                    'The dissociative pause. Everything fades to near-nothing; subtle violet pulses are the only proof you still exist.',
                 name: 'Into the Void',
             },
             {
@@ -250,7 +250,7 @@ export default effect(
                     tunnelSpeed: 110,
                 },
                 description:
-                    'Sugar-soaked hyperdrive through a candy-coated wormhole — pink sparks burst like pop rocks dissolving on your retinas',
+                    'Sugar-soaked hyperdrive through a candy-coated wormhole. Pink sparks burst like pop rocks dissolving on your retinas.',
                 name: 'Sugar Rush Protocol',
             },
             {
@@ -267,7 +267,7 @@ export default effect(
                     tunnelSpeed: 45,
                 },
                 description:
-                    'Thoughts scatter like moths around a dying streetlamp — the tunnel drifts sideways, half-asleep, refusing to commit to any direction',
+                    'Thoughts scatter like moths around a dying streetlamp. The tunnel drifts sideways, half-asleep, refusing to commit to any direction.',
                 name: 'Task Paralysis Limbo',
             },
         ],

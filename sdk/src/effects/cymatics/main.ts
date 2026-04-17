@@ -105,7 +105,7 @@ export default effect(
     {
         audio: true,
         description:
-            'Sound made visible — frequency-reactive geometry pulses and shatters as a spring-physics camera tracks the sonic field',
+            'Sound made visible. Frequency-reactive geometry pulses and shatters as a spring-physics camera tracks the sonic field.',
 
         frame: (ctx, time) => {
             const dt = Math.min(lastTime > 0 ? time - lastTime : 0.016, 0.05)
@@ -296,7 +296,7 @@ export default effect(
                     visualStyle: 'Vortex',
                 },
                 description:
-                    'Sub-bass becomes architecture — slow vortex pull in a concrete bunker where the kick drum is a seismic event',
+                    'Sub-bass becomes architecture. Slow vortex pull in a concrete bunker where the kick drum is a seismic event.',
                 name: 'Warehouse Ritual',
             },
             {
@@ -309,7 +309,7 @@ export default effect(
                     visualStyle: 'Resonance',
                 },
                 description:
-                    'Eight frequency ribbons streaming through neon rain — bass swells roll the low bands while treble shimmer crackles across the top',
+                    'Eight frequency ribbons stream through neon rain. Bass swells roll the low bands while treble shimmer crackles across the top.',
                 name: 'Neon Meridian',
             },
             {
@@ -322,7 +322,7 @@ export default effect(
                     visualStyle: 'Particle Field',
                 },
                 description:
-                    'Ambient drone through stained glass — prismatic particles breathe with glacial patience, each harmonic a new color',
+                    'Ambient drone through stained glass. Prismatic particles breathe with glacial patience, each harmonic a new color.',
                 name: 'Glass Cathedral',
             },
             {
@@ -335,7 +335,7 @@ export default effect(
                     visualStyle: 'Lattice',
                 },
                 description:
-                    'Industrial lattice pulses under acid-green data streams — percussive hits tear holes in the matrix',
+                    'Industrial lattice pulses under acid-green data streams. Percussive hits tear holes in the matrix.',
                 name: 'Toxic Mainframe',
             },
             {
@@ -348,7 +348,7 @@ export default effect(
                     visualStyle: 'Particle Field',
                 },
                 description:
-                    'Jazz club at closing time — warm aurora ripples respond to brushed cymbals and upright bass with velvet restraint',
+                    'Jazz club at closing time. Warm aurora ripples respond to brushed cymbals and upright bass with velvet restraint.',
                 name: 'Aurora Lounge',
             },
             {
@@ -361,7 +361,7 @@ export default effect(
                     visualStyle: 'Resonance',
                 },
                 description:
-                    'Frequency ribbons unfurl like magnetic tape in zero gravity — each band a living seismograph of its octave, bass ripples propagating through pastel shimmer',
+                    'Frequency ribbons unfurl like magnetic tape in zero gravity. Each band, a living seismograph of its octave; bass ripples propagate through pastel shimmer.',
                 name: 'Chladni Plate',
             },
             {
@@ -374,7 +374,7 @@ export default effect(
                     visualStyle: 'Lattice',
                 },
                 description:
-                    'Cooling magma crystallizes into obsidian geometry — each low rumble redraws the lattice lines in dim volcanic amber',
+                    'Cooling magma crystallizes into obsidian geometry. Each low rumble redraws the lattice lines in dim volcanic amber.',
                 name: 'Tectonic Meditation',
             },
             {
@@ -387,7 +387,7 @@ export default effect(
                     visualStyle: 'Vortex',
                 },
                 description:
-                    'A particle accelerator at full bore — colliding beams of magenta and cyan spiral into the event horizon as the bass line breaks physics',
+                    'A particle accelerator at full bore. Colliding beams of magenta and cyan spiral into the event horizon as the bass line breaks physics.',
                 name: 'Dopamine Collider',
             },
             {
@@ -400,7 +400,7 @@ export default effect(
                     visualStyle: 'Resonance',
                 },
                 description:
-                    'Northern lights draped across a frozen lake — emerald and violet frequency bands ripple like curtains pulled by the solar wind',
+                    'Northern lights draped across a frozen lake. Emerald and violet frequency bands ripple like curtains pulled by the solar wind.',
                 name: 'Magnetosphere',
             },
         ],

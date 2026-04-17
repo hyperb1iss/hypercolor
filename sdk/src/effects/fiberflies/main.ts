@@ -389,7 +389,7 @@ export default canvas.stateful(
     },
     {
         description:
-            'Wander among luminous fiber-optic creatures — breathing neon halos bloom and drift through warm darkness on invisible currents',
+            'Wander among luminous fiber-optic creatures. Breathing neon halos bloom and drift through warm darkness on invisible currents.',
         presets: [
             {
                 controls: {
@@ -404,7 +404,7 @@ export default canvas.stateful(
                     wander: 50,
                 },
                 description:
-                    'Classic fireflies in a summer meadow at dusk — neon green sparks drifting through warm violet darkness',
+                    'Classic fireflies in a summer meadow at dusk. Neon green sparks drift through warm violet darkness.',
                 name: 'Firefly Glen',
             },
             {
@@ -420,7 +420,7 @@ export default canvas.stateful(
                     wander: 78,
                 },
                 description:
-                    'Bioluminescent spores drifting through a humid glass conservatory at 2am — slow, verdant, hypnotic',
+                    'Bioluminescent spores drift through a humid glass conservatory at 2am. Slow, verdant, hypnotic.',
                 name: "Witch's Garden",
             },
             {
@@ -436,7 +436,7 @@ export default canvas.stateful(
                     wander: 40,
                 },
                 description:
-                    'Hot magenta blooms pulse in deep indigo shadow — neon flowers opening and closing in slow rhythm',
+                    'Hot magenta blooms pulse in deep indigo shadow. Neon flowers open and close in slow rhythm.',
                 name: 'Neon Bloom',
             },
             {
@@ -452,7 +452,7 @@ export default canvas.stateful(
                     wander: 55,
                 },
                 description:
-                    'A dying summer field at dusk — amber sparks fade in and out like the last warm breath of the season',
+                    'A dying summer field at dusk. Amber sparks fade in and out like the last warm breath of the season.',
                 name: 'Amber Drift',
             },
             {
@@ -468,7 +468,7 @@ export default canvas.stateful(
                     wander: 45,
                 },
                 description:
-                    'Ancient spirits materialize as orbs of ice above a frozen lake — each one drifts with glacial intention',
+                    'Ancient spirits materialize as orbs of ice above a frozen lake. Each one drifts with glacial intention.',
                 name: 'Ghost Lake',
             },
             {
@@ -484,7 +484,7 @@ export default canvas.stateful(
                     wander: 70,
                 },
                 description:
-                    'A dense cloud of electric fireflies surging through dark forest undergrowth — alive, wild, luminous',
+                    'A dense cloud of electric fireflies surges through dark forest undergrowth. Alive, wild, luminous.',
                 name: 'Electric Swarm',
             },
             {
@@ -500,7 +500,7 @@ export default canvas.stateful(
                     wander: 25,
                 },
                 description:
-                    'Bioluminescent creatures luring prey in the hadal zone — sparse, eerie, impossibly deep blue-black void',
+                    'Bioluminescent creatures lure prey in the hadal zone. Sparse, eerie, impossibly deep blue-black void.',
                 name: 'Deep Abyss',
             },
             {
@@ -515,7 +515,7 @@ export default canvas.stateful(
                     speed: 3,
                     wander: 35,
                 },
-                description: 'Purple and cyan spirits dance through twilight — a garden where neon meets the occult',
+                description: 'Purple and cyan spirits dance through twilight, a garden where neon meets the occult.',
                 name: 'Violet Hour',
             },
         ],

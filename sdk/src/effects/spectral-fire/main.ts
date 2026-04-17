@@ -23,7 +23,7 @@ export default effect(
     {
         audio: true,
         description:
-            'Spectral flames lick upward in layered tongues — embers scatter as audio energy lifts the fire into frenzy',
+            'Spectral flames lick upward in layered tongues. Embers scatter as audio energy lifts the fire into frenzy.',
         presets: [
             {
                 controls: {
@@ -37,7 +37,7 @@ export default effect(
                     turbulence: 35,
                 },
                 description:
-                    'A perfect winter fireplace — steady, warm, crackling with occasional pops sending sparks into darkness',
+                    'A perfect winter fireplace. Steady, warm, crackling with occasional pops sending sparks into darkness.',
                 name: 'Hearthstone',
             },
             {
@@ -52,7 +52,7 @@ export default effect(
                     turbulence: 40,
                 },
                 description:
-                    'Magma churns in the throat of an active volcano — dense, slow, suffocating heat with white-hot cores',
+                    'Magma churns in the throat of an active volcano. Dense, slow, suffocating heat with white-hot cores.',
                 name: 'Volcanic Caldera',
             },
             {
@@ -67,7 +67,7 @@ export default effect(
                     turbulence: 45,
                 },
                 description:
-                    'Copper salts crackle in a crucible — blue-green chemical flames dance with teal precision',
+                    'Copper salts crackle in a crucible. Blue-green chemical flames dance with teal precision.',
                 name: "Alchemist's Flask",
             },
             {
@@ -82,7 +82,7 @@ export default effect(
                     turbulence: 55,
                 },
                 description:
-                    'Violet spectral flames lick through the bones of a cursed forest — cold fire that consumes nothing',
+                    'Violet spectral flames lick through the bones of a cursed forest. Cold fire that consumes nothing.',
                 name: 'Witch Light',
             },
             {
@@ -97,7 +97,7 @@ export default effect(
                     turbulence: 80,
                 },
                 description:
-                    'Emergency flares split the dark — crimson and magenta flames claw at the sky with desperate intensity',
+                    'Emergency flares split the dark. Crimson and magenta flames claw at the sky with desperate intensity.',
                 name: 'Strontium Flare',
             },
             {
@@ -112,7 +112,7 @@ export default effect(
                     turbulence: 25,
                 },
                 description:
-                    'Ghostly green marsh lights hover over still water — flickering low, hypnotic, beckoning you deeper',
+                    'Ghostly green marsh lights hover over still water. Flickering low, hypnotic, beckoning you deeper.',
                 name: "Will-o'-Wisp",
             },
             {
@@ -127,7 +127,7 @@ export default effect(
                     turbulence: 100,
                 },
                 description:
-                    'A dimensional rift tears open and vomits pure blue plasma — towering pillars of chaos with no ash, no mercy',
+                    'A dimensional rift tears open and vomits pure blue plasma. Towering pillars of chaos with no ash, no mercy.',
                 name: 'Eldritch Gate',
             },
             {
@@ -141,7 +141,7 @@ export default effect(
                     speed: 7,
                     turbulence: 90,
                 },
-                description: 'Toxic vents split the earth open — acid-yellow flames dance over a field of black glass',
+                description: 'Toxic vents split the earth open. Acid-yellow flames dance over a field of black glass.',
                 name: 'Sulfur Rift',
             },
             {
@@ -156,7 +156,7 @@ export default effect(
                     turbulence: 15,
                 },
                 description:
-                    'The dying breath of a great fire — low smoldering ash with faint orange pulses cling to life in the dark',
+                    'The dying breath of a great fire. Low smoldering ash with faint orange pulses clings to life in the dark.',
                 name: 'Last Ember',
             },
         ],

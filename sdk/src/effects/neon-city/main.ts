@@ -863,7 +863,7 @@ export default canvas.stateful(
     {
         author: 'Hypercolor',
         description:
-            'A neon skyline breathes after dark — a moon bleeds haze across endless towers, windows flicker like a population pulse, transit vehicles knife through rain with white-hot headlights, and aircraft warning beacons pulse on every spire',
+            'A neon skyline breathes after dark. A moon bleeds haze across endless towers; windows flicker like a population pulse; transit vehicles knife through rain with white-hot headlights; aircraft warning beacons pulse on every spire.',
         presets: [
             {
                 controls: {
@@ -877,7 +877,7 @@ export default canvas.stateful(
                     windowDensity: 64,
                 },
                 description:
-                    'Advertising blimps drift above the Tyrell pyramid — a vast amber sun burns behind teal-black towers as hover-car trails weave the canyon between slabs',
+                    'Advertising blimps drift above the Tyrell pyramid. A vast amber sun burns behind teal-black towers as hover-car trails weave the canyon between slabs.',
                 name: 'Off-World Skyline',
             },
             {
@@ -892,7 +892,7 @@ export default canvas.stateful(
                     windowDensity: 96,
                 },
                 description:
-                    'The intersection at peak chaos — magenta vapor pooling between tower-blocks, every window a story, speeders screaming between levels of the mega-complex',
+                    'The intersection at peak chaos. Magenta vapor pools between tower-blocks, every window a story, speeders screaming between levels of the mega-complex.',
                 name: 'Shibuya Crossing',
             },
             {
@@ -907,7 +907,7 @@ export default canvas.stateful(
                     windowDensity: 58,
                 },
                 description:
-                    'Emergency sirens reflected in black rain — crimson haze bleeding down neo-Tokyo streets, something about to detonate at the center of the frame',
+                    'Emergency sirens reflected in black rain. Crimson haze bleeds down neo-Tokyo streets, something about to detonate at the center of the frame.',
                 name: 'Neo Tokyo, 3:14 AM',
             },
             {
@@ -922,7 +922,7 @@ export default canvas.stateful(
                     windowDensity: 56,
                 },
                 description:
-                    'The Pacific Coast Highway remembered through a VHS tape — purple dusk melting into hot pink, a convertible slicing through a memory of summer',
+                    'The Pacific Coast Highway remembered through a VHS tape. Purple dusk melts into hot pink, a convertible slicing through a memory of summer.',
                 name: 'Pacific Coast Memory',
             },
             {
@@ -937,7 +937,7 @@ export default canvas.stateful(
                     windowDensity: 72,
                 },
                 description:
-                    'Corporate district, Monday pre-dawn — cold cyan glass walls stare back at themselves, a single amber window means someone has been up all night',
+                    'Corporate district, Monday pre-dawn. Cold cyan glass walls stare back at themselves; a single amber window means someone has been up all night.',
                 name: 'Winter Financial District',
             },
             {
@@ -952,7 +952,7 @@ export default canvas.stateful(
                     windowDensity: 68,
                 },
                 description:
-                    'An alien metropolis grown from coral — organic towers pulse with phosphorescent green, violet pollen drifts through warm tropical rain',
+                    'An alien metropolis grown from coral. Organic towers pulse with phosphorescent green, violet pollen drifting through warm tropical rain.',
                 name: 'Lagoon Citadel',
             },
             {
@@ -967,7 +967,7 @@ export default canvas.stateful(
                     windowDensity: 52,
                 },
                 description:
-                    'A dust storm clears over Olympus Mons — rust-red haze veils the colony as cobalt oxygen-domes glow against a Martian dawn',
+                    'A dust storm clears over Olympus Mons. Rust-red haze veils the colony as cobalt oxygen-domes glow against a Martian dawn.',
                 name: 'Olympus Observatory',
             },
             {
@@ -982,7 +982,7 @@ export default canvas.stateful(
                     windowDensity: 38,
                 },
                 description:
-                    'A lunar habitat hours before sunrise — azure moonlight silvering the dome glass, one crimson warning strobe pulsing on every spire',
+                    'A lunar habitat hours before sunrise. Azure moonlight silvers the dome glass, one crimson warning strobe pulsing on every spire.',
                 name: 'Lunar Nightshift',
             },
             {
@@ -997,7 +997,7 @@ export default canvas.stateful(
                     windowDensity: 88,
                 },
                 description:
-                    'Containment failure in the research arcology — acid-green vapor seeping from every joint as hot-pink warning traffic swarms the affected levels',
+                    'Containment failure in the research arcology. Acid-green vapor seeps from every joint as hot-pink warning traffic swarms the affected levels.',
                 name: 'Biohazard Tower',
             },
             {
@@ -1012,7 +1012,7 @@ export default canvas.stateful(
                     windowDensity: 18,
                 },
                 description:
-                    'A rolling blackout crawls across the grid — towers winking out floor by floor, only spire warnings and emergency transit still burning through the dark',
+                    'A rolling blackout crawls across the grid. Towers wink out floor by floor; only spire warnings and emergency transit still burn through the dark.',
                 name: 'Blackout Protocol',
             },
             {
@@ -1027,7 +1027,7 @@ export default canvas.stateful(
                     windowDensity: 100,
                 },
                 description:
-                    'Every circuit lit, every lane screaming — the megacity grid maxed out and hallucinating in magenta overload, rain reduced to vertical scan lines',
+                    'Every circuit lit, every lane screaming. The megacity grid maxed out and hallucinating in magenta overload, rain reduced to vertical scan lines.',
                 name: 'Dopamine Rush',
             },
         ],

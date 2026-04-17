@@ -67,7 +67,7 @@ export default effect(
             {
                 name: 'Hypnotic Vortex',
                 description:
-                    'Reality folding inward — a spiral of pure spectrum light pulling you into infinite fractal depth, every color the eye can perceive cascading through impossible geometry',
+                    'Reality folds inward. A spiral of pure spectrum light pulls you into infinite fractal depth, every color the eye can perceive cascading through impossible geometry.',
                 controls: {
                     brightness: 80,
                     complexity: 85,
@@ -84,7 +84,7 @@ export default effect(
             {
                 name: 'Crystal Cathedral',
                 description:
-                    'Light breathing through stained glass at molecular scale — crystalline refractions expanding and contracting in slow luminous waves',
+                    'Light breathes through stained glass at molecular scale. Crystalline refractions expand and contract in slow luminous waves.',
                 controls: {
                     brightness: 80,
                     complexity: 70,
@@ -101,7 +101,7 @@ export default effect(
             {
                 name: 'Neon Dimension',
                 description:
-                    'Every motion mode firing simultaneously — maximum fractal chaos drenched in electric neon, spiraling and breathing and drifting through a dimension of pure light',
+                    'Every motion mode fires simultaneously. Maximum fractal chaos drenched in electric neon, spiraling and breathing and drifting through a dimension of pure light.',
                 controls: {
                     brightness: 85,
                     complexity: 95,
@@ -118,7 +118,7 @@ export default effect(
             {
                 name: 'Aurora Dreams',
                 description:
-                    'Northern lights captured in a crystal ball — gentle drifting greens and violets flowing through organic symmetry, peaceful and otherworldly',
+                    'Northern lights captured in a crystal ball. Gentle drifting greens and violets flow through organic symmetry, peaceful and otherworldly.',
                 controls: {
                     brightness: 75,
                     complexity: 55,
@@ -135,7 +135,7 @@ export default effect(
             {
                 name: 'SilkCircuit Surge',
                 description:
-                    'Our signature palette cranked to eleven — electric purple and neon cyan refracting through deep geometric symmetry, the visual identity made kinetic',
+                    'Our signature palette cranked to eleven. Electric purple and neon cyan refract through deep geometric symmetry, the visual identity made kinetic.',
                 controls: {
                     brightness: 75,
                     complexity: 80,
@@ -152,7 +152,7 @@ export default effect(
             {
                 name: 'Deep Meditation',
                 description:
-                    'Slow breathing mandala in deep indigo space — the kind of visual that dissolves time, four-fold symmetry pulsing like a cosmic heartbeat',
+                    'Slow breathing mandala in deep indigo space. The kind of visual that dissolves time; four-fold symmetry pulses like a cosmic heartbeat.',
                 controls: {
                     brightness: 65,
                     complexity: 60,
@@ -169,7 +169,7 @@ export default effect(
             {
                 name: 'Ember Vortex',
                 description:
-                    'A fire tornado through a kaleidoscope — 12-fold crimson symmetry spiraling at high speed, molten amber light refracting through every fold',
+                    'A fire tornado through a kaleidoscope. Twelve-fold crimson symmetry spirals at high speed, molten amber light refracting through every fold.',
                 controls: {
                     brightness: 80,
                     complexity: 90,

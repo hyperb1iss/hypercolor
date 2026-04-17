@@ -15,7 +15,7 @@ export default effect(
     },
     {
         description:
-            'Molten ember flecks spiral through a directional forge — glowing particles caught in toxic thermals, trailing heat into shadow',
+            'Molten ember flecks spiral through a directional forge. Glowing particles caught in toxic thermals, trailing heat into shadow.',
         presets: [
             {
                 controls: {
@@ -28,7 +28,7 @@ export default effect(
                     speed: 6,
                 },
                 description:
-                    "Sparks cascading off an anvil in a blacksmith's den — white-hot flecks riding convection currents upward",
+                    "Sparks cascade off an anvil in a blacksmith's den. White-hot flecks ride convection currents upward.",
                 name: 'Foundry Floor',
             },
             {
@@ -41,7 +41,7 @@ export default effect(
                     scene: 'Crosswind',
                     speed: 3,
                 },
-                description: 'Radioactive mycelium releasing glowing spores into a dead wind — slow, alien, unsettling',
+                description: 'Radioactive mycelium releases glowing spores into a dead wind. Slow, alien, unsettling.',
                 name: 'Toxic Spore',
             },
             {
@@ -55,7 +55,7 @@ export default effect(
                     speed: 9,
                 },
                 description:
-                    'Overclocked silicon shedding plasma — electric fragments spiraling through a failing motherboard',
+                    'Overclocked silicon sheds plasma. Electric fragments spiral through a failing motherboard.',
                 name: 'Circuit Meltdown',
             },
             {
@@ -69,7 +69,7 @@ export default effect(
                     speed: 1,
                 },
                 description:
-                    'Incense embers floating in a still room — barely-there particles drifting with infinite patience',
+                    'Incense embers float in a still room. Barely-there particles drift with infinite patience.',
                 name: 'Ash Meditation',
             },
             {
@@ -83,7 +83,7 @@ export default effect(
                     speed: 5,
                 },
                 description:
-                    'A dying star venting rust-colored plasma through cracks in its own surface — apocalyptic and beautiful',
+                    'A dying star vents rust-colored plasma through cracks in its own surface. Apocalyptic and beautiful.',
                 name: 'Corroded Sun',
             },
             {
@@ -97,7 +97,7 @@ export default effect(
                     speed: 2,
                 },
                 description:
-                    'Paper lanterns dissolve into ash over a night river — scattered flecks coast sideways on a warm autumn draft',
+                    'Paper lanterns dissolve into ash over a night river. Scattered flecks coast sideways on a warm autumn draft.',
                 name: 'Lantern Festival',
             },
             {
@@ -111,7 +111,7 @@ export default effect(
                     speed: 10,
                 },
                 description:
-                    'Thermite ignites inside a centrifuge — white-hot sparks compress into a roaring column of molten fury',
+                    'Thermite ignites inside a centrifuge. White-hot sparks compress into a roaring column of molten fury.',
                 name: 'Thermite Cyclone',
             },
             {
@@ -125,7 +125,7 @@ export default effect(
                     speed: 4,
                 },
                 description:
-                    'Bioluminescent pollen rises from a swamp orchid at midnight — toxic green motes float upward into black canopy',
+                    'Bioluminescent pollen rises from a swamp orchid at midnight. Toxic green motes drift upward into black canopy.',
                 name: 'Swamp Orchid',
             },
         ],

@@ -21,7 +21,7 @@ export default effect(
     },
     {
         description:
-            'Luminous aurora curtains ripple across a star-dusted polar sky — slow magnetic waves painting the dark in spectral color',
+            'Aurora curtains ripple across a star-dusted polar sky. Slow magnetic waves paint the dark in spectral color.',
         presets: [
             {
                 controls: {
@@ -52,7 +52,7 @@ export default effect(
                     warpStrength: 95,
                 },
                 description:
-                    'A solar wind eruption tears the sky open — violent ribbons whip and shatter at impossible speed',
+                    'A solar wind eruption tears the sky open. Violent ribbons whip and shatter at impossible speed.',
                 name: 'Magnetic Storm',
             },
             {
@@ -68,7 +68,7 @@ export default effect(
                     warpStrength: 30,
                 },
                 description:
-                    'Bioluminescent plankton drifting through the thermosphere — ghostly green veils pulse in slow motion',
+                    'Bioluminescent plankton drift through the thermosphere. Ghostly green veils pulse in slow motion.',
                 name: 'Phosphor Dreams',
             },
             {
@@ -84,7 +84,7 @@ export default effect(
                     warpStrength: 80,
                 },
                 description:
-                    'Ancient light ceremony above a volcanic plateau — deep magentas and ambers weave through sacred geometry',
+                    'Ancient light ceremony above a volcanic plateau. Deep magentas and ambers weave through sacred geometry.',
                 name: 'Ritual Veil',
             },
             {
@@ -99,7 +99,7 @@ export default effect(
                     starBrightness: 35,
                     warpStrength: 72,
                 },
-                description: 'A retro-future skyline hums with neon — synthetic aurora over a digital ocean at dusk',
+                description: 'A retro-future skyline hums with neon. Synthetic aurora over a digital ocean at dusk.',
                 name: 'Silicon Vaporwave',
             },
             {
@@ -115,7 +115,7 @@ export default effect(
                     warpStrength: 20,
                 },
                 description:
-                    'Lay flat on frozen tundra and watch the entire sky exhale — vast emerald curtains unfurl between ten thousand stars',
+                    'Lie flat on frozen tundra and watch the entire sky exhale. Vast emerald curtains unfurl between ten thousand stars.',
                 name: 'Cathedral of Silence',
             },
             {
@@ -131,7 +131,7 @@ export default effect(
                     warpStrength: 88,
                 },
                 description:
-                    'Magma bleeds through cracks in a volcanic sky — crimson and amber ribbons thrash like solar flares ripping across the stratosphere',
+                    'Magma bleeds through cracks in a volcanic sky. Crimson and amber ribbons thrash like solar flares ripping across the stratosphere.',
                 name: 'Volcanic Skybleed',
             },
             {
@@ -147,7 +147,7 @@ export default effect(
                     warpStrength: 55,
                 },
                 description:
-                    'Electric silk unfurls across the ionosphere — neon violet and cyan threads weave through starlight like code made visible',
+                    'Electric silk unfurls across the ionosphere. Neon violet and cyan threads weave through starlight like code made visible.',
                 name: 'SilkCircuit Skyline',
             },
         ],

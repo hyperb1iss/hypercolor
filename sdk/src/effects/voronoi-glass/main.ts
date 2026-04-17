@@ -653,7 +653,7 @@ export default canvas.stateful(
     },
     {
         description:
-            'Peer through luminous stained glass — Voronoi cells shift and reform, each facet glowing with cathedral light',
+            'Peer through luminous stained glass. Voronoi cells shift and reform, each facet glowing with cathedral light.',
         presets: [
             {
                 controls: {
@@ -671,7 +671,7 @@ export default canvas.stateful(
                     speed: 2,
                 },
                 description:
-                    'Vast rose window flooding a stone nave with fractured color — slow-drifting cells in deep jewel tones, edges burning like leaded glass catching the last light',
+                    'Vast rose window floods a stone nave with fractured color. Slow-drifting cells in deep jewel tones, edges burning like leaded glass catching the last light.',
                 name: 'Cathedral at Twilight',
             },
             {
@@ -690,7 +690,7 @@ export default canvas.stateful(
                     speed: 3,
                 },
                 description:
-                    'Looking up through a crack in ancient ice — dense tessellations of blue-white shards refracting polar light, cold and sharp as a diamond saw',
+                    'Looking up through a crack in ancient ice. Dense tessellations of blue-white shards refract polar light, cold and sharp as a diamond saw.',
                 name: 'Glacier Crevasse',
             },
             {
@@ -709,7 +709,7 @@ export default canvas.stateful(
                     speed: 6,
                 },
                 description:
-                    'A furnace-hot window melting at the seams — cells drift and warp like cooling magma, amber edges bleeding into deep solar orange',
+                    'A furnace-hot window melts at the seams. Cells drift and warp like cooling magma, amber edges bleeding into deep solar orange.',
                 name: 'Molten Stained Glass',
             },
             {
@@ -728,7 +728,7 @@ export default canvas.stateful(
                     speed: 2,
                 },
                 description:
-                    'Bioluminescent jellyfish pulsing through deep ocean glass — slow, hypnotic cells in teal and violet, glazed with an unearthly aquatic shimmer',
+                    'Bioluminescent jellyfish pulse through deep ocean glass. Slow, hypnotic cells in teal and violet, glazed with an unearthly aquatic shimmer.',
                 name: 'Abyssal Lagoon',
             },
             {
@@ -747,7 +747,7 @@ export default canvas.stateful(
                     speed: 8,
                 },
                 description:
-                    'White light shatters through a room of cut diamonds — prismatic edges fire in every direction at once',
+                    'White light shatters through a room of cut diamonds. Prismatic edges fire in every direction at once.',
                 name: 'Diamond Refraction Chamber',
             },
             {
@@ -766,7 +766,7 @@ export default canvas.stateful(
                     speed: 5,
                 },
                 description:
-                    'Stare into the corona during totality — vast amber cells drift and collide, each seam blazing with trapped solar wind',
+                    'Stare into the corona during totality. Vast amber cells drift and collide, each seam blazing with trapped solar wind.',
                 name: 'Eclipse Corona',
             },
             {
@@ -785,7 +785,7 @@ export default canvas.stateful(
                     speed: 1,
                 },
                 description:
-                    'Sea glass worn smooth by a thousand tides — faint cells suspended in glacial stillness, light barely remembering where it entered',
+                    'Sea glass worn smooth by a thousand tides. Faint cells suspended in glacial stillness, light barely remembering where it entered.',
                 name: 'Frozen Reliquary',
             },
         ],
