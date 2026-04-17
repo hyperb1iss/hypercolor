@@ -175,8 +175,13 @@ fn try_resize_rgba(
         out_rgba,
         fr::PixelType::U8x4,
     )?;
-    let options =
-        fr::ResizeOptions::new().resize_alg(fr::ResizeAlg::Interpolation(fr::FilterType::Bilinear));
+    // The effect canvas is always opaque (α=255) — skipping
+    // fast_image_resize's default premultiply/un-premultiply bracket around
+    // the convolution pass removes roughly a third of the preview resize
+    // cost, which was the single largest CPU hotspot on the WS runtime.
+    let options = fr::ResizeOptions::new()
+        .resize_alg(fr::ResizeAlg::Interpolation(fr::FilterType::Bilinear))
+        .use_alpha(false);
     // `resize` can only fail on shape mismatch for a same-pixel-type pair,
     // which `ImageRef::new`/`Image::from_slice_u8` already reject above —
     // so any error past this point is a library-level bug. Ignore the

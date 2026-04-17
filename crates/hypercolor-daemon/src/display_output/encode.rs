@@ -430,8 +430,12 @@ fn try_render_canvas_frame_rgba_fast(
         fr::PixelType::U8x4,
     )
     .context("display destination image buffer is invalid for fast resize")?;
+    // Effect canvases are opaque (α=255). Skipping the default
+    // premultiply/un-premultiply bracket roughly halves the display
+    // output resize cost, which also feeds the JPEG encoder downstream.
     let options = fr::ResizeOptions::new()
         .resize_alg(fr::ResizeAlg::Interpolation(fr::FilterType::Bilinear))
+        .use_alpha(false)
         .crop(crop.left, crop.top, crop.width, crop.height);
     encode_state
         .fast_resizer
