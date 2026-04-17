@@ -14,6 +14,9 @@ uniform float iTurbulence;
 uniform float iFlow;
 uniform float iBlend;
 uniform int iDirection;
+// Declared so the palette control binds to a uniform; the TS frame hook
+// overrides iLeftColor/iRightColor/iBgColor directly from the palette table.
+uniform int iPalette;
 
 // ─── Noise ──────────────────────────────────────────────────────────
 
