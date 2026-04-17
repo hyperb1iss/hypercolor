@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { join, resolve } from 'node:path'
+import { resolve } from 'node:path'
 
 import { buildArtifacts, discoverWorkspaceEntries } from '../packages/core/src/tooling'
 
@@ -16,8 +16,9 @@ function parseArgs() {
 
     for (let index = 0; index < args.length; index += 1) {
         const arg = args[index]
-        if (arg === '--out' && args[index + 1]) {
-            outDir = resolve(args[index + 1]!)
+        const nextArg = args[index + 1]
+        if (arg === '--out' && nextArg) {
+            outDir = resolve(nextArg)
             index += 1
             continue
         }

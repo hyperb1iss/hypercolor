@@ -1,8 +1,7 @@
 import { existsSync, watch } from 'node:fs'
 import { dirname, resolve } from 'node:path'
-
-import { addEffect, promptAddEffectOptions } from '@hypercolor/create-effect'
 import type { TemplateKind } from '@hypercolor/create-effect'
+import { addEffect, promptAddEffectOptions } from '@hypercolor/create-effect'
 
 import { runDevServer } from './dev'
 import {
@@ -29,8 +28,9 @@ function optionValue(args: string[], name: string): string | undefined {
 function takeRepeatedValues(args: string[], name: string): string[] {
     const values: string[] = []
     for (let index = 0; index < args.length; index += 1) {
-        if (args[index] === name && args[index + 1]) {
-            values.push(args[index + 1]!)
+        const value = args[index + 1]
+        if (args[index] === name && value) {
+            values.push(value)
         }
     }
     return values
@@ -55,9 +55,8 @@ async function runBuild(args: string[], context: CliContext): Promise<number> {
     const workspaceRoot = resolve(context.cwd, optionValue(args, '--workspace-root') ?? '.')
     const outDir = resolve(context.cwd, optionValue(args, '--out') ?? 'dist')
     const entryRoots = takeRepeatedValues(args, '--entry-root')
-    const sdkAliasPath = optionValue(args, '--sdk-alias-path')
-        ? resolve(context.cwd, optionValue(args, '--sdk-alias-path')!)
-        : undefined
+    const sdkAliasArg = optionValue(args, '--sdk-alias-path')
+    const sdkAliasPath = sdkAliasArg ? resolve(context.cwd, sdkAliasArg) : undefined
     const minify = args.includes('--minify')
     const watchMode = args.includes('--watch')
     const buildAll = args.includes('--all') || positionalArgs(args).length === 0
@@ -221,9 +220,8 @@ async function runDev(args: string[], context: CliContext): Promise<number> {
     const [entryArg] = positionalArgs(args)
     const workspaceRoot = resolve(context.cwd, optionValue(args, '--workspace-root') ?? '.')
     const entryRoots = takeRepeatedValues(args, '--entry-root')
-    const sdkAliasPath = optionValue(args, '--sdk-alias-path')
-        ? resolve(context.cwd, optionValue(args, '--sdk-alias-path')!)
-        : undefined
+    const sdkAliasArg = optionValue(args, '--sdk-alias-path')
+    const sdkAliasPath = sdkAliasArg ? resolve(context.cwd, sdkAliasArg) : undefined
     const port = Number.parseInt(optionValue(args, '--port') ?? '4200', 10)
 
     await runDevServer({

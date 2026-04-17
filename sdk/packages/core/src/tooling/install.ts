@@ -90,7 +90,9 @@ function daemonBaseUrl(options: InstallArtifactsOptions): string {
     return options.daemonUrl ?? process.env.HYPERCOLOR_DAEMON_URL ?? 'http://127.0.0.1:9420'
 }
 
-export async function installArtifactsViaDaemon(options: InstallArtifactsOptions = {}): Promise<InstallArtifactsResult> {
+export async function installArtifactsViaDaemon(
+    options: InstallArtifactsOptions = {},
+): Promise<InstallArtifactsResult> {
     const cwd = options.cwd ?? process.cwd()
     const inputs = await resolveInstallInputs(options.filePatterns, cwd)
     const result: InstallArtifactsResult = { failures: [], successes: [] }

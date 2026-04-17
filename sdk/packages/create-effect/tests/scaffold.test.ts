@@ -54,9 +54,18 @@ describe('@hypercolor/create-effect', () => {
             expect(existsSync(join(workspaceDir, 'effects', 'aurora', 'main.ts'))).toBeTrue()
 
             await runCommand(['bun', 'install'], workspaceDir)
-            await runCommand(['bun', 'run', 'add', 'ember', '--template', 'shader'], workspaceDir, { EDITOR: '', VISUAL: '' })
-            await runCommand(['bun', 'run', 'add', 'hud', '--template', 'face', '--audio'], workspaceDir, { EDITOR: '', VISUAL: '' })
-            await runCommand(['bun', 'run', 'add', 'raw-html', '--template', 'html'], workspaceDir, { EDITOR: '', VISUAL: '' })
+            await runCommand(['bun', 'run', 'add', 'ember', '--template', 'shader'], workspaceDir, {
+                EDITOR: '',
+                VISUAL: '',
+            })
+            await runCommand(['bun', 'run', 'add', 'hud', '--template', 'face', '--audio'], workspaceDir, {
+                EDITOR: '',
+                VISUAL: '',
+            })
+            await runCommand(['bun', 'run', 'add', 'raw-html', '--template', 'html'], workspaceDir, {
+                EDITOR: '',
+                VISUAL: '',
+            })
 
             await runCommand(['bun', 'run', 'build'], workspaceDir)
             await runCommand(['bun', 'run', 'validate'], workspaceDir)
@@ -68,11 +77,9 @@ describe('@hypercolor/create-effect', () => {
 
             await runCommand(['./node_modules/.bin/hypercolor', 'validate', 'effects/raw-html.html'], workspaceDir)
             await runCommand(['bun', 'run', 'ship'], workspaceDir, { XDG_DATA_HOME: xdgDataHome })
-            await runCommand(
-                ['./node_modules/.bin/hypercolor', 'install', 'effects/raw-html.html'],
-                workspaceDir,
-                { XDG_DATA_HOME: xdgDataHome },
-            )
+            await runCommand(['./node_modules/.bin/hypercolor', 'install', 'effects/raw-html.html'], workspaceDir, {
+                XDG_DATA_HOME: xdgDataHome,
+            })
 
             expect(existsSync(join(xdgDataHome, 'hypercolor', 'effects', 'user', 'aurora.html'))).toBeTrue()
             expect(existsSync(join(xdgDataHome, 'hypercolor', 'effects', 'user', 'ember.html'))).toBeTrue()
@@ -105,7 +112,9 @@ describe('@hypercolor/create-effect', () => {
             )
 
             expect(exitCode).toBe(0)
-            expect(readFileSync(join(workspaceDir, 'effects', 'glow-card.html'), 'utf8')).toContain('<title>Glow Card</title>')
+            expect(readFileSync(join(workspaceDir, 'effects', 'glow-card.html'), 'utf8')).toContain(
+                '<title>Glow Card</title>',
+            )
 
             await runCommand(['bun', 'install'], workspaceDir)
             await runCommand(['bun', 'run', 'validate'], workspaceDir)

@@ -2,8 +2,12 @@ import { existsSync, watch } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
 import { renderDevShell } from './dev-shell'
-import { buildArtifactDocument, discoverWorkspaceEntries } from './tooling'
-import { artifactIdFromEntry, extractArtifactMetadata } from './tooling'
+import {
+    artifactIdFromEntry,
+    buildArtifactDocument,
+    discoverWorkspaceEntries,
+    extractArtifactMetadata,
+} from './tooling'
 import type { ArtifactKind, ExtractedArtifactMetadata } from './tooling/types'
 
 interface DevEntryState {
@@ -121,11 +125,7 @@ function injectDevPrelude(html: string, args: { height: number; width: number })
 
 async function tryOpenBrowser(url: string): Promise<void> {
     const cmd =
-        process.platform === 'darwin'
-            ? ['open', url]
-            : process.platform === 'linux'
-              ? ['xdg-open', url]
-              : undefined
+        process.platform === 'darwin' ? ['open', url] : process.platform === 'linux' ? ['xdg-open', url] : undefined
 
     if (!cmd) return
     Bun.spawn({ cmd, stderr: 'ignore', stdin: 'ignore', stdout: 'ignore' })
@@ -207,19 +207,21 @@ export async function startDevServer(options: DevServerOptions): Promise<DevServ
         },
         port: options.port,
         websocket: {
+            close(ws) {
+                sockets.delete(ws)
+            },
             message() {},
             open(ws) {
                 sockets.add(ws)
                 ws.send(JSON.stringify({ state: toSnapshot(), type: 'state' }))
             },
-            close(ws) {
-                sockets.delete(ws)
-            },
         },
     })
 
     async function refreshEntries(): Promise<void> {
-        const discoveredPaths = options.entryPath ? [resolve(options.cwd, options.entryPath)] : discoverWorkspaceEntries(options.workspaceRoot, options.entryRoots)
+        const discoveredPaths = options.entryPath
+            ? [resolve(options.cwd, options.entryPath)]
+            : discoverWorkspaceEntries(options.workspaceRoot, options.entryRoots)
         const nextEntries = new Map<string, DevEntryState>()
 
         for (const entryPath of discoveredPaths) {
