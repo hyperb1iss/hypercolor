@@ -978,13 +978,18 @@ async fn install_effect_upload_writes_file_and_registers_effect() {
     assert_eq!(json["data"]["presets"], 1);
 
     let installed_path = tempdir.path().join("data/effects/user/aurora.html");
-    assert!(installed_path.exists(), "expected uploaded effect to be written");
+    assert!(
+        installed_path.exists(),
+        "expected uploaded effect to be written"
+    );
 
     let registry = state.effect_registry.read().await;
     assert!(
         registry
             .iter()
-            .any(|(_, entry)| entry.metadata.name == "Aurora" && entry.source_path == fs::canonicalize(&installed_path).expect("canonical path should resolve"))
+            .any(|(_, entry)| entry.metadata.name == "Aurora"
+                && entry.source_path
+                    == fs::canonicalize(&installed_path).expect("canonical path should resolve"))
     );
 }
 

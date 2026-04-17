@@ -992,9 +992,8 @@ pub async fn install_effect(
         ));
     }
 
-    let html = match String::from_utf8(file_bytes) {
-        Ok(html) => html,
-        Err(_) => return ApiError::bad_request("Uploaded effect must be valid UTF-8 HTML."),
+    let Ok(html) = String::from_utf8(file_bytes) else {
+        return ApiError::bad_request("Uploaded effect must be valid UTF-8 HTML.");
     };
 
     let validated = match validate_uploaded_html(&html) {
@@ -1035,9 +1034,7 @@ pub async fn install_effect(
         Ok(Some(entry)) => entry,
         Ok(None) => {
             let _ = fs::remove_file(&installed_path).await;
-            return ApiError::bad_request(
-                "Uploaded effect is not supported by this daemon build.",
-            );
+            return ApiError::bad_request("Uploaded effect is not supported by this daemon build.");
         }
         Err(error) => {
             let _ = fs::remove_file(&installed_path).await;
@@ -1052,11 +1049,7 @@ pub async fn install_effect(
     let (added, updated) = {
         let mut registry = state.effect_registry.write().await;
         let replaced = registry.register(entry.clone()).is_some();
-        if replaced {
-            (0, 1)
-        } else {
-            (1, 0)
-        }
+        if replaced { (0, 1) } else { (1, 0) }
     };
 
     state
@@ -1507,21 +1500,18 @@ struct ValidatedUploadedHtml {
 async fn next_uploaded_html_field(
     multipart: &mut Multipart,
 ) -> Result<(Option<String>, Vec<u8>), Response> {
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|error| ApiError::bad_request(format!("Failed to read multipart upload: {error}")))?
-    {
+    while let Some(field) = multipart.next_field().await.map_err(|error| {
+        ApiError::bad_request(format!("Failed to read multipart upload: {error}"))
+    })? {
         let file_name = field.file_name().map(ToOwned::to_owned);
         let field_name = field.name().map(ToOwned::to_owned);
         if file_name.is_none() && field_name.as_deref() != Some("file") {
             continue;
         }
 
-        let bytes = field
-            .bytes()
-            .await
-            .map_err(|error| ApiError::bad_request(format!("Failed to read uploaded file: {error}")))?;
+        let bytes = field.bytes().await.map_err(|error| {
+            ApiError::bad_request(format!("Failed to read uploaded file: {error}"))
+        })?;
         return Ok((file_name, bytes.to_vec()));
     }
 
@@ -1571,10 +1561,7 @@ fn validate_uploaded_html(html: &str) -> Result<ValidatedUploadedHtml, Vec<Strin
         if let (Some(min), Some(max)) = (control.min, control.max)
             && min >= max
         {
-            errors.push(format!(
-                "Control \"{}\" has min >= max",
-                control.property
-            ));
+            errors.push(format!("Control \"{}\" has min >= max", control.property));
         }
     }
 
@@ -1589,11 +1576,7 @@ fn validate_uploaded_html(html: &str) -> Result<ValidatedUploadedHtml, Vec<Strin
     }
 }
 
-fn validate_preset_json(
-    html: &str,
-    parsed: &ParsedHtmlEffectMetadata,
-    errors: &mut Vec<String>,
-) {
+fn validate_preset_json(html: &str, parsed: &ParsedHtmlEffectMetadata, errors: &mut Vec<String>) {
     let known_controls = parsed
         .controls
         .iter()
@@ -1614,12 +1597,13 @@ fn validate_preset_json(
             continue;
         };
 
-        let parsed_json = serde_json::from_str::<serde_json::Value>(raw_controls).map_err(|error| {
-            format!(
-                "Preset \"{}\" has invalid preset-controls JSON: {error}",
-                normalize_whitespace(preset_name)
-            )
-        });
+        let parsed_json =
+            serde_json::from_str::<serde_json::Value>(raw_controls).map_err(|error| {
+                format!(
+                    "Preset \"{}\" has invalid preset-controls JSON: {error}",
+                    normalize_whitespace(preset_name)
+                )
+            });
         let value = match parsed_json {
             Ok(value) => value,
             Err(error) => {
@@ -1661,7 +1645,9 @@ fn user_effects_install_dir(state: &AppState) -> PathBuf {
 }
 
 fn uploaded_file_stem(file_name: &str) -> Option<&str> {
-    FsPath::new(file_name).file_stem().and_then(|stem| stem.to_str())
+    FsPath::new(file_name)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
 }
 
 fn sanitize_effect_filename_stem(input: &str) -> String {
@@ -1886,13 +1872,11 @@ fn has_render_surface(html: &str) -> bool {
 }
 
 fn has_tag_with_id(html: &str, tag_name: &str, expected_id: &str) -> bool {
-    extract_start_tags(html, tag_name)
-        .into_iter()
-        .any(|tag| {
-            parse_tag_attributes(&tag)
-                .get("id")
-                .is_some_and(|value| value.eq_ignore_ascii_case(expected_id))
-        })
+    extract_start_tags(html, tag_name).into_iter().any(|tag| {
+        parse_tag_attributes(&tag)
+            .get("id")
+            .is_some_and(|value| value.eq_ignore_ascii_case(expected_id))
+    })
 }
 
 fn extract_html_title(input: &str) -> Option<String> {
