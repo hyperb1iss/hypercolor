@@ -254,6 +254,8 @@ pub(crate) async fn maybe_sleep_throttle(
             render_surface_dequeued_slots: render_surfaces.dequeued_slots,
             preview_pool_saturation_reallocs: render_surfaces.preview_pool_saturation_reallocs,
             direct_pool_saturation_reallocs: render_surfaces.direct_pool_saturation_reallocs,
+            preview_pool_grown_slots: render_surfaces.preview_pool_grown_slots,
+            direct_pool_grown_slots: render_surfaces.direct_pool_grown_slots,
             canvas_receiver_count: render_surfaces.canvas_receivers,
             full_frame_copy_count: publish_stats.full_frame_copy_count,
             full_frame_copy_bytes: publish_stats.full_frame_copy_bytes,

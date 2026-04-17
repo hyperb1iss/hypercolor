@@ -1065,6 +1065,23 @@ pub struct SurfaceStateCounts {
 
 const DEFAULT_RENDER_SURFACE_SLOTS: usize = 3;
 
+/// Absolute floor for a pool's growth cap. Even a one-slot pool must be
+/// permitted to absorb transient double-pinning without entering the
+/// realloc-every-frame failure mode.
+const MIN_POOL_CAP: usize = 16;
+
+/// Growth factor applied to the initial slot count when the caller does
+/// not pass an explicit cap. Four absorbs typical fan-out swings while
+/// staying small enough that a leak shows up as a visible `grown_slots`
+/// climb well before it starves RAM.
+const DEFAULT_POOL_GROWTH_FACTOR: usize = 4;
+
+fn default_pool_cap(initial_slots: usize) -> usize {
+    initial_slots
+        .saturating_mul(DEFAULT_POOL_GROWTH_FACTOR)
+        .max(MIN_POOL_CAP)
+}
+
 #[derive(Clone)]
 struct SurfaceSlot {
     canvas: Canvas,
@@ -1098,29 +1115,59 @@ impl SurfaceSlot {
     }
 }
 
-/// Fixed-capacity pool for reusable render surfaces.
+/// Elastic-capacity pool for reusable render surfaces.
+///
+/// The pool starts at its configured initial slot count and grows up to
+/// `max_slots` on demand. A dequeue that cannot find a free slot first
+/// tries to append a new slot (one-time `Canvas::new` per high-water
+/// mark); only when the pool is at its cap does it fall back to reusing
+/// a still-shared Published slot, which forces a `Canvas::new` every
+/// frame until downstream releases its pins. That fallback path feeds
+/// `saturation_reallocs` so the cap can be flagged as undersized in
+/// metrics.
 #[derive(Clone)]
 pub struct RenderSurfacePool {
     descriptor: SurfaceDescriptor,
     slots: Vec<SurfaceSlot>,
     next_slot: usize,
-    /// Total count of dequeues that had to reuse a still-shared Published
-    /// slot and therefore allocated a fresh canvas. A non-zero growth rate
-    /// means the pool is undersized for the downstream fan-out.
+    /// Hard cap for `slots.len()`. Growth above this falls back to the
+    /// realloc path; serves as a safety bound against runaway Arc leaks.
+    max_slots: usize,
+    /// Total count of slots appended after construction. Each growth
+    /// event is a one-time `Canvas::new`; a high value simply means the
+    /// pool has settled into its working set.
+    grown_slots: u32,
+    /// Total count of dequeues that hit the cap and had to reuse a
+    /// still-shared Published slot (forcing a fresh `Canvas::new`). A
+    /// rising value means `max_slots` is too small for current fan-out.
     saturation_reallocs: u64,
 }
 
 impl RenderSurfacePool {
-    /// Create a new three-slot render surface pool.
+    /// Create a new render surface pool with the default slot count.
     #[must_use]
     pub fn new(descriptor: SurfaceDescriptor) -> Self {
         Self::with_slot_count(descriptor, DEFAULT_RENDER_SURFACE_SLOTS)
     }
 
-    /// Create a render surface pool with an explicit slot count.
+    /// Create a render surface pool with an explicit initial slot count
+    /// and an auto-computed growth cap.
     #[must_use]
     pub fn with_slot_count(descriptor: SurfaceDescriptor, slot_count: usize) -> Self {
+        Self::with_slot_count_and_cap(descriptor, slot_count, default_pool_cap(slot_count))
+    }
+
+    /// Create a render surface pool with explicit initial slot count and
+    /// growth cap. `max_slots` is clamped to at least `slot_count` (and
+    /// at least 1).
+    #[must_use]
+    pub fn with_slot_count_and_cap(
+        descriptor: SurfaceDescriptor,
+        slot_count: usize,
+        max_slots: usize,
+    ) -> Self {
         let slot_count = slot_count.max(1);
+        let max_slots = max_slots.max(slot_count);
         let slots = (0..slot_count)
             .map(|_| SurfaceSlot::new(descriptor))
             .collect();
@@ -1128,12 +1175,27 @@ impl RenderSurfacePool {
             descriptor,
             slots,
             next_slot: 0,
+            max_slots,
+            grown_slots: 0,
             saturation_reallocs: 0,
         }
     }
 
-    /// Cumulative count of dequeues that had to reuse a still-shared slot
-    /// and allocate a fresh canvas. Monotonically increasing.
+    /// Hard growth cap for this pool.
+    #[must_use]
+    pub const fn max_slots(&self) -> usize {
+        self.max_slots
+    }
+
+    /// Count of slots appended since construction. Each event is a
+    /// one-time `Canvas::new`; a settled pool converges on a fixed value.
+    #[must_use]
+    pub const fn grown_slots(&self) -> u32 {
+        self.grown_slots
+    }
+
+    /// Cumulative count of dequeues that hit the cap and had to reuse a
+    /// still-shared slot, forcing a fresh `Canvas::new` on every call.
     #[must_use]
     pub const fn saturation_reallocs(&self) -> u64 {
         self.saturation_reallocs
@@ -1188,6 +1250,15 @@ impl RenderSurfacePool {
     }
 
     /// Lease the next available surface slot for mutation.
+    ///
+    /// Preference order:
+    /// 1. An already-Free slot — no allocation.
+    /// 2. Appending a new slot (one-time `Canvas::new`) if we are under
+    ///    `max_slots`. Converts the chronic realloc pattern from an
+    ///    undersized pool into a single high-water-mark growth event.
+    /// 3. Reusing a still-shared Published slot — forces a
+    ///    `Canvas::new` every call; bumps `saturation_reallocs` so it
+    ///    surfaces in metrics.
     pub fn dequeue(&mut self) -> Option<SurfaceLease<'_>> {
         self.reclaim_published_slots();
 
@@ -1198,6 +1269,19 @@ impl RenderSurfacePool {
             }
 
             let _ = self.slots[index].begin_dequeue(self.descriptor);
+            self.next_slot = (index + 1) % self.slots.len();
+            return Some(SurfaceLease {
+                descriptor: self.descriptor,
+                slot: &mut self.slots[index],
+            });
+        }
+
+        if self.slots.len() < self.max_slots {
+            let mut fresh = SurfaceSlot::new(self.descriptor);
+            let _ = fresh.begin_dequeue(self.descriptor);
+            self.slots.push(fresh);
+            self.grown_slots = self.grown_slots.saturating_add(1);
+            let index = self.slots.len() - 1;
             self.next_slot = (index + 1) % self.slots.len();
             return Some(SurfaceLease {
                 descriptor: self.descriptor,

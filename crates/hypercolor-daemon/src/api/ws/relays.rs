@@ -1178,6 +1178,8 @@ pub(super) async fn build_metrics_message(
                 canvas_receivers: latest_frame.canvas_receiver_count,
                 preview_pool_saturation_reallocs: latest_frame.preview_pool_saturation_reallocs,
                 direct_pool_saturation_reallocs: latest_frame.direct_pool_saturation_reallocs,
+                preview_pool_grown_slots: latest_frame.preview_pool_grown_slots,
+                direct_pool_grown_slots: latest_frame.direct_pool_grown_slots,
             },
             preview: MetricsPreview {
                 canvas_receivers: preview_runtime.canvas_receivers,

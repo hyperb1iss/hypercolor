@@ -120,6 +120,23 @@ impl RenderGroupRuntime {
             .sum()
     }
 
+    /// Count of slots the preview pool has appended above its initial
+    /// capacity since construction. Non-zero values are benign and
+    /// reflect the pool settling at its working-set size.
+    #[must_use]
+    pub(crate) fn preview_surface_pool_grown_slots(&self) -> u32 {
+        self.preview_surface_pool.grown_slots()
+    }
+
+    /// Total grown slots across every direct-canvas group pool.
+    #[must_use]
+    pub(crate) fn direct_surface_pool_grown_slots(&self) -> u32 {
+        self.direct_surface_pools
+            .values()
+            .map(RenderSurfacePool::grown_slots)
+            .sum()
+    }
+
     pub(crate) fn reuse_scene(&self, groups_revision: u64) -> Option<RenderGroupResult> {
         let retained = self.retained_frame.as_ref()?;
         if retained.groups_revision != groups_revision {

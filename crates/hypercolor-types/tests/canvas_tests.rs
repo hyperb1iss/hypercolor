@@ -365,8 +365,10 @@ fn render_surface_pool_can_grow_without_disturbing_published_slots() {
 
 #[test]
 fn render_surface_pool_rebinds_published_slots_under_retention_pressure() {
+    // Pin the pool at a single slot so dequeue must fall back to rebinding
+    // the still-shared Published slot instead of growing.
     let descriptor = SurfaceDescriptor::rgba8888(2, 1);
-    let mut pool = RenderSurfacePool::with_slot_count(descriptor, 1);
+    let mut pool = RenderSurfacePool::with_slot_count_and_cap(descriptor, 1, 1);
 
     let mut lease_a = pool.dequeue().expect("first lease");
     lease_a
@@ -493,6 +495,63 @@ fn render_surface_pool_slot_counts_match_visible_states() {
     assert_eq!(counts.published, 1);
     assert_eq!(counts.dequeued, 1);
     assert_eq!(counts.free, 1);
+}
+
+#[test]
+fn render_surface_pool_grows_when_all_slots_are_still_shared() {
+    let descriptor = SurfaceDescriptor::rgba8888(2, 2);
+    let mut pool = RenderSurfacePool::with_slot_count_and_cap(descriptor, 2, 4);
+
+    // Publish both initial slots and hold their surfaces so reclaim_published_slots
+    // cannot free them on the next dequeue.
+    let lease_a = pool.dequeue().expect("first lease");
+    let _surface_a = lease_a.submit(1, 10);
+    let lease_b = pool.dequeue().expect("second lease");
+    let _surface_b = lease_b.submit(2, 20);
+
+    assert_eq!(pool.slot_count(), 2);
+    assert_eq!(pool.grown_slots(), 0);
+
+    // Next dequeue should grow the pool rather than realloc a shared slot.
+    let _lease_c = pool.dequeue().expect("grown lease");
+    assert_eq!(pool.slot_count(), 3);
+    assert_eq!(pool.grown_slots(), 1);
+    assert_eq!(pool.saturation_reallocs(), 0);
+}
+
+#[test]
+fn render_surface_pool_falls_back_to_realloc_when_at_cap() {
+    let descriptor = SurfaceDescriptor::rgba8888(2, 2);
+    let mut pool = RenderSurfacePool::with_slot_count_and_cap(descriptor, 1, 1);
+
+    // Pin the only slot's canvas downstream so reclaim cannot free it.
+    let lease = pool.dequeue().expect("first lease");
+    let _surface = lease.submit(1, 10);
+
+    assert_eq!(pool.slot_count(), 1);
+    assert_eq!(pool.max_slots(), 1);
+
+    // At cap and still shared — the realloc path must engage.
+    let _lease = pool.dequeue().expect("realloc lease");
+    assert_eq!(pool.slot_count(), 1);
+    assert_eq!(pool.grown_slots(), 0);
+    assert_eq!(pool.saturation_reallocs(), 1);
+}
+
+#[test]
+fn render_surface_pool_prefers_reclaimed_slots_over_growing() {
+    let descriptor = SurfaceDescriptor::rgba8888(2, 2);
+    let mut pool = RenderSurfacePool::with_slot_count_and_cap(descriptor, 1, 4);
+
+    // Publish then drop, so the slot is reclaimable on next dequeue.
+    let lease = pool.dequeue().expect("first lease");
+    let surface = lease.submit(1, 10);
+    drop(surface);
+
+    let _lease = pool.dequeue().expect("reclaimed lease");
+    assert_eq!(pool.slot_count(), 1);
+    assert_eq!(pool.grown_slots(), 0);
+    assert_eq!(pool.saturation_reallocs(), 0);
 }
 
 #[test]

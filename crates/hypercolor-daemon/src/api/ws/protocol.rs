@@ -818,14 +818,18 @@ pub(super) struct MetricsRenderSurfaces {
     pub(super) dequeued_slots: u32,
     pub(super) canvas_receivers: u32,
     /// Monotonic counter: how many times the render-group preview pool
-    /// had to allocate a fresh canvas on dequeue because every slot was
-    /// still shared downstream. A steadily-rising value signals the pool
-    /// is undersized for current subscriber fan-out and is silently
-    /// inflating the producer stage with `canvas_size * 4` bytes of
-    /// alloc+zero per frame.
+    /// hit its growth cap and had to reuse a still-shared slot, forcing
+    /// a fresh `Canvas::new` on every frame. A rising value means the
+    /// cap is too low for current fan-out.
     pub(super) preview_pool_saturation_reallocs: u64,
     /// Same counter summed across per-group direct-canvas pools.
     pub(super) direct_pool_saturation_reallocs: u64,
+    /// Current slot count above the preview pool's initial size.
+    /// Benign when stable — the pool converged on its working set. A
+    /// climbing value over time could indicate a pinned-Arc leak.
+    pub(super) preview_pool_grown_slots: u32,
+    /// Same gauge summed across per-group direct-canvas pools.
+    pub(super) direct_pool_grown_slots: u32,
 }
 
 #[derive(Debug, Serialize)]
