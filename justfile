@@ -101,6 +101,13 @@ lint *args='':
 lint-fix *args='':
     ./scripts/cargo-cache-build.sh cargo clippy {{ workspace_args }} --all-targets --fix --allow-dirty --allow-staged {{ args }}
 
+# Apply automatic Rust and SDK fixes
+fix *args='':
+    just lint-fix {{ args }}
+    just fmt
+    just sdk-fix
+    @echo '✅ Automatic fixes applied'
+
 # Format all code
 fmt:
     cargo fmt --all
