@@ -45,6 +45,12 @@ pub struct ActiveEffectResponse {
     pub active_preset_id: Option<String>,
     #[serde(default)]
     pub render_group_id: Option<String>,
+    /// Server-side controls version (matches the `ETag` header).
+    /// `Some` while an effect is running, `None` on the idle response.
+    /// Clients that want optimistic concurrency echo this back via
+    /// `If-Match` on the effect-id PATCH endpoint.
+    #[serde(default)]
+    pub controls_version: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -60,6 +66,8 @@ struct WireActiveEffectResponse {
     pub active_preset_id: Option<String>,
     #[serde(default)]
     pub render_group_id: Option<String>,
+    #[serde(default)]
+    pub controls_version: Option<u64>,
 }
 
 /// Detailed effect payload from `GET /api/v1/effects/:id`.
@@ -124,6 +132,7 @@ pub async fn fetch_active_effect() -> Result<Option<ActiveEffectResponse>, Strin
             control_values: effect.control_values,
             active_preset_id: effect.active_preset_id,
             render_group_id: effect.render_group_id,
+            controls_version: effect.controls_version,
         })
     }))
 }

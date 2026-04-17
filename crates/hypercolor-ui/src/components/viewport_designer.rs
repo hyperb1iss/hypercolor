@@ -1,12 +1,6 @@
 //! Viewport Designer modal — authoring surface for effects that expose
 //! a `ViewportRect` control (Web Viewport, Screen Cast).
-//!
-//! Scaffold-only for this commit — the module compiles and every type
-//! in the public surface is reachable, but the `ViewportDesignerModal`
-//! entry point is not yet wired into `control_panel`. That's the next
-//! commit; carrying module-level `dead_code` allows here to keep the
-//! shell landable as its own reviewable unit without red lint output.
-#![allow(dead_code, clippy::too_many_arguments)]
+#![allow(clippy::too_many_arguments)]
 //!
 //! Implements Spec 46 Wave 1 MVP. The modal discriminates on effect
 //! mode: Web Viewport gets URL + scroll + render-size controls,
@@ -108,6 +102,10 @@ impl ViewportDraft {
 pub struct ViewportDesignerContext {
     pub effect_id: String,
     pub effect_name: String,
+    /// Target LED canvas aspect ratio. Reserved for the aspect-lock
+    /// toggle in the next commit; carry it through now so callers
+    /// don't have to change their context construction later.
+    #[allow(dead_code)]
     pub canvas_aspect: f32,
     pub initial_draft: ViewportDraft,
 }
