@@ -1002,6 +1002,7 @@ async fn activate_display_face_test_scene(
             color: None,
             display_target: Some(DisplayFaceTarget::new(device_id)),
             role: RenderGroupRole::Display,
+                    controls_version: 0,
         }],
         transition: TransitionSpec {
             duration_ms: 0,
@@ -1833,6 +1834,175 @@ async fn patch_controls_updates_primary_group_controls() {
     assert_eq!(active_response.status(), StatusCode::OK);
     let active_json = body_json(active_response).await;
     assert_eq!(active_json["data"]["control_values"]["speed"]["float"], 7.5);
+}
+
+#[tokio::test]
+async fn patch_effect_controls_by_id_rejects_non_uuid_path_segment() {
+    // The effect-id PATCH endpoint is UUID-keyed; anything that isn't
+    // parseable as a UUID is a client bug, not a misrouted request,
+    // so 400 is the right answer (404 would let a fat-fingered call
+    // look like "that effect just isn't loaded").
+    let app = test_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/effects/not-a-uuid/controls")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"speed":7.0}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn patch_effect_controls_by_id_threads_controls_version_through_etag() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    // The active-effect endpoint seeds the modal's draft; it must
+    // hand back both the current `controls_version` and an `ETag`
+    // header so the client can round-trip either form.
+    let active_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_response.status(), StatusCode::OK);
+    let etag = active_response
+        .headers()
+        .get("etag")
+        .expect("active effect response should carry ETag")
+        .to_str()
+        .expect("ETag must be ASCII")
+        .to_owned();
+    assert_eq!(etag, "\"0\"");
+    let active_body = body_json(active_response).await;
+    let effect_id = active_body["data"]["id"]
+        .as_str()
+        .expect("active effect must have an id")
+        .to_owned();
+    assert_eq!(active_body["data"]["controls_version"], 0);
+
+    // Valid `If-Match` applies; the response body + ETag advance to
+    // version 1 so the next commit can chain against the fresh token.
+    let patch_uri = format!("/api/v1/effects/{effect_id}/controls");
+    let ok_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(&patch_uri)
+                .header("content-type", "application/json")
+                .header("if-match", "0")
+                .body(Body::from(r#"{"controls":{"speed":3.0}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(ok_response.status(), StatusCode::OK);
+    let ok_etag = ok_response
+        .headers()
+        .get("etag")
+        .expect("successful PATCH should carry ETag")
+        .to_str()
+        .expect("ETag must be ASCII")
+        .to_owned();
+    assert_eq!(ok_etag, "\"1\"");
+    let ok_body = body_json(ok_response).await;
+    assert_eq!(ok_body["data"]["controls_version"], 1);
+
+    // Re-issuing the same precondition now fires the stale path; the
+    // 412 body carries the server's current version so the client can
+    // rebase without a second GET.
+    let stale_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(&patch_uri)
+                .header("content-type", "application/json")
+                .header("if-match", "0")
+                .body(Body::from(r#"{"controls":{"speed":3.5}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(stale_response.status(), StatusCode::PRECONDITION_FAILED);
+    let stale_body = body_json(stale_response).await;
+    assert_eq!(stale_body["current"], 1);
+}
+
+#[tokio::test]
+async fn patch_effect_controls_by_id_accepts_missing_if_match_as_no_precondition() {
+    // Omitting the header must keep the endpoint usable for simple
+    // clients (curl, tests, ad-hoc integrations) that don't want to
+    // participate in optimistic concurrency.
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    let active_body = body_json(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/effects/active")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request"),
+    )
+    .await;
+    let effect_id = active_body["data"]["id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/effects/{effect_id}/controls"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"speed":4.0}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]

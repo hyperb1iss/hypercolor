@@ -335,6 +335,7 @@ fn remove_display_groups_for_device_prunes_named_scenes_too() {
             color: None,
             display_target: Some(DisplayFaceTarget::new(device_id)),
             role: RenderGroupRole::Display,
+            controls_version: 0,
         },
         RenderGroup {
             id: RenderGroupId::new(),
@@ -350,6 +351,7 @@ fn remove_display_groups_for_device_prunes_named_scenes_too() {
             color: None,
             display_target: Some(DisplayFaceTarget::new(other_device_id)),
             role: RenderGroupRole::Display,
+            controls_version: 0,
         },
     ];
     let named_scene_id = named_scene.id;

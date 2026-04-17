@@ -163,6 +163,7 @@ mod tests {
             color: None,
             display_target: None,
             role: RenderGroupRole::Custom,
+            controls_version: 0,
         }
     }
 

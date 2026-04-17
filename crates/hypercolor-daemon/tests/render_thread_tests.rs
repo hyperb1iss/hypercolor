@@ -202,6 +202,7 @@ fn primary_group(
         color: None,
         display_target: None,
         role: RenderGroupRole::Primary,
+        controls_version: 0,
     }
 }
 
@@ -225,6 +226,7 @@ fn custom_group(
         color: None,
         display_target: None,
         role: RenderGroupRole::Custom,
+        controls_version: 0,
     }
 }
 
@@ -249,6 +251,7 @@ fn display_group(
         color: None,
         display_target: Some(DisplayFaceTarget::new(device_id)),
         role: RenderGroupRole::Display,
+        controls_version: 0,
     }
 }
 

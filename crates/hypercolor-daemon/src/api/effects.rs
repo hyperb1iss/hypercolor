@@ -5,11 +5,13 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::response::Response;
+use axum::http::{HeaderMap, HeaderValue, header};
+use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use hypercolor_core::effect::EffectRegistry;
+use hypercolor_core::scene::ControlsVersionMismatch;
 use hypercolor_types::effect::{
     ControlBinding, ControlDefinition, ControlValue, EffectCategory, EffectId, EffectMetadata,
     EffectSource, PresetTemplate,
@@ -86,6 +88,12 @@ pub struct ActiveEffectResponse {
     pub active_preset_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub render_group_id: Option<String>,
+    /// Server-side version token for the group's controls. Clients
+    /// that want to use optimistic concurrency on the effect-id PATCH
+    /// endpoint echo this value back via `If-Match`. Idle responses
+    /// omit it (there's nothing to version).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub controls_version: Option<u64>,
 }
 
 impl ActiveEffectResponse {
@@ -98,6 +106,7 @@ impl ActiveEffectResponse {
             control_values: HashMap::new(),
             active_preset_id: None,
             render_group_id: None,
+            controls_version: None,
         }
     }
 }
@@ -501,7 +510,8 @@ pub async fn get_active_effect(State(state): State<Arc<AppState>>) -> Response {
         return ApiResponse::ok(ActiveEffectResponse::idle());
     };
 
-    ApiResponse::ok(ActiveEffectResponse {
+    let controls_version = group.controls_version;
+    let response = ActiveEffectResponse {
         id: Some(meta.id.to_string()),
         name: Some(meta.name.clone()),
         state: "running".to_owned(),
@@ -509,7 +519,10 @@ pub async fn get_active_effect(State(state): State<Arc<AppState>>) -> Response {
         control_values: resolved_control_values(&meta, &group),
         active_preset_id: group.preset_id.map(|preset| preset.to_string()),
         render_group_id: Some(group.id.to_string()),
-    })
+        controls_version: Some(controls_version),
+    };
+    let response = ApiResponse::ok(response).into_response();
+    attach_controls_version_headers(response, controls_version)
 }
 
 /// `POST /api/v1/effects/stop` — Stop the currently active effect.
@@ -616,6 +629,187 @@ pub async fn update_current_controls(
         "applied": applied,
         "rejected": rejected,
     }))
+}
+
+/// `PATCH /api/v1/effects/{effect_id}/controls` — Update controls on a
+/// specific effect, scoped by the effect's metadata id rather than the
+/// ambient "currently active" effect.
+///
+/// Supports optimistic concurrency via the standard `If-Match` header:
+/// the value is the `controls_version` the client last observed (as an
+/// unsigned integer; no quoting required). On a version match the
+/// update is applied, the new version is echoed in the `ETag` response
+/// header AND the JSON body's `controls_version` field. On mismatch
+/// the response is `412 Precondition Failed` with a body containing
+/// the current server version so the client can rebase.
+///
+/// Callers that don't care about concurrency control omit the header;
+/// the endpoint then behaves like `update_current_controls`.
+///
+/// Implemented per Spec 46 § 9.1.
+pub async fn update_effect_controls(
+    State(state): State<Arc<AppState>>,
+    Path(effect_id_raw): Path<String>,
+    headers: HeaderMap,
+    body: Option<Json<UpdateCurrentControlsRequest>>,
+) -> Response {
+    let Ok(effect_uuid) = effect_id_raw.parse::<uuid::Uuid>() else {
+        return ApiError::bad_request("effect_id must be a valid UUID");
+    };
+    let effect_id = EffectId::from(effect_uuid);
+
+    let expected_version = match parse_if_match_version(&headers) {
+        Ok(version) => version,
+        Err(message) => return ApiError::bad_request(message),
+    };
+
+    let controls = body
+        .as_ref()
+        .and_then(|payload| payload.controls.as_ref())
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if controls.is_empty() {
+        return ApiError::bad_request("controls payload must include at least one key");
+    }
+
+    let Some((group, active_meta)) = primary_effect_by_id(state.as_ref(), effect_id).await else {
+        return ApiError::not_found("No render group loads that effect");
+    };
+    let effect_name = active_meta.name.clone();
+    let (normalized, invalid) = normalize_control_payload(&active_meta, &controls);
+    let mut rejected: Vec<String> = Vec::new();
+    rejected.extend(invalid);
+    let applied = normalized.clone();
+    let previous_values = resolved_control_values(&active_meta, &group);
+
+    let (scene_id, updated_group, new_version) = {
+        let mut scene_manager = state.scene_manager.write().await;
+        let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
+            Ok(scene_id) => scene_id,
+            Err(error) => return error.api_response("updating effect controls"),
+        };
+        match scene_manager.patch_group_controls_with_precondition(
+            group.id,
+            normalized,
+            expected_version,
+        ) {
+            Ok((updated, version)) => (scene_id, updated.clone(), version),
+            Err(ControlsVersionMismatch::NoActiveScene | ControlsVersionMismatch::GroupMissing) => {
+                return ApiError::not_found("render group no longer exists");
+            }
+            Err(ControlsVersionMismatch::Stale { current }) => {
+                return controls_version_mismatch_response(current);
+            }
+        }
+    };
+
+    if !rejected.is_empty() {
+        warn!(
+            effect = %effect_name,
+            rejected_controls = ?rejected,
+            "Rejected one or more control updates"
+        );
+    }
+    publish_render_group_changed(
+        state.as_ref(),
+        scene_id,
+        &updated_group,
+        RenderGroupChangeKind::ControlsPatched,
+    );
+    publish_primary_control_changed_events(
+        state.as_ref(),
+        &active_meta,
+        &previous_values,
+        &resolved_control_values(&active_meta, &updated_group),
+        applied.keys().map(String::as_str),
+        ChangeTrigger::Api,
+    );
+    super::persist_runtime_session(&state).await;
+
+    let body = ApiResponse::ok(serde_json::json!({
+        "effect": effect_name,
+        "applied": applied,
+        "rejected": rejected,
+        "controls_version": new_version,
+    }))
+    .into_response();
+    attach_controls_version_headers(body, new_version)
+}
+
+/// Parse an `If-Match` header as an unsigned decimal `controls_version`.
+///
+/// Per RFC 7232 the canonical shape is a quoted ETag; we accept both
+/// quoted and bare decimal forms because clients do not consistently
+/// quote integer ETags and the parser is cheap. A malformed header
+/// surfaces a static error message the caller wraps into a `400 Bad
+/// Request` — silent fallback to "no precondition" would defeat the
+/// whole point.
+///
+/// Returns `Ok(Some(v))` for a valid precondition, `Ok(None)` for no
+/// header or `*`, and `Err(msg)` for malformed input.
+fn parse_if_match_version(headers: &HeaderMap) -> Result<Option<u64>, &'static str> {
+    let Some(value) = headers.get(header::IF_MATCH) else {
+        return Ok(None);
+    };
+    let raw = value.to_str().map_err(|_| "If-Match header must be ASCII")?;
+    let trimmed = raw.trim().trim_matches('"');
+    if trimmed == "*" {
+        // `*` traditionally means "any existing resource" — we honor
+        // it by skipping the precondition, matching the common HTTP
+        // semantic. Not used by our modal but harmless to support.
+        return Ok(None);
+    }
+    trimmed
+        .parse::<u64>()
+        .map(Some)
+        .map_err(|_| "If-Match must be a non-negative integer controls_version")
+}
+
+fn controls_version_mismatch_response(current: u64) -> Response {
+    let body = serde_json::json!({
+        "error": "controls_version mismatch",
+        "current": current,
+    });
+    let mut response = (
+        axum::http::StatusCode::PRECONDITION_FAILED,
+        axum::Json(body),
+    )
+        .into_response();
+    if let Ok(etag) = HeaderValue::from_str(&format!("\"{current}\"")) {
+        response.headers_mut().insert(header::ETAG, etag);
+    }
+    response
+}
+
+fn attach_controls_version_headers(mut response: Response, version: u64) -> Response {
+    if let Ok(etag) = HeaderValue::from_str(&format!("\"{version}\"")) {
+        response.headers_mut().insert(header::ETAG, etag);
+    }
+    response
+}
+
+/// Resolve the render group currently loaded with the given effect id.
+///
+/// Wave 1 policy: if the effect is attached to multiple groups (unusual
+/// but not impossible in custom scenes), take the first — deterministic
+/// enough for the UI's single-effect modal. A future "pick which group"
+/// affordance can extend this.
+async fn primary_effect_by_id(
+    state: &AppState,
+    effect_id: EffectId,
+) -> Option<(RenderGroup, EffectMetadata)> {
+    let scene_manager = state.scene_manager.read().await;
+    let scene = scene_manager.active_scene()?;
+    let group = scene
+        .groups
+        .iter()
+        .find(|group| group.effect_id == Some(effect_id))
+        .cloned()?;
+    drop(scene_manager);
+    let registry = state.effect_registry.read().await;
+    let metadata = registry.get(&effect_id)?.metadata.clone();
+    Some((group, metadata))
 }
 
 /// `PUT /api/v1/effects/current/controls/{name}/binding` — Attach a live sensor

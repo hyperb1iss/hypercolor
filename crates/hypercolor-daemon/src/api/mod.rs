@@ -910,6 +910,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             "/effects/{id}/apply",
             axum::routing::post(effects::apply_effect),
         )
+        .route(
+            "/effects/{id}/controls",
+            axum::routing::patch(effects::update_effect_controls),
+        )
         // ── Scenes ───────────────────────────────────────────────────
         .route(
             "/scenes",

@@ -121,6 +121,15 @@ pub struct RenderGroup {
 
     /// Semantic role inside the scene.
     pub role: RenderGroupRole,
+
+    /// Monotonic version counter for the control mutation stream.
+    ///
+    /// Bumped every time `controls` or `control_bindings` is patched so
+    /// clients can detect concurrent edits via an `If-Match` header on
+    /// the controls PATCH endpoint. Serialized with `#[serde(default)]`
+    /// so older persisted scenes load at version 0 without migration.
+    #[serde(default)]
+    pub controls_version: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

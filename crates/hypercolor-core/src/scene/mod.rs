@@ -34,6 +34,23 @@ use crate::types::scene::{
 };
 use crate::types::spatial::SpatialLayout;
 
+/// Error variants for precondition-checked control patches.
+///
+/// `NoActiveScene` and `GroupMissing` are plumbed separately from
+/// `Stale` so API callers can map each to a distinct HTTP status
+/// (404 vs 412) without reflecting on strings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlsVersionMismatch {
+    /// No scene is currently active — nothing to patch.
+    NoActiveScene,
+    /// The active scene exists but no group with the given id.
+    GroupMissing,
+    /// The group exists and the `If-Match` precondition did not
+    /// match. `current` is the server-side version the client should
+    /// rebase against if they choose to retry.
+    Stale { current: u64 },
+}
+
 // ── SceneManager ────────────────────────────────────────────────────────
 
 /// Central scene lifecycle manager.
@@ -382,6 +399,7 @@ impl SceneManager {
                 color: None,
                 display_target: None,
                 role: RenderGroupRole::Primary,
+                controls_version: 0,
             });
         }
 
@@ -433,6 +451,7 @@ impl SceneManager {
                 color: None,
                 display_target: Some(DisplayFaceTarget::new(device_id)),
                 role: RenderGroupRole::Display,
+                controls_version: 0,
             });
         }
 
@@ -526,13 +545,50 @@ impl SceneManager {
         group_id: RenderGroupId,
         updates: HashMap<String, ControlValue>,
     ) -> Option<&RenderGroup> {
-        let scene = self.active_scene_mut()?;
-        let group = scene.groups.iter_mut().find(|group| group.id == group_id)?;
+        self.patch_group_controls_with_precondition(group_id, updates, None)
+            .ok()
+            .map(|(group, _version)| group)
+    }
+
+    /// Apply control updates subject to an optional version precondition.
+    ///
+    /// `expected_version = Some(N)` returns
+    /// `Err(ControlsVersionMismatch { current })` if the group's
+    /// current version is not `N`. `None` skips the check (the common
+    /// patch_group_controls caller is preserved). On success the
+    /// returned tuple carries the new version so callers can echo it
+    /// back as an `ETag`.
+    pub fn patch_group_controls_with_precondition(
+        &mut self,
+        group_id: RenderGroupId,
+        updates: HashMap<String, ControlValue>,
+        expected_version: Option<u64>,
+    ) -> Result<(&RenderGroup, u64), ControlsVersionMismatch> {
+        let scene = self
+            .active_scene_mut()
+            .ok_or(ControlsVersionMismatch::NoActiveScene)?;
+        let group = scene
+            .groups
+            .iter_mut()
+            .find(|group| group.id == group_id)
+            .ok_or(ControlsVersionMismatch::GroupMissing)?;
+        if let Some(expected) = expected_version
+            && expected != group.controls_version
+        {
+            return Err(ControlsVersionMismatch::Stale {
+                current: group.controls_version,
+            });
+        }
         group.controls.extend(updates);
         group.preset_id = None;
+        group.controls_version = group.controls_version.saturating_add(1);
+        let new_version = group.controls_version;
         self.refresh_active_render_groups();
-        self.active_scene()
+        let current = self
+            .active_scene()
             .and_then(|active| active.groups.iter().find(|group| group.id == group_id))
+            .ok_or(ControlsVersionMismatch::GroupMissing)?;
+        Ok((current, new_version))
     }
 
     pub fn reset_group_controls(

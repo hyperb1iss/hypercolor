@@ -100,6 +100,7 @@ fn sample_group(name: &str, zone_id: &str, effect_id: EffectId) -> RenderGroup {
         color: Some("#e135ff".into()),
         display_target: None,
         role: RenderGroupRole::Custom,
+        controls_version: 0,
     }
 }
 

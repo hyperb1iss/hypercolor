@@ -427,6 +427,7 @@ async fn activate_display_face_scene_with_target(
             color: None,
             display_target: Some(display_target.normalized()),
             role: hypercolor_types::scene::RenderGroupRole::Display,
+                    controls_version: 0,
         }],
         transition: TransitionSpec {
             duration_ms: 0,

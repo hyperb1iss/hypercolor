@@ -113,6 +113,7 @@ fn grouped_scene(name: &str, zone_id: &str, effect_id: EffectId) -> hypercolor_t
         color: None,
         display_target: None,
         role: RenderGroupRole::Custom,
+            controls_version: 0,
     }];
     scene.unassigned_behavior = UnassignedBehavior::Off;
     scene
@@ -164,6 +165,7 @@ fn scene_manager_create_rejects_overlapping_render_groups() {
             color: None,
             display_target: None,
             role: RenderGroupRole::Custom,
+            controls_version: 0,
         },
         RenderGroup {
             id: RenderGroupId::new(),
@@ -179,6 +181,7 @@ fn scene_manager_create_rejects_overlapping_render_groups() {
             color: None,
             display_target: None,
             role: RenderGroupRole::Custom,
+            controls_version: 0,
         },
     ];
 

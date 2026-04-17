@@ -80,6 +80,7 @@ fn render_group(id: RenderGroupId, effect_id: EffectId) -> RenderGroup {
         color: None,
         display_target: None,
         role: RenderGroupRole::Custom,
+        controls_version: 0,
     }
 }
 

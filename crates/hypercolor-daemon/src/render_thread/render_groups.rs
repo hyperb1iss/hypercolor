@@ -751,6 +751,7 @@ mod tests {
             color: None,
             display_target: None,
             role: RenderGroupRole::Custom,
+            controls_version: 0,
         }
     }
 
@@ -933,6 +934,7 @@ mod tests {
             color: None,
             display_target: None,
             role: RenderGroupRole::Custom,
+            controls_version: 0,
         };
         let mut zones = Vec::new();
         let display_group_target_fps = HashMap::new();
@@ -1082,6 +1084,7 @@ mod tests {
                 color: None,
                 display_target: None,
                 role: RenderGroupRole::Custom,
+                controls_version: 0,
             },
             RenderGroup {
                 id: RenderGroupId::new(),
@@ -1111,6 +1114,7 @@ mod tests {
                 color: None,
                 display_target: None,
                 role: RenderGroupRole::Custom,
+                            controls_version: 0,
             },
         ];
         let mut zones = Vec::new();
