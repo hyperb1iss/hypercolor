@@ -19,6 +19,7 @@
 //!     quick-adjust picker the modal complements (not replaces)
 
 use leptos::ev;
+use leptos::portal::Portal;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use serde_json::json;
@@ -192,24 +193,10 @@ pub fn ViewportDesignerModal(
         on_close.run(ViewportDesignerResult::Cancelled);
     });
 
-    // Esc / backdrop-click close affordances. § 10.6 notes that iframe
-    // focus capture breaks keydown propagation, but for the Wave 1
-    // Servo-only modal there is no iframe so Esc on the backdrop-level
-    // listener suffices. The explicit Close button + footer Cancel
-    // still work regardless of focus location (clicks always bubble
-    // to the modal root).
-    let backdrop_click = move |ev: ev::MouseEvent| {
-        // Only treat backdrop clicks as cancel — clicks on modal
-        // children set `target != currentTarget`.
-        if let Some(target) = ev.target()
-            && let Some(current) = ev.current_target()
-            && target == current
-        {
-            ev.prevent_default();
-            cancel.run(());
-        }
-    };
-
+    // Esc closes the modal. § 10.6 notes iframe focus capture breaks
+    // keydown propagation, but Wave 1 has no iframe — the fallback
+    // close affordances (backdrop click + × button + Cancel) still
+    // work regardless of focus.
     let handle_keydown = move |ev: ev::KeyboardEvent| {
         if ev.key() == "Escape" {
             ev.prevent_default();
@@ -218,25 +205,67 @@ pub fn ViewportDesignerModal(
     };
 
     view! {
-        <div
-            class="viewport-designer-backdrop"
-            on:click=backdrop_click
-            on:keydown=handle_keydown
-            tabindex="-1"
-        >
-            <div class="viewport-designer-modal" role="dialog" aria-modal="true">
-                <div class="viewport-designer-header">
-                    <div class="viewport-designer-title">
-                        <Icon icon=icondata::LuLayoutTemplate width="20" height="20" />
-                        <span class="title-label">"Viewport Designer"</span>
-                        <span class="title-effect">{context.effect_name.clone()}</span>
+        // Portal to <body> so the modal escapes any ancestor stacking
+        // context / overflow clip (the controls column uses transforms
+        // for scroll animation, which would otherwise trap a fixed
+        // overlay inside the column — same class of bug the dropdown
+        // menus hit, solved the same way).
+        <Portal>
+            // Fixed full-viewport overlay — z-50 sits above the rest of
+            // the UI chrome, `grid place-items-center` centers the panel
+            // without depending on flex math inside the caller. Matches
+            // the `ModalBackdrop` pattern used by `device_pairing_modal`.
+            <div
+                class="fixed inset-0 z-50 grid place-items-center p-4 animate-fade-in"
+                on:keydown=handle_keydown
+                tabindex="-1"
+            >
+            // Click-absorbing backdrop — clicking the dimmed area cancels.
+            // The modal panel below stops click propagation so buttons inside
+            // never fall through to this handler.
+            <div
+                class="absolute inset-0 bg-black/60 backdrop-blur-sm"
+                on:click=move |ev| {
+                    ev.prevent_default();
+                    cancel.run(());
+                }
+            />
+            // Modal panel.
+            <div
+                class="relative flex flex-col overflow-hidden rounded-2xl border border-edge-subtle
+                       bg-surface-raised shadow-2xl animate-scale-in"
+                style="width: min(72rem, calc(100vw - 2rem)); max-height: calc(100vh - 4rem); \
+                       box-shadow: 0 0 80px rgba(0, 0, 0, 0.45), 0 0 40px rgba(225, 53, 255, 0.08);"
+                role="dialog"
+                aria-modal="true"
+            >
+                // Header
+                <div class="flex items-center justify-between gap-3 border-b border-edge-subtle px-5 py-3">
+                    <div class="flex items-center gap-2.5 min-w-0">
+                        <div class="text-accent-primary shrink-0">
+                            <Icon icon=icondata::LuLayoutTemplate width="20" height="20" />
+                        </div>
+                        <span class="text-[11px] font-mono uppercase tracking-[0.14em] text-fg-tertiary">
+                            "Viewport Designer"
+                        </span>
+                        <span class="truncate text-sm text-fg-primary font-medium">
+                            {context.effect_name.clone()}
+                        </span>
                     </div>
-                    <div class="viewport-designer-header-actions">
+                    <div class="flex items-center gap-2 shrink-0">
                         {move || is_dirty.get().then(|| view! {
-                            <span class="viewport-designer-unsaved" title="Unsaved changes">"● Unsaved"</span>
+                            <span
+                                class="rounded-full border border-accent-muted/40 bg-accent-muted/10 px-2 py-0.5
+                                       text-[10px] font-mono uppercase tracking-[0.12em] text-accent-primary"
+                                title="Unsaved changes"
+                            >
+                                "● Unsaved"
+                            </span>
                         })}
                         <button
-                            class="viewport-designer-close"
+                            class="rounded-lg border border-edge-subtle/60 bg-surface-sunken/60 px-2.5 py-1
+                                   text-sm text-fg-secondary transition-all duration-150 hover:scale-[1.04]
+                                   hover:border-accent-muted/40 hover:text-accent-primary"
                             aria-label="Close"
                             on:click=move |_| cancel.run(())
                         >
@@ -245,27 +274,34 @@ pub fn ViewportDesignerModal(
                     </div>
                 </div>
 
-                <div class="viewport-designer-body">
+                // Body — scrolls internally if the panel is smaller than
+                // the viewport. Padding matches the existing ModalBackdrop.
+                <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
                     {move || match mode {
-                        ViewportDesignerMode::WebViewport => {
-                            view! { <WebViewportPaneStub draft=draft set_draft=set_draft /> }
-                                .into_any()
-                        }
-                        ViewportDesignerMode::ScreenCast => {
-                            view! { <ScreenCastPaneStub /> }.into_any()
-                        }
+                        ViewportDesignerMode::WebViewport => view! {
+                            <WebViewportPaneStub draft=draft set_draft=set_draft />
+                        }.into_any(),
+                        ViewportDesignerMode::ScreenCast => view! {
+                            <ScreenCastPaneStub />
+                        }.into_any(),
                     }}
                 </div>
 
-                <div class="viewport-designer-footer">
+                // Footer
+                <div class="flex items-center justify-end gap-2 border-t border-edge-subtle bg-surface-sunken/40 px-5 py-3">
                     <button
-                        class="viewport-designer-button secondary"
+                        class="rounded-xl border border-edge-subtle/80 bg-surface-sunken/60 px-3.5 py-1.5
+                               text-xs font-medium text-fg-secondary transition-all duration-150
+                               hover:border-edge-strong hover:text-fg-primary"
                         on:click=move |_| cancel.run(())
                     >
                         "Cancel"
                     </button>
                     <button
-                        class="viewport-designer-button primary"
+                        class="rounded-xl border border-accent-muted/50 bg-accent-muted/15 px-4 py-1.5
+                               text-xs font-medium text-accent-primary transition-all duration-150
+                               hover:border-accent-muted hover:bg-accent-muted/25
+                               disabled:cursor-not-allowed disabled:opacity-60"
                         disabled=move || apply_pending.get()
                         on:click=move |_| apply.run(())
                     >
@@ -273,7 +309,8 @@ pub fn ViewportDesignerModal(
                     </button>
                 </div>
             </div>
-        </div>
+            </div>
+        </Portal>
     }
 }
 
@@ -307,11 +344,15 @@ fn WebViewportPaneStub(
     };
 
     view! {
-        <div class="viewport-designer-content">
-            <div class="viewport-designer-url-row">
-                <label class="viewport-designer-field-label">"URL"</label>
+        <div class="flex flex-col gap-4">
+            <div class="flex items-center gap-3">
+                <label class="shrink-0 text-[10px] font-mono uppercase tracking-[0.14em] text-fg-tertiary">
+                    "URL"
+                </label>
                 <input
-                    class="viewport-designer-input"
+                    class="flex-1 rounded-xl border border-edge-subtle bg-surface-sunken px-3 py-2 text-xs
+                           text-fg-primary transition-all duration-150
+                           placeholder-fg-tertiary/40 focus:border-accent-muted focus:outline-none"
                     type="text"
                     prop:value=move || url.get()
                     on:change=move |ev| {
@@ -325,52 +366,50 @@ fn WebViewportPaneStub(
                 />
             </div>
 
-            <div class="viewport-designer-placeholder">
+            <div class="flex flex-col items-center justify-center gap-2 rounded-2xl border border-edge-subtle
+                        bg-surface-sunken/50 px-4 py-10 text-fg-tertiary">
                 <Icon icon=icondata::LuEye width="24" height="24" />
-                <span>"Servo preview + drag-to-resize overlay land in the next commit."</span>
-                <span class="viewport-designer-placeholder-hint">
+                <span class="text-sm text-fg-secondary">
+                    "Servo preview + drag-to-resize overlay land in the next commit."
+                </span>
+                <span class="text-[11px] text-fg-tertiary/80">
                     "Use the numeric inputs below to position the crop in the meantime."
                 </span>
             </div>
 
-            <div class="viewport-designer-control-grid">
-                <div class="viewport-designer-control-row">
-                    <label>"Viewport"</label>
-                    <NumericGrid value=viewport on_change=Callback::new(update_viewport) />
-                </div>
+            <div class="grid grid-cols-[140px_1fr] items-center gap-3">
+                <label class="text-[10px] font-mono uppercase tracking-[0.14em] text-fg-tertiary">
+                    "Viewport"
+                </label>
+                <NumericGrid value=viewport on_change=Callback::new(update_viewport) />
 
-                <div class="viewport-designer-control-row">
-                    <label>"Fit mode"</label>
-                    <FitModeRadio value=fit_mode on_change=Callback::new(update_fit) />
-                </div>
+                <label class="text-[10px] font-mono uppercase tracking-[0.14em] text-fg-tertiary">
+                    "Fit mode"
+                </label>
+                <FitModeRadio value=fit_mode on_change=Callback::new(update_fit) />
 
-                <div class="viewport-designer-control-row">
-                    <label>
-                        "Scroll Y: "
-                        <span class="viewport-designer-scroll-value">
-                            {move || format!("{}px", scroll_y.get())}
-                        </span>
-                    </label>
-                    <input
-                        class="viewport-designer-slider"
-                        type="range"
-                        min="0"
-                        max="8000"
-                        step="1"
-                        prop:value=move || scroll_y.get().to_string()
-                        on:input=move |ev| {
-                            let raw = event_target_value(&ev);
-                            let Ok(next) = raw.parse::<i32>() else {
-                                return;
-                            };
-                            update_mode(Box::new(move |mode| {
-                                if let ModeDraft::WebViewport { scroll_y: slot, .. } = mode {
-                                    *slot = next;
-                                }
-                            }));
-                        }
-                    />
-                </div>
+                <label class="text-[10px] font-mono uppercase tracking-[0.14em] text-fg-tertiary">
+                    {move || format!("Scroll Y · {}px", scroll_y.get())}
+                </label>
+                <input
+                    class="h-2 w-full accent-accent-primary"
+                    type="range"
+                    min="0"
+                    max="8000"
+                    step="1"
+                    prop:value=move || scroll_y.get().to_string()
+                    on:input=move |ev| {
+                        let raw = event_target_value(&ev);
+                        let Ok(next) = raw.parse::<i32>() else {
+                            return;
+                        };
+                        update_mode(Box::new(move |mode| {
+                            if let ModeDraft::WebViewport { scroll_y: slot, .. } = mode {
+                                *slot = next;
+                            }
+                        }));
+                    }
+                />
             </div>
         </div>
     }
@@ -381,9 +420,12 @@ fn WebViewportPaneStub(
 #[component]
 fn ScreenCastPaneStub() -> impl IntoView {
     view! {
-        <div class="viewport-designer-placeholder">
+        <div class="flex flex-col items-center justify-center gap-2 rounded-2xl border border-edge-subtle
+                    bg-surface-sunken/50 px-4 py-12 text-fg-tertiary">
             <Icon icon=icondata::LuMonitor width="24" height="24" />
-            <span>"Screen Capture pane wiring lands in the next commit."</span>
+            <span class="text-sm text-fg-secondary">
+                "Screen Capture pane wiring lands in the next commit."
+            </span>
         </div>
     }
 }
@@ -419,7 +461,7 @@ fn NumericGrid(
     };
 
     view! {
-        <div class="viewport-designer-numeric-grid">
+        <div class="grid grid-cols-4 gap-2">
             <NumericField label="x" value=Signal::derive(move || value.get().x) on_change=bind_field(NumericAxis::X) />
             <NumericField label="y" value=Signal::derive(move || value.get().y) on_change=bind_field(NumericAxis::Y) />
             <NumericField label="w" value=Signal::derive(move || value.get().width) on_change=bind_field(NumericAxis::Width) />
@@ -443,10 +485,14 @@ fn NumericField(
     on_change: Callback<f32>,
 ) -> impl IntoView {
     view! {
-        <div class="viewport-designer-numeric-field">
-            <span class="viewport-designer-numeric-label">{label}</span>
+        <label class="flex flex-col gap-1">
+            <span class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">
+                {label}
+            </span>
             <input
-                class="viewport-designer-numeric-input"
+                class="rounded-lg border border-edge-subtle bg-surface-sunken px-2 py-1 text-xs
+                       text-fg-primary transition-all duration-150
+                       focus:border-accent-muted focus:outline-none"
                 type="number"
                 step="0.01"
                 min="0"
@@ -459,7 +505,7 @@ fn NumericField(
                     }
                 }
             />
-        </div>
+        </label>
     }
 }
 
@@ -475,12 +521,22 @@ fn FitModeRadio(
     ];
 
     view! {
-        <div class="viewport-designer-fit-radio" role="radiogroup">
+        <div class="flex items-center gap-1.5" role="radiogroup">
             {variants.map(|(label, mode)| {
                 let current = value;
                 view! {
                     <button
-                        class="viewport-designer-fit-chip"
+                        class=move || {
+                            let active = current.get() == mode;
+                            let base = "rounded-lg border px-3 py-1 text-[11px] font-medium uppercase \
+                                        tracking-[0.12em] transition-all duration-150";
+                            if active {
+                                format!("{base} border-accent-muted/60 bg-accent-muted/15 text-accent-primary")
+                            } else {
+                                format!("{base} border-edge-subtle bg-surface-sunken/50 text-fg-secondary \
+                                         hover:border-edge-strong hover:text-fg-primary")
+                            }
+                        }
                         role="radio"
                         aria-checked=move || (current.get() == mode).to_string()
                         on:click=move |_| on_change.run(mode)

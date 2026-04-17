@@ -115,9 +115,9 @@ pub(super) fn ViewportPicker(
         .unwrap_or_default();
     let (url_text, set_url_text) = signal(initial_url);
 
-    // Viewport Designer modal state. Populated on-demand by a single
+    // Viewport Designer modal state. We populate it on demand via one
     // GET /api/v1/effects/active so the inline picker doesn't need
-    // any more props to open the modal. Set to None when closed.
+    // extra props — the Edit button is self-contained.
     let designer_context = RwSignal::<Option<ViewportDesignerContext>>::new(None);
     let designer_opening = RwSignal::new(false);
     if let Some(binding) = url_input.clone() {
@@ -192,12 +192,11 @@ pub(super) fn ViewportPicker(
     };
 
     // Fetch active-effect metadata + seed a draft when the user clicks
-    // Edit. We intentionally do the GET on click (not on picker mount)
-    // so the extra round trip only fires when the user actually wants
-    // the modal. If the fetch fails we surface a toast and leave the
-    // button re-armable.
+    // Edit. The GET happens on click (not on picker mount) so the
+    // extra round trip only fires when the user actually wants the
+    // modal. A failure surfaces as a toast and re-arms the button.
     let open_designer = move |_ev: ev::MouseEvent| {
-        if designer_opening.get() || designer_context.get().is_some() {
+        if designer_opening.get_untracked() || designer_context.get_untracked().is_some() {
             return;
         }
         designer_opening.set(true);
@@ -213,6 +212,44 @@ pub(super) fn ViewportPicker(
                         .get("brightness")
                         .and_then(ControlValue::as_f32)
                         .unwrap_or(1.0);
+                    let mode_draft = match mode {
+                        ViewportDesignerMode::WebViewport => ModeDraft::WebViewport {
+                            url: effect
+                                .control_values
+                                .get("url")
+                                .and_then(|v| match v {
+                                    ControlValue::Text(t) => Some(t.clone()),
+                                    ControlValue::Enum(t) => Some(t.clone()),
+                                    _ => None,
+                                })
+                                .unwrap_or_default(),
+                            scroll_x: effect
+                                .control_values
+                                .get("scroll_x")
+                                .and_then(ControlValue::as_f32)
+                                .map(|v| v.round() as i32)
+                                .unwrap_or(0),
+                            scroll_y: effect
+                                .control_values
+                                .get("scroll_y")
+                                .and_then(ControlValue::as_f32)
+                                .map(|v| v.round() as i32)
+                                .unwrap_or(0),
+                            render_width: effect
+                                .control_values
+                                .get("render_width")
+                                .and_then(ControlValue::as_f32)
+                                .map(|v| v.round() as u32)
+                                .unwrap_or(1280),
+                            render_height: effect
+                                .control_values
+                                .get("render_height")
+                                .and_then(ControlValue::as_f32)
+                                .map(|v| v.round() as u32)
+                                .unwrap_or(720),
+                        },
+                        ViewportDesignerMode::ScreenCast => ModeDraft::ScreenCast,
+                    };
                     let context = ViewportDesignerContext {
                         effect_id: effect.id.clone(),
                         effect_name: effect.name.clone(),
@@ -224,44 +261,7 @@ pub(super) fn ViewportPicker(
                                 brightness,
                                 controls_version: version,
                             },
-                            mode: match mode {
-                                ViewportDesignerMode::WebViewport => ModeDraft::WebViewport {
-                                    url: effect
-                                        .control_values
-                                        .get("url")
-                                        .and_then(|v| match v {
-                                            ControlValue::Text(t) => Some(t.clone()),
-                                            ControlValue::Enum(t) => Some(t.clone()),
-                                            _ => None,
-                                        })
-                                        .unwrap_or_default(),
-                                    scroll_x: effect
-                                        .control_values
-                                        .get("scroll_x")
-                                        .and_then(ControlValue::as_f32)
-                                        .map(|v| v.round() as i32)
-                                        .unwrap_or(0),
-                                    scroll_y: effect
-                                        .control_values
-                                        .get("scroll_y")
-                                        .and_then(ControlValue::as_f32)
-                                        .map(|v| v.round() as i32)
-                                        .unwrap_or(0),
-                                    render_width: effect
-                                        .control_values
-                                        .get("render_width")
-                                        .and_then(ControlValue::as_f32)
-                                        .map(|v| v.round() as u32)
-                                        .unwrap_or(1280),
-                                    render_height: effect
-                                        .control_values
-                                        .get("render_height")
-                                        .and_then(ControlValue::as_f32)
-                                        .map(|v| v.round() as u32)
-                                        .unwrap_or(720),
-                                },
-                                ViewportDesignerMode::ScreenCast => ModeDraft::ScreenCast,
-                            },
+                            mode: mode_draft,
                         },
                     };
                     designer_context.set(Some(context));
@@ -370,11 +370,13 @@ pub(super) fn ViewportPicker(
                 <div class="flex-1" />
                 <button
                     type="button"
-                    class="rounded-lg border px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.12em] transition-all duration-150 hover:scale-[1.02]"
+                    class="rounded-lg border px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.12em]
+                           transition-all duration-150 hover:scale-[1.02]
+                           disabled:opacity-60 disabled:cursor-wait disabled:hover:scale-100"
                     style=reset_button_style.clone()
-                    on:click=open_designer
-                    disabled=move || designer_opening.get() || designer_context.get().is_some()
+                    disabled=move || designer_opening.get()
                     title="Open pixel-accurate editor"
+                    on:click=open_designer
                 >
                     {move || if designer_opening.get() { "Loading…" } else { "Edit…" }}
                 </button>
@@ -459,10 +461,10 @@ pub(super) fn ViewportPicker(
             </div>
         </div>
 
-        // Viewport Designer modal — rendered as a sibling so its
-        // fixed-position backdrop covers the viewport, not just this
-        // card. Only instantiates once context is loaded (after the
-        // /effects/active round trip completes).
+        // Viewport Designer modal — sibling of the card so its
+        // `fixed inset-0 z-50` overlay covers the whole viewport, not
+        // just this card's flex column. Only rendered once the open
+        // click has finished fetching effect context.
         {move || designer_context.get().map(|ctx| view! {
             <ViewportDesignerModal context=ctx on_close=designer_closed />
         })}
@@ -612,11 +614,11 @@ fn resize_viewport_rect(
 }
 
 /// Best-effort discriminator between Web Viewport and Screen Cast
-/// modes. The active-effect response doesn't carry the effect name
-/// in a structured form, so we sniff control IDs — Web Viewport is
-/// the only built-in that exposes `url`, `scroll_x`, `scroll_y` and
-/// friends together. A future spec could add a proper discriminator
-/// field to the response; for now this matches the built-in shapes.
+/// modes. The active-effect response doesn't carry a structured
+/// discriminator, so we sniff control ids — Web Viewport is the only
+/// built-in that exposes `url` / `scroll_y`. A future spec can add a
+/// proper marker to the response; today this matches the built-in
+/// shapes.
 fn detect_designer_mode(
     effect: &crate::api::effects::ActiveEffectResponse,
 ) -> ViewportDesignerMode {
