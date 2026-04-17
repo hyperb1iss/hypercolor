@@ -1,0 +1,44 @@
+{
+    "$schema": "https://biomejs.dev/schemas/2.4.7/schema.json",
+    "files": {
+        "ignoreUnknown": true
+    },
+    "formatter": {
+        "enabled": true,
+        "indentStyle": "space",
+        "indentWidth": 4,
+        "lineWidth": 120
+    },
+    "javascript": {
+        "formatter": {
+            "arrowParentheses": "always",
+            "quoteStyle": "single",
+            "semicolons": "asNeeded",
+            "trailingCommas": "all"
+        }
+    },
+    "linter": {
+        "enabled": true,
+        "rules": {
+            "recommended": true
+        }
+    },
+    "overrides": [
+        {
+            "includes": ["**/*.md", "**/*.json"],
+            "assist": { "enabled": false },
+            "formatter": { "enabled": false },
+            "linter": { "enabled": false }
+        },
+        {
+            "includes": ["**/package.json", "**/biome.jsonc"],
+            "assist": {
+                "actions": {
+                    "source": {
+                        "useSortedKeys": "off"
+                    }
+                }
+            }
+        }
+    ]
+}

@@ -44,7 +44,9 @@ function validateShaderBindings(entryPath: string, def: RegisteredArtifactDef): 
     if (shaderUniforms.size === 0) return
 
     const controlUniforms = new Set(
-        def.resolvedControls.map((ctrl) => ctrl.uniformName ?? `i${ctrl.key.charAt(0).toUpperCase()}${ctrl.key.slice(1)}`),
+        def.resolvedControls.map(
+            (ctrl) => ctrl.uniformName ?? `i${ctrl.key.charAt(0).toUpperCase()}${ctrl.key.slice(1)}`,
+        ),
     )
 
     const missing = Array.from(controlUniforms).filter((name) => !shaderUniforms.has(name))
@@ -59,9 +61,7 @@ function validateShaderBindings(entryPath: string, def: RegisteredArtifactDef): 
     }
 
     if (extra.length > 0) {
-        console.warn(
-            `Warning: ${entryPath} shader exposes uniforms with no controls: ${extra.join(', ')}`,
-        )
+        console.warn(`Warning: ${entryPath} shader exposes uniforms with no controls: ${extra.join(', ')}`)
     }
 }
 

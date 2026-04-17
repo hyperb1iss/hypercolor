@@ -329,7 +329,7 @@ effects-build:
 
 # Build a single SDK effect (e.g., just effect-build borealis)
 effect-build name:
-    cd sdk && bun scripts/build-effect.ts src/effects/{{ name }}/main.ts
+    cd sdk && bun run build:effect src/effects/{{ name }}/main.ts
 
 # Build all SDK faces → effects/hypercolor/*.html
 faces-build:
@@ -337,7 +337,7 @@ faces-build:
 
 # Build a single SDK face (e.g., just face-build silkcircuit-hud)
 face-build name:
-    cd sdk && bun scripts/build-effect.ts src/faces/{{ name }}/main.ts
+    cd sdk && bun run build:effect src/faces/{{ name }}/main.ts
 
 # ─── Site ─────────────────────────────────────────────────
 

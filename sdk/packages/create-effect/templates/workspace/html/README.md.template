@@ -1,0 +1,9 @@
+# __WORKSPACE_NAME__
+
+Plain HTML Hypercolor effects.
+
+## Commands
+
+- `bun run validate` checks every effect file
+- `bun run ship` installs locally
+- `bun run ship:daemon` uploads through the daemon API

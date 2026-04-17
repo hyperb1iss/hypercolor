@@ -1,11 +1,13 @@
 #!/usr/bin/env bun
 
-import { chmodSync, mkdirSync, rmSync } from 'node:fs'
+import { chmodSync, cpSync, mkdirSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 const PACKAGE_ROOT = resolve(import.meta.dirname)
 const DIST_DIR = join(PACKAGE_ROOT, 'dist')
 const BIN_FILE = join(PACKAGE_ROOT, 'bin', 'hypercolor.js')
+const TEMPLATES_DIR = join(PACKAGE_ROOT, 'templates')
+const CREATE_EFFECT_TEMPLATES_DIR = join(PACKAGE_ROOT, '..', 'create-effect', 'templates')
 
 async function buildOrThrow(config: Bun.BuildConfig): Promise<void> {
     const result = await Bun.build(config)
@@ -19,7 +21,9 @@ async function buildOrThrow(config: Bun.BuildConfig): Promise<void> {
 
 async function main(): Promise<void> {
     rmSync(DIST_DIR, { force: true, recursive: true })
+    rmSync(TEMPLATES_DIR, { force: true, recursive: true })
     mkdirSync(DIST_DIR, { recursive: true })
+    cpSync(CREATE_EFFECT_TEMPLATES_DIR, TEMPLATES_DIR, { recursive: true })
 
     await buildOrThrow({
         entrypoints: [join(PACKAGE_ROOT, 'src/index.ts')],
@@ -30,17 +34,10 @@ async function main(): Promise<void> {
     })
 
     await buildOrThrow({
-        entrypoints: [join(PACKAGE_ROOT, 'src/cli.ts')],
+        entrypoints: [join(PACKAGE_ROOT, 'src/cli.ts'), join(PACKAGE_ROOT, 'src/tooling/metadata-worker.ts')],
         format: 'esm',
-        outfile: join(DIST_DIR, 'cli.js'),
-        sourcemap: 'external',
-        target: 'bun',
-    })
-
-    await buildOrThrow({
-        entrypoints: [join(PACKAGE_ROOT, 'src/tooling/metadata-worker.ts')],
-        format: 'esm',
-        outfile: join(DIST_DIR, 'tooling', 'metadata-worker.js'),
+        naming: '[name].js',
+        outdir: DIST_DIR,
         sourcemap: 'external',
         target: 'bun',
     })

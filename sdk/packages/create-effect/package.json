@@ -1,35 +1,36 @@
 {
-    "name": "@hypercolor/sdk",
+    "name": "@hypercolor/create-effect",
     "version": "0.1.0",
-    "description": "TypeScript SDK for creating Hypercolor RGB lighting effects",
+    "description": "Bun create scaffolder for Hypercolor effect workspaces",
     "type": "module",
-    "main": "./dist/index.js",
-    "module": "./dist/index.js",
-    "types": "./dist/index.d.ts",
+    "main": "./src/index.ts",
+    "module": "./src/index.ts",
+    "types": "./src/index.ts",
     "bin": {
-        "hypercolor": "./bin/hypercolor.js"
+        "create-hypercolor-effect": "./bin/create-hypercolor-effect.js"
     },
     "exports": {
         ".": {
-            "types": "./dist/index.d.ts",
-            "import": "./dist/index.js"
+            "import": "./src/index.ts",
+            "types": "./src/index.ts"
         }
     },
     "files": [
         "bin",
-        "dist",
+        "src",
         "templates"
     ],
     "scripts": {
-        "build": "bun ./build-package.ts && tsc -p tsconfig.build.json",
-        "dev": "bun --watch ./build-package.ts",
+        "build": "tsc --noEmit",
+        "dev": "tsc --noEmit --watch",
         "typecheck": "tsc --noEmit"
     },
-    "dependencies": {},
+    "dependencies": {
+        "@clack/prompts": "^0.11.0"
+    },
     "devDependencies": {
         "@types/node": "^24.10.1",
         "bun-types": "^1.3.12",
-        "tsup": "^8.5.0",
         "typescript": "^5.9.3"
     },
     "engines": {
@@ -40,17 +41,14 @@
         "hypercolor",
         "rgb",
         "lighting",
-        "effects",
-        "webgl",
-        "shader",
-        "typescript",
-        "canvas"
+        "bun",
+        "scaffolding"
     ],
     "author": "Stefanie Jane <stef@hyperbliss.tech>",
     "license": "Apache-2.0",
     "repository": {
         "type": "git",
         "url": "https://github.com/hyperb1iss/hypercolor",
-        "directory": "sdk/packages/core"
+        "directory": "sdk/packages/create-effect"
     }
 }

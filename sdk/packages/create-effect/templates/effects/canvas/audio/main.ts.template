@@ -1,0 +1,49 @@
+import { audio, canvas, combo, num } from '@hypercolor/sdk'
+
+export default canvas(
+    '__DISPLAY_NAME__',
+    {
+        glow: num('Glow', [0, 100], 68, { group: 'Color' }),
+        palette: combo('Palette', ['Aurora', 'Fire', 'Ocean'], { group: 'Color' }),
+        speed: num('Speed', [1, 10], 5, { group: 'Motion' }),
+    },
+    (ctx, time, controls) => {
+        const width = ctx.canvas.width
+        const height = ctx.canvas.height
+        const analysis = audio()
+        const speed = (controls.speed as number) ?? 5
+        const glow = ((controls.glow as number) ?? 68) / 100
+        const palette = (controls.palette as string) ?? 'Aurora'
+        const baseHue = palette === 'Fire' ? 20 : palette === 'Ocean' ? 205 : 145
+        const pulse = Math.max(analysis.beatPulse, analysis.bassEnv * 0.8, analysis.levelShort * 0.7, 0.08)
+        const hue = (baseHue + time * speed * 30 + pulse * 95) % 360
+
+        ctx.fillStyle = '#04050a'
+        ctx.fillRect(0, 0, width, height)
+
+        const halo = ctx.createRadialGradient(width * 0.5, height * 0.5, 10, width * 0.5, height * 0.5, width * 0.55)
+        halo.addColorStop(0, `hsla(${hue}, 100%, 64%, ${0.28 + pulse * 0.35})`)
+        halo.addColorStop(0.55, `hsla(${(hue + 55) % 360}, 96%, 52%, ${0.18 + glow * 0.3})`)
+        halo.addColorStop(1, 'rgba(0, 0, 0, 0)')
+        ctx.fillStyle = halo
+        ctx.fillRect(0, 0, width, height)
+
+        ctx.strokeStyle = `hsla(${(hue + 180) % 360}, 100%, 72%, ${0.16 + glow * 0.4})`
+        ctx.lineWidth = 2 + pulse * 18
+        ctx.beginPath()
+        ctx.arc(width * 0.5, height * 0.5, 24 + pulse * 80, 0, Math.PI * 2)
+        ctx.stroke()
+    },
+    {
+        audio: true,
+        author: 'You',
+        description: 'A starter audio-reactive canvas effect',
+        presets: [
+            {
+                controls: { glow: 68, palette: 'Aurora', speed: 5 },
+                description: 'Responsive halo with balanced bloom.',
+                name: 'Default',
+            },
+        ],
+    },
+)

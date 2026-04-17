@@ -60,7 +60,10 @@ describe('sdk cli build + validate', () => {
             )
             expect(buildExit).toBe(0)
 
-            const validateExit = await main(['validate', join(outDir, 'borealis.html')], { cwd: SDK_ROOT, stdout: console })
+            const validateExit = await main(['validate', join(outDir, 'borealis.html')], {
+                cwd: SDK_ROOT,
+                stdout: console,
+            })
             expect(validateExit).toBe(0)
         } finally {
             rmSync(outDir, { force: true, recursive: true })

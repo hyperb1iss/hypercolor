@@ -1,0 +1,5 @@
+[loader]
+".glsl" = "text"
+
+[install]
+link = "hardlink"

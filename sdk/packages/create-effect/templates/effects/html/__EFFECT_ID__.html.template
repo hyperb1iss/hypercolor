@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="hypercolor-version" content="1" />
+    <meta description="A starter HTML effect" />
+    <meta publisher="You" />
+    <title>__DISPLAY_NAME__</title>
+  </head>
+  <body style="margin:0;overflow:hidden;background:#000;">
+    <div id="exStage" style="position:relative;overflow:hidden;background:#000;width:100vw;height:100vh;">
+      <canvas id="exCanvas" style="display:block;width:100%;height:100%;"></canvas>
+    </div>
+    <script>
+      const canvas = document.getElementById('exCanvas')
+      const ctx = canvas.getContext('2d')
+
+      function resize() {
+        canvas.width = window.innerWidth
+        canvas.height = window.innerHeight
+      }
+
+      function frame(time) {
+        const t = time * 0.001
+        const hue = (t * 40) % 360
+        const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height)
+        gradient.addColorStop(0, `hsl(${hue}, 100%, 55%)`)
+        gradient.addColorStop(1, `hsl(${(hue + 70) % 360}, 100%, 35%)`)
+        ctx.fillStyle = gradient
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+        requestAnimationFrame(frame)
+      }
+
+      resize()
+      window.addEventListener('resize', resize)
+      requestAnimationFrame(frame)
+    </script>
+  </body>
+</html>

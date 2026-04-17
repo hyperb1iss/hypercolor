@@ -1,0 +1,24 @@
+import { combo, effect, num } from '@hypercolor/sdk'
+import shader from './fragment.glsl'
+
+export default effect(
+    '__DISPLAY_NAME__',
+    shader,
+    {
+        intensity: num('Intensity', [0, 100], 70, { group: 'Color' }),
+        palette: combo('Palette', ['Aurora', 'Fire', 'Ocean'], { group: 'Color' }),
+        speed: num('Speed', [1, 10], 5, { group: 'Motion' }),
+    },
+    {
+        audio: true,
+        author: 'You',
+        description: 'A starter audio-reactive shader effect',
+        presets: [
+            {
+                controls: { intensity: 70, palette: 'Aurora', speed: 5 },
+                description: 'Balanced audio-reactive response.',
+                name: 'Default',
+            },
+        ],
+    },
+)

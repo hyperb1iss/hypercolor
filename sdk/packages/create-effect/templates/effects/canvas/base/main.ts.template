@@ -1,0 +1,50 @@
+import { canvas, combo, num } from '@hypercolor/sdk'
+
+export default canvas(
+    '__DISPLAY_NAME__',
+    {
+        brightness: num('Brightness', [0, 100], 80, { group: 'Color' }),
+        palette: combo('Palette', ['Aurora', 'Fire', 'Ocean'], { group: 'Color' }),
+        speed: num('Speed', [1, 10], 5, { group: 'Motion' }),
+    },
+    (ctx, time, controls) => {
+        const width = ctx.canvas.width
+        const height = ctx.canvas.height
+        const speed = (controls.speed as number) ?? 5
+        const brightness = ((controls.brightness as number) ?? 80) / 100
+        const palette = (controls.palette as string) ?? 'Aurora'
+        const baseHue = palette === 'Fire' ? 20 : palette === 'Ocean' ? 205 : 145
+        const drift = Math.sin(time * speed * 0.9) * 0.5 + 0.5
+        const hue = (baseHue + drift * 55 + time * speed * 24) % 360
+
+        ctx.fillStyle = '#04050a'
+        ctx.fillRect(0, 0, width, height)
+
+        const gradient = ctx.createLinearGradient(0, 0, width, height)
+        gradient.addColorStop(0, `hsla(${hue}, 100%, ${36 + brightness * 10}%, 0.88)`)
+        gradient.addColorStop(1, `hsla(${(hue + 42) % 360}, 90%, ${22 + brightness * 12}%, 0.92)`)
+        ctx.fillStyle = gradient
+        ctx.fillRect(0, 0, width, height)
+
+        ctx.fillStyle = `hsla(${(hue + 90) % 360}, 100%, 70%, ${0.08 + brightness * 0.18})`
+        ctx.beginPath()
+        ctx.arc(width * 0.38, height * 0.45, 48 + drift * 52, 0, Math.PI * 2)
+        ctx.fill()
+
+        ctx.fillStyle = `hsla(${(hue + 210) % 360}, 100%, 68%, ${0.06 + brightness * 0.12})`
+        ctx.beginPath()
+        ctx.arc(width * 0.66, height * 0.55, 42 + (1 - drift) * 44, 0, Math.PI * 2)
+        ctx.fill()
+    },
+    {
+        author: 'You',
+        description: 'A starter canvas effect',
+        presets: [
+            {
+                controls: { brightness: 80, palette: 'Aurora', speed: 5 },
+                description: 'Balanced motion and brightness.',
+                name: 'Default',
+            },
+        ],
+    },
+)

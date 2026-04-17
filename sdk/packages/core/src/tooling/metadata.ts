@@ -3,7 +3,8 @@ import { dirname, resolve } from 'node:path'
 import type { ExtractedArtifactMetadata } from './types'
 
 export async function extractArtifactMetadata(entryPath: string): Promise<ExtractedArtifactMetadata> {
-    const workerUrl = new URL('./metadata-worker.ts', import.meta.url)
+    const workerExtension = import.meta.url.endsWith('.ts') ? 'ts' : 'js'
+    const workerUrl = new URL(`./metadata-worker.${workerExtension}`, import.meta.url)
 
     return await new Promise<ExtractedArtifactMetadata>((resolveMetadata, rejectMetadata) => {
         const worker = new Worker(workerUrl.href, { type: 'module' })

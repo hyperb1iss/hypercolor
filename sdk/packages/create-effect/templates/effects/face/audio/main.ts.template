@@ -1,0 +1,70 @@
+import { face, num } from '@hypercolor/sdk'
+
+const styleId = 'hc-face-__EFFECT_ID__'
+
+const styles = `
+.hc-face-shell {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background:
+        radial-gradient(circle at top, rgba(128, 255, 234, 0.18), transparent 55%),
+        linear-gradient(180deg, #090b12 0%, #05060a 100%);
+    color: white;
+    font-family: 'Rajdhani', sans-serif;
+}
+
+.hc-face-value {
+    font-size: clamp(64px, 24vw, 160px);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-shadow: 0 0 30px rgba(128, 255, 234, 0.25);
+}
+`
+
+function ensureStyles(): void {
+    if (document.getElementById(styleId)) return
+    const style = document.createElement('style')
+    style.id = styleId
+    style.textContent = styles
+    document.head.appendChild(style)
+}
+
+export default face(
+    '__DISPLAY_NAME__',
+    {
+        glow: num('Glow', [0, 100], 68, { group: 'Style' }),
+    },
+    {
+        author: 'You',
+        description: 'A starter audio-reactive display face',
+        presets: [
+            {
+                controls: { glow: 68 },
+                description: 'Balanced audio-reactive face glow.',
+                name: 'Default',
+            },
+        ],
+    },
+    (ctx) => {
+        ensureStyles()
+
+        const shell = document.createElement('div')
+        shell.className = 'hc-face-shell'
+
+        const value = document.createElement('div')
+        value.className = 'hc-face-value'
+        shell.appendChild(value)
+        ctx.container.appendChild(shell)
+
+        return (time, controls) => {
+            const engineAudio = (globalThis as { engine?: { audio?: { beatPulse?: number; level?: number } } }).engine?.audio
+            const pulse = Math.max(engineAudio?.beatPulse ?? 0, engineAudio?.level ?? 0, 0.08)
+            const glow = ((controls.glow as number) ?? 68) / 100
+            const hue = (time * 42 + pulse * 120) % 360
+            shell.style.boxShadow = `inset 0 0 ${28 + glow * 54 + pulse * 60}px hsla(${hue}, 100%, 70%, ${0.16 + glow * 0.18})`
+            value.textContent = `${Math.round(pulse * 100)}`
+        }
+    },
+)

@@ -1,6 +1,9 @@
 import { existsSync, watch } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
+import { addEffect, promptAddEffectOptions } from '@hypercolor/create-effect'
+import type { TemplateKind } from '@hypercolor/create-effect'
+
 import { buildArtifacts, discoverWorkspaceEntries, installArtifactsLocally, validateHtmlArtifactFile } from './tooling'
 
 interface CliContext {
@@ -104,14 +107,17 @@ async function runBuild(args: string[], context: CliContext): Promise<number> {
 
 function printHumanValidation(result: Awaited<ReturnType<typeof validateHtmlArtifactFile>>, context: CliContext): void {
     context.stdout.log(`\n${result.file}\n`)
-    context.stdout.log(result.valid ? `PASS  Render surface + title + script` : 'FAIL  Validation errors present')
+    context.stdout.log(result.valid ? 'PASS  Render surface + title + script' : 'FAIL  Validation errors present')
     for (const warning of result.warnings) {
         context.stdout.log(`WARN  ${warning.message}`)
     }
     for (const error of result.errors) {
         context.stdout.log(`FAIL  ${error.message}`)
     }
-    const suffix = result.warnings.length > 0 ? ` (${result.warnings.length} warning${result.warnings.length === 1 ? '' : 's'})` : ''
+    const suffix =
+        result.warnings.length > 0
+            ? ` (${result.warnings.length} warning${result.warnings.length === 1 ? '' : 's'})`
+            : ''
     context.stdout.log(`\nResult: ${result.valid ? 'PASS' : 'FAIL'}${suffix}`)
 }
 
@@ -165,9 +171,48 @@ async function runInstall(args: string[], context: CliContext): Promise<number> 
     return result.failures.length > 0 || result.successes.length === 0 ? 1 : 0
 }
 
-const NOT_IMPLEMENTED = new Set(['add', 'dev'])
+async function runAdd(args: string[], context: CliContext): Promise<number> {
+    const [name] = positionalArgs(args)
+    const templateArg = optionValue(args, '--template')
+    const prompted =
+        name && templateArg
+            ? undefined
+            : await promptAddEffectOptions({
+                  audio: args.includes('--audio') ? true : undefined,
+                  effectId: name,
+                  template: templateArg,
+              })
+
+    const effectId = prompted?.effectId ?? name
+    const template: TemplateKind | undefined =
+        prompted?.template ??
+        (templateArg === 'canvas' || templateArg === 'shader' || templateArg === 'face' || templateArg === 'html'
+            ? templateArg
+            : undefined)
+    const audio = prompted?.audio ?? args.includes('--audio')
+
+    if (!effectId || !template) {
+        context.stdout.error('Usage: hypercolor add [name] [--template canvas|shader|face|html] [--audio]')
+        return 1
+    }
+
+    const result = await addEffect({
+        audio,
+        editor: [process.env.VISUAL, process.env.EDITOR].find((value) => value?.trim()),
+        effectId,
+        output: context.stdout,
+        template,
+        workspaceDir: context.cwd,
+    })
+
+    context.stdout.log(`Entry: ${result.entryPath}`)
+    return 0
+}
+
+const NOT_IMPLEMENTED = new Set(['dev'])
 
 const COMMANDS = new Map<string, CommandHandler>([
+    ['add', runAdd],
     ['build', runBuild],
     ['install', runInstall],
     ['validate', runValidate],
@@ -180,12 +225,15 @@ Commands:
   build      Build effect entrypoints into HTML artifacts
   validate   Validate built HTML artifacts
   install    Install HTML artifacts into the user effects directory
+  add        Scaffold a new effect inside the workspace
   dev        Reserved for the Bun preview server
-  add        Reserved for workspace scaffolding
 `)
 }
 
-export async function main(argv = process.argv.slice(2), context: CliContext = { cwd: process.cwd(), stdout: console }): Promise<number> {
+export async function main(
+    argv = process.argv.slice(2),
+    context: CliContext = { cwd: process.cwd(), stdout: console },
+): Promise<number> {
     const [command, ...args] = argv
     if (!command || command === '--help' || command === 'help') {
         printHelp(context)
