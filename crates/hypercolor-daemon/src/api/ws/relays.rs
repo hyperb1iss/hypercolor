@@ -169,10 +169,16 @@ pub(super) async fn relay_frames(
             }
         }
 
-        let frame = frame_rx.borrow();
-        if !should_emit(&mut last_sent, frame_config.config.fps) {
-            continue;
-        }
+        // Clone the frame out of the watch borrow before encoding so the
+        // render thread's frame_sender.send_modify() isn't blocked on our
+        // serialization. FrameData holds owned Vecs; clone is O(total LEDs).
+        let frame = {
+            let borrow = frame_rx.borrow();
+            if !should_emit(&mut last_sent, frame_config.config.fps) {
+                continue;
+            }
+            borrow.clone()
+        };
         let outbound = cached_frame_payload(&frame, frame_config);
 
         match outbound {
@@ -250,10 +256,16 @@ pub(super) async fn relay_spectrum(
             }
         }
 
-        let spectrum = spectrum_rx.borrow();
-        if !should_emit(&mut last_sent, spectrum_config.fps) {
-            continue;
-        }
+        // Mirror the frame/canvas relays: drop the watch borrow before
+        // encoding so the render thread's spectrum_sender.send_modify()
+        // isn't blocked on our serialization.
+        let spectrum = {
+            let borrow = spectrum_rx.borrow();
+            if !should_emit(&mut last_sent, spectrum_config.fps) {
+                continue;
+            }
+            borrow.clone()
+        };
         if binary_tx
             .try_send(cached_spectrum_payload(&spectrum, spectrum_config.bins))
             .is_err()
@@ -358,17 +370,24 @@ pub(super) async fn relay_canvas(
                 active_canvas_config = None;
             }
             () = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
-                let latest_canvas = canvas_rx.borrow();
-                let surface_identity = preview_surface_identity(&latest_canvas);
-                if last_sent_surface == Some(surface_identity) {
-                    pending_send = false;
-                    continue;
-                }
+                // Clone out of the watch borrow before encoding so the
+                // render thread's canvas_sender().send() isn't blocked on
+                // bilinear/JPEG work. CanvasFrame's pixel storage is
+                // Arc-backed, so clone is cheap (refcount bumps).
+                let (canvas_snapshot, surface_identity) = {
+                    let latest_canvas = canvas_rx.borrow();
+                    let surface_identity = preview_surface_identity(&latest_canvas);
+                    if last_sent_surface == Some(surface_identity) {
+                        pending_send = false;
+                        continue;
+                    }
+                    (latest_canvas.clone(), surface_identity)
+                };
 
                 // Preview always renders at full brightness — the brightness
                 // slider affects device output, not the UI canvas preview.
                 let payload = try_encode_cached_canvas_preview_binary(
-                    &latest_canvas,
+                    &canvas_snapshot,
                     canvas_config.format,
                     1.0,
                     canvas_config.width,
@@ -466,15 +485,20 @@ pub(super) async fn relay_screen_canvas(
                 active_canvas_config = None;
             }
             () = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
-                let latest_canvas = canvas_rx.borrow();
-                let surface_identity = preview_surface_identity(&latest_canvas);
-                if last_sent_surface == Some(surface_identity) {
-                    pending_send = false;
-                    continue;
-                }
+                // See relay_canvas for why we clone out of the borrow before
+                // encoding — avoids blocking the render thread's watch writer.
+                let (canvas_snapshot, surface_identity) = {
+                    let latest_canvas = canvas_rx.borrow();
+                    let surface_identity = preview_surface_identity(&latest_canvas);
+                    if last_sent_surface == Some(surface_identity) {
+                        pending_send = false;
+                        continue;
+                    }
+                    (latest_canvas.clone(), surface_identity)
+                };
 
                 let payload = try_encode_cached_canvas_binary_with_header_scaled(
-                    &latest_canvas,
+                    &canvas_snapshot,
                     canvas_config.format,
                     WS_SCREEN_CANVAS_HEADER,
                     canvas_config.width,
@@ -571,15 +595,20 @@ pub(super) async fn relay_web_viewport_canvas(
                 active_canvas_config = None;
             }
             () = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
-                let latest_canvas = canvas_rx.borrow();
-                let surface_identity = preview_surface_identity(&latest_canvas);
-                if last_sent_surface == Some(surface_identity) {
-                    pending_send = false;
-                    continue;
-                }
+                // See relay_canvas for why we clone out of the borrow before
+                // encoding — avoids blocking the render thread's watch writer.
+                let (canvas_snapshot, surface_identity) = {
+                    let latest_canvas = canvas_rx.borrow();
+                    let surface_identity = preview_surface_identity(&latest_canvas);
+                    if last_sent_surface == Some(surface_identity) {
+                        pending_send = false;
+                        continue;
+                    }
+                    (latest_canvas.clone(), surface_identity)
+                };
 
                 let payload = try_encode_cached_canvas_binary_with_header_scaled(
-                    &latest_canvas,
+                    &canvas_snapshot,
                     canvas_config.format,
                     WS_WEB_VIEWPORT_CANVAS_HEADER,
                     canvas_config.width,
