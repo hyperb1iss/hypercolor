@@ -6,6 +6,9 @@
     "main": "./dist/index.js",
     "module": "./dist/index.js",
     "types": "./dist/index.d.ts",
+    "bin": {
+        "hypercolor": "./bin/hypercolor.js"
+    },
     "exports": {
         ".": {
             "types": "./dist/index.d.ts",
@@ -13,11 +16,12 @@
         }
     },
     "files": [
+        "bin",
         "dist"
     ],
     "scripts": {
-        "build": "tsup",
-        "dev": "tsup --watch",
+        "build": "bun ./build-package.ts && tsc -p tsconfig.build.json",
+        "dev": "bun --watch ./build-package.ts",
         "typecheck": "tsc --noEmit"
     },
     "dependencies": {},
@@ -28,6 +32,7 @@
         "typescript": "^5.9.3"
     },
     "engines": {
+        "bun": ">=1.2.0",
         "node": ">=24.0.0"
     },
     "keywords": [

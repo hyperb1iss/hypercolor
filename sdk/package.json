@@ -10,15 +10,15 @@
         "lint": "biome lint .",
         "lint:fix": "biome lint --write .",
         "format": "biome format --write .",
+        "hypercolor": "bun packages/core/src/cli.ts",
         "typecheck": "bun run --filter '*' typecheck && tsc --noEmit -p tsconfig.json",
         "clean": "rm -rf packages/*/dist",
-        "build:effects": "bun scripts/build-effect.ts --all",
-        "build:effect": "bun scripts/build-effect.ts",
-        "build:faces": "bun scripts/build-effect.ts --faces"
+        "build:effects": "bun run hypercolor build --all --workspace-root . --entry-root src/effects --entry-root src/faces --out ../effects/hypercolor --sdk-alias-path packages/core/src/index.ts",
+        "build:effect": "bun run hypercolor build --out ../effects/hypercolor --sdk-alias-path packages/core/src/index.ts",
+        "build:faces": "bun run hypercolor build --all --workspace-root . --entry-root src/faces --out ../effects/hypercolor --sdk-alias-path packages/core/src/index.ts"
     },
     "devDependencies": {
         "@biomejs/biome": "2.4.6",
-        "esbuild": "^0.27.3",
         "typescript": "^5.9.3"
     },
     "dependencies": {}
