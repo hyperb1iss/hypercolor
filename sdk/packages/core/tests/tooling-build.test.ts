@@ -36,6 +36,24 @@ describe('tooling build', () => {
         }
     })
 
+    test('inlines GLSL source for WebGL effects', async () => {
+        const outDir = mkdtempSync(join(tmpdir(), 'hypercolor-webgl-build-'))
+        try {
+            const [result] = await buildArtifacts({
+                entryPaths: [resolve(SDK_ROOT, 'src/effects/arc-storm/main.ts')],
+                outDir,
+                sdkAliasPath: SDK_ALIAS,
+            })
+
+            const html = readFileSync(result.outputPath, 'utf8')
+            expect(html).toContain('<title>Arc Storm</title>')
+            expect(html).toContain('#version 300 es')
+            expect(html).not.toContain('var fragment_default = "./fragment-')
+        } finally {
+            rmSync(outDir, { force: true, recursive: true })
+        }
+    })
+
     test('builds a face html artifact with face container markup', async () => {
         const outDir = mkdtempSync(join(tmpdir(), 'hypercolor-face-build-'))
         try {

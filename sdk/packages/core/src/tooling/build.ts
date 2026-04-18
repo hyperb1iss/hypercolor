@@ -141,6 +141,9 @@ async function bundleEntry(entryPath: string, sdkAliasPath: string | undefined, 
     const buildConfig = {
         entrypoints: [entryPath],
         format: 'iife',
+        loader: {
+            '.glsl': 'text',
+        },
         minify,
         sourcemap: 'none',
         target: 'browser',

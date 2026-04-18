@@ -1,7 +1,5 @@
 import { existsSync, watch } from 'node:fs'
 import { dirname, resolve } from 'node:path'
-import type { TemplateKind } from '@hypercolor/create-effect'
-import { addEffect, promptAddEffectOptions } from '@hypercolor/create-effect'
 
 import { runDevServer } from './dev'
 import {
@@ -16,6 +14,8 @@ interface CliContext {
     cwd: string
     stdout: Pick<Console, 'error' | 'log'>
 }
+
+type TemplateKind = 'canvas' | 'shader' | 'face' | 'html'
 
 type CommandHandler = (args: string[], context: CliContext) => Promise<number>
 
@@ -179,6 +179,7 @@ async function runInstall(args: string[], context: CliContext): Promise<number> 
 }
 
 async function runAdd(args: string[], context: CliContext): Promise<number> {
+    const { addEffect, promptAddEffectOptions } = await import('@hypercolor/create-effect')
     const [name] = positionalArgs(args)
     const templateArg = optionValue(args, '--template')
     const prompted =
