@@ -9,13 +9,13 @@ use leptos_router::hooks::use_location;
 use leptos_use::use_throttle_fn_with_arg;
 
 use crate::api;
-use crate::app::{EffectsContext, WsContext};
+use crate::app::{EffectsContext, FrameAnalysisContext, WsContext};
 use crate::async_helpers::spawn_api_call;
 use crate::color::{self, CanvasPalette};
 use crate::components::canvas_preview::CanvasPreview;
 use crate::icons::*;
 use crate::preview_telemetry::PreviewTelemetryContext;
-use crate::route_ui::{now_playing_canvas_mode, NowPlayingCanvasMode};
+use crate::route_ui::{NowPlayingCanvasMode, now_playing_canvas_mode};
 use crate::style_utils::category_accent_rgb;
 use crate::ws::ConnectionState;
 
@@ -30,8 +30,7 @@ pub fn Sidebar() -> impl IntoView {
     let fx = expect_context::<EffectsContext>();
 
     let has_active = Memo::new(move |_| fx.active_effect_id.get().is_some());
-    let canvas_mode =
-        Signal::derive(move || now_playing_canvas_mode(&location.pathname.get()));
+    let canvas_mode = Signal::derive(move || now_playing_canvas_mode(&location.pathname.get()));
 
     let nav_items = vec![
         NavItem {
@@ -91,8 +90,8 @@ pub fn Sidebar() -> impl IntoView {
             Signal::derive(|| 0_u32),
         ),
     };
+    let frame_analysis = use_context::<FrameAnalysisContext>();
     let (live_palette, set_live_palette) = signal(None::<CanvasPalette>);
-    let (last_palette_time, set_last_palette_time) = signal(0.0_f64);
     let global_brightness_resource = LocalResource::new(api::fetch_global_brightness);
     let (global_brightness, set_global_brightness) = signal(100_u8);
 
@@ -112,29 +111,22 @@ pub fn Sidebar() -> impl IntoView {
         50.0,
     );
 
-    if let Some(ws) = ws {
-        // Palette extraction — throttled ~2x/sec for ambient styling
+    if let Some(frame_analysis) = frame_analysis {
         Effect::new(move |_| {
             if canvas_mode.get() != NowPlayingCanvasMode::Palette {
                 return;
             }
 
-            let Some(frame) = ws.canvas_frame.get() else {
+            let Some(analysis) = frame_analysis.live_canvas.get() else {
                 return;
             };
 
-            let now = js_sys::Date::now();
-            if now - last_palette_time.get_untracked() < 500.0 {
-                return;
-            }
-            set_last_palette_time.set(now);
-
-            if let Some(new_palette) = color::extract_canvas_palette(&frame) {
-                let smoothed = live_palette.get_untracked().map_or(new_palette, |old| {
-                    color::lerp_palette(old, new_palette, 0.3)
+            let smoothed = live_palette
+                .get_untracked()
+                .map_or(analysis.palette, |old| {
+                    color::lerp_palette(old, analysis.palette, 0.3)
                 });
-                set_live_palette.set(Some(smoothed));
-            }
+            set_live_palette.set(Some(smoothed));
         });
     }
 

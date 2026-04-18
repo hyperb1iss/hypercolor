@@ -10,6 +10,7 @@ use hypercolor_types::effect::{ControlDefinition, ControlValue};
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 
 use crate::api;
+use crate::color::CanvasFrameAnalysis;
 use crate::components::preset_matching::controls_to_json;
 use crate::components::shell::Shell;
 use crate::pages::dashboard::DashboardPage;
@@ -116,6 +117,11 @@ pub struct WsContext {
     pub audio_level: ReadSignal<AudioLevel>,
     pub audio_enabled: ReadSignal<bool>,
     pub set_audio_enabled: WriteSignal<bool>,
+}
+
+#[derive(Clone, Copy)]
+pub struct FrameAnalysisContext {
+    pub live_canvas: ReadSignal<Option<CanvasFrameAnalysis>>,
 }
 
 /// Shared active-effect state — accessible from sidebar, effects page, etc.
@@ -263,7 +269,8 @@ impl EffectsContext {
         // doesn't flash empty while the daemon's confirmation round-trips.
         // The snapshot callback will overwrite with the authoritative state.
         if let Some(prefs) = stored_prefs.as_ref() {
-            self.set_active_control_values.set(prefs.control_values.clone());
+            self.set_active_control_values
+                .set(prefs.control_values.clone());
             self.set_active_preset_id.set(prefs.preset_id.clone());
         } else {
             self.set_active_control_values.set(HashMap::new());
@@ -518,6 +525,8 @@ pub fn App() -> impl IntoView {
     let ws = WsManager::new();
     let (audio_enabled, set_audio_enabled) = signal(false);
     let (preview_presenter, set_preview_presenter) = signal(PreviewPresenterTelemetry::default());
+    let (live_canvas_analysis, set_live_canvas_analysis) = signal(None::<CanvasFrameAnalysis>);
+    let (last_canvas_analysis_at, set_last_canvas_analysis_at) = signal(0.0_f64);
 
     // Seed audio_enabled from daemon config
     leptos::task::spawn_local(async move {
@@ -553,6 +562,25 @@ pub fn App() -> impl IntoView {
     provide_context(PreviewTelemetryContext {
         presenter: preview_presenter,
         set_presenter: set_preview_presenter,
+    });
+    provide_context(FrameAnalysisContext {
+        live_canvas: live_canvas_analysis,
+    });
+
+    Effect::new(move |_| {
+        let Some(frame) = ws.canvas_frame.get() else {
+            return;
+        };
+
+        let now = js_sys::Date::now();
+        if now - last_canvas_analysis_at.get_untracked() < 500.0 {
+            return;
+        }
+        set_last_canvas_analysis_at.set(now);
+
+        if let Some(analysis) = crate::color::analyze_canvas_frame(&frame) {
+            set_live_canvas_analysis.set(Some(analysis));
+        }
     });
 
     // Global effects state — shared between sidebar player + effects page

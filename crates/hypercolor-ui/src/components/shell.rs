@@ -6,10 +6,9 @@ use leptos_router::hooks::use_location;
 use leptos_router::hooks::use_navigate;
 use wasm_bindgen::JsCast;
 
-use crate::app::EffectsContext;
+use crate::app::{EffectsContext, FrameAnalysisContext};
 use crate::components::sidebar::Sidebar;
 use crate::icons::*;
-use crate::ws::CanvasPixelFormat;
 
 /// Read the current theme from the DOM.
 fn read_theme() -> String {
@@ -29,68 +28,6 @@ fn apply_theme(theme: &str) {
         let _ = doc.set_attribute("data-theme", theme);
     }
     crate::storage::set("hc-theme", theme);
-}
-
-/// Extract dominant hue (0..360) from RGBA pixel data by averaging sampled pixels.
-/// Samples every Nth pixel for performance — runs on a throttled timer, not every frame.
-fn extract_dominant_hue(frame: &crate::ws::CanvasFrame) -> Option<f64> {
-    if frame.pixel_format() == CanvasPixelFormat::Jpeg {
-        return None;
-    }
-
-    let pixel_count = frame.pixel_count();
-    if pixel_count == 0 {
-        return None;
-    }
-
-    let step = (pixel_count / 200).max(1); // ~200 samples max
-    let mut hue_sin_sum = 0.0_f64;
-    let mut hue_cos_sum = 0.0_f64;
-    let mut count = 0u32;
-
-    for i in (0..pixel_count).step_by(step) {
-        let Some([r, g, b, _]) = frame.rgba_at(i) else {
-            continue;
-        };
-        let r = f64::from(r) / 255.0;
-        let g = f64::from(g) / 255.0;
-        let b = f64::from(b) / 255.0;
-
-        let max = r.max(g).max(b);
-        let min = r.min(g).min(b);
-        let chroma = max - min;
-
-        // Skip near-gray pixels (low chroma = no meaningful hue)
-        if chroma < 0.1 {
-            continue;
-        }
-
-        let hue = if (max - r).abs() < f64::EPSILON {
-            60.0 * (((g - b) / chroma) % 6.0)
-        } else if (max - g).abs() < f64::EPSILON {
-            60.0 * (((b - r) / chroma) + 2.0)
-        } else {
-            60.0 * (((r - g) / chroma) + 4.0)
-        };
-
-        let hue = if hue < 0.0 { hue + 360.0 } else { hue };
-        let rad = hue.to_radians();
-        hue_sin_sum += rad.sin();
-        hue_cos_sum += rad.cos();
-        count += 1;
-    }
-
-    if count < 5 {
-        return None; // Not enough chromatic pixels
-    }
-
-    let avg_rad = hue_sin_sum.atan2(hue_cos_sum);
-    let avg_hue = avg_rad.to_degrees();
-    Some(if avg_hue < 0.0 {
-        avg_hue + 360.0
-    } else {
-        avg_hue
-    })
 }
 
 /// Shared theme state — provided via context for sidebar and other consumers.
@@ -130,30 +67,21 @@ pub fn Shell(children: Children) -> impl IntoView {
         open: Callback::new(move |()| set_palette_open.set(true)),
     });
 
-    // Ambient hue extraction — sample canvas frame ~2x/sec, update --ambient-hue
+    // Ambient hue extraction — driven by the shared frame-analysis pass in app context.
     let shell_ref = NodeRef::<leptos::html::Div>::new();
-    let ws = use_context::<crate::app::WsContext>();
-    let (last_hue_update, set_last_hue_update) = signal(0.0_f64);
+    let frame_analysis = use_context::<FrameAnalysisContext>();
 
-    if let Some(ws) = ws {
+    if let Some(frame_analysis) = frame_analysis {
         Effect::new(move |_| {
-            let Some(frame) = ws.canvas_frame.get() else {
+            let Some(analysis) = frame_analysis.live_canvas.get() else {
                 return;
             };
 
-            // Throttle to ~2 updates/sec
-            let now = js_sys::Date::now();
-            if now - last_hue_update.get_untracked() < 500.0 {
-                return;
-            }
-            set_last_hue_update.set(now);
-
-            if let Some(hue) = extract_dominant_hue(&frame)
-                && let Some(el) = shell_ref.get()
-            {
+            if let Some(el) = shell_ref.get() {
                 let html_el: &web_sys::HtmlElement = &el;
                 let style = html_el.style();
-                let _ = style.set_property("--ambient-hue", &format!("{hue:.0}"));
+                let _ =
+                    style.set_property("--ambient-hue", &format!("{:.0}", analysis.dominant_hue));
             }
         });
     }

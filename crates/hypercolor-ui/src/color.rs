@@ -9,11 +9,17 @@
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
 /// Three-color palette extracted from a canvas frame.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CanvasPalette {
     pub primary: (f64, f64, f64),
     pub secondary: (f64, f64, f64),
     pub tertiary: (f64, f64, f64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CanvasFrameAnalysis {
+    pub palette: CanvasPalette,
+    pub dominant_hue: f64,
 }
 
 /// Linear interpolate between two RGB values.
@@ -162,7 +168,7 @@ pub fn harmonize_palette(p: CanvasPalette) -> CanvasPalette {
 /// Samples ~200 pixels, groups by 12 hue sectors of 30° each, skips
 /// dark/desaturated pixels, and returns averaged RGB for the top 3 sectors.
 /// Returns `None` if no sector has enough vibrant pixels.
-pub fn extract_canvas_palette(frame: &CanvasFrame) -> Option<CanvasPalette> {
+pub fn analyze_canvas_frame(frame: &CanvasFrame) -> Option<CanvasFrameAnalysis> {
     if frame.pixel_format() == CanvasPixelFormat::Jpeg {
         return None;
     }
@@ -173,14 +179,23 @@ pub fn extract_canvas_palette(frame: &CanvasFrame) -> Option<CanvasPalette> {
     }
 
     let step = (pixel_count / 200).max(1);
+    analyze_rgba_samples(
+        (0..pixel_count)
+            .step_by(step)
+            .filter_map(|i| frame.rgba_at(i)),
+    )
+}
 
-    // 12 hue sectors (30° each): (r_sum, g_sum, b_sum, count)
+pub(crate) fn analyze_rgba_samples<I>(pixels: I) -> Option<CanvasFrameAnalysis>
+where
+    I: IntoIterator<Item = [u8; 4]>,
+{
     let mut sectors = [(0.0_f64, 0.0_f64, 0.0_f64, 0_u32); 12];
+    let mut hue_sin_sum = 0.0_f64;
+    let mut hue_cos_sum = 0.0_f64;
+    let mut chromatic_count = 0_u32;
 
-    for i in (0..pixel_count).step_by(step) {
-        let Some([r, g, b, _]) = frame.rgba_at(i) else {
-            continue;
-        };
+    for [r, g, b, _] in pixels {
         let r = f64::from(r);
         let g = f64::from(g);
         let b = f64::from(b);
@@ -192,12 +207,11 @@ pub fn extract_canvas_palette(frame: &CanvasFrame) -> Option<CanvasPalette> {
         let max = rf.max(gf).max(bf);
         let min = rf.min(gf).min(bf);
         let chroma = max - min;
-        let lightness = (max + min) / 2.0;
-
-        if chroma < 0.15 || lightness < 0.08 {
+        if chroma < 0.1 {
             continue;
         }
 
+        let lightness = (max + min) / 2.0;
         let hue = if (max - rf).abs() < f64::EPSILON {
             60.0 * (((gf - bf) / chroma) % 6.0)
         } else if (max - gf).abs() < f64::EPSILON {
@@ -206,6 +220,14 @@ pub fn extract_canvas_palette(frame: &CanvasFrame) -> Option<CanvasPalette> {
             60.0 * (((rf - gf) / chroma) + 4.0)
         };
         let hue = if hue < 0.0 { hue + 360.0 } else { hue };
+        let rad = hue.to_radians();
+        hue_sin_sum += rad.sin();
+        hue_cos_sum += rad.cos();
+        chromatic_count += 1;
+
+        if chroma < 0.15 || lightness < 0.08 {
+            continue;
+        }
 
         let sector = ((hue / 30.0) as usize).min(11);
         sectors[sector].0 += r;
@@ -214,13 +236,16 @@ pub fn extract_canvas_palette(frame: &CanvasFrame) -> Option<CanvasPalette> {
         sectors[sector].3 += 1;
     }
 
+    if chromatic_count < 5 {
+        return None;
+    }
+
     let mut ranked: Vec<(usize, u32)> = sectors
         .iter()
         .enumerate()
-        .filter(|(_, s)| s.3 >= 3)
-        .map(|(i, s)| (i, s.3))
+        .filter(|(_, sector)| sector.3 >= 3)
+        .map(|(idx, sector)| (idx, sector.3))
         .collect();
-
     if ranked.is_empty() {
         return None;
     }
@@ -228,26 +253,40 @@ pub fn extract_canvas_palette(frame: &CanvasFrame) -> Option<CanvasPalette> {
     ranked.sort_by(|a, b| b.1.cmp(&a.1));
 
     let avg = |idx: usize| -> (f64, f64, f64) {
-        let s = &sectors[idx];
-        let n = f64::from(s.3);
-        (s.0 / n, s.1 / n, s.2 / n)
+        let sector = &sectors[idx];
+        let count = f64::from(sector.3);
+        (sector.0 / count, sector.1 / count, sector.2 / count)
     };
 
-    let primary = avg(ranked[0].0);
-    let secondary = if ranked.len() > 1 {
-        avg(ranked[1].0)
-    } else {
-        primary
-    };
-    let tertiary = if ranked.len() > 2 {
-        avg(ranked[2].0)
-    } else {
-        secondary
+    let palette = CanvasPalette {
+        primary: avg(ranked[0].0),
+        secondary: if ranked.len() > 1 {
+            avg(ranked[1].0)
+        } else {
+            avg(ranked[0].0)
+        },
+        tertiary: if ranked.len() > 2 {
+            avg(ranked[2].0)
+        } else if ranked.len() > 1 {
+            avg(ranked[1].0)
+        } else {
+            avg(ranked[0].0)
+        },
     };
 
-    Some(CanvasPalette {
-        primary,
-        secondary,
-        tertiary,
+    let avg_rad = hue_sin_sum.atan2(hue_cos_sum);
+    let dominant_hue = avg_rad.to_degrees();
+
+    Some(CanvasFrameAnalysis {
+        palette,
+        dominant_hue: if dominant_hue < 0.0 {
+            dominant_hue + 360.0
+        } else {
+            dominant_hue
+        },
     })
+}
+
+pub fn extract_canvas_palette(frame: &CanvasFrame) -> Option<CanvasPalette> {
+    analyze_canvas_frame(frame).map(|analysis| analysis.palette)
 }
