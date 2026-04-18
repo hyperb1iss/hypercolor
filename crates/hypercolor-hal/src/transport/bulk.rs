@@ -16,7 +16,7 @@ use tracing::{debug, trace};
 use crate::protocol::TransferType;
 use crate::transport::{Transport, TransportError, spawn_blocking_transport_io};
 
-const DEFAULT_IO_TIMEOUT: Duration = Duration::from_millis(1_000);
+const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_REPORT_LEN: usize = 32;
 const HID_REPORT_TYPE_FEATURE: u16 = 0x03;
 

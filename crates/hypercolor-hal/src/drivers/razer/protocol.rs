@@ -1020,12 +1020,10 @@ impl Protocol for RazerProtocol {
             0
         } else {
             let nanos = frame_interval.as_nanos();
-            if nanos == 0 {
-                0
-            } else {
-                let one_second_nanos = 1_000_000_000_u128;
-                u32::try_from(one_second_nanos / nanos).unwrap_or(u32::MAX)
-            }
+            let one_second_nanos = 1_000_000_000_u128;
+            one_second_nanos
+                .checked_div(nanos)
+                .map_or(0, |fps| u32::try_from(fps).unwrap_or(u32::MAX))
         };
 
         DeviceCapabilities {

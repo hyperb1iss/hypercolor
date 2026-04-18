@@ -12,7 +12,7 @@ use nusb::transfer::{ControlIn, ControlOut, ControlType, Recipient, TransferErro
 
 use crate::transport::{Transport, TransportError};
 
-const DEFAULT_IO_TIMEOUT: Duration = Duration::from_millis(1_000);
+const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(1);
 const VENDOR_OP_WRITE: u8 = 0x01;
 const VENDOR_OP_READ: u8 = 0x02;
 const VENDOR_OP_DELAY: u8 = 0x03;

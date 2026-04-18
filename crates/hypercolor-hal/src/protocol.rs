@@ -88,7 +88,7 @@ pub trait Protocol: Send + Sync {
 
     /// Response timeout budget for commands that expect a reply.
     fn response_timeout(&self) -> Duration {
-        Duration::from_millis(1_000)
+        Duration::from_secs(1)
     }
 
     /// Encode a display frame from JPEG-compressed image data.

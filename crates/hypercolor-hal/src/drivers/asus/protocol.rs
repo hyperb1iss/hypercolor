@@ -28,7 +28,7 @@ const DIRECT_MODE_ID: u8 = 0xFF;
 const RESPONSE_DELAY: Duration = Duration::from_millis(50);
 const RESPONSE_POST_DELAY: Duration = Duration::from_millis(5);
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
-const RESPONSE_TIMEOUT: Duration = Duration::from_millis(2_000);
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 
 const _: () = assert!(
     std::mem::size_of::<AuraDirectPacket>() == AURA_REPORT_PAYLOAD_LEN,

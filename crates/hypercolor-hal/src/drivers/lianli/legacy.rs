@@ -18,7 +18,7 @@ const ORIGINAL_LEDS_PER_FAN: usize = 16;
 const AL10_LEDS_PER_FAN: usize = 20;
 
 const LEGACY_CONTROL_DELAY: Duration = Duration::from_millis(5);
-const LEGACY_RESPONSE_TIMEOUT: Duration = Duration::from_millis(1_000);
+const LEGACY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
 const ORIGINAL_FRAME_INTERVAL: Duration = Duration::from_millis(125);
 const AL10_FRAME_INTERVAL: Duration = Duration::from_millis(250);
 

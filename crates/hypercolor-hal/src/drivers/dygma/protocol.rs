@@ -311,7 +311,7 @@ impl Protocol for DygmaProtocol {
     }
 
     fn response_timeout(&self) -> Duration {
-        Duration::from_millis(2_000)
+        Duration::from_secs(2)
     }
 
     fn zones(&self) -> Vec<ProtocolZone> {

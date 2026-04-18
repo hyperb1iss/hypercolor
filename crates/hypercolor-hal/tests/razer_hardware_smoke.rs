@@ -15,7 +15,7 @@ use hypercolor_hal::transport::hidraw::UsbHidRawTransport;
 use zerocopy::{FromZeros, IntoBytes};
 
 const HARDWARE_TEST_ENV: &str = "HYPERCOLOR_TEST_RAZER_HARDWARE";
-const RESPONSE_TIMEOUT: Duration = Duration::from_millis(1_000);
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
 const IDENTIFY_FLASH_MS: Duration = Duration::from_millis(150);
 
 fn hardware_tests_enabled() -> bool {

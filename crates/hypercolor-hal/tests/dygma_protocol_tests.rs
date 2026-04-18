@@ -167,7 +167,7 @@ fn brightness_commands_follow_variant() {
 #[test]
 fn response_timeout_is_two_seconds() {
     let protocol = build_defy_wired_protocol();
-    assert_eq!(protocol.response_timeout(), Duration::from_millis(2_000));
+    assert_eq!(protocol.response_timeout(), Duration::from_secs(2));
 }
 
 #[test]
