@@ -25,8 +25,8 @@ use hypercolor_types::canvas::Canvas;
 use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata};
 use reqwest::Url;
 use servo::{
-    DeviceIntPoint, DeviceIntRect, JSValue, JavaScriptEvaluationError, Preferences,
-    RenderingContext, Servo, ServoBuilder, WebView, WebViewBuilder,
+    JSValue, JavaScriptEvaluationError, Preferences, RenderingContext, Servo, ServoBuilder,
+    WebView, WebViewBuilder,
 };
 use tracing::{debug, trace, warn};
 
@@ -500,6 +500,92 @@ fn file_url_for_path(path: &Path) -> Result<Url> {
             canonical_path.display()
         )
     })
+}
+
+/// Read Servo's composited framebuffer into a fresh `Canvas`.
+///
+/// Bypasses `servo-paint-api::Framebuffer::read_framebuffer_to_image`, which
+/// allocates, calls `glReadPixels`, clones the whole `Vec<u8>` so it can
+/// flip rows into the original via `clone_from_slice`. On a 640×480×4 frame
+/// that's two extra full-buffer passes over ≈1.2 MB beyond the unavoidable
+/// `glReadPixels` DMA. Profile attributed that pair to ~45% of the Servo
+/// worker thread as raw libc memmove.
+///
+/// Here we read directly into an owned `Vec<u8>` and swap rows in place —
+/// each byte moves at most once, so the flip is half the cost of Servo's
+/// default and there's no separate clone. The `bind_vertex_array(0)` call
+/// is the OSMesa workaround that Servo's upstream implementation keeps for
+/// its own reasons; preserve it so the headless adapter stays honest.
+fn read_framebuffer_into_canvas(
+    session: &ServoSession,
+    width: i32,
+    height: i32,
+) -> Result<Canvas> {
+    use gleam::gl;
+
+    if width <= 0 || height <= 0 {
+        bail!("Servo readback rectangle has non-positive dimensions ({width}×{height})");
+    }
+
+    let width_u32 = u32::try_from(width).context("servo readback width overflow")?;
+    let height_u32 = u32::try_from(height).context("servo readback height overflow")?;
+
+    session.rendering_context.prepare_for_rendering();
+    let gl = session.rendering_context.gleam_gl_api();
+    gl.bind_vertex_array(0);
+
+    let mut pixels = gl.read_pixels(0, 0, width, height, gl::RGBA, gl::UNSIGNED_BYTE);
+    let gl_error = gl.get_error();
+    if gl_error != gl::NO_ERROR {
+        warn!("GL error 0x{gl_error:x} raised during Servo framebuffer readback");
+    }
+
+    let stride = usize::try_from(width)
+        .ok()
+        .and_then(|w| w.checked_mul(4))
+        .context("servo readback row stride overflow")?;
+    let expected_len = stride
+        .checked_mul(usize::try_from(height).context("servo readback height overflow")?)
+        .context("servo readback buffer length overflow")?;
+    if pixels.len() != expected_len {
+        bail!(
+            "Servo readback returned {} bytes; expected {} ({}×{}×4)",
+            pixels.len(),
+            expected_len,
+            width,
+            height
+        );
+    }
+
+    flip_rows_in_place(&mut pixels, stride);
+
+    Ok(Canvas::from_vec(pixels, width_u32, height_u32))
+}
+
+/// Swap pairs of rows in a row-major RGBA buffer to flip it vertically.
+///
+/// OpenGL's `glReadPixels` places (0,0) at the bottom-left of the source
+/// framebuffer, but `Canvas` expects top-left origin. Walking from both
+/// ends with `swap_with_slice` lets each byte move exactly once — no
+/// scratch buffer, no per-row clone.
+fn flip_rows_in_place(pixels: &mut [u8], stride: usize) {
+    if stride == 0 {
+        return;
+    }
+    let row_count = pixels.len() / stride;
+    if row_count < 2 {
+        return;
+    }
+    let mut top = 0;
+    let mut bottom = row_count - 1;
+    while top < bottom {
+        let top_start = top * stride;
+        let bottom_start = bottom * stride;
+        let (upper, lower) = pixels.split_at_mut(bottom_start);
+        upper[top_start..top_start + stride].swap_with_slice(&mut lower[..stride]);
+        top += 1;
+        bottom -= 1;
+    }
 }
 
 fn trimmed_servo_preferences() -> Preferences {
@@ -1077,20 +1163,9 @@ impl ServoWorkerRuntime {
                 i32::try_from(size.width).context("canvas width overflow for Servo readback")?;
             let height_i32 =
                 i32::try_from(size.height).context("canvas height overflow for Servo readback")?;
-            let rect = DeviceIntRect::new(
-                DeviceIntPoint::new(0, 0),
-                DeviceIntPoint::new(width_i32, height_i32),
-            );
 
-            let image = self
-                .session(session_id)?
-                .rendering_context
-                .read_to_image(rect)
-                .ok_or_else(|| anyhow!("Servo returned no pixels for readback rectangle"))?;
-
-            let image_width = image.width();
-            let image_height = image.height();
-            let canvas = Canvas::from_vec(image.into_raw(), image_width, image_height);
+            let canvas =
+                read_framebuffer_into_canvas(self.session(session_id)?, width_i32, height_i32)?;
             self.session_mut(session_id)?.last_canvas = Some(canvas.clone());
             Ok(canvas)
         })();
@@ -1652,6 +1727,64 @@ mod tests {
             trimmed_servo_preferences().shell_background_color_rgba,
             [0.0, 0.0, 0.0, 0.0]
         );
+    }
+
+    #[test]
+    fn flip_rows_in_place_inverts_row_order() {
+        // 3 rows × 2 pixels × 4 bytes = 24 bytes. Row 0 is RRGG.., row 1
+        // is ..BBWW.., row 2 is YYCC.. — after a flip, row 0 is expected
+        // to carry row 2's bytes and vice versa, row 1 unchanged.
+        let mut pixels = vec![
+            0x11, 0x11, 0x11, 0xff, 0x22, 0x22, 0x22, 0xff, // row 0
+            0x33, 0x33, 0x33, 0xff, 0x44, 0x44, 0x44, 0xff, // row 1
+            0x55, 0x55, 0x55, 0xff, 0x66, 0x66, 0x66, 0xff, // row 2
+        ];
+        flip_rows_in_place(&mut pixels, 8);
+        assert_eq!(
+            pixels,
+            vec![
+                0x55, 0x55, 0x55, 0xff, 0x66, 0x66, 0x66, 0xff,
+                0x33, 0x33, 0x33, 0xff, 0x44, 0x44, 0x44, 0xff,
+                0x11, 0x11, 0x11, 0xff, 0x22, 0x22, 0x22, 0xff,
+            ]
+        );
+    }
+
+    #[test]
+    fn flip_rows_in_place_handles_even_row_count() {
+        let mut pixels = vec![
+            0xaa, 0xaa, 0xaa, 0xff, // row 0
+            0xbb, 0xbb, 0xbb, 0xff, // row 1
+            0xcc, 0xcc, 0xcc, 0xff, // row 2
+            0xdd, 0xdd, 0xdd, 0xff, // row 3
+        ];
+        flip_rows_in_place(&mut pixels, 4);
+        assert_eq!(
+            pixels,
+            vec![
+                0xdd, 0xdd, 0xdd, 0xff,
+                0xcc, 0xcc, 0xcc, 0xff,
+                0xbb, 0xbb, 0xbb, 0xff,
+                0xaa, 0xaa, 0xaa, 0xff,
+            ]
+        );
+    }
+
+    #[test]
+    fn flip_rows_in_place_is_a_noop_for_degenerate_buffers() {
+        let mut single_row = vec![0x01, 0x02, 0x03, 0xff];
+        flip_rows_in_place(&mut single_row, 4);
+        assert_eq!(single_row, vec![0x01, 0x02, 0x03, 0xff]);
+
+        let mut empty: Vec<u8> = Vec::new();
+        flip_rows_in_place(&mut empty, 4);
+        assert!(empty.is_empty());
+
+        // A zero stride can't meaningfully flip — guard against division
+        // by zero rather than panicking.
+        let mut pixels = vec![0u8; 16];
+        flip_rows_in_place(&mut pixels, 0);
+        assert_eq!(pixels, vec![0u8; 16]);
     }
 
     #[test]
