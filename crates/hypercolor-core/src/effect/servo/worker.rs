@@ -697,6 +697,11 @@ struct ServoSession {
     delegate: Rc<HypercolorWebViewDelegate>,
     loaded_html_path: Option<PathBuf>,
     script_buffer: String,
+    /// Most recent successful readback, retained so ticks where Servo has
+    /// nothing new to composite can skip `read_to_image` entirely. Cloning a
+    /// `Canvas` is an Arc refcount bump (zero-copy), so repeated reuse costs
+    /// nothing beyond the flag check.
+    last_canvas: Option<Canvas>,
 }
 
 struct ServoWorkerRuntime {
@@ -816,6 +821,7 @@ impl ServoWorkerRuntime {
                 delegate,
                 loaded_html_path: None,
                 script_buffer: String::new(),
+                last_canvas: None,
             },
         );
 
@@ -1047,6 +1053,23 @@ impl ServoWorkerRuntime {
             if frame_ready {
                 trace!("Servo delegate signaled new frame");
             }
+
+            // Fast path: the delegate didn't observe a fresh composition this
+            // tick, so `paint()` + `read_to_image()` would just re-deliver
+            // bytes we already have. `read_framebuffer_to_image` in
+            // servo-paint-api does a `glReadPixels` + full `Vec::clone` + a
+            // per-row flip — three passes over a 640×480×4 (≈1.2 MB) buffer
+            // on the Servo worker thread. Skipping that when nothing changed
+            // was the single biggest memmove win in the profile, and
+            // `Canvas::clone` is an Arc bump so reuse is effectively free.
+            if !frame_ready
+                && let Some(cached) = self.session(session_id)?.last_canvas.as_ref()
+                && cached.width() == width
+                && cached.height() == height
+            {
+                return Ok(cached.clone());
+            }
+
             self.active_webview(session_id)?.paint();
 
             let size = self.session(session_id)?.rendering_context.size();
@@ -1067,11 +1090,9 @@ impl ServoWorkerRuntime {
 
             let image_width = image.width();
             let image_height = image.height();
-            Ok(Canvas::from_vec(
-                image.into_raw(),
-                image_width,
-                image_height,
-            ))
+            let canvas = Canvas::from_vec(image.into_raw(), image_width, image_height);
+            self.session_mut(session_id)?.last_canvas = Some(canvas.clone());
+            Ok(canvas)
         })();
 
         if let Some(webview) = self
