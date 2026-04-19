@@ -47,7 +47,7 @@ pub(crate) async fn build_frame_scene_snapshot(
     last_render_group_demand: &mut Option<CachedRenderGroupDemand>,
     delta_secs: f32,
 ) -> FrameSceneSnapshot {
-    let scene_runtime = current_scene_runtime_snapshot(state, delta_secs).await;
+    let scene_runtime = current_scene_runtime_snapshot(state, frame_scheduler, delta_secs).await;
     let effect_scene = current_effect_scene_snapshot(
         state,
         &scene_runtime,
@@ -69,6 +69,7 @@ pub(crate) async fn build_frame_scene_snapshot(
 
 async fn current_scene_runtime_snapshot(
     state: &RenderThreadState,
+    frame_scheduler: &mut FrameScheduler,
     delta_secs: f32,
 ) -> SceneRuntimeSnapshot {
     let transitioning = {
@@ -79,21 +80,27 @@ async fn current_scene_runtime_snapshot(
     if transitioning {
         let mut manager = state.scene_manager.write().await;
         manager.tick_transition(delta_secs);
-        return snapshot_scene_runtime(state, &manager).await;
+        return snapshot_scene_runtime(state, frame_scheduler, &manager).await;
     }
 
     let manager = state.scene_manager.read().await;
-    snapshot_scene_runtime(state, &manager).await
+    snapshot_scene_runtime(state, frame_scheduler, &manager).await
 }
 
 async fn snapshot_scene_runtime(
     state: &RenderThreadState,
+    frame_scheduler: &mut FrameScheduler,
     manager: &SceneManager,
 ) -> SceneRuntimeSnapshot {
     let active_render_groups = manager.active_render_groups();
-    let active_display_group_target_fps =
-        snapshot_display_group_target_fps(&state.device_registry, active_render_groups.as_ref())
-            .await;
+    let active_render_groups_revision = manager.active_render_groups_revision();
+    let active_display_group_target_fps = snapshot_display_group_target_fps(
+        &state.device_registry,
+        frame_scheduler,
+        active_render_groups_revision,
+        active_render_groups.as_ref(),
+    )
+    .await;
     let active_render_group_count = u32::try_from(
         active_render_groups
             .iter()
@@ -112,7 +119,7 @@ async fn snapshot_scene_runtime(
                 eased_progress: transition.eased_progress(),
             }),
         active_render_groups,
-        active_render_groups_revision: manager.active_render_groups_revision(),
+        active_render_groups_revision,
         active_render_group_count,
         active_display_group_target_fps,
     }
@@ -120,8 +127,17 @@ async fn snapshot_scene_runtime(
 
 async fn snapshot_display_group_target_fps(
     device_registry: &hypercolor_core::device::DeviceRegistry,
+    frame_scheduler: &mut FrameScheduler,
+    groups_revision: u64,
     groups: &[RenderGroup],
 ) -> HashMap<RenderGroupId, u32> {
+    let registry_generation = device_registry.generation();
+    if let Some(cached) =
+        frame_scheduler.cached_display_group_target_fps(groups_revision, registry_generation)
+    {
+        return cached;
+    }
+
     let max_fps_by_device = device_registry
         .list()
         .await
@@ -129,7 +145,7 @@ async fn snapshot_display_group_target_fps(
         .map(|tracked| (tracked.info.id, tracked.info.capabilities.max_fps))
         .collect::<HashMap<DeviceId, u32>>();
 
-    groups
+    let target_fps = groups
         .iter()
         .filter_map(|group| {
             let target = group.display_target.as_ref()?;
@@ -142,7 +158,13 @@ async fn snapshot_display_group_target_fps(
                 capped_group_direct_display_target_fps(device_max_fps),
             ))
         })
-        .collect()
+        .collect();
+    frame_scheduler.cache_display_group_target_fps(
+        groups_revision,
+        registry_generation,
+        &target_fps,
+    );
+    target_fps
 }
 
 async fn current_effect_scene_snapshot(

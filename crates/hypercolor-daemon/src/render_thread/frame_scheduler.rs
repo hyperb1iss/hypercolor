@@ -57,12 +57,50 @@ pub(crate) struct FrameSceneSnapshotInputs {
     pub spatial_engine: SpatialEngine,
 }
 
+#[derive(Debug, Clone, Default)]
+struct CachedDisplayGroupTargetFps {
+    groups_revision: u64,
+    registry_generation: u64,
+    values: HashMap<RenderGroupId, u32>,
+}
+
 #[derive(Debug, Default)]
-pub(crate) struct FrameScheduler;
+pub(crate) struct FrameScheduler {
+    cached_display_group_target_fps: Option<CachedDisplayGroupTargetFps>,
+}
 
 impl FrameScheduler {
     pub const fn new() -> Self {
-        Self
+        Self {
+            cached_display_group_target_fps: None,
+        }
+    }
+
+    pub(crate) fn cached_display_group_target_fps(
+        &self,
+        groups_revision: u64,
+        registry_generation: u64,
+    ) -> Option<HashMap<RenderGroupId, u32>> {
+        self.cached_display_group_target_fps
+            .as_ref()
+            .filter(|cache| {
+                cache.groups_revision == groups_revision
+                    && cache.registry_generation == registry_generation
+            })
+            .map(|cache| cache.values.clone())
+    }
+
+    pub(crate) fn cache_display_group_target_fps(
+        &mut self,
+        groups_revision: u64,
+        registry_generation: u64,
+        values: &HashMap<RenderGroupId, u32>,
+    ) {
+        self.cached_display_group_target_fps = Some(CachedDisplayGroupTargetFps {
+            groups_revision,
+            registry_generation,
+            values: values.clone(),
+        });
     }
 
     #[allow(
@@ -205,5 +243,23 @@ mod tests {
         assert!(snapshot.scene_runtime.active_transition.is_some());
         assert_eq!(snapshot.scene_runtime.active_render_group_count(), 1);
         assert_eq!(snapshot.spatial_engine.layout().canvas_width, 320);
+    }
+
+    #[test]
+    fn frame_scheduler_caches_display_group_target_fps_by_revision_and_registry_generation() {
+        let mut scheduler = FrameScheduler::new();
+        let group_id = RenderGroupId::new();
+        let values = std::collections::HashMap::from([(group_id, 30)]);
+
+        assert!(scheduler.cached_display_group_target_fps(1, 7).is_none());
+
+        scheduler.cache_display_group_target_fps(1, 7, &values);
+
+        assert_eq!(
+            scheduler.cached_display_group_target_fps(1, 7),
+            Some(values.clone())
+        );
+        assert!(scheduler.cached_display_group_target_fps(2, 7).is_none());
+        assert!(scheduler.cached_display_group_target_fps(1, 8).is_none());
     }
 }
