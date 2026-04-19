@@ -52,6 +52,17 @@ use crate::session::OutputPowerState;
 
 static WS_CACHE_TEST_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
 
+#[cfg(feature = "servo")]
+fn current_servo_effect_health() -> (u64, u64) {
+    let snapshot = hypercolor_core::effect::servo_telemetry_snapshot();
+    (snapshot.soft_stalls_total, snapshot.breaker_opens_total)
+}
+
+#[cfg(not(feature = "servo"))]
+const fn current_servo_effect_health() -> (u64, u64) {
+    (0, 0)
+}
+
 fn secured_state() -> Arc<AppState> {
     let mut state = AppState::new();
     state.security_state =
@@ -220,6 +231,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
         panic!("expected metrics message");
     };
     let json = serde_json::to_value(&data).expect("metrics payload should serialize");
+    let (servo_soft_stalls_total, servo_breaker_opens_total) = current_servo_effect_health();
 
     assert_eq!(json["timeline"]["frame_token"], 77);
     assert_eq!(json["timeline"]["compositor_backend"], "gpu");
@@ -238,6 +250,14 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["pacing"]["gpu_sample_wait_blocked"], 1);
     assert_eq!(json["effect_health"]["errors_total"], 2);
     assert_eq!(json["effect_health"]["fallbacks_applied_total"], 1);
+    assert_eq!(
+        json["effect_health"]["servo_soft_stalls_total"],
+        servo_soft_stalls_total
+    );
+    assert_eq!(
+        json["effect_health"]["servo_breaker_opens_total"],
+        servo_breaker_opens_total
+    );
     assert_eq!(json["timeline"]["logical_layer_count"], 2);
     assert_eq!(json["timeline"]["render_group_count"], 1);
     assert_eq!(json["timeline"]["scene_active"], true);

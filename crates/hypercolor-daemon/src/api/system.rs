@@ -102,6 +102,8 @@ pub struct RenderSurfaceStatus {
 pub struct EffectHealthStatus {
     pub errors_total: u64,
     pub fallbacks_applied_total: u64,
+    pub servo_soft_stalls_total: u64,
+    pub servo_breaker_opens_total: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -193,9 +195,12 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     let latest_frame = performance
         .latest_frame
         .map(|frame| latest_frame_status(frame, state.start_time.elapsed().as_secs_f64() * 1000.0));
+    let (servo_soft_stalls_total, servo_breaker_opens_total) = servo_effect_health_counts();
     let effect_health = EffectHealthStatus {
         errors_total: performance.effect_health.errors_total,
         fallbacks_applied_total: performance.effect_health.fallbacks_applied_total,
+        servo_soft_stalls_total,
+        servo_breaker_opens_total,
     };
     let preview_runtime = preview_runtime_status(&state.preview_runtime);
 
@@ -367,6 +372,17 @@ fn overall_health(checks: &HealthChecks) -> &'static str {
 
 fn render_loop_is_operational(state: &str) -> bool {
     state != "stopped"
+}
+
+#[cfg(feature = "servo")]
+fn servo_effect_health_counts() -> (u64, u64) {
+    let snapshot = hypercolor_core::effect::servo_telemetry_snapshot();
+    (snapshot.soft_stalls_total, snapshot.breaker_opens_total)
+}
+
+#[cfg(not(feature = "servo"))]
+const fn servo_effect_health_counts() -> (u64, u64) {
+    (0, 0)
 }
 
 fn latest_frame_status(frame: LatestFrameMetrics, render_elapsed_ms: f64) -> LatestFrameStatus {
@@ -580,6 +596,8 @@ mod tests {
             .await
             .expect("status body should read");
         let json: Value = serde_json::from_slice(&body).expect("status should serialize");
+        let (servo_soft_stalls_total, servo_breaker_opens_total) =
+            super::servo_effect_health_counts();
 
         assert_eq!(json["data"]["render_loop"]["target_fps"], 60);
         assert_eq!(json["data"]["render_loop"]["ceiling_fps"], 60);
@@ -625,6 +643,14 @@ mod tests {
         assert_eq!(json["data"]["latest_frame"]["full_frame_copy_kb"], 250.0);
         assert_eq!(json["data"]["effect_health"]["errors_total"], 1);
         assert_eq!(json["data"]["effect_health"]["fallbacks_applied_total"], 1);
+        assert_eq!(
+            json["data"]["effect_health"]["servo_soft_stalls_total"],
+            servo_soft_stalls_total
+        );
+        assert_eq!(
+            json["data"]["effect_health"]["servo_breaker_opens_total"],
+            servo_breaker_opens_total
+        );
         assert_eq!(json["data"]["preview_runtime"]["canvas_receivers"], 1);
         assert_eq!(
             json["data"]["preview_runtime"]["screen_canvas_receivers"],

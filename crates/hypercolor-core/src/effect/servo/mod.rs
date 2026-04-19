@@ -23,9 +23,11 @@ mod circuit_breaker;
 mod delegate;
 mod renderer;
 mod session;
+mod telemetry;
 mod worker;
 mod worker_client;
 
 pub use delegate::{ConsoleMessage, HypercolorWebViewDelegate};
 pub use renderer::ServoRenderer;
 pub use session::{ServoSessionHandle, SessionConfig, note_servo_session_error};
+pub use telemetry::{ServoTelemetrySnapshot, servo_telemetry_snapshot};

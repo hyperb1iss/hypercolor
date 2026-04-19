@@ -775,6 +775,8 @@ pub(super) struct MetricsPacing {
 pub(super) struct MetricsEffectHealth {
     pub(super) errors_total: u64,
     pub(super) fallbacks_applied_total: u64,
+    pub(super) servo_soft_stalls_total: u64,
+    pub(super) servo_breaker_opens_total: u64,
 }
 
 #[derive(Debug, Serialize)]

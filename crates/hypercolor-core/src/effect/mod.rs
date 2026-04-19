@@ -35,7 +35,10 @@ pub use paths::{bundled_effects_root, resolve_html_source_path};
 pub use pool::EffectPool;
 pub use registry::{EffectEntry, EffectRegistry, RescanReport};
 #[cfg(feature = "servo")]
-pub use servo::{ConsoleMessage, HypercolorWebViewDelegate, ServoRenderer};
+pub use servo::{
+    ConsoleMessage, HypercolorWebViewDelegate, ServoRenderer, ServoTelemetrySnapshot,
+    servo_telemetry_snapshot,
+};
 #[cfg(feature = "servo")]
 pub use servo_bootstrap::bootstrap_software_rendering_context;
 pub use traits::{EffectRenderer, FrameInput};

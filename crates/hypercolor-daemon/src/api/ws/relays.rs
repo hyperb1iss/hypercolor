@@ -1097,6 +1097,7 @@ pub(super) async fn build_metrics_message(
     let canvas_demand = state.preview_runtime.canvas_demand();
     let screen_canvas_demand = state.preview_runtime.screen_canvas_demand();
     let web_viewport_canvas_demand = state.preview_runtime.web_viewport_canvas_demand();
+    let (servo_soft_stalls_total, servo_breaker_opens_total) = servo_effect_health_counts();
 
     ServerMessage::Metrics {
         timestamp: format_iso8601_now(),
@@ -1154,6 +1155,8 @@ pub(super) async fn build_metrics_message(
             effect_health: MetricsEffectHealth {
                 errors_total: performance_snapshot.effect_health.errors_total,
                 fallbacks_applied_total: performance_snapshot.effect_health.fallbacks_applied_total,
+                servo_soft_stalls_total,
+                servo_breaker_opens_total,
             },
             timeline: MetricsTimeline {
                 frame_token: latest_frame.timeline.frame_token,
@@ -1234,6 +1237,17 @@ pub(super) async fn build_metrics_message(
             },
         },
     }
+}
+
+#[cfg(feature = "servo")]
+fn servo_effect_health_counts() -> (u64, u64) {
+    let snapshot = hypercolor_core::effect::servo_telemetry_snapshot();
+    (snapshot.soft_stalls_total, snapshot.breaker_opens_total)
+}
+
+#[cfg(not(feature = "servo"))]
+const fn servo_effect_health_counts() -> (u64, u64) {
+    (0, 0)
 }
 
 fn round_1(value: f64) -> f64 {

@@ -18,6 +18,7 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use super::session::DrainPendingRenderError;
+use super::telemetry::record_servo_soft_stall;
 use super::worker::{
     RENDER_RESPONSE_TIMEOUT, effect_is_audio_reactive, poison_shared_servo_worker,
     prepare_runtime_html_source, servo_worker_is_fatal_error,
@@ -305,6 +306,7 @@ impl ServoRenderer {
                 if !self.warned_stalled_frame
                     && pending_age.is_some_and(|age| age >= soft_stall_timeout)
                 {
+                    record_servo_soft_stall();
                     warn!(
                         fps_cap = self.active_fps_cap(),
                         pending_age_ms = pending_age.map_or(0, |age| age.as_millis()),
@@ -942,6 +944,7 @@ mod tests {
     fn poll_in_flight_render_marks_soft_stall_before_hard_timeout() {
         let (worker, render_rx, result_tx, delivered_rx, _unload_rx, stopped) =
             spawn_render_test_worker();
+        let baseline_stalls = crate::effect::servo::servo_telemetry_snapshot().soft_stalls_total;
 
         let mut renderer = ServoRenderer::new();
         attach_renderer_session(&mut renderer, &worker);
@@ -962,6 +965,16 @@ mod tests {
         renderer.poll_in_flight_render();
 
         assert!(renderer.warned_stalled_frame);
+        assert_eq!(
+            crate::effect::servo::servo_telemetry_snapshot().soft_stalls_total,
+            baseline_stalls + 1
+        );
+
+        renderer.poll_in_flight_render();
+        assert_eq!(
+            crate::effect::servo::servo_telemetry_snapshot().soft_stalls_total,
+            baseline_stalls + 1
+        );
 
         result_tx
             .send(Ok(solid_canvas(1, 1, 1)))

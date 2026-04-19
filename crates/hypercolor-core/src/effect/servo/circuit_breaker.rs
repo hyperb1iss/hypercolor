@@ -11,6 +11,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+use super::telemetry::record_servo_breaker_open;
+
 /// Number of consecutive failures before the breaker opens.
 const FAILURE_THRESHOLD: u32 = 3;
 /// Base cooldown applied after the breaker opens.
@@ -132,6 +134,7 @@ impl ServoCircuitBreaker {
 
     fn open(&self) {
         self.store_state(CircuitState::Open);
+        record_servo_breaker_open();
         let opens = self.consecutive_opens.fetch_add(1, Ordering::AcqRel) + 1;
         let cooldown = cooldown_for_opens(opens);
         self.set_next_retry(cooldown);
@@ -206,11 +209,16 @@ mod tests {
     #[test]
     fn threshold_failures_open_breaker() {
         let breaker = ServoCircuitBreaker::new();
+        let baseline_opens = crate::effect::servo::servo_telemetry_snapshot().breaker_opens_total;
         for _ in 0..FAILURE_THRESHOLD {
             breaker.record_failure();
         }
         assert_eq!(breaker.load_state(), CircuitState::Open);
         assert!(!breaker.can_attempt());
+        assert_eq!(
+            crate::effect::servo::servo_telemetry_snapshot().breaker_opens_total,
+            baseline_opens + 1
+        );
     }
 
     #[test]
