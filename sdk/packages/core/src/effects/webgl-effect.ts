@@ -44,12 +44,17 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
     protected audioReactive: boolean
     protected preserveDrawingBuffer: boolean
     protected currentAudioData: AudioData | null = null
+    protected captureMode: boolean
 
     constructor(config: WebGLEffectConfig) {
         super(config)
         this.fragmentShader = config.fragmentShader
         this.vertexShader = config.vertexShader ?? DEFAULT_VERTEX_SHADER
         this.audioReactive = config.audioReactive ?? false
+        this.captureMode =
+            (typeof window !== 'undefined'
+                ? (window as { __hypercolorCaptureMode?: boolean }).__hypercolorCaptureMode
+                : undefined) ?? false
         this.preserveDrawingBuffer =
             config.preserveDrawingBuffer ??
             (typeof window !== 'undefined'
@@ -103,6 +108,9 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
         }
 
         this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4)
+        if (this.captureMode) {
+            this.gl.finish()
+        }
     }
 
     protected getAudio(): AudioData | null {

@@ -111,6 +111,9 @@ declare global {
         /** Force WebGL effects to preserve the backbuffer between frames */
         __hypercolorPreserveDrawingBuffer?: boolean
 
+        /** Indicates the effect is running in a capture/readback host. */
+        __hypercolorCaptureMode?: boolean
+
         /** Dynamic control values indexed by control ID */
         [controlId: string]: unknown
     }

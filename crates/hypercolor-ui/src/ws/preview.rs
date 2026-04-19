@@ -5,7 +5,7 @@ use wasm_bindgen::{JsCast, JsValue};
 
 use super::messages::CanvasFrame;
 
-pub const DEFAULT_PREVIEW_FPS_CAP: u32 = 30;
+pub const DEFAULT_PREVIEW_FPS_CAP: u32 = 60;
 pub(super) const HIDDEN_TAB_PREVIEW_FPS_CAP: u32 = 6;
 pub(super) const SCREEN_PREVIEW_FPS_CAP: u32 = 15;
 pub(super) const WEB_VIEWPORT_PREVIEW_FPS_CAP: u32 = 15;

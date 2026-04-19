@@ -216,10 +216,6 @@ pub(super) fn prepare_runtime_html_source(
     original_path: &Path,
     controls: &HashMap<String, ControlValue>,
 ) -> Result<(PathBuf, Option<PathBuf>)> {
-    if controls.is_empty() {
-        return Ok((original_path.to_path_buf(), None));
-    }
-
     let html = std::fs::read_to_string(original_path).with_context(|| {
         format!(
             "failed to read HTML effect file while preparing runtime source: {}",
@@ -262,6 +258,12 @@ fn build_control_preamble_script(controls: &HashMap<String, ControlValue>) -> St
     sorted_controls.sort_by(|(left, _), (right, _)| left.cmp(right));
 
     let mut script = String::from("(function(){\n");
+    script.push_str("  window.__hypercolorCaptureMode = true;\n");
+    script.push_str("  window.__hypercolorPreserveDrawingBuffer = true;\n");
+    script.push_str("  if (typeof globalThis === 'object' && globalThis !== null) {\n");
+    script.push_str("    globalThis.__hypercolorCaptureMode = true;\n");
+    script.push_str("    globalThis.__hypercolorPreserveDrawingBuffer = true;\n");
+    script.push_str("  }\n");
     for (name, value) in sorted_controls {
         let key_literal = serde_json::to_string(name).unwrap_or_else(|_| "\"invalid\"".to_owned());
         let _ = writeln!(
@@ -1658,6 +1660,10 @@ mod tests {
         assert!(script.contains("globalThis[\"speed\"] = 42"));
         assert!(script.contains("globalThis[\"enabled\"] = true"));
         assert!(script.contains("globalThis[\"color\"] = \"#00ffaa\""));
+        assert!(script.contains("window.__hypercolorCaptureMode = true"));
+        assert!(script.contains("window.__hypercolorPreserveDrawingBuffer = true"));
+        assert!(script.contains("globalThis.__hypercolorCaptureMode = true"));
+        assert!(script.contains("globalThis.__hypercolorPreserveDrawingBuffer = true"));
     }
 
     #[test]
@@ -1677,6 +1683,29 @@ mod tests {
 
         let injected = inject_runtime_head_block(html, block);
         assert!(injected.starts_with("<body>\n<script>bootstrap()</script>"));
+    }
+
+    #[test]
+    fn prepare_runtime_html_source_injects_capture_flags_without_controls() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let html_path = temp.path().join("effect.html");
+        std::fs::write(
+            &html_path,
+            "<html><head><title>x</title></head><body><script>run()</script></body></html>",
+        )
+        .expect("html write should work");
+
+        let controls = HashMap::new();
+        let (runtime_path, runtime_html_path) =
+            prepare_runtime_html_source(&html_path, &controls).expect("runtime html should build");
+
+        assert_ne!(runtime_path, html_path);
+        assert_eq!(runtime_html_path.as_deref(), Some(runtime_path.as_path()));
+
+        let runtime_html =
+            std::fs::read_to_string(&runtime_path).expect("runtime html should be readable");
+        assert!(runtime_html.contains("window.__hypercolorCaptureMode = true"));
+        assert!(runtime_html.contains("window.__hypercolorPreserveDrawingBuffer = true"));
     }
 
     #[test]

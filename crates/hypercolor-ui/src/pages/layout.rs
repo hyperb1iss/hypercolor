@@ -5,7 +5,7 @@ use leptos::prelude::*;
 use crate::app::WsContext;
 use crate::components::layout_builder::LayoutBuilder;
 
-const LAYOUT_PREVIEW_FPS_CAP: u32 = 30;
+const LAYOUT_PREVIEW_FPS_CAP: u32 = 60;
 
 /// Dedicated layout editor page at `/layout`.
 #[component]

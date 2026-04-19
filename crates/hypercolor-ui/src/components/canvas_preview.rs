@@ -356,20 +356,6 @@ pub fn CanvasPreview(
                                     presenter_state
                                         .schedule_retry(frame.frame_number, retry_streak);
                                     last_presented_frame.borrow_mut().take();
-                                    last_presented_at.borrow_mut().take();
-                                    *skipped_frames.borrow_mut() = 0;
-                                    if show_fps {
-                                        presented_fps.set(0.0);
-                                    }
-                                    if runtime_mode.get_untracked().is_some() {
-                                        runtime_mode.set(None);
-                                    }
-                                    *last_telemetry_published_at.borrow_mut() = None;
-                                    *last_published_telemetry.borrow_mut() =
-                                        PreviewPresenterTelemetry::default();
-                                    if let Some(telemetry) = preview_telemetry {
-                                        telemetry.set(PreviewPresenterTelemetry::default());
-                                    }
                                 }
                             }
                         }
