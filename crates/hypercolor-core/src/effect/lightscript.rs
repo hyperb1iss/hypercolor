@@ -21,6 +21,7 @@ const DEFAULT_ZONE_IMAGE_WIDTH: usize = 160;
 const DEFAULT_ZONE_IMAGE_HEIGHT: usize = 100;
 const DEFAULT_ZONE_IMAGE_BYTES: usize = DEFAULT_ZONE_IMAGE_WIDTH * DEFAULT_ZONE_IMAGE_HEIGHT * 4;
 const EFFECT_SPECTRUM_GAMMA: f32 = 1.8;
+const EFFECT_TRANSIENT_GAIN: f32 = 2.8;
 const MEL_RUNNING_MAX_DECAY: f32 = 0.999;
 const MEL_RUNNING_MAX_FLOOR: f32 = 0.001;
 const SPECTRUM_BASS_END: usize = 40;
@@ -519,15 +520,16 @@ impl LightscriptRuntime {
     fn audio_update_script(&mut self, audio: &AudioData) -> String {
         let raw_rms = clamp_unit(audio.rms_level);
         let peak = clamp_unit(audio.peak_level);
-        let beat_pulse = clamp_unit(audio.beat_pulse);
-        let onset_pulse = clamp_unit(audio.onset_pulse);
-        let motion = clamp_unit(audio.spectral_flux);
         let compressed_spectrum = shape_audio_bins(&audio.spectrum);
         let compressed_mel = shape_audio_bins(&audio.mel_bands);
         let (compressed_bass, compressed_mid, compressed_treble) =
             Self::band_levels(&compressed_spectrum);
         let loudness_scale =
             Self::loudness_scale(raw_rms, compressed_bass, compressed_mid, compressed_treble);
+        let transient_scale = clamp_unit(raw_rms * EFFECT_TRANSIENT_GAIN);
+        let beat_pulse = clamp_unit(audio.beat_pulse * transient_scale);
+        let onset_pulse = clamp_unit(audio.onset_pulse * transient_scale);
+        let motion = clamp_unit(audio.spectral_flux * transient_scale);
         let shaped_spectrum = scale_audio_bins(&compressed_spectrum, loudness_scale);
         let shaped_mel = scale_audio_bins(&compressed_mel, loudness_scale);
         let mel_shape = self.normalized_mel_bands(&shaped_mel);
@@ -639,7 +641,7 @@ impl LightscriptRuntime {
         push_js_f32_assignment(
             &mut script,
             "window.engine.audio.spectralFlux",
-            audio.spectral_flux,
+            motion,
         );
         push_js_csv_typed_array_assignment(
             &mut script,
@@ -1561,9 +1563,7 @@ mod tests {
         assert!(script.contains("window.engine.audio.beatPhase = 0.25"));
         assert!(script.contains("window.engine.audio.freq = new Int8Array([127,127,127"));
         assert!(script.contains("window.engine.audio.frequency = new Float32Array([1,1,1"));
-        assert!(
-            script.contains("window.engine.audio.frequencyWeighted = new Float32Array([0.82,")
-        );
+        assert!(script.contains("window.engine.audio.frequencyWeighted = new Float32Array([0.82,"));
         assert!(script.contains("window.engine.audio.dominantPitch = 1"));
         assert!(script.contains("window.engine.audio.melBands = new Float32Array(["));
         assert!(
@@ -1638,13 +1638,67 @@ mod tests {
         let treble = extract_assignment(&script, "window.engine.audio.treble");
         let level = extract_assignment(&script, "window.engine.audio.levelLinear");
 
-        assert!(bass > 0.09 && bass < 0.12, "bass should follow loudness instead of pinning: {bass}");
-        assert!(mid > 0.08 && mid < 0.11, "mid should track body without flooding the shader: {mid}");
-        assert!(treble > 0.01 && treble < 0.02, "treble should stay present but restrained: {treble}");
-        assert!(level > 0.07 && level < 0.09, "overall level should stay close to measured loudness: {level}");
+        assert!(
+            bass > 0.09 && bass < 0.12,
+            "bass should follow loudness instead of pinning: {bass}"
+        );
+        assert!(
+            mid > 0.08 && mid < 0.11,
+            "mid should track body without flooding the shader: {mid}"
+        );
+        assert!(
+            treble > 0.01 && treble < 0.02,
+            "treble should stay present but restrained: {treble}"
+        );
+        assert!(
+            level > 0.07 && level < 0.09,
+            "overall level should stay close to measured loudness: {level}"
+        );
         assert!(
             (extract_assignment(&script, "window.engine.audio.rms") - 0.08).abs() < 0.0001,
             "raw RMS should stay available for diagnostics"
+        );
+    }
+
+    #[test]
+    fn audio_script_transient_channels_follow_measured_loudness() {
+        let mut runtime = LightscriptRuntime::new(320, 200);
+        let mut audio = AudioData::silence();
+        audio.rms_level = 0.08;
+        audio.beat_pulse = 1.0;
+        audio.onset_pulse = 0.9;
+        audio.spectral_flux = 0.8;
+        for value in &mut audio.spectrum[..SPECTRUM_BASS_END] {
+            *value = 0.64;
+        }
+        for value in &mut audio.spectrum[SPECTRUM_BASS_END..SPECTRUM_MID_END] {
+            *value = 0.60;
+        }
+        for value in &mut audio.spectrum[SPECTRUM_MID_END..] {
+            *value = 0.20;
+        }
+
+        let script = runtime.audio_update_script(&audio);
+        let beat_pulse = extract_assignment(&script, "window.engine.audio.beatPulse");
+        let onset_pulse = extract_assignment(&script, "window.engine.audio.onsetPulse");
+        let spectral_flux = extract_assignment(&script, "window.engine.audio.spectralFlux");
+        let swell = extract_assignment(&script, "window.engine.audio.swell");
+
+        assert!(
+            beat_pulse > 0.20 && beat_pulse < 0.24,
+            "quiet material should not export near-full beat pulses: {beat_pulse}"
+        );
+        assert!(
+            onset_pulse > 0.17 && onset_pulse < 0.21,
+            "quiet material should keep onset pulses in check: {onset_pulse}"
+        );
+        assert!(
+            spectral_flux > 0.17 && spectral_flux < 0.19,
+            "spectral flux should track loudness instead of flooding motion: {spectral_flux}"
+        );
+        assert!(
+            swell < 0.27,
+            "swell should stay restrained for quiet content: {swell}"
         );
     }
 
@@ -1654,6 +1708,8 @@ mod tests {
         let mut audio = AudioData::silence();
         audio.rms_level = 0.28;
         audio.beat_pulse = 1.0;
+        audio.onset_pulse = 1.0;
+        audio.spectral_flux = 0.65;
         for value in &mut audio.spectrum[..SPECTRUM_BASS_END] {
             *value = 0.88;
         }
@@ -1666,10 +1722,26 @@ mod tests {
 
         let script = runtime.audio_update_script(&audio);
         let bass = extract_assignment(&script, "window.engine.audio.bass");
+        let beat_pulse = extract_assignment(&script, "window.engine.audio.beatPulse");
+        let onset_pulse = extract_assignment(&script, "window.engine.audio.onsetPulse");
         let level = extract_assignment(&script, "window.engine.audio.levelLinear");
 
-        assert!(bass > 0.62, "beat-assisted bass hits should still clear shockwave thresholds: {bass}");
-        assert!(level > 0.40, "overall level should rise for big transients: {level}");
+        assert!(
+            bass > 0.55,
+            "strong bass hits should stay substantial: {bass}"
+        );
+        assert!(
+            beat_pulse > 0.75,
+            "loud beats should still export punchy beat pulses: {beat_pulse}"
+        );
+        assert!(
+            onset_pulse > 0.75,
+            "loud onsets should still export punchy onset pulses: {onset_pulse}"
+        );
+        assert!(
+            level > 0.40,
+            "overall level should rise for big transients: {level}"
+        );
     }
 
     #[test]
