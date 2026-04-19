@@ -391,6 +391,9 @@ pub struct EffectEngineConfig {
     pub render_acceleration_mode: RenderAccelerationMode,
 
     #[serde(default)]
+    pub effect_error_fallback: EffectErrorFallbackPolicy,
+
+    #[serde(default)]
     pub extra_effect_dirs: Vec<PathBuf>,
 
     #[serde(default = "defaults::bool_true")]
@@ -407,6 +410,7 @@ impl Default for EffectEngineConfig {
             servo_enabled: defaults::bool_true(),
             wgpu_backend: defaults::auto_string(),
             render_acceleration_mode: defaults::render_acceleration_mode(),
+            effect_error_fallback: EffectErrorFallbackPolicy::default(),
             extra_effect_dirs: Vec::new(),
             watch_effects: defaults::bool_true(),
             watch_config: defaults::bool_true(),
@@ -424,6 +428,28 @@ pub enum RenderAccelerationMode {
     Auto,
     /// Require the GPU acceleration lane.
     Gpu,
+}
+
+/// Daemon response when a live effect emits an
+/// [`crate::event::HypercolorEvent::EffectError`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectErrorFallbackPolicy {
+    /// Leave the failing assignment in place and surface the error only.
+    #[default]
+    None,
+    /// Clear every active render-group assignment using the failing effect.
+    ClearGroups,
+}
+
+impl EffectErrorFallbackPolicy {
+    #[must_use]
+    pub const fn event_label(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::ClearGroups => Some("clear_groups"),
+        }
+    }
 }
 
 // ─── Audio ───────────────────────────────────────────────────────────────────

@@ -188,6 +188,9 @@ pub struct DaemonState {
     /// Effect file watcher for hot-reload.
     pub(super) effect_watcher_task: Option<tokio::task::JoinHandle<()>>,
 
+    /// Effect-error fallback worker driven by the event bus.
+    pub(super) effect_error_fallback_task: Option<tokio::task::JoinHandle<()>>,
+
     /// Periodic discovery worker task.
     pub(super) discovery_task: Option<tokio::task::JoinHandle<()>>,
 

@@ -20,12 +20,15 @@ use hypercolor_daemon::startup::{
 };
 use hypercolor_daemon::{layout_store, runtime_state, scene_store::SceneStore};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
-use hypercolor_types::config::{RenderAccelerationMode, WledProtocolConfig};
+use hypercolor_types::config::{
+    EffectErrorFallbackPolicy, RenderAccelerationMode, WledProtocolConfig,
+};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::effect::EffectSource;
+use hypercolor_types::event::{EffectStopReason, HypercolorEvent};
 use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole, SceneId};
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -1484,4 +1487,96 @@ fn reconcile_auto_layout_zones_for_device_removes_stale_auto_zones() {
             start_corner: hypercolor_types::spatial::Corner::TopLeft,
         }
     );
+}
+
+#[tokio::test]
+async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
+    let _guard = TestDataDirGuard::new().await;
+    let mut config = default_config();
+    config.effect_engine.effect_error_fallback = EffectErrorFallbackPolicy::ClearGroups;
+    let temp = temp_config_file();
+    std::fs::write(
+        temp.path(),
+        toml::to_string(&config).expect("serialize test config"),
+    )
+    .expect("write test config");
+    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
+        .expect("daemon state should initialize");
+    state.start().await.expect("start should succeed");
+
+    let metadata = {
+        let registry = state.effect_registry.read().await;
+        let (_, entry) = registry
+            .iter()
+            .find(|(_, entry)| matches!(entry.metadata.source, EffectSource::Native { .. }))
+            .expect("expected at least one native effect in registry");
+        entry.metadata.clone()
+    };
+
+    let group_id = {
+        let layout = {
+            let spatial = state.spatial_engine.read().await;
+            spatial.layout().as_ref().clone()
+        };
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .upsert_primary_group(&metadata, std::collections::HashMap::new(), None, layout)
+            .expect("native effect should activate")
+            .id
+    };
+
+    let mut rx = state.event_bus.subscribe_all();
+    state.event_bus.publish(HypercolorEvent::EffectError {
+        effect_id: metadata.id.to_string(),
+        error: "render exploded".to_owned(),
+        fallback: None,
+    });
+
+    let mut saw_stopped = false;
+    let mut saw_fallback_event = false;
+    let mut saw_group_update = false;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !(saw_stopped && saw_fallback_event && saw_group_update) {
+            let event = rx.recv().await.expect("effect-error fallback event");
+            match event.event {
+                HypercolorEvent::EffectStopped { effect, reason } => {
+                    if effect.id == metadata.id.to_string() && reason == EffectStopReason::Error {
+                        saw_stopped = true;
+                    }
+                }
+                HypercolorEvent::EffectError {
+                    effect_id,
+                    fallback,
+                    ..
+                } => {
+                    if effect_id == metadata.id.to_string()
+                        && fallback.as_deref() == Some("clear_groups")
+                    {
+                        saw_fallback_event = true;
+                    }
+                }
+                HypercolorEvent::RenderGroupChanged {
+                    group_id: changed, ..
+                } => {
+                    if changed == group_id {
+                        saw_group_update = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("effect-error fallback worker should react");
+
+    let cleared_effect = {
+        let scene_manager = state.scene_manager.read().await;
+        scene_manager
+            .active_scene()
+            .and_then(|scene| scene.groups.iter().find(|group| group.id == group_id))
+            .and_then(|group| group.effect_id)
+    };
+    assert_eq!(cleared_effect, None);
+
+    state.shutdown().await.expect("shutdown should succeed");
 }

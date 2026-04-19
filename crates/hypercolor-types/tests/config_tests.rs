@@ -2,8 +2,9 @@
 
 use hypercolor_types::config::{
     AudioConfig, CaptureConfig, DaemonConfig, DbusConfig, DiscoveryConfig, EffectEngineConfig,
-    FeatureFlags, HueConfig, HypercolorConfig, LogLevel, McpConfig, NanoleafConfig, NetworkConfig,
-    RenderAccelerationMode, ShutdownBehavior, TuiConfig, WebConfig, WledConfig, WledProtocolConfig,
+    EffectErrorFallbackPolicy, FeatureFlags, HueConfig, HypercolorConfig, LogLevel, McpConfig,
+    NanoleafConfig, NetworkConfig, RenderAccelerationMode, ShutdownBehavior, TuiConfig, WebConfig,
+    WledConfig, WledProtocolConfig,
 };
 use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
 
@@ -53,6 +54,7 @@ fn effect_engine_defaults_match_spec() {
     assert!(e.servo_enabled);
     assert_eq!(e.wgpu_backend, "auto");
     assert_eq!(e.render_acceleration_mode, RenderAccelerationMode::Cpu);
+    assert_eq!(e.effect_error_fallback, EffectErrorFallbackPolicy::None);
     assert!(e.extra_effect_dirs.is_empty());
     assert!(e.watch_effects);
     assert!(e.watch_config);
@@ -262,6 +264,7 @@ fn minimal_toml_fills_defaults() {
 fn effect_engine_acceleration_mode_toml_roundtrip() {
     let original = EffectEngineConfig {
         render_acceleration_mode: RenderAccelerationMode::Auto,
+        effect_error_fallback: EffectErrorFallbackPolicy::ClearGroups,
         ..EffectEngineConfig::default()
     };
     let toml_str = toml::to_string(&original).expect("serialize EffectEngineConfig");
@@ -270,6 +273,10 @@ fn effect_engine_acceleration_mode_toml_roundtrip() {
     assert_eq!(
         restored.render_acceleration_mode,
         RenderAccelerationMode::Auto
+    );
+    assert_eq!(
+        restored.effect_error_fallback,
+        EffectErrorFallbackPolicy::ClearGroups
     );
 }
 

@@ -8,10 +8,11 @@ use tracing::{debug, info, warn};
 use hypercolor_core::device::{UsbHotplugEvent, UsbHotplugMonitor};
 use hypercolor_core::effect::{EffectWatchEvent, EffectWatcher};
 use hypercolor_core::engine::FpsTier;
-use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::config::{EffectErrorFallbackPolicy, HypercolorConfig};
 use hypercolor_types::event::{HypercolorEvent, SceneChangeReason};
 use hypercolor_types::scene::SceneId;
 
+use crate::api::AppState;
 use crate::discovery::{self, DiscoveryBackend};
 use crate::display_output::{
     DEFAULT_STATIC_HOLD_REFRESH_INTERVAL, DisplayOutputState, DisplayOutputThread,
@@ -133,6 +134,7 @@ impl DaemonState {
             self.spawn_effect_watcher().await;
         }
 
+        self.spawn_effect_error_fallback_worker();
         self.spawn_discovery_worker(Arc::clone(&config));
 
         info!("Daemon is running");
@@ -181,6 +183,9 @@ impl DaemonState {
         }
 
         if let Some(handle) = self.effect_watcher_task.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.effect_error_fallback_task.take() {
             handle.abort();
         }
         if let Some(handle) = self.discovery_task.take() {
@@ -457,6 +462,83 @@ impl DaemonState {
             }
 
             debug!("Effect watcher channel closed; task exiting");
+        }));
+    }
+
+    fn spawn_effect_error_fallback_worker(&mut self) {
+        let state = Arc::new(AppState::from_daemon_state(self));
+        let mut event_rx = state.event_bus.subscribe_all();
+
+        self.effect_error_fallback_task = Some(tokio::spawn(async move {
+            info!("Effect-error fallback worker active");
+
+            loop {
+                let event = match event_rx.recv().await {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(skipped, "Effect-error fallback worker lagged");
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        debug!("Effect-error fallback worker channel closed; task exiting");
+                        break;
+                    }
+                };
+
+                let HypercolorEvent::EffectError {
+                    effect_id,
+                    error,
+                    fallback,
+                } = event.event
+                else {
+                    continue;
+                };
+                if fallback.is_some() {
+                    continue;
+                }
+
+                let Some(config_manager) = state.config_manager.as_ref() else {
+                    continue;
+                };
+                let policy = config_manager.get().effect_engine.effect_error_fallback;
+                if matches!(policy, EffectErrorFallbackPolicy::None) {
+                    continue;
+                }
+
+                match crate::api::apply_effect_error_fallback(&state, &effect_id, policy).await {
+                    Ok(Some(applied)) => {
+                        if let Some(fallback_label) = policy.event_label() {
+                            state.event_bus.publish(HypercolorEvent::EffectError {
+                                effect_id: effect_id.clone(),
+                                error: error.clone(),
+                                fallback: Some(fallback_label.to_owned()),
+                            });
+                        }
+                        info!(
+                            effect_id,
+                            effect = %applied.effect.name,
+                            cleared_groups = applied.cleared_group_count,
+                            fallback_policy = ?policy,
+                            "Applied effect-error fallback"
+                        );
+                    }
+                    Ok(None) => {
+                        debug!(
+                            effect_id,
+                            fallback_policy = ?policy,
+                            "Effect-error fallback found no active assignments to clear"
+                        );
+                    }
+                    Err(fallback_error) => {
+                        warn!(
+                            effect_id,
+                            fallback_policy = ?policy,
+                            reason = %fallback_error.message("applying an effect error fallback"),
+                            "Failed to apply effect-error fallback"
+                        );
+                    }
+                }
+            }
         }));
     }
 

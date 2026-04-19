@@ -482,6 +482,7 @@ impl DaemonState {
             render_thread: None,
             display_output_thread: None,
             effect_watcher_task: None,
+            effect_error_fallback_task: None,
             discovery_task: None,
             session_controller: None,
             start_time: Instant::now(),

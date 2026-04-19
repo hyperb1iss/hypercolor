@@ -53,12 +53,18 @@ use hypercolor_core::input::InputManager;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_network::DriverRegistry;
-use hypercolor_types::config::{HypercolorConfig, McpConfig, RenderAccelerationMode};
+use hypercolor_types::config::{
+    EffectErrorFallbackPolicy, HypercolorConfig, McpConfig, RenderAccelerationMode,
+};
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::event::{HypercolorEvent, RenderGroupChangeKind, SceneChangeReason};
+use hypercolor_types::effect::EffectId;
+use hypercolor_types::event::{
+    EffectRef, EffectStopReason, HypercolorEvent, RenderGroupChangeKind, SceneChangeReason,
+};
 use hypercolor_types::scene::{RenderGroup, Scene, SceneId};
 use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
+use uuid::Uuid;
 
 use crate::api::envelope::ApiError;
 use crate::attachment_profiles::AttachmentProfileStore;
@@ -648,6 +654,103 @@ pub(crate) fn active_scene_id_for_runtime_mutation(
         });
     }
     Ok(active_scene.id)
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct EffectErrorFallbackApplied {
+    pub effect: EffectRef,
+    pub cleared_group_count: usize,
+}
+
+pub(crate) async fn apply_effect_error_fallback(
+    state: &Arc<AppState>,
+    effect_id: &str,
+    policy: EffectErrorFallbackPolicy,
+) -> Result<Option<EffectErrorFallbackApplied>, ActiveSceneMutationError> {
+    match policy {
+        EffectErrorFallbackPolicy::None => Ok(None),
+        EffectErrorFallbackPolicy::ClearGroups => {
+            clear_active_scene_effect_groups(state, effect_id).await
+        }
+    }
+}
+
+async fn clear_active_scene_effect_groups(
+    state: &Arc<AppState>,
+    effect_id: &str,
+) -> Result<Option<EffectErrorFallbackApplied>, ActiveSceneMutationError> {
+    let effect = resolve_effect_ref_for_fallback(state, effect_id).await;
+
+    let (scene_id, cleared_groups) = {
+        let mut scene_manager = state.scene_manager.write().await;
+        let scene_id = active_scene_id_for_runtime_mutation(&scene_manager)?;
+        let group_ids = scene_manager
+            .active_scene()
+            .map(|scene| {
+                scene
+                    .groups
+                    .iter()
+                    .filter(|group| {
+                        group
+                            .effect_id
+                            .as_ref()
+                            .is_some_and(|candidate| candidate.to_string() == effect_id)
+                    })
+                    .map(|group| group.id)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if group_ids.is_empty() {
+            return Ok(None);
+        }
+
+        let mut cleared_groups = Vec::with_capacity(group_ids.len());
+        for group_id in group_ids {
+            if let Some(group) = scene_manager.clear_group_effect(group_id).cloned() {
+                cleared_groups.push(group);
+            }
+        }
+        (scene_id, cleared_groups)
+    };
+
+    if cleared_groups.is_empty() {
+        return Ok(None);
+    }
+
+    state.event_bus.publish(HypercolorEvent::EffectStopped {
+        effect: effect.clone(),
+        reason: EffectStopReason::Error,
+    });
+    for group in &cleared_groups {
+        publish_render_group_changed(
+            state.as_ref(),
+            scene_id,
+            group,
+            RenderGroupChangeKind::Updated,
+        );
+    }
+    persist_runtime_session(state).await;
+
+    Ok(Some(EffectErrorFallbackApplied {
+        effect,
+        cleared_group_count: cleared_groups.len(),
+    }))
+}
+
+async fn resolve_effect_ref_for_fallback(state: &AppState, effect_id: &str) -> EffectRef {
+    let parsed_id = Uuid::parse_str(effect_id).ok().map(EffectId::new);
+    if let Some(parsed_id) = parsed_id {
+        let registry = state.effect_registry.read().await;
+        if let Some(entry) = registry.get(&parsed_id) {
+            return crate::api::effects::effect_ref(&entry.metadata);
+        }
+    }
+
+    EffectRef {
+        id: effect_id.to_owned(),
+        name: effect_id.to_owned(),
+        engine: "unknown".to_owned(),
+    }
 }
 
 pub(crate) async fn prune_scene_display_groups_for_device(
