@@ -5,7 +5,7 @@ use anyhow::Result;
 use tracing::warn;
 
 use hypercolor_core::types::canvas::Canvas;
-use hypercolor_types::event::ZoneColors;
+use hypercolor_types::event::{HypercolorEvent, ZoneColors};
 use hypercolor_types::scene::RenderGroupId;
 use hypercolor_types::spatial::SpatialLayout;
 
@@ -14,7 +14,7 @@ use super::frame_scheduler::FrameSceneSnapshot;
 use super::frame_sources::static_surface;
 use super::pipeline_runtime::{FrameInputs, RenderCaches};
 use super::producer_queue::{ProducerFrame, ProducerFrameState};
-use super::render_groups::{GroupCanvasFrame, RenderGroupResult};
+use super::render_groups::{GroupCanvasFrame, RenderGroupEffectError, RenderGroupResult};
 use super::sparkleflinger::{ComposedFrameSet, PreviewSurfaceRequest};
 use super::{RenderThreadState, micros_between, micros_u32};
 use crate::preview_runtime::PreviewDemandSummary;
@@ -360,6 +360,7 @@ impl ComposeContext<'_> {
                 }
             }
             Err(error) => {
+                self.publish_effect_error(&error);
                 warn!(%error, "failed to render active scene groups; publishing black frame");
                 let source_frame = ProducerFrame::Surface(static_surface(
                     &mut self.render.static_surface_cache,
@@ -472,6 +473,25 @@ impl ComposeContext<'_> {
             self.state.preview_runtime.screen_canvas_receiver_count(),
             self.state.preview_runtime.screen_canvas_demand(),
         )
+    }
+
+    fn publish_effect_error(&mut self, error: &anyhow::Error) {
+        let Some(effect_error) = error.downcast_ref::<RenderGroupEffectError>() else {
+            return;
+        };
+        let Some(effect_error) = self
+            .render
+            .render_group_runtime
+            .note_effect_error(effect_error)
+        else {
+            return;
+        };
+
+        self.state.event_bus.publish(HypercolorEvent::EffectError {
+            effect_id: effect_error.effect_id.clone(),
+            error: effect_error.to_string(),
+            fallback: None,
+        });
     }
 }
 

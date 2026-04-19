@@ -47,6 +47,16 @@ pub(crate) struct RenderGroupResult {
     pub reuse_published_zones: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("render group '{group_name}' effect '{effect_name}' ({effect_id}) failed: {error}")]
+pub(crate) struct RenderGroupEffectError {
+    pub(crate) effect_id: String,
+    pub(crate) effect_name: String,
+    pub(crate) group_id: RenderGroupId,
+    pub(crate) group_name: String,
+    pub(crate) error: String,
+}
+
 #[derive(Clone)]
 struct RetainedRenderGroupFrame {
     groups_revision: u64,
@@ -71,6 +81,7 @@ pub(crate) struct RenderGroupRuntime {
     preview_surface_pool: RenderSurfacePool,
     reconciled_groups_revision: Option<u64>,
     retained_frame: Option<RetainedRenderGroupFrame>,
+    last_effect_error: Option<RenderGroupEffectError>,
     combined_layout: Arc<SpatialLayout>,
     preview_width: u32,
     preview_height: u32,
@@ -95,6 +106,7 @@ impl RenderGroupRuntime {
             ),
             reconciled_groups_revision: None,
             retained_frame: None,
+            last_effect_error: None,
             combined_layout: Arc::new(empty_group_layout(preview_width, preview_height)),
             preview_width,
             preview_height,
@@ -180,6 +192,7 @@ impl RenderGroupRuntime {
             groups,
             elapsed_ms,
             display_group_target_fps,
+            registry,
             delta_secs,
             audio,
             interaction,
@@ -187,6 +200,7 @@ impl RenderGroupRuntime {
             sensors,
             zones,
         )? {
+            self.clear_effect_error();
             self.retain_frame(groups_revision, &result);
             return Ok(result);
         }
@@ -221,15 +235,19 @@ impl RenderGroupRuntime {
                     continue;
                 };
                 let render_start = Instant::now();
-                self.effect_pool.render_group_into(
-                    group,
-                    delta_secs,
-                    audio,
-                    interaction,
-                    screen,
-                    sensors,
-                    lease.canvas_mut(),
-                )?;
+                self.effect_pool
+                    .render_group_into(
+                        group,
+                        delta_secs,
+                        audio,
+                        interaction,
+                        screen,
+                        sensors,
+                        lease.canvas_mut(),
+                    )
+                    .map_err(|error| {
+                        anyhow::Error::new(render_group_effect_error(group, registry, error))
+                    })?;
                 render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
                 if !group.layout.zones.is_empty() {
                     let sample_start = Instant::now();
@@ -248,15 +266,19 @@ impl RenderGroupRuntime {
                 continue;
             };
             let render_start = Instant::now();
-            self.effect_pool.render_group_into(
-                group,
-                delta_secs,
-                audio,
-                interaction,
-                screen,
-                sensors,
-                target,
-            )?;
+            self.effect_pool
+                .render_group_into(
+                    group,
+                    delta_secs,
+                    audio,
+                    interaction,
+                    screen,
+                    sensors,
+                    target,
+                )
+                .map_err(|error| {
+                    anyhow::Error::new(render_group_effect_error(group, registry, error))
+                })?;
             render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
             if !group.layout.zones.is_empty() {
                 let sample_start = Instant::now();
@@ -288,6 +310,7 @@ impl RenderGroupRuntime {
             logical_layer_count,
             reuse_published_zones: false,
         };
+        self.clear_effect_error();
         self.retain_frame(groups_revision, &result);
         Ok(result)
     }
@@ -388,6 +411,7 @@ impl RenderGroupRuntime {
         groups: &[RenderGroup],
         elapsed_ms: u32,
         display_group_target_fps: &HashMap<RenderGroupId, u32>,
+        registry: &EffectRegistry,
         delta_secs: f32,
         audio: &AudioData,
         interaction: &InteractionData,
@@ -416,7 +440,11 @@ impl RenderGroupRuntime {
             lease.canvas_mut(),
         ) {
             lease.release();
-            return Err(error);
+            return Err(anyhow::Error::new(render_group_effect_error(
+                preview_group,
+                registry,
+                error,
+            )));
         }
         let mut render_us = micros_u32(render_start.elapsed());
 
@@ -458,15 +486,19 @@ impl RenderGroupRuntime {
                 continue;
             };
             let render_start = Instant::now();
-            self.effect_pool.render_group_into(
-                group,
-                delta_secs,
-                audio,
-                interaction,
-                screen,
-                sensors,
-                group_lease.canvas_mut(),
-            )?;
+            self.effect_pool
+                .render_group_into(
+                    group,
+                    delta_secs,
+                    audio,
+                    interaction,
+                    screen,
+                    sensors,
+                    group_lease.canvas_mut(),
+                )
+                .map_err(|error| {
+                    anyhow::Error::new(render_group_effect_error(group, registry, error))
+                })?;
             render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
             if !group.layout.zones.is_empty() {
                 let sample_start = Instant::now();
@@ -495,6 +527,22 @@ impl RenderGroupRuntime {
             logical_layer_count: 1,
             reuse_published_zones: false,
         }))
+    }
+
+    pub(crate) fn note_effect_error(
+        &mut self,
+        error: &RenderGroupEffectError,
+    ) -> Option<RenderGroupEffectError> {
+        if self.last_effect_error.as_ref() == Some(error) {
+            return None;
+        }
+
+        self.last_effect_error = Some(error.clone());
+        Some(error.clone())
+    }
+
+    fn clear_effect_error(&mut self) {
+        self.last_effect_error = None;
     }
 
     fn single_full_preview_group<'a>(&self, groups: &'a [RenderGroup]) -> Option<&'a RenderGroup> {
@@ -659,6 +707,32 @@ fn empty_group_layout(width: u32, height: u32) -> SpatialLayout {
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
         version: 1,
+    }
+}
+
+fn render_group_effect_error(
+    group: &RenderGroup,
+    registry: &EffectRegistry,
+    error: anyhow::Error,
+) -> RenderGroupEffectError {
+    let effect_id = group
+        .effect_id
+        .map_or_else(|| "unknown".to_owned(), |effect_id| effect_id.to_string());
+    let effect_name = group
+        .effect_id
+        .and_then(|effect_id| {
+            registry
+                .get(&effect_id)
+                .map(|entry| entry.metadata.name.clone())
+        })
+        .unwrap_or_else(|| effect_id.clone());
+
+    RenderGroupEffectError {
+        effect_id,
+        effect_name,
+        group_id: group.id,
+        group_name: group.name.clone(),
+        error: error.to_string(),
     }
 }
 
@@ -829,6 +903,25 @@ mod tests {
             &SystemSnapshot::empty(),
             zones,
         )
+    }
+
+    #[test]
+    fn note_effect_error_dedupes_until_cleared() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let error = RenderGroupEffectError {
+            effect_id: "effect-1".into(),
+            effect_name: "Test Effect".into(),
+            group_id: RenderGroupId::new(),
+            group_name: "Test Group".into(),
+            error: "boom".into(),
+        };
+
+        assert_eq!(runtime.note_effect_error(&error), Some(error.clone()));
+        assert_eq!(runtime.note_effect_error(&error), None);
+
+        runtime.clear_effect_error();
+
+        assert_eq!(runtime.note_effect_error(&error), Some(error));
     }
 
     #[test]
