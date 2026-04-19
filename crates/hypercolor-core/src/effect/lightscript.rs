@@ -89,6 +89,10 @@ impl LightscriptRuntime {
             SPECTRUM_BINS, SPECTRUM_BINS
         ));
         script.push_str(&format!(
+            "  if (!(window.engine.audio.frequencyWeighted instanceof Float32Array) || window.engine.audio.frequencyWeighted.length !== {}) {{ window.engine.audio.frequencyWeighted = new Float32Array({}); }}\n",
+            SPECTRUM_BINS, SPECTRUM_BINS
+        ));
+        script.push_str(&format!(
             "  if (!(window.engine.audio.melBands instanceof Float32Array) || window.engine.audio.melBands.length !== {}) {{ window.engine.audio.melBands = new Float32Array({}); }}\n",
             MEL_BANDS, MEL_BANDS
         ));
@@ -112,15 +116,22 @@ impl LightscriptRuntime {
             LEVEL_FLOOR_DB
         ));
         script.push_str("  window.engine.audio.levelLinear = 0;\n");
+        script.push_str("  window.engine.audio.levelShort = 0;\n");
+        script.push_str("  window.engine.audio.levelLong = 0;\n");
         script.push_str("  window.engine.audio.rms = 0;\n");
         script.push_str("  window.engine.audio.peak = 0;\n");
         script.push_str("  window.engine.audio.bass = 0;\n");
+        script.push_str("  window.engine.audio.bassEnv = 0;\n");
         script.push_str("  window.engine.audio.mid = 0;\n");
+        script.push_str("  window.engine.audio.midEnv = 0;\n");
         script.push_str("  window.engine.audio.treble = 0;\n");
+        script.push_str("  window.engine.audio.trebleEnv = 0;\n");
         script.push_str("  window.engine.audio.density = 0;\n");
+        script.push_str("  window.engine.audio.momentum = 0;\n");
+        script.push_str("  window.engine.audio.swell = 0;\n");
         script.push_str("  window.engine.audio.width = 0.5;\n");
         script.push_str("  window.engine.audio.bpm = 0;\n");
-        script.push_str("  window.engine.audio.tempo = 0;\n");
+        script.push_str("  window.engine.audio.tempo = 120;\n");
         script.push_str("  window.engine.audio.beat = false;\n");
         script.push_str("  window.engine.audio.beatPulse = 0;\n");
         script.push_str("  window.engine.audio.beatPhase = 0;\n");
@@ -129,10 +140,10 @@ impl LightscriptRuntime {
         script.push_str("  window.engine.audio.onset = false;\n");
         script.push_str("  window.engine.audio.onsetPulse = 0;\n");
         script.push_str("  window.engine.audio.spectralFlux = 0;\n");
-        script.push_str("  window.engine.audio.brightness = 0;\n");
-        script.push_str("  window.engine.audio.spread = 0;\n");
-        script.push_str("  window.engine.audio.rolloff = 0;\n");
-        script.push_str("  window.engine.audio.roughness = 0;\n");
+        script.push_str("  window.engine.audio.brightness = 0.5;\n");
+        script.push_str("  window.engine.audio.spread = 0.3;\n");
+        script.push_str("  window.engine.audio.rolloff = 0.5;\n");
+        script.push_str("  window.engine.audio.roughness = 0.2;\n");
         script.push_str("  window.engine.audio.harmonicHue = 0;\n");
         script.push_str("  window.engine.audio.chordMood = 0;\n");
         script.push_str("  window.engine.audio.dominantPitch = 0;\n");
@@ -470,11 +481,31 @@ impl LightscriptRuntime {
         let brightness = clamp_unit(audio.spectral_centroid);
         let beat_pulse = clamp_unit(audio.beat_pulse);
         let onset_pulse = clamp_unit(audio.onset_pulse);
+        let level_short = clamp_unit(level_linear * 1.05);
+        let level_long = clamp_unit(level_linear * 0.82);
+        let bass_env = clamp_unit(bass * 0.92 + beat_pulse * 0.1);
+        let mid_env = clamp_unit(mid * 0.93 + density * 0.05);
+        let treble_env = clamp_unit(treble * 0.94 + density * 0.04);
+        let momentum = clamp_signed_unit((mid - bass) * 0.55);
+        let swell = clamp_unit(beat_pulse + density * 0.18);
+        let width = 0.5;
+        let spread = clamp_unit(0.18 + width * 0.58);
+        let rolloff = clamp_unit(0.46 + treble * 0.32);
+        let roughness = clamp_unit(0.15 + (mid - treble).abs() * 0.45);
+        let chord_mood = clamp_signed_unit(mid - bass * 0.48);
+        let (dominant_pitch, dominant_pitch_confidence) = dominant_pitch_metrics(&audio.chromagram);
+        let harmonic_hue = harmonic_hue(&audio.chromagram, bass, mid, treble);
+        let tempo = if audio.bpm.is_finite() && audio.bpm > 0.0 {
+            audio.bpm
+        } else {
+            120.0
+        };
 
         let spectral_flux_bands = [bass, mid, treble];
 
         let spectrum_csv = join_padded_f32_csv(&audio.spectrum, SPECTRUM_BINS);
         let frequency_raw_csv = join_padded_normalized_i8_csv(&audio.spectrum, SPECTRUM_BINS);
+        let frequency_weighted_csv = join_weighted_spectrum_csv(&audio.spectrum, SPECTRUM_BINS);
         let mel_csv = join_padded_f32_csv(&audio.mel_bands, MEL_BANDS);
         let chroma_csv = join_padded_f32_csv(&audio.chromagram, CHROMA_BINS);
         let flux_bands_csv = join_f32_csv(&spectral_flux_bands);
@@ -483,6 +514,7 @@ impl LightscriptRuntime {
             1200_usize
                 .saturating_add(spectrum_csv.len())
                 .saturating_add(frequency_raw_csv.len().saturating_mul(2))
+                .saturating_add(frequency_weighted_csv.len())
                 .saturating_add(mel_csv.len().saturating_mul(2))
                 .saturating_add(chroma_csv.len())
                 .saturating_add(flux_bands_csv.len()),
@@ -497,15 +529,22 @@ impl LightscriptRuntime {
         push_js_f32_assignment(&mut script, "window.engine.audio.level", level_db);
         push_js_f32_assignment(&mut script, "window.engine.audio.levelRaw", level_db);
         push_js_f32_assignment(&mut script, "window.engine.audio.levelLinear", level_linear);
+        push_js_f32_assignment(&mut script, "window.engine.audio.levelShort", level_short);
+        push_js_f32_assignment(&mut script, "window.engine.audio.levelLong", level_long);
         push_js_f32_assignment(&mut script, "window.engine.audio.rms", level_linear);
         push_js_f32_assignment(&mut script, "window.engine.audio.peak", peak);
         push_js_f32_assignment(&mut script, "window.engine.audio.bass", bass);
+        push_js_f32_assignment(&mut script, "window.engine.audio.bassEnv", bass_env);
         push_js_f32_assignment(&mut script, "window.engine.audio.mid", mid);
+        push_js_f32_assignment(&mut script, "window.engine.audio.midEnv", mid_env);
         push_js_f32_assignment(&mut script, "window.engine.audio.treble", treble);
+        push_js_f32_assignment(&mut script, "window.engine.audio.trebleEnv", treble_env);
         push_js_f32_assignment(&mut script, "window.engine.audio.density", density);
-        script.push_str("  window.engine.audio.width = 0.5;\n");
+        push_js_f32_assignment(&mut script, "window.engine.audio.momentum", momentum);
+        push_js_f32_assignment(&mut script, "window.engine.audio.swell", swell);
+        push_js_f32_assignment(&mut script, "window.engine.audio.width", width);
         push_js_f32_assignment(&mut script, "window.engine.audio.bpm", audio.bpm);
-        push_js_f32_assignment(&mut script, "window.engine.audio.tempo", audio.bpm);
+        push_js_f32_assignment(&mut script, "window.engine.audio.tempo", tempo);
         push_js_bool_assignment(&mut script, "window.engine.audio.beat", audio.beat_detected);
         push_js_f32_assignment(&mut script, "window.engine.audio.beatPulse", beat_pulse);
         push_js_f32_assignment(
@@ -541,13 +580,21 @@ impl LightscriptRuntime {
             &flux_bands_csv,
         );
         push_js_f32_assignment(&mut script, "window.engine.audio.brightness", brightness);
-        script.push_str("  window.engine.audio.spread = 0;\n");
-        script.push_str("  window.engine.audio.rolloff = 0;\n");
-        script.push_str("  window.engine.audio.roughness = 0;\n");
-        script.push_str("  window.engine.audio.harmonicHue = 0;\n");
-        script.push_str("  window.engine.audio.chordMood = 0;\n");
-        script.push_str("  window.engine.audio.dominantPitch = 0;\n");
-        script.push_str("  window.engine.audio.dominantPitchConfidence = 0;\n");
+        push_js_f32_assignment(&mut script, "window.engine.audio.spread", spread);
+        push_js_f32_assignment(&mut script, "window.engine.audio.rolloff", rolloff);
+        push_js_f32_assignment(&mut script, "window.engine.audio.roughness", roughness);
+        push_js_f32_assignment(&mut script, "window.engine.audio.harmonicHue", harmonic_hue);
+        push_js_f32_assignment(&mut script, "window.engine.audio.chordMood", chord_mood);
+        push_js_f32_assignment(
+            &mut script,
+            "window.engine.audio.dominantPitch",
+            f32::from(dominant_pitch),
+        );
+        push_js_f32_assignment(
+            &mut script,
+            "window.engine.audio.dominantPitchConfidence",
+            dominant_pitch_confidence,
+        );
         push_js_csv_typed_array_assignment(
             &mut script,
             "window.engine.audio.freq",
@@ -565,6 +612,12 @@ impl LightscriptRuntime {
             "window.engine.audio.frequency",
             "Float32Array",
             &spectrum_csv,
+        );
+        push_js_csv_typed_array_assignment(
+            &mut script,
+            "window.engine.audio.frequencyWeighted",
+            "Float32Array",
+            &frequency_weighted_csv,
         );
         push_js_csv_typed_array_assignment(
             &mut script,
@@ -722,6 +775,37 @@ fn clamp_unit(value: f32) -> f32 {
     }
 }
 
+fn clamp_signed_unit(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+fn dominant_pitch_metrics(chromagram: &[f32]) -> (u8, f32) {
+    let mut dominant_index = 0_u8;
+    let mut dominant_value = 0.0_f32;
+    for (index, value) in chromagram.iter().enumerate() {
+        let value = clamp_unit(*value);
+        if value > dominant_value {
+            dominant_index = u8::try_from(index).unwrap_or(u8::MAX);
+            dominant_value = value;
+        }
+    }
+
+    (dominant_index, dominant_value)
+}
+
+fn harmonic_hue(chromagram: &[f32], bass: f32, mid: f32, treble: f32) -> f32 {
+    let (dominant_pitch, confidence) = dominant_pitch_metrics(chromagram);
+    if confidence > f32::EPSILON {
+        return (f32::from(dominant_pitch) * 30.0).rem_euclid(360.0);
+    }
+
+    (bass * 48.0 + mid * 158.0 + treble * 282.0).rem_euclid(360.0)
+}
+
 fn normalized_to_int8(value: f32) -> i8 {
     #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
     let scaled = (clamp_unit(value) * 127.0).round() as i16;
@@ -784,6 +868,24 @@ fn join_padded_f32_csv(values: &[f32], expected_len: usize) -> String {
         } else {
             csv.push('0');
         }
+    }
+    csv
+}
+
+fn join_weighted_spectrum_csv(values: &[f32], expected_len: usize) -> String {
+    let mut csv = String::with_capacity(expected_len.saturating_mul(8));
+    for index in 0..expected_len {
+        if index > 0 {
+            csv.push(',');
+        }
+        let value = values.get(index).copied().map_or(0.0, clamp_unit);
+        let t = if expected_len <= 1 {
+            0.0
+        } else {
+            f32::from(u16::try_from(index).unwrap_or(u16::MAX))
+                / f32::from(u16::try_from(expected_len - 1).unwrap_or(u16::MAX))
+        };
+        push_js_number_literal(&mut csv, value * (0.82 + t * 0.2));
     }
     csv
 }
@@ -1107,6 +1209,10 @@ mod tests {
         assert!(script.contains("window.engine.width = 320"));
         assert!(script.contains("window.engine.height = 200"));
         assert!(script.contains("window.engine.audio.freq = new Int8Array(200)"));
+        assert!(script.contains("window.engine.audio.frequencyWeighted = new Float32Array(200)"));
+        assert!(script.contains("window.engine.audio.levelShort = 0"));
+        assert!(script.contains("window.engine.audio.bassEnv = 0"));
+        assert!(script.contains("window.engine.audio.tempo = 120"));
         assert!(script.contains("window.engine.zone.hue = new Int16Array(560)"));
         assert!(script.contains("window.engine.getSensorValue = function(name)"));
         assert!(script.contains("window.engine.keyboard.isKeyDown = function(key)"));
@@ -1327,15 +1433,27 @@ mod tests {
         audio.onset_pulse = 0.5;
         audio.beat_phase = 0.25;
         audio.spectrum = vec![0.1, 0.2, 0.3];
+        audio.chromagram = vec![0.1, 0.6, 0.2];
 
         let script = LightscriptRuntime::audio_update_script(&audio);
         assert!(script.contains("window.engine.audio.level = 0"));
         assert!(script.contains("window.engine.audio.levelRaw = 0"));
+        assert!(script.contains("window.engine.audio.levelShort = 1"));
+        assert!(script.contains("window.engine.audio.levelLong = 0.82"));
+        assert!(script.contains("window.engine.audio.bassEnv ="));
+        assert!(script.contains("window.engine.audio.midEnv ="));
+        assert!(script.contains("window.engine.audio.trebleEnv ="));
+        assert!(script.contains("window.engine.audio.momentum ="));
+        assert!(script.contains("window.engine.audio.swell ="));
         assert!(script.contains("window.engine.audio.beatPulse = 0.75"));
         assert!(script.contains("window.engine.audio.onsetPulse = 0.5"));
         assert!(script.contains("window.engine.audio.beatPhase = 0.25"));
         assert!(script.contains("window.engine.audio.freq = new Int8Array([13,25,38"));
         assert!(script.contains("window.engine.audio.frequency = new Float32Array([0.1,0.2,0.3"));
+        assert!(
+            script.contains("window.engine.audio.frequencyWeighted = new Float32Array([0.082,")
+        );
+        assert!(script.contains("window.engine.audio.dominantPitch = 1"));
         assert!(script.contains("window.engine.audio.melBands = new Float32Array(["));
         assert!(script.contains("window.engine.audio.chromagram = new Float32Array(["));
     }
