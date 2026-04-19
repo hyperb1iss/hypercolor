@@ -210,6 +210,12 @@ impl EffectSlot {
     }
 }
 
+impl Drop for EffectSlot {
+    fn drop(&mut self) {
+        self.renderer.destroy();
+    }
+}
+
 fn lookup_effect_metadata(
     registry: &EffectRegistry,
     effect_id: EffectId,
@@ -330,5 +336,205 @@ fn evaluate_sensor_binding(
                 .ok()
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use anyhow::Result;
+
+    use super::{EffectPool, EffectSlot};
+    use crate::effect::builtin::register_builtin_effects;
+    use crate::effect::registry::EffectRegistry;
+    use crate::effect::traits::{EffectRenderer, FrameInput};
+    use hypercolor_types::canvas::Canvas;
+    use hypercolor_types::effect::{
+        EffectCategory, EffectId, EffectMetadata, EffectSource,
+    };
+    use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole};
+    use hypercolor_types::spatial::{
+        DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+        StripDirection,
+    };
+
+    struct DestroySpyRenderer {
+        destroyed: Arc<AtomicBool>,
+    }
+
+    impl DestroySpyRenderer {
+        fn new(destroyed: Arc<AtomicBool>) -> Self {
+            Self { destroyed }
+        }
+    }
+
+    impl EffectRenderer for DestroySpyRenderer {
+        fn init(&mut self, _metadata: &EffectMetadata) -> Result<()> {
+            Ok(())
+        }
+
+        fn render_into(&mut self, _input: &FrameInput<'_>, _target: &mut Canvas) -> Result<()> {
+            Ok(())
+        }
+
+        fn set_control(&mut self, _name: &str, _value: &hypercolor_types::effect::ControlValue) {}
+
+        fn destroy(&mut self) {
+            self.destroyed.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn sample_layout() -> SpatialLayout {
+        SpatialLayout {
+            id: "pool-drop-test".into(),
+            name: "Pool Drop Test".into(),
+            description: None,
+            canvas_width: 32,
+            canvas_height: 16,
+            zones: vec![DeviceZone {
+                id: "desk:main".into(),
+                name: "Desk".into(),
+                device_id: "mock:device".into(),
+                zone_name: None,
+                position: NormalizedPosition::new(0.5, 0.5),
+                size: NormalizedPosition::new(1.0, 1.0),
+                rotation: 0.0,
+                scale: 1.0,
+                display_order: 0,
+                orientation: None,
+                topology: LedTopology::Strip {
+                    count: 1,
+                    direction: StripDirection::LeftToRight,
+                },
+                led_positions: Vec::new(),
+                led_mapping: None,
+                sampling_mode: Some(SamplingMode::Bilinear),
+                edge_behavior: Some(EdgeBehavior::Clamp),
+                shape: None,
+                shape_preset: None,
+                attachment: None,
+            }],
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        }
+    }
+
+    fn spy_metadata(effect_id: EffectId) -> EffectMetadata {
+        EffectMetadata {
+            id: effect_id,
+            name: "Destroy Spy".into(),
+            author: "hypercolor-test".into(),
+            version: "0.1.0".into(),
+            description: "Destroy spy effect".into(),
+            category: EffectCategory::Utility,
+            tags: vec!["test".into()],
+            controls: Vec::new(),
+            presets: Vec::new(),
+            audio_reactive: false,
+            screen_reactive: false,
+            source: EffectSource::Native {
+                path: "mock/destroy-spy.wgsl".into(),
+            },
+            license: Some("Apache-2.0".into()),
+        }
+    }
+
+    fn spy_slot(effect_id: EffectId, destroyed: Arc<AtomicBool>) -> EffectSlot {
+        EffectSlot {
+            effect_id,
+            metadata: spy_metadata(effect_id),
+            renderer: Box::new(DestroySpyRenderer::new(destroyed)),
+            controls: HashMap::new(),
+            binding_state: HashMap::new(),
+            elapsed_secs: 0.0,
+            frame_number: 0,
+        }
+    }
+
+    fn registry_with_builtins() -> EffectRegistry {
+        let mut registry = EffectRegistry::new(Vec::new());
+        register_builtin_effects(&mut registry);
+        registry
+    }
+
+    fn builtin_effect_id(registry: &EffectRegistry, stem: &str) -> EffectId {
+        registry
+            .iter()
+            .find_map(|(id, entry)| {
+                (entry.metadata.source.source_stem() == Some(stem)).then_some(*id)
+            })
+            .expect("builtin effect should be registered")
+    }
+
+    fn render_group(id: RenderGroupId, effect_id: EffectId) -> RenderGroup {
+        RenderGroup {
+            id,
+            name: "Desk".into(),
+            description: None,
+            effect_id: Some(effect_id),
+            controls: HashMap::new(),
+            control_bindings: HashMap::new(),
+            preset_id: None,
+            layout: sample_layout(),
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+            display_target: None,
+            role: RenderGroupRole::Custom,
+            controls_version: 0,
+        }
+    }
+
+    #[test]
+    fn dropping_effect_slot_calls_destroy() {
+        let destroyed = Arc::new(AtomicBool::new(false));
+        let slot = spy_slot(EffectId::new(uuid::Uuid::now_v7()), Arc::clone(&destroyed));
+
+        drop(slot);
+
+        assert!(destroyed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn reconcile_pruning_destroys_removed_slot() {
+        let destroyed = Arc::new(AtomicBool::new(false));
+        let group_id = RenderGroupId::new();
+        let mut pool = EffectPool::new();
+        pool.slots.insert(
+            group_id,
+            spy_slot(EffectId::new(uuid::Uuid::now_v7()), Arc::clone(&destroyed)),
+        );
+
+        pool.reconcile(&[], &EffectRegistry::new(Vec::new()))
+            .expect("prune should succeed");
+
+        assert!(destroyed.load(Ordering::SeqCst));
+        assert!(pool.slots.is_empty());
+    }
+
+    #[test]
+    fn reconcile_replacement_destroys_old_slot() {
+        let destroyed = Arc::new(AtomicBool::new(false));
+        let group_id = RenderGroupId::new();
+        let mut pool = EffectPool::new();
+        pool.slots.insert(
+            group_id,
+            spy_slot(EffectId::new(uuid::Uuid::now_v7()), Arc::clone(&destroyed)),
+        );
+
+        let registry = registry_with_builtins();
+        let solid_id = builtin_effect_id(&registry, "solid_color");
+        let group = render_group(group_id, solid_id);
+
+        pool.reconcile(&[group], &registry)
+            .expect("replacement should succeed");
+
+        assert!(destroyed.load(Ordering::SeqCst));
+        assert_eq!(pool.slots.len(), 1);
     }
 }
