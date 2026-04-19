@@ -47,6 +47,7 @@ pub struct SystemStatus {
     pub capture_available: bool,
     pub render_loop: RenderLoopStatus,
     pub latest_frame: Option<LatestFrameStatus>,
+    pub effect_health: EffectHealthStatus,
     pub preview_runtime: PreviewRuntimeStatus,
     pub event_bus_subscribers: usize,
 }
@@ -95,6 +96,12 @@ pub struct RenderSurfaceStatus {
     pub published_slots: u32,
     pub dequeued_slots: u32,
     pub canvas_receivers: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EffectHealthStatus {
+    pub errors_total: u64,
+    pub fallbacks_applied_total: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -186,6 +193,10 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     let latest_frame = performance
         .latest_frame
         .map(|frame| latest_frame_status(frame, state.start_time.elapsed().as_secs_f64() * 1000.0));
+    let effect_health = EffectHealthStatus {
+        errors_total: performance.effect_health.errors_total,
+        fallbacks_applied_total: performance.effect_health.fallbacks_applied_total,
+    };
     let preview_runtime = preview_runtime_status(&state.preview_runtime);
 
     let uptime_seconds = state.start_time.elapsed().as_secs();
@@ -212,6 +223,7 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         capture_available: settings::capture_input_available(),
         render_loop: render_loop_status,
         latest_frame,
+        effect_health,
         preview_runtime,
         event_bus_subscribers: subscribers,
     })
@@ -498,6 +510,8 @@ mod tests {
             .record_screen_canvas_publication(screen_frame.frame_number, screen_frame.timestamp_ms);
         {
             let mut performance = state.performance.write().await;
+            performance.record_effect_error();
+            performance.record_effect_fallback_applied();
             performance.record_frame(LatestFrameMetrics {
                 timestamp_ms: 40,
                 input_us: 100,
@@ -609,6 +623,8 @@ mod tests {
         );
         assert_eq!(json["data"]["latest_frame"]["full_frame_copy_count"], 1);
         assert_eq!(json["data"]["latest_frame"]["full_frame_copy_kb"], 250.0);
+        assert_eq!(json["data"]["effect_health"]["errors_total"], 1);
+        assert_eq!(json["data"]["effect_health"]["fallbacks_applied_total"], 1);
         assert_eq!(json["data"]["preview_runtime"]["canvas_receivers"], 1);
         assert_eq!(
             json["data"]["preview_runtime"]["screen_canvas_receivers"],

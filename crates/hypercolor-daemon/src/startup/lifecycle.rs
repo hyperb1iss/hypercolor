@@ -496,6 +496,11 @@ impl DaemonState {
                     continue;
                 }
 
+                {
+                    let mut performance = state.performance.write().await;
+                    performance.record_effect_error();
+                }
+
                 let Some(config_manager) = state.config_manager.as_ref() else {
                     continue;
                 };
@@ -506,6 +511,10 @@ impl DaemonState {
 
                 match crate::api::apply_effect_error_fallback(&state, &effect_id, policy).await {
                     Ok(Some(applied)) => {
+                        {
+                            let mut performance = state.performance.write().await;
+                            performance.record_effect_fallback_applied();
+                        }
                         if let Some(fallback_label) = policy.event_label() {
                             state.event_bus.publish(HypercolorEvent::EffectError {
                                 effect_id: effect_id.clone(),

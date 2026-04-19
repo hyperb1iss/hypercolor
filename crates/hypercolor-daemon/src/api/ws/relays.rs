@@ -25,10 +25,11 @@ use super::cache::{
     try_encode_cached_canvas_binary_with_header_scaled, try_encode_cached_canvas_preview_binary,
 };
 use super::protocol::{
-    ActiveFramesConfig, CanvasConfig, MetricsCopies, MetricsDevices, MetricsFps, MetricsFrameTime,
-    MetricsMemory, MetricsPacing, MetricsPayload, MetricsPreview, MetricsPreviewDemand,
-    MetricsRenderSurfaces, MetricsStages, MetricsTimeline, MetricsWebsocket, ServerMessage,
-    SpectrumConfig, SubscriptionState, WsChannel, event_message_parts, should_relay_event,
+    ActiveFramesConfig, CanvasConfig, MetricsCopies, MetricsDevices, MetricsEffectHealth,
+    MetricsFps, MetricsFrameTime, MetricsMemory, MetricsPacing, MetricsPayload, MetricsPreview,
+    MetricsPreviewDemand, MetricsRenderSurfaces, MetricsStages, MetricsTimeline, MetricsWebsocket,
+    ServerMessage, SpectrumConfig, SubscriptionState, WsChannel, event_message_parts,
+    should_relay_event,
 };
 use crate::api::AppState;
 use crate::performance::FrameTimeSummary as RenderFrameTimeSummary;
@@ -1149,6 +1150,10 @@ pub(super) async fn build_metrics_message(
                 gpu_sample_retry_hit: performance_snapshot.pacing.gpu_sample_retry_hit,
                 gpu_sample_queue_saturated: performance_snapshot.pacing.gpu_sample_queue_saturated,
                 gpu_sample_wait_blocked: performance_snapshot.pacing.gpu_sample_wait_blocked,
+            },
+            effect_health: MetricsEffectHealth {
+                errors_total: performance_snapshot.effect_health.errors_total,
+                fallbacks_applied_total: performance_snapshot.effect_health.fallbacks_applied_total,
             },
             timeline: MetricsTimeline {
                 frame_token: latest_frame.timeline.frame_token,

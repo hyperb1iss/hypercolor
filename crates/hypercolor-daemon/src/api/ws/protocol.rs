@@ -693,6 +693,7 @@ pub(super) struct MetricsPayload {
     pub(super) frame_time: MetricsFrameTime,
     pub(super) stages: MetricsStages,
     pub(super) pacing: MetricsPacing,
+    pub(super) effect_health: MetricsEffectHealth,
     pub(super) timeline: MetricsTimeline,
     pub(super) render_surfaces: MetricsRenderSurfaces,
     pub(super) preview: MetricsPreview,
@@ -768,6 +769,12 @@ pub(super) struct MetricsPacing {
     pub(super) gpu_sample_retry_hit: u32,
     pub(super) gpu_sample_queue_saturated: u32,
     pub(super) gpu_sample_wait_blocked: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct MetricsEffectHealth {
+    pub(super) errors_total: u64,
+    pub(super) fallbacks_applied_total: u64,
 }
 
 #[derive(Debug, Serialize)]

@@ -151,12 +151,20 @@ pub(crate) struct PacingSummary {
     pub gpu_sample_wait_blocked: u32,
 }
 
+/// Aggregate effect-health counters observed by the daemon.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct EffectHealthSummary {
+    pub errors_total: u64,
+    pub fallbacks_applied_total: u64,
+}
+
 /// Snapshot exported to API/WebSocket consumers.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PerformanceSnapshot {
     pub latest_frame: Option<LatestFrameMetrics>,
     pub frame_time: FrameTimeSummary,
     pub pacing: PacingSummary,
+    pub effect_health: EffectHealthSummary,
 }
 
 /// Rolling performance tracker updated by the render thread.
@@ -167,6 +175,7 @@ pub struct PerformanceTracker {
     jitter_us: VecDeque<u32>,
     wake_delay_us: VecDeque<u32>,
     reuse_history: VecDeque<FrameReuseSample>,
+    effect_health: EffectHealthSummary,
 }
 
 impl PerformanceTracker {
@@ -210,7 +219,19 @@ impl PerformanceTracker {
             latest_frame: self.latest_frame,
             frame_time: summarize_frame_times(&self.frame_times_us),
             pacing: summarize_pacing(&self.jitter_us, &self.wake_delay_us, &self.reuse_history),
+            effect_health: self.effect_health,
         }
+    }
+
+    /// Record one deduplicated effect-render failure observed by the daemon.
+    pub(crate) fn record_effect_error(&mut self) {
+        self.effect_health.errors_total = self.effect_health.errors_total.saturating_add(1);
+    }
+
+    /// Record one applied effect fallback policy action.
+    pub(crate) fn record_effect_fallback_applied(&mut self) {
+        self.effect_health.fallbacks_applied_total =
+            self.effect_health.fallbacks_applied_total.saturating_add(1);
     }
 }
 

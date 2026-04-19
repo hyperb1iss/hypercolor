@@ -8,11 +8,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
+use axum::body::to_bytes;
+use axum::extract::State;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::manager::{
     BackendRoutingDebugSnapshot, LayoutRoutingDebugEntry, OrphanedQueueDebugEntry,
 };
 use hypercolor_core::device::{BackendInfo, DeviceBackend};
+use hypercolor_daemon::api::{AppState, system::get_status};
 use hypercolor_daemon::discovery;
 use hypercolor_daemon::startup::{
     DaemonState, collect_unmapped_prefixed_layout_targets, default_config, install_signal_handlers,
@@ -34,6 +37,7 @@ use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
 };
+use serde_json::Value;
 use tempfile::NamedTempFile;
 use tokio::sync::Mutex;
 
@@ -1577,6 +1581,14 @@ async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
             .and_then(|group| group.effect_id)
     };
     assert_eq!(cleared_effect, None);
+
+    let response = get_status(State(Arc::new(AppState::from_daemon_state(&state)))).await;
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("status body should read");
+    let json: Value = serde_json::from_slice(&body).expect("status should serialize");
+    assert_eq!(json["data"]["effect_health"]["errors_total"], 1);
+    assert_eq!(json["data"]["effect_health"]["fallbacks_applied_total"], 1);
 
     state.shutdown().await.expect("shutdown should succeed");
 }

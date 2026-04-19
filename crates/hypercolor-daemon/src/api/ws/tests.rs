@@ -150,6 +150,9 @@ async fn metrics_message_includes_latest_frame_timeline() {
         .record_screen_canvas_publication(screen_frame.frame_number, screen_frame.timestamp_ms);
     {
         let mut performance = state.performance.write().await;
+        performance.record_effect_error();
+        performance.record_effect_error();
+        performance.record_effect_fallback_applied();
         performance.record_frame(LatestFrameMetrics {
             timestamp_ms: 1234,
             input_us: 200,
@@ -233,6 +236,8 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["pacing"]["gpu_sample_retry_hit"], 1);
     assert_eq!(json["pacing"]["gpu_sample_queue_saturated"], 1);
     assert_eq!(json["pacing"]["gpu_sample_wait_blocked"], 1);
+    assert_eq!(json["effect_health"]["errors_total"], 2);
+    assert_eq!(json["effect_health"]["fallbacks_applied_total"], 1);
     assert_eq!(json["timeline"]["logical_layer_count"], 2);
     assert_eq!(json["timeline"]["render_group_count"], 1);
     assert_eq!(json["timeline"]["scene_active"], true);
