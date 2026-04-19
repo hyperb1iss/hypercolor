@@ -52,6 +52,10 @@ use self::linux as linux_audio;
 use crate::types::audio::{CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
 
 const DEFAULT_AUDIO_FRAME_DT: f32 = 1.0 / 60.0;
+#[cfg(target_os = "linux")]
+const PULSE_CAPTURE_TARGET_LATENCY_MS: u64 = 20;
+#[cfg(target_os = "linux")]
+const PULSE_CAPTURE_MAX_BUFFER_FRAGMENTS: u32 = 4;
 
 // ── AudioAnalyzer ────────────────────────────────────────────────────────
 
@@ -1116,6 +1120,7 @@ fn run_linux_pulse_capture(
         return;
     };
     let stream = Rc::new(RefCell::new(stream));
+    let buffer_attr = pulse_record_buffer_attr(&spec);
     let stream_for_callback = Rc::clone(&stream);
     let callback_analyzer = Arc::clone(&analyzer);
     let callback_source = source_name.to_owned();
@@ -1160,11 +1165,11 @@ fn run_linux_pulse_capture(
             }
         })));
 
-    if let Err(error) =
-        stream
-            .borrow_mut()
-            .connect_record(Some(source_name), None, pulse::stream::FlagSet::NOFLAGS)
-    {
+    if let Err(error) = stream.borrow_mut().connect_record(
+        Some(source_name),
+        Some(&buffer_attr),
+        pulse_record_stream_flags(),
+    ) {
         let _ = ready_tx.send(Err(format!(
             "failed to connect PulseAudio record stream for {display_name}: {error:?}"
         )));
@@ -1181,6 +1186,16 @@ fn run_linux_pulse_capture(
         context.disconnect();
         return;
     }
+
+    let actual_fragsize = stream.borrow_mut().get_buffer_attr().map(|attr| attr.fragsize);
+    tracing::info!(
+        source = %source_name,
+        target_fragment_bytes = buffer_attr.fragsize,
+        target_fragment_ms = PULSE_CAPTURE_TARGET_LATENCY_MS,
+        max_buffer_bytes = buffer_attr.maxlength,
+        actual_fragment_bytes = actual_fragsize,
+        "PulseAudio record buffer configured for low-latency capture"
+    );
 
     loop {
         if stop_rx.try_recv().is_ok() {
@@ -1224,6 +1239,31 @@ fn run_linux_pulse_capture(
 
     let _ = stream.borrow_mut().disconnect();
     context.disconnect();
+}
+
+#[cfg(target_os = "linux")]
+fn pulse_record_buffer_attr(spec: &pulse::sample::Spec) -> pulse::def::BufferAttr {
+    let target_latency = pulse::time::MicroSeconds(PULSE_CAPTURE_TARGET_LATENCY_MS * 1_000);
+    let frame_size = u32::try_from(spec.frame_size()).unwrap_or(1);
+    let fragment_bytes = u32::try_from(spec.usec_to_bytes(target_latency))
+        .unwrap_or(u32::MAX)
+        .max(frame_size);
+    let max_buffer_bytes = fragment_bytes.saturating_mul(PULSE_CAPTURE_MAX_BUFFER_FRAGMENTS);
+
+    pulse::def::BufferAttr {
+        // The Pulse defaults are on the order of seconds, which makes monitor
+        // capture look alive but badly delayed after pause/play transitions.
+        maxlength: max_buffer_bytes,
+        tlength: u32::MAX,
+        prebuf: u32::MAX,
+        minreq: u32::MAX,
+        fragsize: fragment_bytes,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn pulse_record_stream_flags() -> pulse::stream::FlagSet {
+    pulse::stream::FlagSet::ADJUST_LATENCY
 }
 
 #[cfg(target_os = "linux")]
@@ -1366,5 +1406,24 @@ where
 
     if let Ok(mut guard) = analyzer.lock() {
         guard.push_samples(&mono);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pulse_record_buffer_attr_targets_twenty_milliseconds() {
+        let spec = pulse::sample::Spec {
+            format: pulse::sample::Format::FLOAT32NE,
+            channels: 2,
+            rate: 48_000,
+        };
+
+        let attr = pulse_record_buffer_attr(&spec);
+
+        assert_eq!(attr.fragsize, 7_680);
+        assert_eq!(attr.maxlength, 30_720);
     }
 }
