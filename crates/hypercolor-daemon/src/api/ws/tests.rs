@@ -38,8 +38,9 @@ use super::protocol::{
     unique_sorted_channel_names, ws_capabilities,
 };
 use super::relays::{
-    build_metrics_message, publish_subscriptions, relay_frames, relay_metrics, relay_spectrum,
-    sync_preview_receiver, try_enqueue_json,
+    build_metrics_message, publish_subscriptions, relay_canvas, relay_frames, relay_metrics,
+    relay_screen_canvas, relay_spectrum, relay_web_viewport_canvas, sync_preview_receiver,
+    try_enqueue_json,
 };
 use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
@@ -47,6 +48,7 @@ use crate::performance::{CompositorBackendKind, FrameTimeline, LatestFrameMetric
 use crate::preview_runtime::{
     PreviewFrameReceiver, PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand,
 };
+use crate::session::OutputPowerState;
 
 static WS_CACHE_TEST_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
 
@@ -378,6 +380,106 @@ async fn relay_spectrum_subscribes_lazily() {
     .expect("spectrum receiver should be dropped after unsubscribe");
 
     relay_handle.abort();
+}
+
+async fn assert_backpressure_notice_does_not_repeat(
+    expected_channel: &'static str,
+    relay_handle: tokio::task::JoinHandle<()>,
+    json_rx: &mut tokio::sync::mpsc::Receiver<Utf8Bytes>,
+) {
+    let first = tokio::time::timeout(std::time::Duration::from_millis(300), json_rx.recv())
+        .await
+        .expect("relay should emit an initial backpressure notice")
+        .expect("backpressure notice should be delivered");
+    let payload: serde_json::Value =
+        serde_json::from_str(first.as_str()).expect("backpressure notice should parse");
+
+    assert_eq!(payload["type"], "backpressure");
+    assert_eq!(payload["channel"], expected_channel);
+    assert_eq!(payload["dropped_frames"], 1);
+    assert_eq!(payload["recommendation"], "reduce_fps");
+
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(700), json_rx.recv())
+            .await
+            .is_err(),
+        "relay should not keep retrying the same payload after backpressure"
+    );
+
+    relay_handle.abort();
+    let _ = relay_handle.await;
+}
+
+#[tokio::test]
+async fn relay_canvas_clears_pending_send_after_backpressure() {
+    let state = Arc::new(AppState::new());
+    let mut subscriptions = SubscriptionState::default();
+    subscriptions.channels.insert(WsChannel::Canvas);
+    let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
+    let (_power_state_tx, power_state_rx) = watch::channel(OutputPowerState::default());
+    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(4);
+    let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(1);
+    binary_tx
+        .try_send(Bytes::from_static(b"occupied"))
+        .expect("binary queue should start full");
+
+    let relay_handle = tokio::spawn(relay_canvas(
+        Arc::clone(&state.preview_runtime),
+        power_state_rx,
+        json_tx,
+        binary_tx,
+        subscriptions_rx,
+    ));
+
+    assert_backpressure_notice_does_not_repeat("canvas", relay_handle, &mut json_rx).await;
+    let _ = binary_rx.recv().await;
+}
+
+#[tokio::test]
+async fn relay_screen_canvas_clears_pending_send_after_backpressure() {
+    let state = Arc::new(AppState::new());
+    let mut subscriptions = SubscriptionState::default();
+    subscriptions.channels.insert(WsChannel::ScreenCanvas);
+    let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
+    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(4);
+    let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(1);
+    binary_tx
+        .try_send(Bytes::from_static(b"occupied"))
+        .expect("binary queue should start full");
+
+    let relay_handle = tokio::spawn(relay_screen_canvas(
+        Arc::clone(&state.preview_runtime),
+        json_tx,
+        binary_tx,
+        subscriptions_rx,
+    ));
+
+    assert_backpressure_notice_does_not_repeat("screen_canvas", relay_handle, &mut json_rx).await;
+    let _ = binary_rx.recv().await;
+}
+
+#[tokio::test]
+async fn relay_web_viewport_canvas_clears_pending_send_after_backpressure() {
+    let state = Arc::new(AppState::new());
+    let mut subscriptions = SubscriptionState::default();
+    subscriptions.channels.insert(WsChannel::WebViewportCanvas);
+    let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
+    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(4);
+    let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(1);
+    binary_tx
+        .try_send(Bytes::from_static(b"occupied"))
+        .expect("binary queue should start full");
+
+    let relay_handle = tokio::spawn(relay_web_viewport_canvas(
+        Arc::clone(&state.preview_runtime),
+        json_tx,
+        binary_tx,
+        subscriptions_rx,
+    ));
+
+    assert_backpressure_notice_does_not_repeat("web_viewport_canvas", relay_handle, &mut json_rx)
+        .await;
+    let _ = binary_rx.recv().await;
 }
 
 #[test]

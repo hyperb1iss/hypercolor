@@ -401,6 +401,8 @@ pub(super) async fn relay_canvas(
 
                 if binary_tx.try_send(payload).is_err() {
                     backpressure.record_drop(&json_tx, "canvas", canvas_config.fps);
+                    last_sent_at = Instant::now();
+                    pending_send = false;
                     continue;
                 }
 
@@ -512,6 +514,8 @@ pub(super) async fn relay_screen_canvas(
 
                 if binary_tx.try_send(payload).is_err() {
                     backpressure.record_drop(&json_tx, "screen_canvas", canvas_config.fps);
+                    last_sent_at = Instant::now();
+                    pending_send = false;
                     continue;
                 }
 
@@ -626,6 +630,8 @@ pub(super) async fn relay_web_viewport_canvas(
                         "web_viewport_canvas",
                         canvas_config.fps,
                     );
+                    last_sent_at = Instant::now();
+                    pending_send = false;
                     continue;
                 }
 
