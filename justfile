@@ -25,16 +25,20 @@ alias f := fmt
 verify: fmt-check lint test
     @echo '✅ All checks passed'
 
-# Build the workspace
+# Build the workspace with the daemon's full feature set
 build *args='':
     ./scripts/cargo-cache-build.sh cargo build {{ workspace_args }} {{ args }}
 
-# Build with the runtime-tuned preview profile
+# Build with the runtime-tuned preview profile and full daemon features
 build-preview *args='':
     ./scripts/cargo-cache-build.sh cargo build {{ workspace_args }} --profile preview {{ args }}
 
-# Build in release mode
+# Build a full release bundle with binaries, assets, docs, and agent skills
 release *args='':
+    ./scripts/dist.sh {{ args }}
+
+# Build release binaries only without assembling a distribution bundle
+release-bin *args='':
     ./scripts/cargo-cache-build.sh cargo build {{ workspace_args }} --release {{ args }}
 
 # Type-check without building
@@ -141,11 +145,11 @@ docs-build:
 
 # ─── Running ──────────────────────────────────────────────
 
-# Run the daemon
+# Run the daemon with the full renderer set enabled
 daemon *args='':
     ./scripts/cargo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview -- --log-level debug {{ args }}
 
-# Run the daemon with the feature-gated GPU compositor enabled
+# Run the daemon with the GPU compositor explicitly selected
 daemon-wgpu *args='':
     ./scripts/cargo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features wgpu -- --log-level debug --render-acceleration-mode gpu {{ args }}
 
@@ -157,7 +161,7 @@ cli *args='':
 tray *args='':
     ./scripts/cargo-cache-build.sh cargo run -p hypercolor-tray -- {{ args }}
 
-# Run the daemon in release mode
+# Run the daemon in release mode with the full renderer set enabled
 daemon-release *args='':
     ./scripts/cargo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --release -- {{ args }}
 
@@ -382,7 +386,7 @@ setup:
     cd "{{justfile_directory()}}/sdk" && bun install
     echo '✅ All dependencies installed'
 
-# Build everything end-to-end and create a distribution tarball
+# Build the ready-to-ship distribution bundle and tarball
 dist *args='':
     ./scripts/dist.sh {{ args }}
 

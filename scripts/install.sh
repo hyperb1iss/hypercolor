@@ -7,6 +7,8 @@ SKIP_BUILD=0
 SKIP_SYSTEM_HOOKS=0
 ENABLE_SERVICE=1
 START_SERVICE=1
+CACHE_ROOT="${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"
+BUILD_TARGET_DIR="${CARGO_TARGET_DIR:-${CACHE_ROOT}/target}"
 
 PREFIX="${HOME}/.local"
 BIN_DIR="${PREFIX}/bin"
@@ -123,17 +125,17 @@ build_binaries() {
     cargo_profile_flag=(--release)
   fi
 
-  info "building hypercolor daemon (with Servo)"
-  cargo build -p hypercolor-daemon --bin hypercolor --features servo "${cargo_profile_flag[@]}"
+  info "building hypercolor daemon"
+  "${ROOT_DIR}/scripts/cargo-cache-build.sh" \
+    cargo build -p hypercolor-daemon --bin hypercolor-daemon "${cargo_profile_flag[@]}"
 
   info "building hyper CLI"
-  cargo build -p hypercolor-cli --bin hyper "${cargo_profile_flag[@]}"
-
-  info "building hypercolor-tui"
-  cargo build -p hypercolor-tui "${cargo_profile_flag[@]}"
+  "${ROOT_DIR}/scripts/cargo-cache-build.sh" \
+    cargo build -p hypercolor-cli --bin hypercolor "${cargo_profile_flag[@]}"
 
   info "building hypercolor-tray"
-  cargo build -p hypercolor-tray "${cargo_profile_flag[@]}"
+  "${ROOT_DIR}/scripts/cargo-cache-build.sh" \
+    cargo build -p hypercolor-tray --bin hypercolor-tray "${cargo_profile_flag[@]}"
 
   build_ui
   build_effects
@@ -167,25 +169,27 @@ install_icons() {
 install_user_files() {
   local target_dir
   target_dir="$(profile_dir)"
+  local artifact_dir="${BUILD_TARGET_DIR}/${target_dir}"
 
-  require_file "${ROOT_DIR}/target/${target_dir}/hypercolor"
-  require_file "${ROOT_DIR}/target/${target_dir}/hyper"
+  require_file "${artifact_dir}/hypercolor-daemon"
+  require_file "${artifact_dir}/hypercolor"
+  require_file "${artifact_dir}/hypercolor-tray"
   require_file "${ROOT_DIR}/crates/hypercolor-ui/dist/index.html"
 
   install -d "${BIN_DIR}" "${DATA_DIR}" "${APP_DIR}" "${SYSTEMD_USER_DIR}"
 
   install -Dm755 \
-    "${ROOT_DIR}/target/${target_dir}/hypercolor" \
+    "${artifact_dir}/hypercolor-daemon" \
     "${BIN_DIR}/hypercolor"
   install -Dm755 \
-    "${ROOT_DIR}/target/${target_dir}/hyper" \
+    "${artifact_dir}/hypercolor" \
     "${BIN_DIR}/hyper"
   install -Dm755 \
-    "${ROOT_DIR}/target/${target_dir}/hypercolor-tui" \
-    "${BIN_DIR}/hypercolor-tui"
-  install -Dm755 \
-    "${ROOT_DIR}/target/${target_dir}/hypercolor-tray" \
+    "${artifact_dir}/hypercolor-tray" \
     "${BIN_DIR}/hypercolor-tray"
+  install -Dm755 \
+    "${ROOT_DIR}/packaging/bin/hypercolor-tui" \
+    "${BIN_DIR}/hypercolor-tui"
   install -Dm755 \
     "${ROOT_DIR}/packaging/bin/hypercolor-open" \
     "${BIN_DIR}/hypercolor-open"
