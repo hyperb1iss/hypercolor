@@ -8,7 +8,7 @@ use wasm_bindgen::JsCast;
 use hypercolor_types::config::HypercolorConfig;
 
 use crate::api;
-use crate::components::page_header::PageHeader;
+use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::settings_sections::*;
 use crate::icons::*;
 
@@ -244,79 +244,76 @@ pub fn SettingsPage() -> impl IntoView {
     ];
 
     view! {
-        <div class="flex flex-col h-full animate-fade-in">
-            // Sticky header with title + tab bar
-            <div class="sticky top-0 z-10 shrink-0 glass-dense border-b border-edge-default">
-                <div class="flex items-end justify-between gap-4 px-6 pt-5 pb-4">
-                    <PageHeader
-                        icon=LuSettings2
-                        title="Settings"
-                        subtitle="Engine, capture sources, and diagnostics."
-                        accent_rgb="241, 250, 140"
-                        gradient="linear-gradient(105deg,#80ffea 0%,#e8f0ff 50%,#f1fa8c 100%)"
-                    />
+        <div class="flex flex-col h-full">
+            <PageHeader
+                icon=LuSettings2
+                title="Settings"
+                tagline="Tune the engine"
+                accent=PageAccent::Yellow
+            >
+                <HeaderTrailing slot>
                     <div
-                        class="flex shrink-0 items-center gap-1.5 text-xs"
-                        style="color: rgba(128, 255, 234, 0.4)"
+                        class="flex shrink-0 items-center gap-1.5 text-[11px]"
+                        style="color: rgba(128, 255, 234, 0.5)"
                     >
                         <Icon icon=LuInfo width="12px" height="12px" />
                         "Auto-saved"
                     </div>
-                </div>
+                </HeaderTrailing>
+                <HeaderToolbar slot>
+                    <div class="flex items-center gap-0.5 w-full h-full overflow-x-auto scrollbar-none">
+                        {tabs.into_iter().map(|tab| {
+                            let id = tab.id;
+                            let is_active = Memo::new(move |_| active_section.get() == id);
 
-                // Tab bar
-                <div class="flex items-center gap-0.5 px-6 overflow-x-auto scrollbar-none border-t border-edge-subtle/10">
-                    {tabs.into_iter().map(|tab| {
-                        let id = tab.id;
-                        let is_active = Memo::new(move |_| active_section.get() == id);
+                            let separator = if tab.separator_before {
+                                Some(view! {
+                                    <div
+                                        class="w-px h-4 mx-1.5 shrink-0"
+                                        style="background: rgba(139, 133, 160, 0.15)"
+                                    />
+                                })
+                            } else {
+                                None
+                            };
 
-                        let separator = if tab.separator_before {
-                            Some(view! {
-                                <div
-                                    class="w-px h-4 mx-1.5 shrink-0"
-                                    style="background: rgba(139, 133, 160, 0.15)"
-                                />
-                            })
-                        } else {
-                            None
-                        };
-
-                        view! {
-                            {separator}
-                            <button
-                                class="flex items-center gap-1.5 px-3 py-2.5 text-sm shrink-0 relative transition-colors duration-200 cursor-pointer"
-                                style=move || if is_active.get() {
-                                    "color: rgb(230, 237, 243)"
-                                } else {
-                                    "color: rgba(139, 133, 160, 0.6)"
-                                }
-                                on:click=move |_| scroll_to(id)
-                            >
-                                <span
-                                    class="w-4 h-4 flex items-center justify-center shrink-0"
+                            view! {
+                                {separator}
+                                <button
+                                    class="flex items-center gap-1.5 px-3 h-full text-[13px] shrink-0 relative transition-colors duration-200 cursor-pointer"
                                     style=move || if is_active.get() {
-                                        "color: rgb(128, 255, 234)"
+                                        "color: rgb(230, 237, 243)"
                                     } else {
-                                        ""
+                                        "color: rgba(139, 133, 160, 0.6)"
                                     }
+                                    on:click=move |_| scroll_to(id)
                                 >
-                                    <Icon icon=tab.icon width="14px" height="14px" />
-                                </span>
-                                <span class="whitespace-nowrap">{tab.label}</span>
-                                // Active underline — cyan glow
-                                <div
-                                    class="absolute bottom-0 left-2 right-2 h-[2px] rounded-full transition-all duration-300"
-                                    style=move || if is_active.get() {
-                                        "background: rgb(128, 255, 234); box-shadow: 0 0 10px rgba(128, 255, 234, 0.4); opacity: 1"
-                                    } else {
-                                        "opacity: 0"
-                                    }
-                                />
-                            </button>
-                        }
-                    }).collect_view()}
-                </div>
-            </div>
+                                    <span
+                                        class="w-4 h-4 flex items-center justify-center shrink-0"
+                                        style=move || if is_active.get() {
+                                            "color: rgb(128, 255, 234)"
+                                        } else {
+                                            ""
+                                        }
+                                    >
+                                        <Icon icon=tab.icon width="14px" height="14px" />
+                                    </span>
+                                    <span class="whitespace-nowrap">{tab.label}</span>
+                                    // Active underline — cyan glow
+                                    <div
+                                        class="absolute bottom-0 left-2 right-2 h-[2px] rounded-full transition-all duration-300"
+                                        style=move || if is_active.get() {
+                                            "background: rgb(128, 255, 234); box-shadow: 0 0 10px rgba(128, 255, 234, 0.4); opacity: 1"
+                                        } else {
+                                            "opacity: 0"
+                                        }
+                                    />
+                                </button>
+                            }
+                        }).collect_view()}
+                    </div>
+                </HeaderToolbar>
+            </PageHeader>
 
             // Scrollable content
             <div class="flex-1 overflow-y-auto scroll-smooth">

@@ -22,7 +22,7 @@ pub fn LayoutPage() -> impl IntoView {
     });
 
     view! {
-        <div class="flex h-full min-h-0 flex-col overflow-hidden animate-fade-in">
+        <div class="flex h-full min-h-0 flex-col overflow-hidden">
             <LayoutBuilder />
         </div>
     }

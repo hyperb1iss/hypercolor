@@ -14,7 +14,7 @@ use crate::app::DevicesContext;
 use crate::components::layout_canvas::LayoutCanvas;
 use crate::components::layout_palette::LayoutPalette;
 use crate::components::layout_zone_properties::LayoutZoneProperties;
-use crate::components::page_header::PageHeader;
+use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::icons::*;
 use crate::layout_geometry;
 use crate::layout_page_state::{LayoutPageState, PerLayoutState};
@@ -670,22 +670,68 @@ pub fn LayoutBuilder() -> impl IntoView {
 
     view! {
         <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div class="shrink-0 glass-subtle border-b border-edge-default relative">
-                <div class="px-6 pt-5 pb-4">
-                    <div class="flex items-end justify-between gap-4">
-                        <PageHeader
-                            icon=LuLayoutTemplate
-                            title="Layout"
-                            subtitle="Arrange devices, zones, and compound groups against the live preview canvas."
-                            accent_rgb="255, 106, 193"
-                            gradient="linear-gradient(105deg,#80ffea 0%,#e8d4ff 50%,#ff6ac1 100%)"
-                        />
-                    </div>
-                </div>
-
-                // Toolbar — glass background with edge glow
-                <div class="px-6 pb-3 flex flex-wrap items-center gap-3">
-                    // Layout selector / rename
+            <PageHeader
+                icon=LuLayoutTemplate
+                title="Layout"
+                tagline="Arrange devices on the canvas"
+                accent=PageAccent::Coral
+            >
+                <HeaderTrailing slot>
+                    // Save / Revert / Apply buttons — visible only when a layout is loaded.
+                    // Delete remains in the toolbar row, fenced from these primary actions.
+                    {move || layout.get().map(|_| {
+                        let dirty = is_dirty.get();
+                        let is_active = selected_layout_is_active.get();
+                        let apply_style = if is_active || dirty {
+                            "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
+                        } else {
+                            "background: rgba(128, 255, 234, 0.1); border-color: rgba(128, 255, 234, 0.2); color: rgb(128, 255, 234)"
+                        };
+                        let save_style = if dirty {
+                            "background: rgba(80, 250, 123, 0.12); border-color: rgba(80, 250, 123, 0.3); color: rgb(80, 250, 123); \
+                             box-shadow: 0 0 12px rgba(80, 250, 123, 0.15)"
+                        } else {
+                            "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
+                        };
+                        let revert_style = if dirty {
+                            "background: rgba(241, 250, 140, 0.08); border-color: rgba(241, 250, 140, 0.2); color: rgb(241, 250, 140)"
+                        } else {
+                            "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
+                        };
+                        view! {
+                            <div class="flex items-center gap-2">
+                                <button
+                                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
+                                    style=apply_style
+                                    on:click=move |_| apply_layout()
+                                    disabled=move || is_dirty.get() || selected_layout_is_active.get()
+                                >
+                                    <Icon icon=LuCheck width="14px" height="14px" />
+                                    {move || if selected_layout_is_active.get() { "Active" } else { "Apply" }}
+                                </button>
+                                <button
+                                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
+                                    style=revert_style
+                                    on:click=move |_| revert_layout()
+                                    disabled=move || !is_dirty.get()
+                                >
+                                    <Icon icon=LuUndo2 width="14px" height="14px" />
+                                    "Revert"
+                                </button>
+                                <button
+                                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
+                                    style=save_style
+                                    on:click=move |_| save_layout()
+                                    disabled=move || !is_dirty.get()
+                                >
+                                    <Icon icon=LuSave width="14px" height="14px" />
+                                    "Save"
+                                </button>
+                            </div>
+                        }
+                    })}
+                </HeaderTrailing>
+                <HeaderToolbar slot>
                     <div class="flex items-center gap-3">
 
                     {move || if renaming.get() {
@@ -850,75 +896,22 @@ pub fn LayoutBuilder() -> impl IntoView {
 
                 <div class="flex-1" />
 
-                // Save / Revert / Delete buttons — only when a layout is loaded
-                {move || layout.get().map(|_| {
-                    let dirty = is_dirty.get();
-                    let is_active = selected_layout_is_active.get();
-                    let apply_style = if is_active || dirty {
-                        "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
-                    } else {
-                        "background: rgba(128, 255, 234, 0.1); border-color: rgba(128, 255, 234, 0.2); color: rgb(128, 255, 234)"
-                    };
-                    let save_style = if dirty {
-                        "background: rgba(80, 250, 123, 0.12); border-color: rgba(80, 250, 123, 0.3); color: rgb(80, 250, 123); \
-                         box-shadow: 0 0 12px rgba(80, 250, 123, 0.15)"
-                    } else {
-                        "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
-                    };
-                    let revert_style = if dirty {
-                        "background: rgba(241, 250, 140, 0.08); border-color: rgba(241, 250, 140, 0.2); color: rgb(241, 250, 140)"
-                    } else {
-                        "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
-                    };
-                    view! {
-                        <div class="flex items-center gap-2">
-                            <button
-                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
-                                style=apply_style
-                                on:click=move |_| apply_layout()
-                                disabled=move || is_dirty.get() || selected_layout_is_active.get()
-                            >
-                                <Icon icon=LuCheck width="14px" height="14px" />
-                                {move || if selected_layout_is_active.get() { "Active" } else { "Apply" }}
-                            </button>
-                            <button
-                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
-                                style=revert_style
-                                on:click=move |_| revert_layout()
-                                disabled=move || !is_dirty.get()
-                            >
-                                <Icon icon=LuUndo2 width="14px" height="14px" />
-                                "Revert"
-                            </button>
-                            <button
-                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
-                                style=save_style
-                                on:click=move |_| save_layout()
-                                disabled=move || !is_dirty.get()
-                            >
-                                <Icon icon=LuSave width="14px" height="14px" />
-                                "Save"
-                            </button>
-                            // Destructive action fenced off from Save to prevent misclick
-                            <div class="w-px h-5 bg-edge-subtle mx-1" />
-                            <button
-                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press
-                                       text-status-error/40 hover:text-status-error"
-                                style="background: rgba(255, 99, 99, 0.04); border-color: rgba(255, 99, 99, 0.12)"
-                                on:click=move |_| delete_layout()
-                            >
-                                <Icon icon=LuTrash2 width="14px" height="14px" />
-                                "Delete"
-                            </button>
-                        </div>
-                    }
+                // Delete — destructive action, only when a layout is loaded.
+                // Fenced visually by its error-red styling; primary Apply/Revert/Save
+                // live in the title-row trailing slot.
+                {move || layout.get().map(|_| view! {
+                    <button
+                        class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press
+                               text-status-error/40 hover:text-status-error"
+                        style="background: rgba(255, 99, 99, 0.04); border-color: rgba(255, 99, 99, 0.12)"
+                        on:click=move |_| delete_layout()
+                    >
+                        <Icon icon=LuTrash2 width="14px" height="14px" />
+                        "Delete"
+                    </button>
                 })}
-                </div>
-
-                // Accent strip
-                <div class="absolute bottom-0 left-0 right-0 h-[2px]"
-                     style="background: linear-gradient(90deg, rgba(255, 106, 193, 0.4), rgba(255, 106, 193, 0.05))" />
-            </div>
+                </HeaderToolbar>
+            </PageHeader>
 
             // Three-column layout
             <Show

@@ -11,7 +11,7 @@ use crate::app::{DevicesContext, WsContext};
 use crate::components::device_card::DeviceCard;
 use crate::components::device_detail::DeviceDetail;
 use crate::components::device_pairing_modal::{DevicePairingModal, ForgetCredentialsModal};
-use crate::components::page_header::PageHeader;
+use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::style_utils::filter_chips;
@@ -248,33 +248,42 @@ pub fn DevicesPage() -> impl IntoView {
     });
 
     view! {
-        <div class="flex flex-col h-full animate-fade-in">
-            <div class="shrink-0 glass-subtle border-b border-edge-default relative">
-                <div class="px-6 pt-5 pb-4">
-                    <div class="flex items-end justify-between gap-4">
-                        <PageHeader
-                            icon=LuCpu
-                            title="Devices"
-                            subtitle="Your hardware. Pair, identify, tune."
-                            accent_rgb="128, 255, 234"
-                            gradient="linear-gradient(105deg,#80ffea 0%,#e8f4ff 55%,#80ffea 100%)"
-                        />
-
-                        <span class="shrink-0 text-[11px] font-mono text-fg-tertiary/55 tabular-nums">
-                            {move || {
-                                let total = device_count.get();
-                                let filtered = filtered_devices.get().len();
-                                if filtered == total {
-                                    format!("{total} devices")
-                                } else {
-                                    format!("{filtered}/{total} devices")
-                                }
-                            }}
-                        </span>
-                    </div>
-                </div>
-
-                <div class="px-6 pb-3 flex items-center gap-3">
+        <div class="flex flex-col h-full">
+            <PageHeader
+                icon=LuCpu
+                title="Devices"
+                tagline="Pair and inspect hardware"
+                accent=PageAccent::Cyan
+            >
+                <HeaderTrailing slot>
+                    <span class="shrink-0 text-[11px] font-mono text-fg-tertiary/55 tabular-nums">
+                        {move || {
+                            let total = device_count.get();
+                            let filtered = filtered_devices.get().len();
+                            if filtered == total {
+                                format!("{total} devices")
+                            } else {
+                                format!("{filtered}/{total} devices")
+                            }
+                        }}
+                    </span>
+                    <button
+                        class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all btn-press shrink-0"
+                        style="background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.1); color: rgba(128, 255, 234, 0.8)"
+                        on:click=move |_| {
+                            let devices_resource = ctx.devices_resource;
+                            leptos::task::spawn_local(async move {
+                                let _ = crate::api::discover_devices().await;
+                                toasts::toast_info("Scanning...");
+                                devices_resource.refetch();
+                            });
+                        }
+                    >
+                        <Icon icon=LuRefreshCw width="12px" height="12px" />
+                        "Scan"
+                    </button>
+                </HeaderTrailing>
+                <HeaderToolbar slot>
                     <div class="relative flex-1 min-w-0">
                         <span class="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-fg-tertiary">
                             <Icon icon=LuSearch width="14px" height="14px" />
@@ -356,28 +365,8 @@ pub fn DevicesPage() -> impl IntoView {
                             </div>
                         })}
                     </div>
-
-                    <button
-                        class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all btn-press shrink-0"
-                        style="background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.1); color: rgba(128, 255, 234, 0.8)"
-                        on:click=move |_| {
-                            let devices_resource = ctx.devices_resource;
-                            leptos::task::spawn_local(async move {
-                                let _ = crate::api::discover_devices().await;
-                                toasts::toast_info("Scanning...");
-                                devices_resource.refetch();
-                            });
-                        }
-                    >
-                        <Icon icon=LuRefreshCw width="12px" height="12px" />
-                        "Scan"
-                    </button>
-                </div>
-
-                // Accent strip
-                <div class="absolute bottom-0 left-0 right-0 h-[2px]"
-                     style="background: linear-gradient(90deg, rgba(128, 255, 234, 0.4), rgba(128, 255, 234, 0.05))" />
-            </div>
+                </HeaderToolbar>
+            </PageHeader>
 
             // Grid + resizable sidebar
             <div class="flex-1 overflow-hidden">

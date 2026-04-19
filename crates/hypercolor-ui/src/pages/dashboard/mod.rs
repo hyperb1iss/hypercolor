@@ -18,7 +18,7 @@ use wasm_bindgen::closure::Closure;
 
 use crate::api;
 use crate::app::WsContext;
-use crate::components::page_header::PageHeader;
+use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::perf_charts::PhaseFrame;
 use crate::components::preview_cabinet::PreviewCabinet;
 use crate::components::resize_handle::ResizeHandle;
@@ -60,7 +60,10 @@ const PREVIEW_WIDTH_STORAGE_KEY: &str = "hc-dashboard-preview-width";
 const DASHBOARD_PREVIEW_FPS_CAP: u32 = 60;
 const DASHBOARD_PREVIEW_MIN_REQUEST_WIDTH: f64 = 480.0;
 const DASHBOARD_PREVIEW_MAX_REQUEST_WIDTH: f64 = 2560.0;
+const DASHBOARD_PREVIEW_INLINE_MAX_REQUEST_WIDTH: f64 = 704.0;
 const DASHBOARD_PREVIEW_REQUEST_QUANTUM: f64 = 64.0;
+const DASHBOARD_PREVIEW_INLINE_MAX_DPR: f64 = 1.25;
+const DASHBOARD_PREVIEW_FULLSCREEN_MAX_DPR: f64 = 1.5;
 const DASHBOARD_PREVIEW_RECOVERY_SAMPLES: u8 = 6;
 
 /// Practical upper bound for the draggable preview column: viewport width
@@ -85,12 +88,20 @@ fn viewport_width_px() -> f64 {
         .unwrap_or(1920.0)
 }
 
-fn dashboard_preview_request_width(preview_width_px: f64) -> u32 {
+fn dashboard_preview_request_width(preview_width_px: f64, fullscreen: bool) -> u32 {
     let device_pixel_ratio = web_sys::window().map_or(1.0, |window| window.device_pixel_ratio());
-    let scaled_width = (preview_width_px * device_pixel_ratio).clamp(
-        DASHBOARD_PREVIEW_MIN_REQUEST_WIDTH,
-        DASHBOARD_PREVIEW_MAX_REQUEST_WIDTH,
-    );
+    let effective_dpr = if fullscreen {
+        device_pixel_ratio.min(DASHBOARD_PREVIEW_FULLSCREEN_MAX_DPR)
+    } else {
+        device_pixel_ratio.min(DASHBOARD_PREVIEW_INLINE_MAX_DPR)
+    };
+    let max_request_width = if fullscreen {
+        DASHBOARD_PREVIEW_MAX_REQUEST_WIDTH
+    } else {
+        DASHBOARD_PREVIEW_INLINE_MAX_REQUEST_WIDTH
+    };
+    let scaled_width = (preview_width_px * effective_dpr)
+        .clamp(DASHBOARD_PREVIEW_MIN_REQUEST_WIDTH, max_request_width);
     let quantized_width = (scaled_width / DASHBOARD_PREVIEW_REQUEST_QUANTUM).ceil()
         * DASHBOARD_PREVIEW_REQUEST_QUANTUM;
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -217,7 +228,10 @@ pub fn DashboardPage() -> impl IntoView {
             preview_width.get()
         };
         ws.set_preview_width_cap
-            .set(dashboard_preview_request_width(effective_width));
+            .set(dashboard_preview_request_width(
+                effective_width,
+                fullscreen.get(),
+            ));
     });
     on_cleanup(move || {
         ws.set_preview_cap.set(crate::ws::DEFAULT_PREVIEW_FPS_CAP);
@@ -447,73 +461,62 @@ pub fn DashboardPage() -> impl IntoView {
     });
 
     view! {
-        <div class="flex h-full min-h-0 flex-col overflow-hidden animate-fade-in">
+        <div class="flex h-full min-h-0 flex-col overflow-hidden">
             <Show when=move || layout_menu_open.get()>
                 <LayoutMenuDismissHandler set_open=set_layout_menu_open />
             </Show>
-            // `relative z-30` lifts the header into its own stacking
-            // context above the scroll container below, so the layout
-            // gear menu can pop down past the header edge and float
-            // over the hero row instead of being clipped behind it.
-            <header class="relative z-30 shrink-0 glass-subtle border-b border-edge-default">
-                <div class="px-6 pt-5 pb-4">
-                    <div class="flex items-end justify-between gap-4">
-                        <PageHeader
-                            icon=LuActivity
-                            title="Dashboard"
-                            subtitle="Live preview, system health, and pipeline telemetry."
-                            accent_rgb="128, 255, 234"
-                            gradient="linear-gradient(105deg,#80ffea 0%,#d4eaff 50%,#50fa7b 100%)"
-                        />
-
-                        <div class="flex items-center gap-3 shrink-0">
-                            // ── Status pills ──
-                            <Suspense fallback=move || view! { <StatusSkeleton /> }>
-                                {move || status_resource.get().map(|result| {
-                                    match result {
-                                        Ok(status) => view! { <StatusStrip status=status metrics=ws.metrics /> }.into_any(),
-                                        Err(e) => view! {
-                                            <div class="text-[11px] text-status-error shrink-0">
-                                                "Failed to connect: " {e}
-                                            </div>
-                                        }.into_any(),
-                                    }
-                                })}
-                            </Suspense>
-
-                            // Layout gear — opens the panel visibility / reset menu.
-                            // Coral dot badges the icon when one or more panels are hidden.
-                            <div class="layout-menu-anchor relative shrink-0">
-                                <button
-                                    type="button"
-                                    class="relative p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary \
-                                           hover:bg-surface-hover/40 transition-all"
-                                    class=("text-electric-purple", move || layout_menu_open.get())
-                                    title="Dashboard layout"
-                                    on:click=move |_| set_layout_menu_open.update(|v| *v = !*v)
-                                >
-                                    <Icon icon=LuLayoutDashboard width="15px" height="15px" />
-                                    {move || dash_layout.read().has_hidden().then(|| view! {
-                                        <span
-                                            class="absolute top-1 right-1 w-1.5 h-1.5 rounded-full"
-                                            style="background: var(--color-coral); \
-                                                   box-shadow: 0 0 6px rgba(255, 106, 193, 0.9)"
-                                        />
-                                    })}
-                                </button>
-                                <Show when=move || layout_menu_open.get()>
-                                    <LayoutMenu
-                                        layout=dash_layout
-                                        on_show=on_panel_show
-                                        on_hide=on_panel_hide
-                                        on_reset=on_layout_reset
-                                    />
-                                </Show>
-                            </div>
-                        </div>
+            <PageHeader
+                icon=LuActivity
+                title="Dashboard"
+                tagline="Watch the engine run"
+                accent=PageAccent::Spectrum
+            >
+                <HeaderTrailing slot>
+                    // Layout gear — opens the panel visibility / reset menu.
+                    // Coral dot badges the icon when one or more panels are hidden.
+                    <div class="layout-menu-anchor relative shrink-0">
+                        <button
+                            type="button"
+                            class="relative p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary \
+                                   hover:bg-surface-hover/40 transition-all"
+                            class=("text-electric-purple", move || layout_menu_open.get())
+                            title="Dashboard layout"
+                            on:click=move |_| set_layout_menu_open.update(|v| *v = !*v)
+                        >
+                            <Icon icon=LuLayoutDashboard width="15px" height="15px" />
+                            {move || dash_layout.read().has_hidden().then(|| view! {
+                                <span
+                                    class="absolute top-1 right-1 w-1.5 h-1.5 rounded-full"
+                                    style="background: var(--color-coral); \
+                                           box-shadow: 0 0 6px rgba(255, 106, 193, 0.9)"
+                                />
+                            })}
+                        </button>
+                        <Show when=move || layout_menu_open.get()>
+                            <LayoutMenu
+                                layout=dash_layout
+                                on_show=on_panel_show
+                                on_hide=on_panel_hide
+                                on_reset=on_layout_reset
+                            />
+                        </Show>
                     </div>
-                </div>
-            </header>
+                </HeaderTrailing>
+                <HeaderToolbar slot>
+                    <Suspense fallback=move || view! { <StatusSkeleton /> }>
+                        {move || status_resource.get().map(|result| {
+                            match result {
+                                Ok(status) => view! { <StatusStrip status=status metrics=ws.metrics /> }.into_any(),
+                                Err(e) => view! {
+                                    <div class="text-[11px] text-status-error shrink-0">
+                                        "Failed to connect: " {e}
+                                    </div>
+                                }.into_any(),
+                            }
+                        })}
+                    </Suspense>
+                </HeaderToolbar>
+            </PageHeader>
 
             <div class="flex-1 min-h-0 overflow-y-auto">
                 <div class="p-6 pt-4 flex flex-col gap-4 min-h-full">

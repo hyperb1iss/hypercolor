@@ -12,7 +12,7 @@ use leptos_use::{use_debounce_fn, use_debounce_fn_with_arg};
 use crate::api;
 use crate::app::{EffectsContext, WsContext};
 use crate::components::control_panel::ControlPanel;
-use crate::components::page_header::PageHeader;
+use crate::components::page_header::{PageAccent, PageHeader};
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::preferences::{EffectPreferences, PreferencesStore};
@@ -430,19 +430,15 @@ pub fn DisplaysPage() -> impl IntoView {
     });
 
     view! {
-        <div class="flex h-full min-h-0 flex-col overflow-hidden animate-fade-in">
-            <div class="shrink-0 glass-subtle border-b border-edge-default">
-                <div class="px-6 pt-5 pb-4">
-                    <PageHeader
-                        icon=LuMonitor
-                        title="Displays"
-                        subtitle="HTML faces for LCD devices."
-                        accent_rgb="225, 53, 255"
-                        gradient="linear-gradient(105deg,#e135ff 0%,#e8f4ff 55%,#80ffea 100%)"
-                    />
-                </div>
-                {move || named_scene_warning.get().map(|(scene_name, snapshot_locked)| view! {
-                    <div class="px-6 pb-4">
+        <div class="flex h-full min-h-0 flex-col overflow-hidden">
+            <PageHeader
+                icon=LuMonitor
+                title="Displays"
+                tagline="Assign faces to LCD screens"
+                accent=PageAccent::Green
+            />
+            {move || named_scene_warning.get().map(|(scene_name, snapshot_locked)| view! {
+                <div class="px-6 pt-3">
                         <div class="rounded-xl border border-[rgba(241,250,140,0.24)] bg-[rgba(241,250,140,0.08)] px-4 py-3 shadow-[0_0_24px_rgba(241,250,140,0.08)]">
                             <div class="flex items-start gap-3">
                                 <div class="mt-0.5 shrink-0 text-[rgba(241,250,140,0.9)]">
@@ -476,28 +472,27 @@ pub fn DisplaysPage() -> impl IntoView {
                         </div>
                     </div>
                 })}
-                {move || degraded_face.get().map(|(effect_name, detail)| view! {
-                    <div class="px-6 pb-4">
-                        <div class="rounded-xl border border-[rgba(255,99,99,0.28)] bg-[rgba(255,99,99,0.10)] px-4 py-3 shadow-[0_0_24px_rgba(255,99,99,0.10)]">
-                            <div class="flex items-start gap-3">
-                                <div class="mt-0.5 shrink-0 text-[rgba(255,99,99,0.94)]">
-                                    <Icon icon=LuTriangleAlert width="14px" height="14px" />
+            {move || degraded_face.get().map(|(effect_name, detail)| view! {
+                <div class="px-6 pt-3">
+                    <div class="rounded-xl border border-[rgba(255,99,99,0.28)] bg-[rgba(255,99,99,0.10)] px-4 py-3 shadow-[0_0_24px_rgba(255,99,99,0.10)]">
+                        <div class="flex items-start gap-3">
+                            <div class="mt-0.5 shrink-0 text-[rgba(255,99,99,0.94)]">
+                                <Icon icon=LuTriangleAlert width="14px" height="14px" />
+                            </div>
+                            <div class="min-w-0 flex-1">
+                                <div class="text-[11px] font-semibold uppercase tracking-[0.16em] text-[rgba(255,99,99,0.84)]">
+                                    "Degraded Face"
                                 </div>
-                                <div class="min-w-0 flex-1">
-                                    <div class="text-[11px] font-semibold uppercase tracking-[0.16em] text-[rgba(255,99,99,0.84)]">
-                                        "Degraded Face"
-                                    </div>
-                                    <div class="mt-1 text-sm leading-5 text-fg-secondary">
-                                        <span class="text-fg-primary">{effect_name}</span>
-                                        " is degraded. "
-                                        {detail}
-                                    </div>
+                                <div class="mt-1 text-sm leading-5 text-fg-secondary">
+                                    <span class="text-fg-primary">{effect_name}</span>
+                                    " is degraded. "
+                                    {detail}
                                 </div>
                             </div>
                         </div>
                     </div>
-                })}
-            </div>
+                </div>
+            })}
             <div class="relative flex min-h-0 flex-1 gap-3 p-3">
                 <aside class="flex min-h-0 w-[260px] shrink-0 flex-col">
                     <DisplayPicker

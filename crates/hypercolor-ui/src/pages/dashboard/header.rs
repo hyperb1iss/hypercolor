@@ -28,7 +28,7 @@ pub(super) fn StatusStrip(
     let ws_clients = Memo::new(move |_| metrics.get().map_or(0, |m| m.websocket.client_count));
 
     view! {
-        <div class="flex items-center gap-4 shrink-0 animate-fade-in">
+        <div class="flex items-center gap-4 shrink-0">
             <StatusPill
                 label="Status"
                 value=if running { "Running" } else { "Stopped" }
