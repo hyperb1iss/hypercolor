@@ -244,6 +244,7 @@ impl DeviceBackend for HueBackend {
             Some(bridge_identity.model_id.as_str()),
             Some(bridge_identity.sw_version.as_str()),
             Some(&entertainment_config),
+            lights.as_slice(),
         );
         let channel_gamuts =
             resolve_channel_gamuts(entertainment_config.channels.as_slice(), lights.as_slice());

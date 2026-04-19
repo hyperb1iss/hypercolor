@@ -1081,7 +1081,10 @@ fn audio_is_quiet(audio: &AudioData) -> bool {
         && audio.peak_level.abs() <= f32::EPSILON
         && audio.spectral_centroid.abs() <= f32::EPSILON
         && audio.spectral_flux.abs() <= f32::EPSILON
-        && audio.spectrum.iter().all(|value| value.abs() <= f32::EPSILON)
+        && audio
+            .spectrum
+            .iter()
+            .all(|value| value.abs() <= f32::EPSILON)
         && audio
             .mel_bands
             .iter()

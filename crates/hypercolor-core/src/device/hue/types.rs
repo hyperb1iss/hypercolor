@@ -164,9 +164,14 @@ pub fn build_device_info(
     model_id: Option<&str>,
     sw_version: Option<&str>,
     entertainment_config: Option<&HueEntertainmentConfig>,
+    lights: &[HueLight],
 ) -> DeviceInfo {
     let fingerprint = DeviceFingerprint(format!("hue:{bridge_id}"));
     let device_id = fingerprint.stable_device_id();
+    let lights_by_id: HashMap<&str, &HueLight> = lights
+        .iter()
+        .map(|light| (light.id.as_str(), light))
+        .collect();
     let zones: Vec<ZoneInfo> = entertainment_config
         .map(|config| {
             config
@@ -175,7 +180,7 @@ pub fn build_device_info(
                 .map(|channel| {
                     let led_count = channel.segment_count.max(1);
                     ZoneInfo {
-                        name: channel.name.clone(),
+                        name: resolved_channel_name(channel, &lights_by_id),
                         led_count,
                         topology: if led_count == 1 {
                             DeviceTopologyHint::Point
@@ -192,11 +197,7 @@ pub fn build_device_info(
 
     DeviceInfo {
         id: device_id,
-        name: if bridge_name.trim().is_empty() {
-            format!("Hue Bridge {bridge_id}")
-        } else {
-            bridge_name.trim().to_owned()
-        },
+        name: resolved_device_name(bridge_id, bridge_name, entertainment_config),
         vendor: "Philips Hue".to_owned(),
         family: DeviceFamily::Hue,
         model: model_id
@@ -220,6 +221,62 @@ pub fn build_device_info(
             features: DeviceFeatures::default(),
         },
     }
+}
+
+fn resolved_device_name(
+    bridge_id: &str,
+    bridge_name: &str,
+    entertainment_config: Option<&HueEntertainmentConfig>,
+) -> String {
+    let config_name = entertainment_config
+        .map(|config| config.name.trim())
+        .filter(|value| !value.is_empty());
+    if let Some(config_name) = config_name {
+        return config_name.to_owned();
+    }
+
+    let bridge_name = bridge_name.trim();
+    if bridge_name.is_empty() {
+        format!("Hue Bridge {bridge_id}")
+    } else {
+        bridge_name.to_owned()
+    }
+}
+
+fn resolved_channel_name(channel: &HueChannel, lights_by_id: &HashMap<&str, &HueLight>) -> String {
+    let channel_name = channel.name.trim();
+    if !channel_name.is_empty() && !is_generic_channel_name(channel, channel_name) {
+        return channel_name.to_owned();
+    }
+
+    let mut member_names = Vec::new();
+    for member in &channel.members {
+        let Some(light_id) = member.light_id.as_deref() else {
+            continue;
+        };
+        let Some(name) = lights_by_id
+            .get(light_id)
+            .map(|light| light.name.trim())
+            .filter(|name| !name.is_empty())
+        else {
+            continue;
+        };
+        if member_names.iter().any(|existing| existing == name) {
+            continue;
+        }
+        member_names.push(name.to_owned());
+    }
+
+    match member_names.len() {
+        0 => channel_name.to_owned(),
+        1 => member_names[0].clone(),
+        2 => format!("{} + {}", member_names[0], member_names[1]),
+        _ => format!("{} +{}", member_names[0], member_names.len() - 1),
+    }
+}
+
+fn is_generic_channel_name(channel: &HueChannel, channel_name: &str) -> bool {
+    channel_name.eq_ignore_ascii_case(&format!("Channel {}", channel.id))
 }
 
 fn gamut_from_type(raw: &str) -> Option<ColorGamut> {

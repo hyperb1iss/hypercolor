@@ -165,14 +165,14 @@ impl ServoRenderer {
     }
 
     fn cleanup_runtime_html(&mut self) {
-        if let Some(path) = self.runtime_html_path.take() {
-            if let Err(error) = std::fs::remove_file(&path) {
-                debug!(
-                    path = %path.display(),
-                    %error,
-                    "Failed to remove temporary runtime HTML source"
-                );
-            }
+        if let Some(path) = self.runtime_html_path.take()
+            && let Err(error) = std::fs::remove_file(&path)
+        {
+            debug!(
+                path = %path.display(),
+                %error,
+                "Failed to remove temporary runtime HTML source"
+            );
         }
     }
 
@@ -336,7 +336,7 @@ impl ServoRenderer {
         };
         if session.has_pending_render() {
             return;
-        };
+        }
         let Some(frame) = self.queued_frame.take() else {
             return;
         };
@@ -418,12 +418,15 @@ impl ServoRenderer {
     }
 
     fn active_fps_cap(&self) -> u32 {
-        self.last_animation_fps_cap.unwrap_or(DEFAULT_EFFECT_FPS_CAP)
+        self.last_animation_fps_cap
+            .unwrap_or(DEFAULT_EFFECT_FPS_CAP)
     }
 
     fn soft_stall_timeout(&self) -> Duration {
         let tier = FpsTier::from_fps(self.active_fps_cap());
-        let soft_timeout = tier.frame_interval().mul_f32(SOFT_STALL_FRAME_INTERVALS as f32);
+        let soft_timeout = tier
+            .frame_interval()
+            .mul_f32(SOFT_STALL_FRAME_INTERVALS as f32);
         soft_timeout.min(RENDER_RESPONSE_TIMEOUT)
     }
 }
@@ -468,14 +471,14 @@ impl EffectRenderer for ServoRenderer {
 
     fn destroy(&mut self) {
         self.drain_in_flight_render();
-        if let Some(session) = self.session.take() {
-            if let Err(error) = session.close() {
-                note_servo_session_error(
-                    "Failed to destroy Servo effect session during destroy",
-                    &error,
-                );
-                warn!(%error, "Failed to destroy Servo effect session during destroy");
-            }
+        if let Some(session) = self.session.take()
+            && let Err(error) = session.close()
+        {
+            note_servo_session_error(
+                "Failed to destroy Servo effect session during destroy",
+                &error,
+            );
+            warn!(%error, "Failed to destroy Servo effect session during destroy");
         }
         self.pending_scripts.clear();
         self.queued_frame = None;
@@ -544,7 +547,7 @@ impl QueuedFrameInput {
         self.sensors.clone_from(input.sensors);
         merge_unique_strings(
             &mut self.interaction.keyboard.recent_keys,
-            prior_recent_keys.into_iter(),
+            prior_recent_keys,
         );
         self.canvas_width = input.canvas_width;
         self.canvas_height = input.canvas_height;
@@ -679,8 +682,8 @@ mod tests {
         }
     }
 
-    fn solid_canvas(r: u8, g: u8, b: u8) -> Canvas {
-        let mut canvas = Canvas::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
+    fn solid_canvas(width: u32, height: u32, r: u8, g: u8, b: u8) -> Canvas {
+        let mut canvas = Canvas::new(width, height);
         canvas.fill(Rgba::new(r, g, b, 255));
         canvas
     }
@@ -752,7 +755,13 @@ mod tests {
             .expect("attached test session")
             .request_render(Vec::new())
             .expect("test render should queue");
-        renderer.last_canvas = Some(solid_canvas(1, 2, 3));
+        renderer.last_canvas = Some(solid_canvas(
+            DEFAULT_CANVAS_WIDTH,
+            DEFAULT_CANVAS_HEIGHT,
+            1,
+            2,
+            3,
+        ));
 
         renderer.destroy();
 
@@ -922,13 +931,17 @@ mod tests {
 
         assert_eq!(
             renderer.soft_stall_timeout(),
-            FpsTier::Medium.frame_interval().mul_f32(SOFT_STALL_FRAME_INTERVALS as f32)
+            FpsTier::Medium
+                .frame_interval()
+                .mul_f32(SOFT_STALL_FRAME_INTERVALS as f32)
         );
 
         renderer.last_animation_fps_cap = Some(60);
         assert_eq!(
             renderer.soft_stall_timeout(),
-            FpsTier::Full.frame_interval().mul_f32(SOFT_STALL_FRAME_INTERVALS as f32)
+            FpsTier::Full
+                .frame_interval()
+                .mul_f32(SOFT_STALL_FRAME_INTERVALS as f32)
         );
 
         renderer.last_animation_fps_cap = Some(10);
@@ -950,7 +963,13 @@ mod tests {
         attach_renderer_session(&mut renderer, &worker);
         renderer.initialized = true;
         renderer.last_animation_fps_cap = Some(60);
-        renderer.last_canvas = Some(solid_canvas(20, 40, 60));
+        renderer.last_canvas = Some(solid_canvas(
+            DEFAULT_CANVAS_WIDTH,
+            DEFAULT_CANVAS_HEIGHT,
+            20,
+            40,
+            60,
+        ));
         renderer
             .session
             .as_mut()
@@ -977,7 +996,13 @@ mod tests {
         );
 
         result_tx
-            .send(Ok(solid_canvas(1, 1, 1)))
+            .send(Ok(solid_canvas(
+                DEFAULT_CANVAS_WIDTH,
+                DEFAULT_CANVAS_HEIGHT,
+                1,
+                1,
+                1,
+            )))
             .expect("cleanup render result");
         delivered_rx
             .recv_timeout(Duration::from_millis(100))
@@ -996,7 +1021,13 @@ mod tests {
         attach_renderer_session(&mut renderer, &worker);
         renderer.initialized = true;
         renderer.last_animation_fps_cap = Some(60);
-        renderer.last_canvas = Some(solid_canvas(20, 40, 60));
+        renderer.last_canvas = Some(solid_canvas(
+            DEFAULT_CANVAS_WIDTH,
+            DEFAULT_CANVAS_HEIGHT,
+            20,
+            40,
+            60,
+        ));
         renderer
             .session
             .as_mut()
@@ -1012,7 +1043,13 @@ mod tests {
         assert!(renderer.warned_stalled_frame);
 
         result_tx
-            .send(Ok(solid_canvas(9, 8, 7)))
+            .send(Ok(solid_canvas(
+                DEFAULT_CANVAS_WIDTH,
+                DEFAULT_CANVAS_HEIGHT,
+                9,
+                8,
+                7,
+            )))
             .expect("completed render result");
         delivered_rx
             .recv_timeout(Duration::from_millis(100))
@@ -1168,7 +1205,7 @@ mod tests {
         assert!(render_rx.recv_timeout(Duration::from_millis(20)).is_err());
 
         result_tx
-            .send(Ok(solid_canvas(9, 8, 7)))
+            .send(Ok(solid_canvas(640, 360, 9, 8, 7)))
             .expect("first result should be delivered");
         delivered_rx
             .recv_timeout(Duration::from_millis(100))
@@ -1210,7 +1247,7 @@ mod tests {
         assert!(interaction_script.contains("window.engine.mouse.down = false"));
 
         result_tx
-            .send(Ok(solid_canvas(1, 1, 1)))
+            .send(Ok(solid_canvas(640, 360, 1, 1, 1)))
             .expect("cleanup render result");
         delivered_rx
             .recv_timeout(Duration::from_millis(100))
@@ -1240,7 +1277,7 @@ mod tests {
             .expect("first render command");
 
         result_tx
-            .send(Ok(solid_canvas(20, 40, 60)))
+            .send(Ok(solid_canvas(320, 200, 20, 40, 60)))
             .expect("first result should be delivered");
         delivered_rx
             .recv_timeout(Duration::from_millis(100))
@@ -1257,7 +1294,7 @@ mod tests {
         assert!(render_rx.recv_timeout(Duration::from_millis(20)).is_err());
 
         result_tx
-            .send(Ok(solid_canvas(1, 1, 1)))
+            .send(Ok(solid_canvas(320, 200, 1, 1, 1)))
             .expect("cleanup render result");
         delivered_rx
             .recv_timeout(Duration::from_millis(100))
@@ -1289,7 +1326,13 @@ mod tests {
         let release_render = thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(20));
             result_tx
-                .send(Ok(solid_canvas(7, 8, 9)))
+                .send(Ok(solid_canvas(
+                    DEFAULT_CANVAS_WIDTH,
+                    DEFAULT_CANVAS_HEIGHT,
+                    7,
+                    8,
+                    9,
+                )))
                 .expect("destroy should drain in-flight render");
         });
 

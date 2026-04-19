@@ -132,6 +132,7 @@ async fn backend_connects_streams_and_disconnects() -> TestResult {
             Some("BSB002"),
             None,
             None,
+            &[],
         ),
         entertainment_config: None,
         lights: Vec::new(),

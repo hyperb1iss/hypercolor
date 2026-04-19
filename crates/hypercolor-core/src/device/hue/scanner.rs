@@ -264,6 +264,7 @@ async fn build_discovered_bridge(
             Some(model_id.as_str()),
             Some(sw_version.as_str()),
             None,
+            &[],
         );
         return Ok(build_discovered_payload(
             &candidate,
@@ -311,6 +312,7 @@ async fn build_discovered_bridge(
         Some(model_id.as_str()),
         Some(sw_version.as_str()),
         entertainment_config.as_ref(),
+        lights.as_slice(),
     );
 
     Ok(build_discovered_payload(

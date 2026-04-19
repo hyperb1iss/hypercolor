@@ -277,12 +277,12 @@ fn build_control_preamble_script(controls: &HashMap<String, ControlValue>) -> St
 fn inject_runtime_head_block(html: &str, block: &str) -> String {
     let lowered = html.to_ascii_lowercase();
 
-    if let Some(head_start) = lowered.find("<head") {
-        if let Some(head_close_offset) = lowered[head_start..].find('>') {
-            let insert_at = head_start + head_close_offset + 1;
-            let (before, after) = html.split_at(insert_at);
-            return format!("{before}\n{block}{after}");
-        }
+    if let Some(head_start) = lowered.find("<head")
+        && let Some(head_close_offset) = lowered[head_start..].find('>')
+    {
+        let insert_at = head_start + head_close_offset + 1;
+        let (before, after) = html.split_at(insert_at);
+        return format!("{before}\n{block}{after}");
     }
 
     if let Some(script_start) = lowered.find("<script") {

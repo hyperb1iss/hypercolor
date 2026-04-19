@@ -286,7 +286,7 @@ mod tests {
         // Force the next_retry to the past to simulate cooldown elapsed.
         {
             let mut guard = breaker.next_retry.lock().expect("next_retry lock");
-            *guard = Some(Instant::now() - Duration::from_secs(1));
+            *guard = Some(Instant::now().checked_sub(Duration::from_secs(1)).unwrap());
         }
         assert!(breaker.can_attempt());
         assert_eq!(breaker.load_state(), CircuitState::HalfOpen);
