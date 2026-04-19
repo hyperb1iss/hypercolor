@@ -20,6 +20,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use axum::Router;
 use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -293,6 +294,7 @@ async fn hello_handshake_returns_expected_capability_set() {
         "canvas",
         "screen_canvas",
         "metrics",
+        "device_metrics",
         "commands",
     ] {
         assert!(
@@ -341,6 +343,62 @@ async fn hello_handshake_reports_scene_backed_active_effect() {
     );
     assert_eq!(hello["state"]["scene"]["name"], "Default");
     assert_eq!(hello["state"]["scene"]["snapshot_locked"], false);
+}
+
+#[tokio::test]
+async fn device_metrics_subscription_streams_seeded_snapshot() {
+    let state = Arc::new(AppState::new());
+    let device_id = hypercolor_types::device::DeviceId::new();
+    state.device_metrics.store(Arc::new(DeviceMetricsSnapshot {
+        taken_at_ms: 5_678,
+        items: vec![DeviceMetrics {
+            id: device_id,
+            fps_actual: 60.0,
+            fps_target: 60,
+            payload_bps_estimate: 2_048,
+            avg_latency_ms: 9,
+            frames_sent: 64,
+            frames_dropped: 1,
+            errors_total: 0,
+            last_error: None,
+            last_sent_ago_ms: Some(14),
+        }],
+    }));
+    let addr = spawn_test_daemon_with_state(state).await;
+    let mut stream = ws_connect(addr)
+        .await
+        .expect("ws handshake should complete");
+    let _ = recv_until_type(&mut stream, "hello").await.expect("hello");
+
+    ws_send_text(
+        &mut stream,
+        &json!({
+            "type": "subscribe",
+            "channels": ["device_metrics"],
+            "config": { "device_metrics": { "interval_ms": 100 } }
+        })
+        .to_string(),
+    )
+    .await
+    .expect("send device_metrics subscribe");
+
+    let ack = recv_until_type(&mut stream, "subscribed")
+        .await
+        .expect("device_metrics subscribed ack");
+    let channels = ack["channels"].as_array().expect("ack.channels is array");
+    assert_eq!(channels.len(), 1);
+    assert_eq!(channels[0], "device_metrics");
+    assert!(
+        ack["config"].get("device_metrics").is_some(),
+        "config should include device_metrics after subscribing"
+    );
+
+    let message = recv_until_type(&mut stream, "device_metrics")
+        .await
+        .expect("device_metrics message should arrive");
+    assert_eq!(message["data"]["taken_at_ms"], 5_678);
+    assert_eq!(message["data"]["items"][0]["id"], device_id.to_string());
+    assert_eq!(message["data"]["items"][0]["payload_bps_estimate"], 2_048);
 }
 
 // ── Scenario 1: Subscribe → Unsubscribe → Subscribe cycle ────────────────

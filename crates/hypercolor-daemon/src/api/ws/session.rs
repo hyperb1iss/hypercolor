@@ -23,8 +23,8 @@ use super::protocol::{
     ws_capabilities,
 };
 use super::relays::{
-    publish_subscriptions, relay_canvas, relay_display_preview, relay_events, relay_frames,
-    relay_metrics, relay_screen_canvas, relay_spectrum, relay_web_viewport_canvas,
+    publish_subscriptions, relay_canvas, relay_device_metrics, relay_display_preview, relay_events,
+    relay_frames, relay_metrics, relay_screen_canvas, relay_spectrum, relay_web_viewport_canvas,
 };
 use crate::api::AppState;
 use crate::api::effects::active_effect_metadata;
@@ -127,8 +127,16 @@ async fn handle_socket(
         binary_tx.clone(),
         subscriptions_rx.clone(),
     ));
-    let metrics_relay_handle =
-        tokio::spawn(relay_metrics(Arc::clone(&state), json_tx, subscriptions_rx));
+    let metrics_relay_handle = tokio::spawn(relay_metrics(
+        Arc::clone(&state),
+        json_tx.clone(),
+        subscriptions_rx.clone(),
+    ));
+    let device_metrics_relay_handle = tokio::spawn(relay_device_metrics(
+        Arc::clone(&state),
+        json_tx.clone(),
+        subscriptions_rx.clone(),
+    ));
 
     let mut ping_interval = tokio::time::interval(WS_PING_INTERVAL);
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -223,6 +231,7 @@ async fn handle_socket(
     web_viewport_canvas_relay_handle.abort();
     display_preview_relay_handle.abort();
     metrics_relay_handle.abort();
+    device_metrics_relay_handle.abort();
     debug!("WebSocket client disconnected");
 }
 

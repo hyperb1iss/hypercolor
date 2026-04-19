@@ -12,6 +12,8 @@ use serde_json::json;
 
 use hypercolor_types::server::ServerIdentity;
 
+use crate::device_metrics::DeviceMetricsSnapshot;
+
 // ── Subscription Types ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -23,11 +25,12 @@ pub(super) enum WsChannel {
     ScreenCanvas,
     WebViewportCanvas,
     Metrics,
+    DeviceMetrics,
     DisplayPreview,
 }
 
 impl WsChannel {
-    pub(super) const SUPPORTED: [Self; 8] = [
+    pub(super) const SUPPORTED: [Self; 9] = [
         Self::Frames,
         Self::Spectrum,
         Self::Events,
@@ -35,6 +38,7 @@ impl WsChannel {
         Self::ScreenCanvas,
         Self::WebViewportCanvas,
         Self::Metrics,
+        Self::DeviceMetrics,
         Self::DisplayPreview,
     ];
 
@@ -47,6 +51,7 @@ impl WsChannel {
             Self::ScreenCanvas => "screen_canvas",
             Self::WebViewportCanvas => "web_viewport_canvas",
             Self::Metrics => "metrics",
+            Self::DeviceMetrics => "device_metrics",
             Self::DisplayPreview => "display_preview",
         }
     }
@@ -60,6 +65,7 @@ impl WsChannel {
             "screen_canvas" => Some(Self::ScreenCanvas),
             "web_viewport_canvas" => Some(Self::WebViewportCanvas),
             "metrics" => Some(Self::Metrics),
+            "device_metrics" => Some(Self::DeviceMetrics),
             "display_preview" => Some(Self::DisplayPreview),
             _ => None,
         }
@@ -69,7 +75,7 @@ impl WsChannel {
         Self::SUPPORTED.contains(&self)
     }
 
-    const fn bit(self) -> u8 {
+    const fn bit(self) -> u16 {
         match self {
             Self::Frames => 1 << 0,
             Self::Spectrum => 1 << 1,
@@ -78,13 +84,14 @@ impl WsChannel {
             Self::ScreenCanvas => 1 << 4,
             Self::WebViewportCanvas => 1 << 5,
             Self::Metrics => 1 << 6,
-            Self::DisplayPreview => 1 << 7,
+            Self::DeviceMetrics => 1 << 7,
+            Self::DisplayPreview => 1 << 8,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) struct ChannelSet(u8);
+pub(super) struct ChannelSet(u16);
 
 impl ChannelSet {
     pub(super) const fn contains(self, channel: WsChannel) -> bool {
@@ -139,6 +146,7 @@ pub(super) struct ChannelConfig {
     pub(super) screen_canvas: CanvasConfig,
     pub(super) web_viewport_canvas: CanvasConfig,
     pub(super) metrics: MetricsConfig,
+    pub(super) device_metrics: MetricsConfig,
     pub(super) display_preview: DisplayPreviewConfig,
 }
 
@@ -276,6 +284,19 @@ impl ChannelConfig {
             self.metrics.interval_ms = interval_ms;
         }
 
+        if let Some(device_metrics) = patch.device_metrics
+            && let Some(interval_ms) = device_metrics.interval_ms
+        {
+            validate_range(
+                interval_ms,
+                100,
+                10_000,
+                "config.device_metrics.interval_ms",
+                "expected 100..=10000",
+            )?;
+            self.device_metrics.interval_ms = interval_ms;
+        }
+
         if let Some(display_preview) = patch.display_preview {
             // Double-Option: outer `Some` means the client sent the key;
             // inner `None` explicitly clears the target (disabling the
@@ -316,6 +337,7 @@ impl ChannelConfig {
                 WsChannel::ScreenCanvas => serde_json::to_value(&self.screen_canvas),
                 WsChannel::WebViewportCanvas => serde_json::to_value(&self.web_viewport_canvas),
                 WsChannel::Metrics => serde_json::to_value(&self.metrics),
+                WsChannel::DeviceMetrics => serde_json::to_value(&self.device_metrics),
                 WsChannel::DisplayPreview => serde_json::to_value(&self.display_preview),
                 WsChannel::Events => continue,
             };
@@ -516,6 +538,8 @@ pub(super) struct ChannelConfigPatch {
     #[serde(default)]
     pub(super) metrics: Option<MetricsConfigPatch>,
     #[serde(default)]
+    pub(super) device_metrics: Option<MetricsConfigPatch>,
+    #[serde(default)]
     pub(super) display_preview: Option<DisplayPreviewConfigPatch>,
 }
 
@@ -628,6 +652,11 @@ pub(super) enum ServerMessage {
     Metrics {
         timestamp: String,
         data: MetricsPayload,
+    },
+    /// Periodic per-device output telemetry snapshot.
+    DeviceMetrics {
+        timestamp: String,
+        data: DeviceMetricsSnapshot,
     },
     /// Backpressure warning for dropped binary channel payloads.
     Backpressure {
@@ -1061,7 +1090,8 @@ pub(super) fn should_relay_event(
     ) && (channels.contains(WsChannel::Frames)
         || channels.contains(WsChannel::Canvas)
         || channels.contains(WsChannel::ScreenCanvas)
-        || channels.contains(WsChannel::Metrics))
+        || channels.contains(WsChannel::Metrics)
+        || channels.contains(WsChannel::DeviceMetrics))
     {
         return false;
     }

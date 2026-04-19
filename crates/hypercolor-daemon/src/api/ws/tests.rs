@@ -38,12 +38,13 @@ use super::protocol::{
     unique_sorted_channel_names, ws_capabilities,
 };
 use super::relays::{
-    build_metrics_message, publish_subscriptions, relay_canvas, relay_frames, relay_metrics,
-    relay_screen_canvas, relay_spectrum, relay_web_viewport_canvas, sync_preview_receiver,
-    try_enqueue_json,
+    build_device_metrics_message, build_metrics_message, publish_subscriptions, relay_canvas,
+    relay_device_metrics, relay_frames, relay_metrics, relay_screen_canvas, relay_spectrum,
+    relay_web_viewport_canvas, sync_preview_receiver, try_enqueue_json,
 };
 use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
+use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use crate::performance::{CompositorBackendKind, FrameTimeline, LatestFrameMetrics};
 use crate::preview_runtime::{
     PreviewFrameReceiver, PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand,
@@ -294,6 +295,36 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["preview"]["screen_canvas_demand"]["any_rgba"], true);
 }
 
+#[test]
+fn device_metrics_message_uses_shared_snapshot() {
+    let state = Arc::new(AppState::new());
+    let device_id = hypercolor_types::device::DeviceId::new();
+    state.device_metrics.store(Arc::new(DeviceMetricsSnapshot {
+        taken_at_ms: 2_500,
+        items: vec![DeviceMetrics {
+            id: device_id,
+            fps_actual: 58.5,
+            fps_target: 60,
+            payload_bps_estimate: 2_048,
+            avg_latency_ms: 11,
+            frames_sent: 300,
+            frames_dropped: 4,
+            errors_total: 1,
+            last_error: Some("socket timeout".to_owned()),
+            last_sent_ago_ms: Some(12),
+        }],
+    }));
+
+    let ServerMessage::DeviceMetrics { data, .. } = build_device_metrics_message(&state) else {
+        panic!("expected device_metrics message");
+    };
+
+    assert_eq!(data.taken_at_ms, 2_500);
+    assert_eq!(data.items.len(), 1);
+    assert_eq!(data.items[0].id, device_id);
+    assert_eq!(data.items[0].payload_bps_estimate, 2_048);
+}
+
 #[tokio::test]
 async fn relay_metrics_wakes_when_subscription_changes() {
     let state = Arc::new(AppState::new());
@@ -312,6 +343,51 @@ async fn relay_metrics_wakes_when_subscription_changes() {
         .await
         .expect("metrics relay should wake without idle polling");
     assert!(message.is_some());
+
+    relay_handle.abort();
+}
+
+#[tokio::test]
+async fn relay_device_metrics_wakes_when_subscription_changes() {
+    let state = Arc::new(AppState::new());
+    state.device_metrics.store(Arc::new(DeviceMetricsSnapshot {
+        taken_at_ms: 4_200,
+        items: vec![DeviceMetrics {
+            id: hypercolor_types::device::DeviceId::new(),
+            fps_actual: 60.0,
+            fps_target: 60,
+            payload_bps_estimate: 512,
+            avg_latency_ms: 8,
+            frames_sent: 42,
+            frames_dropped: 0,
+            errors_total: 0,
+            last_error: None,
+            last_sent_ago_ms: Some(7),
+        }],
+    }));
+    let initial_subscriptions = SubscriptionState::default();
+    let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
+    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(1);
+
+    let relay_handle = tokio::spawn(relay_device_metrics(
+        Arc::clone(&state),
+        json_tx,
+        subscriptions_rx,
+    ));
+
+    let mut subscriptions = initial_subscriptions;
+    subscriptions.channels.insert(WsChannel::DeviceMetrics);
+    subscriptions.config.device_metrics.interval_ms = 100;
+    publish_subscriptions(&subscriptions_tx, &subscriptions);
+
+    let message = tokio::time::timeout(std::time::Duration::from_millis(250), json_rx.recv())
+        .await
+        .expect("device_metrics relay should wake without idle polling")
+        .expect("device_metrics relay should emit a message");
+    let payload: serde_json::Value =
+        serde_json::from_str(message.as_str()).expect("device_metrics payload should parse");
+    assert_eq!(payload["type"], "device_metrics");
+    assert_eq!(payload["data"]["taken_at_ms"], 4_200);
 
     relay_handle.abort();
 }
@@ -516,6 +592,7 @@ fn parse_channels_accepts_supported_channel() {
         "canvas".to_owned(),
         "screen_canvas".to_owned(),
         "metrics".to_owned(),
+        "device_metrics".to_owned(),
     ];
     let parsed = parse_channels(&channels).expect("events should parse");
     assert_eq!(
@@ -526,7 +603,8 @@ fn parse_channels_accepts_supported_channel() {
             WsChannel::Spectrum,
             WsChannel::Canvas,
             WsChannel::ScreenCanvas,
-            WsChannel::Metrics
+            WsChannel::Metrics,
+            WsChannel::DeviceMetrics,
         ]
     );
 }
@@ -546,7 +624,8 @@ fn channel_config_apply_patch_supports_all_channels() {
         "spectrum": {"fps": 20, "bins": 32},
         "canvas": {"fps": 60, "format": "jpeg", "width": 320, "height": 0},
         "screen_canvas": {"fps": 24, "format": "jpeg", "width": 480, "height": 270},
-        "metrics": {"interval_ms": 500}
+        "metrics": {"interval_ms": 500},
+        "device_metrics": {"interval_ms": 250}
     }))
     .expect("valid json patch");
 
@@ -564,6 +643,7 @@ fn channel_config_apply_patch_supports_all_channels() {
     assert_eq!(json["screen_canvas"]["width"], 480);
     assert_eq!(json["screen_canvas"]["height"], 270);
     assert_eq!(json["metrics"]["interval_ms"], 500);
+    assert_eq!(json["device_metrics"]["interval_ms"], 250);
 }
 
 #[test]
@@ -581,6 +661,7 @@ fn channel_config_defaults_are_stable() {
     assert_eq!(json["screen_canvas"]["width"], 0);
     assert_eq!(json["screen_canvas"]["height"], 0);
     assert_eq!(json["metrics"]["interval_ms"], 1000);
+    assert_eq!(json["device_metrics"]["interval_ms"], 1000);
 }
 
 #[test]
@@ -677,6 +758,25 @@ fn frame_rendered_events_are_suppressed_when_metrics_are_subscribed() {
 }
 
 #[test]
+fn frame_rendered_events_are_suppressed_when_device_metrics_are_subscribed() {
+    let channels = ChannelSet::from_channels(&[WsChannel::Events, WsChannel::DeviceMetrics]);
+    let event = HypercolorEvent::FrameRendered {
+        frame_number: 7,
+        timing: FrameTiming {
+            producer_us: 0,
+            composition_us: 0,
+            render_us: 0,
+            sample_us: 0,
+            push_us: 0,
+            total_us: 0,
+            budget_us: 16_666,
+        },
+    };
+
+    assert!(!should_relay_event(&event, channels));
+}
+
+#[test]
 fn frame_rendered_events_pass_through_for_event_only_clients() {
     let channels = ChannelSet::from_channels(&[WsChannel::Events]);
     let event = HypercolorEvent::FrameRendered {
@@ -704,6 +804,7 @@ fn ws_capabilities_include_commands() {
     assert!(capabilities.contains(&"canvas".to_owned()));
     assert!(capabilities.contains(&"screen_canvas".to_owned()));
     assert!(capabilities.contains(&"metrics".to_owned()));
+    assert!(capabilities.contains(&"device_metrics".to_owned()));
     assert!(capabilities.contains(&"display_preview".to_owned()));
     assert!(capabilities.contains(&"commands".to_owned()));
     assert!(capabilities.contains(&"canvas_format_jpeg".to_owned()));

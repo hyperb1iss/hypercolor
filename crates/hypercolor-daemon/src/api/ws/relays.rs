@@ -963,6 +963,60 @@ pub(super) async fn relay_metrics(
     }
 }
 
+/// Relay periodic per-device metrics snapshots to the WebSocket client.
+pub(super) async fn relay_device_metrics(
+    state: Arc<AppState>,
+    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
+    mut subscriptions: watch::Receiver<SubscriptionState>,
+) {
+    let mut active_interval_ms = None::<u32>;
+
+    loop {
+        if active_interval_ms.is_none() {
+            active_interval_ms = {
+                let subs = subscriptions.borrow();
+                if subs.channels.contains(WsChannel::DeviceMetrics) {
+                    Some(subs.config.device_metrics.interval_ms)
+                } else {
+                    None
+                }
+            };
+        }
+
+        let Some(interval_ms) = active_interval_ms else {
+            if subscriptions.changed().await.is_err() {
+                break;
+            }
+            let _ = subscriptions.borrow_and_update();
+            continue;
+        };
+        tokio::select! {
+            changed = subscriptions.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let _ = subscriptions.borrow_and_update();
+                active_interval_ms = None;
+                continue;
+            }
+            () = tokio::time::sleep(Duration::from_millis(u64::from(interval_ms))) => {}
+        }
+
+        let still_subscribed = {
+            let subs = subscriptions.borrow();
+            subs.channels.contains(WsChannel::DeviceMetrics)
+        };
+        if !still_subscribed {
+            continue;
+        }
+
+        let message = build_device_metrics_message(&state);
+        if let Ok(text) = serde_json::to_string(&message) {
+            let _ = try_enqueue_json(&json_tx, text, "device_metrics");
+        }
+    }
+}
+
 pub(super) fn try_enqueue_json<T>(
     json_tx: &tokio::sync::mpsc::Sender<Utf8Bytes>,
     text: T,
@@ -1236,6 +1290,14 @@ pub(super) async fn build_metrics_message(
                     .load(Ordering::Relaxed),
             },
         },
+    }
+}
+
+pub(super) fn build_device_metrics_message(state: &AppState) -> ServerMessage {
+    let snapshot = state.device_metrics.load_full();
+    ServerMessage::DeviceMetrics {
+        timestamp: format_iso8601_now(),
+        data: snapshot.as_ref().clone(),
     }
 }
 

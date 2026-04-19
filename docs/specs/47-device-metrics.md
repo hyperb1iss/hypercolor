@@ -8,13 +8,15 @@ caller so clients see identical rate calculations for the same sampling window.
 
 ## Scope
 
-v1 covers backend collection and REST delivery only.
+The shipped backend now covers both the shared REST snapshot and the dedicated v2
+WebSocket topic.
 
 - Queue-level cumulative counters for payload bytes and async write failures
 - Centralized daemon collector that derives per-device rates from cumulative deltas
 - REST endpoint for the latest shared snapshot
+- Dedicated WebSocket `device_metrics` topic with its own subscription config
 
-v1 does not add WebSocket streaming, transport-specific telemetry, or persisted history.
+Transport-specific telemetry and persisted history remain out of scope.
 
 ## Data Flow
 
@@ -23,6 +25,8 @@ v1 does not add WebSocket streaming, transport-specific telemetry, or persisted 
 3. The collector computes delta-based `fps_actual` and `payload_bps_estimate`.
 4. The collector stores the result in an `ArcSwap<DeviceMetricsSnapshot>`.
 5. `GET /api/v1/devices/metrics` returns the latest snapshot in the standard API envelope.
+6. WebSocket clients can subscribe to `device_metrics` for the same shared snapshot without
+   modifying the existing aggregate `metrics` payload.
 
 ## Endpoint
 
@@ -60,6 +64,38 @@ Response body:
 `taken_at_ms` lives in `data`, not `meta`, because the standard API envelope metadata shape
 is fixed across the daemon.
 
+## WebSocket
+
+Channel: `device_metrics`
+
+Subscription example:
+
+```json
+{
+  "type": "subscribe",
+  "channels": ["device_metrics"],
+  "config": {
+    "device_metrics": { "interval_ms": 500 }
+  }
+}
+```
+
+Server message:
+
+```json
+{
+  "type": "device_metrics",
+  "timestamp": "2026-04-18T12:00:00.000Z",
+  "data": {
+    "taken_at_ms": 1713412345678,
+    "items": []
+  }
+}
+```
+
+The `device_metrics` topic streams the same shared snapshot used by REST. It does not mutate
+or extend the existing aggregate `metrics` topic.
+
 ## Semantics
 
 - `fps_actual` is derived from `frames_sent` deltas across collector samples.
@@ -77,7 +113,6 @@ is fixed across the daemon.
 
 ## Deferred
 
-- Dedicated WebSocket `device_metrics` topic
 - Percentile latency metrics
 - Transport-specific telemetry
 - Persisted historical series
