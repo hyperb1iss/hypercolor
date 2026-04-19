@@ -866,3 +866,269 @@ fn scale_group_identity_returns_false() {
 
     assert!(!layout_geometry::scale_group(&mut layout, &ids, 1.0));
 }
+
+// ── Group align ─────────────────────────────────────────────────────────
+
+#[test]
+fn align_group_left_matches_bbox_left_edge() {
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.20, 0.30, 0.10, 0.10),
+        plain_zone("b", "dev", 0.60, 0.30, 0.20, 0.10),
+        plain_zone("c", "dev", 0.45, 0.60, 0.10, 0.10),
+    ]);
+    let ids: std::collections::HashSet<String> =
+        ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+
+    layout_geometry::align_group(
+        &mut layout,
+        &ids,
+        layout_geometry::AlignAxis::X,
+        layout_geometry::AlignAnchor::Min,
+    );
+
+    let left_edges: Vec<f32> = layout
+        .zones
+        .iter()
+        .filter(|z| ids.contains(&z.id))
+        .map(|z| z.position.x - z.size.x * 0.5)
+        .collect();
+    let first = left_edges[0];
+    for edge in &left_edges[1..] {
+        assert!(
+            (edge - first).abs() < 0.001,
+            "left edges should match: {first} vs {edge}"
+        );
+    }
+    // Y coords unchanged
+    let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
+    assert!((a.position.y - 0.30).abs() < 0.001);
+    let c = layout.zones.iter().find(|z| z.id == "c").expect("c");
+    assert!((c.position.y - 0.60).abs() < 0.001);
+}
+
+#[test]
+fn align_group_right_matches_bbox_right_edge() {
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.20, 0.30, 0.10, 0.10),
+        plain_zone("b", "dev", 0.60, 0.30, 0.20, 0.10),
+    ]);
+    let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+
+    layout_geometry::align_group(
+        &mut layout,
+        &ids,
+        layout_geometry::AlignAxis::X,
+        layout_geometry::AlignAnchor::Max,
+    );
+
+    // Bbox right edge = 0.60 + 0.10 = 0.70
+    let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
+    let b = layout.zones.iter().find(|z| z.id == "b").expect("b");
+    assert!((a.position.x + a.size.x * 0.5 - 0.70).abs() < 0.001);
+    assert!((b.position.x + b.size.x * 0.5 - 0.70).abs() < 0.001);
+}
+
+#[test]
+fn align_group_center_x_matches_bbox_center() {
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.20, 0.30, 0.10, 0.10),
+        plain_zone("b", "dev", 0.60, 0.30, 0.20, 0.10),
+    ]);
+    let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+
+    // a spans x [0.15, 0.25], b spans x [0.50, 0.70]. Bbox center x = 0.425.
+    layout_geometry::align_group(
+        &mut layout,
+        &ids,
+        layout_geometry::AlignAxis::X,
+        layout_geometry::AlignAnchor::Center,
+    );
+
+    let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
+    let b = layout.zones.iter().find(|z| z.id == "b").expect("b");
+    assert!((a.position.x - 0.425).abs() < 0.01);
+    assert!((b.position.x - 0.425).abs() < 0.01);
+}
+
+#[test]
+fn align_group_top_matches_bbox_top_edge() {
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.3, 0.25, 0.10, 0.10),
+        plain_zone("b", "dev", 0.5, 0.40, 0.10, 0.20),
+        plain_zone("c", "dev", 0.7, 0.55, 0.10, 0.10),
+    ]);
+    let ids: std::collections::HashSet<String> =
+        ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+
+    layout_geometry::align_group(
+        &mut layout,
+        &ids,
+        layout_geometry::AlignAxis::Y,
+        layout_geometry::AlignAnchor::Min,
+    );
+
+    // Bbox top = 0.25 - 0.05 = 0.20
+    let tops: Vec<f32> = layout
+        .zones
+        .iter()
+        .filter(|z| ids.contains(&z.id))
+        .map(|z| z.position.y - z.size.y * 0.5)
+        .collect();
+    for t in &tops {
+        assert!((t - 0.20).abs() < 0.001);
+    }
+}
+
+// ── Group distribute ────────────────────────────────────────────────────
+
+#[test]
+fn distribute_group_horizontal_equalizes_gaps() {
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.10, 0.50, 0.05, 0.10),
+        plain_zone("b", "dev", 0.30, 0.50, 0.05, 0.10),
+        plain_zone("c", "dev", 0.90, 0.50, 0.05, 0.10),
+    ]);
+    let ids: std::collections::HashSet<String> =
+        ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+
+    layout_geometry::distribute_group(&mut layout, &ids, layout_geometry::AlignAxis::X);
+
+    // First and last should be unchanged
+    let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
+    let c = layout.zones.iter().find(|z| z.id == "c").expect("c");
+    assert!((a.position.x - 0.10).abs() < 0.01);
+    assert!((c.position.x - 0.90).abs() < 0.01);
+
+    // Gap between a.right and b.left should equal gap between b.right and c.left
+    let b = layout.zones.iter().find(|z| z.id == "b").expect("b");
+    let gap1 = (b.position.x - b.size.x * 0.5) - (a.position.x + a.size.x * 0.5);
+    let gap2 = (c.position.x - c.size.x * 0.5) - (b.position.x + b.size.x * 0.5);
+    assert!((gap1 - gap2).abs() < 0.01);
+}
+
+#[test]
+fn distribute_group_under_three_zones_is_noop() {
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.1, 0.5, 0.05, 0.10),
+        plain_zone("b", "dev", 0.9, 0.5, 0.05, 0.10),
+    ]);
+    let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+    assert!(!layout_geometry::distribute_group(
+        &mut layout,
+        &ids,
+        layout_geometry::AlignAxis::X
+    ));
+}
+
+// ── Group pack ──────────────────────────────────────────────────────────
+
+#[test]
+fn pack_group_horizontal_butts_zones_edge_to_edge() {
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.20, 0.50, 0.10, 0.10),
+        plain_zone("b", "dev", 0.50, 0.50, 0.10, 0.10),
+        plain_zone("c", "dev", 0.80, 0.50, 0.10, 0.10),
+    ]);
+    let ids: std::collections::HashSet<String> =
+        ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+
+    layout_geometry::pack_group(&mut layout, &ids, layout_geometry::AlignAxis::X);
+
+    let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
+    let b = layout.zones.iter().find(|z| z.id == "b").expect("b");
+    let c = layout.zones.iter().find(|z| z.id == "c").expect("c");
+
+    // a anchors the sequence at its original position
+    assert!((a.position.x - 0.20).abs() < 0.01);
+    // b.left == a.right
+    let a_right = a.position.x + a.size.x * 0.5;
+    let b_left = b.position.x - b.size.x * 0.5;
+    assert!((a_right - b_left).abs() < 0.001);
+    // c.left == b.right
+    let b_right = b.position.x + b.size.x * 0.5;
+    let c_left = c.position.x - c.size.x * 0.5;
+    assert!((b_right - c_left).abs() < 0.001);
+}
+
+// ── Group mirror ────────────────────────────────────────────────────────
+
+#[test]
+fn mirror_group_horizontal_flips_positions_around_centroid() {
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.30, 0.50, 0.10, 0.10),
+        plain_zone("b", "dev", 0.70, 0.50, 0.10, 0.10),
+    ]);
+    let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+
+    // centroid x = 0.50. Mirror should swap effective X positions.
+    layout_geometry::mirror_group(&mut layout, &ids, layout_geometry::AlignAxis::X);
+
+    let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
+    let b = layout.zones.iter().find(|z| z.id == "b").expect("b");
+    assert!((a.position.x - 0.70).abs() < 0.01);
+    assert!((b.position.x - 0.30).abs() < 0.01);
+    // Y unchanged
+    assert!((a.position.y - 0.50).abs() < 0.01);
+    assert!((b.position.y - 0.50).abs() < 0.01);
+}
+
+#[test]
+fn mirror_group_across_vertical_axis_reflects_rotation_to_pi_minus_theta() {
+    // Reflecting across a vertical line through the centroid sends a
+    // segment at angle θ to angle π − θ (not −θ). Use 45° so the two
+    // formulas give different answers — this test catches a bug where
+    // the code naïvely negated rotation for both axes.
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.30, 0.50, 0.10, 0.10),
+        plain_zone("b", "dev", 0.70, 0.50, 0.10, 0.10),
+    ]);
+    layout.zones[0].rotation = std::f32::consts::FRAC_PI_4;
+    let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+
+    layout_geometry::mirror_group(&mut layout, &ids, layout_geometry::AlignAxis::X);
+
+    let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
+    let expected =
+        (std::f32::consts::PI - std::f32::consts::FRAC_PI_4).rem_euclid(std::f32::consts::TAU);
+    assert!(
+        (a.rotation - expected).abs() < 0.01,
+        "expected {expected}, got {}",
+        a.rotation
+    );
+}
+
+#[test]
+fn mirror_group_across_horizontal_axis_negates_rotation() {
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.50, 0.30, 0.10, 0.10),
+        plain_zone("b", "dev", 0.50, 0.70, 0.10, 0.10),
+    ]);
+    layout.zones[0].rotation = std::f32::consts::FRAC_PI_4;
+    let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+
+    layout_geometry::mirror_group(&mut layout, &ids, layout_geometry::AlignAxis::Y);
+
+    let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
+    let expected = (-std::f32::consts::FRAC_PI_4).rem_euclid(std::f32::consts::TAU);
+    assert!(
+        (a.rotation - expected).abs() < 0.01,
+        "expected {expected}, got {}",
+        a.rotation
+    );
+}
+
+#[test]
+fn mirror_group_single_zone_is_noop() {
+    let mut layout = simple_layout(vec![plain_zone("a", "dev", 0.5, 0.5, 0.1, 0.1)]);
+    layout.zones[0].rotation = std::f32::consts::FRAC_PI_4;
+    let ids: std::collections::HashSet<String> = ["a"].iter().map(|s| s.to_string()).collect();
+
+    assert!(!layout_geometry::mirror_group(
+        &mut layout,
+        &ids,
+        layout_geometry::AlignAxis::X,
+    ));
+    let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
+    // Rotation preserved
+    assert!((a.rotation - std::f32::consts::FRAC_PI_4).abs() < 0.01);
+}

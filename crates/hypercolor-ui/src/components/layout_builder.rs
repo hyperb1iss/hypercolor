@@ -240,14 +240,6 @@ pub fn LayoutBuilder() -> impl IntoView {
             .get()
             .is_some_and(|entry| entry.is_active)
     });
-    let layout_header_meta = Memo::new(move |_| {
-        layout.get().map(|current| {
-            let zone_count = current.zones.len();
-            let zone_label = if zone_count == 1 { "zone" } else { "zones" };
-            format!("{} • {} {}", current.name, zone_count, zone_label)
-        })
-    });
-
     // Derive dirty state by comparing working layout to saved snapshot.
     let is_dirty = Signal::derive(move || {
         let current = layout.get();
@@ -688,12 +680,6 @@ pub fn LayoutBuilder() -> impl IntoView {
                             accent_rgb="255, 106, 193"
                             gradient="linear-gradient(105deg,#80ffea 0%,#e8d4ff 50%,#ff6ac1 100%)"
                         />
-
-                        {move || layout_header_meta.get().map(|meta| view! {
-                            <span class="shrink-0 rounded-md border border-edge-subtle bg-surface-overlay/45 px-3 py-1 text-[11px] font-mono text-fg-tertiary/70">
-                                {meta}
-                            </span>
-                        })}
                     </div>
                 </div>
 
@@ -913,6 +899,8 @@ pub fn LayoutBuilder() -> impl IntoView {
                                 <Icon icon=LuSave width="14px" height="14px" />
                                 "Save"
                             </button>
+                            // Destructive action fenced off from Save to prevent misclick
+                            <div class="w-px h-5 bg-edge-subtle mx-1" />
                             <button
                                 class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press
                                        text-status-error/40 hover:text-status-error"

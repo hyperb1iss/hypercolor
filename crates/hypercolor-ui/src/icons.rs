@@ -1,10 +1,13 @@
 //! Central icon registry — single source of truth for all Lucide icons used in the UI.
 
 pub use icondata::{
-    LuActivity, LuAlignCenterHorizontal, LuAlignCenterVertical, LuAudioLines, LuBan, LuCable,
-    LuCheck, LuChevronDown, LuChevronLeft, LuChevronRight, LuChevronUp, LuCircle, LuCircleCheck,
-    LuCircleDot, LuCode, LuColumns3, LuCopy, LuCpu, LuExternalLink, LuEye, LuEyeOff, LuFolder,
-    LuGauge, LuGlobe, LuGrid2x2, LuGripVertical, LuHeart, LuInfo, LuKeyRound, LuKeyboard, LuLayers,
+    LuActivity, LuAlignCenterHorizontal, LuAlignCenterVertical, LuAlignEndHorizontal,
+    LuAlignEndVertical, LuAlignHorizontalDistributeCenter, LuAlignStartHorizontal,
+    LuAlignStartVertical, LuAlignVerticalDistributeCenter, LuAudioLines, LuBan, LuCable, LuCheck,
+    LuChevronDown, LuChevronLeft, LuChevronRight, LuChevronUp, LuCircle, LuCircleCheck,
+    LuCircleDot, LuCode, LuColumns3, LuCopy, LuCpu, LuExternalLink, LuEye, LuEyeOff,
+    LuFlipHorizontal, LuFlipVertical, LuFoldHorizontal, LuFoldVertical, LuFolder, LuGauge,
+    LuGlobe, LuGrid2x2, LuGripVertical, LuHeart, LuInfo, LuKeyRound, LuKeyboard, LuLayers,
     LuLayoutDashboard, LuLayoutTemplate, LuLightbulb, LuLink, LuList, LuLoader, LuLock, LuMaximize,
     LuMic, LuMinimize, LuMinus, LuMonitor, LuMoon, LuMousePointerClick, LuNetwork, LuPalette,
     LuPencil, LuPlay, LuPlus, LuPower, LuRadar, LuRefreshCw, LuRotateCcw, LuSave, LuSearch,

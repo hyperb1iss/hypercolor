@@ -144,6 +144,21 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                     let ids_rot_input = ids.clone();
                     let ids_scale_slider = ids.clone();
                     let ids_scale_input = ids.clone();
+                    let ids_align_left = ids.clone();
+                    let ids_align_hc = ids.clone();
+                    let ids_align_right = ids.clone();
+                    let ids_align_top = ids.clone();
+                    let ids_align_vc = ids.clone();
+                    let ids_align_bottom = ids.clone();
+                    let ids_dist_h = ids.clone();
+                    let ids_dist_v = ids.clone();
+                    let ids_pack_h = ids.clone();
+                    let ids_pack_v = ids.clone();
+                    let ids_mirror_h = ids.clone();
+                    let ids_mirror_v = ids.clone();
+
+                    // Distribute needs at least 3 zones to be meaningful.
+                    let dist_enabled = count >= 3;
 
                     return view! {
                         <div class="space-y-2">
@@ -159,9 +174,6 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                     <span class="text-[10px] text-fg-tertiary/40 font-mono">{depth_label}</span>
                                 </div>
                                 <div class="flex-1" />
-                                <span class="text-[9px] text-fg-tertiary/30">
-                                    "Transforms apply around group center"
-                                </span>
                             </div>
 
                             // ── Row 2: Group transform controls ──
@@ -360,6 +372,196 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                     </div>
                                 </div>
                             </div>
+
+                            // ── Row 3: Align / Distribute / Pack / Mirror ──
+                            <div class="flex items-center gap-1.5 flex-wrap">
+                                // Align pill
+                                <div class="flex items-center gap-0.5 shrink-0 rounded-lg px-2 py-1"
+                                     style="background: rgba(255, 255, 255, 0.02)">
+                                    <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0 pr-1">"Align"</span>
+                                    {group_op_button(LuAlignStartVertical, "Align left edges", move || {
+                                        let ids = ids_align_left.clone();
+                                        set_layout.update(|l| {
+                                            if let Some(layout) = l {
+                                                layout_geometry::align_group(
+                                                    layout, &ids,
+                                                    layout_geometry::AlignAxis::X,
+                                                    layout_geometry::AlignAnchor::Min,
+                                                );
+                                            }
+                                        });
+                                        set_is_dirty.set(true);
+                                    })}
+                                    {group_op_button(LuAlignCenterVertical, "Align horizontal centers", move || {
+                                        let ids = ids_align_hc.clone();
+                                        set_layout.update(|l| {
+                                            if let Some(layout) = l {
+                                                layout_geometry::align_group(
+                                                    layout, &ids,
+                                                    layout_geometry::AlignAxis::X,
+                                                    layout_geometry::AlignAnchor::Center,
+                                                );
+                                            }
+                                        });
+                                        set_is_dirty.set(true);
+                                    })}
+                                    {group_op_button(LuAlignEndVertical, "Align right edges", move || {
+                                        let ids = ids_align_right.clone();
+                                        set_layout.update(|l| {
+                                            if let Some(layout) = l {
+                                                layout_geometry::align_group(
+                                                    layout, &ids,
+                                                    layout_geometry::AlignAxis::X,
+                                                    layout_geometry::AlignAnchor::Max,
+                                                );
+                                            }
+                                        });
+                                        set_is_dirty.set(true);
+                                    })}
+                                    <div class="w-px h-3 bg-edge-subtle mx-0.5" />
+                                    {group_op_button(LuAlignStartHorizontal, "Align top edges", move || {
+                                        let ids = ids_align_top.clone();
+                                        set_layout.update(|l| {
+                                            if let Some(layout) = l {
+                                                layout_geometry::align_group(
+                                                    layout, &ids,
+                                                    layout_geometry::AlignAxis::Y,
+                                                    layout_geometry::AlignAnchor::Min,
+                                                );
+                                            }
+                                        });
+                                        set_is_dirty.set(true);
+                                    })}
+                                    {group_op_button(LuAlignCenterHorizontal, "Align vertical centers", move || {
+                                        let ids = ids_align_vc.clone();
+                                        set_layout.update(|l| {
+                                            if let Some(layout) = l {
+                                                layout_geometry::align_group(
+                                                    layout, &ids,
+                                                    layout_geometry::AlignAxis::Y,
+                                                    layout_geometry::AlignAnchor::Center,
+                                                );
+                                            }
+                                        });
+                                        set_is_dirty.set(true);
+                                    })}
+                                    {group_op_button(LuAlignEndHorizontal, "Align bottom edges", move || {
+                                        let ids = ids_align_bottom.clone();
+                                        set_layout.update(|l| {
+                                            if let Some(layout) = l {
+                                                layout_geometry::align_group(
+                                                    layout, &ids,
+                                                    layout_geometry::AlignAxis::Y,
+                                                    layout_geometry::AlignAnchor::Max,
+                                                );
+                                            }
+                                        });
+                                        set_is_dirty.set(true);
+                                    })}
+                                </div>
+
+                                // Distribute pill (needs 3+ zones)
+                                <div
+                                    class="flex items-center gap-0.5 shrink-0 rounded-lg px-2 py-1"
+                                    style=move || if dist_enabled {
+                                        "background: rgba(255, 255, 255, 0.02)"
+                                    } else {
+                                        "background: rgba(255, 255, 255, 0.02); opacity: 0.35; pointer-events: none"
+                                    }
+                                    title=move || if dist_enabled { "" } else { "Distribute needs 3+ zones" }
+                                >
+                                    <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0 pr-1">"Dist"</span>
+                                    {group_op_button(LuAlignHorizontalDistributeCenter, "Distribute horizontally (even gaps)", move || {
+                                        let ids = ids_dist_h.clone();
+                                        set_layout.update(|l| {
+                                            if let Some(layout) = l {
+                                                layout_geometry::distribute_group(
+                                                    layout, &ids,
+                                                    layout_geometry::AlignAxis::X,
+                                                );
+                                            }
+                                        });
+                                        set_is_dirty.set(true);
+                                    })}
+                                    {group_op_button(LuAlignVerticalDistributeCenter, "Distribute vertically (even gaps)", move || {
+                                        let ids = ids_dist_v.clone();
+                                        set_layout.update(|l| {
+                                            if let Some(layout) = l {
+                                                layout_geometry::distribute_group(
+                                                    layout, &ids,
+                                                    layout_geometry::AlignAxis::Y,
+                                                );
+                                            }
+                                        });
+                                        set_is_dirty.set(true);
+                                    })}
+                                </div>
+
+                                // Pack pill
+                                <div class="flex items-center gap-0.5 shrink-0 rounded-lg px-2 py-1"
+                                     style="background: rgba(255, 255, 255, 0.02)">
+                                    <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0 pr-1">"Pack"</span>
+                                    {group_op_button(LuFoldHorizontal, "Pack horizontally (no gaps)", move || {
+                                        let ids = ids_pack_h.clone();
+                                        set_layout.update(|l| {
+                                            if let Some(layout) = l {
+                                                layout_geometry::pack_group(
+                                                    layout, &ids,
+                                                    layout_geometry::AlignAxis::X,
+                                                );
+                                            }
+                                        });
+                                        set_is_dirty.set(true);
+                                    })}
+                                    {group_op_button(LuFoldVertical, "Pack vertically (no gaps)", move || {
+                                        let ids = ids_pack_v.clone();
+                                        set_layout.update(|l| {
+                                            if let Some(layout) = l {
+                                                layout_geometry::pack_group(
+                                                    layout, &ids,
+                                                    layout_geometry::AlignAxis::Y,
+                                                );
+                                            }
+                                        });
+                                        set_is_dirty.set(true);
+                                    })}
+                                </div>
+
+                                // Mirror pill
+                                <div class="flex items-center gap-0.5 shrink-0 rounded-lg px-2 py-1"
+                                     style="background: rgba(255, 255, 255, 0.02)">
+                                    <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0 pr-1">"Mirror"</span>
+                                    {group_op_button(LuFlipHorizontal, "Mirror across vertical axis", move || {
+                                        let ids = ids_mirror_h.clone();
+                                        set_layout.update(|l| {
+                                            if let Some(layout) = l {
+                                                layout_geometry::mirror_group(
+                                                    layout, &ids,
+                                                    layout_geometry::AlignAxis::X,
+                                                );
+                                            }
+                                        });
+                                        set_is_dirty.set(true);
+                                    })}
+                                    {group_op_button(LuFlipVertical, "Mirror across horizontal axis", move || {
+                                        let ids = ids_mirror_v.clone();
+                                        set_layout.update(|l| {
+                                            if let Some(layout) = l {
+                                                layout_geometry::mirror_group(
+                                                    layout, &ids,
+                                                    layout_geometry::AlignAxis::Y,
+                                                );
+                                            }
+                                        });
+                                        set_is_dirty.set(true);
+                                    })}
+                                </div>
+
+                                <div class="flex-1" />
+                                <span class="text-[9px] text-fg-tertiary/30 shrink-0">
+                                    "Transforms apply around group center"
+                                </span>
+                            </div>
                         </div>
                     }.into_any();
                 }
@@ -481,7 +683,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                 <input
                                     type="text"
                                     placeholder="\u{2014}"
-                                    class="w-16 bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1
+                                    class="w-24 bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1
                                            text-xs text-fg-primary font-mono placeholder-fg-tertiary/20
                                            focus:outline-none focus:border-accent-muted glow-ring transition-colors"
                                     prop:value=channel_name.clone().unwrap_or_default()
@@ -497,9 +699,9 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                 />
                             </div>
 
-                            // Metadata — condensed inline
+                            // Metadata — condensed inline, device id clickable tooltip
                             <div class="flex items-center gap-1.5 min-w-0 text-[10px] font-mono text-fg-tertiary/40">
-                                <span class="truncate max-w-32 cursor-default" title=device_id_title>{device_id_display}</span>
+                                <span class="truncate max-w-24 cursor-default" title=device_id_title>{device_id_display}</span>
                                 <span class="text-fg-tertiary/20">{"\u{00b7}"}</span>
                                 <span class="whitespace-nowrap">{topology_label}</span>
                                 <span class="text-fg-tertiary/20">{"\u{00b7}"}</span>
@@ -624,7 +826,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                 </span>
                             </div>
 
-                            // Zone actions
+                            // Zone actions — destructive separated by divider
                             <div class="flex items-center gap-0.5 shrink-0">
                                 <button
                                     class="shrink-0 p-1 rounded-md text-fg-tertiary/30 hover:text-accent hover:bg-accent/8
@@ -684,6 +886,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                 >
                                     <Icon icon=LuRotateCcw width="12px" height="12px" />
                                 </button>
+                                <div class="w-px h-3 bg-edge-subtle mx-1" />
                                 <button
                                     class="shrink-0 p-1 rounded-md text-status-error/30 hover:text-status-error hover:bg-status-error/8
                                            transition-colors btn-press"
@@ -945,6 +1148,24 @@ fn layer_icon_button(
             on:click=on_click
         >
             <Icon icon=icon width="12px" height="12px" />
+        </button>
+    }
+}
+
+/// Icon-only button for group align/distribute/pack/mirror operations.
+/// Slightly larger than layer buttons so alignment icons read at a glance.
+fn group_op_button(
+    icon: icondata_core::Icon,
+    title: &'static str,
+    on_click: impl Fn() + 'static,
+) -> impl IntoView {
+    view! {
+        <button
+            class="p-1 rounded text-fg-tertiary/40 hover:text-accent hover:bg-accent/8 transition-colors btn-press"
+            title=title
+            on:click=move |_| on_click()
+        >
+            <Icon icon=icon width="13px" height="13px" />
         </button>
     }
 }
