@@ -28,6 +28,8 @@ pub struct LightscriptRuntime {
     height: u32,
     last_controls: HashMap<String, ControlValue>,
     last_interaction: Option<InteractionData>,
+    last_sensor_readings: Option<Vec<SensorReading>>,
+    audio_was_quiet: bool,
 }
 
 impl LightscriptRuntime {
@@ -39,6 +41,8 @@ impl LightscriptRuntime {
             height,
             last_controls: HashMap::new(),
             last_interaction: None,
+            last_sensor_readings: None,
+            audio_was_quiet: false,
         }
     }
 
@@ -361,15 +365,30 @@ impl LightscriptRuntime {
         include_audio: bool,
         include_screen: bool,
     ) {
-        if include_audio {
+        if include_audio && self.should_emit_audio_update(audio) {
             scripts.push(Self::audio_update_script(audio));
         }
 
         if include_screen {
             scripts.push(Self::screen_update_script(screen));
         }
-        scripts.push(Self::sensor_update_script(sensors));
+        let sensor_readings = sensors.readings();
+        if self
+            .last_sensor_readings
+            .as_ref()
+            .is_none_or(|previous| previous != &sensor_readings)
+        {
+            scripts.push(Self::sensor_update_script_from_readings(&sensor_readings));
+            self.last_sensor_readings = Some(sensor_readings);
+        }
         self.push_control_update_scripts(scripts, controls);
+    }
+
+    fn should_emit_audio_update(&mut self, audio: &AudioData) -> bool {
+        let audio_is_quiet = audio_is_quiet(audio);
+        let should_emit = !audio_is_quiet || !self.audio_was_quiet;
+        self.audio_was_quiet = audio_is_quiet;
+        should_emit
     }
 
     /// Build JavaScript to update `window.engine.keyboard` and `window.engine.mouse`.
@@ -570,8 +589,7 @@ impl LightscriptRuntime {
         script
     }
 
-    fn sensor_update_script(snapshot: &SystemSnapshot) -> String {
-        let readings = snapshot.readings();
+    fn sensor_update_script_from_readings(readings: &[SensorReading]) -> String {
         let sensor_list = serde_json::to_string(
             &readings
                 .iter()
@@ -1051,6 +1069,29 @@ fn default_sensor_range(reading: &SensorReading) -> (f32, f32) {
     }
 }
 
+fn audio_is_quiet(audio: &AudioData) -> bool {
+    !audio.beat_detected
+        && !audio.onset_detected
+        && audio.beat_pulse.abs() <= f32::EPSILON
+        && audio.onset_pulse.abs() <= f32::EPSILON
+        && audio.beat_phase.abs() <= f32::EPSILON
+        && audio.beat_confidence.abs() <= f32::EPSILON
+        && audio.bpm.abs() <= f32::EPSILON
+        && audio.rms_level.abs() <= f32::EPSILON
+        && audio.peak_level.abs() <= f32::EPSILON
+        && audio.spectral_centroid.abs() <= f32::EPSILON
+        && audio.spectral_flux.abs() <= f32::EPSILON
+        && audio.spectrum.iter().all(|value| value.abs() <= f32::EPSILON)
+        && audio
+            .mel_bands
+            .iter()
+            .all(|value| value.abs() <= f32::EPSILON)
+        && audio
+            .chromagram
+            .iter()
+            .all(|value| value.abs() <= f32::EPSILON)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1158,6 +1199,120 @@ mod tests {
             scripts
                 .iter()
                 .all(|script| !script.contains("window.engine.audio.level"))
+        );
+    }
+
+    #[test]
+    fn push_frame_scripts_suppresses_repeated_quiet_audio_updates() {
+        let mut runtime = LightscriptRuntime::new(320, 200);
+        let quiet_audio = AudioData::silence();
+        let sensors = SystemSnapshot::empty();
+        let mut scripts = Vec::new();
+
+        runtime.push_frame_scripts(
+            &mut scripts,
+            &quiet_audio,
+            None,
+            &sensors,
+            &HashMap::new(),
+            true,
+            false,
+        );
+        assert!(
+            scripts
+                .iter()
+                .any(|script| script.contains("window.engine.audio.level"))
+        );
+
+        scripts.clear();
+        runtime.push_frame_scripts(
+            &mut scripts,
+            &quiet_audio,
+            None,
+            &sensors,
+            &HashMap::new(),
+            true,
+            false,
+        );
+        assert!(
+            scripts
+                .iter()
+                .all(|script| !script.contains("window.engine.audio.level"))
+        );
+    }
+
+    #[test]
+    fn push_frame_scripts_emits_audio_when_quiet_state_ends() {
+        let mut runtime = LightscriptRuntime::new(320, 200);
+        let quiet_audio = AudioData::silence();
+        let mut active_audio = AudioData::silence();
+        active_audio.rms_level = 0.2;
+        let sensors = SystemSnapshot::empty();
+        let mut scripts = Vec::new();
+
+        runtime.push_frame_scripts(
+            &mut scripts,
+            &quiet_audio,
+            None,
+            &sensors,
+            &HashMap::new(),
+            true,
+            false,
+        );
+        scripts.clear();
+
+        runtime.push_frame_scripts(
+            &mut scripts,
+            &active_audio,
+            None,
+            &sensors,
+            &HashMap::new(),
+            true,
+            false,
+        );
+        assert!(
+            scripts
+                .iter()
+                .any(|script| script.contains("window.engine.audio.level"))
+        );
+    }
+
+    #[test]
+    fn push_frame_scripts_suppresses_unchanged_sensor_updates() {
+        let mut runtime = LightscriptRuntime::new(320, 200);
+        let audio = AudioData::silence();
+        let sensors = SystemSnapshot::empty();
+        let mut scripts = Vec::new();
+
+        runtime.push_frame_scripts(
+            &mut scripts,
+            &audio,
+            None,
+            &sensors,
+            &HashMap::new(),
+            false,
+            false,
+        );
+        assert!(
+            scripts
+                .iter()
+                .any(|script| script.contains("window.engine.sensors ="))
+        );
+
+        scripts.clear();
+        runtime.push_frame_scripts(
+            &mut scripts,
+            &audio,
+            None,
+            &sensors,
+            &HashMap::new(),
+            false,
+            false,
+        );
+        assert!(
+            scripts
+                .iter()
+                .all(|script| !script.contains("window.engine.sensors ="))
         );
     }
 
