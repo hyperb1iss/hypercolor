@@ -106,7 +106,6 @@ impl DaemonState {
             backend_manager: Arc::clone(&self.backend_manager),
             device_registry: self.device_registry.clone(),
             spatial_engine: Arc::clone(&self.spatial_engine),
-            scene_manager: Arc::clone(&self.scene_manager),
             logical_devices: Arc::clone(&self.logical_devices),
             event_bus: Arc::clone(&self.event_bus),
             preview_runtime: Arc::clone(&self.preview_runtime),
