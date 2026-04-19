@@ -4,6 +4,8 @@
 //! The pipeline follows the spec: Hann window, DC removal, 1024-point r2c FFT,
 //! dB-scaled magnitudes, and logarithmic remapping to 200 perceptual bins.
 
+#[cfg(test)]
+use std::f32::consts::PI;
 use std::sync::Arc;
 
 use realfft::RealFftPlanner;
@@ -158,6 +160,8 @@ pub struct FftPipeline {
     /// Pre-computed log-frequency bin mapping: for each of the 200 output bins,
     /// stores `(fft_bin_lo, fft_bin_hi)`.
     bin_map: Vec<(usize, usize)>,
+    /// Full-scale reference magnitude for a bin-centered sine after windowing.
+    magnitude_reference: f32,
     /// Raw dB-normalized magnitudes for all FFT bins (reused each frame).
     raw_magnitudes_buf: Vec<f32>,
     /// Log-frequency resample buffer (reused each frame).
@@ -178,6 +182,7 @@ impl FftPipeline {
         let fft = planner.plan_fft_forward(fft_size);
 
         let spectrum_buf = fft.make_output_vec();
+        let hann_window = precompute_hann(fft_size);
 
         let half = fft_size / 2;
         let bin_map = build_log_bin_map(half, sample_rate);
@@ -185,7 +190,8 @@ impl FftPipeline {
         Self {
             fft_size,
             sample_rate,
-            hann_window: precompute_hann(fft_size),
+            magnitude_reference: full_scale_sine_reference(&hann_window),
+            hann_window,
             time_buf: vec![0.0; fft_size],
             spectrum_buf,
             fft,
@@ -268,7 +274,8 @@ impl FftPipeline {
             .zip(self.spectrum_buf[..=half].iter())
         {
             let mag = (complex.re * complex.re + complex.im * complex.im).sqrt();
-            let db = 20.0 * (mag + DB_EPSILON).log10();
+            let normalized_mag = mag / self.magnitude_reference.max(DB_EPSILON);
+            let db = 20.0 * normalized_mag.max(DB_EPSILON).log10();
             *slot = db_to_normalized(db);
         }
     }
@@ -321,6 +328,14 @@ fn remove_dc_offset(samples: &mut [f32]) {
 /// Map a dB value to [0.0, 1.0]. Below -80 dB is silence, 0 dB is maximum.
 fn db_to_normalized(db: f32) -> f32 {
     ((db - DB_FLOOR) / (0.0 - DB_FLOOR)).clamp(0.0, 1.0)
+}
+
+fn full_scale_sine_reference(window: &[f32]) -> f32 {
+    if window.is_empty() {
+        return 1.0;
+    }
+
+    (window.iter().sum::<f32>() * 0.5).max(DB_EPSILON)
 }
 
 /// Build the log-frequency bin mapping for 200 output bins.
@@ -391,6 +406,16 @@ pub fn spectral_flux(current: &[f32], previous: &[f32]) -> f32 {
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
+
+    fn sine_wave(freq_hz: f32, sample_rate: u32, num_samples: usize) -> Vec<f32> {
+        (0..num_samples)
+            .map(|i| {
+                #[expect(clippy::cast_precision_loss, clippy::as_conversions)]
+                let t = i as f32 / sample_rate as f32;
+                (2.0 * PI * freq_hz * t).sin()
+            })
+            .collect()
+    }
 
     #[test]
     fn ring_buffer_basics() {
@@ -482,5 +507,32 @@ mod tests {
         let prev = vec![0.5; 200];
         let curr = vec![0.3; 200]; // all decreases
         assert!(spectral_flux(&curr, &prev).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn full_scale_sine_does_not_fill_entire_spectrum() {
+        let sample_rate = 48_000;
+        let fft_size = 1024;
+        let samples = sine_wave(1_000.0, sample_rate, fft_size);
+        let mut pipeline = FftPipeline::new(fft_size, sample_rate);
+        let result = pipeline.process(&samples).expect("FFT should succeed");
+
+        #[expect(clippy::cast_precision_loss, clippy::as_conversions)]
+        let mean = result.spectrum.iter().sum::<f32>() / SPECTRUM_BINS as f32;
+        let hot_bins = result.spectrum.iter().filter(|&&value| value > 0.9).count();
+        let peak = result.spectrum.iter().copied().fold(0.0_f32, f32::max);
+
+        assert!(
+            peak > 0.9,
+            "bin-centered sine should still peak strongly: {peak}"
+        );
+        assert!(
+            mean < 0.2,
+            "localized sine should not light the whole spectrum: {mean}"
+        );
+        assert!(
+            hot_bins < 12,
+            "too many bins stayed pinned near full scale: {hot_bins}"
+        );
     }
 }

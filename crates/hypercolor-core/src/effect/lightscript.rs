@@ -20,6 +20,11 @@ const DEFAULT_ZONE_SAMPLES: usize = DEFAULT_ZONE_WIDTH * DEFAULT_ZONE_HEIGHT;
 const DEFAULT_ZONE_IMAGE_WIDTH: usize = 160;
 const DEFAULT_ZONE_IMAGE_HEIGHT: usize = 100;
 const DEFAULT_ZONE_IMAGE_BYTES: usize = DEFAULT_ZONE_IMAGE_WIDTH * DEFAULT_ZONE_IMAGE_HEIGHT * 4;
+const EFFECT_SPECTRUM_GAMMA: f32 = 1.8;
+const MEL_RUNNING_MAX_DECAY: f32 = 0.999;
+const MEL_RUNNING_MAX_FLOOR: f32 = 0.001;
+const SPECTRUM_BASS_END: usize = 40;
+const SPECTRUM_MID_END: usize = 130;
 
 /// Runtime state for Lightscript injection.
 #[derive(Debug, Clone)]
@@ -30,6 +35,7 @@ pub struct LightscriptRuntime {
     last_interaction: Option<InteractionData>,
     last_sensor_readings: Option<Vec<SensorReading>>,
     audio_was_quiet: bool,
+    mel_running_max: Vec<f32>,
 }
 
 impl LightscriptRuntime {
@@ -43,6 +49,7 @@ impl LightscriptRuntime {
             last_interaction: None,
             last_sensor_readings: None,
             audio_was_quiet: false,
+            mel_running_max: vec![MEL_RUNNING_MAX_FLOOR; MEL_BANDS],
         }
     }
 
@@ -377,7 +384,7 @@ impl LightscriptRuntime {
         include_screen: bool,
     ) {
         if include_audio && self.should_emit_audio_update(audio) {
-            scripts.push(Self::audio_update_script(audio));
+            scripts.push(self.audio_update_script(audio));
         }
 
         if include_screen {
@@ -470,24 +477,65 @@ impl LightscriptRuntime {
         clippy::format_push_string,
         clippy::uninlined_format_args
     )]
-    fn audio_update_script(audio: &AudioData) -> String {
-        let level_db = normalized_level_to_db(audio.rms_level);
-        let level_linear = clamp_unit(audio.rms_level);
+    fn normalized_mel_bands(&mut self, values: &[f32]) -> Vec<f32> {
+        if self.mel_running_max.len() != MEL_BANDS {
+            self.mel_running_max
+                .resize(MEL_BANDS, MEL_RUNNING_MAX_FLOOR);
+        }
+
+        let mut normalized = Vec::with_capacity(MEL_BANDS);
+        for index in 0..MEL_BANDS {
+            let raw = values
+                .get(index)
+                .copied()
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .unwrap_or_default();
+            let running_max = (self.mel_running_max[index].max(raw) * MEL_RUNNING_MAX_DECAY)
+                .max(MEL_RUNNING_MAX_FLOOR);
+            self.mel_running_max[index] = running_max;
+            normalized.push((raw / running_max).clamp(0.0, 1.0));
+        }
+
+        normalized
+    }
+
+    fn band_levels(spectrum: &[f32]) -> (f32, f32, f32) {
+        (
+            band_rms(spectrum, 0, SPECTRUM_BASS_END),
+            band_rms(spectrum, SPECTRUM_BASS_END, SPECTRUM_MID_END),
+            band_rms(spectrum, SPECTRUM_MID_END, SPECTRUM_BINS),
+        )
+    }
+
+    fn audio_update_script(&mut self, audio: &AudioData) -> String {
+        let raw_rms = clamp_unit(audio.rms_level);
         let peak = clamp_unit(audio.peak_level);
-        let bass = clamp_unit(audio.bass());
-        let mid = clamp_unit(audio.mid());
-        let treble = clamp_unit(audio.treble());
-        let density = clamp_unit(audio.spectral_flux);
-        let brightness = clamp_unit(audio.spectral_centroid);
         let beat_pulse = clamp_unit(audio.beat_pulse);
         let onset_pulse = clamp_unit(audio.onset_pulse);
+        let motion = clamp_unit(audio.spectral_flux);
+        let shaped_spectrum = shape_audio_bins(&audio.spectrum);
+        let shaped_mel = shape_audio_bins(&audio.mel_bands);
+        let mel_shape = self.normalized_mel_bands(&shaped_mel);
+        let (spectrum_bass, spectrum_mid, spectrum_treble) = Self::band_levels(&shaped_spectrum);
+        let bass = clamp_unit(spectrum_bass + beat_pulse * 0.24);
+        let mid = clamp_unit(spectrum_mid);
+        let treble = clamp_unit(spectrum_treble);
+        let level_linear = clamp_unit(bass * 0.42 + mid * 0.34 + treble * 0.24 + beat_pulse * 0.08);
+        let level_db = normalized_level_to_db(level_linear);
+        let mel_normalized: Vec<f32> = shaped_mel
+            .iter()
+            .zip(mel_shape.iter())
+            .map(|(value, shape)| clamp_unit(value * shape * (0.9 + beat_pulse * 0.2)))
+            .collect();
+        let density = clamp_unit(level_linear * 0.88 + motion * 0.12);
+        let brightness = clamp_unit(0.22 + treble * 0.6);
         let level_short = clamp_unit(level_linear * 1.05);
         let level_long = clamp_unit(level_linear * 0.82);
         let bass_env = clamp_unit(bass * 0.92 + beat_pulse * 0.1);
-        let mid_env = clamp_unit(mid * 0.93 + density * 0.05);
-        let treble_env = clamp_unit(treble * 0.94 + density * 0.04);
+        let mid_env = clamp_unit(mid * 0.93 + motion * 0.05);
+        let treble_env = clamp_unit(treble * 0.94 + motion * 0.04);
         let momentum = clamp_signed_unit((mid - bass) * 0.55);
-        let swell = clamp_unit(beat_pulse + density * 0.18);
+        let swell = clamp_unit(beat_pulse + motion * 0.18);
         let width = 0.5;
         let spread = clamp_unit(0.18 + width * 0.58);
         let rolloff = clamp_unit(0.46 + treble * 0.32);
@@ -501,12 +549,17 @@ impl LightscriptRuntime {
             120.0
         };
 
-        let spectral_flux_bands = [bass, mid, treble];
+        let spectral_flux_bands = [
+            clamp_unit(bass * 0.62 + beat_pulse * 0.2),
+            clamp_unit(mid * 0.58 + motion * 0.15),
+            clamp_unit(treble * 0.6 + motion * 0.12),
+        ];
 
-        let spectrum_csv = join_padded_f32_csv(&audio.spectrum, SPECTRUM_BINS);
-        let frequency_raw_csv = join_padded_normalized_i8_csv(&audio.spectrum, SPECTRUM_BINS);
-        let frequency_weighted_csv = join_weighted_spectrum_csv(&audio.spectrum, SPECTRUM_BINS);
-        let mel_csv = join_padded_f32_csv(&audio.mel_bands, MEL_BANDS);
+        let spectrum_csv = join_padded_f32_csv(&shaped_spectrum, SPECTRUM_BINS);
+        let frequency_raw_csv = join_padded_normalized_i8_csv(&shaped_spectrum, SPECTRUM_BINS);
+        let frequency_weighted_csv = join_weighted_spectrum_csv(&shaped_spectrum, SPECTRUM_BINS);
+        let mel_csv = join_padded_f32_csv(&shaped_mel, MEL_BANDS);
+        let mel_norm_csv = join_padded_f32_csv(&mel_normalized, MEL_BANDS);
         let chroma_csv = join_padded_f32_csv(&audio.chromagram, CHROMA_BINS);
         let flux_bands_csv = join_f32_csv(&spectral_flux_bands);
 
@@ -531,7 +584,7 @@ impl LightscriptRuntime {
         push_js_f32_assignment(&mut script, "window.engine.audio.levelLinear", level_linear);
         push_js_f32_assignment(&mut script, "window.engine.audio.levelShort", level_short);
         push_js_f32_assignment(&mut script, "window.engine.audio.levelLong", level_long);
-        push_js_f32_assignment(&mut script, "window.engine.audio.rms", level_linear);
+        push_js_f32_assignment(&mut script, "window.engine.audio.rms", raw_rms);
         push_js_f32_assignment(&mut script, "window.engine.audio.peak", peak);
         push_js_f32_assignment(&mut script, "window.engine.audio.bass", bass);
         push_js_f32_assignment(&mut script, "window.engine.audio.bassEnv", bass_env);
@@ -629,7 +682,7 @@ impl LightscriptRuntime {
             &mut script,
             "window.engine.audio.melBandsNormalized",
             "Float32Array",
-            &mel_csv,
+            &mel_norm_csv,
         );
         push_js_csv_typed_array_assignment(
             &mut script,
@@ -781,6 +834,26 @@ fn clamp_signed_unit(value: f32) -> f32 {
     } else {
         0.0
     }
+}
+
+fn shape_audio_bins(values: &[f32]) -> Vec<f32> {
+    values
+        .iter()
+        .map(|value| clamp_unit(*value).powf(EFFECT_SPECTRUM_GAMMA))
+        .collect()
+}
+
+fn band_rms(values: &[f32], start: usize, end: usize) -> f32 {
+    let end = end.min(values.len());
+    let start = start.min(end);
+    let slice = &values[start..end];
+    if slice.is_empty() {
+        return 0.0;
+    }
+
+    #[expect(clippy::cast_precision_loss, clippy::as_conversions)]
+    let count = slice.len() as f32;
+    (slice.iter().map(|value| value * value).sum::<f32>() / count).sqrt()
 }
 
 fn dominant_pitch_metrics(chromagram: &[f32]) -> (u8, f32) {
@@ -1201,6 +1274,20 @@ fn audio_is_quiet(audio: &AudioData) -> bool {
 mod tests {
     use super::*;
 
+    fn extract_assignment(script: &str, path: &str) -> f32 {
+        let marker = format!("{path} = ");
+        let start = script
+            .find(&marker)
+            .map(|index| index + marker.len())
+            .expect("assignment should exist");
+        let rest = &script[start..];
+        let end = rest.find(';').expect("assignment should terminate");
+        rest[..end]
+            .trim()
+            .parse::<f32>()
+            .expect("assignment should parse as f32")
+    }
+
     #[test]
     fn bootstrap_script_contains_runtime_shape() {
         let runtime = LightscriptRuntime::new(320, 200);
@@ -1427,15 +1514,17 @@ mod tests {
 
     #[test]
     fn audio_script_contains_level_and_freq_payload() {
+        let mut runtime = LightscriptRuntime::new(320, 200);
         let mut audio = AudioData::silence();
         audio.rms_level = 1.0;
         audio.beat_pulse = 0.75;
         audio.onset_pulse = 0.5;
         audio.beat_phase = 0.25;
-        audio.spectrum = vec![0.1, 0.2, 0.3];
+        audio.spectrum = vec![1.0; SPECTRUM_BINS];
+        audio.mel_bands = vec![1.0; MEL_BANDS];
         audio.chromagram = vec![0.1, 0.6, 0.2];
 
-        let script = LightscriptRuntime::audio_update_script(&audio);
+        let script = runtime.audio_update_script(&audio);
         assert!(script.contains("window.engine.audio.level = 0"));
         assert!(script.contains("window.engine.audio.levelRaw = 0"));
         assert!(script.contains("window.engine.audio.levelShort = 1"));
@@ -1448,18 +1537,22 @@ mod tests {
         assert!(script.contains("window.engine.audio.beatPulse = 0.75"));
         assert!(script.contains("window.engine.audio.onsetPulse = 0.5"));
         assert!(script.contains("window.engine.audio.beatPhase = 0.25"));
-        assert!(script.contains("window.engine.audio.freq = new Int8Array([13,25,38"));
-        assert!(script.contains("window.engine.audio.frequency = new Float32Array([0.1,0.2,0.3"));
+        assert!(script.contains("window.engine.audio.freq = new Int8Array([127,127,127"));
+        assert!(script.contains("window.engine.audio.frequency = new Float32Array([1,1,1"));
         assert!(
-            script.contains("window.engine.audio.frequencyWeighted = new Float32Array([0.082,")
+            script.contains("window.engine.audio.frequencyWeighted = new Float32Array([0.82,")
         );
         assert!(script.contains("window.engine.audio.dominantPitch = 1"));
         assert!(script.contains("window.engine.audio.melBands = new Float32Array(["));
+        assert!(
+            script.contains("window.engine.audio.melBandsNormalized = new Float32Array([1,1,1")
+        );
         assert!(script.contains("window.engine.audio.chromagram = new Float32Array(["));
     }
 
     #[test]
     fn audio_script_sanitizes_non_finite_values() {
+        let mut runtime = LightscriptRuntime::new(320, 200);
         let mut audio = AudioData::silence();
         audio.rms_level = f32::NAN;
         audio.spectrum = vec![f32::INFINITY, f32::NEG_INFINITY, f32::NAN];
@@ -1468,12 +1561,114 @@ mod tests {
         audio.bpm = f32::INFINITY;
         audio.spectral_flux = f32::NEG_INFINITY;
 
-        let script = LightscriptRuntime::audio_update_script(&audio);
+        let script = runtime.audio_update_script(&audio);
         assert!(!script.contains("inf"));
         assert!(!script.contains("NaN"));
         assert!(script.contains("window.engine.audio.freq = new Int8Array([0,0,0"));
         assert!(script.contains("window.engine.audio.frequency = new Float32Array([0,0,0"));
         assert!(script.contains("window.engine.audio.melBands = new Float32Array([0,0"));
+    }
+
+    #[test]
+    fn normalized_mel_bands_track_running_max_decay() {
+        let mut runtime = LightscriptRuntime::new(320, 200);
+        let seed = vec![1.0, 0.5, 0.25];
+        let initial = runtime.normalized_mel_bands(&seed);
+        assert_eq!(initial[0], 1.0);
+        assert_eq!(initial[1], 1.0);
+        assert_eq!(initial[2], 1.0);
+
+        let quieter = vec![0.5, 0.25, 0.125];
+        let normalized = runtime.normalized_mel_bands(&quieter);
+        assert!(normalized[0] > 0.49 && normalized[0] < 0.52);
+        assert!(normalized[1] > 0.49 && normalized[1] < 0.52);
+        assert!(normalized[2] > 0.49 && normalized[2] < 0.52);
+    }
+
+    #[test]
+    fn shape_audio_bins_compresses_midrange_energy() {
+        let shaped = shape_audio_bins(&[0.25, 0.5, 0.75, 1.0]);
+        assert!((shaped[0] - 0.08246925).abs() < 0.0001);
+        assert!((shaped[1] - 0.28717458).abs() < 0.0001);
+        assert!((shaped[2] - 0.5958134).abs() < 0.0001);
+        assert_eq!(shaped[3], 1.0);
+    }
+
+    #[test]
+    fn audio_script_curves_live_like_band_energy_into_reactive_range() {
+        let mut runtime = LightscriptRuntime::new(320, 200);
+        let mut audio = AudioData::silence();
+        audio.rms_level = 0.08;
+        for value in &mut audio.spectrum[..SPECTRUM_BASS_END] {
+            *value = 0.64;
+        }
+        for value in &mut audio.spectrum[SPECTRUM_BASS_END..SPECTRUM_MID_END] {
+            *value = 0.60;
+        }
+        for value in &mut audio.spectrum[SPECTRUM_MID_END..] {
+            *value = 0.20;
+        }
+        audio.mel_bands = vec![0.64; MEL_BANDS];
+
+        let script = runtime.audio_update_script(&audio);
+        let bass = extract_assignment(&script, "window.engine.audio.bass");
+        let mid = extract_assignment(&script, "window.engine.audio.mid");
+        let treble = extract_assignment(&script, "window.engine.audio.treble");
+        let level = extract_assignment(&script, "window.engine.audio.levelLinear");
+
+        assert!(bass > 0.40 && bass < 0.50, "bass should stay lively without pinning: {bass}");
+        assert!(mid > 0.38 && mid < 0.45, "mid should track the musical body: {mid}");
+        assert!(treble > 0.04 && treble < 0.08, "treble should not dominate: {treble}");
+        assert!(level > 0.30 && level < 0.40, "overall level should remain expressive: {level}");
+        assert!(
+            (extract_assignment(&script, "window.engine.audio.rms") - 0.08).abs() < 0.0001,
+            "raw RMS should stay available for diagnostics"
+        );
+    }
+
+    #[test]
+    fn audio_script_keeps_strong_bass_hits_capable_of_triggering_shockwave() {
+        let mut runtime = LightscriptRuntime::new(320, 200);
+        let mut audio = AudioData::silence();
+        audio.rms_level = 0.28;
+        for value in &mut audio.spectrum[..SPECTRUM_BASS_END] {
+            *value = 0.88;
+        }
+        for value in &mut audio.spectrum[SPECTRUM_BASS_END..SPECTRUM_MID_END] {
+            *value = 0.60;
+        }
+        for value in &mut audio.spectrum[SPECTRUM_MID_END..] {
+            *value = 0.33;
+        }
+
+        let script = runtime.audio_update_script(&audio);
+        let bass = extract_assignment(&script, "window.engine.audio.bass");
+        let level = extract_assignment(&script, "window.engine.audio.levelLinear");
+
+        assert!(bass > 0.75, "strong bass hits should still read as strong: {bass}");
+        assert!(level > 0.45, "overall level should rise for big transients: {level}");
+    }
+
+    #[test]
+    fn band_levels_follow_spectrum_shape() {
+        let mut audio = AudioData::silence();
+        for value in &mut audio.spectrum[..SPECTRUM_BASS_END] {
+            *value = 0.55;
+        }
+        for value in &mut audio.spectrum[SPECTRUM_BASS_END..SPECTRUM_MID_END] {
+            *value = 0.22;
+        }
+        for value in &mut audio.spectrum[SPECTRUM_MID_END..] {
+            *value = 0.06;
+        }
+
+        let (bass, mid, treble) = LightscriptRuntime::band_levels(&audio.spectrum);
+        assert!(bass > mid, "bass={bass}, mid={mid}, treble={treble}");
+        assert!(mid > treble, "bass={bass}, mid={mid}, treble={treble}");
+        assert!(
+            bass < 0.7,
+            "spectrum-derived bass should stay proportional: {bass}"
+        );
     }
 
     #[test]
