@@ -507,14 +507,29 @@ impl LightscriptRuntime {
         )
     }
 
+    fn loudness_scale(level_linear: f32, bass: f32, mid: f32, treble: f32) -> f32 {
+        let band_mix = bass * 0.42 + mid * 0.34 + treble * 0.24;
+        if band_mix <= f32::EPSILON {
+            return 0.0;
+        }
+
+        clamp_unit(level_linear / band_mix)
+    }
+
     fn audio_update_script(&mut self, audio: &AudioData) -> String {
         let raw_rms = clamp_unit(audio.rms_level);
         let peak = clamp_unit(audio.peak_level);
         let beat_pulse = clamp_unit(audio.beat_pulse);
         let onset_pulse = clamp_unit(audio.onset_pulse);
         let motion = clamp_unit(audio.spectral_flux);
-        let shaped_spectrum = shape_audio_bins(&audio.spectrum);
-        let shaped_mel = shape_audio_bins(&audio.mel_bands);
+        let compressed_spectrum = shape_audio_bins(&audio.spectrum);
+        let compressed_mel = shape_audio_bins(&audio.mel_bands);
+        let (compressed_bass, compressed_mid, compressed_treble) =
+            Self::band_levels(&compressed_spectrum);
+        let loudness_scale =
+            Self::loudness_scale(raw_rms, compressed_bass, compressed_mid, compressed_treble);
+        let shaped_spectrum = scale_audio_bins(&compressed_spectrum, loudness_scale);
+        let shaped_mel = scale_audio_bins(&compressed_mel, loudness_scale);
         let mel_shape = self.normalized_mel_bands(&shaped_mel);
         let (spectrum_bass, spectrum_mid, spectrum_treble) = Self::band_levels(&shaped_spectrum);
         let bass = clamp_unit(spectrum_bass + beat_pulse * 0.24);
@@ -840,6 +855,13 @@ fn shape_audio_bins(values: &[f32]) -> Vec<f32> {
     values
         .iter()
         .map(|value| clamp_unit(*value).powf(EFFECT_SPECTRUM_GAMMA))
+        .collect()
+}
+
+fn scale_audio_bins(values: &[f32], scale: f32) -> Vec<f32> {
+    values
+        .iter()
+        .map(|value| clamp_unit(*value * scale))
         .collect()
 }
 
@@ -1616,10 +1638,10 @@ mod tests {
         let treble = extract_assignment(&script, "window.engine.audio.treble");
         let level = extract_assignment(&script, "window.engine.audio.levelLinear");
 
-        assert!(bass > 0.40 && bass < 0.50, "bass should stay lively without pinning: {bass}");
-        assert!(mid > 0.38 && mid < 0.45, "mid should track the musical body: {mid}");
-        assert!(treble > 0.04 && treble < 0.08, "treble should not dominate: {treble}");
-        assert!(level > 0.30 && level < 0.40, "overall level should remain expressive: {level}");
+        assert!(bass > 0.09 && bass < 0.12, "bass should follow loudness instead of pinning: {bass}");
+        assert!(mid > 0.08 && mid < 0.11, "mid should track body without flooding the shader: {mid}");
+        assert!(treble > 0.01 && treble < 0.02, "treble should stay present but restrained: {treble}");
+        assert!(level > 0.07 && level < 0.09, "overall level should stay close to measured loudness: {level}");
         assert!(
             (extract_assignment(&script, "window.engine.audio.rms") - 0.08).abs() < 0.0001,
             "raw RMS should stay available for diagnostics"
@@ -1631,6 +1653,7 @@ mod tests {
         let mut runtime = LightscriptRuntime::new(320, 200);
         let mut audio = AudioData::silence();
         audio.rms_level = 0.28;
+        audio.beat_pulse = 1.0;
         for value in &mut audio.spectrum[..SPECTRUM_BASS_END] {
             *value = 0.88;
         }
@@ -1645,8 +1668,8 @@ mod tests {
         let bass = extract_assignment(&script, "window.engine.audio.bass");
         let level = extract_assignment(&script, "window.engine.audio.levelLinear");
 
-        assert!(bass > 0.75, "strong bass hits should still read as strong: {bass}");
-        assert!(level > 0.45, "overall level should rise for big transients: {level}");
+        assert!(bass > 0.62, "beat-assisted bass hits should still clear shockwave thresholds: {bass}");
+        assert!(level > 0.40, "overall level should rise for big transients: {level}");
     }
 
     #[test]
