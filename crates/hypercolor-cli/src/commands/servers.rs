@@ -108,7 +108,7 @@ async fn adopt_command(args: &AdoptArgs, ctx: &OutputContext) -> Result<()> {
         .find(|s| s.identity.instance_name == args.instance)
         .with_context(|| {
             format!(
-                "no server named {:?} found (run `hyper servers discover` to list available instances)",
+                "no server named {:?} found (run `hypercolor servers discover` to list available instances)",
                 args.instance
             )
         })?;
@@ -123,7 +123,7 @@ async fn adopt_command(args: &AdoptArgs, ctx: &OutputContext) -> Result<()> {
     if cfg.profiles.contains_key(&profile_name) {
         anyhow::bail!(
             "profile {profile_name:?} already exists \
-             (use `hyper config profile set {profile_name} host ...` to update, \
+             (use `hypercolor config profile set {profile_name} host ...` to update, \
              or `--name` to adopt under a different name)"
         );
     }

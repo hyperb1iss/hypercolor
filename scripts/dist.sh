@@ -233,12 +233,11 @@ if [[ "${IS_MACOS}" -eq 1 ]]; then
   mkdir -p "${DIST_DIR}/share/hypercolor/launchd"
 fi
 
-install -m755 "${RELEASE_DIR}/hypercolor-daemon" "${DIST_DIR}/bin/hypercolor"
-install -m755 "${RELEASE_DIR}/hypercolor" "${DIST_DIR}/bin/hyper"
+install -m755 "${RELEASE_DIR}/hypercolor-daemon" "${DIST_DIR}/bin/hypercolor-daemon"
+install -m755 "${RELEASE_DIR}/hypercolor" "${DIST_DIR}/bin/hypercolor"
 install -m755 "${RELEASE_DIR}/hypercolor-tray" "${DIST_DIR}/bin/hypercolor-tray"
 install -m755 packaging/bin/hypercolor-tui "${DIST_DIR}/bin/hypercolor-tui"
 install -m755 packaging/bin/hypercolor-open "${DIST_DIR}/bin/hypercolor-open"
-ln -sf hypercolor "${DIST_DIR}/bin/hypercolor-daemon"
 
 if [[ -n "${WEB_ASSETS_DIR}" ]]; then
   cp -R "${WEB_ASSETS_DIR}/ui/." "${DIST_DIR}/share/hypercolor/ui/"
@@ -287,9 +286,9 @@ fi
 
 if [[ ${#TARGET_FLAG[@]} -eq 0 ]]; then
   info "Generating shell completions"
-  "${DIST_DIR}/bin/hyper" completions bash > "${DIST_DIR}/share/bash-completion/completions/hyper"
-  "${DIST_DIR}/bin/hyper" completions zsh > "${DIST_DIR}/share/zsh/site-functions/_hyper"
-  "${DIST_DIR}/bin/hyper" completions fish > "${DIST_DIR}/share/fish/vendor_completions.d/hyper.fish"
+  "${DIST_DIR}/bin/hypercolor" completions bash > "${DIST_DIR}/share/bash-completion/completions/hypercolor"
+  "${DIST_DIR}/bin/hypercolor" completions zsh > "${DIST_DIR}/share/zsh/site-functions/_hypercolor"
+  "${DIST_DIR}/bin/hypercolor" completions fish > "${DIST_DIR}/share/fish/vendor_completions.d/hypercolor.fish"
 else
   warn "cross-compiling — skipping shell completion generation"
 fi
@@ -314,9 +313,8 @@ cat > "${DIST_DIR}/manifest.json" <<EOF
   "platform": "${PLATFORM}",
   "rust_target": "${RUST_TARGET}",
   "binaries": [
-    "hypercolor",
-    "hyper",
     "hypercolor-daemon",
+    "hypercolor",
     "hypercolor-tray",
     "hypercolor-tui",
     "hypercolor-open"

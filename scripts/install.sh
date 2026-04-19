@@ -125,9 +125,9 @@ render_desktop_entry() {
 
 install_completions() {
   install -d "${BASH_COMPLETION_DIR}" "${ZSH_COMPLETION_DIR}" "${FISH_COMPLETION_DIR}"
-  "${BIN_DIR}/hyper" completions bash > "${BASH_COMPLETION_DIR}/hyper"
-  "${BIN_DIR}/hyper" completions zsh > "${ZSH_COMPLETION_DIR}/_hyper"
-  "${BIN_DIR}/hyper" completions fish > "${FISH_COMPLETION_DIR}/hyper.fish"
+  "${BIN_DIR}/hypercolor" completions bash > "${BASH_COMPLETION_DIR}/hypercolor"
+  "${BIN_DIR}/hypercolor" completions zsh > "${ZSH_COMPLETION_DIR}/_hypercolor"
+  "${BIN_DIR}/hypercolor" completions fish > "${FISH_COMPLETION_DIR}/hypercolor.fish"
 }
 
 build_ui() {
@@ -182,7 +182,7 @@ build_binaries() {
   "${ROOT_DIR}/scripts/cargo-cache-build.sh" \
     cargo build -p hypercolor-daemon --bin hypercolor-daemon "${cargo_profile_flag[@]}"
 
-  info "building hyper CLI"
+  info "building hypercolor CLI"
   "${ROOT_DIR}/scripts/cargo-cache-build.sh" \
     cargo build -p hypercolor-cli --bin hypercolor "${cargo_profile_flag[@]}"
 
@@ -234,10 +234,10 @@ install_user_files() {
 
   install -Dm755 \
     "${artifact_dir}/hypercolor-daemon" \
-    "${BIN_DIR}/hypercolor"
+    "${BIN_DIR}/hypercolor-daemon"
   install -Dm755 \
     "${artifact_dir}/hypercolor" \
-    "${BIN_DIR}/hyper"
+    "${BIN_DIR}/hypercolor"
   install -Dm755 \
     "${artifact_dir}/hypercolor-tray" \
     "${BIN_DIR}/hypercolor-tray"

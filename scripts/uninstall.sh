@@ -22,9 +22,12 @@ ICON_DIRS=(
   "${PREFIX}/share/icons/hicolor/128x128/apps/hypercolor.png"
   "${PREFIX}/share/icons/hicolor/256x256/apps/hypercolor.png"
 )
-BASH_COMPLETION="${PREFIX}/share/bash-completion/completions/hyper"
-ZSH_COMPLETION="${PREFIX}/share/zsh/site-functions/_hyper"
-FISH_COMPLETION="${HOME}/.config/fish/completions/hyper.fish"
+BASH_COMPLETION="${PREFIX}/share/bash-completion/completions/hypercolor"
+ZSH_COMPLETION="${PREFIX}/share/zsh/site-functions/_hypercolor"
+FISH_COMPLETION="${HOME}/.config/fish/completions/hypercolor.fish"
+LEGACY_BASH_COMPLETION="${PREFIX}/share/bash-completion/completions/hyper"
+LEGACY_ZSH_COMPLETION="${PREFIX}/share/zsh/site-functions/_hyper"
+LEGACY_FISH_COMPLETION="${HOME}/.config/fish/completions/hyper.fish"
 SYSTEMD_UNIT="${HOME}/.config/systemd/user/hypercolor.service"
 LAUNCHD_PLIST="${HOME}/Library/LaunchAgents/tech.hyperbliss.hypercolor.plist"
 
@@ -74,7 +77,7 @@ if [[ -f "${LAUNCHD_PLIST}" ]]; then
 fi
 
 # ── Remove Binaries ──────────────────────────────────────────
-for bin in hypercolor hyper hypercolor-tray hypercolor-tui hypercolor-open; do
+for bin in hypercolor-daemon hypercolor hyper hypercolor-tray hypercolor-tui hypercolor-open; do
   if [[ -f "${BIN_DIR}/${bin}" ]]; then
     info "Removing ${BIN_DIR}/${bin}"
     rm -f "${BIN_DIR}/${bin}"
@@ -99,7 +102,9 @@ if command -v gtk-update-icon-cache &>/dev/null; then
 fi
 
 # ── Remove Completions ───────────────────────────────────────
-rm -f "${BASH_COMPLETION}" "${ZSH_COMPLETION}" "${FISH_COMPLETION}"
+rm -f \
+  "${BASH_COMPLETION}" "${ZSH_COMPLETION}" "${FISH_COMPLETION}" \
+  "${LEGACY_BASH_COMPLETION}" "${LEGACY_ZSH_COMPLETION}" "${LEGACY_FISH_COMPLETION}"
 
 # ── Remove Systemd Unit ──────────────────────────────────────
 if [[ -f "${SYSTEMD_UNIT}" ]]; then

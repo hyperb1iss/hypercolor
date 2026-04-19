@@ -166,7 +166,7 @@ do_install() {
 
   # Binaries
   info "Installing binaries to ${bin_dir}"
-  for bin in hypercolor hyper hypercolor-tray hypercolor-tui hypercolor-open; do
+  for bin in hypercolor-daemon hypercolor hypercolor-tray hypercolor-tui hypercolor-open; do
     if [[ -f "${src}/bin/${bin}" ]]; then
       install -m 755 "${src}/bin/${bin}" "${bin_dir}/${bin}"
     fi
@@ -197,19 +197,19 @@ do_install() {
   fi
 
   # Shell completions
-  if [[ -f "${src}/share/bash-completion/completions/hyper" ]]; then
+  if [[ -f "${src}/share/bash-completion/completions/hypercolor" ]]; then
     mkdir -p "${share_dir}/bash-completion/completions"
-    cp "${src}/share/bash-completion/completions/hyper" \
+    cp "${src}/share/bash-completion/completions/hypercolor" \
        "${share_dir}/bash-completion/completions/"
   fi
-  if [[ -f "${src}/share/zsh/site-functions/_hyper" ]]; then
+  if [[ -f "${src}/share/zsh/site-functions/_hypercolor" ]]; then
     mkdir -p "${share_dir}/zsh/site-functions"
-    cp "${src}/share/zsh/site-functions/_hyper" \
+    cp "${src}/share/zsh/site-functions/_hypercolor" \
        "${share_dir}/zsh/site-functions/"
   fi
-  if [[ -f "${src}/share/fish/vendor_completions.d/hyper.fish" ]]; then
+  if [[ -f "${src}/share/fish/vendor_completions.d/hypercolor.fish" ]]; then
     mkdir -p "${HOME}/.config/fish/completions"
-    cp "${src}/share/fish/vendor_completions.d/hyper.fish" \
+    cp "${src}/share/fish/vendor_completions.d/hypercolor.fish" \
        "${HOME}/.config/fish/completions/"
   fi
 
@@ -218,7 +218,7 @@ do_install() {
     local systemd_dir="${HOME}/.config/systemd/user"
     mkdir -p "${systemd_dir}"
     # Rewrite ExecStart to use actual binary path
-    sed "s|ExecStart=.*hypercolor|ExecStart=${bin_dir}/hypercolor|g; \
+    sed "s|ExecStart=.*hypercolor-daemon|ExecStart=${bin_dir}/hypercolor-daemon|g; \
          s|%h/.local/share/hypercolor|${share_dir}/hypercolor|g" \
       "${src}/lib/systemd/user/hypercolor.service" \
       > "${systemd_dir}/hypercolor.service"
@@ -234,7 +234,7 @@ do_install() {
   if [[ -f "${src}/share/hypercolor/launchd/tech.hyperbliss.hypercolor.plist" ]]; then
     local agents_dir="${HOME}/Library/LaunchAgents"
     mkdir -p "${agents_dir}"
-    sed "s|~/.local/bin/hypercolor|${bin_dir}/hypercolor|g" \
+    sed "s|~/.local/bin/hypercolor-daemon|${bin_dir}/hypercolor-daemon|g" \
       "${src}/share/hypercolor/launchd/tech.hyperbliss.hypercolor.plist" \
       > "${agents_dir}/tech.hyperbliss.hypercolor.plist"
     info "Launchd plist installed — load with: launchctl load ${agents_dir}/tech.hyperbliss.hypercolor.plist"
@@ -267,7 +267,7 @@ do_uninstall() {
   fi
 
   info "Removing binaries"
-  for bin in hypercolor hyper hypercolor-tray hypercolor-tui hypercolor-open; do
+  for bin in hypercolor-daemon hypercolor hypercolor-tray hypercolor-tui hypercolor-open; do
     rm -f "${bin_dir}/${bin}"
   done
 
@@ -278,6 +278,9 @@ do_uninstall() {
   rm -f "${PREFIX}/share/icons/hicolor/48x48/apps/hypercolor.png"
   rm -f "${PREFIX}/share/icons/hicolor/128x128/apps/hypercolor.png"
   rm -f "${PREFIX}/share/icons/hicolor/256x256/apps/hypercolor.png"
+  rm -f "${PREFIX}/share/bash-completion/completions/hypercolor"
+  rm -f "${PREFIX}/share/zsh/site-functions/_hypercolor"
+  rm -f "${HOME}/.config/fish/completions/hypercolor.fish"
   rm -f "${PREFIX}/share/bash-completion/completions/hyper"
   rm -f "${PREFIX}/share/zsh/site-functions/_hyper"
   rm -f "${HOME}/.config/fish/completions/hyper.fish"
@@ -323,8 +326,8 @@ if [[ ":${PATH}:" != *":${PREFIX}/bin:"* ]]; then
 fi
 
 printf "  ${BOLD}Quick start:${RESET}\n"
-printf "    ${CYAN}hypercolor${RESET}         Start the daemon\n"
-printf "    ${CYAN}hyper status${RESET}       Check daemon status\n"
+printf "    ${CYAN}hypercolor-daemon${RESET}  Start the daemon\n"
+printf "    ${CYAN}hypercolor status${RESET}  Check daemon status\n"
 printf "    ${CYAN}hypercolor-tui${RESET}     Launch the terminal UI\n"
 printf "    ${CYAN}hypercolor-open${RESET}    Open the web UI in your browser\n"
 printf "\n"

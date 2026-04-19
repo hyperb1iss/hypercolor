@@ -1,4 +1,4 @@
-//! `hyper completions` -- generate shell completion scripts.
+//! `hypercolor completions` -- generate shell completion scripts.
 
 use std::io;
 
@@ -43,5 +43,5 @@ impl CompletionShell {
 /// them to stdout.
 pub fn execute(args: &CompletionsArgs, cmd: &mut Command) {
     let shell = args.shell.to_clap_shell();
-    generate(shell, cmd, "hyper", &mut io::stdout());
+    generate(shell, cmd, "hypercolor", &mut io::stdout());
 }

@@ -29,7 +29,7 @@ class Hypercolor < Formula
 
   def install
     # Binaries
-    %w[hypercolor hyper hypercolor-tray hypercolor-tui hypercolor-open].each do |b|
+    %w[hypercolor-daemon hypercolor hypercolor-tray hypercolor-tui hypercolor-open].each do |b|
       bin.install "bin/#{b}" if File.exist?("bin/#{b}")
     end
 
@@ -38,9 +38,9 @@ class Hypercolor < Formula
     (share/"hypercolor").install "share/hypercolor/effects" if File.directory?("share/hypercolor/effects")
 
     # Shell completions
-    bash_completion.install "share/bash-completion/completions/hyper" if File.exist?("share/bash-completion/completions/hyper")
-    zsh_completion.install "share/zsh/site-functions/_hyper" if File.exist?("share/zsh/site-functions/_hyper")
-    fish_completion.install "share/fish/vendor_completions.d/hyper.fish" if File.exist?("share/fish/vendor_completions.d/hyper.fish")
+    bash_completion.install "share/bash-completion/completions/hypercolor" if File.exist?("share/bash-completion/completions/hypercolor")
+    zsh_completion.install "share/zsh/site-functions/_hypercolor" if File.exist?("share/zsh/site-functions/_hypercolor")
+    fish_completion.install "share/fish/vendor_completions.d/hypercolor.fish" if File.exist?("share/fish/vendor_completions.d/hypercolor.fish")
   end
 
   def caveats
@@ -56,7 +56,7 @@ class Hypercolor < Formula
   end
 
   service do
-    run [opt_bin/"hypercolor", "--ui-dir", share/"hypercolor/ui"]
+    run [opt_bin/"hypercolor-daemon", "--ui-dir", share/"hypercolor/ui"]
     keep_alive true
     log_path var/"log/hypercolor/hypercolor.log"
     error_log_path var/"log/hypercolor/hypercolor.log"
@@ -65,6 +65,6 @@ class Hypercolor < Formula
 
   test do
     assert_match version.to_s, shell_output("#{bin}/hypercolor --version")
-    assert_match version.to_s, shell_output("#{bin}/hyper --version")
+    assert_match "Hypercolor lighting daemon", shell_output("#{bin}/hypercolor-daemon --help")
   end
 end

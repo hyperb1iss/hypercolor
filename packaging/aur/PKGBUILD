@@ -45,8 +45,8 @@ package() {
   cd "${_srcdir}"
 
   # Binaries
-  install -Dm755 bin/hypercolor      "${pkgdir}/usr/bin/hypercolor"
-  install -Dm755 bin/hyper           "${pkgdir}/usr/bin/hyper"
+  install -Dm755 bin/hypercolor-daemon "${pkgdir}/usr/bin/hypercolor-daemon"
+  install -Dm755 bin/hypercolor        "${pkgdir}/usr/bin/hypercolor"
   install -Dm755 bin/hypercolor-tray "${pkgdir}/usr/bin/hypercolor-tray"
   install -Dm755 bin/hypercolor-tui  "${pkgdir}/usr/bin/hypercolor-tui"
   install -Dm755 bin/hypercolor-open "${pkgdir}/usr/bin/hypercolor-open"
@@ -71,15 +71,15 @@ package() {
   done
 
   # Shell completions
-  install -Dm644 share/bash-completion/completions/hyper \
-    "${pkgdir}/usr/share/bash-completion/completions/hyper"
-  install -Dm644 share/zsh/site-functions/_hyper \
-    "${pkgdir}/usr/share/zsh/site-functions/_hyper"
-  install -Dm644 share/fish/vendor_completions.d/hyper.fish \
-    "${pkgdir}/usr/share/fish/vendor_completions.d/hyper.fish"
+  install -Dm644 share/bash-completion/completions/hypercolor \
+    "${pkgdir}/usr/share/bash-completion/completions/hypercolor"
+  install -Dm644 share/zsh/site-functions/_hypercolor \
+    "${pkgdir}/usr/share/zsh/site-functions/_hypercolor"
+  install -Dm644 share/fish/vendor_completions.d/hypercolor.fish \
+    "${pkgdir}/usr/share/fish/vendor_completions.d/hypercolor.fish"
 
   # Systemd user service (rewrite paths for system-wide install)
-  sed -e 's|%h/.local/bin/hypercolor|/usr/bin/hypercolor|g' \
+  sed -e 's|%h/.local/bin/hypercolor-daemon|/usr/bin/hypercolor-daemon|g' \
       -e 's|%h/.local/share/hypercolor|/usr/share/hypercolor|g' \
     lib/systemd/user/hypercolor.service \
     > "${pkgdir}/usr/lib/systemd/user/hypercolor.service"

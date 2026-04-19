@@ -244,7 +244,7 @@ install_release_payload() {
     stop_service_if_running
 
     local bin
-    for bin in hypercolor hyper hypercolor-tray hypercolor-tui hypercolor-open; do
+    for bin in hypercolor-daemon hypercolor hypercolor-tray hypercolor-tui hypercolor-open; do
         if [[ -f "${RELEASE_DIR}/bin/${bin}" ]]; then
             install -Dm755 "${RELEASE_DIR}/bin/${bin}" "${INSTALL_DIR}/${bin}"
         fi
@@ -323,7 +323,7 @@ Wants=graphical-session.target
 
 [Service]
 Type=notify
-ExecStart=${INSTALL_DIR}/hypercolor --ui-dir ${UI_DIR}
+ExecStart=${INSTALL_DIR}/hypercolor-daemon --ui-dir ${UI_DIR}
 WatchdogSec=30
 Restart=on-failure
 RestartSec=3
@@ -487,25 +487,25 @@ PLIST
 # ─── Shell completions ────────────────────────────────────────────────────────
 
 install_completions() {
-    if [[ -f "${RELEASE_DIR}/share/bash-completion/completions/hyper" ]]; then
+    if [[ -f "${RELEASE_DIR}/share/bash-completion/completions/hypercolor" ]]; then
         mkdir -p "$BASH_COMPLETION_DIR"
         install -Dm644 \
-            "${RELEASE_DIR}/share/bash-completion/completions/hyper" \
-            "${BASH_COMPLETION_DIR}/hyper"
+            "${RELEASE_DIR}/share/bash-completion/completions/hypercolor" \
+            "${BASH_COMPLETION_DIR}/hypercolor"
     fi
 
-    if [[ -f "${RELEASE_DIR}/share/zsh/site-functions/_hyper" ]]; then
+    if [[ -f "${RELEASE_DIR}/share/zsh/site-functions/_hypercolor" ]]; then
         mkdir -p "$ZSH_COMPLETION_DIR"
         install -Dm644 \
-            "${RELEASE_DIR}/share/zsh/site-functions/_hyper" \
-            "${ZSH_COMPLETION_DIR}/_hyper"
+            "${RELEASE_DIR}/share/zsh/site-functions/_hypercolor" \
+            "${ZSH_COMPLETION_DIR}/_hypercolor"
     fi
 
-    if [[ -f "${RELEASE_DIR}/share/fish/vendor_completions.d/hyper.fish" ]]; then
+    if [[ -f "${RELEASE_DIR}/share/fish/vendor_completions.d/hypercolor.fish" ]]; then
         mkdir -p "$FISH_COMPLETION_DIR"
         install -Dm644 \
-            "${RELEASE_DIR}/share/fish/vendor_completions.d/hyper.fish" \
-            "${FISH_COMPLETION_DIR}/hyper.fish"
+            "${RELEASE_DIR}/share/fish/vendor_completions.d/hypercolor.fish" \
+            "${FISH_COMPLETION_DIR}/hypercolor.fish"
     fi
 
     success "Installed available shell completions"
@@ -544,21 +544,21 @@ do_install() {
     printf "\n"
     printf "  ${GREEN}${BOLD}Hypercolor ${VERSION} installed successfully!${RESET}\n"
     printf "\n"
-    printf "  ${DIM}Daemon:${RESET}  ${INSTALL_DIR}/hypercolor\n"
-    printf "  ${DIM}CLI:${RESET}     ${INSTALL_DIR}/hyper\n"
+    printf "  ${DIM}CLI:${RESET}     ${INSTALL_DIR}/hypercolor\n"
+    printf "  ${DIM}Daemon:${RESET}  ${INSTALL_DIR}/hypercolor-daemon\n"
     printf "  ${DIM}Open UI:${RESET} ${INSTALL_DIR}/hypercolor-open\n"
     printf "  ${DIM}TUI:${RESET}     ${INSTALL_DIR}/hypercolor-tui\n"
     printf "  ${DIM}Web UI:${RESET}  ${CYAN}http://localhost:9420${RESET}\n"
     printf "\n"
     printf "  ${DIM}Quick start:${RESET}\n"
-    printf "    hyper status          ${DIM}# Check daemon status${RESET}\n"
-    printf "    hyper effects list    ${DIM}# Browse available effects${RESET}\n"
-    printf "    hyper devices         ${DIM}# List connected devices${RESET}\n"
+    printf "    hypercolor status     ${DIM}# Check daemon status${RESET}\n"
+    printf "    hypercolor effects list ${DIM}# Browse available effects${RESET}\n"
+    printf "    hypercolor devices    ${DIM}# List connected devices${RESET}\n"
     printf "\n"
 
     if [[ "$NO_SERVICE" == true ]]; then
         printf "  ${DIM}To start manually:${RESET}\n"
-        printf "    hypercolor            ${DIM}# Run in foreground${RESET}\n"
+        printf "    hypercolor-daemon     ${DIM}# Run in foreground${RESET}\n"
         printf "\n"
     fi
 }
@@ -647,7 +647,7 @@ do_uninstall() {
     # Remove binaries
     info "Removing binaries..."
     rm -f "${INSTALL_DIR}/hypercolor"
-    rm -f "${INSTALL_DIR}/hyper"
+    rm -f "${INSTALL_DIR}/hypercolor-daemon"
     rm -f "${INSTALL_DIR}/hypercolor-tray"
     rm -f "${INSTALL_DIR}/hypercolor-tui"
     rm -f "${INSTALL_DIR}/hypercolor-open"
@@ -655,6 +655,9 @@ do_uninstall() {
 
     # Remove completions
     info "Removing shell completions..."
+    rm -f "${BASH_COMPLETION_DIR}/hypercolor"
+    rm -f "${ZSH_COMPLETION_DIR}/_hypercolor"
+    rm -f "${FISH_COMPLETION_DIR}/hypercolor.fish"
     rm -f "${BASH_COMPLETION_DIR}/hyper"
     rm -f "${ZSH_COMPLETION_DIR}/_hyper"
     rm -f "${FISH_COMPLETION_DIR}/hyper.fish"

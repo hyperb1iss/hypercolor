@@ -228,7 +228,7 @@ impl Painter {
     /// Render the brand title "H Y P E R C O L O R" with the brand gradient.
     ///
     /// Respects the painter's enabled flag. Used by both the clap help banner
-    /// and the `hyper status` header.
+    /// and the `hypercolor status` header.
     pub fn help_banner_title(&self) -> String {
         gradient_brand("H Y P E R C O L O R", self.enabled)
     }

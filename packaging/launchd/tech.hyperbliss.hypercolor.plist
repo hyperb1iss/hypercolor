@@ -8,7 +8,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>~/.local/bin/hypercolor</string>
+        <string>~/.local/bin/hypercolor-daemon</string>
     </array>
 
     <key>RunAtLoad</key>
