@@ -32,6 +32,7 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
+use arc_swap::ArcSwap;
 use axum::Router;
 use axum::http::{HeaderValue, Method, header};
 use tokio::sync::{Mutex, RwLock, watch};
@@ -68,6 +69,7 @@ use uuid::Uuid;
 
 use crate::api::envelope::ApiError;
 use crate::attachment_profiles::AttachmentProfileStore;
+use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::DeviceSettingsStore;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::layout_auto_exclusions;
@@ -128,6 +130,9 @@ pub struct AppState {
 
     /// Rolling render-performance snapshot shared with metrics endpoints.
     pub performance: Arc<RwLock<PerformanceTracker>>,
+
+    /// Rolling per-device metrics snapshot shared with device metrics endpoints.
+    pub device_metrics: DeviceMetricsSnapshotStore,
 
     /// Device lifecycle state/action orchestration.
     pub lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
@@ -377,6 +382,7 @@ impl AppState {
         let backend_manager = Arc::new(Mutex::new(BackendManager::new()));
         let usb_protocol_configs = UsbProtocolConfigStore::new();
         let performance = Arc::new(RwLock::new(PerformanceTracker::default()));
+        let device_metrics = Arc::new(ArcSwap::from_pointee(DeviceMetricsSnapshot::default()));
         let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
         let reconnect_tasks = Arc::new(StdMutex::new(HashMap::new()));
         let input_manager = Arc::new(Mutex::new(InputManager::new()));
@@ -447,6 +453,7 @@ impl AppState {
             backend_manager,
             usb_protocol_configs,
             performance,
+            device_metrics,
             lifecycle_manager,
             reconnect_tasks,
             config_manager: None,
@@ -530,6 +537,7 @@ impl AppState {
             backend_manager: Arc::clone(&daemon.backend_manager),
             usb_protocol_configs: daemon.usb_protocol_configs.clone(),
             performance: Arc::clone(&daemon.performance),
+            device_metrics: Arc::clone(&daemon.device_metrics),
             lifecycle_manager: Arc::clone(&daemon.lifecycle_manager),
             reconnect_tasks: Arc::clone(&daemon.reconnect_tasks),
             config_manager: Some(Arc::clone(&daemon.config_manager)),
@@ -868,6 +876,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route(
             "/devices/discover",
             axum::routing::post(devices::discover_devices),
+        )
+        .route(
+            "/devices/metrics",
+            axum::routing::get(devices::list_device_metrics),
         )
         .route(
             "/devices/debug/queues",

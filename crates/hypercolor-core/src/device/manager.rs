@@ -315,6 +315,9 @@ pub struct OutputQueueDebugSnapshot {
     /// Total frames successfully written by the worker.
     pub frames_sent: u64,
 
+    /// Payload bytes successfully written by the worker.
+    pub bytes_sent: u64,
+
     /// Frames dropped due to latest-frame replacement while I/O was busy.
     pub frames_dropped: u64,
 
@@ -330,11 +333,85 @@ pub struct OutputQueueDebugSnapshot {
     /// Last async write error observed by this queue worker.
     pub last_error: Option<String>,
 
+    /// Total async write failures observed by this queue worker.
+    pub errors_total: u64,
+
     /// Milliseconds since last worker write attempt.
     pub last_sent_ago_ms: Option<u64>,
 
     /// Most recent frame sequence seen by this queue.
     pub last_sequence: u64,
+}
+
+/// Typed per-device async output telemetry snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceOutputStatistics {
+    /// Backend ID this queue targets.
+    pub backend_id: String,
+
+    /// Device ID this queue targets.
+    pub device_id: DeviceId,
+
+    /// Layout device IDs currently routed to this queue.
+    pub mapped_layout_ids: Vec<String>,
+
+    /// Configured target frame rate for this queue.
+    pub target_fps: u32,
+
+    /// Total frames accepted from the render loop.
+    pub frames_received: u64,
+
+    /// Total frames successfully written by the worker.
+    pub frames_sent: u64,
+
+    /// Payload bytes successfully written by the worker.
+    pub bytes_sent: u64,
+
+    /// Frames dropped due to latest-frame replacement while I/O was busy.
+    pub frames_dropped: u64,
+
+    /// Average latency from enqueue to write completion.
+    pub avg_latency_ms: u64,
+
+    /// Average time spent waiting in the latest-frame slot before a write starts.
+    pub avg_queue_wait_ms: u64,
+
+    /// Average backend write duration from write start to write completion.
+    pub avg_write_ms: u64,
+
+    /// Last async write error observed by this queue worker.
+    pub last_error: Option<String>,
+
+    /// Total async write failures observed by this queue worker.
+    pub errors_total: u64,
+
+    /// Milliseconds since last worker write attempt.
+    pub last_sent_ago_ms: Option<u64>,
+
+    /// Most recent frame sequence seen by this queue.
+    pub last_sequence: u64,
+}
+
+impl DeviceOutputStatistics {
+    fn into_debug_snapshot(self) -> OutputQueueDebugSnapshot {
+        OutputQueueDebugSnapshot {
+            backend_id: self.backend_id,
+            device_id: self.device_id.to_string(),
+            mapped_layout_ids: self.mapped_layout_ids,
+            target_fps: self.target_fps,
+            frames_received: self.frames_received,
+            frames_sent: self.frames_sent,
+            bytes_sent: self.bytes_sent,
+            frames_dropped: self.frames_dropped,
+            avg_latency_ms: self.avg_latency_ms,
+            avg_queue_wait_ms: self.avg_queue_wait_ms,
+            avg_write_ms: self.avg_write_ms,
+            last_error: self.last_error,
+            errors_total: self.errors_total,
+            last_sent_ago_ms: self.last_sent_ago_ms,
+            last_sequence: self.last_sequence,
+        }
+    }
 }
 
 /// One async device write failure observed by an output queue.
@@ -353,10 +430,12 @@ struct OutputQueueMetrics {
     started_at: Instant,
     frames_received: AtomicU64,
     frames_sent: AtomicU64,
+    bytes_sent: AtomicU64,
     frames_dropped: AtomicU64,
     total_latency_us: AtomicU64,
     total_queue_wait_us: AtomicU64,
     total_write_time_us: AtomicU64,
+    errors_total: AtomicU64,
     last_sent_offset_us: AtomicU64,
     last_sequence: AtomicU64,
     last_success_sequence: AtomicU64,
@@ -370,10 +449,12 @@ impl OutputQueueMetrics {
             started_at,
             frames_received: AtomicU64::new(0),
             frames_sent: AtomicU64::new(0),
+            bytes_sent: AtomicU64::new(0),
             frames_dropped: AtomicU64::new(0),
             total_latency_us: AtomicU64::new(0),
             total_queue_wait_us: AtomicU64::new(0),
             total_write_time_us: AtomicU64::new(0),
+            errors_total: AtomicU64::new(0),
             last_sent_offset_us: AtomicU64::new(0),
             last_sequence: AtomicU64::new(0),
             last_success_sequence: AtomicU64::new(0),
@@ -398,8 +479,13 @@ impl OutputQueueMetrics {
         write_time: Duration,
         total_latency: Duration,
         sent_at: Instant,
+        bytes_sent: usize,
     ) {
         self.frames_sent.fetch_add(1, Ordering::Relaxed);
+        self.bytes_sent.fetch_add(
+            u64::try_from(bytes_sent).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
         self.total_queue_wait_us
             .fetch_add(duration_micros(queue_wait), Ordering::Relaxed);
         self.total_write_time_us
@@ -419,6 +505,7 @@ impl OutputQueueMetrics {
             duration_micros(sent_at.saturating_duration_since(self.started_at)),
             Ordering::Relaxed,
         );
+        self.errors_total.fetch_add(1, Ordering::Relaxed);
         self.last_error_sequence.store(sequence, Ordering::Relaxed);
         if let Ok(mut last_error) = self.last_error.lock() {
             *last_error = Some(error);
@@ -431,9 +518,10 @@ impl OutputQueueMetrics {
         device_id: DeviceId,
         mapped_layout_ids: Vec<String>,
         target_fps: u32,
-    ) -> OutputQueueDebugSnapshot {
+    ) -> DeviceOutputStatistics {
         let frames_received = self.frames_received.load(Ordering::Relaxed);
         let frames_sent = self.frames_sent.load(Ordering::Relaxed);
+        let bytes_sent = self.bytes_sent.load(Ordering::Relaxed);
         let frames_dropped = self.frames_dropped.load(Ordering::Relaxed);
         let avg_latency_ms =
             average_micros_ms(self.total_latency_us.load(Ordering::Relaxed), frames_sent);
@@ -461,18 +549,20 @@ impl OutputQueueMetrics {
         .then(|| self.last_error.lock().ok().and_then(|guard| guard.clone()))
         .flatten();
 
-        OutputQueueDebugSnapshot {
+        DeviceOutputStatistics {
             backend_id: backend_id.to_owned(),
-            device_id: device_id.to_string(),
+            device_id,
             mapped_layout_ids,
             target_fps,
             frames_received,
             frames_sent,
+            bytes_sent,
             frames_dropped,
             avg_latency_ms,
             avg_queue_wait_ms,
             avg_write_ms,
             last_error,
+            errors_total: self.errors_total.load(Ordering::Relaxed),
             last_sent_ago_ms,
             last_sequence: self.last_sequence.load(Ordering::Relaxed),
         }
@@ -629,6 +719,7 @@ impl OutputQueue {
                 };
                 let send_completed = Instant::now();
                 let write_time = send_completed.saturating_duration_since(write_started);
+                let payload_bytes = frame.colors.len().saturating_mul(3);
 
                 match &result {
                     Ok(()) => metrics_for_task.record_write_success(
@@ -637,6 +728,7 @@ impl OutputQueue {
                         write_time,
                         send_completed.saturating_duration_since(frame.produced_at),
                         send_completed,
+                        payload_bytes,
                     ),
                     Err(error) => metrics_for_task.record_write_error(
                         frame.sequence,
@@ -748,12 +840,12 @@ impl OutputQueue {
         Some(led_count)
     }
 
-    fn snapshot(
+    fn statistics(
         &self,
         backend_id: &str,
         device_id: DeviceId,
         mapped_layout_ids: Vec<String>,
-    ) -> OutputQueueDebugSnapshot {
+    ) -> DeviceOutputStatistics {
         self.metrics
             .snapshot(backend_id, device_id, mapped_layout_ids, self.target_fps)
     }
@@ -1871,9 +1963,9 @@ impl BackendManager {
         failures
     }
 
-    /// Build a debug snapshot of queue and routing internals.
+    /// Build a typed per-device output telemetry snapshot for collector tasks.
     #[must_use]
-    pub fn debug_snapshot(&self) -> BackendManagerDebugSnapshot {
+    pub fn device_output_statistics(&self) -> Vec<DeviceOutputStatistics> {
         let mut layout_ids_by_key: HashMap<BackendDeviceKey, Vec<String>> = HashMap::new();
         for (layout_device_id, mapping) in &self.device_map {
             layout_ids_by_key
@@ -1892,14 +1984,25 @@ impl BackendManager {
                 .get(&(backend_id.clone(), *device_id))
                 .cloned()
                 .unwrap_or_default();
-            queues.push(queue.snapshot(backend_id, *device_id, mapped_layout_ids));
+            queues.push(queue.statistics(backend_id, *device_id, mapped_layout_ids));
         }
 
         queues.sort_by(|left, right| {
             left.backend_id
                 .cmp(&right.backend_id)
-                .then(left.device_id.cmp(&right.device_id))
+                .then(left.device_id.to_string().cmp(&right.device_id.to_string()))
         });
+        queues
+    }
+
+    /// Build a debug snapshot of queue and routing internals.
+    #[must_use]
+    pub fn debug_snapshot(&self) -> BackendManagerDebugSnapshot {
+        let queues = self
+            .device_output_statistics()
+            .into_iter()
+            .map(DeviceOutputStatistics::into_debug_snapshot)
+            .collect::<Vec<_>>();
 
         BackendManagerDebugSnapshot {
             queue_count: queues.len(),

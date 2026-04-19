@@ -2728,6 +2728,80 @@ async fn write_frame_returns_immediately_with_slow_backend() {
 }
 
 #[tokio::test]
+async fn device_output_statistics_tracks_payload_bytes_on_success() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::ZERO,
+        Arc::clone(&writes),
+        Arc::clone(&write_count),
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device("slow:bytes", "slow", device_id);
+
+    let layout = make_layout(vec![make_zone("zone_0", "slow:bytes", 4)]);
+    let first = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[10, 20, 30]; 4],
+    }];
+    let second = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[30, 20, 10]; 4],
+    }];
+
+    manager.write_frame(&first, &layout).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    manager.write_frame(&second, &layout).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let stats = manager.device_output_statistics();
+    assert_eq!(stats.len(), 1);
+    assert_eq!(stats[0].device_id, device_id);
+    assert_eq!(stats[0].frames_sent, 2);
+    assert_eq!(stats[0].bytes_sent, 24);
+    assert_eq!(stats[0].errors_total, 0);
+}
+
+#[tokio::test]
+async fn device_output_statistics_tracks_async_write_errors() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let attempts = Arc::new(AtomicUsize::new(0));
+
+    let backend =
+        FailOnceRecordingBackend::new(device_id, Arc::clone(&writes), Arc::clone(&attempts));
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device("fail_once:errors", "fail_once", device_id);
+
+    let layout = make_layout(vec![make_zone("zone_0", "fail_once:errors", 4)]);
+    let frame = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[90, 45, 180]; 4],
+    }];
+
+    manager.write_frame(&frame, &layout).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let stats = manager.device_output_statistics();
+    assert_eq!(stats.len(), 1);
+    assert_eq!(stats[0].device_id, device_id);
+    assert_eq!(stats[0].frames_sent, 0);
+    assert_eq!(stats[0].bytes_sent, 0);
+    assert_eq!(stats[0].errors_total, 1);
+    assert_eq!(
+        stats[0].last_error.as_deref(),
+        Some("transient write failure")
+    );
+}
+
+#[tokio::test]
 async fn write_frame_drops_stale_intermediate_payloads() {
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));

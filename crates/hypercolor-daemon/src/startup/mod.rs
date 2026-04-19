@@ -35,6 +35,7 @@ use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::attachment_profiles::AttachmentProfileStore;
+use crate::device_metrics::DeviceMetricsSnapshotStore;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery;
 use crate::display_output::DisplayOutputThread;
@@ -116,6 +117,9 @@ pub struct DaemonState {
     /// Rolling render-performance snapshot shared with the API.
     pub performance: Arc<RwLock<PerformanceTracker>>,
 
+    /// Rolling per-device metrics snapshot shared with the API.
+    pub device_metrics: DeviceMetricsSnapshotStore,
+
     /// Device lifecycle state/action orchestration.
     pub lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
 
@@ -193,6 +197,9 @@ pub struct DaemonState {
 
     /// Periodic discovery worker task.
     pub(super) discovery_task: Option<tokio::task::JoinHandle<()>>,
+
+    /// Periodic per-device metrics collector task.
+    pub(super) device_metrics_collector_task: Option<tokio::task::JoinHandle<()>>,
 
     /// Session/power-awareness watcher and policy controller.
     pub(super) session_controller: Option<SessionController>,

@@ -8,6 +8,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use arc_swap::ArcSwap;
 use tokio::sync::{Mutex, RwLock, watch};
 use tracing::{info, warn};
 
@@ -38,6 +39,7 @@ use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
 use crate::attachment_profiles::AttachmentProfileStore;
+use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::device_settings::DeviceSettingsStore;
 use crate::effect_layouts;
 use crate::layout_auto_exclusions;
@@ -164,6 +166,8 @@ impl DaemonState {
 
         let performance = Arc::new(RwLock::new(PerformanceTracker::default()));
         info!("Performance tracker created");
+        let device_metrics = Arc::new(ArcSwap::from_pointee(DeviceMetricsSnapshot::default()));
+        info!("Device metrics snapshot store created");
 
         // ── Spatial Engine ──────────────────────────────────────────────
         let default_layout = SpatialLayout {
@@ -456,6 +460,7 @@ impl DaemonState {
             driver_host,
             driver_registry,
             performance,
+            device_metrics,
             lifecycle_manager,
             reconnect_tasks,
             input_manager,
@@ -484,6 +489,7 @@ impl DaemonState {
             effect_watcher_task: None,
             effect_error_fallback_task: None,
             discovery_task: None,
+            device_metrics_collector_task: None,
             session_controller: None,
             start_time: Instant::now(),
             server_identity,

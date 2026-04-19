@@ -13,6 +13,7 @@ use hypercolor_types::event::{HypercolorEvent, SceneChangeReason};
 use hypercolor_types::scene::SceneId;
 
 use crate::api::AppState;
+use crate::device_metrics::spawn_device_metrics_collector;
 use crate::discovery::{self, DiscoveryBackend};
 use crate::display_output::{
     DEFAULT_STATIC_HOLD_REFRESH_INTERVAL, DisplayOutputState, DisplayOutputThread,
@@ -113,6 +114,10 @@ impl DaemonState {
             static_hold_refresh_interval: DEFAULT_STATIC_HOLD_REFRESH_INTERVAL,
             display_frames: Arc::clone(&self.display_frames),
         }));
+        self.device_metrics_collector_task = Some(spawn_device_metrics_collector(
+            Arc::clone(&self.device_metrics),
+            Arc::clone(&self.backend_manager),
+        ));
 
         // Publish a startup event so subscribers know the daemon is alive.
         let device_count = self.device_registry.len().await;
@@ -188,6 +193,9 @@ impl DaemonState {
             handle.abort();
         }
         if let Some(handle) = self.discovery_task.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.device_metrics_collector_task.take() {
             handle.abort();
         }
 

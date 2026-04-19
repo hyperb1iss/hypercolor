@@ -30,6 +30,7 @@ use hypercolor_types::event::HypercolorEvent;
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
+use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::discovery as core_discovery;
 
 pub use attachments::{
@@ -237,6 +238,15 @@ pub async fn list_devices(
             total,
             has_more,
         },
+    })
+}
+
+/// `GET /api/v1/devices/metrics` — List current per-device output telemetry.
+pub async fn list_device_metrics(State(state): State<Arc<AppState>>) -> Response {
+    let snapshot = state.device_metrics.load_full();
+    ApiResponse::ok(DeviceMetricsSnapshot {
+        taken_at_ms: snapshot.taken_at_ms,
+        items: snapshot.items.clone(),
     })
 }
 

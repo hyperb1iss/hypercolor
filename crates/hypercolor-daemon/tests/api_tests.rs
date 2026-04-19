@@ -15,6 +15,7 @@ use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::net::Credentials;
 use hypercolor_core::device::{BackendInfo, DeviceBackend};
+use hypercolor_daemon::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1522,6 +1523,56 @@ async fn debug_output_queues_returns_empty_snapshot() {
             .expect("queues should be an array")
             .len(),
         0
+    );
+}
+
+#[tokio::test]
+async fn list_device_metrics_returns_seeded_snapshot() {
+    let state = Arc::new(isolated_state());
+    let device_id = DeviceId::new();
+    state.device_metrics.store(Arc::new(DeviceMetricsSnapshot {
+        taken_at_ms: 1_234,
+        items: vec![DeviceMetrics {
+            id: device_id,
+            fps_actual: 59.5,
+            fps_target: 60,
+            payload_bps_estimate: 1_024,
+            avg_latency_ms: 12,
+            frames_sent: 120,
+            frames_dropped: 3,
+            errors_total: 2,
+            last_error: Some("socket timeout".to_owned()),
+            last_sent_ago_ms: Some(45),
+        }],
+    }));
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/devices/metrics")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["taken_at_ms"], 1_234);
+    assert_eq!(json["data"]["items"][0]["id"], device_id.to_string());
+    assert_eq!(json["data"]["items"][0]["fps_target"], 60);
+    assert_eq!(json["data"]["items"][0]["payload_bps_estimate"], 1_024);
+    assert_eq!(json["data"]["items"][0]["errors_total"], 2);
+    assert_eq!(json["data"]["items"][0]["last_error"], "socket timeout");
+    assert!(
+        (json["data"]["items"][0]["fps_actual"]
+            .as_f64()
+            .expect("fps_actual should be numeric")
+            - 59.5)
+            .abs()
+            < f64::EPSILON
     );
 }
 
