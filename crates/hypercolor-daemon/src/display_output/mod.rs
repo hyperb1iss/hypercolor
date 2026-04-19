@@ -172,7 +172,7 @@ pub(super) struct DisplayWorkerFrameSet {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct StableDisplaySourceIdentity {
+struct DisplaySourceIdentity {
     generation: u64,
     storage: PublishedSurfaceStorageIdentity,
     width: u32,
@@ -181,8 +181,8 @@ struct StableDisplaySourceIdentity {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct StableDisplayFrameSetIdentity {
-    effect_frame: Option<StableDisplaySourceIdentity>,
-    face_frame: Option<StableDisplaySourceIdentity>,
+    effect_frame: Option<DisplaySourceIdentity>,
+    face_frame: Option<DisplaySourceIdentity>,
 }
 
 impl DisplayTarget {
@@ -418,9 +418,9 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
     }
 }
 
-fn stable_display_source_identity(frame: &CanvasFrame) -> Option<StableDisplaySourceIdentity> {
+fn stable_display_source_identity(frame: &CanvasFrame) -> Option<DisplaySourceIdentity> {
     let surface = frame.surface();
-    (frame.width > 0 && frame.height > 0).then_some(StableDisplaySourceIdentity {
+    (frame.width > 0 && frame.height > 0).then_some(DisplaySourceIdentity {
         generation: surface.generation(),
         storage: surface.storage_identity(),
         width: frame.width,

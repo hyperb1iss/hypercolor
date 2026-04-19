@@ -20,7 +20,7 @@ mod frame_admission;
 mod frame_composer;
 mod frame_executor;
 mod frame_io;
-mod frame_pacing;
+pub(crate) mod frame_pacing;
 mod frame_scheduler;
 mod frame_sources;
 mod frame_state;

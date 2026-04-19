@@ -10,7 +10,6 @@ use tracing::{trace, warn};
 
 use hypercolor_core::bus::CanvasFrame;
 use hypercolor_core::device::BackendIo;
-use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::session::OffOutputBehavior;
 
@@ -20,10 +19,11 @@ use super::encode::{
 use super::render::display_viewport_signature;
 use super::{
     DISPLAY_ERROR_WARN_INTERVAL, DisplayCanvasSource, DisplayCanvasSourceSignature,
-    DisplayGeometry, DisplayTarget, DisplayViewportSignature, DisplayWorkerConfigSignature,
-    DisplayWorkerFrameSet,
+    DisplayGeometry, DisplaySourceIdentity, DisplayTarget, DisplayViewportSignature,
+    DisplayWorkerConfigSignature, DisplayWorkerFrameSet,
 };
 use crate::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
+use crate::render_thread::frame_pacing::advance_deadline;
 use crate::session::OutputPowerState;
 
 async fn publish_display_frame_snapshot(
@@ -90,14 +90,6 @@ struct DisplayFrameInputState {
     viewport: DisplayViewportSignature,
     face_blend_mode: hypercolor_types::scene::DisplayFaceBlendMode,
     face_opacity_bits: u32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct DisplaySourceIdentity {
-    generation: u64,
-    storage: PublishedSurfaceStorageIdentity,
-    width: u32,
-    height: u32,
 }
 
 impl DisplayFrameInputState {
@@ -515,13 +507,6 @@ fn target_interval_for_fps(target_fps: u32) -> Option<Duration> {
     }
 
     Some(Duration::from_secs_f64(1.0 / f64::from(target_fps)))
-}
-
-fn advance_deadline(previous_deadline: Instant, interval: Duration, now: Instant) -> Instant {
-    previous_deadline
-        .checked_add(interval)
-        .unwrap_or(now)
-        .max(now)
 }
 
 fn should_refresh_static_hold(power_state: &watch::Receiver<OutputPowerState>) -> bool {
