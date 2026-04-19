@@ -112,6 +112,11 @@ pub struct WsContext {
     pub set_screen_preview_consumers: WriteSignal<u32>,
     pub set_web_viewport_preview_consumers: WriteSignal<u32>,
     pub metrics: ReadSignal<Option<PerformanceMetrics>>,
+    /// Latest per-device output telemetry snapshot. Populated only while a
+    /// view has bumped `set_device_metrics_consumers`.
+    pub device_metrics: ReadSignal<Option<api::DeviceMetricsSnapshot>>,
+    /// Opt-in subscription counter for the `device_metrics` WS topic.
+    pub set_device_metrics_consumers: WriteSignal<u32>,
     pub backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     pub active_effect: ReadSignal<Option<String>>,
     pub last_device_event: ReadSignal<Option<DeviceEventHint>>,
@@ -577,6 +582,8 @@ pub fn App() -> impl IntoView {
         set_screen_preview_consumers: ws.set_screen_preview_consumers,
         set_web_viewport_preview_consumers: ws.set_web_viewport_preview_consumers,
         metrics: ws.metrics,
+        device_metrics: ws.device_metrics,
+        set_device_metrics_consumers: ws.set_device_metrics_consumers,
         backpressure_notice: ws.backpressure_notice,
         active_effect: ws.active_effect,
         last_device_event: ws.last_device_event,
@@ -587,6 +594,7 @@ pub fn App() -> impl IntoView {
         set_audio_enabled,
     };
     provide_context(ws_ctx);
+    provide_context(crate::device_metrics::install_device_metrics_store(ws_ctx));
     provide_context(PreviewTelemetryContext {
         presenter: preview_presenter,
         set_presenter: set_preview_presenter,

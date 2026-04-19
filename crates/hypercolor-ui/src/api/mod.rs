@@ -9,6 +9,7 @@ use serde::Deserialize;
 
 pub mod client;
 pub mod config;
+pub mod device_metrics;
 pub mod devices;
 pub mod displays;
 pub mod effects;
@@ -30,6 +31,7 @@ pub struct ApiEnvelope<T> {
 // Flat re-exports so existing `crate::api::FooBar` imports keep working.
 
 pub use config::*;
+pub use device_metrics::*;
 pub use devices::*;
 pub use displays::*;
 pub use effects::*;

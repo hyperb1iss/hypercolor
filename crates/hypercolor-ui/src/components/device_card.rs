@@ -4,6 +4,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::api::DeviceSummary;
+use crate::components::device_metrics_strip::DeviceMetricsStrip;
 use crate::icons::*;
 
 // ── Brand identity ──────────────────────────────────────────────────────────
@@ -358,6 +359,11 @@ pub fn DeviceCard(
     let status = status_label(&device.status);
     let is_active = device.status.to_lowercase() == "active";
     let is_disabled = device.status.to_lowercase() == "disabled";
+    let shows_metrics = matches!(
+        device.status.to_lowercase().as_str(),
+        "active" | "connected" | "reconnecting"
+    );
+    let metrics_device_id = device.id.clone();
 
     // Pairing badge info
     let auth_badge = crate::components::device_pairing_modal::auth_badge_info(&device.auth);
@@ -612,6 +618,11 @@ pub fn DeviceCard(
                         </span>
                     </div>
                 </div>
+
+                // ── Row 4: Live per-device metrics strip (connected only) ─
+                {shows_metrics.then(|| view! {
+                    <DeviceMetricsStrip device_id=metrics_device_id.clone() />
+                })}
             </div>
         </button>
     }

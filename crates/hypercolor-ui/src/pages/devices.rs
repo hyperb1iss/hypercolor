@@ -7,7 +7,7 @@ use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
 use crate::api::DeviceSummary;
-use crate::app::DevicesContext;
+use crate::app::{DevicesContext, WsContext};
 use crate::components::device_card::DeviceCard;
 use crate::components::device_detail::DeviceDetail;
 use crate::components::device_pairing_modal::{DevicePairingModal, ForgetCredentialsModal};
@@ -77,6 +77,18 @@ const BACKEND_CHIPS: &[(&str, &str)] = &[
 #[component]
 pub fn DevicesPage() -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
+
+    // Opt into the `device_metrics` WS topic for as long as this page stays
+    // mounted. The daemon only streams per-device telemetry while at least
+    // one consumer is registered, so this keeps the payload off pages that
+    // don't plot it.
+    let ws_ctx = expect_context::<WsContext>();
+    ws_ctx.set_device_metrics_consumers.update(|n| *n = n.saturating_add(1));
+    on_cleanup(move || {
+        ws_ctx
+            .set_device_metrics_consumers
+            .update(|n| *n = n.saturating_sub(1));
+    });
 
     // Restore persisted state
     let (search, set_search) = signal(String::new());

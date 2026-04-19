@@ -5,6 +5,8 @@ use hypercolor_types::scene::{RenderGroupRole, SceneKind, SceneMutationMode};
 use leptos::prelude::*;
 use serde::Deserialize;
 
+use crate::api::DeviceMetricsSnapshot;
+
 // ── Connection State ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,6 +282,11 @@ struct MetricsMessage {
 }
 
 #[derive(Debug, Deserialize)]
+struct DeviceMetricsMessage {
+    data: DeviceMetricsSnapshot,
+}
+
+#[derive(Debug, Deserialize)]
 struct BackpressureMessage {
     dropped_frames: u32,
     channel: String,
@@ -386,6 +393,7 @@ pub(super) fn handle_json_message(
     set_active: &WriteSignal<Option<String>>,
     metrics: ReadSignal<Option<PerformanceMetrics>>,
     set_metrics: &WriteSignal<Option<PerformanceMetrics>>,
+    set_device_metrics: &WriteSignal<Option<DeviceMetricsSnapshot>>,
     backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     set_backpressure_notice: &WriteSignal<Option<BackpressureNotice>>,
     set_last_device_event: &WriteSignal<Option<DeviceEventHint>>,
@@ -442,6 +450,11 @@ pub(super) fn handle_json_message(
                 if metrics.get_untracked().as_ref() != Some(&message.data) {
                     set_metrics.set(Some(message.data));
                 }
+            }
+        }
+        "device_metrics" => {
+            if let Ok(message) = serde_json::from_value::<DeviceMetricsMessage>(msg.clone()) {
+                set_device_metrics.set(Some(message.data));
             }
         }
         "subscribed" => {

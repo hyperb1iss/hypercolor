@@ -1,5 +1,8 @@
 #![allow(dead_code, unused_imports)]
 
+#[path = "../src/api/mod.rs"]
+mod api;
+
 #[path = "../src/ws/messages.rs"]
 mod messages;
 

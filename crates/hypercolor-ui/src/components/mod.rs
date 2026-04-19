@@ -9,6 +9,7 @@ pub mod component_row;
 pub mod control_panel;
 pub mod device_card;
 pub mod device_detail;
+pub mod device_metrics_strip;
 pub mod device_pairing_modal;
 pub mod effect_card;
 pub mod install_effect_panel;

@@ -12,6 +12,7 @@ use super::messages::{
     PerformanceMetrics, PreviewFrameChannel, SceneEventHint, decode_preview_frame,
     handle_json_message,
 };
+use crate::api::DeviceMetricsSnapshot;
 use super::preview::{
     DEFAULT_PREVIEW_FPS_CAP, clear_preview_subscription, clear_screen_preview_subscription,
     clear_web_viewport_preview_subscription, request_preview_subscription,
@@ -56,6 +57,14 @@ pub struct WsManager {
     pub connection_state: ReadSignal<ConnectionState>,
     pub preview_fps: ReadSignal<f32>,
     pub metrics: ReadSignal<Option<PerformanceMetrics>>,
+    /// Latest per-device output telemetry snapshot. `None` until the devices
+    /// page (or any other consumer) subscribes via
+    /// `set_device_metrics_consumers`.
+    pub device_metrics: ReadSignal<Option<DeviceMetricsSnapshot>>,
+    /// Bump when a view needs live per-device metrics; drop on cleanup.
+    /// The daemon subscription turns on when the count transitions 0→n and
+    /// off when it drops back to zero.
+    pub set_device_metrics_consumers: WriteSignal<u32>,
     pub backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     pub active_effect: ReadSignal<Option<String>>,
     pub last_device_event: ReadSignal<Option<DeviceEventHint>>,
@@ -85,6 +94,9 @@ impl WsManager {
         let (connection_state, set_connection_state) = signal(ConnectionState::Disconnected);
         let (preview_fps, set_preview_fps) = signal(0.0_f32);
         let (metrics, set_metrics) = signal(None::<PerformanceMetrics>);
+        let (device_metrics, set_device_metrics) = signal(None::<DeviceMetricsSnapshot>);
+        let (device_metrics_consumers, set_device_metrics_consumers) = signal(0_u32);
+        let device_metrics_requested: StoredValue<bool> = StoredValue::new(false);
         let (backpressure_notice, set_backpressure_notice) = signal(None::<BackpressureNotice>);
         let (active_effect, set_active_effect) = signal(None::<String>);
         let (last_device_event, set_last_device_event) = signal(None::<DeviceEventHint>);
@@ -279,6 +291,7 @@ impl WsManager {
                         &set_active_effect,
                         metrics,
                         &set_metrics,
+                        &set_device_metrics,
                         backpressure_notice,
                         &set_backpressure_notice,
                         &set_last_device_event,
@@ -391,6 +404,48 @@ impl WsManager {
             set_preview_transport_cap.set(preview_page_cap.get());
         });
 
+        // Per-device metrics subscription — opt-in via the consumer counter.
+        // Re-subscribes after reconnect because the effect depends on
+        // `connection_state` and we reset the requested flag when the
+        // connection drops.
+        Effect::new(move |_| {
+            let state = connection_state.get();
+            let consumers = device_metrics_consumers.get();
+
+            if state != ConnectionState::Connected {
+                device_metrics_requested.set_value(false);
+                set_device_metrics.set(None);
+                return;
+            }
+
+            let Some(ws) = ws_handle.get_value() else {
+                return;
+            };
+
+            let want = consumers > 0;
+            let have = device_metrics_requested.get_value();
+
+            if want && !have {
+                let msg = serde_json::json!({
+                    "type": "subscribe",
+                    "channels": ["device_metrics"],
+                    "config": {
+                        "device_metrics": { "interval_ms": 500 }
+                    }
+                });
+                let _ = ws.send_with_str(&msg.to_string());
+                device_metrics_requested.set_value(true);
+            } else if !want && have {
+                let msg = serde_json::json!({
+                    "type": "unsubscribe",
+                    "channels": ["device_metrics"]
+                });
+                let _ = ws.send_with_str(&msg.to_string());
+                device_metrics_requested.set_value(false);
+                set_device_metrics.set(None);
+            }
+        });
+
         Effect::new(move |_| {
             let _probe = backpressure_probe_epoch.get();
             let Some(last_backpressure_at_ms) = last_backpressure_at_ms.get() else {
@@ -458,6 +513,8 @@ impl WsManager {
             connection_state,
             preview_fps,
             metrics,
+            device_metrics,
+            set_device_metrics_consumers,
             backpressure_notice,
             active_effect,
             last_device_event,
