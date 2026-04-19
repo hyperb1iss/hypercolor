@@ -502,8 +502,7 @@ pub(super) fn handle_json_message(
                         .set(Some(extract_scene_event_hint(event_type, scene_data)));
                 } else if EFFECT_ERROR_EVENTS.contains(&event_type) {
                     let effect_data = msg.get("data").unwrap_or(&serde_json::Value::Null);
-                    set_last_effect_error
-                        .set(extract_effect_error_hint(event_type, effect_data));
+                    set_last_effect_error.set(extract_effect_error_hint(event_type, effect_data));
                 } else if DEVICE_LIFECYCLE_EVENTS.contains(&event_type)
                     && let Some(hint) = extract_device_event_hint(event_type, msg.get("data"))
                 {

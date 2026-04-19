@@ -5,7 +5,9 @@ mod messages;
 
 use hypercolor_types::event::RenderGroupChangeKind;
 use hypercolor_types::scene::{RenderGroupRole, SceneKind, SceneMutationMode};
-use messages::{extract_effect_error_hint, extract_scene_event_hint, scene_event_affects_active_effect};
+use messages::{
+    extract_effect_error_hint, extract_scene_event_hint, scene_event_affects_active_effect,
+};
 
 #[test]
 fn extract_scene_event_hint_parses_active_scene_payload() {

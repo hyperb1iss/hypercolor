@@ -8,9 +8,9 @@ use wasm_bindgen::prelude::*;
 use web_sys::MessageEvent;
 
 use super::messages::{
-    AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, DeviceEventHint,
-    EffectErrorHint, PerformanceMetrics, PreviewFrameChannel, SceneEventHint,
-    decode_preview_frame, handle_json_message,
+    AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, DeviceEventHint, EffectErrorHint,
+    PerformanceMetrics, PreviewFrameChannel, SceneEventHint, decode_preview_frame,
+    handle_json_message,
 };
 use super::preview::{
     DEFAULT_PREVIEW_FPS_CAP, clear_preview_subscription, clear_screen_preview_subscription,

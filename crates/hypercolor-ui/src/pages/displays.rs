@@ -254,21 +254,23 @@ pub fn DisplaysPage() -> impl IntoView {
         });
     });
 
-    Effect::new(move |previous_scene_event: Option<Option<crate::ws::SceneEventHint>>| {
-        let current_scene_event = ws.last_scene_event.get();
-        if previous_scene_event.as_ref() == Some(&current_scene_event) {
-            return current_scene_event;
-        }
+    Effect::new(
+        move |previous_scene_event: Option<Option<crate::ws::SceneEventHint>>| {
+            let current_scene_event = ws.last_scene_event.get();
+            if previous_scene_event.as_ref() == Some(&current_scene_event) {
+                return current_scene_event;
+            }
 
-        if current_scene_event.as_ref().is_some_and(|scene_event| {
-            scene_event.event_type == "active_scene_changed"
-                || scene_event.render_group_role == Some(RenderGroupRole::Display)
-        }) {
-            set_face_refresh_tick.update(|value| *value = value.wrapping_add(1));
-        }
+            if current_scene_event.as_ref().is_some_and(|scene_event| {
+                scene_event.event_type == "active_scene_changed"
+                    || scene_event.render_group_role == Some(RenderGroupRole::Display)
+            }) {
+                set_face_refresh_tick.update(|value| *value = value.wrapping_add(1));
+            }
 
-        current_scene_event
-    });
+            current_scene_event
+        },
+    );
 
     let current_face_id = Signal::derive(move || {
         display_face

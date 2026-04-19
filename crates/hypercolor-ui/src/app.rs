@@ -13,6 +13,7 @@ use crate::api;
 use crate::color::CanvasFrameAnalysis;
 use crate::components::preset_matching::controls_to_json;
 use crate::components::shell::Shell;
+use crate::device_event_logic::should_refetch_devices_for_event;
 use crate::pages::dashboard::DashboardPage;
 use crate::pages::devices::DevicesPage;
 use crate::pages::display_preview::DisplayPreviewPage;
@@ -26,8 +27,8 @@ use crate::thumbnails::{self, ThumbnailStore};
 use crate::toasts;
 use crate::ws::messages::scene_event_affects_active_effect;
 use crate::ws::{
-    AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, DeviceEventHint,
-    EffectErrorHint, PerformanceMetrics, SceneEventHint, WsManager,
+    AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, DeviceEventHint, EffectErrorHint,
+    PerformanceMetrics, SceneEventHint, WsManager,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -719,27 +720,23 @@ pub fn App() -> impl IntoView {
             return;
         };
 
-        let current_devices = devices_resource
-            .get()
+        let current_device_ids = devices_resource
+            .get_untracked()
             .and_then(|result| result.ok())
+            .map(|devices| {
+                devices
+                    .into_iter()
+                    .map(|device| device.id)
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
 
-        let should_refetch = match event.event_type.as_str() {
-            "device_connected" | "device_discovered" => {
-                event.device_id.as_ref().is_some_and(|device_id| {
-                    !current_devices.iter().any(|device| &device.id == device_id)
-                })
-            }
-            "device_disconnected" | "device_state_changed" => {
-                event.device_id.as_ref().is_some_and(|device_id| {
-                    current_devices.iter().any(|device| &device.id == device_id)
-                })
-            }
-            "device_discovery_completed" => {
-                current_devices.is_empty() && event.found_count.is_some_and(|count| count > 0)
-            }
-            _ => false,
-        };
+        let should_refetch = should_refetch_devices_for_event(
+            &event.event_type,
+            event.device_id.as_deref(),
+            event.found_count,
+            &current_device_ids,
+        );
 
         if should_refetch {
             devices_resource.refetch();
@@ -783,19 +780,23 @@ pub fn App() -> impl IntoView {
         current_effect_name
     });
 
-    Effect::new(move |previous_effect_error: Option<Option<EffectErrorHint>>| {
-        let current_effect_error = ws_ctx.last_effect_error.get();
-        if previous_effect_error.as_ref() == Some(&current_effect_error) {
-            return current_effect_error;
-        }
+    Effect::new(
+        move |previous_effect_error: Option<Option<EffectErrorHint>>| {
+            let current_effect_error = ws_ctx.last_effect_error.get();
+            if previous_effect_error.as_ref() == Some(&current_effect_error) {
+                return current_effect_error;
+            }
 
-        effects_ctx.set_last_effect_error.set(current_effect_error.clone());
-        if let Some(effect_error) = current_effect_error.as_ref() {
-            toasts::toast_error(&effect_error_toast_message(&effects_ctx, effect_error));
-        }
+            effects_ctx
+                .set_last_effect_error
+                .set(current_effect_error.clone());
+            if let Some(effect_error) = current_effect_error.as_ref() {
+                toasts::toast_error(&effect_error_toast_message(&effects_ctx, effect_error));
+            }
 
-        current_effect_error
-    });
+            current_effect_error
+        },
+    );
 
     Effect::new(move |_| {
         let active_effect_id = effects_ctx.active_effect_id.get();

@@ -603,10 +603,12 @@ pub fn RenderingSection(
         })
     });
     let effect_error_fallback = Signal::derive(move || {
-        read_config(config, |cfg| match cfg.effect_engine.effect_error_fallback {
-            hypercolor_types::config::EffectErrorFallbackPolicy::None => "none".to_string(),
-            hypercolor_types::config::EffectErrorFallbackPolicy::ClearGroups => {
-                "clear_groups".to_string()
+        read_config(config, |cfg| {
+            match cfg.effect_engine.effect_error_fallback {
+                hypercolor_types::config::EffectErrorFallbackPolicy::None => "none".to_string(),
+                hypercolor_types::config::EffectErrorFallbackPolicy::ClearGroups => {
+                    "clear_groups".to_string()
+                }
             }
         })
     });
