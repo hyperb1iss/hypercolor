@@ -1,10 +1,18 @@
 //! Tests for the input source abstraction layer.
 
 #[cfg(target_os = "linux")]
+use hypercolor_core::input::SensorPoller;
+#[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::{CaptureConfig, WaylandScreenCaptureInput};
 use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData};
 use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use hypercolor_core::types::event::{InputButtonState, InputEvent, ZoneColors};
+#[cfg(target_os = "linux")]
+use std::fs;
+#[cfg(target_os = "linux")]
+use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 // ── Mock Sources ───────────────────────────────────────────────────────────
 
@@ -504,6 +512,28 @@ fn manager_samples_multiple_sources() {
     assert!(matches!(&samples[1], InputData::Screen(_)));
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn sensor_poller_does_not_cache_process_stat_fds() {
+    let before = per_process_stat_fd_count();
+    let mut poller = SensorPoller::with_interval(Duration::from_millis(20));
+    let mut rx = poller.receiver();
+
+    poller.start().expect("sensor poller should start");
+    assert!(
+        wait_for_sensor_snapshot(&mut rx, Duration::from_secs(1)),
+        "sensor poller should publish at least one snapshot",
+    );
+
+    let after = per_process_stat_fd_count();
+    poller.stop();
+
+    assert!(
+        after <= before.saturating_add(8),
+        "sensor poller should not retain /proc/<pid>/stat fds (before={before}, after={after})",
+    );
+}
+
 #[test]
 fn manager_start_all_succeeds() {
     let mut mgr = InputManager::new();
@@ -511,6 +541,55 @@ fn manager_start_all_succeeds() {
     mgr.add_source(Box::new(MockScreenSource::new(1)));
 
     mgr.start_all().expect("start_all should succeed");
+}
+
+#[cfg(target_os = "linux")]
+fn per_process_stat_fd_count() -> usize {
+    fs::read_dir("/proc/self/fd")
+        .expect("fd directory should be readable")
+        .filter_map(Result::ok)
+        .filter_map(|entry| fs::read_link(entry.path()).ok())
+        .filter_map(|target| target.into_os_string().into_string().ok())
+        .filter(|target| is_process_stat_path(target))
+        .count()
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_sensor_snapshot(
+    rx: &mut tokio::sync::watch::Receiver<Arc<hypercolor_types::sensor::SystemSnapshot>>,
+    timeout: Duration,
+) -> bool {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+    runtime.block_on(async {
+        matches!(
+            tokio::time::timeout(timeout, rx.changed()).await,
+            Ok(Ok(()))
+        )
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn is_process_stat_path(target: &str) -> bool {
+    let Some(remainder) = target.strip_prefix("/proc/") else {
+        return false;
+    };
+
+    let Some(pid) = remainder.strip_suffix("/stat") else {
+        return false;
+    };
+
+    if pid.bytes().all(|byte| byte.is_ascii_digit()) {
+        return true;
+    }
+
+    let Some((task_owner, task_id)) = pid.split_once("/task/") else {
+        return false;
+    };
+    task_owner.bytes().all(|byte| byte.is_ascii_digit())
+        && task_id.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 #[test]

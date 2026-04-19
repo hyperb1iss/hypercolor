@@ -4121,6 +4121,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "gif 0.14.2",
+ "gleam",
  "hypercolor-hal",
  "hypercolor-types",
  "libpulse-binding",

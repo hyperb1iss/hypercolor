@@ -14,7 +14,10 @@ fn home_and_effect_routes_use_live_palette_mode() {
         now_playing_canvas_mode("/effects/pulse-temp"),
         NowPlayingCanvasMode::Palette
     );
-    assert_eq!(now_playing_canvas_mode("/layout"), NowPlayingCanvasMode::Palette);
+    assert_eq!(
+        now_playing_canvas_mode("/layout"),
+        NowPlayingCanvasMode::Palette
+    );
 }
 
 #[test]

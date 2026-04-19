@@ -61,6 +61,8 @@ web-sys = { version = "0.3", features = [
     "WebGlUniformLocation",
     "Window",
     "Document",
+    "Element",
+    "HtmlElement",
     "KeyboardEvent",
     "MessageEvent",
     "Worker",

@@ -9,10 +9,12 @@
 use std::collections::VecDeque;
 
 use leptos::ev;
+use leptos::html;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
 use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 
 use crate::api;
 use crate::app::WsContext;
@@ -42,15 +44,46 @@ use timeline::{BackpressureBanner, FrameTimelinePanel, LatestFramePanel, PacingP
 
 const HISTORY_SIZE: usize = 60;
 const MIN_PREVIEW_WIDTH: f64 = 280.0;
-const MAX_PREVIEW_WIDTH: f64 = 820.0;
+// Absolute ceiling, used only as the upper bound of the viewport-adaptive
+// clamp so a 4K display still behaves sensibly. Day-to-day the practical
+// ceiling comes from `max_preview_width()` below.
+const ABSOLUTE_MAX_PREVIEW_WIDTH: f64 = 2400.0;
+// Floor for the adaptive ceiling so the slider never gets tighter than the
+// original hard-coded cap on smaller viewports.
+const MIN_ADAPTIVE_MAX_PREVIEW_WIDTH: f64 = 820.0;
+// Room reserved for sidebar + page padding + resize handle + a usable
+// favorites panel when the preview is pushed to its maximum.
+const PREVIEW_MAX_SIBLING_RESERVE_PX: f64 = 600.0;
 const DEFAULT_PREVIEW_WIDTH: f64 = 460.0;
 const HERO_ROW_HEIGHT_PX: f64 = 540.0;
 const PREVIEW_WIDTH_STORAGE_KEY: &str = "hc-dashboard-preview-width";
 const DASHBOARD_PREVIEW_FPS_CAP: u32 = 60;
 const DASHBOARD_PREVIEW_MIN_REQUEST_WIDTH: f64 = 480.0;
-const DASHBOARD_PREVIEW_MAX_REQUEST_WIDTH: f64 = 1280.0;
+const DASHBOARD_PREVIEW_MAX_REQUEST_WIDTH: f64 = 2560.0;
 const DASHBOARD_PREVIEW_REQUEST_QUANTUM: f64 = 64.0;
 const DASHBOARD_PREVIEW_RECOVERY_SAMPLES: u8 = 6;
+
+/// Practical upper bound for the draggable preview column: viewport width
+/// minus the reserve for sidebar, padding, handle, and favorites panel.
+/// Falls back to the floor on tiny viewports so the drag never feels more
+/// restrictive than it used to.
+fn max_preview_width() -> f64 {
+    let viewport_width = web_sys::window()
+        .and_then(|window| window.inner_width().ok())
+        .and_then(|value| value.as_f64())
+        .unwrap_or(1920.0);
+    (viewport_width - PREVIEW_MAX_SIBLING_RESERVE_PX)
+        .clamp(MIN_ADAPTIVE_MAX_PREVIEW_WIDTH, ABSOLUTE_MAX_PREVIEW_WIDTH)
+}
+
+/// Reads the viewport's CSS-pixel width, used when fullscreen takes over
+/// and the cabinet spans the entire window.
+fn viewport_width_px() -> f64 {
+    web_sys::window()
+        .and_then(|window| window.inner_width().ok())
+        .and_then(|value| value.as_f64())
+        .unwrap_or(1920.0)
+}
 
 fn dashboard_preview_request_width(preview_width_px: f64) -> u32 {
     let device_pixel_ratio = web_sys::window().map_or(1.0, |window| window.device_pixel_ratio());
@@ -147,9 +180,16 @@ pub fn DashboardPage() -> impl IntoView {
     let (preview_width, set_preview_width) = signal(
         read_stored_width()
             .unwrap_or(DEFAULT_PREVIEW_WIDTH)
-            .clamp(MIN_PREVIEW_WIDTH, MAX_PREVIEW_WIDTH),
+            .clamp(MIN_PREVIEW_WIDTH, max_preview_width()),
     );
     let drag_start_width = StoredValue::new(0.0_f64);
+
+    // Fullscreen preview — takes over the whole viewport with a true
+    // browser-level Fullscreen API request when available so browser
+    // chrome gets out of the way. State drives both CSS (overlay class
+    // on the wrapper) and icon/tooltip state on the cabinet button.
+    let fullscreen = RwSignal::new(false);
+    let preview_wrapper_ref = NodeRef::<html::Div>::new();
 
     let on_drag_start = Callback::new(move |()| {
         drag_start_width.set_value(preview_width.get_untracked());
@@ -157,7 +197,7 @@ pub fn DashboardPage() -> impl IntoView {
     });
     let on_drag = Callback::new(move |delta_x: f64| {
         let base = drag_start_width.get_value();
-        let new_w = (base + delta_x).clamp(MIN_PREVIEW_WIDTH, MAX_PREVIEW_WIDTH);
+        let new_w = (base + delta_x).clamp(MIN_PREVIEW_WIDTH, max_preview_width());
         set_preview_width.set(new_w);
     });
     let on_drag_end = Callback::new(move |()| {
@@ -165,17 +205,79 @@ pub fn DashboardPage() -> impl IntoView {
         persist_width(preview_width.get_untracked());
     });
 
-    // Match the effects page cadence, but only request enough preview pixels
-    // to fill the dashboard cabinet on the current display.
+    // Match the effects page cadence, but only request enough preview
+    // pixels to fill the dashboard cabinet on the current display. In
+    // fullscreen we size to the whole viewport so the upscaled frame
+    // stays sharp on wide monitors.
     Effect::new(move |_| {
         ws.set_preview_cap.set(dashboard_preview_cap.get());
+        let effective_width = if fullscreen.get() {
+            viewport_width_px()
+        } else {
+            preview_width.get()
+        };
         ws.set_preview_width_cap
-            .set(dashboard_preview_request_width(preview_width.get()));
+            .set(dashboard_preview_request_width(effective_width));
     });
     on_cleanup(move || {
         ws.set_preview_cap.set(crate::ws::DEFAULT_PREVIEW_FPS_CAP);
         ws.set_preview_width_cap.set(0);
     });
+
+    // Fullscreen toggle — drives local state and attempts to enter/exit
+    // the browser-level Fullscreen API. A user agent without the API
+    // (or one that refuses the request) still gets the CSS overlay
+    // via the `fullscreen-preview` class below, so the feature degrades
+    // gracefully rather than falling back to the inline-sized cabinet.
+    let on_toggle_fullscreen = Callback::new(move |()| {
+        let will_be_fullscreen = !fullscreen.get_untracked();
+        fullscreen.set(will_be_fullscreen);
+        if will_be_fullscreen {
+            if let Some(element) = preview_wrapper_ref.get_untracked() {
+                let _ = element.request_fullscreen();
+            }
+        } else if let Some(document) = web_sys::window().and_then(|win| win.document())
+            && document.fullscreen_element().is_some()
+        {
+            document.exit_fullscreen();
+        }
+    });
+
+    // Escape exits fullscreen even when the browser Fullscreen API isn't
+    // in play (the API handles its own Escape). Listening on window is
+    // fine — keydown bubbles to window regardless of focus target.
+    window_event_listener(ev::keydown, move |event: ev::KeyboardEvent| {
+        if event.key() == "Escape" && fullscreen.get_untracked() {
+            fullscreen.set(false);
+            if let Some(document) = web_sys::window().and_then(|win| win.document())
+                && document.fullscreen_element().is_some()
+            {
+                document.exit_fullscreen();
+            }
+        }
+    });
+
+    // Sync our signal when the user exits fullscreen through the browser
+    // (native Esc, address bar click, etc.). `fullscreenchange` fires on
+    // document, which doesn't bubble to window, so we attach directly.
+    // The closure is forgotten so it lives for the page lifetime — one
+    // leaked listener per dashboard mount is cheap and avoids the
+    // cleanup dance for a listener that should never be removed anyway.
+    if let Some(document) = web_sys::window().and_then(|win| win.document()) {
+        let document_for_callback = document.clone();
+        let fullscreen_signal = fullscreen;
+        let callback = Closure::<dyn FnMut()>::new(move || {
+            let browser_is_fullscreen = document_for_callback.fullscreen_element().is_some();
+            if !browser_is_fullscreen && fullscreen_signal.get_untracked() {
+                fullscreen_signal.set(false);
+            }
+        });
+        let _ = document.add_event_listener_with_callback(
+            "fullscreenchange",
+            callback.as_ref().unchecked_ref(),
+        );
+        callback.forget();
+    }
 
     Effect::new(move |_| {
         let telemetry = preview_telemetry.presenter.get();
@@ -423,10 +525,26 @@ pub fn DashboardPage() -> impl IntoView {
                         style=move || format!("height: {HERO_ROW_HEIGHT_PX}px")
                     >
                         <div
+                            node_ref=preview_wrapper_ref
                             class="shrink-0 h-full"
-                            style=move || format!("width: {}px", preview_width.get())
+                            class:fullscreen-preview=move || fullscreen.get()
+                            style=move || {
+                                if fullscreen.get() {
+                                    // Class drives the positioning; style is
+                                    // still set so the non-fullscreen state
+                                    // cleanly takes over when toggled off.
+                                    String::new()
+                                } else {
+                                    format!("width: {}px", preview_width.get())
+                                }
+                            }
                         >
-                            <PreviewCabinet report_telemetry=true fill_height=true />
+                            <PreviewCabinet
+                                report_telemetry=true
+                                fill_height=true
+                                on_toggle_fullscreen=on_toggle_fullscreen
+                                is_fullscreen=Signal::derive(move || fullscreen.get())
+                            />
                         </div>
 
                         <ResizeHandle

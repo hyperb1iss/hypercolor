@@ -21,6 +21,7 @@
 use std::collections::HashMap;
 
 use hypercolor_types::effect::ControlValue;
+use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use wasm_bindgen::{JsCast, closure::Closure};
@@ -48,6 +49,15 @@ pub fn PreviewCabinet(
     /// preset row.
     #[prop(default = false)]
     fill_height: bool,
+    /// Pass `Some(callback)` to render a maximize/minimize button in the
+    /// canvas's top-right corner. The callback fires on click; the host
+    /// page is responsible for updating `is_fullscreen` in response.
+    #[prop(optional)]
+    on_toggle_fullscreen: Option<Callback<()>>,
+    /// Drives the fullscreen button's icon (maximize vs minimize) and
+    /// tooltip. Ignored when `on_toggle_fullscreen` is `None`.
+    #[prop(into, optional)]
+    is_fullscreen: MaybeProp<bool>,
 ) -> impl IntoView {
     let ws = expect_context::<WsContext>();
     let fx = expect_context::<EffectsContext>();
@@ -157,6 +167,37 @@ pub fn PreviewCabinet(
                     fps_target=ws.preview_target_fps
                     report_presenter_telemetry=report_telemetry
                 />
+
+                // Maximize / exit-fullscreen button — floats above the scrim
+                // so the overlay info row's `pointer-events-none` wrapper
+                // doesn't swallow clicks. Only rendered when the host page
+                // actually wires up `on_toggle_fullscreen`; on pages that
+                // don't care (effects sidebar), the control disappears.
+                {on_toggle_fullscreen.map(|cb| view! {
+                    <button
+                        type="button"
+                        class="absolute top-3 right-3 z-20 p-1.5 rounded-lg \
+                               bg-black/45 backdrop-blur-sm border border-edge-subtle/60 \
+                               text-fg-secondary hover:text-fg-primary \
+                               hover:bg-black/65 hover:border-edge-default \
+                               transition-all"
+                        title=move || if is_fullscreen.get().unwrap_or(false) {
+                            "Exit fullscreen (Esc)"
+                        } else {
+                            "Fullscreen preview"
+                        }
+                        on:click=move |ev: ev::MouseEvent| {
+                            ev.stop_propagation();
+                            cb.run(());
+                        }
+                    >
+                        {move || if is_fullscreen.get().unwrap_or(false) {
+                            view! { <Icon icon=LuMinimize width="13px" height="13px" /> }.into_any()
+                        } else {
+                            view! { <Icon icon=LuMaximize width="13px" height="13px" /> }.into_any()
+                        }}
+                    </button>
+                })}
 
                 // Ignition curtain — absolute overlay that fades out over the
                 // canvas on each effect swap. Uses opacity animation only so

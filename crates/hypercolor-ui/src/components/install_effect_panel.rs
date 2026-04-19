@@ -57,7 +57,10 @@ pub fn InstallEffectPanel() -> impl IntoView {
         let target = ev
             .target()
             .and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok());
-        let Some(file) = target.and_then(|input| input.files()).and_then(|files| files.get(0)) else {
+        let Some(file) = target
+            .and_then(|input| input.files())
+            .and_then(|files| files.get(0))
+        else {
             return;
         };
 
@@ -340,7 +343,10 @@ fn parse_install_preview(file_name: &str, html: &str) -> InstallPreview {
                 errors.push(format!("Duplicate control property \"{property}\"."));
             }
 
-            let control_type = attr_value(&attrs, "type").unwrap_or("number").trim().to_ascii_lowercase();
+            let control_type = attr_value(&attrs, "type")
+                .unwrap_or("number")
+                .trim()
+                .to_ascii_lowercase();
             if !matches!(
                 control_type.as_str(),
                 "number"
@@ -380,7 +386,8 @@ fn parse_install_preview(file_name: &str, html: &str) -> InstallPreview {
             continue;
         }
 
-        description = description.or_else(|| attr_value(&attrs, "description").map(ToOwned::to_owned));
+        description =
+            description.or_else(|| attr_value(&attrs, "description").map(ToOwned::to_owned));
         author = author.or_else(|| {
             attr_value(&attrs, "publisher")
                 .map(ToOwned::to_owned)
@@ -570,13 +577,11 @@ fn has_render_surface(html: &str) -> bool {
 }
 
 fn has_tag_with_id(html: &str, tag_name: &str, expected_id: &str) -> bool {
-    extract_start_tags(html, tag_name)
-        .into_iter()
-        .any(|tag| {
-            parse_tag_attributes(&tag)
-                .get("id")
-                .is_some_and(|value| value.eq_ignore_ascii_case(expected_id))
-        })
+    extract_start_tags(html, tag_name).into_iter().any(|tag| {
+        parse_tag_attributes(&tag)
+            .get("id")
+            .is_some_and(|value| value.eq_ignore_ascii_case(expected_id))
+    })
 }
 
 fn extract_html_title(input: &str) -> Option<String> {

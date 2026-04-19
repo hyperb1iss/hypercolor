@@ -1919,8 +1919,8 @@ fn FaceControlsSection(
         };
         let face_id = face.effect.id.clone();
         let daemon_controls = face.group.controls.clone();
-        let is_fresh_assignment = last_restored_face_id
-            .with_value(|last| last.as_deref() != Some(face_id.as_str()));
+        let is_fresh_assignment =
+            last_restored_face_id.with_value(|last| last.as_deref() != Some(face_id.as_str()));
         if is_fresh_assignment {
             last_restored_face_id.set_value(Some(face_id.clone()));
             if let Some(prefs) = store.get(&face_id)
@@ -1933,9 +1933,7 @@ fn FaceControlsSection(
                 set_face_control_values.set(stored_values.clone());
                 spawn_local(async move {
                     let controls_json =
-                        crate::components::preset_matching::bundled_preset_to_json(
-                            &stored_values,
-                        );
+                        crate::components::preset_matching::bundled_preset_to_json(&stored_values);
                     match api::update_display_face_controls(&display_id, &controls_json).await {
                         Ok(face) => {
                             set_display_face.set(Some(Ok(Some(face))));

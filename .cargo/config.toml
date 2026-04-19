@@ -1,6 +1,13 @@
 [build]
 rustdocflags = ["--cfg", "docsrs"]
 
+# Keep jemalloc from holding onto large dirty extents in long-lived daemon
+# sessions. tikv-jemalloc-sys consumes these target-prefixed env vars at build
+# time when Hypercolor is built for Linux GNU targets.
+[env]
+X86_64_UNKNOWN_LINUX_GNU_JEMALLOC_SYS_WITH_MALLOC_CONF = "background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000,abort_conf:true"
+AARCH64_UNKNOWN_LINUX_GNU_JEMALLOC_SYS_WITH_MALLOC_CONF = "background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000,abort_conf:true"
+
 # Keep the shared repo config portable. Release artifacts are built from this
 # config in CI, so host-specific CPU tuning must stay opt-in outside the repo.
 [target.x86_64-unknown-linux-gnu]

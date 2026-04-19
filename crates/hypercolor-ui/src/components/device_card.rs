@@ -395,9 +395,8 @@ pub fn DeviceCard(
          linear-gradient(180deg, rgba({primary}, 0.08) 0%, transparent 62%)"
     );
     // Inner glow surface that breathes on active, stays calm otherwise
-    let ambient_glow = format!(
-        "box-shadow: inset 0 0 32px rgba({primary}, 0.06), 0 0 18px rgba({primary}, 0.05)"
-    );
+    let ambient_glow =
+        format!("box-shadow: inset 0 0 32px rgba({primary}, 0.06), 0 0 18px rgba({primary}, 0.05)");
     let dot_style =
         format!("background: rgb({status_rgb}); box-shadow: 0 0 10px rgba({status_rgb}, 0.7)");
     // Icon gets the brand primary — the glyph feels owned by the vendor

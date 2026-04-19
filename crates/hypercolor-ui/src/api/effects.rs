@@ -179,7 +179,9 @@ pub struct ApplyEffectBody {
 pub async fn apply_effect(id: &str, body: Option<&ApplyEffectBody>) -> Result<(), String> {
     let path = format!("/api/v1/effects/{id}/apply");
     match body {
-        Some(body) => client::post_json_discard(&path, body).await.map_err(Into::into),
+        Some(body) => client::post_json_discard(&path, body)
+            .await
+            .map_err(Into::into),
         None => client::post_empty(&path).await.map_err(Into::into),
     }
 }

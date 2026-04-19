@@ -999,6 +999,47 @@ body.resizing * {
     cursor: col-resize !important;
 }
 
+/* ── Fullscreen Preview ───────────────────────────────────────────────────
+   Drives the preview cabinet takeover. Paired with the browser Fullscreen
+   API on supported user agents, but works standalone as a CSS-only overlay
+   if the API is unavailable or refused. The element also picks up the
+   :fullscreen pseudo-class when the browser API succeeds, which we use to
+   tune the black backdrop and drop the rounded corners for edge-to-edge.
+*/
+.fullscreen-preview {
+    position: fixed;
+    inset: 0;
+    width: 100vw !important;
+    height: 100vh !important;
+    z-index: 100;
+    background: #000;
+    padding: 2vmin;
+    display: flex;
+    animation: fullscreen-preview-in 240ms var(--ease-silk);
+}
+
+.fullscreen-preview > * {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+/* When the browser Fullscreen API actually takes hold, drop the padding
+   and any rounded corners so the canvas goes truly edge-to-edge. */
+.fullscreen-preview:fullscreen {
+    padding: 0;
+}
+
+@keyframes fullscreen-preview-in {
+    from {
+        opacity: 0;
+        transform: scale(0.98);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
 /* ── Logo Animations ────────────────────────────────────────────────────── */
 
 /* Shared gradient text base */

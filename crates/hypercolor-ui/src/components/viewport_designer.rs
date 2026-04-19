@@ -446,9 +446,12 @@ fn NumericGrid(
             let updated = match axis {
                 NumericAxis::X => ViewportRect::new(next, current.y, current.width, current.height),
                 NumericAxis::Y => ViewportRect::new(current.x, next, current.width, current.height),
-                NumericAxis::Width => {
-                    ViewportRect::new(current.x, current.y, next.max(MIN_VIEWPORT_EDGE), current.height)
-                }
+                NumericAxis::Width => ViewportRect::new(
+                    current.x,
+                    current.y,
+                    next.max(MIN_VIEWPORT_EDGE),
+                    current.height,
+                ),
                 NumericAxis::Height => ViewportRect::new(
                     current.x,
                     current.y,

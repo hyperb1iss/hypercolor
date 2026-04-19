@@ -10,7 +10,7 @@ use hypercolor_types::viewport::{FitMode, MIN_VIEWPORT_EDGE, ViewportRect};
 use crate::api::effects::fetch_active_effect;
 use crate::components::canvas_preview::CanvasPreview;
 use crate::components::viewport_designer::{
-    ModeDraft, ViewportDesignerContext, ViewportDesignerMode, ViewportDesignerModal,
+    ModeDraft, ViewportDesignerContext, ViewportDesignerModal, ViewportDesignerMode,
     ViewportDesignerResult, ViewportDraft, ViewportDraftCommon,
 };
 use crate::control_geometry::{
@@ -622,9 +622,7 @@ fn resize_viewport_rect(
 fn detect_designer_mode(
     effect: &crate::api::effects::ActiveEffectResponse,
 ) -> ViewportDesignerMode {
-    if effect.control_values.contains_key("url")
-        || effect.control_values.contains_key("scroll_y")
-    {
+    if effect.control_values.contains_key("url") || effect.control_values.contains_key("scroll_y") {
         ViewportDesignerMode::WebViewport
     } else {
         ViewportDesignerMode::ScreenCast

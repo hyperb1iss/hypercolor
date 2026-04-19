@@ -10,7 +10,9 @@ use tokio::sync::watch;
 use tracing::debug;
 
 use hypercolor_types::sensor::{SensorReading, SensorUnit, SystemSnapshot};
-use sysinfo::{Components, MINIMUM_CPU_UPDATE_INTERVAL, System};
+use sysinfo::{
+    Components, CpuRefreshKind, MINIMUM_CPU_UPDATE_INTERVAL, MemoryRefreshKind, RefreshKind, System,
+};
 
 const DEFAULT_SENSOR_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const BYTES_PER_MEGABYTE: f64 = 1_000_000.0;
@@ -145,7 +147,11 @@ struct SystemSampler {
 
 impl SystemSampler {
     fn new() -> Self {
-        let mut system = System::new_all();
+        let mut system = System::new_with_specifics(
+            RefreshKind::nothing()
+                .with_memory(MemoryRefreshKind::nothing().with_ram().with_swap())
+                .with_cpu(CpuRefreshKind::nothing().with_cpu_usage()),
+        );
         system.refresh_memory();
         system.refresh_cpu_usage();
 
