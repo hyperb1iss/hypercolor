@@ -12,6 +12,7 @@ use crate::components::control_panel::ControlPanel;
 use crate::components::effect_card::EffectCard;
 use crate::components::install_effect_panel::InstallEffectPanel;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
+use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::preview_cabinet::PreviewCabinet;
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
@@ -490,7 +491,7 @@ pub fn EffectsPage() -> impl IntoView {
                                 >
                                     // ── Category section ──
                                     <div class="px-3 pt-1 pb-1.5">
-                                        <div class="text-[10px] font-medium uppercase tracking-wider text-fg-tertiary/50 mb-1.5">"Category"</div>
+                                        <div class=format!("{} mb-1.5", label_class(LabelSize::Small, LabelTone::Subtle))>"Category"</div>
                                         <div class="flex gap-1 flex-wrap">
                                             {filter_chips(CATEGORY_CHIPS, category_filter, set_category_filter)}
                                         </div>
@@ -559,7 +560,7 @@ pub fn EffectsPage() -> impl IntoView {
                                         view! {
                                             <div class="h-px bg-border-subtle/30 mx-2 my-1" />
                                             <div class="px-3 pt-1 pb-1">
-                                                <div class="text-[10px] font-medium uppercase tracking-wider text-fg-tertiary/50 mb-1">"Author"</div>
+                                                <div class=format!("{} mb-1", label_class(LabelSize::Small, LabelTone::Subtle))>"Author"</div>
                                                 // Clear all
                                                 <button
                                                     class="w-full flex items-center gap-2.5 px-2 py-1 rounded-lg text-[11px] text-fg-tertiary hover:bg-surface-hover/40 transition-colors"
@@ -802,7 +803,7 @@ pub fn EffectsPage() -> impl IntoView {
                                                                 <Icon icon=LuSettings2 width="13px" height="13px" />
                                                             </span>
                                                         </div>
-                                                        <h3 class="text-[11px] font-semibold tracking-wide text-fg-secondary uppercase">
+                                                        <h3 class=label_class(LabelSize::Small, LabelTone::Strong)>
                                                             "Controls"
                                                         </h3>
                                                         <div class="flex-1" />

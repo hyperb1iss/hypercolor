@@ -8,6 +8,7 @@ use crate::api::EffectSummary;
 use crate::app::EffectsContext;
 use crate::color;
 use crate::components::perf_charts::{DistributionBar, Sparkline, StackSegment, StackedBar};
+use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
 use crate::style_utils::category_style;
 use crate::thumbnails::{Thumbnail, ThumbnailStore};
@@ -199,7 +200,7 @@ pub(super) fn ThroughputPanel(
             </div>
             <div class="p-4 grid grid-cols-1 md:grid-cols-[auto_1fr] gap-4 items-center">
                 <div class="flex flex-col">
-                    <span class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">"Bytes / sec"</span>
+                    <span class=label_class(LabelSize::Micro, LabelTone::Default)>"Bytes / sec"</span>
                     <span class="text-[22px] font-semibold tabular-nums text-electric-yellow mt-0.5">
                         {move || ws_bytes.get()}
                     </span>

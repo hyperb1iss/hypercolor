@@ -7,6 +7,7 @@
 use leptos::prelude::*;
 
 use crate::api::SystemStatus;
+use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::ws::PerformanceMetrics;
 
 // ── Status strip ─────────────────────────────────────────────────────
@@ -98,7 +99,7 @@ fn StatusPill(
                 style=format!("background: {color}; box-shadow: 0 0 8px {color}aa")
             />
             <div>
-                <div class="text-[9px] font-mono uppercase tracking-[0.14em] text-fg-tertiary">{label}</div>
+                <div class=label_class(LabelSize::Micro, LabelTone::Default)>{label}</div>
                 <div
                     class="text-[14px] font-semibold tabular-nums leading-none mt-0.5"
                     style=format!("color: {color}")
@@ -123,7 +124,7 @@ fn StatusPillDynamic(
                 style=format!("background: {color}; box-shadow: 0 0 8px {color}aa")
             />
             <div>
-                <div class="text-[9px] font-mono uppercase tracking-[0.14em] text-fg-tertiary">{label}</div>
+                <div class=label_class(LabelSize::Micro, LabelTone::Default)>{label}</div>
                 <div
                     class="text-[14px] font-semibold tabular-nums leading-none mt-0.5"
                     style=format!("color: {color}")

@@ -4,6 +4,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::components::perf_charts::{HitRateBar, ProgressRing, RadialGauge, Sparkline};
+use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
 use crate::preview_telemetry::PreviewPresenterTelemetry;
 use crate::ws::PerformanceMetrics;
@@ -383,7 +384,7 @@ fn StatMini(
 ) -> impl IntoView {
     view! {
         <div class="rounded-md bg-surface-overlay/20 px-3 py-2 text-center">
-            <div class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">{label}</div>
+            <div class=label_class(LabelSize::Micro, LabelTone::Default)>{label}</div>
             <div
                 class="text-[16px] font-semibold tabular-nums mt-0.5"
                 style=move || format!("color: {}", color_signal.map_or(color, |s| s.get()))

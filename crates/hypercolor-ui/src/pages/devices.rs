@@ -12,6 +12,7 @@ use crate::components::device_card::DeviceCard;
 use crate::components::device_detail::DeviceDetail;
 use crate::components::device_pairing_modal::{DevicePairingModal, ForgetCredentialsModal};
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
+use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::style_utils::filter_chips;
@@ -338,14 +339,14 @@ pub fn DevicesPage() -> impl IntoView {
                                        rounded-xl border border-edge-subtle bg-surface-overlay dropdown-glow
                                        py-1.5 animate-fade-in animate-glow-reveal scrollbar-dropdown">
                                 <div class="px-3 pt-1 pb-1.5">
-                                    <div class="text-[10px] font-medium uppercase tracking-wider text-fg-tertiary/50 mb-1.5">"Status"</div>
+                                    <div class=format!("{} mb-1.5", label_class(LabelSize::Small, LabelTone::Subtle))>"Status"</div>
                                     <div class="flex gap-1 flex-wrap">
                                         {filter_chips(STATUS_CHIPS, status_filter, set_status_filter)}
                                     </div>
                                 </div>
                                 <div class="h-px bg-border-subtle/30 mx-2 my-1" />
                                 <div class="px-3 pt-1 pb-1.5">
-                                    <div class="text-[10px] font-medium uppercase tracking-wider text-fg-tertiary/50 mb-1.5">"Backend"</div>
+                                    <div class=format!("{} mb-1.5", label_class(LabelSize::Small, LabelTone::Subtle))>"Backend"</div>
                                     <div class="flex gap-1 flex-wrap">
                                         {filter_chips(BACKEND_CHIPS, backend_filter, set_backend_filter)}
                                     </div>

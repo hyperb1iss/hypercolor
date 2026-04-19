@@ -4,6 +4,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::components::perf_charts::{PhaseFrame, PhaseWaterfall, Sparkline};
+use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
 use crate::ws::{BackpressureNotice, PerformanceMetrics};
 
@@ -182,7 +183,7 @@ fn PacingRow(
     view! {
         <div class="space-y-1.5">
             <div class="flex items-baseline justify-between gap-2">
-                <span class="text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">{label}</span>
+                <span class=label_class(LabelSize::Small, LabelTone::Default)>{label}</span>
                 <span class="text-[11px] font-mono tabular-nums" style=format!("color: {color}")>
                     {move || detail.get()}
                 </span>
@@ -230,7 +231,7 @@ pub(super) fn LatestFramePanel(
             <div class="flex items-center justify-between gap-3 mb-1">
                 <div class="flex items-center gap-2">
                     <Icon icon=LuCode width="13px" height="13px" style="color: var(--color-fg-tertiary)" />
-                    <span class="text-[10px] font-mono uppercase tracking-[0.14em] text-fg-tertiary">"Latest Frame"</span>
+                    <span class=label_class(LabelSize::Small, LabelTone::Default)>"Latest Frame"</span>
                 </div>
             </div>
             <div class="text-[11px] font-mono text-fg-secondary/90 break-all">

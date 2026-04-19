@@ -19,6 +19,7 @@ use wasm_bindgen::closure::Closure;
 use crate::api;
 use crate::app::WsContext;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
+use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::perf_charts::PhaseFrame;
 use crate::components::preview_cabinet::PreviewCabinet;
 use crate::components::resize_handle::ResizeHandle;
@@ -762,7 +763,7 @@ fn LayoutMenu(
                                     >
                                         {id.label()}
                                     </span>
-                                    <span class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/50">
+                                    <span class=label_class(LabelSize::Micro, LabelTone::Subtle)>
                                         {config.width.label()}
                                     </span>
                                 </button>

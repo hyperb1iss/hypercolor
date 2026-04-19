@@ -4,16 +4,19 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
+use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
 
 // ── Section Header ─────────────────────────────────────────────────────────
 
+/// Large section header used between settings groups. Uses the canonical
+/// `Section` size from the shared label system with a purple icon accent.
 #[component]
 pub fn SectionHeader(title: &'static str, icon: icondata_core::Icon) -> impl IntoView {
     view! {
         <div class="flex items-center gap-2.5 mb-5">
             <Icon icon=icon width="16px" height="16px" style="color: rgba(225, 53, 255, 0.6)" />
-            <h2 class="text-xs font-mono uppercase tracking-[0.12em] text-fg-tertiary/80">{title}</h2>
+            <h2 class=label_class(LabelSize::Section, LabelTone::Default)>{title}</h2>
         </div>
     }
 }
