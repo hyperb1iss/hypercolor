@@ -226,7 +226,10 @@ pub fn Sidebar() -> impl IntoView {
             // Logo — click to cycle through modes, persisted to localStorage
             {
                 let logo_mode_count = 9_usize;
-                let default_mode = 4_usize; // Prism
+                // Circuit is the canonical brand mark (Orbitron, PCB silkscreen).
+                // The other eight modes are opt-in via click; the default lands
+                // in the most on-brand state on first load and after a wipe.
+                let default_mode = 0_usize;
                 let initial_mode = web_sys::window()
                     .and_then(|w| w.local_storage().ok().flatten())
                     .and_then(|s| s.get_item("hc-logo-mode").ok().flatten())

@@ -18,6 +18,7 @@ pub mod layout_canvas;
 pub mod layout_palette;
 pub mod layout_zone_properties;
 pub mod page_header;
+pub mod page_search_bar;
 pub mod perf_charts;
 pub mod preset_matching;
 pub mod preset_panel;

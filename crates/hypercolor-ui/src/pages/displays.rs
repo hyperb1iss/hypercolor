@@ -1517,10 +1517,7 @@ fn FaceAssignmentCard(
         match display_face.get() {
         Some(Ok(Some(face))) => face.effect.description,
         Some(Err(error)) => error,
-        _ => {
-            "Display faces render full-screen HTML at the panel's native resolution. Pick one to get started."
-                .to_owned()
-        }
+        _ => "Choose a face to start rendering.".to_owned(),
     }
     });
     let has_face = Signal::derive(move || matches!(display_face.get(), Some(Ok(Some(_)))));

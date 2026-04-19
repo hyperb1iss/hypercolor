@@ -12,6 +12,7 @@ use crate::components::control_panel::ControlPanel;
 use crate::components::effect_card::EffectCard;
 use crate::components::install_effect_panel::InstallEffectPanel;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
+use crate::components::page_search_bar::PageSearchBar;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::preview_cabinet::PreviewCabinet;
 use crate::components::resize_handle::ResizeHandle;
@@ -420,26 +421,11 @@ pub fn EffectsPage() -> impl IntoView {
                     <InstallEffectPanel />
                 </HeaderTrailing>
                 <HeaderToolbar slot>
-                    <div class="relative flex-1 min-w-0">
-                        <span class="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-fg-tertiary">
-                            <Icon icon=LuSearch width="14px" height="14px" />
-                        </span>
-                        <input
-                            type="text"
-                            placeholder="Search effects..."
-                            class="w-full bg-surface-overlay/60 border border-edge-subtle rounded-lg pl-9 pr-10 py-1.5 text-sm text-fg-primary
-                                   placeholder-fg-tertiary focus:outline-none focus:border-accent-muted
-                                   search-glow glow-ring transition-all duration-300"
-                            prop:value=move || search.get()
-                            on:input=move |ev| {
-                                let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                if let Some(el) = target {
-                                    set_search.set(el.value());
-                                }
-                            }
-                        />
-                        <kbd class="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-mono text-fg-tertiary bg-surface-overlay/30 px-1.5 py-0.5 rounded border border-edge-subtle">"/"</kbd>
-                    </div>
+                    <PageSearchBar
+                        placeholder="Search effects..."
+                        value=search
+                        set_value=set_search
+                    />
 
                     // Filters dropdown trigger
                     <div class="relative shrink-0">
