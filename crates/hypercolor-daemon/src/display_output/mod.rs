@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use tokio::sync::{Mutex, RwLock, oneshot, watch};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
@@ -166,9 +166,20 @@ struct DisplayTargetsSnapshot {
 }
 
 #[derive(Clone, Debug)]
+pub(super) enum DisplayWorkerFrameSource {
+    Global(Arc<CanvasFrame>),
+    DirectFace(Arc<CanvasFrame>),
+    FaceComposite {
+        effect_frame: Arc<CanvasFrame>,
+        face_frame: Arc<CanvasFrame>,
+        blend_mode: DisplayFaceBlendMode,
+        opacity: f32,
+    },
+}
+
+#[derive(Clone, Debug)]
 pub(super) struct DisplayWorkerFrameSet {
-    pub effect_frame: Option<Arc<CanvasFrame>>,
-    pub face_frame: Option<Arc<CanvasFrame>>,
+    pub source: DisplayWorkerFrameSource,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -181,8 +192,19 @@ struct DisplaySourceIdentity {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct StableDisplayFrameSetIdentity {
-    effect_frame: Option<DisplaySourceIdentity>,
-    face_frame: Option<DisplaySourceIdentity>,
+    source: StableDisplayFrameSourceIdentity,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StableDisplayFrameSourceIdentity {
+    Global(DisplaySourceIdentity),
+    DirectFace(DisplaySourceIdentity),
+    FaceComposite {
+        effect_frame: DisplaySourceIdentity,
+        face_frame: DisplaySourceIdentity,
+        blend_mode: DisplayFaceBlendMode,
+        opacity_bits: u32,
+    },
 }
 
 impl DisplayTarget {
@@ -370,15 +392,6 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
         });
 
         for target in targets.targets.iter() {
-            let effect_frame = match &target.canvas_source {
-                DisplayCanvasSource::Global => {
-                    global_frame.as_ref().map(|(_, frame)| Arc::clone(frame))
-                }
-                DisplayCanvasSource::GroupDirect { .. } if target.blends_with_effect() => {
-                    global_frame.as_ref().map(|(_, frame)| Arc::clone(frame))
-                }
-                DisplayCanvasSource::GroupDirect { .. } => None,
-            };
             let face_frame = match &target.canvas_source {
                 DisplayCanvasSource::Global => None,
                 DisplayCanvasSource::GroupDirect { .. } => {
@@ -389,25 +402,18 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
                     stable_display_source_identity(&frame).map(|_| Arc::new(frame.clone()))
                 }
             };
-            let dispatch_identity = StableDisplayFrameSetIdentity {
-                effect_frame: effect_frame
-                    .as_deref()
-                    .and_then(stable_display_source_identity),
-                face_frame: face_frame
-                    .as_deref()
-                    .and_then(stable_display_source_identity),
-            };
-            if dispatch_identity.effect_frame.is_none() && dispatch_identity.face_frame.is_none() {
+            let Some((frames, dispatch_identity)) = build_display_worker_frame_set(
+                target.as_ref(),
+                global_frame.as_ref(),
+                face_frame.as_ref(),
+            ) else {
                 continue;
-            }
+            };
             if last_dispatched_sources.get(&target.worker_key) == Some(&dispatch_identity) {
                 continue;
             }
             if let Some(worker) = workers.get(&target.worker_key) {
-                worker.push(DisplayWorkerFrameSet {
-                    effect_frame: effect_frame.as_ref().map(Arc::clone),
-                    face_frame: face_frame.as_ref().map(Arc::clone),
-                });
+                worker.push(frames);
                 last_dispatched_sources.insert(target.worker_key.clone(), dispatch_identity);
             }
         }
@@ -426,6 +432,68 @@ fn stable_display_source_identity(frame: &CanvasFrame) -> Option<DisplaySourceId
         width: frame.width,
         height: frame.height,
     })
+}
+
+fn build_display_worker_frame_set(
+    target: &DisplayTarget,
+    global_frame: Option<&(DisplaySourceIdentity, Arc<CanvasFrame>)>,
+    face_frame: Option<&Arc<CanvasFrame>>,
+) -> Option<(DisplayWorkerFrameSet, StableDisplayFrameSetIdentity)> {
+    match &target.canvas_source {
+        DisplayCanvasSource::Global => {
+            let (frame_identity, frame) = global_frame?;
+            Some((
+                DisplayWorkerFrameSet {
+                    source: DisplayWorkerFrameSource::Global(Arc::clone(frame)),
+                },
+                StableDisplayFrameSetIdentity {
+                    source: StableDisplayFrameSourceIdentity::Global(*frame_identity),
+                },
+            ))
+        }
+        DisplayCanvasSource::GroupDirect { .. } => {
+            let face_frame = face_frame?;
+            let face_identity = stable_display_source_identity(face_frame.as_ref())?;
+            if target.blends_with_effect() {
+                let Some((effect_identity, effect_frame)) = global_frame else {
+                    trace!(
+                        backend_id = %target.backend_id,
+                        device_id = %target.device_id,
+                        group_canvas = true,
+                        "skipping blended display face until a matching effect frame is available"
+                    );
+                    return None;
+                };
+                Some((
+                    DisplayWorkerFrameSet {
+                        source: DisplayWorkerFrameSource::FaceComposite {
+                            effect_frame: Arc::clone(effect_frame),
+                            face_frame: Arc::clone(face_frame),
+                            blend_mode: target.face_blend_mode(),
+                            opacity: target.face_opacity(),
+                        },
+                    },
+                    StableDisplayFrameSetIdentity {
+                        source: StableDisplayFrameSourceIdentity::FaceComposite {
+                            effect_frame: *effect_identity,
+                            face_frame: face_identity,
+                            blend_mode: target.face_blend_mode(),
+                            opacity_bits: target.face_opacity().to_bits(),
+                        },
+                    },
+                ))
+            } else {
+                Some((
+                    DisplayWorkerFrameSet {
+                        source: DisplayWorkerFrameSource::DirectFace(Arc::clone(face_frame)),
+                    },
+                    StableDisplayFrameSetIdentity {
+                        source: StableDisplayFrameSourceIdentity::DirectFace(face_identity),
+                    },
+                ))
+            }
+        }
+    }
 }
 
 fn sync_display_canvas_receiver(
