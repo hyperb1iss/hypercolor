@@ -47,6 +47,15 @@ const CONSOLE_SNIPPET_RADIUS: usize = 1;
 const CONSOLE_SNIPPET_LINE_MAX_CHARS: usize = 180;
 const JS_TIMER_MIN_DURATION_MS: i64 = 4;
 
+#[derive(Debug, Clone, Copy, Default)]
+struct ServoRenderStageTimings {
+    evaluate_scripts_us: u64,
+    event_loop_us: u64,
+    paint_us: u64,
+    readback_us: u64,
+    total_us: u64,
+}
+
 // The shared worker. Servo can only exist once per process; this OnceLock
 // keeps the single instance alive across effect switches for the entire
 // daemon lifetime.
@@ -659,6 +668,37 @@ fn combined_script(buffer: &mut String, scripts: &[String]) {
     }
 }
 
+fn elapsed_micros(start: Instant) -> u64 {
+    start.elapsed().as_micros().try_into().unwrap_or(u64::MAX)
+}
+
+fn log_servo_render_stage_timings(
+    session_id: ServoSessionId,
+    width: u32,
+    height: u32,
+    script_count: usize,
+    script_bytes: usize,
+    frame_ready: bool,
+    reused_cached_canvas: bool,
+    timings: ServoRenderStageTimings,
+) {
+    trace!(
+        ?session_id,
+        width,
+        height,
+        script_count,
+        script_bytes,
+        frame_ready,
+        reused_cached_canvas,
+        evaluate_scripts_us = timings.evaluate_scripts_us,
+        event_loop_us = timings.event_loop_us,
+        paint_us = timings.paint_us,
+        readback_us = timings.readback_us,
+        total_us = timings.total_us,
+        "Servo render stage timings"
+    );
+}
+
 enum SharedServoWorkerState {
     Vacant,
     Running(ServoWorker),
@@ -1121,16 +1161,24 @@ impl ServoWorkerRuntime {
         width: u32,
         height: u32,
     ) -> Result<Canvas> {
+        let script_count = scripts.len();
+        let script_bytes = scripts.iter().map(String::len).sum::<usize>();
         let result = (|| {
+            let frame_start = Instant::now();
+            let mut timings = ServoRenderStageTimings::default();
             self.resize_if_needed(session_id, width, height)?;
 
+            let evaluate_scripts_start = Instant::now();
             self.evaluate_scripts(session_id, scripts)?;
+            timings.evaluate_scripts_us = elapsed_micros(evaluate_scripts_start);
 
             // Let timers/RAF advance for one daemon-driven frame after scripts
             // have injected controls/audio for this tick. Leaving the webview
             // unthrottled between ticks lets effect-side RAF/timer loops free-run.
             self.active_webview(session_id)?.set_throttled(false);
+            let event_loop_start = Instant::now();
             self.servo.spin_event_loop();
+            timings.event_loop_us = elapsed_micros(event_loop_start);
             let frame_ready = self.session(session_id)?.delegate.take_frame_ready();
             if frame_ready {
                 trace!("Servo delegate signaled new frame");
@@ -1149,10 +1197,23 @@ impl ServoWorkerRuntime {
                 && cached.width() == width
                 && cached.height() == height
             {
+                timings.total_us = elapsed_micros(frame_start);
+                log_servo_render_stage_timings(
+                    session_id,
+                    width,
+                    height,
+                    script_count,
+                    script_bytes,
+                    frame_ready,
+                    true,
+                    timings,
+                );
                 return Ok(cached.clone());
             }
 
+            let paint_start = Instant::now();
             self.active_webview(session_id)?.paint();
+            timings.paint_us = elapsed_micros(paint_start);
 
             let size = self.session(session_id)?.rendering_context.size();
             let width_i32 =
@@ -1160,9 +1221,22 @@ impl ServoWorkerRuntime {
             let height_i32 =
                 i32::try_from(size.height).context("canvas height overflow for Servo readback")?;
 
+            let readback_start = Instant::now();
             let canvas =
                 read_framebuffer_into_canvas(self.session(session_id)?, width_i32, height_i32)?;
+            timings.readback_us = elapsed_micros(readback_start);
             self.session_mut(session_id)?.last_canvas = Some(canvas.clone());
+            timings.total_us = elapsed_micros(frame_start);
+            log_servo_render_stage_timings(
+                session_id,
+                width,
+                height,
+                script_count,
+                script_bytes,
+                frame_ready,
+                false,
+                timings,
+            );
             Ok(canvas)
         })();
 
