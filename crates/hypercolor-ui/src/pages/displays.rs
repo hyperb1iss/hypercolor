@@ -10,14 +10,16 @@ use leptos_icons::Icon;
 use leptos_use::{use_debounce_fn, use_debounce_fn_with_arg};
 
 use crate::api;
-use crate::app::EffectsContext;
+use crate::app::{EffectsContext, WsContext};
 use crate::components::control_panel::ControlPanel;
 use crate::components::page_header::PageHeader;
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::preferences::{EffectPreferences, PreferencesStore};
 use crate::toasts;
-use hypercolor_types::scene::{DisplayFaceBlendMode, SceneKind, SceneMutationMode};
+use hypercolor_types::scene::{
+    DisplayFaceBlendMode, RenderGroupRole, SceneKind, SceneMutationMode,
+};
 
 type DisplaysResource = LocalResource<Result<Vec<api::DisplaySummary>, String>>;
 
@@ -162,6 +164,7 @@ fn sync_face_composition_from_server(
 #[component]
 pub fn DisplaysPage() -> impl IntoView {
     let fx = expect_context::<EffectsContext>();
+    let ws = expect_context::<WsContext>();
     let displays: DisplaysResource = LocalResource::new(api::fetch_displays);
     let (selected_id, set_selected_id) = signal(None::<String>);
     let (simulator_modal_open, set_simulator_modal_open) = signal(false);
@@ -251,12 +254,53 @@ pub fn DisplaysPage() -> impl IntoView {
         });
     });
 
+    Effect::new(move |previous_scene_event: Option<Option<crate::ws::SceneEventHint>>| {
+        let current_scene_event = ws.last_scene_event.get();
+        if previous_scene_event.as_ref() == Some(&current_scene_event) {
+            return current_scene_event;
+        }
+
+        if current_scene_event.as_ref().is_some_and(|scene_event| {
+            scene_event.event_type == "active_scene_changed"
+                || scene_event.render_group_role == Some(RenderGroupRole::Display)
+        }) {
+            set_face_refresh_tick.update(|value| *value = value.wrapping_add(1));
+        }
+
+        current_scene_event
+    });
+
     let current_face_id = Signal::derive(move || {
         display_face
             .get()
             .and_then(Result::ok)
             .flatten()
             .map(|face| face.effect.id)
+    });
+    let degraded_face = Memo::new(move |_| {
+        let effect_error = fx.last_effect_error.get()?;
+        let effect = fx.effects_index.with(|effects| {
+            effects
+                .iter()
+                .find(|entry| entry.effect.id == effect_error.effect_id)
+                .map(|entry| entry.effect.clone())
+        })?;
+        if !effect.category.eq_ignore_ascii_case("display") {
+            return None;
+        }
+
+        Some((
+            effect.name,
+            match effect_error.fallback.as_deref() {
+                Some("clear_groups") => {
+                    "The daemon cleared this face assignment after a render failure.".to_owned()
+                }
+                Some(fallback) if !fallback.is_empty() => {
+                    format!("The daemon applied fallback \"{fallback}\" after a render failure.")
+                }
+                _ => "The daemon reported a render failure for this face.".to_owned(),
+            },
+        ))
     });
 
     let assign_face = Callback::new(move |effect_id: String| {
@@ -266,6 +310,7 @@ pub fn DisplaysPage() -> impl IntoView {
             toasts::toast_error(&message);
             return;
         }
+        fx.set_last_effect_error.set(None);
         let Some(display) = selected_display.get_untracked() else {
             return;
         };
@@ -294,6 +339,7 @@ pub fn DisplaysPage() -> impl IntoView {
             toasts::toast_error(&message);
             return;
         }
+        fx.set_last_effect_error.set(None);
         let Some(display) = selected_display.get_untracked() else {
             return;
         };
@@ -351,6 +397,7 @@ pub fn DisplaysPage() -> impl IntoView {
             set_returning_to_default.set(true);
             spawn_local(async move {
                 if api::deactivate_scene().await.is_ok() {
+                    fx.set_last_effect_error.set(None);
                     fx.refresh_active_scene();
                     set_face_picker_open.set(false);
                     set_face_refresh_tick.update(|value| *value = value.wrapping_add(1));
@@ -423,6 +470,27 @@ pub fn DisplaysPage() -> impl IntoView {
                                         "Return to Default"
                                     }}
                                 </button>
+                            </div>
+                        </div>
+                    </div>
+                })}
+                {move || degraded_face.get().map(|(effect_name, detail)| view! {
+                    <div class="px-6 pb-4">
+                        <div class="rounded-xl border border-[rgba(255,99,99,0.28)] bg-[rgba(255,99,99,0.10)] px-4 py-3 shadow-[0_0_24px_rgba(255,99,99,0.10)]">
+                            <div class="flex items-start gap-3">
+                                <div class="mt-0.5 shrink-0 text-[rgba(255,99,99,0.94)]">
+                                    <Icon icon=LuTriangleAlert width="14px" height="14px" />
+                                </div>
+                                <div class="min-w-0 flex-1">
+                                    <div class="text-[11px] font-semibold uppercase tracking-[0.16em] text-[rgba(255,99,99,0.84)]">
+                                        "Degraded Face"
+                                    </div>
+                                    <div class="mt-1 text-sm leading-5 text-fg-secondary">
+                                        <span class="text-fg-primary">{effect_name}</span>
+                                        " is degraded. "
+                                        {detail}
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>

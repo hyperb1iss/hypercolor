@@ -39,6 +39,7 @@ pub const DISPLAY_PREVIEW_FRAME_HEADER: u8 = 0x07;
 pub const EFFECT_STARTED_EVENTS: &[&str] =
     &["effect_started", "effect_activated", "effect_changed"];
 pub const EFFECT_STOPPED_EVENTS: &[&str] = &["effect_stopped", "effect_deactivated"];
+pub const EFFECT_ERROR_EVENTS: &[&str] = &["effect_error"];
 pub const SCENE_EVENTS: &[&str] = &["active_scene_changed", "render_group_changed"];
 pub const DEVICE_LIFECYCLE_EVENTS: &[&str] = &[
     "device_connected",
@@ -265,6 +266,14 @@ pub struct SceneEventHint {
     pub render_group_change_kind: Option<RenderGroupChangeKind>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectErrorHint {
+    pub event_type: String,
+    pub effect_id: String,
+    pub error: String,
+    pub fallback: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct MetricsMessage {
     data: PerformanceMetrics,
@@ -381,6 +390,7 @@ pub(super) fn handle_json_message(
     set_backpressure_notice: &WriteSignal<Option<BackpressureNotice>>,
     set_last_device_event: &WriteSignal<Option<DeviceEventHint>>,
     set_last_scene_event: &WriteSignal<Option<SceneEventHint>>,
+    set_last_effect_error: &WriteSignal<Option<EffectErrorHint>>,
     set_audio_level: &WriteSignal<AudioLevel>,
     set_engine_preview_target: &WriteSignal<u32>,
     set_preview_target_fps: &WriteSignal<u32>,
@@ -490,6 +500,10 @@ pub(super) fn handle_json_message(
                     let scene_data = msg.get("data").unwrap_or(&serde_json::Value::Null);
                     set_last_scene_event
                         .set(Some(extract_scene_event_hint(event_type, scene_data)));
+                } else if EFFECT_ERROR_EVENTS.contains(&event_type) {
+                    let effect_data = msg.get("data").unwrap_or(&serde_json::Value::Null);
+                    set_last_effect_error
+                        .set(extract_effect_error_hint(event_type, effect_data));
                 } else if DEVICE_LIFECYCLE_EVENTS.contains(&event_type)
                     && let Some(hint) = extract_device_event_hint(event_type, msg.get("data"))
                 {
@@ -499,6 +513,33 @@ pub(super) fn handle_json_message(
         }
         _ => {}
     }
+}
+
+pub(crate) fn extract_effect_error_hint(
+    event_type: &str,
+    effect_data: &serde_json::Value,
+) -> Option<EffectErrorHint> {
+    let effect_id = effect_data
+        .get("effect_id")
+        .or_else(|| effect_data.get("id"))
+        .and_then(serde_json::Value::as_str)?
+        .to_owned();
+    let error = effect_data
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let fallback = effect_data
+        .get("fallback")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned);
+
+    Some(EffectErrorHint {
+        event_type: event_type.to_owned(),
+        effect_id,
+        error,
+        fallback,
+    })
 }
 
 pub(crate) fn extract_scene_event_hint(

@@ -206,6 +206,32 @@ pub fn EffectsPage() -> impl IntoView {
             )
         })
     });
+    let degraded_effect = Memo::new(move |_| {
+        let effect_error = fx.last_effect_error.get()?;
+        let effect = fx.effects_index.with(|effects| {
+            effects
+                .iter()
+                .find(|entry| entry.effect.id == effect_error.effect_id)
+                .map(|entry| entry.effect.clone())
+        })?;
+        if effect.category.eq_ignore_ascii_case("display") {
+            return None;
+        }
+
+        Some((
+            effect.name,
+            match effect_error.fallback.as_deref() {
+                Some("clear_groups") => {
+                    "The daemon cleared this effect from the active scene after a render failure."
+                        .to_owned()
+                }
+                Some(fallback) if !fallback.is_empty() => {
+                    format!("The daemon applied fallback \"{fallback}\" after a render failure.")
+                }
+                _ => "The daemon reported a render failure for this effect.".to_owned(),
+            },
+        ))
+    });
     let (returning_to_default, set_returning_to_default) = signal(false);
 
     // Filter effects
@@ -281,6 +307,7 @@ pub fn EffectsPage() -> impl IntoView {
         let ctx = fx;
         leptos::task::spawn_local(async move {
             if api::deactivate_scene().await.is_ok() {
+                ctx.set_last_effect_error.set(None);
                 ctx.refresh_active_scene();
                 ctx.refresh_active_effect();
                 toasts::toast_success("Returned to Default scene.");
@@ -642,6 +669,27 @@ pub fn EffectsPage() -> impl IntoView {
                                         "Return to Default"
                                     }}
                                 </button>
+                            </div>
+                        </div>
+                    </div>
+                })}
+                {move || degraded_effect.get().map(|(effect_name, detail)| view! {
+                    <div class="px-6 pb-4">
+                        <div class="rounded-xl border border-[rgba(255,99,99,0.28)] bg-[rgba(255,99,99,0.10)] px-4 py-3 shadow-[0_0_24px_rgba(255,99,99,0.10)]">
+                            <div class="flex items-start gap-3">
+                                <div class="mt-0.5 shrink-0 text-[rgba(255,99,99,0.94)]">
+                                    <Icon icon=LuTriangleAlert width="14px" height="14px" />
+                                </div>
+                                <div class="min-w-0 flex-1">
+                                    <div class="text-[11px] font-semibold uppercase tracking-[0.16em] text-[rgba(255,99,99,0.84)]">
+                                        "Degraded Effect"
+                                    </div>
+                                    <div class="mt-1 text-sm leading-5 text-fg-secondary">
+                                        <span class="text-fg-primary">{effect_name}</span>
+                                        " is degraded. "
+                                        {detail}
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>

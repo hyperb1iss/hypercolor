@@ -5,7 +5,7 @@ mod messages;
 
 use hypercolor_types::event::RenderGroupChangeKind;
 use hypercolor_types::scene::{RenderGroupRole, SceneKind, SceneMutationMode};
-use messages::{extract_scene_event_hint, scene_event_affects_active_effect};
+use messages::{extract_effect_error_hint, extract_scene_event_hint, scene_event_affects_active_effect};
 
 #[test]
 fn extract_scene_event_hint_parses_active_scene_payload() {
@@ -85,4 +85,22 @@ fn scene_event_affects_active_effect_keeps_primary_render_group_changes() {
         Some(RenderGroupChangeKind::Updated)
     );
     assert!(scene_event_affects_active_effect(&hint));
+}
+
+#[test]
+fn extract_effect_error_hint_parses_fallback_payload() {
+    let hint = extract_effect_error_hint(
+        "effect_error",
+        &serde_json::json!({
+            "effect_id": "effect-1",
+            "error": "render exploded",
+            "fallback": "clear_groups",
+        }),
+    )
+    .expect("effect error hint");
+
+    assert_eq!(hint.event_type, "effect_error");
+    assert_eq!(hint.effect_id, "effect-1");
+    assert_eq!(hint.error, "render exploded");
+    assert_eq!(hint.fallback.as_deref(), Some("clear_groups"));
 }

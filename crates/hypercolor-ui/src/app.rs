@@ -23,10 +23,11 @@ use crate::pages::settings::SettingsPage;
 use crate::preferences::{EffectPreferences, PreferencesStore};
 use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
 use crate::thumbnails::{self, ThumbnailStore};
+use crate::toasts;
 use crate::ws::messages::scene_event_affects_active_effect;
 use crate::ws::{
     AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, DeviceEventHint,
-    PerformanceMetrics, SceneEventHint, WsManager,
+    EffectErrorHint, PerformanceMetrics, SceneEventHint, WsManager,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,6 +115,7 @@ pub struct WsContext {
     pub active_effect: ReadSignal<Option<String>>,
     pub last_device_event: ReadSignal<Option<DeviceEventHint>>,
     pub last_scene_event: ReadSignal<Option<SceneEventHint>>,
+    pub last_effect_error: ReadSignal<Option<EffectErrorHint>>,
     pub audio_level: ReadSignal<AudioLevel>,
     pub audio_enabled: ReadSignal<bool>,
     pub set_audio_enabled: WriteSignal<bool>,
@@ -147,6 +149,8 @@ pub struct EffectsContext {
     pub set_active_scene_kind: WriteSignal<Option<SceneKind>>,
     pub active_scene_mutation_mode: ReadSignal<Option<SceneMutationMode>>,
     pub set_active_scene_mutation_mode: WriteSignal<Option<SceneMutationMode>>,
+    pub last_effect_error: ReadSignal<Option<EffectErrorHint>>,
+    pub set_last_effect_error: WriteSignal<Option<EffectErrorHint>>,
     pub is_playing: ReadSignal<bool>,
     pub set_is_playing: WriteSignal<bool>,
     pub favorite_ids: ReadSignal<HashSet<String>>,
@@ -253,6 +257,7 @@ impl EffectsContext {
                 set.remove(&id);
             }
         });
+        self.set_last_effect_error.set(None);
 
         let previous = capture_active_effect_state(self);
         let selected_effect = self.effect_summary(&id);
@@ -326,6 +331,7 @@ impl EffectsContext {
     /// Stop the active effect (keeps metadata visible for the sidebar).
     pub fn stop_effect(&self) {
         self.set_is_playing.set(false);
+        self.set_last_effect_error.set(None);
         let ctx = *self;
         leptos::task::spawn_local(async move {
             if api::stop_effect().await.is_err() {
@@ -338,6 +344,7 @@ impl EffectsContext {
     pub fn resume_effect(&self) {
         if let Some(id) = self.active_effect_id.get_untracked() {
             self.set_is_playing.set(true);
+            self.set_last_effect_error.set(None);
             let ctx = *self;
             leptos::task::spawn_local(async move {
                 if api::apply_effect(&id, None).await.is_ok() {
@@ -491,6 +498,25 @@ fn clear_active_scene_state(ctx: &EffectsContext) {
     ctx.set_active_scene_mutation_mode.set(None);
 }
 
+fn effect_error_display_name(ctx: &EffectsContext, effect_id: &str) -> String {
+    ctx.effect_summary(effect_id)
+        .map(|effect| effect.name)
+        .unwrap_or_else(|| effect_id.to_owned())
+}
+
+fn effect_error_toast_message(ctx: &EffectsContext, effect_error: &EffectErrorHint) -> String {
+    let effect_name = effect_error_display_name(ctx, &effect_error.effect_id);
+    match effect_error.fallback.as_deref() {
+        Some("clear_groups") => {
+            format!("{effect_name} crashed and was cleared from the active scene.")
+        }
+        Some(fallback) if !fallback.is_empty() => {
+            format!("{effect_name} crashed. Fallback: {fallback}.")
+        }
+        _ => format!("{effect_name} hit a render failure."),
+    }
+}
+
 fn capture_active_effect_state(ctx: &EffectsContext) -> ActiveEffectSnapshot {
     ActiveEffectSnapshot {
         id: ctx.active_effect_id.get_untracked(),
@@ -554,6 +580,7 @@ pub fn App() -> impl IntoView {
         active_effect: ws.active_effect,
         last_device_event: ws.last_device_event,
         last_scene_event: ws.last_scene_event,
+        last_effect_error: ws.last_effect_error,
         audio_level: ws.audio_level,
         audio_enabled,
         set_audio_enabled,
@@ -606,6 +633,7 @@ pub fn App() -> impl IntoView {
     let (active_scene_kind, set_active_scene_kind) = signal(None::<SceneKind>);
     let (active_scene_mutation_mode, set_active_scene_mutation_mode) =
         signal(None::<SceneMutationMode>);
+    let (last_effect_error, set_last_effect_error) = signal(None::<EffectErrorHint>);
     let (is_playing, set_is_playing) = signal(false);
     let (favorite_ids, set_favorite_ids) = signal(HashSet::<String>::new());
 
@@ -639,6 +667,8 @@ pub fn App() -> impl IntoView {
         set_active_scene_kind,
         active_scene_mutation_mode,
         set_active_scene_mutation_mode,
+        last_effect_error,
+        set_last_effect_error,
         is_playing,
         set_is_playing,
         favorite_ids,
@@ -751,6 +781,37 @@ pub fn App() -> impl IntoView {
         effects_ctx.refresh_active_effect();
 
         current_effect_name
+    });
+
+    Effect::new(move |previous_effect_error: Option<Option<EffectErrorHint>>| {
+        let current_effect_error = ws_ctx.last_effect_error.get();
+        if previous_effect_error.as_ref() == Some(&current_effect_error) {
+            return current_effect_error;
+        }
+
+        effects_ctx.set_last_effect_error.set(current_effect_error.clone());
+        if let Some(effect_error) = current_effect_error.as_ref() {
+            toasts::toast_error(&effect_error_toast_message(&effects_ctx, effect_error));
+        }
+
+        current_effect_error
+    });
+
+    Effect::new(move |_| {
+        let active_effect_id = effects_ctx.active_effect_id.get();
+        let degraded = effects_ctx.last_effect_error.get();
+        if active_effect_id.is_some()
+            && degraded.as_ref().is_some_and(|effect_error| {
+                effects_ctx
+                    .effect_summary(&effect_error.effect_id)
+                    .is_some_and(|effect| {
+                        !effect.category.eq_ignore_ascii_case("display")
+                            && Some(effect_error.effect_id.clone()) != active_effect_id
+                    })
+            })
+        {
+            effects_ctx.set_last_effect_error.set(None);
+        }
     });
 
     Effect::new(

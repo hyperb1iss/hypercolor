@@ -602,6 +602,14 @@ pub fn RenderingSection(
             }
         })
     });
+    let effect_error_fallback = Signal::derive(move || {
+        read_config(config, |cfg| match cfg.effect_engine.effect_error_fallback {
+            hypercolor_types::config::EffectErrorFallbackPolicy::None => "none".to_string(),
+            hypercolor_types::config::EffectErrorFallbackPolicy::ClearGroups => {
+                "clear_groups".to_string()
+            }
+        })
+    });
 
     // FpsTier values: Minimal(10), Low(20), Medium(30), High(45), Full(60).
     let fps_tier_options = vec![
@@ -625,6 +633,13 @@ pub fn RenderingSection(
         ("cpu".to_string(), "CPU".to_string()),
         ("auto".to_string(), "Auto (prefer GPU)".to_string()),
         ("gpu".to_string(), "GPU (require)".to_string()),
+    ];
+    let fallback_options = vec![
+        ("none".to_string(), "Leave as-is".to_string()),
+        (
+            "clear_groups".to_string(),
+            "Clear failed groups".to_string(),
+        ),
     ];
 
     // Apply a preset by issuing two config writes. "custom" is a UI-only
@@ -695,11 +710,20 @@ pub fn RenderingSection(
                 on_change=on_change
                 restart_required=true
             />
+            <SettingDropdown
+                label="Effect Error Fallback"
+                description="What the daemon should do after an effect render failure. Clear failed groups swaps dark/crashed assignments back to empty scene slots."
+                key="effect_engine.effect_error_fallback"
+                value=effect_error_fallback
+                options=Signal::stored(fallback_options)
+                on_change=on_change
+            />
             <SectionReset section_label="Rendering" on_reset=Callback::new(move |()| {
                 for key in &[
                     "daemon.target_fps",
                     "daemon.canvas_width", "daemon.canvas_height",
                     "effect_engine.render_acceleration_mode",
+                    "effect_engine.effect_error_fallback",
                 ] {
                     on_reset.run(key.to_string());
                 }
