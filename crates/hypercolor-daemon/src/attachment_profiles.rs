@@ -8,7 +8,7 @@ use anyhow::Context;
 
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_hal::drivers::prismrgb::{PrismSConfig, PrismSGpuCable};
-use hypercolor_types::attachment::DeviceAttachmentProfile;
+use hypercolor_types::attachment::{AttachmentSlot, DeviceAttachmentProfile};
 use hypercolor_types::device::{DeviceFamily, DeviceInfo};
 use tracing::warn;
 
@@ -103,11 +103,11 @@ impl AttachmentProfileStore {
     #[must_use]
     pub fn get_or_default(&self, device: &DeviceInfo) -> DeviceAttachmentProfile {
         let device_id = device.id.to_string();
-        let slots = device.default_attachment_profile().slots;
 
         if let Some(profile) = self.profiles.get(&device_id) {
+            let slots = device.default_attachment_profile().slots;
             let mut profile = profile.clone();
-            profile.slots = slots;
+            profile.slots = merge_slots_preserving_ids(&profile.slots, &slots);
             return profile;
         }
 
@@ -192,6 +192,29 @@ impl AttachmentProfileStore {
     }
 }
 
+fn merge_slots_preserving_ids(
+    stored_slots: &[AttachmentSlot],
+    current_slots: &[AttachmentSlot],
+) -> Vec<AttachmentSlot> {
+    let stored_by_range = stored_slots
+        .iter()
+        .map(|slot| ((slot.led_start, slot.led_count), slot))
+        .collect::<HashMap<_, _>>();
+
+    current_slots
+        .iter()
+        .map(|slot| {
+            let Some(previous_slot) = stored_by_range.get(&(slot.led_start, slot.led_count)) else {
+                return slot.clone();
+            };
+
+            let mut merged = slot.clone();
+            merged.id = previous_slot.id.clone();
+            merged
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -199,7 +222,7 @@ mod tests {
     use hypercolor_core::attachment::AttachmentRegistry;
     use hypercolor_types::attachment::{AttachmentBinding, AttachmentSlot};
     use hypercolor_types::device::{
-        ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceId, DeviceInfo,
+        ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
         DeviceTopologyHint, ZoneInfo,
     };
 
@@ -333,6 +356,80 @@ mod tests {
         assert_eq!(
             config.gpu_cable,
             Some(hypercolor_hal::drivers::prismrgb::PrismSGpuCable::Dual8Pin)
+        );
+    }
+
+    #[test]
+    fn get_or_default_preserves_slot_ids_when_zone_names_change() {
+        let original = DeviceInfo {
+            id: DeviceId::new(),
+            name: "Hue Area".to_owned(),
+            vendor: "Philips Hue".to_owned(),
+            family: DeviceFamily::Hue,
+            model: Some("Bridge".to_owned()),
+            connection_type: ConnectionType::Network,
+            zones: vec![
+                ZoneInfo {
+                    name: "Channel 0".to_owned(),
+                    led_count: 1,
+                    topology: DeviceTopologyHint::Point,
+                    color_format: DeviceColorFormat::Rgb,
+                },
+                ZoneInfo {
+                    name: "Channel 1".to_owned(),
+                    led_count: 1,
+                    topology: DeviceTopologyHint::Point,
+                    color_format: DeviceColorFormat::Rgb,
+                },
+            ],
+            firmware_version: None,
+            capabilities: DeviceCapabilities::default(),
+        };
+        let renamed = DeviceInfo {
+            zones: vec![
+                ZoneInfo {
+                    name: "Left Lamp".to_owned(),
+                    led_count: 1,
+                    topology: DeviceTopologyHint::Point,
+                    color_format: DeviceColorFormat::Rgb,
+                },
+                ZoneInfo {
+                    name: "Right Lamp".to_owned(),
+                    led_count: 1,
+                    topology: DeviceTopologyHint::Point,
+                    color_format: DeviceColorFormat::Rgb,
+                },
+            ],
+            ..original.clone()
+        };
+        let mut store = AttachmentProfileStore::new(PathBuf::from("attachment-profiles-test.json"));
+        let mut profile = original.default_attachment_profile();
+        let original_slot_ids = profile
+            .slots
+            .iter()
+            .map(|slot| slot.id.clone())
+            .collect::<Vec<_>>();
+        profile.bindings = vec![AttachmentBinding {
+            slot_id: original_slot_ids[0].clone(),
+            template_id: "dummy-template".to_owned(),
+            name: None,
+            enabled: true,
+            instances: 1,
+            led_offset: 0,
+        }];
+        store.update(&original.id.to_string(), profile);
+
+        let resolved = store.get_or_default(&renamed);
+
+        assert_eq!(resolved.slots[0].name, "Left Lamp");
+        assert_eq!(resolved.slots[1].name, "Right Lamp");
+        assert_eq!(resolved.slots[0].id, original_slot_ids[0]);
+        assert_eq!(resolved.slots[1].id, original_slot_ids[1]);
+        assert!(
+            resolved
+                .slots
+                .iter()
+                .any(|slot| slot.id == resolved.bindings[0].slot_id)
         );
     }
 }

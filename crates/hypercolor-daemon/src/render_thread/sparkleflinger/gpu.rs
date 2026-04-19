@@ -1178,11 +1178,11 @@ impl GpuSparkleFlinger {
         if self.preview_surfaces.is_some() {
             self.discard_pending_preview_map();
         }
-        if let Some(preview_surfaces) = self.preview_surfaces.as_mut() {
-            if preview_surfaces.fits_request(width, height) {
-                preview_surfaces.reconfigure(width, height);
-                return Ok(());
-            }
+        if let Some(preview_surfaces) = self.preview_surfaces.as_mut()
+            && preview_surfaces.fits_request(width, height)
+        {
+            preview_surfaces.reconfigure(width, height);
+            return Ok(());
         }
 
         let (front_view, back_view) = {

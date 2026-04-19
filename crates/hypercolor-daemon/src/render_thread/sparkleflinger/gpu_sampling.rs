@@ -607,7 +607,7 @@ impl GpuSpatialSampler {
         points_buffer: &wgpu::Buffer,
         output_buffer: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
-        let source_view_ptr = source_view as *const wgpu::TextureView as usize;
+        let source_view_ptr = std::ptr::from_ref::<wgpu::TextureView>(source_view) as usize;
         if let Some(cached) = self.cached_bind_groups.iter().find(|cached| {
             cached.source_view_ptr == source_view_ptr
                 && cached.buffer_generation == self.buffer_generation

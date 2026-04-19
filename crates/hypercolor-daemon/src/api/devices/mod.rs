@@ -23,7 +23,8 @@ use hypercolor_core::device::{BackendIo, BackendManager};
 use hypercolor_driver_api::DeviceAuthSummary;
 use hypercolor_types::attachment::{AttachmentBinding, AttachmentSlot};
 use hypercolor_types::device::{
-    DeviceFamily, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, DeviceUserSettings,
+    ConnectionType, DeviceFamily, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint,
+    DeviceUserSettings,
 };
 use hypercolor_types::event::HypercolorEvent;
 
@@ -431,12 +432,6 @@ pub async fn identify_device(
     let Some(tracked) = state.device_registry.get(&device_id).await else {
         return ApiError::not_found(format!("Device not found: {id}"));
     };
-    if !tracked.state.is_renderable() {
-        return ApiError::conflict(format!(
-            "Device is not connected: {} (state={})",
-            tracked.info.name, tracked.state
-        ));
-    }
 
     let duration_ms = body.as_ref().and_then(|b| b.duration_ms).unwrap_or(3000);
     if duration_ms == 0 || duration_ms > 120_000 {
@@ -473,33 +468,37 @@ pub async fn identify_device(
     let network_hostname = network_metadata
         .as_ref()
         .and_then(|metadata| metadata.get("hostname").cloned());
-    let manager = Arc::clone(&state.backend_manager);
     let on_frame = vec![identify_color; led_count];
-    let direct_backend = {
-        let mut manager = manager.lock().await;
-        let Some(direct_backend) = manager.backend_io(&backend_id) else {
-            return ApiError::internal(format!(
-                "Failed to start identify flash for {}: backend '{backend_id}' is not registered",
-                tracked.info.name
-            ));
-        };
-        debug!(
-            backend_id = %backend_id,
-            device_id = %device_id,
-            led_count,
-            color = ?identify_rgb,
-            effective_brightness = identify_brightness,
-            network_ip = ?network_ip,
-            network_hostname = ?network_hostname,
-            "identify enabling direct control and issuing initial on-frame"
-        );
-        manager.begin_direct_control(&backend_id, device_id);
-        direct_backend
+    let (manager, direct_backend, disconnect_after_identify) = match prepare_identify_backend(
+        &state,
+        device_id,
+        &tracked.info,
+        tracked.state,
+        &backend_id,
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(response) => return response,
     };
+    debug!(
+        backend_id = %backend_id,
+        device_id = %device_id,
+        led_count,
+        color = ?identify_rgb,
+        effective_brightness = identify_brightness,
+        network_ip = ?network_ip,
+        network_hostname = ?network_hostname,
+        disconnect_after_identify,
+        "identify enabling direct control and issuing initial on-frame"
+    );
 
     if let Err(error) = direct_backend.write_colors(device_id, &on_frame).await {
         let mut manager = manager.lock().await;
         manager.end_direct_control(&backend_id, device_id);
+        if disconnect_after_identify {
+            let _ = direct_backend.disconnect(device_id).await;
+        }
         warn!(
             backend_id = %backend_id,
             device_id = %device_id,
@@ -531,6 +530,7 @@ pub async fn identify_device(
         device_id,
         on_frame,
         Duration::from_millis(duration_ms),
+        disconnect_after_identify,
     ));
 
     ApiResponse::ok(serde_json::json!({
@@ -559,12 +559,6 @@ pub async fn identify_zone(
     let Some(tracked) = state.device_registry.get(&device_id).await else {
         return ApiError::not_found(format!("Device not found: {id}"));
     };
-    if !tracked.state.is_renderable() {
-        return ApiError::conflict(format!(
-            "Device is not connected: {} (state={})",
-            tracked.info.name, tracked.state
-        ));
-    }
 
     let zone_index = match resolve_zone_index(&tracked.info, &zone_id) {
         Ok(index) => index,
@@ -602,22 +596,25 @@ pub async fn identify_zone(
     let on_frame = build_zone_identify_frame(&tracked.info, zone_index, identify_color);
 
     let backend_id = resolved_backend_id(&state, device_id, &tracked.info.family).await;
-    let manager = Arc::clone(&state.backend_manager);
-    let direct_backend = {
-        let mut manager = manager.lock().await;
-        let Some(direct_backend) = manager.backend_io(&backend_id) else {
-            return ApiError::internal(format!(
-                "Failed to start identify flash for {}: backend '{backend_id}' is not registered",
-                tracked.info.name
-            ));
-        };
-        manager.begin_direct_control(&backend_id, device_id);
-        direct_backend
+    let (manager, direct_backend, disconnect_after_identify) = match prepare_identify_backend(
+        &state,
+        device_id,
+        &tracked.info,
+        tracked.state,
+        &backend_id,
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(response) => return response,
     };
 
     if let Err(error) = direct_backend.write_colors(device_id, &on_frame).await {
         let mut manager = manager.lock().await;
         manager.end_direct_control(&backend_id, device_id);
+        if disconnect_after_identify {
+            let _ = direct_backend.disconnect(device_id).await;
+        }
         warn!(
             backend_id = %backend_id,
             device_id = %device_id,
@@ -649,6 +646,7 @@ pub async fn identify_zone(
         device_id,
         on_frame,
         Duration::from_millis(duration_ms),
+        disconnect_after_identify,
     ));
 
     ApiResponse::ok(serde_json::json!({
@@ -680,12 +678,6 @@ pub async fn identify_attachment(
     let Some(tracked) = state.device_registry.get(&device_id).await else {
         return ApiError::not_found(format!("Device not found: {id}"));
     };
-    if !tracked.state.is_renderable() {
-        return ApiError::conflict(format!(
-            "Device is not connected: {} (state={})",
-            tracked.info.name, tracked.state
-        ));
-    }
 
     let total_leds = usize::try_from(tracked.info.total_led_count()).unwrap_or_default();
     if total_leds == 0 {
@@ -742,22 +734,25 @@ pub async fn identify_attachment(
     };
 
     let backend_id = resolved_backend_id(&state, device_id, &tracked.info.family).await;
-    let manager = Arc::clone(&state.backend_manager);
-    let direct_backend = {
-        let mut manager = manager.lock().await;
-        let Some(direct_backend) = manager.backend_io(&backend_id) else {
-            return ApiError::internal(format!(
-                "Failed to start identify flash for {}: backend '{backend_id}' is not registered",
-                tracked.info.name
-            ));
-        };
-        manager.begin_direct_control(&backend_id, device_id);
-        direct_backend
+    let (manager, direct_backend, disconnect_after_identify) = match prepare_identify_backend(
+        &state,
+        device_id,
+        &tracked.info,
+        tracked.state,
+        &backend_id,
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(response) => return response,
     };
 
     if let Err(error) = direct_backend.write_colors(device_id, &on_frame).await {
         let mut manager = manager.lock().await;
         manager.end_direct_control(&backend_id, device_id);
+        if disconnect_after_identify {
+            let _ = direct_backend.disconnect(device_id).await;
+        }
         warn!(
             backend_id = %backend_id,
             device_id = %device_id,
@@ -789,6 +784,7 @@ pub async fn identify_attachment(
         device_id,
         on_frame,
         Duration::from_millis(duration_ms),
+        disconnect_after_identify,
     ));
 
     ApiResponse::ok(serde_json::json!({
@@ -1103,6 +1099,7 @@ async fn run_identify_flash(
     device_id: DeviceId,
     on_frame: Vec<[u8; 3]>,
     duration: Duration,
+    disconnect_after_identify: bool,
 ) {
     if on_frame.is_empty() {
         return;
@@ -1179,6 +1176,23 @@ async fn run_identify_flash(
         "identify released direct control"
     );
 
+    if disconnect_after_identify {
+        if let Err(error) = direct_backend.disconnect(device_id).await {
+            warn!(
+                backend_id = %backend_id,
+                device_id = %device_id,
+                error = %error,
+                "identify temporary disconnect failed"
+            );
+        } else {
+            debug!(
+                backend_id = %backend_id,
+                device_id = %device_id,
+                "identify released temporary backend connection"
+            );
+        }
+    }
+
     if identify_failed {
         return;
     }
@@ -1188,6 +1202,65 @@ async fn run_identify_flash(
         backend = %backend_id,
         "Identify flash completed"
     );
+}
+
+async fn prepare_identify_backend(
+    state: &Arc<AppState>,
+    device_id: DeviceId,
+    info: &DeviceInfo,
+    device_state: DeviceState,
+    backend_id: &str,
+) -> Result<(Arc<tokio::sync::Mutex<BackendManager>>, BackendIo, bool), Response> {
+    let supports_temporary_identify = matches!(info.connection_type, ConnectionType::Network)
+        && device_state != DeviceState::Disabled;
+    if !device_state.is_renderable() && !supports_temporary_identify {
+        return Err(ApiError::conflict(format!(
+            "Device is not connected: {} (state={device_state})",
+            info.name
+        )));
+    }
+
+    let manager = Arc::clone(&state.backend_manager);
+    let direct_backend = {
+        let manager = manager.lock().await;
+        let Some(direct_backend) = manager.backend_io(backend_id) else {
+            return Err(ApiError::internal(format!(
+                "Failed to start identify flash for {}: backend '{backend_id}' is not registered",
+                info.name
+            )));
+        };
+        direct_backend
+    };
+
+    let disconnect_after_identify = if device_state.is_renderable() {
+        false
+    } else if supports_temporary_identify {
+        if let Err(error) = direct_backend.connect_with_refresh(device_id).await {
+            return Err(ApiError::conflict(format!(
+                "Device is not connected and temporary identify failed for {}: {error}",
+                info.name
+            )));
+        }
+        if let Ok(Some(refreshed_info)) = direct_backend.connected_device_info(device_id).await {
+            let _ = state
+                .device_registry
+                .update_info(&device_id, refreshed_info)
+                .await;
+        }
+        true
+    } else {
+        return Err(ApiError::conflict(format!(
+            "Device is not connected: {} (state={device_state})",
+            info.name
+        )));
+    };
+
+    {
+        let mut manager = manager.lock().await;
+        manager.begin_direct_control(backend_id, device_id);
+    }
+
+    Ok((manager, direct_backend, disconnect_after_identify))
 }
 
 fn parse_hex_color(raw: &str) -> Option<String> {

@@ -1354,9 +1354,18 @@ mod tests {
             first_frame.surface.storage_identity(),
             second_frame.surface.storage_identity()
         );
-        assert_eq!(first_frame.surface.generation(), second_frame.surface.generation());
-        assert_eq!(first_frame.surface.get_pixel(0, 0), Rgba::new(0, 255, 0, 255));
-        assert_eq!(third_frame.surface.get_pixel(0, 0), Rgba::new(0, 255, 0, 255));
+        assert_eq!(
+            first_frame.surface.generation(),
+            second_frame.surface.generation()
+        );
+        assert_eq!(
+            first_frame.surface.get_pixel(0, 0),
+            Rgba::new(0, 255, 0, 255)
+        );
+        assert_eq!(
+            third_frame.surface.get_pixel(0, 0),
+            Rgba::new(0, 255, 0, 255)
+        );
         assert!(
             third_frame.surface.storage_identity() != second_frame.surface.storage_identity()
                 || third_frame.surface.generation() != second_frame.surface.generation()

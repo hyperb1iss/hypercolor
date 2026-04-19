@@ -153,10 +153,9 @@ pub(crate) fn publish_frame_updates(
         .into_iter()
         .collect::<std::collections::HashMap<_, _>>();
     for (group_id, group_canvas) in group_canvases {
-        state.event_bus.upsert_display_group_target(
-            *group_id,
-            (&group_canvas.display_target).into(),
-        );
+        state
+            .event_bus
+            .upsert_display_group_target(*group_id, (&group_canvas.display_target).into());
         let Some(sender) = group_canvas_senders.get(group_id) else {
             continue;
         };

@@ -6338,14 +6338,14 @@ async fn identify_device_validates_and_returns_canonical_id() {
 #[tokio::test]
 async fn identify_device_requires_connected_state() {
     let state = Arc::new(isolated_state());
-    let _device_id = insert_test_device(&state, "Known Strip").await;
+    let _device_id = insert_test_display_device(&state, "Known Display").await;
     let app = test_app_with_state(Arc::clone(&state));
 
     let response = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/devices/Known%20Strip/identify")
+                .uri("/api/v1/devices/Known%20Display/identify")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -6355,6 +6355,40 @@ async fn identify_device_requires_connected_state() {
     assert_eq!(response.status(), StatusCode::CONFLICT);
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "conflict");
+}
+
+#[tokio::test]
+async fn identify_device_temporarily_connects_known_network_device() {
+    let state = Arc::new(isolated_state());
+    let device_id = insert_test_device(&state, "Known Strip").await;
+    let disconnects = Arc::new(AtomicUsize::new(0));
+    {
+        let mut manager = state.backend_manager.lock().await;
+        manager.register_backend(Box::new(DisconnectRecordingBackend::new(
+            device_id,
+            Arc::clone(&disconnects),
+        )));
+    }
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/devices/{device_id}/identify"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"duration_ms":1}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["device_id"], device_id.to_string());
+
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(disconnects.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
