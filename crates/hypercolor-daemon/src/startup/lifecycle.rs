@@ -108,6 +108,7 @@ impl DaemonState {
             scene_manager: Arc::clone(&self.scene_manager),
             logical_devices: Arc::clone(&self.logical_devices),
             event_bus: Arc::clone(&self.event_bus),
+            preview_runtime: Arc::clone(&self.preview_runtime),
             power_state: self.power_state.subscribe(),
             static_hold_refresh_interval: DEFAULT_STATIC_HOLD_REFRESH_INTERVAL,
             display_frames: Arc::clone(&self.display_frames),

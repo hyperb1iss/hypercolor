@@ -256,8 +256,8 @@ pub(crate) async fn execute_frame(
         scene_snapshot.elapsed_ms,
         frame_loop.last_canvas_preview_publish_ms,
         state.preview_canvas_receiver_count(),
-        state.preview_runtime.canvas_receiver_count(),
-        state.preview_runtime.canvas_demand().max_fps,
+        state.preview_runtime.tracked_canvas_receiver_count(),
+        state.preview_runtime.tracked_canvas_demand().max_fps,
     );
     let screen_canvas_preview_due = preview_publication_due(
         scene_snapshot.elapsed_ms,

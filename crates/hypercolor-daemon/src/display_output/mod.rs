@@ -30,6 +30,9 @@ use self::render::display_viewport_signature;
 use crate::discovery::backend_id_for_device;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::logical_devices::LogicalDevice;
+use crate::preview_runtime::{
+    PreviewFrameReceiver, PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand,
+};
 use crate::session::OutputPowerState;
 use worker::DisplayWorkerHandle;
 
@@ -63,6 +66,8 @@ pub struct DisplayOutputState {
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
     /// Event bus canvas stream produced by the render thread.
     pub event_bus: Arc<HypercolorBus>,
+    /// Internal preview-demand accounting shared with the render thread.
+    pub preview_runtime: Arc<PreviewRuntime>,
     /// Session power policy used to decide whether static hold refresh is active.
     pub power_state: watch::Receiver<OutputPowerState>,
     /// How often unchanged display frames should be reasserted during static hold.
@@ -208,6 +213,10 @@ impl DisplayTarget {
             .as_ref()
             .map_or(1.0, |target| target.opacity.clamp(0.0, 1.0))
     }
+
+    fn requires_global_canvas(&self) -> bool {
+        matches!(self.canvas_source, DisplayCanvasSource::Global) || self.blends_with_effect()
+    }
 }
 
 impl DisplayCanvasSource {
@@ -229,7 +238,6 @@ impl DisplayOutputThread {
     /// Spawn the automatic display output task.
     #[must_use]
     pub fn spawn(state: DisplayOutputState) -> Self {
-        let canvas_rx = state.event_bus.canvas_receiver();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let join_handle = std::thread::Builder::new()
             .name("hypercolor-display".to_owned())
@@ -242,7 +250,7 @@ impl DisplayOutputThread {
                     .enable_all()
                     .build()
                     .expect("display output runtime should initialize");
-                runtime.block_on(run_display_output(state, canvas_rx, shutdown_rx));
+                runtime.block_on(run_display_output(state, shutdown_rx));
             })
             .expect("display output thread should spawn");
         info!("display output thread spawned");
@@ -284,11 +292,17 @@ impl DisplayOutputThread {
     }
 }
 
-async fn run_display_output(
-    state: DisplayOutputState,
-    mut canvas_rx: watch::Receiver<CanvasFrame>,
-    mut shutdown_rx: oneshot::Receiver<()>,
-) {
+async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot::Receiver<()>) {
+    let mut canvas_rx = Some(
+        state
+            .preview_runtime
+            .internal_canvas_receiver(PreviewStreamDemand {
+                fps: DISPLAY_OUTPUT_MAX_FPS,
+                format: PreviewPixelFormat::Rgba,
+                width: 0,
+                height: 0,
+            }),
+    );
     let mut workers = HashMap::<DisplayWorkerKey, DisplayWorkerHandle>::new();
     let mut targets_cache = DisplayTargetCache::default();
     let mut last_reconciled_target_version = None::<u64>;
@@ -298,19 +312,30 @@ async fn run_display_output(
     dispatch_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        tokio::select! {
-            _ = &mut shutdown_rx => {
-                debug!("display output task shutting down");
-                break;
-            }
-            changed = canvas_rx.changed() => {
-                if changed.is_err() {
-                    debug!("display output task exiting because canvas stream closed");
+        if let Some(canvas_rx) = canvas_rx.as_mut() {
+            tokio::select! {
+                _ = &mut shutdown_rx => {
+                    debug!("display output task shutting down");
                     break;
                 }
-                let _ = canvas_rx.borrow_and_update();
+                changed = canvas_rx.changed() => {
+                    if changed.is_err() {
+                        debug!("display output task exiting because canvas stream closed");
+                        break;
+                    }
+                    let _ = canvas_rx.borrow_and_update();
+                }
+                _ = dispatch_tick.tick() => {
+                }
             }
-            _ = dispatch_tick.tick() => {
+        } else {
+            tokio::select! {
+                _ = &mut shutdown_rx => {
+                    debug!("display output task shutting down");
+                    break;
+                }
+                _ = dispatch_tick.tick() => {
+                }
             }
         }
 
@@ -328,16 +353,21 @@ async fn run_display_output(
             last_reconciled_target_version = Some(targets.version);
             last_dispatched_sources.clear();
         }
+        sync_display_canvas_receiver(
+            &mut canvas_rx,
+            state.preview_runtime.as_ref(),
+            display_canvas_preview_demand(targets.targets.as_ref()),
+        );
         if targets.targets.is_empty() {
             last_dispatched_sources.clear();
             continue;
         }
 
-        let global_frame = {
+        let global_frame = canvas_rx.as_ref().and_then(|canvas_rx| {
             let frame = canvas_rx.borrow();
             stable_display_source_identity(&frame)
                 .map(|identity| (identity, Arc::new(frame.clone())))
-        };
+        });
 
         for target in targets.targets.iter() {
             let effect_frame = match &target.canvas_source {
@@ -396,6 +426,39 @@ fn stable_display_source_identity(frame: &CanvasFrame) -> Option<StableDisplaySo
         width: frame.width,
         height: frame.height,
     })
+}
+
+fn sync_display_canvas_receiver(
+    receiver: &mut Option<PreviewFrameReceiver>,
+    preview_runtime: &PreviewRuntime,
+    demand: Option<PreviewStreamDemand>,
+) {
+    match demand {
+        Some(demand) => {
+            if let Some(receiver) = receiver.as_mut() {
+                receiver.update_demand(demand);
+            } else {
+                *receiver = Some(preview_runtime.internal_canvas_receiver(demand));
+            }
+        }
+        None => {
+            let _ = receiver.take();
+        }
+    }
+}
+
+fn display_canvas_preview_demand(targets: &[Arc<DisplayTarget>]) -> Option<PreviewStreamDemand> {
+    targets
+        .iter()
+        .filter(|target| target.requires_global_canvas())
+        .map(|target| target.target_fps)
+        .max()
+        .map(|fps| PreviewStreamDemand {
+            fps: fps.max(1),
+            format: PreviewPixelFormat::Rgba,
+            width: 0,
+            height: 0,
+        })
 }
 
 async fn reconcile_display_workers(

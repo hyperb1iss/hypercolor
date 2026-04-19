@@ -173,7 +173,7 @@ pub(crate) fn publish_frame_updates(
         .note_canvas_frame(frame_number, elapsed_ms);
     let canvas_receivers = state.preview_canvas_receiver_count();
     if canvas_receivers > 0 {
-        let tracked_canvas_receivers = state.preview_runtime.canvas_receiver_count();
+        let tracked_canvas_receivers = state.preview_runtime.tracked_canvas_receiver_count();
         let publish_canvas = {
             let current = state.event_bus.canvas_sender().borrow();
             let changed = if let Some(surface) = preview_surface.as_ref().or(frame_surface.as_ref())
@@ -190,7 +190,7 @@ pub(crate) fn publish_frame_updates(
                     *last_canvas_preview_publish_ms,
                     canvas_receivers,
                     tracked_canvas_receivers,
-                    state.preview_runtime.canvas_demand().max_fps,
+                    state.preview_runtime.tracked_canvas_demand().max_fps,
                 )
         };
         if publish_canvas {

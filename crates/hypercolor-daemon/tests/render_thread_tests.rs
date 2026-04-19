@@ -3574,14 +3574,29 @@ fn preview_runtime_receivers_share_event_bus_canvas_channel() {
 
     assert_eq!(state.event_bus.canvas_receiver_count(), 0);
     assert_eq!(state.preview_runtime.canvas_receiver_count(), 0);
+    assert_eq!(state.preview_runtime.tracked_canvas_receiver_count(), 0);
 
     let _direct_rx = state.event_bus.canvas_receiver();
     assert_eq!(state.event_bus.canvas_receiver_count(), 1);
     assert_eq!(state.preview_runtime.canvas_receiver_count(), 0);
+    assert_eq!(state.preview_runtime.tracked_canvas_receiver_count(), 0);
 
     let _preview_rx = state.preview_runtime.canvas_receiver();
     assert_eq!(state.event_bus.canvas_receiver_count(), 2);
     assert_eq!(state.preview_runtime.canvas_receiver_count(), 1);
+
+    let _internal_preview_rx =
+        state
+            .preview_runtime
+            .internal_canvas_receiver(PreviewStreamDemand {
+                fps: 30,
+                format: PreviewPixelFormat::Rgba,
+                width: 0,
+                height: 0,
+            });
+    assert_eq!(state.event_bus.canvas_receiver_count(), 3);
+    assert_eq!(state.preview_runtime.canvas_receiver_count(), 1);
+    assert_eq!(state.preview_runtime.tracked_canvas_receiver_count(), 2);
 }
 
 #[tokio::test]

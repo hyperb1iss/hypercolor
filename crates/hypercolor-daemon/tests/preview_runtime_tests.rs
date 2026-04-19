@@ -26,6 +26,30 @@ fn preview_runtime_snapshot_tracks_canvas_publication_and_receivers() {
 }
 
 #[test]
+fn internal_canvas_receivers_stay_out_of_external_preview_telemetry() {
+    let bus = Arc::new(HypercolorBus::new());
+    let runtime = PreviewRuntime::new(bus);
+    let _internal = runtime.internal_canvas_receiver(PreviewStreamDemand {
+        fps: 30,
+        format: PreviewPixelFormat::Rgba,
+        width: 0,
+        height: 0,
+    });
+
+    let snapshot = runtime.snapshot();
+    assert_eq!(snapshot.canvas_receivers, 0);
+    assert_eq!(runtime.canvas_receiver_count(), 0);
+    assert_eq!(runtime.tracked_canvas_receiver_count(), 1);
+    assert_eq!(runtime.canvas_demand().subscribers, 0);
+
+    let tracked_demand = runtime.tracked_canvas_demand();
+    assert_eq!(tracked_demand.subscribers, 1);
+    assert_eq!(tracked_demand.max_fps, 30);
+    assert!(tracked_demand.any_full_resolution);
+    assert!(tracked_demand.any_rgba);
+}
+
+#[test]
 fn preview_runtime_snapshot_tracks_screen_publication_and_receivers() {
     let bus = Arc::new(HypercolorBus::new());
     let runtime = PreviewRuntime::new(Arc::clone(&bus));

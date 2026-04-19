@@ -25,6 +25,7 @@ pub struct PreviewRuntimeSnapshot {
 #[derive(Debug, Default)]
 struct PreviewRuntimeTelemetry {
     canvas_receivers: Arc<AtomicU32>,
+    internal_canvas_receivers: Arc<AtomicU32>,
     screen_canvas_receivers: Arc<AtomicU32>,
     web_viewport_canvas_receivers: Arc<AtomicU32>,
     canvas_frames_published: AtomicU64,
@@ -94,9 +95,11 @@ impl Default for PreviewDemandSummaryState {
 struct PreviewRuntimeDemandState {
     next_subscription_id: AtomicU64,
     canvas: Mutex<Vec<(u64, PreviewStreamDemand)>>,
+    internal_canvas: Mutex<Vec<(u64, PreviewStreamDemand)>>,
     screen_canvas: Mutex<Vec<(u64, PreviewStreamDemand)>>,
     web_viewport_canvas: Mutex<Vec<(u64, PreviewStreamDemand)>>,
     canvas_summary: PreviewDemandSummaryState,
+    internal_canvas_summary: PreviewDemandSummaryState,
     screen_canvas_summary: PreviewDemandSummaryState,
     web_viewport_canvas_summary: PreviewDemandSummaryState,
 }
@@ -104,6 +107,7 @@ struct PreviewRuntimeDemandState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PreviewStreamKind {
     Canvas,
+    InternalCanvas,
     ScreenCanvas,
     WebViewportCanvas,
 }
@@ -174,6 +178,7 @@ impl PreviewRuntime {
             event_bus,
             telemetry: Arc::new(PreviewRuntimeTelemetry {
                 canvas_receivers: Arc::new(AtomicU32::new(0)),
+                internal_canvas_receivers: Arc::new(AtomicU32::new(0)),
                 screen_canvas_receivers: Arc::new(AtomicU32::new(0)),
                 web_viewport_canvas_receivers: Arc::new(AtomicU32::new(0)),
                 ..PreviewRuntimeTelemetry::default()
@@ -206,6 +211,20 @@ impl PreviewRuntime {
             PreviewDemandRegistration::new(
                 Arc::clone(&self.demand_state),
                 PreviewStreamKind::Canvas,
+                PreviewStreamDemand::default(),
+            ),
+        )
+    }
+
+    #[must_use]
+    pub fn internal_canvas_receiver(&self, demand: PreviewStreamDemand) -> PreviewFrameReceiver {
+        PreviewFrameReceiver::new(
+            self.event_bus.canvas_receiver(),
+            Arc::clone(&self.telemetry.internal_canvas_receivers),
+            PreviewDemandRegistration::new(
+                Arc::clone(&self.demand_state),
+                PreviewStreamKind::InternalCanvas,
+                demand,
             ),
         )
     }
@@ -214,6 +233,16 @@ impl PreviewRuntime {
     pub fn canvas_receiver_count(&self) -> usize {
         usize::try_from(self.telemetry.canvas_receivers.load(Ordering::Relaxed))
             .unwrap_or(usize::MAX)
+    }
+
+    #[must_use]
+    pub fn tracked_canvas_receiver_count(&self) -> usize {
+        let external = self.telemetry.canvas_receivers.load(Ordering::Relaxed);
+        let internal = self
+            .telemetry
+            .internal_canvas_receivers
+            .load(Ordering::Relaxed);
+        usize::try_from(external.saturating_add(internal)).unwrap_or(usize::MAX)
     }
 
     pub fn note_screen_canvas_frame(&self, frame_number: u32, timestamp_ms: u32) {
@@ -240,6 +269,7 @@ impl PreviewRuntime {
             PreviewDemandRegistration::new(
                 Arc::clone(&self.demand_state),
                 PreviewStreamKind::ScreenCanvas,
+                PreviewStreamDemand::default(),
             ),
         )
     }
@@ -278,6 +308,7 @@ impl PreviewRuntime {
             PreviewDemandRegistration::new(
                 Arc::clone(&self.demand_state),
                 PreviewStreamKind::WebViewportCanvas,
+                PreviewStreamDemand::default(),
             ),
         )
     }
@@ -349,6 +380,14 @@ impl PreviewRuntime {
     }
 
     #[must_use]
+    pub fn tracked_canvas_demand(&self) -> PreviewDemandSummary {
+        merge_preview_demand_summaries(
+            self.demand_state.summary(PreviewStreamKind::Canvas),
+            self.demand_state.summary(PreviewStreamKind::InternalCanvas),
+        )
+    }
+
+    #[must_use]
     pub fn screen_canvas_demand(&self) -> PreviewDemandSummary {
         self.demand_state.summary(PreviewStreamKind::ScreenCanvas)
     }
@@ -370,6 +409,7 @@ impl PreviewRuntimeDemandState {
     fn entries(&self, kind: PreviewStreamKind) -> &Mutex<Vec<(u64, PreviewStreamDemand)>> {
         match kind {
             PreviewStreamKind::Canvas => &self.canvas,
+            PreviewStreamKind::InternalCanvas => &self.internal_canvas,
             PreviewStreamKind::ScreenCanvas => &self.screen_canvas,
             PreviewStreamKind::WebViewportCanvas => &self.web_viewport_canvas,
         }
@@ -378,6 +418,7 @@ impl PreviewRuntimeDemandState {
     fn summary_state(&self, kind: PreviewStreamKind) -> &PreviewDemandSummaryState {
         match kind {
             PreviewStreamKind::Canvas => &self.canvas_summary,
+            PreviewStreamKind::InternalCanvas => &self.internal_canvas_summary,
             PreviewStreamKind::ScreenCanvas => &self.screen_canvas_summary,
             PreviewStreamKind::WebViewportCanvas => &self.web_viewport_canvas_summary,
         }
@@ -449,6 +490,22 @@ fn summarize_preview_demands(entries: &[(u64, PreviewStreamDemand)]) -> PreviewD
     summary
 }
 
+fn merge_preview_demand_summaries(
+    external: PreviewDemandSummary,
+    internal: PreviewDemandSummary,
+) -> PreviewDemandSummary {
+    PreviewDemandSummary {
+        subscribers: external.subscribers.saturating_add(internal.subscribers),
+        max_fps: external.max_fps.max(internal.max_fps),
+        max_width: external.max_width.max(internal.max_width),
+        max_height: external.max_height.max(internal.max_height),
+        any_full_resolution: external.any_full_resolution || internal.any_full_resolution,
+        any_rgb: external.any_rgb || internal.any_rgb,
+        any_rgba: external.any_rgba || internal.any_rgba,
+        any_jpeg: external.any_jpeg || internal.any_jpeg,
+    }
+}
+
 fn store_preview_demand_summary(state: &PreviewDemandSummaryState, summary: PreviewDemandSummary) {
     state.snapshot.store(Arc::new(summary));
 }
@@ -458,9 +515,13 @@ fn load_preview_demand_summary(state: &PreviewDemandSummaryState) -> PreviewDema
 }
 
 impl PreviewDemandRegistration {
-    fn new(state: Arc<PreviewRuntimeDemandState>, kind: PreviewStreamKind) -> Self {
+    fn new(
+        state: Arc<PreviewRuntimeDemandState>,
+        kind: PreviewStreamKind,
+        demand: PreviewStreamDemand,
+    ) -> Self {
         let id = state.next_subscription_id.fetch_add(1, Ordering::Relaxed);
-        let demand = state.register(kind, id, PreviewStreamDemand::default());
+        let demand = state.register(kind, id, demand);
         Self {
             kind,
             id,
