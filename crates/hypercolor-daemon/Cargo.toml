@@ -20,7 +20,7 @@ hue = ["dep:hypercolor-driver-hue"]
 nanoleaf = ["dep:hypercolor-driver-nanoleaf"]
 nvidia = ["hypercolor-core/nvidia"]
 wgpu = ["dep:wgpu", "dep:pollster"]
-default = ["hue", "nanoleaf"]
+default = ["hue", "nanoleaf", "wgpu", "servo"]
 servo = ["hypercolor-core/servo"]
 
 [dependencies]
