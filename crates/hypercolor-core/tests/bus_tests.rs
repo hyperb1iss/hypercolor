@@ -1,14 +1,15 @@
 //! Comprehensive tests for the event bus.
 
 use hypercolor_core::bus::{
-    CanvasFrame, EventFilter, EventTimestamp, HypercolorBus, TimestampedEvent,
+    CanvasFrame, DisplayGroupTarget, EventFilter, EventTimestamp, HypercolorBus, TimestampedEvent,
 };
 use hypercolor_core::types::canvas::{Canvas, Rgba};
 use hypercolor_core::types::event::{
     ChangeTrigger, DisconnectReason, EffectRef, EventCategory, EventPriority, FrameData,
     HypercolorEvent, Severity, SpectrumData, ZoneColors,
 };
-use hypercolor_types::scene::RenderGroupId;
+use hypercolor_types::device::DeviceId;
+use hypercolor_types::scene::{DisplayFaceBlendMode, RenderGroupId};
 use tokio::sync::broadcast;
 use tokio::time::{Duration, timeout};
 
@@ -281,14 +282,33 @@ fn retain_group_canvases_prunes_stale_streams() {
     let bus = HypercolorBus::new();
     let keep_id = RenderGroupId::new();
     let stale_id = RenderGroupId::new();
+    let device_id = DeviceId::new();
 
     let _keep = bus.group_canvas_sender(keep_id);
     let _stale = bus.group_canvas_sender(stale_id);
+    bus.upsert_display_group_target(
+        keep_id,
+        DisplayGroupTarget {
+            device_id,
+            blend_mode: DisplayFaceBlendMode::Alpha,
+            opacity: 0.5,
+        },
+    );
+    bus.upsert_display_group_target(
+        stale_id,
+        DisplayGroupTarget {
+            device_id,
+            blend_mode: DisplayFaceBlendMode::Replace,
+            opacity: 1.0,
+        },
+    );
     assert_eq!(bus.group_canvas_stream_count(), 2);
+    assert_eq!(bus.display_group_target_count(), 2);
 
     bus.retain_group_canvases(&[keep_id]);
 
     assert_eq!(bus.group_canvas_stream_count(), 1);
+    assert_eq!(bus.display_group_target_count(), 1);
     let stale = bus.group_canvas_receiver(stale_id);
     let frame = stale.borrow().clone();
     assert_eq!(frame.width, 0);
@@ -300,17 +320,100 @@ fn retain_group_canvases_and_collect_senders_reuses_kept_streams() {
     let bus = HypercolorBus::new();
     let keep_id = RenderGroupId::new();
     let stale_id = RenderGroupId::new();
+    let device_id = DeviceId::new();
 
     let keep_sender = bus.group_canvas_sender(keep_id);
     let _stale_sender = bus.group_canvas_sender(stale_id);
+    bus.upsert_display_group_target(
+        keep_id,
+        DisplayGroupTarget {
+            device_id,
+            blend_mode: DisplayFaceBlendMode::Alpha,
+            opacity: 0.5,
+        },
+    );
+    bus.upsert_display_group_target(
+        stale_id,
+        DisplayGroupTarget {
+            device_id,
+            blend_mode: DisplayFaceBlendMode::Replace,
+            opacity: 1.0,
+        },
+    );
 
     let senders = bus.retain_group_canvases_and_collect_senders(&[keep_id]);
 
     assert_eq!(bus.group_canvas_stream_count(), 1);
+    assert_eq!(bus.display_group_target_count(), 1);
     assert_eq!(senders.len(), 1);
     assert_eq!(senders[0].0, keep_id);
     assert_eq!(senders[0].1.borrow().width, 0);
     assert!(senders[0].1.same_channel(&keep_sender));
+}
+
+#[test]
+fn display_group_targets_roundtrip_and_revision() {
+    let bus = HypercolorBus::new();
+    let group_id = RenderGroupId::new();
+    let device_id = DeviceId::new();
+
+    let (initial_revision, initial_targets) = bus.display_group_targets_snapshot();
+    assert_eq!(initial_revision, 0);
+    assert!(initial_targets.is_empty());
+
+    bus.upsert_display_group_target(
+        group_id,
+        DisplayGroupTarget {
+            device_id,
+            blend_mode: DisplayFaceBlendMode::Screen,
+            opacity: 0.6,
+        },
+    );
+
+    let (revision, targets) = bus.display_group_targets_snapshot();
+    assert_eq!(revision, 1);
+    assert_eq!(targets.len(), 1);
+    assert_eq!(
+        targets.get(&group_id),
+        Some(&DisplayGroupTarget {
+            device_id,
+            blend_mode: DisplayFaceBlendMode::Screen,
+            opacity: 0.6,
+        })
+    );
+}
+
+#[test]
+fn retain_display_group_targets_prunes_stale_routes() {
+    let bus = HypercolorBus::new();
+    let keep_id = RenderGroupId::new();
+    let stale_id = RenderGroupId::new();
+    let device_id = DeviceId::new();
+
+    bus.upsert_display_group_target(
+        keep_id,
+        DisplayGroupTarget {
+            device_id,
+            blend_mode: DisplayFaceBlendMode::Alpha,
+            opacity: 0.5,
+        },
+    );
+    bus.upsert_display_group_target(
+        stale_id,
+        DisplayGroupTarget {
+            device_id,
+            blend_mode: DisplayFaceBlendMode::Replace,
+            opacity: 1.0,
+        },
+    );
+    assert_eq!(bus.display_group_target_count(), 2);
+
+    bus.retain_display_group_targets(&[keep_id]);
+
+    let (_, targets) = bus.display_group_targets_snapshot();
+    assert_eq!(bus.display_group_target_count(), 1);
+    assert!(targets.contains_key(&keep_id));
+    assert!(!targets.contains_key(&stale_id));
 }
 
 // ── No Subscribers ───────────────────────────────────────────────────────

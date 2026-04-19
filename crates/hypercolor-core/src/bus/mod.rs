@@ -24,8 +24,9 @@ use serde::{Serialize, Serializer};
 use tokio::sync::{broadcast, watch};
 
 use crate::types::canvas::{Canvas, PublishedSurface};
+use crate::types::device::DeviceId;
 use crate::types::event::{FrameData, HypercolorEvent, SpectrumData};
-use crate::types::scene::RenderGroupId;
+use crate::types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, RenderGroupId};
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -197,6 +198,39 @@ impl CanvasFrame {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisplayGroupTarget {
+    pub device_id: DeviceId,
+    pub blend_mode: DisplayFaceBlendMode,
+    pub opacity: f32,
+}
+
+impl From<DisplayFaceTarget> for DisplayGroupTarget {
+    fn from(value: DisplayFaceTarget) -> Self {
+        Self {
+            device_id: value.device_id,
+            blend_mode: value.blend_mode,
+            opacity: value.opacity,
+        }
+    }
+}
+
+impl From<&DisplayFaceTarget> for DisplayGroupTarget {
+    fn from(value: &DisplayFaceTarget) -> Self {
+        Self {
+            device_id: value.device_id,
+            blend_mode: value.blend_mode,
+            opacity: value.opacity,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct DisplayGroupTargetRegistry {
+    revision: u64,
+    targets: HashMap<RenderGroupId, DisplayGroupTarget>,
+}
+
 // ── HypercolorBus ────────────────────────────────────────────────────────
 
 /// The central event bus. Owns all channels and provides typed
@@ -228,6 +262,9 @@ pub struct HypercolorBus {
     /// Latest per-render-group canvases for direct display consumption.
     group_canvases: Arc<Mutex<HashMap<RenderGroupId, watch::Sender<CanvasFrame>>>>,
 
+    /// Render-thread-authored display-face routing metadata keyed by group id.
+    display_group_targets: Arc<Mutex<DisplayGroupTargetRegistry>>,
+
     /// Monotonic clock base for `mono_ms` timestamps.
     start_instant: Instant,
 }
@@ -251,6 +288,7 @@ impl HypercolorBus {
             screen_canvas,
             web_viewport_canvas,
             group_canvases: Arc::new(Mutex::new(HashMap::new())),
+            display_group_targets: Arc::new(Mutex::new(DisplayGroupTargetRegistry::default())),
             start_instant: Instant::now(),
         }
     }
@@ -405,6 +443,8 @@ impl HypercolorBus {
             .expect("group canvas registry should not be poisoned");
         if active_ids.is_empty() {
             group_canvases.clear();
+            drop(group_canvases);
+            self.retain_display_group_targets(active_ids);
             return Vec::new();
         }
 
@@ -414,7 +454,7 @@ impl HypercolorBus {
             .collect::<std::collections::HashSet<_>>();
         group_canvases.retain(|group_id, _| active_set.contains(group_id));
 
-        active_ids
+        let senders = active_ids
             .iter()
             .copied()
             .map(|group_id| {
@@ -427,7 +467,10 @@ impl HypercolorBus {
                     .clone();
                 (group_id, sender)
             })
-            .collect()
+            .collect();
+        drop(group_canvases);
+        self.retain_display_group_targets(active_ids);
+        senders
     }
 
     /// Subscribe to a render group's canvas updates.
@@ -445,6 +488,81 @@ impl HypercolorBus {
             .len()
     }
 
+    /// Insert or update render-thread-authored display-face routing metadata.
+    pub fn upsert_display_group_target(&self, id: RenderGroupId, target: DisplayGroupTarget) {
+        let mut display_group_targets = self
+            .display_group_targets
+            .lock()
+            .expect("display group target registry should not be poisoned");
+        let changed = display_group_targets.targets.get(&id) != Some(&target);
+        if changed {
+            display_group_targets.targets.insert(id, target);
+            display_group_targets.revision = display_group_targets.revision.saturating_add(1);
+        }
+    }
+
+    /// Drop any render-thread-authored display-face routes not present in the active set.
+    pub fn retain_display_group_targets(&self, active_ids: &[RenderGroupId]) {
+        let mut display_group_targets = self
+            .display_group_targets
+            .lock()
+            .expect("display group target registry should not be poisoned");
+        let changed = if active_ids.is_empty() {
+            let changed = !display_group_targets.targets.is_empty();
+            display_group_targets.targets.clear();
+            changed
+        } else {
+            let active_ids = active_ids
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>();
+            let original_len = display_group_targets.targets.len();
+            display_group_targets
+                .targets
+                .retain(|group_id, _| active_ids.contains(group_id));
+            original_len != display_group_targets.targets.len()
+        };
+        if changed {
+            display_group_targets.revision = display_group_targets.revision.saturating_add(1);
+        }
+    }
+
+    /// Snapshot the active render-thread-authored display-face routes.
+    #[must_use]
+    pub fn display_group_targets_snapshot(
+        &self,
+    ) -> (u64, HashMap<RenderGroupId, DisplayGroupTarget>) {
+        let display_group_targets = self
+            .display_group_targets
+            .lock()
+            .expect("display group target registry should not be poisoned");
+        (
+            display_group_targets.revision,
+            display_group_targets.targets.clone(),
+        )
+    }
+
+    /// Number of tracked render-thread-authored display-face routes.
+    #[must_use]
+    pub fn display_group_target_count(&self) -> usize {
+        self.display_group_targets
+            .lock()
+            .expect("display group target registry should not be poisoned")
+            .targets
+            .len()
+    }
+
+    /// Remove the render-thread-authored display-face route for a render group.
+    pub fn remove_display_group_target(&self, id: RenderGroupId) {
+        let mut display_group_targets = self
+            .display_group_targets
+            .lock()
+            .expect("display group target registry should not be poisoned");
+        if display_group_targets.targets.remove(&id).is_some() {
+            display_group_targets.revision = display_group_targets.revision.saturating_add(1);
+        }
+    }
+
     /// Drop any per-group canvas streams not present in the active set.
     pub fn retain_group_canvases(&self, active_ids: &[RenderGroupId]) {
         let mut group_canvases = self
@@ -453,14 +571,18 @@ impl HypercolorBus {
             .expect("group canvas registry should not be poisoned");
         if active_ids.is_empty() {
             group_canvases.clear();
+            drop(group_canvases);
+            self.retain_display_group_targets(active_ids);
             return;
         }
 
-        let active_ids = active_ids
+        let active_set = active_ids
             .iter()
             .copied()
             .collect::<std::collections::HashSet<_>>();
-        group_canvases.retain(|group_id, _| active_ids.contains(group_id));
+        group_canvases.retain(|group_id, _| active_set.contains(group_id));
+        drop(group_canvases);
+        self.retain_display_group_targets(active_ids);
     }
 
     /// Remove the per-group canvas stream for a render group.
@@ -470,6 +592,8 @@ impl HypercolorBus {
             .lock()
             .expect("group canvas registry should not be poisoned");
         group_canvases.remove(&id);
+        drop(group_canvases);
+        self.remove_display_group_target(id);
     }
 
     /// Number of active broadcast subscribers.

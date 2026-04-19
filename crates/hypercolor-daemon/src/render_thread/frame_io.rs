@@ -153,11 +153,16 @@ pub(crate) fn publish_frame_updates(
         .into_iter()
         .collect::<std::collections::HashMap<_, _>>();
     for (group_id, group_canvas) in group_canvases {
+        state.event_bus.upsert_display_group_target(
+            *group_id,
+            (&group_canvas.display_target).into(),
+        );
         let Some(sender) = group_canvas_senders.get(group_id) else {
             continue;
         };
-        let GroupCanvasFrame::Surface(surface) = group_canvas;
-        let surface = surface.with_frame_metadata(frame_number, elapsed_ms);
+        let surface = group_canvas
+            .surface
+            .with_frame_metadata(frame_number, elapsed_ms);
         let publish_group_canvas = {
             let current = sender.borrow();
             should_publish_surface_frame(&current, &surface)

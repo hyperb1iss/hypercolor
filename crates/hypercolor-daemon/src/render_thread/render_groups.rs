@@ -10,7 +10,7 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor};
 use hypercolor_types::event::ZoneColors;
-use hypercolor_types::scene::{RenderGroup, RenderGroupId};
+use hypercolor_types::scene::{DisplayFaceTarget, RenderGroup, RenderGroupId};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
@@ -31,8 +31,9 @@ const PREVIEW_SURFACE_POOL_SLOTS: usize = 6;
 const DIRECT_SURFACE_POOL_SLOTS: usize = 4;
 
 #[derive(Clone)]
-pub(crate) enum GroupCanvasFrame {
-    Surface(PublishedSurface),
+pub(crate) struct GroupCanvasFrame {
+    pub surface: PublishedSurface,
+    pub display_target: DisplayFaceTarget,
 }
 
 pub(crate) struct RenderGroupResult {
@@ -256,7 +257,13 @@ impl RenderGroupRuntime {
                     sample_us = sample_us.saturating_add(micros_u32(sample_start.elapsed()));
                 }
                 active_group_canvas_ids.push(group.id);
-                let frame = GroupCanvasFrame::Surface(lease.submit(0, 0));
+                let frame = GroupCanvasFrame {
+                    surface: lease.submit(0, 0),
+                    display_target: group
+                        .display_target
+                        .clone()
+                        .expect("direct display group should carry a display target"),
+                };
                 self.retain_direct_group_frame(group.id, elapsed_ms, &frame);
                 group_canvases.push((group.id, frame));
                 continue;
@@ -510,7 +517,13 @@ impl RenderGroupRuntime {
                 sample_us = sample_us.saturating_add(micros_u32(sample_start.elapsed()));
             }
             active_group_canvas_ids.push(group.id);
-            let frame = GroupCanvasFrame::Surface(group_lease.submit(0, 0));
+            let frame = GroupCanvasFrame {
+                surface: group_lease.submit(0, 0),
+                display_target: group
+                    .display_target
+                    .clone()
+                    .expect("direct display group should carry a display target"),
+            };
             self.retain_direct_group_frame(group.id, elapsed_ms, &frame);
             group_canvases.push((group.id, frame));
         }
@@ -1090,11 +1103,13 @@ mod tests {
         let [(_, group_canvas_frame)] = &result.group_canvases[..] else {
             panic!("display group should publish a surface-backed direct canvas");
         };
-        let GroupCanvasFrame::Surface(surface) = group_canvas_frame;
 
         assert_eq!(result.logical_layer_count, 0);
         assert_eq!(preview_surface.get_pixel(0, 0), Rgba::new(0, 0, 0, 255));
-        assert_eq!(surface.get_pixel(0, 0), Rgba::new(0, 0, 255, 255));
+        assert_eq!(
+            group_canvas_frame.surface.get_pixel(0, 0),
+            Rgba::new(0, 0, 255, 255)
+        );
     }
 
     #[test]
@@ -1132,10 +1147,12 @@ mod tests {
         let [(_, group_canvas_frame)] = &result.group_canvases[..] else {
             panic!("display group should publish a direct surface");
         };
-        let GroupCanvasFrame::Surface(display_surface) = group_canvas_frame;
 
         assert_eq!(preview_surface.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
-        assert_eq!(display_surface.get_pixel(0, 0), Rgba::new(0, 0, 255, 255));
+        assert_eq!(
+            group_canvas_frame.surface.get_pixel(0, 0),
+            Rgba::new(0, 0, 255, 255)
+        );
         assert_eq!(zones.len(), 2);
         assert_eq!(zones[0].zone_id, "zone_preview");
         assert_eq!(zones[0].colors.first().copied(), Some([255, 0, 0]));
@@ -1270,7 +1287,7 @@ mod tests {
             result
                 .group_canvases
                 .iter()
-                .all(|(_, frame)| matches!(frame, GroupCanvasFrame::Surface(_)))
+                .all(|(_, frame)| frame.surface.width() > 0 && frame.surface.height() > 0)
         );
         assert_eq!(zones.len(), 2);
         assert_eq!(zones[0].zone_id, "zone_left");
@@ -1304,7 +1321,6 @@ mod tests {
         let [(_, first_frame)] = &first.group_canvases[..] else {
             panic!("display group should publish a direct surface");
         };
-        let GroupCanvasFrame::Surface(first_surface) = first_frame;
 
         let second = render_scene_for_test(
             &mut runtime,
@@ -1319,7 +1335,6 @@ mod tests {
         let [(_, second_frame)] = &second.group_canvases[..] else {
             panic!("display group should keep publishing a direct surface");
         };
-        let GroupCanvasFrame::Surface(second_surface) = second_frame;
 
         let third = render_scene_for_test(
             &mut runtime,
@@ -1334,18 +1349,17 @@ mod tests {
         let [(_, third_frame)] = &third.group_canvases[..] else {
             panic!("display group should keep publishing a direct surface");
         };
-        let GroupCanvasFrame::Surface(third_surface) = third_frame;
 
         assert_eq!(
-            first_surface.storage_identity(),
-            second_surface.storage_identity()
+            first_frame.surface.storage_identity(),
+            second_frame.surface.storage_identity()
         );
-        assert_eq!(first_surface.generation(), second_surface.generation());
-        assert_eq!(first_surface.get_pixel(0, 0), Rgba::new(0, 255, 0, 255));
-        assert_eq!(third_surface.get_pixel(0, 0), Rgba::new(0, 255, 0, 255));
+        assert_eq!(first_frame.surface.generation(), second_frame.surface.generation());
+        assert_eq!(first_frame.surface.get_pixel(0, 0), Rgba::new(0, 255, 0, 255));
+        assert_eq!(third_frame.surface.get_pixel(0, 0), Rgba::new(0, 255, 0, 255));
         assert!(
-            third_surface.storage_identity() != second_surface.storage_identity()
-                || third_surface.generation() != second_surface.generation()
+            third_frame.surface.storage_identity() != second_frame.surface.storage_identity()
+                || third_frame.surface.generation() != second_frame.surface.generation()
         );
     }
 }

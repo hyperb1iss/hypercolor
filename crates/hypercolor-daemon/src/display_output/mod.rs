@@ -17,7 +17,7 @@ use anyhow::{Context, Result, anyhow};
 use tokio::sync::{Mutex, RwLock, oneshot, watch};
 use tracing::{debug, info, trace, warn};
 
-use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
+use hypercolor_core::bus::{CanvasFrame, DisplayGroupTarget, HypercolorBus};
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
@@ -120,6 +120,7 @@ struct DisplayTargetCache {
     initialized: bool,
     version: u64,
     registry_generation: u64,
+    display_group_targets_revision: u64,
     scene_revision: u64,
     layout_ptr: usize,
     logical_signature: u64,
@@ -496,6 +497,27 @@ fn build_display_worker_frame_set(
     }
 }
 
+fn merged_display_face_targets(
+    fallback_targets: HashMap<DeviceId, (RenderGroupId, DisplayFaceTarget)>,
+    published_targets: HashMap<RenderGroupId, DisplayGroupTarget>,
+) -> HashMap<DeviceId, (RenderGroupId, DisplayFaceTarget)> {
+    let mut merged = fallback_targets;
+    for (group_id, published_target) in published_targets {
+        merged.insert(
+            published_target.device_id,
+            (
+                group_id,
+                DisplayFaceTarget {
+                    device_id: published_target.device_id,
+                    blend_mode: published_target.blend_mode,
+                    opacity: published_target.opacity,
+                },
+            ),
+        );
+    }
+    merged
+}
+
 fn sync_display_canvas_receiver(
     receiver: &mut Option<PreviewFrameReceiver>,
     preview_runtime: &PreviewRuntime,
@@ -605,7 +627,7 @@ async fn display_targets(
         let spatial = spatial_engine.read().await;
         spatial.layout()
     };
-    let (scene_revision, display_face_targets) = {
+    let (scene_revision, fallback_display_face_targets) = {
         let manager = scene_manager.read().await;
         (
             manager.active_render_groups_revision(),
@@ -621,6 +643,12 @@ async fn display_targets(
                 .collect::<HashMap<_, _>>(),
         )
     };
+    let (display_group_targets_revision, published_display_group_targets) =
+        event_bus.display_group_targets_snapshot();
+    let display_face_targets = merged_display_face_targets(
+        fallback_display_face_targets,
+        published_display_group_targets,
+    );
     let logical_store = logical_devices.read().await;
     let registry_generation = registry.generation();
     #[expect(
@@ -632,6 +660,7 @@ async fn display_targets(
 
     if cache.initialized
         && cache.registry_generation == registry_generation
+        && cache.display_group_targets_revision == display_group_targets_revision
         && cache.scene_revision == scene_revision
         && cache.layout_ptr == layout_ptr
         && cache.logical_signature == logical_signature
@@ -723,6 +752,7 @@ async fn display_targets(
     cache.initialized = true;
     cache.version = cache.version.saturating_add(1);
     cache.registry_generation = registry_generation;
+    cache.display_group_targets_revision = display_group_targets_revision;
     cache.scene_revision = scene_revision;
     cache.layout_ptr = layout_ptr;
     cache.logical_signature = logical_signature;

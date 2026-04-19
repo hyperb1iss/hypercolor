@@ -1507,6 +1507,16 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
     assert_eq!(frame.width, 320);
     assert_eq!(frame.height, 200);
     assert_eq!(&frame.rgba_bytes()[0..4], [0, 0, 255, 255].as_slice());
+    let (_, published_targets) = state.event_bus.display_group_targets_snapshot();
+    let published_target = published_targets
+        .get(&group_id)
+        .expect("display group target metadata should publish with the face frame");
+    assert_eq!(published_target.device_id, display_id);
+    assert_eq!(
+        published_target.blend_mode,
+        hypercolor_types::scene::DisplayFaceBlendMode::Replace
+    );
+    assert_eq!(published_target.opacity, 1.0);
 
     {
         let mut rl = state.render_loop.write().await;
@@ -1574,6 +1584,9 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
     let first_frame = wait_for_next_frame(&mut frame_rx, 0).await;
     assert!(first_frame.frame_number > 0);
     assert_eq!(state.event_bus.group_canvas_stream_count(), 1);
+    let (_, first_targets) = state.event_bus.display_group_targets_snapshot();
+    assert_eq!(state.event_bus.display_group_target_count(), 1);
+    assert!(first_targets.contains_key(&first_group_id));
 
     {
         let mut scene_manager = state.scene_manager.write().await;
@@ -1585,6 +1598,10 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
     let second_frame = wait_for_next_frame(&mut frame_rx, first_frame.frame_number).await;
     assert!(second_frame.frame_number > first_frame.frame_number);
     assert_eq!(state.event_bus.group_canvas_stream_count(), 1);
+    let (_, second_targets) = state.event_bus.display_group_targets_snapshot();
+    assert_eq!(state.event_bus.display_group_target_count(), 1);
+    assert!(!second_targets.contains_key(&first_group_id));
+    assert!(second_targets.contains_key(&second_group_id));
 
     let stale_rx = state.event_bus.group_canvas_receiver(first_group_id);
     let stale_frame = stale_rx.borrow().clone();
