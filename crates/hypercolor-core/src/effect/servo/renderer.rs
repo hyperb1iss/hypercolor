@@ -14,6 +14,7 @@ use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, Eff
 use hypercolor_types::sensor::SystemSnapshot;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use super::session::DrainPendingRenderError;
@@ -30,6 +31,7 @@ use crate::engine::FpsTier;
 const DEFAULT_EFFECT_FPS_CAP: u32 = 30;
 const DEFAULT_DISPLAY_FPS_CAP: u32 = 30;
 const MAX_EFFECT_FPS_CAP: u32 = 60;
+const SOFT_STALL_FRAME_INTERVALS: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AnimationCadence {
@@ -288,6 +290,7 @@ impl ServoRenderer {
             .session
             .as_ref()
             .and_then(ServoSessionHandle::pending_render_age);
+        let soft_stall_timeout = self.soft_stall_timeout();
         let Some(session) = self.session.as_mut() else {
             return;
         };
@@ -300,10 +303,12 @@ impl ServoRenderer {
             }
             Ok(None) => {
                 if !self.warned_stalled_frame
-                    && pending_age.is_some_and(|age| age >= RENDER_RESPONSE_TIMEOUT)
+                    && pending_age.is_some_and(|age| age >= soft_stall_timeout)
                 {
                     warn!(
-                        timeout_ms = RENDER_RESPONSE_TIMEOUT.as_millis(),
+                        fps_cap = self.active_fps_cap(),
+                        pending_age_ms = pending_age.map_or(0, |age| age.as_millis()),
+                        soft_timeout_ms = soft_stall_timeout.as_millis(),
                         "Servo frame render is late; reusing previous frame"
                     );
                     self.warned_stalled_frame = true;
@@ -408,6 +413,16 @@ impl ServoRenderer {
                 self.session = None;
             }
         }
+    }
+
+    fn active_fps_cap(&self) -> u32 {
+        self.last_animation_fps_cap.unwrap_or(DEFAULT_EFFECT_FPS_CAP)
+    }
+
+    fn soft_stall_timeout(&self) -> Duration {
+        let tier = FpsTier::from_fps(self.active_fps_cap());
+        let soft_timeout = tier.frame_interval().mul_f32(SOFT_STALL_FRAME_INTERVALS as f32);
+        soft_timeout.min(RENDER_RESPONSE_TIMEOUT)
     }
 }
 
@@ -897,6 +912,113 @@ mod tests {
                 .iter()
                 .all(|script| !script.contains("__hypercolorFpsCap"))
         );
+    }
+
+    #[test]
+    fn soft_stall_timeout_tracks_active_animation_cap() {
+        let mut renderer = ServoRenderer::new();
+
+        assert_eq!(
+            renderer.soft_stall_timeout(),
+            FpsTier::Medium.frame_interval().mul_f32(SOFT_STALL_FRAME_INTERVALS as f32)
+        );
+
+        renderer.last_animation_fps_cap = Some(60);
+        assert_eq!(
+            renderer.soft_stall_timeout(),
+            FpsTier::Full.frame_interval().mul_f32(SOFT_STALL_FRAME_INTERVALS as f32)
+        );
+
+        renderer.last_animation_fps_cap = Some(10);
+        assert_eq!(
+            renderer.soft_stall_timeout(),
+            FpsTier::Minimal
+                .frame_interval()
+                .mul_f32(SOFT_STALL_FRAME_INTERVALS as f32)
+        );
+    }
+
+    #[test]
+    fn poll_in_flight_render_marks_soft_stall_before_hard_timeout() {
+        let (worker, render_rx, result_tx, delivered_rx, _unload_rx, stopped) =
+            spawn_render_test_worker();
+
+        let mut renderer = ServoRenderer::new();
+        attach_renderer_session(&mut renderer, &worker);
+        renderer.initialized = true;
+        renderer.last_animation_fps_cap = Some(60);
+        renderer.last_canvas = Some(solid_canvas(20, 40, 60));
+        renderer
+            .session
+            .as_mut()
+            .expect("attached test session")
+            .request_render(Vec::new())
+            .expect("test render should queue");
+        let _ = render_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("render command");
+
+        thread::sleep(renderer.soft_stall_timeout() + Duration::from_millis(25));
+        renderer.poll_in_flight_render();
+
+        assert!(renderer.warned_stalled_frame);
+
+        result_tx
+            .send(Ok(solid_canvas(1, 1, 1)))
+            .expect("cleanup render result");
+        delivered_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("cleanup result delivery ack");
+
+        drop(worker);
+        assert!(stopped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn poll_in_flight_render_clears_stall_warning_after_completed_frame() {
+        let (worker, render_rx, result_tx, delivered_rx, _unload_rx, stopped) =
+            spawn_render_test_worker();
+
+        let mut renderer = ServoRenderer::new();
+        attach_renderer_session(&mut renderer, &worker);
+        renderer.initialized = true;
+        renderer.last_animation_fps_cap = Some(60);
+        renderer.last_canvas = Some(solid_canvas(20, 40, 60));
+        renderer
+            .session
+            .as_mut()
+            .expect("attached test session")
+            .request_render(Vec::new())
+            .expect("test render should queue");
+        let _ = render_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("render command");
+
+        thread::sleep(renderer.soft_stall_timeout() + Duration::from_millis(25));
+        renderer.poll_in_flight_render();
+        assert!(renderer.warned_stalled_frame);
+
+        result_tx
+            .send(Ok(solid_canvas(9, 8, 7)))
+            .expect("completed render result");
+        delivered_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("completed result delivery ack");
+
+        renderer.poll_in_flight_render();
+
+        assert!(!renderer.warned_stalled_frame);
+        assert_eq!(
+            renderer
+                .last_canvas
+                .as_ref()
+                .expect("completed frame")
+                .get_pixel(0, 0),
+            Rgba::new(9, 8, 7, 255)
+        );
+
+        drop(worker);
+        assert!(stopped.load(Ordering::SeqCst));
     }
 
     #[test]
