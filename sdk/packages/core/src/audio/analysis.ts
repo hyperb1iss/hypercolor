@@ -26,6 +26,7 @@ export function getAudioData(): AudioData {
     if (!hasEngine) return createSilentAudioData()
 
     const audio = engine.audio as any
+    const levelLinear = resolveAudioLevelLinear(audio)
 
     return {
         // Legacy
@@ -45,9 +46,9 @@ export function getAudioData(): AudioData {
         frequencyRaw: audio.frequencyRaw ?? new Int8Array(FFT_SIZE),
         frequencyWeighted: audio.frequencyWeighted ?? new Float32Array(FFT_SIZE),
         harmonicHue: audio.harmonicHue ?? 0,
-        level: audio.level != null ? normalizeAudioLevel(audio.level) : 0,
+        level: levelLinear,
         levelLong: audio.levelLong ?? 0,
-        levelRaw: audio.level ?? -100,
+        levelRaw: resolveAudioLevelRaw(audio),
         levelShort: audio.levelShort ?? 0,
         melBands: audio.melBands ?? new Float32Array(MEL_BANDS),
         melBandsNormalized: audio.melBandsNormalized ?? new Float32Array(MEL_BANDS),
@@ -98,9 +99,12 @@ export function getScreenZoneData(): ScreenZoneData {
     return { height, hue, lightness, saturation, width }
 }
 
-/** Normalize dB level (-100..0) to 0..1. */
-export function normalizeAudioLevel(levelDb: number): number {
-    return Math.max(0, Math.min(1, (levelDb + 100) / 100))
+/** Normalize a live daemon dB level or a dev-shell 0..1 level to 0..1. */
+export function normalizeAudioLevel(level: number): number {
+    if (!Number.isFinite(level)) return 0
+    if (level >= 0 && level <= 1) return level
+    if (level <= -100) return 0
+    return Math.max(0, Math.min(1, 10 ** (level / 20)))
 }
 
 function createSilentAudioData(): AudioData {
@@ -143,4 +147,37 @@ function createSilentAudioData(): AudioData {
         trebleEnv: 0,
         width: 0.5,
     }
+}
+
+function resolveAudioLevelRaw(audio: Record<string, unknown>): number {
+    const levelRaw = audio.levelRaw
+    if (typeof levelRaw === 'number' && Number.isFinite(levelRaw)) {
+        return levelRaw
+    }
+
+    const levelLinear = audio.levelLinear
+    if (typeof levelLinear === 'number' && Number.isFinite(levelLinear)) {
+        return levelLinear > 0 ? 20 * Math.log10(levelLinear) : -100
+    }
+
+    const level = audio.level
+    if (typeof level === 'number' && Number.isFinite(level)) {
+        return level >= 0 && level <= 1 ? (level > 0 ? 20 * Math.log10(level) : -100) : level
+    }
+
+    return -100
+}
+
+function resolveAudioLevelLinear(audio: Record<string, unknown>): number {
+    const levelLinear = audio.levelLinear
+    if (typeof levelLinear === 'number' && Number.isFinite(levelLinear)) {
+        return Math.max(0, Math.min(1, levelLinear))
+    }
+
+    const level = audio.level
+    if (typeof level === 'number' && Number.isFinite(level)) {
+        return normalizeAudioLevel(level)
+    }
+
+    return 0
 }
