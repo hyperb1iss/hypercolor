@@ -65,6 +65,11 @@ interface ResolvedFaceControl {
     spec: import('../controls/specs').ControlSpec
 }
 
+interface ResolvedFaceFontControl {
+    key: string
+    defaultFamily: string
+}
+
 function resolveFaceControls(controls: ControlMap): ResolvedFaceControl[] {
     const resolved: ResolvedFaceControl[] = []
     for (const [key, value] of Object.entries(controls)) {
@@ -80,6 +85,38 @@ function resolveControlValues(controls: ResolvedFaceControl[]): Record<string, u
         result[ctrl.key] = getControlValue(ctrl.key, ctrl.spec.defaultValue)
     }
     return result
+}
+
+function resolveFaceFontControls(controls: ResolvedFaceControl[]): ResolvedFaceFontControl[] {
+    const resolved: ResolvedFaceFontControl[] = []
+    for (const ctrl of controls) {
+        if (ctrl.spec.__type !== 'combobox') continue
+        const key = ctrl.key.toLowerCase()
+        const label = ctrl.spec.label.toLowerCase()
+        if (!key.includes('font') && !label.includes('font')) continue
+        if (typeof ctrl.spec.defaultValue !== 'string' || ctrl.spec.defaultValue.length === 0) continue
+        resolved.push({
+            defaultFamily: ctrl.spec.defaultValue,
+            key: ctrl.key,
+        })
+    }
+    return resolved
+}
+
+function resolveFaceFontFamilies(
+    controls: ResolvedFaceFontControl[],
+    controlValues: Record<string, unknown>,
+): string[] {
+    const families = new Set<string>()
+    for (const ctrl of controls) {
+        const selectedFamily = controlValues[ctrl.key]
+        const family =
+            typeof selectedFamily === 'string' && selectedFamily.trim().length > 0
+                ? selectedFamily.trim()
+                : ctrl.defaultFamily
+        families.add(family)
+    }
+    return [...families]
 }
 
 // ── Metadata ────────────────────────────────────────────────────────────
@@ -160,41 +197,43 @@ function googleFontsUrl(families: Iterable<string>): string {
     return `https://fonts.googleapis.com/css2?${query}&display=swap`
 }
 
-/**
- * Load fonts used by combobox controls that look like font pickers.
- * Injects a Google Fonts stylesheet and waits for the default font to load.
- */
-async function loadFaceFonts(controls: ResolvedFaceControl[]): Promise<void> {
-    const fontControls = controls.filter(
-        (c) =>
-            c.spec.__type === 'combobox' && (c.spec.meta.values as string[] | undefined)?.some((v) => v.includes(' ')),
-    )
-    if (fontControls.length === 0) return
+const loadedFaceFonts = new Set<string>()
 
-    const families = new Set<string>()
-    for (const ctrl of fontControls) {
-        const values = ctrl.spec.meta.values as string[] | undefined
-        if (values) {
-            for (const v of values) families.add(v)
+/**
+ * Load only the currently selected face fonts instead of the whole picker menu.
+ */
+async function loadFaceFonts(
+    fontControls: ResolvedFaceFontControl[],
+    controlValues: Record<string, unknown>,
+): Promise<void> {
+    const families = resolveFaceFontFamilies(fontControls, controlValues).filter(
+        (family) => family.length > 0 && !loadedFaceFonts.has(family),
+    )
+    if (families.length === 0) return
+
+    const pendingLoads: Promise<unknown>[] = []
+    for (const family of families) {
+        loadedFaceFonts.add(family)
+        const link = document.createElement('link')
+        link.rel = 'stylesheet'
+        link.href = googleFontsUrl([family])
+        document.head.appendChild(link)
+        if (typeof document.fonts?.load === 'function') {
+            pendingLoads.push(document.fonts.load(`16px "${family}"`))
         }
     }
 
-    if (families.size === 0) return
-
-    // Inject Google Fonts stylesheet
-    const link = document.createElement('link')
-    link.rel = 'stylesheet'
-    link.href = googleFontsUrl(families)
-    document.head.appendChild(link)
-
-    // Wait for the default font of each control to be ready
     if (typeof document.fonts?.load === 'function') {
-        const defaultFamilies = fontControls.map((c) => String(c.spec.defaultValue))
-        await Promise.allSettled(defaultFamilies.map((f) => document.fonts.load(`16px "${f}"`)))
+        await Promise.allSettled(pendingLoads)
     }
 }
 
-function startFaceLoop(ctx: FaceContext, setupFn: FaceSetupFn, resolvedControls: ResolvedFaceControl[]): void {
+function startFaceLoop(
+    ctx: FaceContext,
+    setupFn: FaceSetupFn,
+    resolvedControls: ResolvedFaceControl[],
+    fontControls: ResolvedFaceFontControl[],
+): void {
     const updateFn = setupFn(ctx)
     const sensorAccessor = buildSensorAccessor()
 
@@ -206,6 +245,7 @@ function startFaceLoop(ctx: FaceContext, setupFn: FaceSetupFn, resolvedControls:
 
         // Read current control values (may have been updated by the daemon)
         const controls = resolveControlValues(resolvedControls)
+        void loadFaceFonts(fontControls, controls)
 
         // Call the face's update function
         updateFn(time, controls, sensorAccessor)
@@ -231,6 +271,7 @@ function startFaceLoop(ctx: FaceContext, setupFn: FaceSetupFn, resolvedControls:
  */
 export function face(name: string, controls: ControlMap, options: FaceOptions, setupFn: FaceSetupFn): void {
     const resolved = resolveFaceControls(controls)
+    const fontControls = resolveFaceFontControls(resolved)
     const designBasis = options.designBasis ?? { height: 480, width: 480 }
     const circular = options.circular ?? false
 
@@ -269,10 +310,11 @@ export function face(name: string, controls: ControlMap, options: FaceOptions, s
         }
 
         // Load fonts before first render so text doesn't flash fallbacks
-        await loadFaceFonts(resolved)
+        const initialControls = resolveControlValues(resolved)
+        await loadFaceFonts(fontControls, initialControls)
 
         const ctx = createFaceContext(container, canvas, designBasis, circular)
-        startFaceLoop(ctx, setupFn, resolved)
+        startFaceLoop(ctx, setupFn, resolved, fontControls)
     }
 
     let started = false
@@ -295,4 +337,10 @@ export function face(name: string, controls: ControlMap, options: FaceOptions, s
             window.addEventListener('DOMContentLoaded', start, { once: true })
         }
     }
+}
+
+export const __testing = {
+    resolveFaceControls,
+    resolveFaceFontControls,
+    resolveFaceFontFamilies,
 }
