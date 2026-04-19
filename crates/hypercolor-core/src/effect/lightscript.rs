@@ -22,10 +22,41 @@ const DEFAULT_ZONE_IMAGE_HEIGHT: usize = 100;
 const DEFAULT_ZONE_IMAGE_BYTES: usize = DEFAULT_ZONE_IMAGE_WIDTH * DEFAULT_ZONE_IMAGE_HEIGHT * 4;
 const EFFECT_SPECTRUM_GAMMA: f32 = 1.8;
 const EFFECT_TRANSIENT_GAIN: f32 = 2.8;
+const LEVEL_SHORT_ATTACK: f32 = 0.52;
+const LEVEL_SHORT_DECAY: f32 = 0.22;
+const LEVEL_LONG_ATTACK: f32 = 0.18;
+const LEVEL_LONG_DECAY: f32 = 0.05;
+const BAND_ENV_ATTACK: f32 = 0.46;
+const BAND_ENV_DECAY: f32 = 0.16;
+const SWELL_ATTACK: f32 = 0.62;
+const SWELL_DECAY: f32 = 0.2;
+const MOMENTUM_ATTACK: f32 = 0.28;
+const MOMENTUM_DECAY: f32 = 0.16;
+const FLUX_BAND_ATTACK: f32 = 0.8;
+const FLUX_BAND_DECAY: f32 = 0.85;
 const MEL_RUNNING_MAX_DECAY: f32 = 0.999;
 const MEL_RUNNING_MAX_FLOOR: f32 = 0.001;
 const SPECTRUM_BASS_END: usize = 40;
 const SPECTRUM_MID_END: usize = 130;
+
+#[derive(Debug, Clone, Default)]
+struct DerivedAudioState {
+    level_short: f32,
+    level_long: f32,
+    bass_env: f32,
+    mid_env: f32,
+    treble_env: f32,
+    momentum: f32,
+    swell: f32,
+    spectral_flux_bands: [f32; 3],
+    previous_band_levels: [f32; 3],
+}
+
+impl DerivedAudioState {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
 
 /// Runtime state for Lightscript injection.
 #[derive(Debug, Clone)]
@@ -37,6 +68,7 @@ pub struct LightscriptRuntime {
     last_sensor_readings: Option<Vec<SensorReading>>,
     audio_was_quiet: bool,
     mel_running_max: Vec<f32>,
+    audio_state: DerivedAudioState,
 }
 
 impl LightscriptRuntime {
@@ -51,6 +83,7 @@ impl LightscriptRuntime {
             last_sensor_readings: None,
             audio_was_quiet: false,
             mel_running_max: vec![MEL_RUNNING_MAX_FLOOR; MEL_BANDS],
+            audio_state: DerivedAudioState::default(),
         }
     }
 
@@ -520,6 +553,10 @@ impl LightscriptRuntime {
     fn audio_update_script(&mut self, audio: &AudioData) -> String {
         let raw_rms = clamp_unit(audio.rms_level);
         let peak = clamp_unit(audio.peak_level);
+        let quiet_frame = audio_is_quiet(audio);
+        if quiet_frame {
+            self.audio_state.reset();
+        }
         let compressed_spectrum = shape_audio_bins(&audio.spectrum);
         let compressed_mel = shape_audio_bins(&audio.mel_bands);
         let (compressed_bass, compressed_mid, compressed_treble) =
@@ -546,13 +583,83 @@ impl LightscriptRuntime {
             .collect();
         let density = clamp_unit(level_linear * 0.88 + motion * 0.12);
         let brightness = clamp_unit(0.22 + treble * 0.6);
-        let level_short = clamp_unit(level_linear * 1.05);
-        let level_long = clamp_unit(level_linear * 0.82);
-        let bass_env = clamp_unit(bass * 0.92 + beat_pulse * 0.1);
-        let mid_env = clamp_unit(mid * 0.93 + motion * 0.05);
-        let treble_env = clamp_unit(treble * 0.94 + motion * 0.04);
-        let momentum = clamp_signed_unit((mid - bass) * 0.55);
-        let swell = clamp_unit(beat_pulse + motion * 0.18);
+        let level_short_target = clamp_unit(level_linear * 1.08 + beat_pulse * 0.06);
+        let level_long_target = clamp_unit(level_linear * 0.92 + beat_pulse * 0.02);
+        self.audio_state.level_short = smooth_unit(
+            self.audio_state.level_short,
+            level_short_target,
+            LEVEL_SHORT_ATTACK,
+            LEVEL_SHORT_DECAY,
+        );
+        self.audio_state.level_long = smooth_unit(
+            self.audio_state.level_long,
+            level_long_target,
+            LEVEL_LONG_ATTACK,
+            LEVEL_LONG_DECAY,
+        );
+
+        let bass_env_target = clamp_unit(bass + beat_pulse * 0.14);
+        let mid_env_target = clamp_unit(mid + motion * 0.08);
+        let treble_env_target = clamp_unit(treble + motion * 0.06);
+        self.audio_state.bass_env = smooth_unit(
+            self.audio_state.bass_env,
+            bass_env_target,
+            BAND_ENV_ATTACK,
+            BAND_ENV_DECAY,
+        );
+        self.audio_state.mid_env = smooth_unit(
+            self.audio_state.mid_env,
+            mid_env_target,
+            BAND_ENV_ATTACK,
+            BAND_ENV_DECAY,
+        );
+        self.audio_state.treble_env = smooth_unit(
+            self.audio_state.treble_env,
+            treble_env_target,
+            BAND_ENV_ATTACK,
+            BAND_ENV_DECAY,
+        );
+
+        let momentum_target = clamp_signed_unit((mid - bass) * 0.55);
+        self.audio_state.momentum = smooth_signed_unit(
+            self.audio_state.momentum,
+            momentum_target,
+            MOMENTUM_ATTACK,
+            MOMENTUM_DECAY,
+        );
+
+        let swell_target = clamp_unit(
+            beat_pulse.max(onset_pulse * 0.85).max(motion * 0.62).max(level_linear * 0.46),
+        );
+        self.audio_state.swell = smooth_unit(
+            self.audio_state.swell,
+            swell_target,
+            SWELL_ATTACK,
+            SWELL_DECAY,
+        );
+
+        let band_levels = [bass, mid, treble];
+        let mut spectral_flux_bands = [0.0; 3];
+        for (index, current) in band_levels.iter().copied().enumerate() {
+            let previous = self.audio_state.previous_band_levels[index];
+            let target = clamp_unit((current - previous).max(0.0) * 1.9 + motion * 0.04);
+            self.audio_state.spectral_flux_bands[index] = smooth_unit(
+                self.audio_state.spectral_flux_bands[index],
+                target,
+                FLUX_BAND_ATTACK,
+                FLUX_BAND_DECAY,
+            );
+            spectral_flux_bands[index] = self.audio_state.spectral_flux_bands[index];
+        }
+        self.audio_state.previous_band_levels = band_levels;
+
+        let level_short = self.audio_state.level_short;
+        let level_long = self.audio_state.level_long;
+        let bass_env = self.audio_state.bass_env;
+        let mid_env = self.audio_state.mid_env;
+        let treble_env = self.audio_state.treble_env;
+        let momentum = self.audio_state.momentum;
+        let swell = self.audio_state.swell;
         let width = 0.5;
         let spread = clamp_unit(0.18 + width * 0.58);
         let rolloff = clamp_unit(0.46 + treble * 0.32);
@@ -565,12 +672,6 @@ impl LightscriptRuntime {
         } else {
             120.0
         };
-
-        let spectral_flux_bands = [
-            clamp_unit(bass * 0.62 + beat_pulse * 0.2),
-            clamp_unit(mid * 0.58 + motion * 0.15),
-            clamp_unit(treble * 0.6 + motion * 0.12),
-        ];
 
         let spectrum_csv = join_padded_f32_csv(&shaped_spectrum, SPECTRUM_BINS);
         let frequency_raw_csv = join_padded_normalized_i8_csv(&shaped_spectrum, SPECTRUM_BINS);
@@ -851,6 +952,20 @@ fn clamp_signed_unit(value: f32) -> f32 {
     } else {
         0.0
     }
+}
+
+fn smooth_unit(current: f32, target: f32, attack: f32, decay: f32) -> f32 {
+    let factor = if target > current { attack } else { decay };
+    clamp_unit(current + (target - current) * factor)
+}
+
+fn smooth_signed_unit(current: f32, target: f32, attack: f32, decay: f32) -> f32 {
+    let factor = if target.abs() > current.abs() {
+        attack
+    } else {
+        decay
+    };
+    clamp_signed_unit(current + (target - current) * factor)
 }
 
 fn shape_audio_bins(values: &[f32]) -> Vec<f32> {
@@ -1312,6 +1427,28 @@ mod tests {
             .expect("assignment should parse as f32")
     }
 
+    fn extract_f32_array_assignment(script: &str, path: &str) -> Vec<f32> {
+        let marker = format!("{path} = new Float32Array([");
+        let start = script
+            .find(&marker)
+            .map(|index| index + marker.len())
+            .expect("typed array assignment should exist");
+        let rest = &script[start..];
+        let end = rest
+            .find("]);")
+            .expect("typed array assignment should terminate");
+        rest[..end]
+            .split(',')
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| {
+                value
+                    .trim()
+                    .parse::<f32>()
+                    .expect("typed array item should parse as f32")
+            })
+            .collect()
+    }
+
     #[test]
     fn bootstrap_script_contains_runtime_shape() {
         let runtime = LightscriptRuntime::new(320, 200);
@@ -1549,10 +1686,18 @@ mod tests {
         audio.chromagram = vec![0.1, 0.6, 0.2];
 
         let script = runtime.audio_update_script(&audio);
+        let level_short = extract_assignment(&script, "window.engine.audio.levelShort");
+        let level_long = extract_assignment(&script, "window.engine.audio.levelLong");
         assert!(script.contains("window.engine.audio.level = 0"));
         assert!(script.contains("window.engine.audio.levelRaw = 0"));
-        assert!(script.contains("window.engine.audio.levelShort = 1"));
-        assert!(script.contains("window.engine.audio.levelLong = 0.82"));
+        assert!(
+            level_short > 0.5 && level_short < 1.0,
+            "levelShort should react quickly without being a raw copy: {level_short}"
+        );
+        assert!(
+            level_long > 0.1 && level_long < level_short,
+            "levelLong should lag behind the short envelope: {level_long}"
+        );
         assert!(script.contains("window.engine.audio.bassEnv ="));
         assert!(script.contains("window.engine.audio.midEnv ="));
         assert!(script.contains("window.engine.audio.trebleEnv ="));
@@ -1741,6 +1886,87 @@ mod tests {
         assert!(
             level > 0.40,
             "overall level should rise for big transients: {level}"
+        );
+    }
+
+    #[test]
+    fn audio_script_derived_envelopes_keep_decay_after_a_drop() {
+        let mut runtime = LightscriptRuntime::new(320, 200);
+        let mut loud = AudioData::silence();
+        loud.rms_level = 0.26;
+        loud.beat_pulse = 0.7;
+        loud.onset_pulse = 0.55;
+        for value in &mut loud.spectrum[..SPECTRUM_BASS_END] {
+            *value = 0.88;
+        }
+        for value in &mut loud.spectrum[SPECTRUM_BASS_END..SPECTRUM_MID_END] {
+            *value = 0.58;
+        }
+        for value in &mut loud.spectrum[SPECTRUM_MID_END..] {
+            *value = 0.24;
+        }
+        runtime.audio_update_script(&loud);
+
+        let mut quiet = AudioData::silence();
+        quiet.rms_level = 0.03;
+        for value in &mut quiet.spectrum[..SPECTRUM_BASS_END] {
+            *value = 0.12;
+        }
+        for value in &mut quiet.spectrum[SPECTRUM_BASS_END..SPECTRUM_MID_END] {
+            *value = 0.09;
+        }
+        for value in &mut quiet.spectrum[SPECTRUM_MID_END..] {
+            *value = 0.04;
+        }
+
+        let script = runtime.audio_update_script(&quiet);
+        let bass = extract_assignment(&script, "window.engine.audio.bass");
+        let bass_env = extract_assignment(&script, "window.engine.audio.bassEnv");
+        let level = extract_assignment(&script, "window.engine.audio.levelLinear");
+        let level_short = extract_assignment(&script, "window.engine.audio.levelShort");
+        let level_long = extract_assignment(&script, "window.engine.audio.levelLong");
+
+        assert!(bass_env > bass, "bassEnv should preserve transient decay: bass={bass}, bassEnv={bass_env}");
+        assert!(
+            level_short > level,
+            "levelShort should hold above the instantaneous level after a drop: level={level}, levelShort={level_short}"
+        );
+        assert!(
+            level_long > level,
+            "levelLong should remain above the instantaneous level after a drop: level={level}, levelLong={level_long}"
+        );
+    }
+
+    #[test]
+    fn audio_script_flux_bands_track_change_not_steady_loudness() {
+        let mut runtime = LightscriptRuntime::new(320, 200);
+        let mut audio = AudioData::silence();
+        audio.rms_level = 0.2;
+        for value in &mut audio.spectrum[..SPECTRUM_BASS_END] {
+            *value = 0.72;
+        }
+        for value in &mut audio.spectrum[SPECTRUM_BASS_END..SPECTRUM_MID_END] {
+            *value = 0.44;
+        }
+        for value in &mut audio.spectrum[SPECTRUM_MID_END..] {
+            *value = 0.18;
+        }
+
+        let first = runtime.audio_update_script(&audio);
+        let first_flux = extract_f32_array_assignment(&first, "window.engine.audio.spectralFluxBands");
+        let second = runtime.audio_update_script(&audio);
+        let second_flux = extract_f32_array_assignment(&second, "window.engine.audio.spectralFluxBands");
+
+        assert!(
+            first_flux[0] > second_flux[0],
+            "steady audio should reduce bass motion on the next frame: first={:?}, second={:?}",
+            first_flux,
+            second_flux
+        );
+        assert!(
+            second_flux[0] < 0.08 && second_flux[1] < 0.08 && second_flux[2] < 0.08,
+            "steady bands should not keep reporting strong spectral flux: {:?}",
+            second_flux
         );
     }
 
