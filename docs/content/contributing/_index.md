@@ -29,7 +29,8 @@ just verify
 | Command | Description |
 |---|---|
 | `just build` | Debug build |
-| `just release` | Release build |
+| `just release` | Full release bundle in `dist/` |
+| `just release-bin` | Release binaries only |
 | `just check` | Type-check without building |
 | `just test` | Run all tests |
 | `just lint` | Clippy with `-D warnings` |

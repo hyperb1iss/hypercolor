@@ -70,7 +70,8 @@ Then build:
 
 ```bash
 just build          # Debug build
-just release        # Release build (optimized)
+just release        # Full release bundle in dist/
+just release-bin    # Release binaries only
 just check          # Type-check without building
 just verify         # Format check + lint + test — run this after changes
 ```
