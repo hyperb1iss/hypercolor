@@ -305,7 +305,7 @@ if [[ "${IS_MACOS}" -eq 1 ]]; then
     "${DIST_DIR}/share/hypercolor/launchd/"
 fi
 
-cp LICENSE README.md "${DIST_DIR}/"
+cp LICENSE NOTICE README.md "${DIST_DIR}/"
 
 cat > "${DIST_DIR}/manifest.json" <<EOF
 {

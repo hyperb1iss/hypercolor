@@ -7,8 +7,6 @@ SKIP_BUILD=0
 SKIP_SYSTEM_HOOKS=0
 ENABLE_SERVICE=1
 START_SERVICE=1
-CACHE_ROOT="${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"
-BUILD_TARGET_DIR="${CARGO_TARGET_DIR:-${CACHE_ROOT}/target}"
 
 PREFIX="${HOME}/.local"
 BIN_DIR="${PREFIX}/bin"
@@ -62,6 +60,61 @@ profile_dir() {
     return
   fi
   printf 'release'
+}
+
+account_home_dir() {
+  local account_home=""
+
+  if command -v getent >/dev/null 2>&1; then
+    account_home="$(getent passwd "$(id -un)" | cut -d: -f6)"
+  fi
+
+  if [[ -z "${account_home}" ]]; then
+    account_home="$(eval printf '%s' "~$(id -un)")"
+  fi
+
+  printf '%s' "${account_home}"
+}
+
+target_dir_candidates() {
+  local account_home=""
+  local -a candidates=()
+
+  if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+    candidates+=("${CARGO_TARGET_DIR}")
+  fi
+
+  if [[ -n "${HYPERCOLOR_CACHE_DIR:-}" ]]; then
+    candidates+=("${HYPERCOLOR_CACHE_DIR}/target")
+  fi
+
+  candidates+=("${HOME}/.cache/hypercolor/target")
+
+  account_home="$(account_home_dir)"
+  if [[ -n "${account_home}" && "${account_home}" != "${HOME}" ]]; then
+    candidates+=("${account_home}/.cache/hypercolor/target")
+  fi
+
+  candidates+=("${ROOT_DIR}/target")
+
+  printf '%s\n' "${candidates[@]}" | awk '!seen[$0]++'
+}
+
+resolve_artifact_dir() {
+  local target_dir
+  target_dir="$(profile_dir)"
+
+  while IFS= read -r candidate; do
+    [[ -n "${candidate}" ]] || continue
+    if [[ -e "${candidate}/${target_dir}/hypercolor-daemon" \
+      && -e "${candidate}/${target_dir}/hypercolor" \
+      && -e "${candidate}/${target_dir}/hypercolor-tray" ]]; then
+      printf '%s/%s' "${candidate}" "${target_dir}"
+      return
+    fi
+  done < <(target_dir_candidates)
+
+  die "missing build artifacts for profile '${target_dir}' in any of: $(target_dir_candidates | paste -sd ', ' -)"
 }
 
 render_desktop_entry() {
@@ -167,14 +220,15 @@ install_icons() {
 }
 
 install_user_files() {
-  local target_dir
-  target_dir="$(profile_dir)"
-  local artifact_dir="${BUILD_TARGET_DIR}/${target_dir}"
+  local artifact_dir
+  artifact_dir="$(resolve_artifact_dir)"
 
   require_file "${artifact_dir}/hypercolor-daemon"
   require_file "${artifact_dir}/hypercolor"
   require_file "${artifact_dir}/hypercolor-tray"
   require_file "${ROOT_DIR}/crates/hypercolor-ui/dist/index.html"
+
+  info "using build artifacts from ${artifact_dir}"
 
   install -d "${BIN_DIR}" "${DATA_DIR}" "${APP_DIR}" "${SYSTEMD_USER_DIR}"
 
