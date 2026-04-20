@@ -7,7 +7,6 @@ use crate::api;
 use crate::app::DevicesContext;
 use crate::icons::*;
 
-mod brightness_slider;
 mod devices;
 mod offline;
 mod topology;

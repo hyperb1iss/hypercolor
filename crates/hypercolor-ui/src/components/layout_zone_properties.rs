@@ -5,12 +5,15 @@ use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
 use crate::app::DevicesContext;
+use crate::components::device_brightness_slider::DeviceBrightnessSlider;
 use crate::icons::*;
 use crate::layout_geometry::{self, SizeAxis};
+use crate::style_utils::device_accent_colors;
 /// Zone properties editor (bottom panel of layout builder).
 #[component]
 pub fn LayoutZoneProperties() -> impl IntoView {
     let editor = expect_context::<crate::components::layout_builder::LayoutEditorContext>();
+    let devices_ctx = expect_context::<DevicesContext>();
     let layout = editor.layout;
     let selected_zone_ids = editor.selected_zone_ids;
     let keep_aspect_ratio = editor.keep_aspect_ratio;
@@ -19,6 +22,57 @@ pub fn LayoutZoneProperties() -> impl IntoView {
     let set_selected_zone_ids = editor.set_selected_zone_ids;
     let set_is_dirty = editor.set_is_dirty;
     let compound_depth = editor.compound_depth;
+
+    // Unique physical device ids (`DeviceSummary::id`) whose zones are
+    // currently selected. Drives the brightness slider. Empty when nothing
+    // is selected; single-entry for a single zone or a multi-zone group
+    // living on one device; multi-entry for cross-device selections.
+    let selected_device_ids = Signal::derive(move || {
+        let zone_ids = selected_zone_ids.get();
+        if zone_ids.is_empty() {
+            return Vec::<String>::new();
+        }
+        let devices = devices_ctx
+            .devices_resource
+            .get()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+        layout.with(|current| {
+            let Some(l) = current.as_ref() else {
+                return Vec::new();
+            };
+            let mut seen = std::collections::HashSet::new();
+            let mut result = Vec::new();
+            for zid in &zone_ids {
+                if let Some(zone) = l.zones.iter().find(|z| &z.id == zid)
+                    && let Some(dev) = devices
+                        .iter()
+                        .find(|d| d.layout_device_id == zone.device_id)
+                    && seen.insert(dev.id.clone())
+                {
+                    result.push(dev.id.clone());
+                }
+            }
+            result
+        })
+    });
+    // Accent color for the brightness slider — take the first selected
+    // device's accent (matches the palette card) so it feels tied to the
+    // selection.
+    let brightness_rgb = Signal::derive(move || {
+        let zone_ids = selected_zone_ids.get();
+        layout.with(|current| {
+            current
+                .as_ref()
+                .and_then(|l| {
+                    l.zones
+                        .iter()
+                        .find(|z| zone_ids.contains(&z.id))
+                        .map(|z| device_accent_colors(&z.device_id).0)
+                })
+                .unwrap_or_else(|| "225, 53, 255".to_string())
+        })
+    });
     // Canvas pixel dimensions for display conversion
     let canvas_dims = Signal::derive(move || {
         layout.with(|current| {
@@ -162,7 +216,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
 
                     return view! {
                         <div class="space-y-2">
-                            // ── Row 1: Group identity ──
+                            // ── Row 1: Group identity + master brightness ──
                             <div class="flex items-center gap-3 min-w-0">
                                 <div class="flex items-center gap-1.5 min-w-0">
                                     <span
@@ -174,6 +228,10 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                     <span class="text-[10px] text-fg-tertiary/40 font-mono">{depth_label}</span>
                                 </div>
                                 <div class="flex-1" />
+                                <DeviceBrightnessSlider
+                                    device_ids=selected_device_ids
+                                    rgb=brightness_rgb.get()
+                                />
                             </div>
 
                             // ── Row 2: Group transform controls ──
@@ -908,6 +966,10 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                     <Icon icon=LuTrash2 width="12px" height="12px" />
                                 </button>
                             </div>
+                            <DeviceBrightnessSlider
+                                device_ids=selected_device_ids
+                                rgb=brightness_rgb.get()
+                            />
                         </div>
 
                         // ── Row 2: Transform controls in pill sections ──

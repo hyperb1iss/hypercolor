@@ -7,6 +7,7 @@ pub mod color_wheel;
 pub mod component_picker;
 pub mod component_row;
 pub mod control_panel;
+pub mod device_brightness_slider;
 pub mod device_card;
 pub mod device_detail;
 pub mod device_metrics_strip;
