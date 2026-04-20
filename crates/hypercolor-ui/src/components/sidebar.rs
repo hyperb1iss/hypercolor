@@ -14,10 +14,8 @@ use crate::async_helpers::spawn_api_call;
 use crate::color::{self, CanvasPalette};
 use crate::components::canvas_preview::CanvasPreview;
 use crate::icons::*;
-use crate::preview_telemetry::PreviewTelemetryContext;
 use crate::route_ui::{NowPlayingCanvasMode, now_playing_canvas_mode};
 use crate::style_utils::category_accent_rgb;
-use crate::ws::ConnectionState;
 
 // ── Sidebar Component ──────────────────────────────────────────────────────
 
@@ -662,136 +660,23 @@ pub fn Sidebar() -> impl IntoView {
                 })
             }}
 
-            // Bottom bar — status, theme, search, collapse
-            {
-                let theme_ctx = use_context::<crate::components::shell::ThemeContext>();
-                let palette_ctx = use_context::<crate::components::shell::PaletteContext>();
-                let ws_ctx = use_context::<WsContext>();
-                let preview_telemetry = use_context::<PreviewTelemetryContext>();
-
-                view! {
-                    <div class="shrink-0 border-t border-edge-subtle px-2 py-2 space-y-1">
-                        // Status + actions row (expanded only)
-                        <div
-                            class="flex items-center justify-between gap-2 px-1 min-h-5"
-                            style:display=move || if collapsed.get() { "none" } else { "flex" }
-                        >
-                            // Connection status
-                            <div class="min-w-0 flex flex-1 items-center gap-1.5 overflow-hidden text-[10px] font-mono text-fg-tertiary">
-                                {move || {
-                                    ws_ctx.map(|ws| {
-                                        view! {
-                                            <div
-                                                class="w-[5px] h-[5px] rounded-full shrink-0"
-                                                style=move || {
-                                                    match ws.connection_state.get() {
-                                                        ConnectionState::Connected => "background: rgb(80, 250, 123); box-shadow: 0 0 6px rgba(80, 250, 123, 0.5)",
-                                                        ConnectionState::Error => "background: rgb(255, 99, 99); box-shadow: 0 0 6px rgba(255, 99, 99, 0.5)",
-                                                        ConnectionState::Connecting => "background: rgb(241, 250, 140)",
-                                                        ConnectionState::Disconnected => "background: rgb(82, 82, 91)",
-                                                    }
-                                                }
-                                            />
-                                            <span class="shrink-0 whitespace-nowrap">
-                                                {move || ws.connection_state.get().to_string()}
-                                            </span>
-                                            <span class="min-w-0 flex-1 truncate text-fg-tertiary/50">
-                                                {move || {
-                                                    let telemetry = preview_telemetry
-                                                        .map(|context| context.presenter.get())
-                                                        .unwrap_or_default();
-                                                    let mode = telemetry.runtime_mode.unwrap_or("pending");
-                                                    let arrival = telemetry.arrival_to_present_ms;
-                                                    if arrival > 0.0 {
-                                                        format!(
-                                                            "preview {:.0}/{} {mode} {:.1}ms",
-                                                            ws.preview_fps.get(),
-                                                            ws.preview_target_fps.get(),
-                                                            arrival
-                                                        )
-                                                    } else {
-                                                        format!(
-                                                            "preview {:.0}/{} {mode}",
-                                                            ws.preview_fps.get(),
-                                                            ws.preview_target_fps.get()
-                                                        )
-                                                    }
-                                                }}
-                                            </span>
-                                            <span class="shrink-0 whitespace-nowrap text-fg-tertiary/50">
-                                                {move || {
-                                                    ws.metrics
-                                                        .get()
-                                                        .map(|metrics| format!("engine {:.0}/{}", metrics.fps.actual, metrics.fps.target))
-                                                        .unwrap_or_else(|| "engine ...".to_string())
-                                                }}
-                                            </span>
-                                        }
-                                    })
-                                }}
-                            </div>
-
-                            // Right side: theme + search
-                            <div class="shrink-0 flex items-center gap-0.5">
-                                // Search (command palette)
-                                {move || {
-                                    palette_ctx.map(|ctx| {
-                                        let open = ctx.open;
-                                        view! {
-                                            <button
-                                                class="p-1.5 rounded-md text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 btn-press"
-                                                title="Search effects (⌘K)"
-                                                aria-label="Search effects"
-                                                on:click=move |_| open.run(())
-                                            >
-                                                <Icon icon=LuSearch width="14px" height="14px" />
-                                            </button>
-                                        }
-                                    })
-                                }}
-
-                                // Theme toggle
-                                {move || {
-                                    theme_ctx.map(|ctx| {
-                                        let toggle = ctx.toggle;
-                                        let is_dark = ctx.is_dark;
-                                        view! {
-                                            <button
-                                                class="p-1.5 rounded-md text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 btn-press"
-                                                title=move || if is_dark.get() { "Light mode" } else { "Dark mode" }
-                                                aria-label=move || if is_dark.get() { "Light mode" } else { "Dark mode" }
-                                                on:click=move |_| toggle.run(())
-                                            >
-                                                {move || if is_dark.get() {
-                                                    view! { <Icon icon=LuSun width="14px" height="14px" style="color: inherit" /> }.into_any()
-                                                } else {
-                                                    view! { <Icon icon=LuMoon width="14px" height="14px" style="color: inherit" /> }.into_any()
-                                                }}
-                                            </button>
-                                        }
-                                    })
-                                }}
-                            </div>
-                        </div>
-
-                        // Collapse toggle
-                        <button
-                            class="flex items-center justify-center w-full h-8 rounded-lg text-fg-tertiary hover:text-fg-secondary
-                                   hover:bg-surface-hover/30 btn-press"
-                            on:click=move |_| set_collapsed.update(|v| *v = !*v)
-                            title=move || if collapsed.get() { "Expand sidebar" } else { "Collapse sidebar" }
-                            aria-label=move || if collapsed.get() { "Expand sidebar" } else { "Collapse sidebar" }
-                        >
-                            <span
-                                class="w-4 h-4 flex items-center justify-center transition-transform duration-200"
-                                class:rotate-180=move || collapsed.get()
-                            >
-                                <Icon icon=LuChevronLeft width="16px" height="16px" />
-                            </span>
-                        </button>
-                    </div>
-                }
-            }
+            // Bottom bar — collapse toggle only
+            <div class="shrink-0 border-t border-edge-subtle px-2 py-2">
+                <button
+                    class="flex items-center justify-center w-full h-8 rounded-lg text-fg-tertiary hover:text-fg-secondary
+                           hover:bg-surface-hover/30 btn-press"
+                    on:click=move |_| set_collapsed.update(|v| *v = !*v)
+                    title=move || if collapsed.get() { "Expand sidebar" } else { "Collapse sidebar" }
+                    aria-label=move || if collapsed.get() { "Expand sidebar" } else { "Collapse sidebar" }
+                >
+                    <span
+                        class="w-4 h-4 flex items-center justify-center transition-transform duration-200"
+                        class:rotate-180=move || collapsed.get()
+                    >
+                        <Icon icon=LuChevronLeft width="16px" height="16px" />
+                    </span>
+                </button>
+            </div>
         </nav>
     }
 }

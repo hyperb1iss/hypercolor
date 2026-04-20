@@ -45,3 +45,7 @@ site/out/
 # Debug
 *.pdb
 .tmp
+
+# Claude vomit
+.agents/scheduled_tasks.lock
+.agents/settings.local.json
