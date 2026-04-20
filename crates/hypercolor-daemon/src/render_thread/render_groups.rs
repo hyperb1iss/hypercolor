@@ -36,16 +36,22 @@ pub(crate) struct GroupCanvasFrame {
     pub display_target: DisplayFaceTarget,
 }
 
+#[derive(Clone)]
+pub(crate) enum LedSamplingStrategy {
+    SparkleFlinger,
+    PreSampled(Arc<SpatialLayout>),
+    ReusePublished(Arc<SpatialLayout>),
+}
+
 pub(crate) struct RenderGroupResult {
-    pub preview_frame: ProducerFrame,
+    pub ui_preview_frame: ProducerFrame,
     pub group_canvases: Vec<(RenderGroupId, GroupCanvasFrame)>,
     pub active_group_canvas_ids: Vec<RenderGroupId>,
-    pub layout: Arc<SpatialLayout>,
+    pub led_sampling_strategy: LedSamplingStrategy,
     pub render_us: u32,
     pub sample_us: u32,
     pub preview_compose_us: u32,
     pub logical_layer_count: u32,
-    pub reuse_published_zones: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -61,7 +67,7 @@ pub(crate) struct RenderGroupEffectError {
 #[derive(Clone)]
 struct RetainedRenderGroupFrame {
     groups_revision: u64,
-    preview_frame: ProducerFrame,
+    ui_preview_frame: ProducerFrame,
     active_group_canvas_ids: Vec<RenderGroupId>,
     layout: Arc<SpatialLayout>,
     logical_layer_count: u32,
@@ -157,15 +163,16 @@ impl RenderGroupRuntime {
         }
 
         Some(RenderGroupResult {
-            preview_frame: retained.preview_frame.clone(),
+            ui_preview_frame: retained.ui_preview_frame.clone(),
             group_canvases: Vec::new(),
             active_group_canvas_ids: retained.active_group_canvas_ids.clone(),
-            layout: Arc::clone(&retained.layout),
+            led_sampling_strategy: LedSamplingStrategy::ReusePublished(Arc::clone(
+                &retained.layout,
+            )),
             render_us: 0,
             sample_us: 0,
             preview_compose_us: 0,
             logical_layer_count: retained.logical_layer_count,
-            reuse_published_zones: true,
         })
     }
 
@@ -302,20 +309,20 @@ impl RenderGroupRuntime {
         )
         .unwrap_or(u32::MAX);
         let preview_compose_start = Instant::now();
-        let preview_frame = self.compose_preview(groups);
+        let ui_preview_frame = self.compose_ui_preview(groups);
         let preview_compose_us = micros_u32(preview_compose_start.elapsed());
-        let layout = Arc::clone(&self.combined_layout);
 
         let result = RenderGroupResult {
-            preview_frame,
+            ui_preview_frame,
             group_canvases,
             active_group_canvas_ids,
-            layout,
+            led_sampling_strategy: LedSamplingStrategy::PreSampled(Arc::clone(
+                &self.combined_layout,
+            )),
             render_us,
             sample_us,
             preview_compose_us,
             logical_layer_count,
-            reuse_published_zones: false,
         };
         self.clear_effect_error();
         self.retain_frame(groups_revision, &result);
@@ -530,15 +537,16 @@ impl RenderGroupRuntime {
         zones.truncate(next_index);
 
         Ok(Some(RenderGroupResult {
-            preview_frame: ProducerFrame::Surface(preview_surface),
+            ui_preview_frame: ProducerFrame::Surface(preview_surface),
             group_canvases,
             active_group_canvas_ids,
-            layout: Arc::clone(&self.combined_layout),
+            led_sampling_strategy: LedSamplingStrategy::PreSampled(Arc::clone(
+                &self.combined_layout,
+            )),
             render_us,
             sample_us,
             preview_compose_us: 0,
             logical_layer_count: 1,
-            reuse_published_zones: false,
         }))
     }
 
@@ -577,9 +585,13 @@ impl RenderGroupRuntime {
     fn retain_frame(&mut self, groups_revision: u64, result: &RenderGroupResult) {
         self.retained_frame = Some(RetainedRenderGroupFrame {
             groups_revision,
-            preview_frame: result.preview_frame.clone(),
+            ui_preview_frame: result.ui_preview_frame.clone(),
             active_group_canvas_ids: result.active_group_canvas_ids.clone(),
-            layout: Arc::clone(&result.layout),
+            layout: match &result.led_sampling_strategy {
+                LedSamplingStrategy::PreSampled(layout)
+                | LedSamplingStrategy::ReusePublished(layout) => Arc::clone(layout),
+                LedSamplingStrategy::SparkleFlinger => Arc::clone(&self.combined_layout),
+            },
             logical_layer_count: result.logical_layer_count,
         });
     }
@@ -616,10 +628,10 @@ impl RenderGroupRuntime {
         );
     }
 
-    fn compose_preview(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
+    fn compose_ui_preview(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
         let Some(mut lease) = self.preview_surface_pool.dequeue() else {
             let mut preview = Canvas::new(self.preview_width, self.preview_height);
-            compose_preview_canvas(
+            compose_ui_preview_canvas(
                 &mut preview,
                 groups,
                 &self.target_canvases,
@@ -629,7 +641,7 @@ impl RenderGroupRuntime {
             return ProducerFrame::Canvas(preview);
         };
 
-        compose_preview_canvas(
+        compose_ui_preview_canvas(
             lease.canvas_mut(),
             groups,
             &self.target_canvases,
@@ -641,7 +653,7 @@ impl RenderGroupRuntime {
     }
 }
 
-fn compose_preview_canvas(
+fn compose_ui_preview_canvas(
     preview: &mut Canvas,
     groups: &[RenderGroup],
     target_canvases: &HashMap<RenderGroupId, Canvas>,
@@ -945,7 +957,7 @@ mod tests {
         source.fill(Rgba::new(12, 34, 56, 255));
         runtime.target_canvases.insert(group.id, source);
 
-        let preview = runtime.compose_preview(&[group]);
+        let preview = runtime.compose_ui_preview(&[group]);
         let ProducerFrame::Surface(surface) = preview else {
             panic!("single-group preview should publish a pooled surface");
         };
@@ -967,7 +979,7 @@ mod tests {
         source.set_pixel(1, 1, Rgba::new(255, 255, 0, 255));
         runtime.target_canvases.insert(group.id, source);
 
-        let preview = runtime.compose_preview(&[group]);
+        let preview = runtime.compose_ui_preview(&[group]);
         let ProducerFrame::Surface(surface) = preview else {
             panic!("scaled single-group preview should publish a pooled surface");
         };
@@ -1001,7 +1013,7 @@ mod tests {
             .target_canvases
             .insert(display_group.id, display_canvas);
 
-        let preview = runtime.compose_preview(&[preview_group, display_group]);
+        let preview = runtime.compose_ui_preview(&[preview_group, display_group]);
         let ProducerFrame::Surface(surface) = preview else {
             panic!("mixed preview should publish a pooled surface");
         };
@@ -1056,7 +1068,7 @@ mod tests {
         )
         .expect("single group should render");
 
-        let ProducerFrame::Surface(surface) = result.preview_frame else {
+        let ProducerFrame::Surface(surface) = result.ui_preview_frame else {
             panic!("single full-size group should render into a surface");
         };
 
@@ -1097,7 +1109,7 @@ mod tests {
         )
         .expect("single display group should render");
 
-        let ProducerFrame::Surface(preview_surface) = result.preview_frame else {
+        let ProducerFrame::Surface(preview_surface) = result.ui_preview_frame else {
             panic!("single display group should render into a surface");
         };
         let [(_, group_canvas_frame)] = &result.group_canvases[..] else {
@@ -1141,7 +1153,7 @@ mod tests {
         )
         .expect("mixed preview and display groups should render");
 
-        let ProducerFrame::Surface(preview_surface) = result.preview_frame else {
+        let ProducerFrame::Surface(preview_surface) = result.ui_preview_frame else {
             panic!("mixed full-preview scene should publish a surface-backed preview");
         };
         let [(_, group_canvas_frame)] = &result.group_canvases[..] else {

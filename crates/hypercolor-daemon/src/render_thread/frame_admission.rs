@@ -5,12 +5,21 @@ const ADMISSION_HISTORY_CAPACITY: usize = 60;
 const FULL_TIER_ELIGIBLE_TOTAL_RATIO: f64 = 0.8;
 const FULL_TIER_ELIGIBLE_PRODUCER_RATIO: f64 = 0.6;
 const FULL_TIER_ELIGIBLE_COMPOSITION_RATIO: f64 = 0.2;
+const FULL_TIER_ELIGIBLE_PUSH_RATIO: f64 = 0.16;
+const FULL_TIER_ELIGIBLE_PUBLISH_RATIO: f64 = 0.1;
+const FULL_TIER_ELIGIBLE_WAKE_RATIO: f64 = 0.08;
+const FULL_TIER_ELIGIBLE_JITTER_RATIO: f64 = 0.1;
 const FULL_TIER_ELIGIBLE_P95_RATIO: f64 = 0.85;
 const FULL_TIER_REVOKE_TOTAL_RATIO: f64 = 0.92;
 const FULL_TIER_REVOKE_PRODUCER_RATIO: f64 = 0.7;
 const FULL_TIER_REVOKE_COMPOSITION_RATIO: f64 = 0.25;
+const FULL_TIER_REVOKE_PUSH_RATIO: f64 = 0.24;
+const FULL_TIER_REVOKE_PUBLISH_RATIO: f64 = 0.16;
+const FULL_TIER_REVOKE_WAKE_RATIO: f64 = 0.16;
+const FULL_TIER_REVOKE_JITTER_RATIO: f64 = 0.2;
 const FULL_TIER_REVOKE_P95_RATIO: f64 = 0.95;
 const FULL_TIER_COPY_PRESSURE_THRESHOLD: u32 = 2;
+const FULL_TIER_OUTPUT_ERROR_THRESHOLD: u32 = 2;
 const FULL_TIER_REVOKE_MISS_THRESHOLD: u32 = 2;
 const FULL_TIER_REVOKE_PERCENTILE_MIN_SAMPLES: usize = 10;
 const FULL_TIER_READMIT_MIN_SAMPLES: usize = 30;
@@ -21,7 +30,12 @@ pub(crate) struct FrameAdmissionSample {
     pub(crate) total_us: u32,
     pub(crate) producer_us: u32,
     pub(crate) composition_us: u32,
+    pub(crate) push_us: u32,
+    pub(crate) publish_us: u32,
+    pub(crate) wake_late_us: u32,
+    pub(crate) jitter_us: u32,
     pub(crate) full_frame_copy_count: u32,
+    pub(crate) output_errors: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -36,10 +50,15 @@ pub(crate) struct FrameAdmissionController {
     total_ewma_us: Option<f64>,
     producer_ewma_us: Option<f64>,
     composition_ewma_us: Option<f64>,
+    push_ewma_us: Option<f64>,
+    publish_ewma_us: Option<f64>,
+    wake_ewma_us: Option<f64>,
+    jitter_ewma_us: Option<f64>,
     recent_total_us: [u32; ADMISSION_HISTORY_CAPACITY],
     recent_total_len: usize,
     recent_total_next: usize,
     consecutive_copy_frames: u32,
+    consecutive_output_error_frames: u32,
     consecutive_over_budget_frames: u32,
     consecutive_full_eligible_frames: u32,
 }
@@ -52,10 +71,15 @@ impl FrameAdmissionController {
             total_ewma_us: None,
             producer_ewma_us: None,
             composition_ewma_us: None,
+            push_ewma_us: None,
+            publish_ewma_us: None,
+            wake_ewma_us: None,
+            jitter_ewma_us: None,
             recent_total_us: [0; ADMISSION_HISTORY_CAPACITY],
             recent_total_len: 0,
             recent_total_next: 0,
             consecutive_copy_frames: 0,
+            consecutive_output_error_frames: 0,
             consecutive_over_budget_frames: 0,
             consecutive_full_eligible_frames: 0,
         }
@@ -73,11 +97,22 @@ impl FrameAdmissionController {
         self.producer_ewma_us = Some(update_ewma(self.producer_ewma_us, sample.producer_us));
         self.composition_ewma_us =
             Some(update_ewma(self.composition_ewma_us, sample.composition_us));
+        self.push_ewma_us = Some(update_ewma(self.push_ewma_us, sample.push_us));
+        self.publish_ewma_us = Some(update_ewma(self.publish_ewma_us, sample.publish_us));
+        self.wake_ewma_us = Some(update_ewma(self.wake_ewma_us, sample.wake_late_us));
+        self.jitter_ewma_us = Some(update_ewma(self.jitter_ewma_us, sample.jitter_us));
 
         if sample.full_frame_copy_count > 0 {
             self.consecutive_copy_frames = self.consecutive_copy_frames.saturating_add(1);
         } else {
             self.consecutive_copy_frames = 0;
+        }
+
+        if sample.output_errors > 0 {
+            self.consecutive_output_error_frames =
+                self.consecutive_output_error_frames.saturating_add(1);
+        } else {
+            self.consecutive_output_error_frames = 0;
         }
 
         if sample.total_us > full_tier_budget_us_u32() {
@@ -126,6 +161,10 @@ impl FrameAdmissionController {
         let total_ewma_us = self.total_ewma_us.unwrap_or(full_budget_us);
         let producer_ewma_us = self.producer_ewma_us.unwrap_or(0.0);
         let composition_ewma_us = self.composition_ewma_us.unwrap_or(0.0);
+        let push_ewma_us = self.push_ewma_us.unwrap_or(0.0);
+        let publish_ewma_us = self.publish_ewma_us.unwrap_or(0.0);
+        let wake_ewma_us = self.wake_ewma_us.unwrap_or(0.0);
+        let jitter_ewma_us = self.jitter_ewma_us.unwrap_or(0.0);
         let copy_pressure = self.consecutive_copy_frames >= FULL_TIER_COPY_PRESSURE_THRESHOLD;
         let percentile_window_ready =
             self.recent_total_len >= FULL_TIER_REVOKE_PERCENTILE_MIN_SAMPLES;
@@ -136,6 +175,7 @@ impl FrameAdmissionController {
         };
 
         copy_pressure
+            || self.consecutive_output_error_frames >= FULL_TIER_OUTPUT_ERROR_THRESHOLD
             || self.consecutive_over_budget_frames >= FULL_TIER_REVOKE_MISS_THRESHOLD
             || (percentile_window_ready
                 && total_ewma_us > full_budget_us * FULL_TIER_REVOKE_TOTAL_RATIO)
@@ -143,6 +183,14 @@ impl FrameAdmissionController {
                 && producer_ewma_us > full_budget_us * FULL_TIER_REVOKE_PRODUCER_RATIO)
             || (percentile_window_ready
                 && composition_ewma_us > full_budget_us * FULL_TIER_REVOKE_COMPOSITION_RATIO)
+            || (percentile_window_ready
+                && push_ewma_us > full_budget_us * FULL_TIER_REVOKE_PUSH_RATIO)
+            || (percentile_window_ready
+                && publish_ewma_us > full_budget_us * FULL_TIER_REVOKE_PUBLISH_RATIO)
+            || (percentile_window_ready
+                && wake_ewma_us > full_budget_us * FULL_TIER_REVOKE_WAKE_RATIO)
+            || (percentile_window_ready
+                && jitter_ewma_us > full_budget_us * FULL_TIER_REVOKE_JITTER_RATIO)
             || (percentile_window_ready
                 && p95_total_us > full_budget_us * FULL_TIER_REVOKE_P95_RATIO)
             || (percentile_window_ready && p99_total_us > full_budget_us)
@@ -157,15 +205,24 @@ impl FrameAdmissionController {
         let total_ewma_us = self.total_ewma_us.unwrap_or(full_budget_us);
         let producer_ewma_us = self.producer_ewma_us.unwrap_or(0.0);
         let composition_ewma_us = self.composition_ewma_us.unwrap_or(0.0);
+        let push_ewma_us = self.push_ewma_us.unwrap_or(0.0);
+        let publish_ewma_us = self.publish_ewma_us.unwrap_or(0.0);
+        let wake_ewma_us = self.wake_ewma_us.unwrap_or(0.0);
+        let jitter_ewma_us = self.jitter_ewma_us.unwrap_or(0.0);
         let (p95_total_us, p99_total_us) =
             percentile_pair_us(&self.recent_total_us[..self.recent_total_len])
                 .unwrap_or((full_budget_us, full_budget_us));
 
         self.consecutive_copy_frames == 0
+            && self.consecutive_output_error_frames == 0
             && self.consecutive_over_budget_frames == 0
             && total_ewma_us <= full_budget_us * FULL_TIER_ELIGIBLE_TOTAL_RATIO
             && producer_ewma_us <= full_budget_us * FULL_TIER_ELIGIBLE_PRODUCER_RATIO
             && composition_ewma_us <= full_budget_us * FULL_TIER_ELIGIBLE_COMPOSITION_RATIO
+            && push_ewma_us <= full_budget_us * FULL_TIER_ELIGIBLE_PUSH_RATIO
+            && publish_ewma_us <= full_budget_us * FULL_TIER_ELIGIBLE_PUBLISH_RATIO
+            && wake_ewma_us <= full_budget_us * FULL_TIER_ELIGIBLE_WAKE_RATIO
+            && jitter_ewma_us <= full_budget_us * FULL_TIER_ELIGIBLE_JITTER_RATIO
             && p95_total_us <= full_budget_us * FULL_TIER_ELIGIBLE_P95_RATIO
             && p99_total_us <= full_budget_us
     }
@@ -220,7 +277,12 @@ mod tests {
             total_us,
             producer_us,
             composition_us,
+            push_us: 0,
+            publish_us: 0,
+            wake_late_us: 0,
+            jitter_us: 0,
             full_frame_copy_count: 0,
+            output_errors: 0,
         }
     }
 
@@ -302,5 +364,39 @@ mod tests {
 
         let recovered = admission.record_frame(sample(7_500, 4_000, 900));
         assert_eq!(recovered.ceiling_tier, FpsTier::Full);
+    }
+
+    #[test]
+    fn output_errors_revoke_full_tier_immediately() {
+        let mut admission = FrameAdmissionController::new(FpsTier::Full);
+
+        let first = admission.record_frame(FrameAdmissionSample {
+            output_errors: 1,
+            ..sample(8_000, 4_500, 1_000)
+        });
+        assert_eq!(first.ceiling_tier, FpsTier::Full);
+
+        let second = admission.record_frame(FrameAdmissionSample {
+            output_errors: 1,
+            ..sample(8_000, 4_500, 1_000)
+        });
+        assert_eq!(second.ceiling_tier, FpsTier::High);
+    }
+
+    #[test]
+    fn sustained_publish_pressure_revokes_full_tier() {
+        let mut admission = FrameAdmissionController::new(FpsTier::Full);
+
+        for _ in 0..super::FULL_TIER_REVOKE_PERCENTILE_MIN_SAMPLES {
+            let decision = admission.record_frame(FrameAdmissionSample {
+                publish_us: 3_200,
+                ..sample(9_000, 4_500, 1_000)
+            });
+            if decision.ceiling_tier == FpsTier::High {
+                return;
+            }
+        }
+
+        panic!("sustained publish pressure should revoke full tier");
     }
 }

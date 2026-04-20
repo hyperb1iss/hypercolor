@@ -86,6 +86,7 @@ pub struct LatestFrameStatus {
     pub render_group_count: u32,
     pub full_frame_copy_count: u32,
     pub full_frame_copy_kb: f64,
+    pub output_errors: u32,
     pub render_surfaces: RenderSurfaceStatus,
 }
 
@@ -414,6 +415,7 @@ fn latest_frame_status(frame: LatestFrameMetrics, render_elapsed_ms: f64) -> Lat
         render_group_count: frame.render_group_count,
         full_frame_copy_count: frame.full_frame_copy_count,
         full_frame_copy_kb: round_2(bytes_to_kib(frame.full_frame_copy_bytes)),
+        output_errors: frame.output_errors,
         render_surfaces: RenderSurfaceStatus {
             slot_count: frame.render_surface_slot_count,
             free_slots: frame.render_surface_free_slots,
@@ -641,6 +643,7 @@ mod tests {
         );
         assert_eq!(json["data"]["latest_frame"]["full_frame_copy_count"], 1);
         assert_eq!(json["data"]["latest_frame"]["full_frame_copy_kb"], 250.0);
+        assert_eq!(json["data"]["latest_frame"]["output_errors"], 0);
         assert_eq!(json["data"]["effect_health"]["errors_total"], 1);
         assert_eq!(json["data"]["effect_health"]["fallbacks_applied_total"], 1);
         assert_eq!(

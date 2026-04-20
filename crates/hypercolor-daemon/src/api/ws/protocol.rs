@@ -787,6 +787,12 @@ pub(super) struct MetricsPacing {
     pub(super) wake_delay_avg_ms: f64,
     pub(super) wake_delay_p95_ms: f64,
     pub(super) wake_delay_max_ms: f64,
+    pub(super) push_avg_ms: f64,
+    pub(super) push_p95_ms: f64,
+    pub(super) push_max_ms: f64,
+    pub(super) publish_avg_ms: f64,
+    pub(super) publish_p95_ms: f64,
+    pub(super) publish_max_ms: f64,
     pub(super) frame_age_ms: f64,
     pub(super) reused_inputs: u32,
     pub(super) reused_canvas: u32,
@@ -798,6 +804,8 @@ pub(super) struct MetricsPacing {
     pub(super) gpu_sample_retry_hit: u32,
     pub(super) gpu_sample_queue_saturated: u32,
     pub(super) gpu_sample_wait_blocked: u32,
+    pub(super) output_error_frames: u32,
+    pub(super) full_frame_copy_frames: u32,
 }
 
 #[derive(Debug, Serialize)]

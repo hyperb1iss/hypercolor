@@ -29,9 +29,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 #[cfg(target_os = "linux")]
 use std::time::Duration;
-use std::time::Instant;
 
 use anyhow::{Context, anyhow};
+use arc_swap::ArcSwapOption;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, SupportedStreamConfig};
 #[cfg(target_os = "linux")]
@@ -268,6 +268,7 @@ pub struct AudioInput {
     capture_active: bool,
     config: AudioPipelineConfig,
     analyzer: Arc<Mutex<AudioAnalyzer>>,
+    latest_snapshot: Arc<ArcSwapOption<AudioData>>,
     capture: Option<CaptureHandle>,
     parked_source: Option<AudioSourceType>,
     degraded_to_silence: bool,
@@ -284,6 +285,7 @@ impl AudioInput {
             capture_active: false,
             config: config.clone(),
             analyzer: Arc::new(Mutex::new(AudioAnalyzer::new(config))),
+            latest_snapshot: Arc::new(ArcSwapOption::empty()),
             capture: None,
             parked_source: None,
             degraded_to_silence: false,
@@ -303,6 +305,7 @@ impl AudioInput {
     pub fn push_samples(&mut self, samples: &[f32]) {
         if let Ok(mut analyzer) = self.analyzer.lock() {
             analyzer.push_samples(samples);
+            publish_latest_snapshot(&mut analyzer, samples.len(), &self.latest_snapshot);
         }
     }
 
@@ -325,7 +328,7 @@ impl AudioInput {
         self.set_capture_active_state(active)
     }
 
-    fn sample_with_dt(&mut self, dt: f32) -> anyhow::Result<InputData> {
+    fn sample_with_dt(&mut self, _dt: f32) -> anyhow::Result<InputData> {
         if !self.running {
             return Ok(InputData::None);
         }
@@ -333,31 +336,15 @@ impl AudioInput {
             return Ok(InputData::Audio(AudioData::silence()));
         }
 
-        let dt = if dt.is_finite() && dt > 0.0 {
-            dt
-        } else {
-            DEFAULT_AUDIO_FRAME_DT
-        };
-        let lock_wait_started = Instant::now();
-        let mut analyzer = self
-            .analyzer
-            .lock()
-            .map_err(|_| anyhow!("audio analyzer mutex poisoned"))?;
-        let lock_wait = lock_wait_started.elapsed();
-        tracing::trace!(
-            input = %self.name,
-            lock_wait_us = u64::try_from(lock_wait.as_micros()).unwrap_or(u64::MAX),
-            "Audio analyzer lock acquired"
-        );
-        match analyzer.analyze(dt)? {
-            Some(data) => Ok(InputData::Audio(data)),
-            None if self.degraded_to_silence
-                || matches!(self.config.source, AudioSourceType::None) =>
-            {
-                Ok(InputData::Audio(AudioData::silence()))
-            }
-            None => Ok(InputData::None),
+        if let Some(snapshot) = self.latest_snapshot.load_full() {
+            return Ok(InputData::Audio((*snapshot).clone()));
         }
+
+        if self.degraded_to_silence || matches!(self.config.source, AudioSourceType::None) {
+            return Ok(InputData::Audio(AudioData::silence()));
+        }
+
+        Ok(InputData::None)
     }
 
     fn apply_analyzer_config(&mut self, config: &AudioPipelineConfig) {
@@ -366,6 +353,7 @@ impl AudioInput {
         } else {
             self.analyzer = Arc::new(Mutex::new(AudioAnalyzer::new(config)));
         }
+        self.clear_latest_snapshot();
     }
 
     fn start_stream_for_config(
@@ -377,7 +365,12 @@ impl AudioInput {
             return Ok((analyzer, None));
         }
 
-        let capture = build_capture_stream(&self.host, config, Arc::clone(&analyzer))?;
+        let capture = build_capture_stream(
+            &self.host,
+            config,
+            Arc::clone(&analyzer),
+            Arc::clone(&self.latest_snapshot),
+        )?;
 
         Ok((analyzer, Some(capture)))
     }
@@ -388,6 +381,11 @@ impl AudioInput {
         } else {
             self.analyzer = Arc::new(Mutex::new(AudioAnalyzer::new(&self.config)));
         }
+        self.clear_latest_snapshot();
+    }
+
+    fn clear_latest_snapshot(&self) {
+        self.latest_snapshot.store(None);
     }
 
     fn pause_capture_stream(&mut self) {
@@ -482,7 +480,13 @@ impl AudioInput {
             }
         }
 
-        match build_capture_stream(&self.host, &self.config, Arc::clone(&self.analyzer)) {
+        self.clear_latest_snapshot();
+        match build_capture_stream(
+            &self.host,
+            &self.config,
+            Arc::clone(&self.analyzer),
+            Arc::clone(&self.latest_snapshot),
+        ) {
             Ok(capture) => {
                 tracing::info!(
                     input = %self.name,
@@ -704,6 +708,7 @@ fn build_capture_stream(
     host: &cpal::Host,
     config: &AudioPipelineConfig,
     analyzer: Arc<Mutex<AudioAnalyzer>>,
+    latest_snapshot: Arc<ArcSwapOption<AudioData>>,
 ) -> anyhow::Result<CaptureHandle> {
     let selected = select_input_device(host, &config.source)?;
     match selected {
@@ -719,50 +724,102 @@ fn build_capture_stream(
             let channels = usize::from(stream_config.channels.max(1));
             let sample_format = supported_config.sample_format();
             let stream = match sample_format {
-                SampleFormat::I8 => {
-                    build_stream::<i8>(&device, &stream_config, channels, analyzer, &display_name)
-                }
-                SampleFormat::I16 => {
-                    build_stream::<i16>(&device, &stream_config, channels, analyzer, &display_name)
-                }
+                SampleFormat::I8 => build_stream::<i8>(
+                    &device,
+                    &stream_config,
+                    channels,
+                    analyzer,
+                    latest_snapshot,
+                    &display_name,
+                ),
+                SampleFormat::I16 => build_stream::<i16>(
+                    &device,
+                    &stream_config,
+                    channels,
+                    analyzer,
+                    latest_snapshot,
+                    &display_name,
+                ),
                 SampleFormat::I24 => build_stream::<cpal::I24>(
                     &device,
                     &stream_config,
                     channels,
                     analyzer,
+                    latest_snapshot,
                     &display_name,
                 ),
-                SampleFormat::I32 => {
-                    build_stream::<i32>(&device, &stream_config, channels, analyzer, &display_name)
-                }
-                SampleFormat::I64 => {
-                    build_stream::<i64>(&device, &stream_config, channels, analyzer, &display_name)
-                }
-                SampleFormat::U8 => {
-                    build_stream::<u8>(&device, &stream_config, channels, analyzer, &display_name)
-                }
-                SampleFormat::U16 => {
-                    build_stream::<u16>(&device, &stream_config, channels, analyzer, &display_name)
-                }
+                SampleFormat::I32 => build_stream::<i32>(
+                    &device,
+                    &stream_config,
+                    channels,
+                    analyzer,
+                    latest_snapshot,
+                    &display_name,
+                ),
+                SampleFormat::I64 => build_stream::<i64>(
+                    &device,
+                    &stream_config,
+                    channels,
+                    analyzer,
+                    latest_snapshot,
+                    &display_name,
+                ),
+                SampleFormat::U8 => build_stream::<u8>(
+                    &device,
+                    &stream_config,
+                    channels,
+                    analyzer,
+                    latest_snapshot,
+                    &display_name,
+                ),
+                SampleFormat::U16 => build_stream::<u16>(
+                    &device,
+                    &stream_config,
+                    channels,
+                    analyzer,
+                    latest_snapshot,
+                    &display_name,
+                ),
                 SampleFormat::U24 => build_stream::<cpal::U24>(
                     &device,
                     &stream_config,
                     channels,
                     analyzer,
+                    latest_snapshot,
                     &display_name,
                 ),
-                SampleFormat::U32 => {
-                    build_stream::<u32>(&device, &stream_config, channels, analyzer, &display_name)
-                }
-                SampleFormat::U64 => {
-                    build_stream::<u64>(&device, &stream_config, channels, analyzer, &display_name)
-                }
-                SampleFormat::F32 => {
-                    build_stream::<f32>(&device, &stream_config, channels, analyzer, &display_name)
-                }
-                SampleFormat::F64 => {
-                    build_stream::<f64>(&device, &stream_config, channels, analyzer, &display_name)
-                }
+                SampleFormat::U32 => build_stream::<u32>(
+                    &device,
+                    &stream_config,
+                    channels,
+                    analyzer,
+                    latest_snapshot,
+                    &display_name,
+                ),
+                SampleFormat::U64 => build_stream::<u64>(
+                    &device,
+                    &stream_config,
+                    channels,
+                    analyzer,
+                    latest_snapshot,
+                    &display_name,
+                ),
+                SampleFormat::F32 => build_stream::<f32>(
+                    &device,
+                    &stream_config,
+                    channels,
+                    analyzer,
+                    latest_snapshot,
+                    &display_name,
+                ),
+                SampleFormat::F64 => build_stream::<f64>(
+                    &device,
+                    &stream_config,
+                    channels,
+                    analyzer,
+                    latest_snapshot,
+                    &display_name,
+                ),
                 sample_format => Err(anyhow!("unsupported audio sample format: {sample_format}")),
             }?;
             stream
@@ -784,7 +841,13 @@ fn build_capture_stream(
         SelectedInputDevice::LinuxPulse {
             source_name,
             display_name,
-        } => build_linux_pulse_capture_stream(&source_name, &display_name, analyzer, config),
+        } => build_linux_pulse_capture_stream(
+            &source_name,
+            &display_name,
+            analyzer,
+            latest_snapshot,
+            config,
+        ),
     }
 }
 
@@ -1000,6 +1063,7 @@ fn build_linux_pulse_capture_stream(
     source_name: &str,
     display_name: &str,
     analyzer: Arc<Mutex<AudioAnalyzer>>,
+    latest_snapshot: Arc<ArcSwapOption<AudioData>>,
     config: &AudioPipelineConfig,
 ) -> anyhow::Result<CaptureHandle> {
     const PULSE_CAPTURE_CHANNELS: usize = 2;
@@ -1020,6 +1084,7 @@ fn build_linux_pulse_capture_stream(
                 &worker_source,
                 &worker_display,
                 analyzer,
+                latest_snapshot,
                 ready_tx,
                 stop_rx,
                 PULSE_CAPTURE_CHANNELS,
@@ -1070,6 +1135,7 @@ fn run_linux_pulse_capture(
     source_name: &str,
     display_name: &str,
     analyzer: Arc<Mutex<AudioAnalyzer>>,
+    latest_snapshot: Arc<ArcSwapOption<AudioData>>,
     ready_tx: mpsc::SyncSender<Result<(), String>>,
     stop_rx: mpsc::Receiver<()>,
     channels: usize,
@@ -1123,6 +1189,7 @@ fn run_linux_pulse_capture(
     let buffer_attr = pulse_record_buffer_attr(&spec);
     let stream_for_callback = Rc::clone(&stream);
     let callback_analyzer = Arc::clone(&analyzer);
+    let callback_snapshot = Arc::clone(&latest_snapshot);
     let callback_source = source_name.to_owned();
     stream
         .borrow_mut()
@@ -1132,7 +1199,12 @@ fn run_linux_pulse_capture(
                 match guard.peek() {
                     Ok(pulse::stream::PeekResult::Data(bytes)) => {
                         let samples = bytes_to_f32_samples(bytes);
-                        push_input_samples(&samples, channels, &callback_analyzer);
+                        push_input_samples(
+                            &samples,
+                            channels,
+                            &callback_analyzer,
+                            &callback_snapshot,
+                        );
                         if let Err(error) = guard.discard() {
                             tracing::warn!(
                                 source = %callback_source,
@@ -1370,6 +1442,7 @@ fn build_stream<T>(
     config: &cpal::StreamConfig,
     channels: usize,
     analyzer: Arc<Mutex<AudioAnalyzer>>,
+    latest_snapshot: Arc<ArcSwapOption<AudioData>>,
     device_name: &str,
 ) -> anyhow::Result<Stream>
 where
@@ -1380,7 +1453,7 @@ where
     device
         .build_input_stream(
             config,
-            move |data: &[T], _| push_input_samples(data, channels, &analyzer),
+            move |data: &[T], _| push_input_samples(data, channels, &analyzer, &latest_snapshot),
             move |error| {
                 tracing::warn!(
                     device = %err_name,
@@ -1393,8 +1466,12 @@ where
         .with_context(|| format!("failed to build audio capture stream for '{device_name}'"))
 }
 
-fn push_input_samples<T>(input: &[T], channels: usize, analyzer: &Arc<Mutex<AudioAnalyzer>>)
-where
+fn push_input_samples<T>(
+    input: &[T],
+    channels: usize,
+    analyzer: &Arc<Mutex<AudioAnalyzer>>,
+    latest_snapshot: &Arc<ArcSwapOption<AudioData>>,
+) where
     T: Sample + Copy,
     f32: FromSample<T>,
 {
@@ -1409,7 +1486,36 @@ where
 
     if let Ok(mut guard) = analyzer.lock() {
         guard.push_samples(&mono);
+        publish_latest_snapshot(&mut guard, mono.len(), latest_snapshot);
     }
+}
+
+fn publish_latest_snapshot(
+    analyzer: &mut AudioAnalyzer,
+    sample_count: usize,
+    latest_snapshot: &Arc<ArcSwapOption<AudioData>>,
+) {
+    match analyzer.analyze(analysis_dt_seconds(sample_count, analyzer.sample_rate_hz())) {
+        Ok(Some(snapshot)) => latest_snapshot.store(Some(Arc::new(snapshot))),
+        Ok(None) => {}
+        Err(error) => tracing::warn!(%error, "Audio snapshot analysis failed"),
+    }
+}
+
+fn analysis_dt_seconds(sample_count: usize, sample_rate_hz: u32) -> f32 {
+    if sample_rate_hz == 0 {
+        return DEFAULT_AUDIO_FRAME_DT;
+    }
+
+    let safe_sample_count = u32::try_from(sample_count.max(1)).unwrap_or(u32::MAX);
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "audio callback chunk durations only need frame-scale precision"
+    )]
+    let dt = (f64::from(safe_sample_count) / f64::from(sample_rate_hz)) as f32;
+    dt.max(DEFAULT_AUDIO_FRAME_DT / 8.0)
 }
 
 #[cfg(all(test, target_os = "linux"))]

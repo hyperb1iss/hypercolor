@@ -1,20 +1,20 @@
-use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
 use tracing::warn;
 
 use hypercolor_core::types::canvas::Canvas;
-use hypercolor_types::event::{HypercolorEvent, ZoneColors};
+use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::scene::RenderGroupId;
-use hypercolor_types::spatial::SpatialLayout;
 
 use super::frame_pacing::SkipDecision;
 use super::frame_scheduler::FrameSceneSnapshot;
 use super::frame_sources::static_surface;
 use super::pipeline_runtime::{FrameInputs, RenderCaches};
 use super::producer_queue::{ProducerFrame, ProducerFrameState};
-use super::render_groups::{GroupCanvasFrame, RenderGroupEffectError, RenderGroupResult};
+use super::render_groups::{
+    GroupCanvasFrame, LedSamplingStrategy, RenderGroupEffectError, RenderGroupResult,
+};
 use super::sparkleflinger::{ComposedFrameSet, PreviewSurfaceRequest};
 use super::{RenderThreadState, micros_between, micros_u32};
 use crate::preview_runtime::PreviewDemandSummary;
@@ -29,9 +29,7 @@ pub(crate) struct RenderStageStats {
     pub(crate) web_viewport_preview: Option<Canvas>,
     pub(crate) group_canvases: Vec<(RenderGroupId, GroupCanvasFrame)>,
     pub(crate) active_group_canvas_ids: Vec<RenderGroupId>,
-    pub(crate) sampled_layout: Option<Arc<SpatialLayout>>,
-    pub(crate) sampled_zones: Option<Vec<ZoneColors>>,
-    pub(crate) reuse_published_frame: bool,
+    pub(crate) led_sampling_strategy: LedSamplingStrategy,
     pub(crate) producer_render_us: u32,
     pub(crate) producer_preview_compose_us: u32,
     pub(crate) sampled_us: u32,
@@ -271,9 +269,7 @@ impl ComposeContext<'_> {
             web_viewport_preview: None,
             group_canvases: Vec::new(),
             active_group_canvas_ids: Vec::new(),
-            sampled_layout: None,
-            sampled_zones: None,
-            reuse_published_frame: false,
+            led_sampling_strategy: LedSamplingStrategy::SparkleFlinger,
             producer_render_us: 0,
             producer_preview_compose_us: 0,
             sampled_us: 0,
@@ -302,13 +298,13 @@ impl ComposeContext<'_> {
     ) -> RenderStageStats {
         match render_group_result {
             Ok(render_group_result) => {
-                let preview_frame = render_group_result.preview_frame.clone();
+                let ui_preview_frame = render_group_result.ui_preview_frame.clone();
                 let composition_start = Instant::now();
                 let compiled_plan = self.render.composition_planner.compile_primary_frame(
                     self.state.canvas_dims.width(),
                     self.state.canvas_dims.height(),
                     &self.scene_snapshot.scene_runtime,
-                    preview_frame,
+                    ui_preview_frame,
                     true,
                 );
                 let preview_request = self.preview_surface_request();
@@ -323,7 +319,7 @@ impl ComposeContext<'_> {
                 } else {
                     self.render
                         .sparkleflinger
-                        .preview_only_frame(render_group_result.preview_frame, preview_request)
+                        .preview_only_frame(render_group_result.ui_preview_frame, preview_request)
                 };
                 let composition_bypassed = composed.bypassed;
                 let composition_done_at = Instant::now();
@@ -336,9 +332,7 @@ impl ComposeContext<'_> {
                     web_viewport_preview: None,
                     group_canvases: render_group_result.group_canvases,
                     active_group_canvas_ids: render_group_result.active_group_canvas_ids,
-                    sampled_layout: Some(render_group_result.layout),
-                    sampled_zones: None,
-                    reuse_published_frame: render_group_result.reuse_published_zones,
+                    led_sampling_strategy: render_group_result.led_sampling_strategy,
                     producer_render_us: render_group_result.render_us,
                     producer_preview_compose_us: render_group_result.preview_compose_us,
                     sampled_us: render_group_result.sample_us,
@@ -393,9 +387,7 @@ impl ComposeContext<'_> {
                     web_viewport_preview: None,
                     group_canvases: Vec::new(),
                     active_group_canvas_ids: Vec::new(),
-                    sampled_layout: None,
-                    sampled_zones: None,
-                    reuse_published_frame: false,
+                    led_sampling_strategy: LedSamplingStrategy::SparkleFlinger,
                     producer_render_us: 0,
                     producer_preview_compose_us: 0,
                     sampled_us: 0,

@@ -139,6 +139,12 @@ pub(crate) struct PacingSummary {
     pub wake_delay_avg_ms: f64,
     pub wake_delay_p95_ms: f64,
     pub wake_delay_max_ms: f64,
+    pub push_avg_ms: f64,
+    pub push_p95_ms: f64,
+    pub push_max_ms: f64,
+    pub publish_avg_ms: f64,
+    pub publish_p95_ms: f64,
+    pub publish_max_ms: f64,
     pub reused_inputs: u32,
     pub reused_canvas: u32,
     pub retained_effect: u32,
@@ -149,6 +155,8 @@ pub(crate) struct PacingSummary {
     pub gpu_sample_retry_hit: u32,
     pub gpu_sample_queue_saturated: u32,
     pub gpu_sample_wait_blocked: u32,
+    pub output_error_frames: u32,
+    pub full_frame_copy_frames: u32,
 }
 
 /// Aggregate effect-health counters observed by the daemon.
@@ -174,7 +182,9 @@ pub struct PerformanceTracker {
     frame_times_us: VecDeque<u32>,
     jitter_us: VecDeque<u32>,
     wake_delay_us: VecDeque<u32>,
-    reuse_history: VecDeque<FrameReuseSample>,
+    push_us: VecDeque<u32>,
+    publish_us: VecDeque<u32>,
+    pacing_history: VecDeque<FramePacingSample>,
     effect_health: EffectHealthSummary,
 }
 
@@ -185,7 +195,9 @@ impl PerformanceTracker {
         self.frame_times_us.push_back(metrics.total_us);
         self.jitter_us.push_back(metrics.jitter_us);
         self.wake_delay_us.push_back(metrics.wake_late_us);
-        self.reuse_history.push_back(FrameReuseSample {
+        self.push_us.push_back(metrics.push_us);
+        self.publish_us.push_back(metrics.publish_us);
+        self.pacing_history.push_back(FramePacingSample {
             inputs: metrics.reused_inputs,
             canvas: metrics.reused_canvas,
             retained_effect: metrics.retained_effect,
@@ -196,6 +208,8 @@ impl PerformanceTracker {
             gpu_sample_retry_hit: metrics.gpu_sample_retry_hit,
             gpu_sample_queue_saturated: metrics.gpu_sample_queue_saturated,
             gpu_sample_wait_blocked: metrics.gpu_sample_wait_blocked,
+            output_error: metrics.output_errors > 0,
+            full_frame_copy: metrics.full_frame_copy_count > 0,
         });
 
         if self.frame_times_us.len() > FRAME_HISTORY_CAPACITY {
@@ -207,8 +221,14 @@ impl PerformanceTracker {
         if self.wake_delay_us.len() > FRAME_HISTORY_CAPACITY {
             let _ = self.wake_delay_us.pop_front();
         }
-        if self.reuse_history.len() > FRAME_HISTORY_CAPACITY {
-            let _ = self.reuse_history.pop_front();
+        if self.push_us.len() > FRAME_HISTORY_CAPACITY {
+            let _ = self.push_us.pop_front();
+        }
+        if self.publish_us.len() > FRAME_HISTORY_CAPACITY {
+            let _ = self.publish_us.pop_front();
+        }
+        if self.pacing_history.len() > FRAME_HISTORY_CAPACITY {
+            let _ = self.pacing_history.pop_front();
         }
     }
 
@@ -218,7 +238,13 @@ impl PerformanceTracker {
         PerformanceSnapshot {
             latest_frame: self.latest_frame,
             frame_time: summarize_frame_times(&self.frame_times_us),
-            pacing: summarize_pacing(&self.jitter_us, &self.wake_delay_us, &self.reuse_history),
+            pacing: summarize_pacing(
+                &self.jitter_us,
+                &self.wake_delay_us,
+                &self.push_us,
+                &self.publish_us,
+                &self.pacing_history,
+            ),
             effect_health: self.effect_health,
         }
     }
@@ -251,7 +277,7 @@ struct ShortSummary {
     clippy::struct_excessive_bools,
     reason = "reuse sampling tracks separate boolean reuse signals for pacing summaries"
 )]
-struct FrameReuseSample {
+struct FramePacingSample {
     inputs: bool,
     canvas: bool,
     retained_effect: bool,
@@ -262,6 +288,8 @@ struct FrameReuseSample {
     gpu_sample_retry_hit: bool,
     gpu_sample_queue_saturated: bool,
     gpu_sample_wait_blocked: bool,
+    output_error: bool,
+    full_frame_copy: bool,
 }
 
 fn summarize_frame_times(samples: &VecDeque<u32>) -> FrameTimeSummary {
@@ -289,10 +317,14 @@ fn summarize_frame_times(samples: &VecDeque<u32>) -> FrameTimeSummary {
 fn summarize_pacing(
     jitter_us: &VecDeque<u32>,
     wake_delay_us: &VecDeque<u32>,
-    reuse_history: &VecDeque<FrameReuseSample>,
+    push_us: &VecDeque<u32>,
+    publish_us: &VecDeque<u32>,
+    pacing_history: &VecDeque<FramePacingSample>,
 ) -> PacingSummary {
     let jitter = summarize_short_samples(jitter_us);
     let wake_delay = summarize_short_samples(wake_delay_us);
+    let push = summarize_short_samples(push_us);
+    let publish = summarize_short_samples(publish_us);
 
     PacingSummary {
         jitter_avg_ms: jitter.avg_ms,
@@ -301,63 +333,83 @@ fn summarize_pacing(
         wake_delay_avg_ms: wake_delay.avg_ms,
         wake_delay_p95_ms: wake_delay.p95_ms,
         wake_delay_max_ms: wake_delay.max_ms,
-        reused_inputs: u32::try_from(reuse_history.iter().filter(|sample| sample.inputs).count())
+        push_avg_ms: push.avg_ms,
+        push_p95_ms: push.p95_ms,
+        push_max_ms: push.max_ms,
+        publish_avg_ms: publish.avg_ms,
+        publish_p95_ms: publish.p95_ms,
+        publish_max_ms: publish.max_ms,
+        reused_inputs: u32::try_from(pacing_history.iter().filter(|sample| sample.inputs).count())
             .unwrap_or(u32::MAX),
-        reused_canvas: u32::try_from(reuse_history.iter().filter(|sample| sample.canvas).count())
+        reused_canvas: u32::try_from(pacing_history.iter().filter(|sample| sample.canvas).count())
             .unwrap_or(u32::MAX),
         retained_effect: u32::try_from(
-            reuse_history
+            pacing_history
                 .iter()
                 .filter(|sample| sample.retained_effect)
                 .count(),
         )
         .unwrap_or(u32::MAX),
         retained_screen: u32::try_from(
-            reuse_history
+            pacing_history
                 .iter()
                 .filter(|sample| sample.retained_screen)
                 .count(),
         )
         .unwrap_or(u32::MAX),
         composition_bypassed: u32::try_from(
-            reuse_history
+            pacing_history
                 .iter()
                 .filter(|sample| sample.composition_bypassed)
                 .count(),
         )
         .unwrap_or(u32::MAX),
         gpu_zone_sampling: u32::try_from(
-            reuse_history
+            pacing_history
                 .iter()
                 .filter(|sample| sample.gpu_zone_sampling)
                 .count(),
         )
         .unwrap_or(u32::MAX),
         gpu_sample_deferred: u32::try_from(
-            reuse_history
+            pacing_history
                 .iter()
                 .filter(|sample| sample.gpu_sample_deferred)
                 .count(),
         )
         .unwrap_or(u32::MAX),
         gpu_sample_retry_hit: u32::try_from(
-            reuse_history
+            pacing_history
                 .iter()
                 .filter(|sample| sample.gpu_sample_retry_hit)
                 .count(),
         )
         .unwrap_or(u32::MAX),
         gpu_sample_queue_saturated: u32::try_from(
-            reuse_history
+            pacing_history
                 .iter()
                 .filter(|sample| sample.gpu_sample_queue_saturated)
                 .count(),
         )
         .unwrap_or(u32::MAX),
         gpu_sample_wait_blocked: u32::try_from(
-            reuse_history
+            pacing_history
                 .iter()
                 .filter(|sample| sample.gpu_sample_wait_blocked)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+        output_error_frames: u32::try_from(
+            pacing_history
+                .iter()
+                .filter(|sample| sample.output_error)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+        full_frame_copy_frames: u32::try_from(
+            pacing_history
+                .iter()
+                .filter(|sample| sample.full_frame_copy)
                 .count(),
         )
         .unwrap_or(u32::MAX),

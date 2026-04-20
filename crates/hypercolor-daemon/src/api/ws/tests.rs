@@ -210,9 +210,9 @@ async fn metrics_message_includes_latest_frame_timeline() {
             preview_pool_grown_slots: 0,
             direct_pool_grown_slots: 0,
             canvas_receiver_count: 2,
-            full_frame_copy_count: 0,
-            full_frame_copy_bytes: 0,
-            output_errors: 0,
+            full_frame_copy_count: 1,
+            full_frame_copy_bytes: 2_048,
+            output_errors: 1,
             timeline: FrameTimeline {
                 frame_token: 77,
                 budget_us: 16_666,
@@ -244,11 +244,17 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["timeline"]["cpu_readback_skipped"], true);
     assert_eq!(json["timeline"]["budget_ms"], 16.67);
     assert_eq!(json["timeline"]["wake_late_ms"], 0.22);
+    assert_eq!(json["pacing"]["push_avg_ms"], 0.25);
+    assert_eq!(json["pacing"]["push_p95_ms"], 0.25);
+    assert_eq!(json["pacing"]["publish_avg_ms"], 0.18);
+    assert_eq!(json["pacing"]["publish_p95_ms"], 0.18);
     assert_eq!(json["pacing"]["gpu_zone_sampling"], 1);
     assert_eq!(json["pacing"]["gpu_sample_deferred"], 1);
     assert_eq!(json["pacing"]["gpu_sample_retry_hit"], 1);
     assert_eq!(json["pacing"]["gpu_sample_queue_saturated"], 1);
     assert_eq!(json["pacing"]["gpu_sample_wait_blocked"], 1);
+    assert_eq!(json["pacing"]["output_error_frames"], 1);
+    assert_eq!(json["pacing"]["full_frame_copy_frames"], 1);
     assert_eq!(json["effect_health"]["errors_total"], 2);
     assert_eq!(json["effect_health"]["fallbacks_applied_total"], 1);
     assert_eq!(

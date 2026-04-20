@@ -1,4 +1,5 @@
 use std::future::{Future, poll_fn};
+use std::sync::Arc;
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
@@ -16,6 +17,7 @@ use super::frame_state::{
 };
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
 use super::pipeline_runtime::PipelineRuntime;
+use super::render_groups::LedSamplingStrategy;
 use super::sparkleflinger::{ComposedFrameSet, ZoneSamplingDispatch};
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
@@ -299,12 +301,15 @@ pub(crate) async fn execute_frame(
     let mut pending_gpu_zone_sampling = None;
     let mut can_reuse_published_frame = false;
     let mut can_hold_published_frame = false;
-    let used_pre_sampled_scene_zones = render_stage.sampled_layout.is_some();
-    let layout = if let Some(sampled_layout) = render_stage.sampled_layout.take() {
-        if let Some(sampled_zones) = render_stage.sampled_zones.take() {
-            render.recycled_frame.zones = sampled_zones;
-        }
-        sampled_layout
+    let used_pre_sampled_scene_zones = matches!(
+        render_stage.led_sampling_strategy,
+        LedSamplingStrategy::PreSampled(_)
+    );
+    let layout = if let LedSamplingStrategy::PreSampled(layout)
+    | LedSamplingStrategy::ReusePublished(layout) =
+        &render_stage.led_sampling_strategy
+    {
+        Arc::clone(layout)
     } else {
         render_stage.sampled_us = 0;
         let prepared_zones = scene_snapshot.spatial_engine.sampling_plan();
@@ -373,7 +378,8 @@ pub(crate) async fn execute_frame(
         if !gpu_zone_sampling && stale_sampling_matches_current && can_hold_published_frame {
             render.deferred_zone_sampling = stale_deferred_sampling.take();
             gpu_sample_deferred = true;
-            render_stage.reuse_published_frame = true;
+            render_stage.led_sampling_strategy =
+                LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
             refresh_reused_frame_metadata = render_stage.screen_retained;
         } else if let Some(pending) = stale_deferred_sampling.take()
             && let Some(pending) = try_retire_stale_zone_sampling(render, pending)
@@ -385,7 +391,8 @@ pub(crate) async fn execute_frame(
             render.deferred_zone_sampling = stale_deferred_sampling.take();
             if can_hold_published_frame {
                 gpu_sample_deferred = true;
-                render_stage.reuse_published_frame = true;
+                render_stage.led_sampling_strategy =
+                    LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
                 refresh_reused_frame_metadata = render_stage.screen_retained;
             }
         } else if !gpu_zone_sampling {
@@ -486,13 +493,15 @@ pub(crate) async fn execute_frame(
                     render.deferred_zone_sampling = Some(pending);
                     gpu_zone_sampling = false;
                     gpu_sample_deferred = true;
-                    render_stage.reuse_published_frame = true;
+                    render_stage.led_sampling_strategy =
+                        LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
                     refresh_reused_frame_metadata = true;
                 }
                 Err(error) => {
                     warn!(%error, "Deferred GPU spatial sampling finalize failed; reusing retained frame zones");
                     gpu_zone_sampling = false;
-                    render_stage.reuse_published_frame = true;
+                    render_stage.led_sampling_strategy =
+                        LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
                     refresh_reused_frame_metadata = true;
                 }
             }
@@ -500,7 +509,8 @@ pub(crate) async fn execute_frame(
             render.deferred_zone_sampling = Some(pending);
             gpu_zone_sampling = false;
             gpu_sample_deferred = true;
-            render_stage.reuse_published_frame = true;
+            render_stage.led_sampling_strategy =
+                LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
         } else if let Err(error) = render
             .sparkleflinger
             .finish_pending_zone_sampling(pending, &mut render.recycled_frame.zones)
@@ -517,7 +527,11 @@ pub(crate) async fn execute_frame(
             .saturating_add(micros_between(gpu_sample_finish, Instant::now()));
     }
     let _ = stale_deferred_sampling;
-    if !gpu_zone_sampling && !used_pre_sampled_scene_zones && !render_stage.reuse_published_frame {
+    let reuses_published_frame = matches!(
+        render_stage.led_sampling_strategy,
+        LedSamplingStrategy::ReusePublished(_)
+    );
+    if !gpu_zone_sampling && !used_pre_sampled_scene_zones && !reuses_published_frame {
         let cpu_sample_start = Instant::now();
         scene_snapshot.spatial_engine.sample_into(
             render_stage
@@ -542,14 +556,14 @@ pub(crate) async fn execute_frame(
             state.backend_manager.lock().await
         };
         let device_brightness_generation = manager.output_brightness_generation();
-        let can_reuse_routed_outputs = render_stage.reuse_published_frame
+        let can_reuse_routed_outputs = reuses_published_frame
             && frame_loop.last_output_brightness_bits == Some(global_brightness_bits)
             && frame_loop.last_device_output_brightness_generation
                 == Some(device_brightness_generation)
             && manager.can_reuse_routed_frame_outputs(layout.as_ref());
         let write_stats = if can_reuse_routed_outputs {
             manager.reuse_routed_frame_outputs(layout.as_ref())
-        } else if render_stage.reuse_published_frame {
+        } else if reuses_published_frame {
             let published_frame = state.event_bus.frame_sender().borrow();
             manager
                 .write_frame_with_brightness(
@@ -661,7 +675,7 @@ pub(crate) async fn execute_frame(
         &mut frame_loop.last_canvas_preview_publish_ms,
         &mut frame_loop.last_screen_canvas_preview_publish_ms,
         &mut frame_loop.last_web_viewport_preview_publish_ms,
-        render_stage.reuse_published_frame,
+        reuses_published_frame,
         refresh_reused_frame_metadata,
         FrameTiming {
             producer_us: render_stage.producer_us,
@@ -803,7 +817,12 @@ pub(crate) async fn execute_frame(
             total_us,
             producer_us: render_stage.producer_us,
             composition_us: render_stage.composition_us,
+            push_us,
+            publish_us,
+            wake_late_us,
+            jitter_us,
             full_frame_copy_count,
+            output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),
         });
         match rl.frame_complete_with_max_tier(Some(admission.ceiling_tier)) {
             Some(frame_stats) => (
@@ -838,6 +857,7 @@ mod tests {
     };
     use crate::performance::CompositorBackendKind;
     use crate::render_thread::frame_composer::RenderStageStats;
+    use crate::render_thread::render_groups::LedSamplingStrategy;
     use crate::render_thread::sparkleflinger::ComposedFrameSet;
 
     fn render_stage(
@@ -862,9 +882,7 @@ mod tests {
             web_viewport_preview: None,
             group_canvases: Vec::new(),
             active_group_canvas_ids: Vec::new(),
-            sampled_layout: None,
-            sampled_zones: None,
-            reuse_published_frame: false,
+            led_sampling_strategy: LedSamplingStrategy::SparkleFlinger,
             producer_render_us: 0,
             producer_preview_compose_us: 0,
             sampled_us: 0,

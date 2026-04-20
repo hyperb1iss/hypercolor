@@ -736,6 +736,32 @@ fn audio_input_produces_audio_data_with_samples() {
 }
 
 #[test]
+fn audio_input_reuses_latest_snapshot_between_samples() {
+    let config = manual_input_config();
+    let mut input = AudioInput::new(&config);
+    input.start().expect("start");
+    input
+        .set_capture_active(true)
+        .expect("enable manual capture");
+
+    let samples = sine_wave(440.0, 48_000, 2048);
+    input.push_samples(&samples);
+
+    let InputData::Audio(first) = input.sample().expect("first sample should succeed") else {
+        panic!("expected audio data from first sample");
+    };
+    let InputData::Audio(second) = input.sample().expect("second sample should succeed") else {
+        panic!("expected audio data from second sample");
+    };
+
+    assert_eq!(first.spectrum, second.spectrum);
+    assert_eq!(first.mel_bands, second.mel_bands);
+    assert_eq!(first.chromagram, second.chromagram);
+    assert_eq!(first.beat_detected, second.beat_detected);
+    assert!((first.rms_level - second.rms_level).abs() < f32::EPSILON);
+}
+
+#[test]
 fn audio_input_silence_produces_near_zero() {
     let config = AudioPipelineConfig {
         noise_floor: -120.0, // Very low floor so silence still gets processed
