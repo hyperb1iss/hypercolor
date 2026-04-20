@@ -75,7 +75,7 @@ export default effect(
     {
         audio: true,
         description:
-            'Feed it sound and watch the spectrum breathe. Frequency bands rise in poised columns of light across a stable, luminous field.',
+            'Sound becomes architecture. Frequency bands rise as 3D hyperbars, row after row cascading through timespace toward you, history etched in depth.',
         setup: (ctx) => {
             resetState()
             ctx.registerUniform('iCascadeLevel', 0)
