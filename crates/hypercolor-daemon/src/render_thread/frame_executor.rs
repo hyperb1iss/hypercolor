@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::future::{Future, poll_fn};
 use std::sync::Arc;
 use std::task::Poll;
@@ -5,18 +6,23 @@ use std::time::{Duration, Instant};
 
 use tracing::{info, trace, warn};
 
+use hypercolor_core::scene::interpolate_color;
+use hypercolor_core::types::canvas::RgbaF32;
 use hypercolor_core::types::event::{FrameData, FrameTiming};
+use hypercolor_types::event::ZoneColors;
+use hypercolor_types::scene::ColorInterpolation;
 use hypercolor_types::spatial::SpatialLayout;
 
 use super::frame_admission::FrameAdmissionSample;
 use super::frame_composer::{ComposeRequest, compose_frame};
 use super::frame_io::{preview_publication_due, publish_frame_updates, sample_inputs};
 use super::frame_pacing::{FrameExecution, NextWake, SkipDecision};
+use super::frame_scheduler::SceneTransitionSnapshot;
 use super::frame_state::{
     build_frame_scene_snapshot, reconcile_audio_capture, reconcile_screen_capture,
 };
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
-use super::pipeline_runtime::PipelineRuntime;
+use super::pipeline_runtime::{PipelineRuntime, RetainedZoneFrame, SceneTransitionKey};
 use super::render_groups::LedSamplingStrategy;
 use super::sparkleflinger::{ComposedFrameSet, ZoneSamplingDispatch};
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
@@ -124,6 +130,117 @@ fn discard_zone_sampling_backlog(render: &mut super::pipeline_runtime::RenderCac
     }
     while let Some(pending) = render.retired_zone_sampling.pop_front() {
         render.sparkleflinger.discard_pending_zone_sampling(pending);
+    }
+}
+
+fn scene_transition_key(transition: &SceneTransitionSnapshot) -> Option<SceneTransitionKey> {
+    Some(SceneTransitionKey {
+        from_scene: transition.from_scene?,
+        to_scene: transition.to_scene?,
+    })
+}
+
+fn current_scene_sampled_zones<'a>(
+    led_sampling_strategy: &'a LedSamplingStrategy,
+    recycled_zones: &'a [ZoneColors],
+) -> Option<&'a [ZoneColors]> {
+    match led_sampling_strategy {
+        LedSamplingStrategy::PreSampled(_) => Some(recycled_zones),
+        LedSamplingStrategy::RetainedPreSampled { zones, .. } => Some(zones.as_ref()),
+        LedSamplingStrategy::SparkleFlinger(_) | LedSamplingStrategy::ReusePublished(_) => None,
+    }
+}
+
+fn build_transition_layout(
+    base_layout: &SpatialLayout,
+    current_layout: &SpatialLayout,
+    transition_key: SceneTransitionKey,
+) -> Arc<SpatialLayout> {
+    let mut layout = current_layout.clone();
+    layout.id = format!(
+        "scene-transition:{}->{}",
+        transition_key.from_scene, transition_key.to_scene
+    );
+    layout.name = "Scene Transition".into();
+    layout.description = Some("Blended transition routing layout".into());
+
+    let existing_zone_ids = layout
+        .zones
+        .iter()
+        .map(|zone| zone.id.as_str())
+        .collect::<HashSet<_>>();
+    let base_only_zones = base_layout
+        .zones
+        .iter()
+        .filter(|zone| !existing_zone_ids.contains(zone.id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    layout.zones.extend(
+        base_only_zones
+            .into_iter(),
+    );
+    Arc::new(layout)
+}
+
+fn blend_zone_rgb(
+    from: [u8; 3],
+    to: [u8; 3],
+    progress: f32,
+    color_interpolation: &ColorInterpolation,
+) -> [u8; 3] {
+    let mixed = interpolate_color(
+        &RgbaF32::from_srgb_u8(from[0], from[1], from[2], 255),
+        &RgbaF32::from_srgb_u8(to[0], to[1], to[2], 255),
+        progress,
+        color_interpolation,
+    )
+    .to_srgb_u8();
+    [mixed[0], mixed[1], mixed[2]]
+}
+
+fn blend_scene_zone_frames(
+    from_zones: &[ZoneColors],
+    to_zones: &[ZoneColors],
+    transition_layout: &SpatialLayout,
+    progress: f32,
+    color_interpolation: &ColorInterpolation,
+    target: &mut Vec<ZoneColors>,
+) {
+    let from_zones_by_id = from_zones
+        .iter()
+        .map(|zone| (zone.zone_id.as_str(), zone))
+        .collect::<HashMap<_, _>>();
+    let to_zones_by_id = to_zones
+        .iter()
+        .map(|zone| (zone.zone_id.as_str(), zone))
+        .collect::<HashMap<_, _>>();
+    let black = [0, 0, 0];
+
+    target.clear();
+    target.reserve(transition_layout.zones.len());
+    for layout_zone in &transition_layout.zones {
+        let from_zone = from_zones_by_id.get(layout_zone.id.as_str()).copied();
+        let to_zone = to_zones_by_id.get(layout_zone.id.as_str()).copied();
+        let led_count = from_zone
+            .map_or(0, |zone| zone.colors.len())
+            .max(to_zone.map_or(0, |zone| zone.colors.len()));
+        let colors = (0..led_count)
+            .map(|index| {
+                let from = from_zone
+                    .and_then(|zone| zone.colors.get(index))
+                    .copied()
+                    .unwrap_or(black);
+                let to = to_zone
+                    .and_then(|zone| zone.colors.get(index))
+                    .copied()
+                    .unwrap_or(black);
+                blend_zone_rgb(from, to, progress, color_interpolation)
+            })
+            .collect();
+        target.push(ZoneColors {
+            zone_id: layout_zone.id.clone(),
+            colors,
+        });
     }
 }
 
@@ -294,7 +411,9 @@ pub(crate) async fn execute_frame(
 
     let sparkleflinger_sampling_engine = match &render_stage.led_sampling_strategy {
         LedSamplingStrategy::SparkleFlinger(spatial_engine) => Some(spatial_engine.clone()),
-        LedSamplingStrategy::PreSampled(_) | LedSamplingStrategy::ReusePublished(_) => None,
+        LedSamplingStrategy::PreSampled(_)
+        | LedSamplingStrategy::RetainedPreSampled { .. }
+        | LedSamplingStrategy::ReusePublished(_) => None,
     };
     let mut gpu_zone_sampling = false;
     let mut gpu_sample_deferred = false;
@@ -305,14 +424,20 @@ pub(crate) async fn execute_frame(
     let mut pending_gpu_zone_sampling = None;
     let mut can_reuse_published_frame = false;
     let mut can_hold_published_frame = false;
-    let used_pre_sampled_scene_zones = matches!(
+    let uses_scene_sampled_zones = matches!(
         render_stage.led_sampling_strategy,
-        LedSamplingStrategy::PreSampled(_)
+        LedSamplingStrategy::PreSampled(_) | LedSamplingStrategy::RetainedPreSampled { .. }
     );
-    let layout = if let LedSamplingStrategy::PreSampled(layout)
+    let mut retained_scene_zones = None::<Arc<[ZoneColors]>>;
+    let mut layout = if let LedSamplingStrategy::PreSampled(layout)
     | LedSamplingStrategy::ReusePublished(layout) =
         &render_stage.led_sampling_strategy
     {
+        Arc::clone(layout)
+    } else if let LedSamplingStrategy::RetainedPreSampled { layout, zones } =
+        &render_stage.led_sampling_strategy
+    {
+        retained_scene_zones = Some(Arc::clone(zones));
         Arc::clone(layout)
     } else {
         let sampling_engine = sparkleflinger_sampling_engine
@@ -534,11 +659,13 @@ pub(crate) async fn execute_frame(
             .saturating_add(micros_between(gpu_sample_finish, Instant::now()));
     }
     let _ = stale_deferred_sampling;
-    let reuses_published_frame = matches!(
-        render_stage.led_sampling_strategy,
-        LedSamplingStrategy::ReusePublished(_)
-    );
-    if !gpu_zone_sampling && !used_pre_sampled_scene_zones && !reuses_published_frame {
+    if !gpu_zone_sampling
+        && !uses_scene_sampled_zones
+        && !matches!(
+            render_stage.led_sampling_strategy,
+            LedSamplingStrategy::ReusePublished(_)
+        )
+    {
         let cpu_sample_start = Instant::now();
         sparkleflinger_sampling_engine
             .as_ref()
@@ -553,6 +680,72 @@ pub(crate) async fn execute_frame(
             );
         render_stage.sampled_us = micros_between(cpu_sample_start, Instant::now());
     }
+
+    if let Some(transition) = scene_snapshot.scene_runtime.active_transition.as_ref()
+        && uses_scene_sampled_zones
+        && let Some(transition_key) = scene_transition_key(transition)
+        && let Some(current_zones) = current_scene_sampled_zones(
+            &render_stage.led_sampling_strategy,
+            &render.recycled_frame.zones,
+        )
+        .map(<[ZoneColors]>::to_vec)
+    {
+        let transition_blend_start = Instant::now();
+        if render.zone_transition_planner.active_transition != Some(transition_key) {
+            render.zone_transition_planner.active_transition = Some(transition_key);
+            render.zone_transition_planner.transition_base = Some(
+                render.zone_transition_planner.last_stable.clone().unwrap_or_else(|| {
+                    RetainedZoneFrame {
+                        layout: Arc::clone(&layout),
+                        zones: current_zones.clone(),
+                    }
+                }),
+            );
+        }
+
+        if let Some(base) = render.zone_transition_planner.transition_base.as_ref() {
+            let transition_layout =
+                build_transition_layout(base.layout.as_ref(), layout.as_ref(), transition_key);
+            blend_scene_zone_frames(
+                &base.zones,
+                &current_zones,
+                transition_layout.as_ref(),
+                transition.eased_progress.clamp(0.0, 1.0),
+                &transition.color_interpolation,
+                &mut render.recycled_frame.zones,
+            );
+            layout = Arc::clone(&transition_layout);
+            render_stage.led_sampling_strategy = LedSamplingStrategy::PreSampled(transition_layout);
+            retained_scene_zones = None;
+            render_stage.sampled_us = render_stage
+                .sampled_us
+                .saturating_add(micros_between(transition_blend_start, Instant::now()));
+        }
+    } else if retained_scene_zones.is_some() {
+        render_stage.led_sampling_strategy = LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
+    }
+
+    let reuses_published_frame = matches!(
+        render_stage.led_sampling_strategy,
+        LedSamplingStrategy::ReusePublished(_)
+    );
+    if scene_snapshot.scene_runtime.active_transition.is_none() {
+        if let Some(retained_zones) = retained_scene_zones.as_ref() {
+            render
+                .zone_transition_planner
+                .record_stable(Arc::clone(&layout), retained_zones.as_ref());
+        } else if reuses_published_frame {
+            let published_frame = state.event_bus.frame_sender().borrow();
+            render
+                .zone_transition_planner
+                .record_stable(Arc::clone(&layout), &published_frame.zones);
+        } else {
+            render
+                .zone_transition_planner
+                .record_stable(Arc::clone(&layout), &render.recycled_frame.zones);
+        }
+    }
+
     let sample_us = render_stage.sampled_us;
     let sample_done_at = Instant::now();
     let sample_done_us = micros_between(frame_start, sample_done_at);
@@ -858,16 +1051,19 @@ mod tests {
     use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
     use hypercolor_core::types::event::{FrameData, ZoneColors};
+    use hypercolor_types::scene::{ColorInterpolation, SceneId};
     use hypercolor_types::spatial::{
         DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     };
 
     use super::{
+        blend_scene_zone_frames, build_transition_layout,
         can_hold_published_frame_for_deferred_sampling,
         can_reuse_published_frame_for_deferred_sampling, should_advance_gpu_preview,
     };
     use crate::performance::CompositorBackendKind;
     use crate::render_thread::frame_composer::RenderStageStats;
+    use crate::render_thread::pipeline_runtime::SceneTransitionKey;
     use crate::render_thread::render_groups::LedSamplingStrategy;
     use crate::render_thread::sparkleflinger::ComposedFrameSet;
 
@@ -983,6 +1179,13 @@ mod tests {
         )
     }
 
+    fn zone(zone_id: &str, colors: &[[u8; 3]]) -> ZoneColors {
+        ZoneColors {
+            zone_id: zone_id.to_owned(),
+            colors: colors.to_vec(),
+        }
+    }
+
     #[test]
     fn gpu_zone_sampling_reuses_retained_frame_only_when_layout_matches_without_backlog() {
         let mut render_stage = render_stage(CompositorBackendKind::Gpu, false, false);
@@ -1021,5 +1224,62 @@ mod tests {
             &layout,
             &published_frame(&["left", "other"])
         ));
+    }
+
+    #[test]
+    fn transition_layout_keeps_current_order_and_appends_base_only_zones() {
+        let base_layout = sample_layout(&["left", "legacy"]);
+        let current_layout = sample_layout(&["left", "right"]);
+        let transition_layout = build_transition_layout(
+            &base_layout,
+            &current_layout,
+            SceneTransitionKey {
+                from_scene: SceneId::new(),
+                to_scene: SceneId::new(),
+            },
+        );
+
+        let zone_ids = transition_layout
+            .zones
+            .iter()
+            .map(|zone| zone.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(zone_ids, vec!["left", "right", "legacy"]);
+    }
+
+    #[test]
+    fn zone_transition_blend_unions_shared_and_missing_zone_outputs() {
+        let transition_layout = sample_layout(&["shared", "entering", "leaving"]);
+        let from = vec![
+            zone("shared", &[[255, 0, 0]]),
+            zone("leaving", &[[0, 255, 0]]),
+        ];
+        let to = vec![
+            zone("shared", &[[0, 0, 255]]),
+            zone("entering", &[[255, 255, 255]]),
+        ];
+        let mut blended = Vec::new();
+
+        blend_scene_zone_frames(
+            &from,
+            &to,
+            &transition_layout,
+            0.5,
+            &ColorInterpolation::Srgb,
+            &mut blended,
+        );
+
+        assert_eq!(blended.len(), 3);
+        assert_eq!(blended[0].zone_id, "shared");
+        assert_eq!(blended[1].zone_id, "entering");
+        assert_eq!(blended[2].zone_id, "leaving");
+        assert_ne!(blended[0].colors[0], [255, 0, 0]);
+        assert_ne!(blended[0].colors[0], [0, 0, 255]);
+        assert!(blended[1].colors[0][0] > 0);
+        assert!(blended[1].colors[0][1] > 0);
+        assert!(blended[1].colors[0][2] > 0);
+        assert!(blended[2].colors[0][1] > 0);
+        assert_eq!(blended[2].colors[0][0], 0);
+        assert_eq!(blended[2].colors[0][2], 0);
     }
 }

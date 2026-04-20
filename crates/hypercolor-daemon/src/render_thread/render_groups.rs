@@ -40,6 +40,10 @@ pub(crate) struct GroupCanvasFrame {
 pub(crate) enum LedSamplingStrategy {
     SparkleFlinger(SpatialEngine),
     PreSampled(Arc<SpatialLayout>),
+    RetainedPreSampled {
+        layout: Arc<SpatialLayout>,
+        zones: Arc<[ZoneColors]>,
+    },
     ReusePublished(Arc<SpatialLayout>),
 }
 
@@ -69,8 +73,17 @@ struct RetainedRenderGroupFrame {
     groups_revision: u64,
     ui_preview_frame: ProducerFrame,
     active_group_canvas_ids: Vec<RenderGroupId>,
-    layout: Arc<SpatialLayout>,
+    led_sampling_strategy: RetainedLedSamplingStrategy,
     logical_layer_count: u32,
+}
+
+#[derive(Clone)]
+enum RetainedLedSamplingStrategy {
+    SparkleFlinger(SpatialEngine),
+    PreSampled {
+        layout: Arc<SpatialLayout>,
+        zones: Arc<[ZoneColors]>,
+    },
 }
 
 #[derive(Clone)]
@@ -166,9 +179,17 @@ impl RenderGroupRuntime {
             ui_preview_frame: retained.ui_preview_frame.clone(),
             group_canvases: Vec::new(),
             active_group_canvas_ids: retained.active_group_canvas_ids.clone(),
-            led_sampling_strategy: LedSamplingStrategy::ReusePublished(Arc::clone(
-                &retained.layout,
-            )),
+            led_sampling_strategy: match &retained.led_sampling_strategy {
+                RetainedLedSamplingStrategy::SparkleFlinger(spatial_engine) => {
+                    LedSamplingStrategy::SparkleFlinger(spatial_engine.clone())
+                }
+                RetainedLedSamplingStrategy::PreSampled { layout, zones } => {
+                    LedSamplingStrategy::RetainedPreSampled {
+                        layout: Arc::clone(layout),
+                        zones: Arc::clone(zones),
+                    }
+                }
+            },
             render_us: 0,
             sample_us: 0,
             preview_compose_us: 0,
@@ -209,7 +230,7 @@ impl RenderGroupRuntime {
             zones,
         )? {
             self.clear_effect_error();
-            self.retain_frame(groups_revision, &result);
+            self.retain_frame(groups_revision, &result, &[]);
             return Ok(result);
         }
 
@@ -319,7 +340,7 @@ impl RenderGroupRuntime {
             logical_layer_count,
         };
         self.clear_effect_error();
-        self.retain_frame(groups_revision, &result);
+        self.retain_frame(groups_revision, &result, zones);
         Ok(result)
     }
 
@@ -558,15 +579,36 @@ impl RenderGroupRuntime {
         Some(group)
     }
 
-    fn retain_frame(&mut self, groups_revision: u64, result: &RenderGroupResult) {
+    fn retain_frame(
+        &mut self,
+        groups_revision: u64,
+        result: &RenderGroupResult,
+        zones: &[ZoneColors],
+    ) {
         self.retained_frame = Some(RetainedRenderGroupFrame {
             groups_revision,
             ui_preview_frame: result.ui_preview_frame.clone(),
             active_group_canvas_ids: result.active_group_canvas_ids.clone(),
-            layout: match &result.led_sampling_strategy {
-                LedSamplingStrategy::PreSampled(layout)
-                | LedSamplingStrategy::ReusePublished(layout) => Arc::clone(layout),
-                LedSamplingStrategy::SparkleFlinger(spatial_engine) => spatial_engine.layout(),
+            led_sampling_strategy: match &result.led_sampling_strategy {
+                LedSamplingStrategy::PreSampled(layout) => RetainedLedSamplingStrategy::PreSampled {
+                    layout: Arc::clone(layout),
+                    zones: zones.to_vec().into(),
+                },
+                LedSamplingStrategy::SparkleFlinger(spatial_engine) => {
+                    RetainedLedSamplingStrategy::SparkleFlinger(spatial_engine.clone())
+                }
+                LedSamplingStrategy::RetainedPreSampled { layout, zones } => {
+                    RetainedLedSamplingStrategy::PreSampled {
+                        layout: Arc::clone(layout),
+                        zones: Arc::clone(zones),
+                    }
+                }
+                LedSamplingStrategy::ReusePublished(layout) => {
+                    RetainedLedSamplingStrategy::PreSampled {
+                        layout: Arc::clone(layout),
+                        zones: Arc::new([]),
+                    }
+                }
             },
             logical_layer_count: result.logical_layer_count,
         });
@@ -1161,9 +1203,10 @@ mod tests {
         let reused = runtime
             .reuse_scene(1)
             .expect("retained scene should be reusable");
-        let LedSamplingStrategy::ReusePublished(reused_layout) = reused.led_sampling_strategy
+        let LedSamplingStrategy::SparkleFlinger(reused_spatial_engine) =
+            reused.led_sampling_strategy
         else {
-            panic!("retained single-preview scene should reuse the published LED layout");
+            panic!("retained single-preview scene should stay SparkleFlinger-owned");
         };
 
         assert_eq!(preview_surface.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
@@ -1176,8 +1219,8 @@ mod tests {
         assert_eq!(sampled.len(), 1);
         assert_eq!(sampled[0].zone_id, "zone_preview");
         assert_eq!(sampled[0].colors.first().copied(), Some([255, 0, 0]));
-        assert_eq!(reused_layout.zones.len(), 1);
-        assert_eq!(reused_layout.zones[0].id, "zone_preview");
+        assert_eq!(reused_spatial_engine.layout().zones.len(), 1);
+        assert_eq!(reused_spatial_engine.layout().zones[0].id, "zone_preview");
     }
 
     #[test]
@@ -1325,6 +1368,19 @@ mod tests {
         assert_eq!(layout.zones.len(), 2);
         assert_eq!(layout.zones[0].id, "zone_left");
         assert_eq!(layout.zones[1].id, "zone_right");
+        let reused = runtime
+            .reuse_scene(1)
+            .expect("retained multi-group scene should be reusable");
+        let LedSamplingStrategy::RetainedPreSampled { layout, zones } = reused.led_sampling_strategy
+        else {
+            panic!("retained multi-group scene should keep its raw pre-sampled zones");
+        };
+        assert_eq!(layout.zones.len(), 2);
+        assert_eq!(zones.len(), 2);
+        assert_eq!(zones[0].zone_id, "zone_left");
+        assert_eq!(zones[0].colors.first().copied(), Some([255, 0, 0]));
+        assert_eq!(zones[1].zone_id, "zone_right");
+        assert_eq!(zones[1].colors.first().copied(), Some([0, 255, 0]));
     }
 
     #[test]
@@ -1371,10 +1427,11 @@ mod tests {
         let reused = runtime
             .reuse_scene(1)
             .expect("display-only scene should keep an empty retained LED layout");
-        let LedSamplingStrategy::ReusePublished(layout) = reused.led_sampling_strategy else {
-            panic!("display-only scene should reuse an empty LED layout");
+        let LedSamplingStrategy::RetainedPreSampled { layout, zones } = reused.led_sampling_strategy else {
+            panic!("display-only scene should keep an empty retained LED layout");
         };
         assert!(layout.zones.is_empty());
+        assert!(zones.is_empty());
     }
 
     #[test]

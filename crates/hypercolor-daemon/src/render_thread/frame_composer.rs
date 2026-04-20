@@ -335,6 +335,7 @@ impl ComposeContext<'_> {
                             )
                         }
                         LedSamplingStrategy::PreSampled(_)
+                        | LedSamplingStrategy::RetainedPreSampled { .. }
                         | LedSamplingStrategy::ReusePublished(_) => false,
                     };
                 let composed = if requires_full_composition {

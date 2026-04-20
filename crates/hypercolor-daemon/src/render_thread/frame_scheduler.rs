@@ -2,18 +2,31 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_types::scene::{RenderGroup, RenderGroupId, SceneId};
+use hypercolor_types::scene::{ColorInterpolation, RenderGroup, RenderGroupId, SceneId};
 
 use crate::session::OutputPowerState;
 
 use super::frame_state::EffectDemand;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct SceneTransitionSnapshot {
     pub from_scene: Option<SceneId>,
     pub to_scene: Option<SceneId>,
     pub progress: f32,
     pub eased_progress: f32,
+    pub color_interpolation: ColorInterpolation,
+}
+
+impl Default for SceneTransitionSnapshot {
+    fn default() -> Self {
+        Self {
+            from_scene: None,
+            to_scene: None,
+            progress: 0.0,
+            eased_progress: 0.0,
+            color_interpolation: ColorInterpolation::Srgb,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -124,7 +137,9 @@ impl FrameScheduler {
 mod tests {
     use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_types::effect::EffectId;
-    use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole};
+    use hypercolor_types::scene::{
+        ColorInterpolation, RenderGroup, RenderGroupId, RenderGroupRole,
+    };
     use hypercolor_types::spatial::{
         DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
         StripDirection,
@@ -226,6 +241,7 @@ mod tests {
                     to_scene: None,
                     progress: 0.25,
                     eased_progress: 0.5,
+                    color_interpolation: ColorInterpolation::Srgb,
                 }),
                 active_render_groups: vec![sample_group()].into(),
                 active_render_groups_revision: 1,

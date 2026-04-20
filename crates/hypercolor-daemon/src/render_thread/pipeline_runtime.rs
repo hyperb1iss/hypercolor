@@ -10,7 +10,10 @@ use hypercolor_core::types::canvas::{
 };
 use hypercolor_core::types::event::FrameData;
 use hypercolor_types::config::RenderAccelerationMode;
+use hypercolor_types::event::ZoneColors;
 use hypercolor_types::sensor::SystemSnapshot;
+use hypercolor_types::scene::SceneId;
+use hypercolor_types::spatial::SpatialLayout;
 use std::sync::Arc;
 
 use super::RenderThreadState;
@@ -97,6 +100,7 @@ pub(crate) struct RenderCaches {
     pub(crate) deferred_zone_sampling: Option<PendingZoneSampling>,
     pub(crate) retired_zone_sampling: VecDeque<PendingZoneSampling>,
     pub(crate) deferred_zone_sampling_scratch: Vec<hypercolor_types::event::ZoneColors>,
+    pub(crate) zone_transition_planner: ZoneTransitionPlanner,
     pub(crate) render_group_runtime: RenderGroupRuntime,
     pub(crate) render_surface_pool: RenderSurfacePool,
     pub(crate) render_scene_state: RenderSceneState,
@@ -124,6 +128,40 @@ pub(crate) struct RenderSurfaceSnapshot {
     pub(crate) direct_pool_grown_slots: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SceneTransitionKey {
+    pub(crate) from_scene: SceneId,
+    pub(crate) to_scene: SceneId,
+}
+
+#[derive(Clone)]
+pub(crate) struct RetainedZoneFrame {
+    pub(crate) layout: Arc<SpatialLayout>,
+    pub(crate) zones: Vec<ZoneColors>,
+}
+
+#[derive(Default)]
+pub(crate) struct ZoneTransitionPlanner {
+    pub(crate) active_transition: Option<SceneTransitionKey>,
+    pub(crate) transition_base: Option<RetainedZoneFrame>,
+    pub(crate) last_stable: Option<RetainedZoneFrame>,
+}
+
+impl ZoneTransitionPlanner {
+    pub(crate) fn clear(&mut self) {
+        self.active_transition = None;
+        self.transition_base = None;
+    }
+
+    pub(crate) fn record_stable(&mut self, layout: Arc<SpatialLayout>, zones: &[ZoneColors]) {
+        self.clear();
+        self.last_stable = Some(RetainedZoneFrame {
+            layout,
+            zones: zones.to_vec(),
+        });
+    }
+}
+
 impl RenderCaches {
     /// Rebuild surface pools and clear cached canvases for a canvas resize.
     ///
@@ -144,6 +182,7 @@ impl RenderCaches {
         self.render_group_runtime = RenderGroupRuntime::new(width, height);
         self.composition_planner = CompositionPlanner::new();
         self.deferred_zone_sampling_scratch.clear();
+        self.zone_transition_planner = ZoneTransitionPlanner::default();
         self.static_surface_cache = None;
     }
 
@@ -227,6 +266,7 @@ impl PipelineRuntime {
                 deferred_zone_sampling: None,
                 retired_zone_sampling: VecDeque::new(),
                 deferred_zone_sampling_scratch: Vec::new(),
+                zone_transition_planner: ZoneTransitionPlanner::default(),
                 render_group_runtime: RenderGroupRuntime::new(canvas_width, canvas_height),
                 render_surface_pool: RenderSurfacePool::with_slot_count(
                     SurfaceDescriptor::rgba8888(canvas_width, canvas_height),

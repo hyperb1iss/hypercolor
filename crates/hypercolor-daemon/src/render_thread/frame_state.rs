@@ -117,6 +117,7 @@ async fn snapshot_scene_runtime(
                 to_scene: Some(transition.to_scene),
                 progress: transition.progress,
                 eased_progress: transition.eased_progress(),
+                color_interpolation: transition.spec.color_interpolation.clone(),
             }),
         active_render_groups,
         active_render_groups_revision,
