@@ -252,8 +252,8 @@ pub fn ControlDropdownDismissHandlers(
     is_open: ReadSignal<bool>,
     set_open: WriteSignal<bool>,
 ) -> impl IntoView {
-    install_control_dropdown_outside_handler(class_name, is_open, set_open);
-    install_scroll_close_handler(is_open, set_open);
+    install_control_dropdown_outside_handler(class_name.clone(), is_open, set_open);
+    install_scroll_close_handler(class_name, is_open, set_open);
     view! {}
 }
 
@@ -498,19 +498,35 @@ pub(super) fn install_control_dropdown_outside_handler(
 }
 
 /// Close a dropdown when any ancestor scrolls. The menu is portaled and uses
-/// viewport-relative positioning, so scrolling should dismiss it rather than
-/// leaving it visually detached from the trigger.
-pub(super) fn install_scroll_close_handler(is_open: ReadSignal<bool>, set_open: WriteSignal<bool>) {
+/// viewport-relative positioning, so external scrolling should dismiss it
+/// rather than leaving it visually detached from the trigger. Scrolls that
+/// originate inside the dropdown's own subtree (matched by `class_name`,
+/// which is set on both the trigger wrapper and the portaled panel) are
+/// ignored — otherwise scrolling the options list would close the menu.
+pub(super) fn install_scroll_close_handler(
+    class_name: String,
+    is_open: ReadSignal<bool>,
+    set_open: WriteSignal<bool>,
+) {
     let Some(win) = web_sys::window() else {
         return;
     };
+    let selector = format!(".{class_name}");
 
     // Use capture phase to catch scroll events from any descendant.
     let _ = use_event_listener_with_options(
         win,
         ev::scroll,
-        move |_: web_sys::Event| {
+        move |ev: web_sys::Event| {
             if !is_open.get_untracked() {
+                return;
+            }
+            let inside = ev
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                .map(|el| el.closest(&selector).ok().flatten().is_some())
+                .unwrap_or(false);
+            if inside {
                 return;
             }
             set_open.set(false);
