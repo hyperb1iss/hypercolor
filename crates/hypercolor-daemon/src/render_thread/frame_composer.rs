@@ -99,6 +99,17 @@ fn effective_render_group_layer_count(plan_layers: u32, group_layers: u32) -> u3
     group_layers.saturating_add(plan_layers.saturating_sub(1))
 }
 
+fn render_group_requires_full_composition(
+    transition_active: bool,
+    led_sampling_strategy: &LedSamplingStrategy,
+) -> bool {
+    transition_active
+        || matches!(
+            led_sampling_strategy,
+            LedSamplingStrategy::SparkleFlinger(_)
+        )
+}
+
 impl ComposeContext<'_> {
     async fn compose(&mut self) -> RenderStageStats {
         self.compose_render_group_frame_set(Instant::now()).await
@@ -269,7 +280,9 @@ impl ComposeContext<'_> {
             web_viewport_preview: None,
             group_canvases: Vec::new(),
             active_group_canvas_ids: Vec::new(),
-            led_sampling_strategy: LedSamplingStrategy::SparkleFlinger,
+            led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(
+                self.scene_snapshot.spatial_engine.clone(),
+            ),
             producer_render_us: 0,
             producer_preview_compose_us: 0,
             sampled_us: 0,
@@ -308,12 +321,28 @@ impl ComposeContext<'_> {
                     true,
                 );
                 let preview_request = self.preview_surface_request();
-                let composed = if compiled_plan.metadata.transition_active {
+                let requires_full_composition = render_group_requires_full_composition(
+                    compiled_plan.metadata.transition_active,
+                    &render_group_result.led_sampling_strategy,
+                );
+                let requires_cpu_sampling_canvas =
+                    match &render_group_result.led_sampling_strategy {
+                        LedSamplingStrategy::SparkleFlinger(spatial_engine) => {
+                            requires_cpu_sampling_canvas(
+                                self.render
+                                    .sparkleflinger
+                                    .can_sample_zone_plan(spatial_engine.sampling_plan().as_ref()),
+                            )
+                        }
+                        LedSamplingStrategy::PreSampled(_)
+                        | LedSamplingStrategy::ReusePublished(_) => false,
+                    };
+                let composed = if requires_full_composition {
                     self.render.sparkleflinger.compose_for_outputs(
                         compiled_plan.plan.with_cpu_replay_cacheable(
                             effect_retained && !compiled_plan.metadata.transition_active,
                         ),
-                        self.requires_cpu_sampling_canvas(),
+                        requires_cpu_sampling_canvas,
                         preview_request,
                     )
                 } else {
@@ -387,7 +416,9 @@ impl ComposeContext<'_> {
                     web_viewport_preview: None,
                     group_canvases: Vec::new(),
                     active_group_canvas_ids: Vec::new(),
-                    led_sampling_strategy: LedSamplingStrategy::SparkleFlinger,
+                    led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(
+                        self.scene_snapshot.spatial_engine.clone(),
+                    ),
                     producer_render_us: 0,
                     producer_preview_compose_us: 0,
                     sampled_us: 0,
@@ -590,9 +621,16 @@ fn preview_surface_request(
 mod tests {
     use super::{
         PreviewSurfaceRequest, effective_render_group_layer_count, preview_surface_request,
-        requires_cpu_sampling_canvas, requires_published_surface,
+        render_group_requires_full_composition, requires_cpu_sampling_canvas,
+        requires_published_surface,
     };
+    use std::sync::Arc;
+
+    use hypercolor_core::spatial::SpatialEngine;
+    use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+
     use crate::preview_runtime::PreviewDemandSummary;
+    use crate::render_thread::render_groups::LedSamplingStrategy;
 
     #[test]
     fn render_group_layer_count_adds_transition_base_once() {
@@ -604,6 +642,41 @@ mod tests {
     fn cpu_sampling_canvas_only_depends_on_preview_receivers_and_gpu_sampling() {
         assert!(!requires_cpu_sampling_canvas(true));
         assert!(requires_cpu_sampling_canvas(false));
+    }
+
+    #[test]
+    fn render_group_full_composition_is_required_when_sparkleflinger_owns_led_sampling() {
+        let strategy = LedSamplingStrategy::SparkleFlinger(SpatialEngine::new(SpatialLayout {
+            id: "layout".into(),
+            name: "Layout".into(),
+            description: None,
+            canvas_width: 4,
+            canvas_height: 4,
+            zones: Vec::new(),
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        }));
+        assert!(render_group_requires_full_composition(false, &strategy));
+    }
+
+    #[test]
+    fn render_group_presampled_leds_can_bypass_full_composition_without_transition() {
+        let strategy = LedSamplingStrategy::PreSampled(Arc::new(SpatialLayout {
+            id: "layout".into(),
+            name: "Layout".into(),
+            description: None,
+            canvas_width: 4,
+            canvas_height: 4,
+            zones: Vec::new(),
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        }));
+        assert!(!render_group_requires_full_composition(false, &strategy));
+        assert!(render_group_requires_full_composition(true, &strategy));
     }
 
     #[test]

@@ -292,6 +292,10 @@ pub(crate) async fn execute_frame(
     .await;
     let render_us = render_stage.total_us;
 
+    let sparkleflinger_sampling_engine = match &render_stage.led_sampling_strategy {
+        LedSamplingStrategy::SparkleFlinger(spatial_engine) => Some(spatial_engine.clone()),
+        LedSamplingStrategy::PreSampled(_) | LedSamplingStrategy::ReusePublished(_) => None,
+    };
     let mut gpu_zone_sampling = false;
     let mut gpu_sample_deferred = false;
     let mut gpu_sample_retry_hit = false;
@@ -311,9 +315,12 @@ pub(crate) async fn execute_frame(
     {
         Arc::clone(layout)
     } else {
+        let sampling_engine = sparkleflinger_sampling_engine
+            .as_ref()
+            .expect("SparkleFlinger-owned LED sampling requires a spatial engine");
         render_stage.sampled_us = 0;
-        let prepared_zones = scene_snapshot.spatial_engine.sampling_plan();
-        let layout = scene_snapshot.spatial_engine.layout();
+        let prepared_zones = sampling_engine.sampling_plan();
+        let layout = sampling_engine.layout();
         (can_reuse_published_frame, can_hold_published_frame) = {
             let published_frame = state.event_bus.frame_sender().borrow();
             (
@@ -533,14 +540,17 @@ pub(crate) async fn execute_frame(
     );
     if !gpu_zone_sampling && !used_pre_sampled_scene_zones && !reuses_published_frame {
         let cpu_sample_start = Instant::now();
-        scene_snapshot.spatial_engine.sample_into(
-            render_stage
-                .composed_frame
-                .sampling_canvas
-                .as_ref()
-                .expect("CPU spatial sampling requires a materialized canvas"),
-            &mut render.recycled_frame.zones,
-        );
+        sparkleflinger_sampling_engine
+            .as_ref()
+            .expect("CPU spatial sampling requires a SparkleFlinger-owned spatial engine")
+            .sample_into(
+                render_stage
+                    .composed_frame
+                    .sampling_canvas
+                    .as_ref()
+                    .expect("CPU spatial sampling requires a materialized canvas"),
+                &mut render.recycled_frame.zones,
+            );
         render_stage.sampled_us = micros_between(cpu_sample_start, Instant::now());
     }
     let sample_us = render_stage.sampled_us;
@@ -845,6 +855,7 @@ pub(crate) async fn execute_frame(
 
 #[cfg(test)]
 mod tests {
+    use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
     use hypercolor_core::types::event::{FrameData, ZoneColors};
     use hypercolor_types::spatial::{
@@ -882,7 +893,9 @@ mod tests {
             web_viewport_preview: None,
             group_canvases: Vec::new(),
             active_group_canvas_ids: Vec::new(),
-            led_sampling_strategy: LedSamplingStrategy::SparkleFlinger,
+            led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(SpatialEngine::new(
+                sample_layout(&[]),
+            )),
             producer_render_us: 0,
             producer_preview_compose_us: 0,
             sampled_us: 0,
