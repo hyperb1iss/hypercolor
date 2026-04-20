@@ -270,6 +270,7 @@ async fn set_active_layout_for_device(state: &Arc<AppState>, device_id: DeviceId
             shape_preset: None,
             display_order: 0,
             attachment: None,
+            brightness: None,
         }],
 
         default_sampling_mode: SamplingMode::Bilinear,

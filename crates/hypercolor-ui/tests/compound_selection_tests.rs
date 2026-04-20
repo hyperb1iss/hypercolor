@@ -13,6 +13,7 @@ use hypercolor_types::spatial::{
 // ── Fixtures ─────────────────────────────────────────────────────────────
 
 fn test_zone(id: &str, device_id: &str, attachment: Option<(&str, u32)>) -> DeviceZone {
+ brightness: None,
     DeviceZone {
         id: id.to_owned(),
         name: id.to_owned(),
@@ -35,6 +36,7 @@ fn test_zone(id: &str, device_id: &str, attachment: Option<(&str, u32)>) -> Devi
         shape: None,
         shape_preset: None,
         attachment: attachment.map(|(slot_id, instance)| ZoneAttachment {
+        brightness: None,
             template_id: "test-template".to_owned(),
             slot_id: slot_id.to_owned(),
             instance,

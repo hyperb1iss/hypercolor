@@ -405,6 +405,16 @@ pub struct DeviceZone {
     /// Attachment metadata for zones imported from attachment profiles.
     #[serde(default)]
     pub attachment: Option<ZoneAttachment>,
+
+    /// Per-zone brightness scalar in `[0.0, 1.0]`. `None` means full
+    /// brightness (1.0). Applied multiplicatively with the device output
+    /// brightness and global scene brightness during frame routing.
+    ///
+    /// Use this to dim a single channel of a multi-zone controller
+    /// without touching its siblings — e.g. balancing a specific LED
+    /// strip against the rest of the setup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brightness: Option<f32>,
 }
 
 fn default_scale() -> f32 {

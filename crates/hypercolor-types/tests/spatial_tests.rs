@@ -262,6 +262,7 @@ fn device_zone_construction() {
         shape_preset: Some("strimer-atx-24pin".into()),
         display_order: 0,
         attachment: None,
+        brightness: None,
     };
 
     assert_eq!(zone.id, "zone-1");
@@ -296,6 +297,7 @@ fn device_zone_optional_fields() {
         shape_preset: None,
         display_order: 0,
         attachment: None,
+        brightness: None,
     };
 
     assert!(zone.zone_name.is_none());
@@ -372,6 +374,7 @@ fn spatial_layout_with_zones() {
         shape_preset: None,
         display_order: 0,
         attachment: None,
+        brightness: None,
     };
 
     let layout = SpatialLayout {

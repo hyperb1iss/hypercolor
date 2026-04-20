@@ -283,6 +283,7 @@ fn display_zone(
         shape_preset: None,
         display_order: 0,
         attachment: None,
+        brightness: None,
     }
 }
 
@@ -323,6 +324,7 @@ fn led_zone(
         shape_preset: None,
         display_order: 0,
         attachment: None,
+        brightness: None,
     }
 }
 

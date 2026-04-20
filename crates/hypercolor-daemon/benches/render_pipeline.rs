@@ -76,6 +76,7 @@ fn strip_zone(id: &str, device_id: &str, led_count: u32) -> DeviceZone {
         shape_preset: None,
         display_order: 0,
         attachment: None,
+        brightness: None,
     }
 }
 

@@ -13,7 +13,6 @@ use crate::style_utils::device_accent_colors;
 #[component]
 pub fn LayoutZoneProperties() -> impl IntoView {
     let editor = expect_context::<crate::components::layout_builder::LayoutEditorContext>();
-    let devices_ctx = expect_context::<DevicesContext>();
     let layout = editor.layout;
     let selected_zone_ids = editor.selected_zone_ids;
     let keep_aspect_ratio = editor.keep_aspect_ratio;
@@ -23,42 +22,71 @@ pub fn LayoutZoneProperties() -> impl IntoView {
     let set_is_dirty = editor.set_is_dirty;
     let compound_depth = editor.compound_depth;
 
-    // Unique physical device ids (`DeviceSummary::id`) whose zones are
-    // currently selected. Drives the brightness slider. Empty when nothing
-    // is selected; single-entry for a single zone or a multi-zone group
-    // living on one device; multi-entry for cross-device selections.
-    let selected_device_ids = Signal::derive(move || {
+    // Brightness aggregate for the currently-selected zones — returns
+    // `(value_0_to_100, mixed)`. Each `DeviceZone` carries its own
+    // `brightness: Option<f32>` (None = 1.0). When the selection spans
+    // zones with different brightness values the slider shows "Mixed"
+    // at the average; dragging collapses them all to a shared value.
+    let brightness_value = Signal::derive(move || {
         let zone_ids = selected_zone_ids.get();
         if zone_ids.is_empty() {
-            return Vec::<String>::new();
+            return (100u8, false);
         }
-        let devices = devices_ctx
-            .devices_resource
-            .get()
-            .and_then(Result::ok)
-            .unwrap_or_default();
         layout.with(|current| {
             let Some(l) = current.as_ref() else {
-                return Vec::new();
+                return (100u8, false);
             };
-            let mut seen = std::collections::HashSet::new();
-            let mut result = Vec::new();
-            for zid in &zone_ids {
-                if let Some(zone) = l.zones.iter().find(|z| &z.id == zid)
-                    && let Some(dev) = devices
-                        .iter()
-                        .find(|d| d.layout_device_id == zone.device_id)
-                    && seen.insert(dev.id.clone())
-                {
-                    result.push(dev.id.clone());
-                }
+            let values: Vec<u8> = l
+                .zones
+                .iter()
+                .filter(|z| zone_ids.contains(&z.id))
+                .map(|z| {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let pct = (z.brightness.unwrap_or(1.0).clamp(0.0, 1.0) * 100.0).round() as u8;
+                    pct
+                })
+                .collect();
+            if values.is_empty() {
+                return (100u8, false);
             }
-            result
+            let first = values[0];
+            let mixed = values.iter().any(|v| *v != first);
+            if mixed {
+                let sum: u32 = values.iter().map(|v| u32::from(*v)).sum();
+                #[allow(clippy::cast_possible_truncation)]
+                let avg = (sum / values.len() as u32) as u8;
+                (avg, true)
+            } else {
+                (first, false)
+            }
         })
     });
+
+    // Write handler — update `brightness` on every selected zone. Setting
+    // back to 100 clears to `None` so serialized layouts stay clean.
+    let set_zone_brightness = move |pct: u8| {
+        let zone_ids = selected_zone_ids.get_untracked();
+        if zone_ids.is_empty() {
+            return;
+        }
+        let new_brightness = if pct >= 100 {
+            None
+        } else {
+            Some(f32::from(pct) / 100.0)
+        };
+        set_layout.update(|l| {
+            let Some(layout) = l.as_mut() else { return };
+            for zone in &mut layout.zones {
+                if zone_ids.contains(&zone.id) {
+                    zone.brightness = new_brightness;
+                }
+            }
+        });
+        set_is_dirty.set(true);
+    };
+
     // Accent color for the brightness slider — take the first selected
-    // device's accent (matches the palette card) so it feels tied to the
-    // selection.
+    // zone's device accent so it feels tied to the selection.
     let brightness_rgb = Signal::derive(move || {
         let zone_ids = selected_zone_ids.get();
         layout.with(|current| {
@@ -229,7 +257,8 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                 </div>
                                 <div class="flex-1" />
                                 <DeviceBrightnessSlider
-                                    device_ids=selected_device_ids
+                                    value=brightness_value
+                                    on_change=Callback::new(set_zone_brightness)
                                     rgb=brightness_rgb.get()
                                 />
                             </div>
@@ -967,7 +996,8 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                 </button>
                             </div>
                             <DeviceBrightnessSlider
-                                device_ids=selected_device_ids
+                                value=brightness_value
+                                on_change=Callback::new(set_zone_brightness)
                                 rgb=brightness_rgb.get()
                             />
                         </div>

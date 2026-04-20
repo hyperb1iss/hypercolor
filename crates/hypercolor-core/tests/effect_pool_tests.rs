@@ -57,6 +57,7 @@ fn sample_layout() -> SpatialLayout {
             shape: None,
             shape_preset: None,
             attachment: None,
+            brightness: None,
         }],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,

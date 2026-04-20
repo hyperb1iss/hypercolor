@@ -259,6 +259,7 @@ fn layout_with_device(layout_device_id: &str) -> SpatialLayout {
             shape: None,
             shape_preset: None,
             attachment: None,
+            brightness: None,
         }],
 
         default_sampling_mode: SamplingMode::Bilinear,

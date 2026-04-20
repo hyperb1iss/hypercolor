@@ -272,6 +272,7 @@ pub fn append_auto_layout_zones_for_device(
                 .or_else(|| auto_layout_shape(&zone_info.topology)),
             shape_preset: None,
             attachment: None,
+            brightness: None,
         });
     }
 

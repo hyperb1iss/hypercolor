@@ -264,6 +264,7 @@ pub(crate) fn seeded_device_layout(
             shape,
             shape_preset: Some("ableton-push2".to_owned()),
             attachment: None,
+            brightness: None,
         });
     }
 
@@ -389,6 +390,7 @@ pub(crate) fn seeded_attachment_layout(
                     led_count: Some(suggested.led_count),
                     led_mapping: suggested.led_mapping.clone(),
                 }),
+                brightness: None,
             });
         }
     }

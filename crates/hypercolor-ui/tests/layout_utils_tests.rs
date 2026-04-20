@@ -44,6 +44,7 @@ fn ring_zone(
     zone_name: Option<&str>,
     display_order: i32,
     attachment: Option<ZoneAttachment>,
+    brightness: None,
 ) -> DeviceZone {
     DeviceZone {
         id: id.to_owned(),

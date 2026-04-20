@@ -36,6 +36,7 @@ fn sample_layout() -> SpatialLayout {
             shape_preset: None,
             display_order: 0,
             attachment: None,
+            brightness: None,
         }],
 
         default_sampling_mode: SamplingMode::Bilinear,

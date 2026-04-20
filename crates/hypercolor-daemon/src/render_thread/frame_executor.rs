@@ -645,6 +645,7 @@ mod tests {
                     shape: None,
                     shape_preset: None,
                     attachment: None,
+                    brightness: None,
                 })
                 .collect(),
             default_sampling_mode: SamplingMode::Nearest,

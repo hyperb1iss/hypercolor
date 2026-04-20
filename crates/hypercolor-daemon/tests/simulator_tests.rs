@@ -390,6 +390,7 @@ async fn simulated_display_crud_routes_update_runtime_state() {
         shape: None,
         shape_preset: None,
         attachment: None,
+        brightness: None,
     });
     {
         let mut layouts = state.layouts.write().await;

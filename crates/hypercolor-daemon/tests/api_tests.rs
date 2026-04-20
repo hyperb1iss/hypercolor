@@ -1406,6 +1406,7 @@ async fn set_layout_targeting_device(state: &AppState, layout_device_id: &str, l
             shape: None,
             shape_preset: None,
             attachment: None,
+            brightness: None,
         }],
 
         default_sampling_mode: SamplingMode::Bilinear,

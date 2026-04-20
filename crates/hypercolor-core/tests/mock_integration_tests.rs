@@ -102,6 +102,7 @@ fn build_layout_for_device(
             shape_preset: None,
             display_order: 0,
             attachment: None,
+            brightness: None,
         }],
         default_sampling_mode: hypercolor_types::spatial::SamplingMode::Nearest,
         default_edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
@@ -147,6 +148,7 @@ fn build_dual_zone_layout(
                 shape_preset: None,
                 display_order: 0,
                 attachment: None,
+                brightness: None,
             },
             DeviceZone {
                 id: "zone-matrix".to_owned(),
@@ -172,6 +174,7 @@ fn build_dual_zone_layout(
                 shape_preset: None,
                 display_order: 0,
                 attachment: None,
+                brightness: None,
             },
         ],
         default_sampling_mode: hypercolor_types::spatial::SamplingMode::Nearest,

@@ -262,6 +262,7 @@ fn set_zone_rotation_updates_single_zone_without_moving_it() {
             shape_preset: None,
             display_order: 0,
             attachment: None,
+            brightness: None,
         }],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
@@ -313,6 +314,7 @@ fn repair_legacy_lcd_defaults_updates_untouched_square_display_zone() {
             shape_preset: Some("lcd-display".to_owned()),
             display_order: 0,
             attachment: None,
+            brightness: None,
         }],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
@@ -592,6 +594,7 @@ fn plain_zone(id: &str, device_id: &str, x: f32, y: f32, w: f32, h: f32) -> Devi
         shape: None,
         shape_preset: None,
         attachment: None,
+        brightness: None,
     }
 }
 

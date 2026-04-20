@@ -85,6 +85,7 @@ pub fn create_default_zone(
         shape: defaults.shape,
         shape_preset: defaults.shape_preset,
         attachment: None,
+        brightness: None,
         display_order,
     }
 }

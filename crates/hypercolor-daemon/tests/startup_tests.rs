@@ -1035,6 +1035,7 @@ fn test_zone(id: &str, device_id: &str) -> DeviceZone {
         shape_preset: None,
         display_order: 0,
         attachment: None,
+        brightness: None,
         led_mapping: None,
     }
 }
@@ -1367,6 +1368,7 @@ fn reconcile_auto_layout_zones_for_device_updates_existing_seiren_auto_zone() {
             shape_preset: None,
             display_order: 0,
             attachment: None,
+            brightness: None,
             led_mapping: None,
         }],
 
@@ -1440,6 +1442,7 @@ fn reconcile_auto_layout_zones_for_device_removes_stale_auto_zones() {
                 shape_preset: None,
                 display_order: 0,
                 attachment: None,
+                brightness: None,
                 led_mapping: None,
             },
             DeviceZone {
@@ -1466,6 +1469,7 @@ fn reconcile_auto_layout_zones_for_device_removes_stale_auto_zones() {
                 shape_preset: None,
                 display_order: 0,
                 attachment: None,
+                brightness: None,
                 led_mapping: None,
             },
         ],

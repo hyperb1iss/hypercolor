@@ -882,6 +882,7 @@ mod tests {
                 shape_preset: None,
                 display_order: 0,
                 attachment: None,
+                brightness: None,
             }],
             default_sampling_mode: SamplingMode::Bilinear,
             default_edge_behavior: EdgeBehavior::Clamp,

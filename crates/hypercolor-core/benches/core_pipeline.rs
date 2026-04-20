@@ -266,6 +266,7 @@ fn full_canvas_zone(id: &str, topology: LedTopology) -> DeviceZone {
         shape_preset: None,
         display_order: 0,
         attachment: None,
+        brightness: None,
     }
 }
 
@@ -350,6 +351,7 @@ fn bench_routing_zone(
         shape_preset: None,
         display_order: 0,
         attachment: None,
+        brightness: None,
     }
 }
 

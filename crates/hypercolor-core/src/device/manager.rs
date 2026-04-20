@@ -1685,6 +1685,20 @@ impl BackendManager {
         self.warned_inactive_layout_devices
             .extend(plan.inactive_devices.iter().cloned());
 
+        // Per-zone brightness from the layout. `None` → 1.0 (full).
+        // Applied multiplicatively with device_output_brightness during
+        // staging copy so each channel of a multi-zone controller can
+        // be dimmed independently.
+        let zone_brightness_for = |zone_id: &str| -> f32 {
+            layout
+                .zones
+                .iter()
+                .find(|z| z.id == zone_id)
+                .and_then(|z| z.brightness)
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0)
+        };
+
         if zone_colors.len() == plan.ordered_zone_routes.len()
             && zone_colors
                 .iter()
@@ -1692,10 +1706,12 @@ impl BackendManager {
                 .all(|(zone_colors, ordered)| zone_colors.zone_id == ordered.zone_id)
         {
             for (zone_colors, ordered) in zone_colors.iter().zip(&plan.ordered_zone_routes) {
+                let zb = zone_brightness_for(zone_colors.zone_id.as_str());
                 self.route_zone_colors(
                     zone_colors.zone_id.as_str(),
                     &zone_colors.colors,
                     &ordered.route,
+                    zb,
                 );
             }
         } else {
@@ -1704,7 +1720,8 @@ impl BackendManager {
                     warn!(zone_id = %zc.zone_id, "zone not found in spatial layout");
                     continue;
                 };
-                self.route_zone_colors(&zc.zone_id, &zc.colors, route);
+                let zb = zone_brightness_for(zc.zone_id.as_str());
+                self.route_zone_colors(&zc.zone_id, &zc.colors, route, zb);
             }
         }
 
@@ -1821,7 +1838,13 @@ impl BackendManager {
         stats
     }
 
-    fn route_zone_colors(&mut self, zone_id: &str, colors: &[[u8; 3]], route: &PlannedZoneRoute) {
+    fn route_zone_colors(
+        &mut self,
+        zone_id: &str,
+        colors: &[[u8; 3]],
+        route: &PlannedZoneRoute,
+        zone_brightness: f32,
+    ) {
         let PlannedZoneRoute::Mapped(route) = route else {
             let PlannedZoneRoute::Unmapped { layout_device_id } = route else {
                 unreachable!("only mapped or unmapped zone routes are compiled");
@@ -1875,6 +1898,7 @@ impl BackendManager {
                     let start = segment.start;
                     let end = start.saturating_add(copy_len);
                     staging.output[start..end].copy_from_slice(&remapped_colors[..copy_len]);
+                    apply_zone_brightness(&mut staging.output[start..end], zone_brightness);
                     staging.mark_written_range(start, end);
                 }
 
@@ -1892,7 +1916,9 @@ impl BackendManager {
                 }
                 let start = staging.output.len();
                 staging.output.extend_from_slice(remapped_colors);
-                staging.mark_written_range(start, staging.output.len());
+                let end = staging.output.len();
+                apply_zone_brightness(&mut staging.output[start..end], zone_brightness);
+                staging.mark_written_range(start, end);
                 None
             }
         };
@@ -2123,6 +2149,30 @@ fn prepare_output_for_leds_full_brightness(colors: &mut [[u8; 3]]) {
             linear_to_output_u8(green),
             linear_to_output_u8(blue),
         ];
+    }
+}
+
+/// Scale a zone's portion of the staging buffer by a per-zone brightness
+/// multiplier. sRGB u8 space scaling — the device output brightness is
+/// applied downstream in linear space by `prepare_output_for_leds_scaled`,
+/// so the final output is `linear(sRGB × zone) × device`. Not strictly
+/// gamma-correct for the zone factor, but the user tunes this by eye and
+/// the error is bounded at moderate brightness values.
+fn apply_zone_brightness(colors: &mut [[u8; 3]], zone_brightness: f32) {
+    if zone_brightness >= 0.999 {
+        return;
+    }
+    if zone_brightness <= 0.0 {
+        colors.fill([0, 0, 0]);
+        return;
+    }
+    for color in colors {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        {
+            color[0] = (f32::from(color[0]) * zone_brightness) as u8;
+            color[1] = (f32::from(color[1]) * zone_brightness) as u8;
+            color[2] = (f32::from(color[2]) * zone_brightness) as u8;
+        }
     }
 }
 

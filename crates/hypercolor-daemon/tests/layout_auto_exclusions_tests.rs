@@ -31,6 +31,7 @@ fn make_zone(id: &str, device_id: &str) -> DeviceZone {
         shape_preset: None,
         display_order: 0,
         attachment: None,
+        brightness: None,
     }
 }
 
