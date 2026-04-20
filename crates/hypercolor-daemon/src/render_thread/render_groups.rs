@@ -89,7 +89,7 @@ pub(crate) struct RenderGroupRuntime {
     reconciled_groups_revision: Option<u64>,
     retained_frame: Option<RetainedRenderGroupFrame>,
     last_effect_error: Option<RenderGroupEffectError>,
-    combined_layout: Arc<SpatialLayout>,
+    combined_led_layout: Arc<SpatialLayout>,
     preview_width: u32,
     preview_height: u32,
 }
@@ -114,7 +114,7 @@ impl RenderGroupRuntime {
             reconciled_groups_revision: None,
             retained_frame: None,
             last_effect_error: None,
-            combined_layout: Arc::new(empty_group_layout(preview_width, preview_height)),
+            combined_led_layout: Arc::new(empty_group_layout(preview_width, preview_height)),
             preview_width,
             preview_height,
         }
@@ -223,9 +223,6 @@ impl RenderGroupRuntime {
                 continue;
             }
 
-            let Some(spatial_engine) = self.spatial_engines.get(&group.id) else {
-                continue;
-            };
             if group_publishes_direct_canvas(group) {
                 if let Some(retained) = self.reuse_retained_direct_group_frame(
                     group,
@@ -257,12 +254,6 @@ impl RenderGroupRuntime {
                         anyhow::Error::new(render_group_effect_error(group, registry, error))
                     })?;
                 render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
-                if !group.layout.zones.is_empty() {
-                    let sample_start = Instant::now();
-                    next_index =
-                        spatial_engine.sample_append_into_at(lease.canvas_mut(), zones, next_index);
-                    sample_us = sample_us.saturating_add(micros_u32(sample_start.elapsed()));
-                }
                 active_group_canvas_ids.push(group.id);
                 let frame = GroupCanvasFrame {
                     surface: lease.submit(0, 0),
@@ -276,6 +267,9 @@ impl RenderGroupRuntime {
                 continue;
             }
 
+            let Some(spatial_engine) = self.spatial_engines.get(&group.id) else {
+                continue;
+            };
             let Some(target) = self.target_canvases.get_mut(&group.id) else {
                 continue;
             };
@@ -317,7 +311,7 @@ impl RenderGroupRuntime {
             group_canvases,
             active_group_canvas_ids,
             led_sampling_strategy: LedSamplingStrategy::PreSampled(Arc::clone(
-                &self.combined_layout,
+                &self.combined_led_layout,
             )),
             render_us,
             sample_us,
@@ -371,7 +365,7 @@ impl RenderGroupRuntime {
             self.ensure_spatial_engine(group);
         }
 
-        self.combined_layout = Arc::new(combine_group_layouts(
+        self.combined_led_layout = Arc::new(combine_led_group_layouts(
             groups,
             self.preview_width,
             self.preview_height,
@@ -743,11 +737,11 @@ fn render_group_effect_error(
     }
 }
 
-fn combine_group_layouts(groups: &[RenderGroup], width: u32, height: u32) -> SpatialLayout {
+fn combine_led_group_layouts(groups: &[RenderGroup], width: u32, height: u32) -> SpatialLayout {
     let mut layout = empty_group_layout(width, height);
     layout.zones = groups
         .iter()
-        .filter(|group| group.enabled && group.effect_id.is_some())
+        .filter(|group| group_contributes_to_preview(group))
         .flat_map(|group| group.layout.zones.clone())
         .collect();
     layout
@@ -1116,6 +1110,7 @@ mod tests {
             group_canvas_frame.surface.get_pixel(0, 0),
             Rgba::new(0, 0, 255, 255)
         );
+        assert!(zones.is_empty());
     }
 
     #[test]
@@ -1275,6 +1270,64 @@ mod tests {
     }
 
     #[test]
+    fn multiple_custom_groups_with_display_group_exclude_display_faces_from_led_sampling() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let registry = builtin_registry();
+        let solid_id = builtin_effect_id(&registry, "solid_color");
+        let mut left = sample_group(4, 4);
+        left.name = "Left".into();
+        left.effect_id = Some(solid_id);
+        left.controls =
+            HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]);
+        left.layout.zones = vec![point_zone("zone_left")];
+        let mut right = sample_group(4, 4);
+        right.name = "Right".into();
+        right.effect_id = Some(solid_id);
+        right.controls =
+            HashMap::from([("color".into(), ControlValue::Color([0.0, 1.0, 0.0, 1.0]))]);
+        right.layout.zones = vec![point_zone("zone_right")];
+        let mut display = sample_display_group(4, 4);
+        display.name = "Display".into();
+        display.effect_id = Some(solid_id);
+        display.controls =
+            HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]);
+        display.layout.zones = vec![point_zone("zone_display")];
+        let mut zones = Vec::new();
+        let display_group_target_fps = HashMap::new();
+
+        let result = render_scene_for_test(
+            &mut runtime,
+            &[left, right, display],
+            1,
+            0,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("mixed preview and display groups should render");
+        let [(_, group_canvas_frame)] = &result.group_canvases[..] else {
+            panic!("display group should publish a direct surface");
+        };
+        let LedSamplingStrategy::PreSampled(layout) = result.led_sampling_strategy else {
+            panic!("generic multi-group path should keep using pre-sampled LED zones");
+        };
+
+        assert_eq!(result.logical_layer_count, 2);
+        assert_eq!(
+            group_canvas_frame.surface.get_pixel(0, 0),
+            Rgba::new(0, 0, 255, 255)
+        );
+        assert_eq!(zones.len(), 2);
+        assert_eq!(zones[0].zone_id, "zone_left");
+        assert_eq!(zones[0].colors.first().copied(), Some([255, 0, 0]));
+        assert_eq!(zones[1].zone_id, "zone_right");
+        assert_eq!(zones[1].colors.first().copied(), Some([0, 255, 0]));
+        assert_eq!(layout.zones.len(), 2);
+        assert_eq!(layout.zones[0].id, "zone_left");
+        assert_eq!(layout.zones[1].id, "zone_right");
+    }
+
+    #[test]
     fn multiple_display_groups_publish_surface_backed_direct_canvases() {
         let mut runtime = RenderGroupRuntime::new(4, 4);
         let registry = builtin_registry();
@@ -1314,11 +1367,14 @@ mod tests {
                 .iter()
                 .all(|(_, frame)| frame.surface.width() > 0 && frame.surface.height() > 0)
         );
-        assert_eq!(zones.len(), 2);
-        assert_eq!(zones[0].zone_id, "zone_left");
-        assert_eq!(zones[0].colors.first().copied(), Some([255, 0, 0]));
-        assert_eq!(zones[1].zone_id, "zone_right");
-        assert_eq!(zones[1].colors.first().copied(), Some([0, 0, 255]));
+        assert!(zones.is_empty());
+        let reused = runtime
+            .reuse_scene(1)
+            .expect("display-only scene should keep an empty retained LED layout");
+        let LedSamplingStrategy::ReusePublished(layout) = reused.led_sampling_strategy else {
+            panic!("display-only scene should reuse an empty LED layout");
+        };
+        assert!(layout.zones.is_empty());
     }
 
     #[test]
