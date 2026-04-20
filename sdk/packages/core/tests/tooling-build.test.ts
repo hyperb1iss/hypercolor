@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -69,6 +69,57 @@ describe('tooling build', () => {
             expect(html).toContain(`<meta name="hypercolor-version" content="${HYPERCOLOR_FORMAT_VERSION}" />`)
         } finally {
             rmSync(outDir, { force: true, recursive: true })
+        }
+    })
+
+    test('marks shockwave as audio-reactive in built metadata', async () => {
+        const outDir = mkdtempSync(join(tmpdir(), 'hypercolor-shockwave-build-'))
+        try {
+            const [result] = await buildArtifacts({
+                entryPaths: [resolve(SDK_ROOT, 'src/effects/shockwave/main.ts')],
+                outDir,
+                sdkAliasPath: SDK_ALIAS,
+            })
+
+            expect(result.metadata.audioReactive).toBeTrue()
+            const html = readFileSync(result.outputPath, 'utf8')
+            expect(html).toContain('<meta audio-reactive="true" />')
+        } finally {
+            rmSync(outDir, { force: true, recursive: true })
+        }
+    })
+
+    test('fails fast when an effect uses audio helpers without audio: true', async () => {
+        const tempRoot = mkdtempSync(join(tmpdir(), 'hypercolor-audio-optin-'))
+        const entryDir = join(tempRoot, 'missing-audio-optin')
+        const entryPath = join(entryDir, 'main.ts')
+        const outDir = join(tempRoot, 'dist')
+
+        mkdirSync(entryDir, { recursive: true })
+        writeFileSync(
+            entryPath,
+            `
+import { audio, canvas } from ${JSON.stringify(SDK_ALIAS)}
+
+export default canvas.stateful('Missing Audio Opt-In', {}, () => {
+    return () => {
+        const data = audio()
+        void data.level
+    }
+})
+`,
+        )
+
+        try {
+            await expect(
+                buildArtifacts({
+                    entryPaths: [entryPath],
+                    outDir,
+                    sdkAliasPath: SDK_ALIAS,
+                }),
+            ).rejects.toThrow('missing audio: true')
+        } finally {
+            rmSync(tempRoot, { force: true, recursive: true })
         }
     })
 })

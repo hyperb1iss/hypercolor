@@ -15,11 +15,15 @@
         "clean": "rm -rf packages/*/dist",
         "build:effects": "bun run hypercolor build --all --workspace-root . --entry-root src/effects --entry-root src/faces --out ../effects/hypercolor --sdk-alias-path packages/core/src/index.ts",
         "build:effect": "bun run hypercolor build --out ../effects/hypercolor --sdk-alias-path packages/core/src/index.ts",
-        "build:faces": "bun run hypercolor build --all --workspace-root . --entry-root src/faces --out ../effects/hypercolor --sdk-alias-path packages/core/src/index.ts"
+        "build:faces": "bun run hypercolor build --all --workspace-root . --entry-root src/faces --out ../effects/hypercolor --sdk-alias-path packages/core/src/index.ts",
+        "capture:screenshots": "bun scripts/capture-screenshots.ts",
+        "capture:promote": "bun scripts/capture-screenshots.ts --promote"
     },
     "devDependencies": {
         "@biomejs/biome": "2.4.6",
         "typescript": "^5.9.3"
     },
-    "dependencies": {}
+    "dependencies": {
+        "sharp": "^0.33.5"
+    }
 }

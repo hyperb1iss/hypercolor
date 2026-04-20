@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import type { ArtifactKind, BuildControlDef, ExtractedArtifactMetadata, RegisteredArtifactDef } from './types'
 
 const BUILTIN_UNIFORMS = new Set(['iTime', 'iResolution', 'iMouse'])
+const AUDIO_USAGE_PATTERNS = [/\baudio\s*\(/, /\bctx\.audio\b/, /\bgetAudioData\s*\(/, /\bengine\.audio\b/]
 
 function toBuildControls(def: RegisteredArtifactDef): BuildControlDef[] {
     return def.resolvedControls.map((ctrl) => {
@@ -65,6 +66,16 @@ function validateShaderBindings(entryPath: string, def: RegisteredArtifactDef): 
     }
 }
 
+async function validateExplicitReactivityOptIns(entryPath: string, def: RegisteredArtifactDef): Promise<void> {
+    const source = await Bun.file(entryPath).text()
+
+    if (def.audio !== true && AUDIO_USAGE_PATTERNS.some((pattern) => pattern.test(source))) {
+        throw new Error(
+            `Audio reactivity validation failed for ${entryPath}: effect uses audio helpers but is missing audio: true`,
+        )
+    }
+}
+
 function runtimeGlobals() {
     return globalThis as Record<string, unknown>
 }
@@ -107,6 +118,7 @@ async function loadMetadata(entryPath: string): Promise<ExtractedArtifactMetadat
         }
 
         validateShaderBindings(entryPath, def)
+        await validateExplicitReactivityOptIns(entryPath, def)
 
         return {
             audioReactive: def.audio ?? false,
