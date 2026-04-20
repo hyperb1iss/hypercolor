@@ -46,6 +46,7 @@ const state = {
     driftVelocity: 0,
     impact: 0,
     motionPulse: 0,
+    motionTime: 0,
     panVelocityX: 0,
     panVelocityY: 0,
     panX: 0,
@@ -71,9 +72,9 @@ export default effect(
     'Cymatics',
     shader,
     {
-        visualStyle: combo('Style', ['Lattice', 'Particle Field', 'Vortex', 'Resonance'], {
+        visualStyle: combo('Style', ['Twist', 'Particle Field'], {
             default: 'Particle Field',
-            tooltip: 'Visualization mode — each renders sound as a different spatial phenomenon',
+            tooltip: 'Twist bends a warping cube lattice through space; Particle Field drifts through a luminous 3D cell grid',
             group: 'Scene',
         }),
         colorScheme: combo('Colors', ['Aurora', 'Cyberpunk', 'Lava', 'Prism', 'Toxic', 'Vaporwave'], {
@@ -93,7 +94,22 @@ export default effect(
         }),
         flow: num('Flow', [-100, 100], 30, {
             normalize: 'none',
-            tooltip: 'Travel direction and speed',
+            tooltip: 'Travel direction and base speed',
+            group: 'Motion',
+        }),
+        speed: num('Speed', [10, 200], 100, {
+            normalize: 'none',
+            tooltip: 'Overall motion tempo — scales flight, sway, and curve rate',
+            group: 'Motion',
+        }),
+        curvature: num('Curve', [0, 150], 55, {
+            normalize: 'none',
+            tooltip: 'How much the flight path bends through space',
+            group: 'Motion',
+        }),
+        thrust: num('Thrust', [0, 150], 70, {
+            normalize: 'none',
+            tooltip: 'How strongly the camera commits to forward flight vs lateral wander',
             group: 'Motion',
         }),
         sensitivity: num('Sensitivity', [10, 200], 50, {
@@ -110,6 +126,12 @@ export default effect(
         frame: (ctx, time) => {
             const dt = Math.min(lastTime > 0 ? time - lastTime : 0.016, 0.05)
             lastTime = time
+
+            // Motion tempo — scaling dt for motion integration (but not audio
+            // smoothing) lets users slow the camera without dampening reactivity.
+            const speedScale = clamp(readNumber(ctx.controls.speed, 100) / 100, 0.1, 2.0)
+            const motionDt = dt * speedScale
+            state.motionTime += motionDt
 
             const audio = ctx.audio
             const flow = clamp(readNumber(ctx.controls.flow, 30) / 100, -1, 1)
@@ -250,7 +272,7 @@ export default effect(
                 state.motionPulse * 0.72 +
                 state.smoothOnset * 0.45
             state.twistVelocity = smoothAsymmetric(state.twistVelocity, twistVelocityTarget, 6.5, 2.2, dt)
-            state.twist += state.twistVelocity * dt
+            state.twist += state.twistVelocity * motionDt
 
             const travelDirection = Math.abs(flow) > 0.01 ? Math.sign(flow) : Math.sign(state.smoothMomentum) || 1
             const driftVelocityTarget =
@@ -260,7 +282,7 @@ export default effect(
                 state.motionPulse * 0.85 * travelDirection +
                 state.smoothOnset * 0.6 * travelDirection
             state.driftVelocity = smoothAsymmetric(state.driftVelocity, driftVelocityTarget, 5.8, 1.7, dt)
-            state.drift += state.driftVelocity * dt
+            state.drift += state.driftVelocity * motionDt
 
             const warpVelocityTarget =
                 0.32 +
@@ -270,7 +292,7 @@ export default effect(
                 state.motionPulse * 0.72 +
                 state.smoothOnset * 0.35
             state.warpVelocity = smoothAsymmetric(state.warpVelocity, warpVelocityTarget, 6.4, 2.2, dt)
-            state.warpPhase += state.warpVelocity * dt
+            state.warpPhase += state.warpVelocity * motionDt
 
             ctx.setUniform('iAudioLevelSmooth', state.smoothLevel)
             ctx.setUniform('iAudioBassSmooth', state.smoothBass)
@@ -283,42 +305,20 @@ export default effect(
             ctx.setUniform('iMotionTwist', state.twist)
             ctx.setUniform('iFlowDrift', state.drift)
             ctx.setUniform('iWarpPhase', state.warpPhase)
+            ctx.setUniform('iMotionTime', state.motionTime)
         },
 
         presets: [
             {
                 controls: {
-                    colorScheme: 'Lava',
-                    colorSpeed: 25,
-                    flow: -80,
-                    glowIntensity: 180,
-                    sensitivity: 180,
-                    visualStyle: 'Vortex',
-                },
-                description:
-                    'Sub-bass becomes architecture. Slow vortex pull in a concrete bunker where the kick drum is a seismic event.',
-                name: 'Warehouse Ritual',
-            },
-            {
-                controls: {
-                    colorScheme: 'Cyberpunk',
-                    colorSpeed: 120,
-                    flow: 75,
-                    glowIntensity: 130,
-                    sensitivity: 90,
-                    visualStyle: 'Resonance',
-                },
-                description:
-                    'Eight frequency ribbons stream through neon rain. Bass swells roll the low bands while treble shimmer crackles across the top.',
-                name: 'Neon Meridian',
-            },
-            {
-                controls: {
                     colorScheme: 'Prism',
                     colorSpeed: 15,
+                    curvature: 40,
                     flow: 10,
                     glowIntensity: 85,
                     sensitivity: 35,
+                    speed: 45,
+                    thrust: 30,
                     visualStyle: 'Particle Field',
                 },
                 description:
@@ -327,24 +327,14 @@ export default effect(
             },
             {
                 controls: {
-                    colorScheme: 'Toxic',
-                    colorSpeed: 160,
-                    flow: -45,
-                    glowIntensity: 150,
-                    sensitivity: 145,
-                    visualStyle: 'Lattice',
-                },
-                description:
-                    'Industrial lattice pulses under acid-green data streams. Percussive hits tear holes in the matrix.',
-                name: 'Toxic Mainframe',
-            },
-            {
-                controls: {
                     colorScheme: 'Aurora',
                     colorSpeed: 40,
+                    curvature: 55,
                     flow: 20,
                     glowIntensity: 70,
                     sensitivity: 55,
+                    speed: 70,
+                    thrust: 50,
                     visualStyle: 'Particle Field',
                 },
                 description:
@@ -353,55 +343,67 @@ export default effect(
             },
             {
                 controls: {
-                    colorScheme: 'Vaporwave',
-                    colorSpeed: 65,
-                    flow: 40,
-                    glowIntensity: 110,
-                    sensitivity: 70,
-                    visualStyle: 'Resonance',
+                    colorScheme: 'Cyberpunk',
+                    colorSpeed: 120,
+                    curvature: 75,
+                    flow: 75,
+                    glowIntensity: 120,
+                    sensitivity: 90,
+                    speed: 115,
+                    thrust: 85,
+                    visualStyle: 'Particle Field',
                 },
                 description:
-                    'Frequency ribbons unfurl like magnetic tape in zero gravity. Each band, a living seismograph of its octave; bass ripples propagate through pastel shimmer.',
-                name: 'Chladni Plate',
+                    'Neon rain over a midnight skyline. Magenta and cyan cells drift past as bass rolls through in slow waves.',
+                name: 'Neon Meridian',
             },
             {
                 controls: {
                     colorScheme: 'Lava',
-                    colorSpeed: 8,
-                    flow: -5,
-                    glowIntensity: 60,
-                    sensitivity: 25,
-                    visualStyle: 'Lattice',
+                    colorSpeed: 18,
+                    curvature: 90,
+                    flow: -25,
+                    glowIntensity: 95,
+                    sensitivity: 110,
+                    speed: 55,
+                    thrust: 35,
+                    visualStyle: 'Twist',
                 },
                 description:
-                    'Cooling magma crystallizes into obsidian geometry. Each low rumble redraws the lattice lines in dim volcanic amber.',
-                name: 'Tectonic Meditation',
+                    'Sub-bass becomes architecture. A twisting corridor of volcanic geometry where every kick redraws the walls.',
+                name: 'Warehouse Ritual',
+            },
+            {
+                controls: {
+                    colorScheme: 'Toxic',
+                    colorSpeed: 150,
+                    curvature: 115,
+                    flow: -55,
+                    glowIntensity: 130,
+                    sensitivity: 140,
+                    speed: 125,
+                    thrust: 105,
+                    visualStyle: 'Twist',
+                },
+                description:
+                    'Industrial lattice warps under acid-green data streams. Percussive hits tear holes in the matrix as the path bends through the grid.',
+                name: 'Toxic Mainframe',
             },
             {
                 controls: {
                     colorScheme: 'Cyberpunk',
-                    colorSpeed: 185,
-                    flow: 95,
-                    glowIntensity: 195,
-                    sensitivity: 195,
-                    visualStyle: 'Vortex',
+                    colorSpeed: 170,
+                    curvature: 130,
+                    flow: 90,
+                    glowIntensity: 165,
+                    sensitivity: 180,
+                    speed: 175,
+                    thrust: 140,
+                    visualStyle: 'Twist',
                 },
                 description:
-                    'A particle accelerator at full bore. Colliding beams of magenta and cyan spiral into the event horizon as the bass line breaks physics.',
+                    'Full-throttle thrust through a cathedral of neon girders. Magenta and cyan shear past as the drop carves curves through space.',
                 name: 'Dopamine Collider',
-            },
-            {
-                controls: {
-                    colorScheme: 'Aurora',
-                    colorSpeed: 30,
-                    flow: -30,
-                    glowIntensity: 90,
-                    sensitivity: 80,
-                    visualStyle: 'Resonance',
-                },
-                description:
-                    'Northern lights draped across a frozen lake. Emerald and violet frequency bands ripple like curtains pulled by the solar wind.',
-                name: 'Magnetosphere',
             },
         ],
 
@@ -417,6 +419,7 @@ export default effect(
             ctx.registerUniform('iMotionTwist', 0)
             ctx.registerUniform('iFlowDrift', 0)
             ctx.registerUniform('iWarpPhase', 0)
+            ctx.registerUniform('iMotionTime', 0)
         },
     },
 )
