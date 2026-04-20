@@ -29,9 +29,7 @@ use self::render::display_viewport_signature;
 use crate::discovery::backend_id_for_device;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::logical_devices::LogicalDevice;
-use crate::preview_runtime::{
-    PreviewFrameReceiver, PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand,
-};
+use crate::preview_runtime::PreviewRuntime;
 use crate::session::OutputPowerState;
 use worker::DisplayWorkerHandle;
 
@@ -312,19 +310,20 @@ impl DisplayOutputThread {
 }
 
 async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot::Receiver<()>) {
-    let mut canvas_rx = Some(
-        state
-            .preview_runtime
-            .internal_canvas_receiver(PreviewStreamDemand {
-                fps: DISPLAY_OUTPUT_MAX_FPS,
-                format: PreviewPixelFormat::Rgba,
-                width: 0,
-                height: 0,
-            }),
-    );
     let mut workers = HashMap::<DisplayWorkerKey, DisplayWorkerHandle>::new();
     let mut targets_cache = DisplayTargetCache::default();
-    let mut last_reconciled_target_version = None::<u64>;
+    let initial_targets = display_targets(
+        &state.device_registry,
+        &state.spatial_engine,
+        &state.logical_devices,
+        &state.event_bus,
+        &mut targets_cache,
+    )
+    .await;
+    let mut canvas_rx = display_requires_global_canvas(initial_targets.targets.as_ref())
+        .then(|| state.event_bus.global_canvas_receiver());
+    reconcile_display_workers(&state, &mut workers, initial_targets.targets.as_ref()).await;
+    let mut last_reconciled_target_version = Some(initial_targets.version);
     let mut last_dispatched_sources =
         HashMap::<DisplayWorkerKey, StableDisplayFrameSetIdentity>::new();
     let mut dispatch_tick = tokio::time::interval(DISPLAY_OUTPUT_DISPATCH_INTERVAL);
@@ -373,8 +372,8 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
         }
         sync_display_canvas_receiver(
             &mut canvas_rx,
-            state.preview_runtime.as_ref(),
-            display_canvas_preview_demand(targets.targets.as_ref()),
+            state.event_bus.as_ref(),
+            display_requires_global_canvas(targets.targets.as_ref()),
         );
         if targets.targets.is_empty() {
             last_dispatched_sources.clear();
@@ -493,36 +492,21 @@ fn build_display_worker_frame_set(
 }
 
 fn sync_display_canvas_receiver(
-    receiver: &mut Option<PreviewFrameReceiver>,
-    preview_runtime: &PreviewRuntime,
-    demand: Option<PreviewStreamDemand>,
+    receiver: &mut Option<watch::Receiver<CanvasFrame>>,
+    event_bus: &HypercolorBus,
+    subscribe: bool,
 ) {
-    match demand {
-        Some(demand) => {
-            if let Some(receiver) = receiver.as_mut() {
-                receiver.update_demand(demand);
-            } else {
-                *receiver = Some(preview_runtime.internal_canvas_receiver(demand));
-            }
+    if subscribe {
+        if receiver.is_none() {
+            *receiver = Some(event_bus.global_canvas_receiver());
         }
-        None => {
-            let _ = receiver.take();
-        }
+    } else {
+        let _ = receiver.take();
     }
 }
 
-fn display_canvas_preview_demand(targets: &[Arc<DisplayTarget>]) -> Option<PreviewStreamDemand> {
-    targets
-        .iter()
-        .filter(|target| target.requires_global_canvas())
-        .map(|target| target.target_fps)
-        .max()
-        .map(|fps| PreviewStreamDemand {
-            fps: fps.max(1),
-            format: PreviewPixelFormat::Rgba,
-            width: 0,
-            height: 0,
-        })
+fn display_requires_global_canvas(targets: &[Arc<DisplayTarget>]) -> bool {
+    targets.iter().any(|target| target.requires_global_canvas())
 }
 
 async fn reconcile_display_workers(

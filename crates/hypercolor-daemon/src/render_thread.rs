@@ -175,6 +175,15 @@ impl RenderThreadState {
     pub(crate) fn preview_canvas_receiver_count(&self) -> usize {
         self.event_bus.canvas_receiver_count()
     }
+
+    pub(crate) fn authoritative_canvas_receiver_count(&self) -> usize {
+        self.event_bus.global_canvas_receiver_count()
+    }
+
+    pub(crate) fn published_canvas_receiver_count(&self) -> usize {
+        self.preview_canvas_receiver_count()
+            .saturating_add(self.authoritative_canvas_receiver_count())
+    }
 }
 
 impl RenderThread {

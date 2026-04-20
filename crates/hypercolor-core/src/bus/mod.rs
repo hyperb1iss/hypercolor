@@ -7,6 +7,7 @@
 //! - **Frame data** — latest LED colors via `tokio::sync::watch`. Subscribers skip stale frames.
 //! - **Spectrum data** — latest audio analysis via `tokio::sync::watch`. Same semantics.
 //! - **Canvas previews** — latest render and screen-source canvases via `tokio::sync::watch`.
+//! - **Authoritative global canvases** — latest full-scene display surface for non-preview consumers.
 //! - **Per-group canvases** — latest render-group canvases via per-group `tokio::sync::watch`.
 //!
 //! The bus is `Send + Sync`, cloneable, and entirely lock-free.
@@ -253,6 +254,9 @@ pub struct HypercolorBus {
     /// Latest render canvas snapshot.
     canvas: watch::Sender<CanvasFrame>,
 
+    /// Latest authoritative full-scene canvas snapshot for display/global consumers.
+    global_canvas: watch::Sender<CanvasFrame>,
+
     /// Latest screen-source canvas snapshot.
     screen_canvas: watch::Sender<CanvasFrame>,
 
@@ -277,6 +281,7 @@ impl HypercolorBus {
         let (frame, _) = watch::channel(FrameData::empty());
         let (spectrum, _) = watch::channel(SpectrumData::empty());
         let (canvas, _) = watch::channel(CanvasFrame::empty());
+        let (global_canvas, _) = watch::channel(CanvasFrame::empty());
         let (screen_canvas, _) = watch::channel(CanvasFrame::empty());
         let (web_viewport_canvas, _) = watch::channel(CanvasFrame::empty());
 
@@ -285,6 +290,7 @@ impl HypercolorBus {
             frame,
             spectrum,
             canvas,
+            global_canvas,
             screen_canvas,
             web_viewport_canvas,
             group_canvases: Arc::new(Mutex::new(HashMap::new())),
@@ -377,6 +383,24 @@ impl HypercolorBus {
     #[must_use]
     pub fn canvas_receiver_count(&self) -> usize {
         self.canvas.receiver_count()
+    }
+
+    /// Access the authoritative global-canvas watch sender.
+    #[must_use]
+    pub fn global_canvas_sender(&self) -> &watch::Sender<CanvasFrame> {
+        &self.global_canvas
+    }
+
+    /// Subscribe to authoritative global-canvas updates.
+    #[must_use]
+    pub fn global_canvas_receiver(&self) -> watch::Receiver<CanvasFrame> {
+        self.global_canvas.subscribe()
+    }
+
+    /// Number of active authoritative global-canvas receivers.
+    #[must_use]
+    pub fn global_canvas_receiver_count(&self) -> usize {
+        self.global_canvas.receiver_count()
     }
 
     /// Access the screen-canvas watch sender (for source preview publication).

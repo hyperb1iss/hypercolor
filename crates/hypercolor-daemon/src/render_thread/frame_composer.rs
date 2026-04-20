@@ -458,6 +458,7 @@ impl ComposeContext<'_> {
             self.publish_screen_canvas_preview,
             self.scene_snapshot.effect_demand.effect_running,
             self.scene_snapshot.effect_demand.screen_capture_active,
+            self.state.authoritative_canvas_receiver_count(),
             self.state.preview_canvas_receiver_count(),
             self.state.preview_runtime.tracked_canvas_receiver_count(),
             self.state.preview_runtime.tracked_canvas_demand(),
@@ -500,8 +501,10 @@ fn requires_published_surface(
     publish_screen_canvas_preview: bool,
     effect_running: bool,
     screen_capture_active: bool,
+    authoritative_canvas_receivers: usize,
 ) -> bool {
-    publish_canvas_preview
+    authoritative_canvas_receivers > 0
+        || publish_canvas_preview
         || (publish_screen_canvas_preview && !effect_running && screen_capture_active)
 }
 
@@ -520,6 +523,7 @@ fn preview_surface_request(
     publish_screen_canvas_preview: bool,
     effect_running: bool,
     screen_capture_active: bool,
+    authoritative_canvas_receivers: usize,
     canvas_receivers: usize,
     tracked_canvas_receivers: usize,
     canvas_demand: PreviewDemandSummary,
@@ -534,8 +538,16 @@ fn preview_surface_request(
         publish_screen_canvas_preview,
         effect_running,
         screen_capture_active,
+        authoritative_canvas_receivers,
     ) {
         return None;
+    }
+
+    if authoritative_canvas_receivers > 0 {
+        return Some(PreviewSurfaceRequest {
+            width: canvas_width,
+            height: canvas_height,
+        });
     }
 
     if (publish_canvas_preview && canvas_receivers > tracked_canvas_receivers)
@@ -596,10 +608,15 @@ mod tests {
 
     #[test]
     fn published_surface_depends_on_preview_and_screen_passthrough_receivers() {
-        assert!(!requires_published_surface(false, false, false, false));
-        assert!(requires_published_surface(true, false, true, false));
-        assert!(requires_published_surface(false, true, false, true));
-        assert!(!requires_published_surface(false, true, true, true));
+        assert!(!requires_published_surface(false, false, false, false, 0));
+        assert!(requires_published_surface(true, false, true, false, 0));
+        assert!(requires_published_surface(false, true, false, true, 0));
+        assert!(!requires_published_surface(false, true, true, true, 0));
+    }
+
+    #[test]
+    fn published_surface_depends_on_authoritative_global_receivers() {
+        assert!(requires_published_surface(false, false, false, false, 1));
     }
 
     #[test]
@@ -612,6 +629,7 @@ mod tests {
                 false,
                 true,
                 false,
+                0,
                 1,
                 1,
                 PreviewDemandSummary {
@@ -642,6 +660,7 @@ mod tests {
                 false,
                 true,
                 false,
+                0,
                 2,
                 1,
                 PreviewDemandSummary {
@@ -651,6 +670,31 @@ mod tests {
                     max_height: 360,
                     ..PreviewDemandSummary::default()
                 },
+                0,
+                0,
+                PreviewDemandSummary::default(),
+            ),
+            Some(PreviewSurfaceRequest {
+                width: 1280,
+                height: 720,
+            })
+        );
+    }
+
+    #[test]
+    fn preview_surface_request_uses_full_resolution_for_authoritative_global_lane() {
+        assert_eq!(
+            preview_surface_request(
+                1280,
+                720,
+                false,
+                false,
+                true,
+                false,
+                1,
+                0,
+                0,
+                PreviewDemandSummary::default(),
                 0,
                 0,
                 PreviewDemandSummary::default(),

@@ -172,6 +172,33 @@ pub(crate) fn publish_frame_updates(
     }
     let group_canvas_us = micros_u32(group_canvas_start.elapsed());
     let preview_start = Instant::now();
+    let authoritative_canvas_receivers = state.authoritative_canvas_receiver_count();
+    if authoritative_canvas_receivers > 0 {
+        let publish_global_canvas = {
+            let current = state.event_bus.global_canvas_sender().borrow();
+            if let Some(surface) =
+                authoritative_global_surface(state, &frame_surface, &preview_surface)
+            {
+                should_publish_surface_frame(&current, surface)
+            } else {
+                should_publish_canvas_frame(&current, &CanvasFrame::empty())
+            }
+        };
+        if publish_global_canvas {
+            let global_frame = if let Some(surface) =
+                authoritative_global_surface(state, &frame_surface, &preview_surface)
+            {
+                CanvasFrame::from_surface(
+                    surface
+                        .clone()
+                        .with_frame_metadata(frame_number, elapsed_ms),
+                )
+            } else {
+                CanvasFrame::empty()
+            };
+            let _ = state.event_bus.global_canvas_sender().send(global_frame);
+        }
+    }
     state
         .preview_runtime
         .note_canvas_frame(frame_number, elapsed_ms);
@@ -354,6 +381,19 @@ fn should_publish_surface_frame(current: &CanvasFrame, next: &PublishedSurface) 
 
 fn should_publish_canvas_storage(current: &CanvasFrame, next: &Canvas) -> bool {
     stable_canvas_frame_identity(current) != stable_canvas_identity(next)
+}
+
+fn authoritative_global_surface<'a>(
+    state: &RenderThreadState,
+    frame_surface: &'a Option<PublishedSurface>,
+    preview_surface: &'a Option<PublishedSurface>,
+) -> Option<&'a PublishedSurface> {
+    frame_surface.as_ref().or_else(|| {
+        preview_surface.as_ref().filter(|surface| {
+            surface.width() == state.canvas_dims.width()
+                && surface.height() == state.canvas_dims.height()
+        })
+    })
 }
 
 fn stable_canvas_frame_identity(frame: &CanvasFrame) -> Option<StableCanvasFrameIdentity> {
