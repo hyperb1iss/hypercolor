@@ -2,7 +2,7 @@
 
 TypeScript SDK for authoring [Hypercolor](https://github.com/hyperb1iss/hypercolor) RGB lighting effects.
 
-One declarative function call turns your idea into a shippable artifact. The SDK handles the render loop, control UI generation, audio pipeline, palette sampling, preview studio, and HTML bundling so you stay focused on the pixels.
+One declarative function call turns your idea into a shippable artifact. The SDK handles the render loop, control UI generation, audio pipeline, palette sampling, and HTML bundling so you stay focused on the pixels.
 
 ## Quick start
 
@@ -11,10 +11,10 @@ Scaffold a fresh workspace with the companion package:
 ```bash
 bunx create-hypercolor-effect my-effects
 cd my-effects
-bun run dev
+bun run build
 ```
 
-That gives you a live preview studio at `http://localhost:4200`, an effect to edit, and the full build/validate/install loop.
+That gives you an effect to edit and the full build/validate/install loop.
 
 Write an effect:
 
@@ -64,7 +64,6 @@ bun run ship:daemon
 Inside any scaffolded workspace, the `hypercolor` CLI drives the full loop:
 
 ```bash
-bunx hypercolor dev            # preview studio on :4200
 bunx hypercolor build --all    # compile every effect into dist/
 bunx hypercolor validate dist/*.html
 bunx hypercolor install dist/my-effect.html           # local filesystem copy
@@ -72,7 +71,7 @@ bunx hypercolor install dist/my-effect.html --daemon  # upload via daemon API
 bunx hypercolor add ember --template canvas           # scaffold another effect
 ```
 
-Scaffolded workspaces expose the same flow through `bun run dev`, `bun run build`, `bun run validate`, `bun run ship`, and `bun run ship:daemon`.
+Scaffolded workspaces expose the same flow through `bun run build`, `bun run validate`, `bun run ship`, and `bun run ship:daemon`.
 
 ## Documentation
 

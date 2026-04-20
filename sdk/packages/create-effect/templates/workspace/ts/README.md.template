@@ -4,7 +4,6 @@ Hypercolor effect workspace.
 
 ## Commands
 
-- `bun dev` starts the preview server
 - `bun run build` builds every effect into `dist/`
 - `bun run validate` checks built artifacts
 - `bun run ship` installs locally

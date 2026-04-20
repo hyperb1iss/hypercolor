@@ -7,7 +7,7 @@ template = "page.html"
 
 Hypercolor's HTML effect format is a straight superset of LightScript's. A self-contained HTML file with one canvas, one script tag, and a few meta tags drops straight into the daemon with zero tooling. The SDK reads this format directly, the daemon loads it without any build step, and every LightScript effect you've ever seen runs as-is.
 
-This path is the least-encouraged for new work. You give up typed controls, palette sampling, the `AudioData` struct, and most of the preview studio. Choose it for porting, for one-file oddities, and for effects that must travel without a workspace. For greenfield authoring, [TypeScript effects](@/effects/typescript-effects.md) are almost always the better call.
+This path is the least-encouraged for new work. You give up typed controls, palette sampling, the `AudioData` struct, and most of the SDK authoring ergonomics. Choose it for porting, for one-file oddities, and for effects that must travel without a workspace. For greenfield authoring, [TypeScript effects](@/effects/typescript-effects.md) are almost always the better call.
 
 ## The minimum viable effect
 

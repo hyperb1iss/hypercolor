@@ -1,7 +1,6 @@
 import { existsSync, watch } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
-import { runDevServer } from './dev'
 import {
     buildArtifacts,
     discoverWorkspaceEntries,
@@ -217,26 +216,12 @@ async function runAdd(args: string[], context: CliContext): Promise<number> {
     return 0
 }
 
-async function runDev(args: string[], context: CliContext): Promise<number> {
-    const [entryArg] = positionalArgs(args)
-    const workspaceRoot = resolve(context.cwd, optionValue(args, '--workspace-root') ?? '.')
-    const entryRoots = takeRepeatedValues(args, '--entry-root')
-    const sdkAliasArg = optionValue(args, '--sdk-alias-path')
-    const sdkAliasPath = sdkAliasArg ? resolve(context.cwd, sdkAliasArg) : undefined
-    const port = Number.parseInt(optionValue(args, '--port') ?? '4200', 10)
-
-    await runDevServer({
-        cwd: context.cwd,
-        entryPath: entryArg ? resolve(context.cwd, entryArg) : undefined,
-        entryRoots: entryRoots.length > 0 ? entryRoots : ['effects'],
-        open: args.includes('--open'),
-        port: Number.isFinite(port) ? port : 4200,
-        sdkAliasPath,
-        stdout: context.stdout,
-        workspaceRoot,
-    })
-
-    return 0
+async function runDev(_args: string[], context: CliContext): Promise<number> {
+    context.stdout.error(
+        'hypercolor dev has been removed. Use build, validate, and install against the real daemon/app preview instead.',
+    )
+    context.stdout.error('Try: bun run build && bun run ship:daemon')
+    return 1
 }
 
 const NOT_IMPLEMENTED = new Set<string>()
@@ -253,7 +238,7 @@ function printHelp(context: CliContext): void {
     context.stdout.log(`hypercolor <command>
 
 Commands:
-  dev        Start the Bun preview server
+  dev        Deprecated. Use build/install against the real daemon preview
   build      Build effect entrypoints into HTML artifacts
   validate   Validate built HTML artifacts
   install    Install HTML artifacts into the user effects directory

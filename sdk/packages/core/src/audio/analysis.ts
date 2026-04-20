@@ -99,7 +99,7 @@ export function getScreenZoneData(): ScreenZoneData {
     return { height, hue, lightness, saturation, width }
 }
 
-/** Normalize a live daemon dB level or a dev-shell 0..1 level to 0..1. */
+/** Normalize either daemon dB levels or pre-normalized linear levels to 0..1. */
 export function normalizeAudioLevel(level: number): number {
     if (!Number.isFinite(level)) return 0
     if (level >= 0 && level <= 1) return level

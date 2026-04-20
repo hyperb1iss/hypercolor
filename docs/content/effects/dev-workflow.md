@@ -1,16 +1,15 @@
 +++
 title = "Dev Workflow"
-description = "Studio, build, validate, install. The loop from code to LEDs"
+description = "Build, validate, install. The loop from code to LEDs"
 weight = 2
 template = "page.html"
 +++
 
-Every scaffolded workspace ships with a full authoring loop: a live preview studio, a build step that produces standalone HTML artifacts, a validator that catches metadata problems before they reach the daemon, and two install paths for getting the artifact onto running hardware.
+Every scaffolded workspace ships with a full authoring loop: build standalone HTML artifacts, validate them before they reach the daemon, and install them into the real runtime.
 
 ## The loop at a glance
 
 ```bash
-bun run dev              # start the studio at localhost:4200
 bun run build            # compile every effect into dist/*.html
 bun run validate         # check metadata and render surfaces
 bun run ship             # install locally (filesystem copy)
@@ -20,37 +19,22 @@ bun run ship:daemon      # install through the daemon API
 Each `bun run` script is a thin alias over the authoring CLI. The underlying commands work anywhere inside the workspace:
 
 ```bash
-bunx hypercolor dev
 bunx hypercolor build --all
 bunx hypercolor validate dist/*.html
 bunx hypercolor install dist/*.html
 bunx hypercolor install dist/*.html --daemon
 ```
 
-## The preview studio
+## The real loop
 
-```bash
-bun run dev
-```
+The old synthetic preview server is gone. The source of truth is the daemon/app runtime, so the recommended iteration loop is:
 
-The studio boots on `http://localhost:4200`. It gives you:
+1. Edit the effect source.
+2. `bun run build`
+3. `bun run ship:daemon` if the daemon is already running, or `bun run ship` plus `hypercolor effects rescan` if you want a plain filesystem install.
+4. Preview the result in the real app and on real hardware.
 
-- an effect switcher for every effect in the workspace
-- generated UI for every declared control, grouped as you grouped them
-- preset buttons that snap all controls in one click
-- audio simulation with bass, mid, treble sliders and a manual beat trigger
-- canvas size presets for daemon defaults, strip, matrix, and ring layouts
-- LED sampling preview overlaid on the canvas so you can see what the hardware will see
-
-Every save triggers a rebuild. The studio swaps the running iframe and carries your current control values through the reload so you don't lose your place.
-
-Override the port with `--port`:
-
-```bash
-bunx hypercolor dev --port 4321
-```
-
-Pass `--open` to auto-launch the studio in your default browser.
+That loop is slower than a fake browser shell, but it catches the actual runtime behavior: audio wiring, metadata, HTML loading, Servo behavior, and effect registration.
 
 ## Building artifacts
 
@@ -137,7 +121,7 @@ bunx hypercolor add skyline --template shader --audio
 bunx hypercolor add flicker --template html
 ```
 
-Each new effect lands in `effects/<id>/` (or `effects/<id>.html` for HTML) without touching your existing effects. The studio picks up the new entry on its next rebuild.
+Each new effect lands in `effects/<id>/` (or `effects/<id>.html` for HTML) without touching your existing effects.
 
 ## The `hypercolor` daemon CLI
 

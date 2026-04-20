@@ -26,7 +26,7 @@ describe('audio analysis contract', () => {
         expect(audio.levelRaw).toBe(-18)
     })
 
-    test('reads dev-shell normalized audio levels without saturating', () => {
+    test('reads pre-normalized linear audio levels without saturating', () => {
         ;(globalThis as { engine?: unknown }).engine = {
             audio: {
                 level: 0.36,

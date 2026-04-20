@@ -96,7 +96,7 @@ export async function main(
         workspaceName: workspaceNameFromTarget(workspaceName),
     })
 
-    const nextCommand = template === 'html' ? 'bun run validate' : 'bun dev'
+    const nextCommand = template === 'html' ? 'bun run validate' : 'bun run build'
     context.stdout.log(`\nNext steps:\n  cd ${workspaceName}\n  ${nextCommand}`)
 
     return 0

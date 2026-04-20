@@ -9,7 +9,7 @@ Every Hypercolor effect lives in a Bun workspace that depends on `@hypercolor/sd
 
 ## Install Bun
 
-The SDK, CLI, and preview studio all run on Bun. Install it once:
+The SDK, CLI, and build tools all run on Bun. Install it once:
 
 ```bash
 curl -fsSL https://bun.sh/install | bash
@@ -127,4 +127,4 @@ Once `@hypercolor/sdk` lands on npm, the scaffolder's default `^0.1.0` spec will
 
 ## What next
 
-Once `bun install` has finished, head to [Dev Workflow](@/effects/dev-workflow.md) to start the studio, build your first artifact, and ship it to the daemon.
+Once `bun install` has finished, head to [Dev Workflow](@/effects/dev-workflow.md) to build your first artifact and ship it to the daemon.

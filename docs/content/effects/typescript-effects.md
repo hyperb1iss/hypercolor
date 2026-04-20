@@ -5,7 +5,7 @@ weight = 3
 template = "page.html"
 +++
 
-TypeScript effects are the default path. You write a draw function, declare controls, and the SDK wires up the render loop, control UI, audio pipeline, palette sampling, and preview studio around you.
+TypeScript effects are the default path. You write a draw function, declare controls, and the SDK wires up the render loop, control UI, audio pipeline, and palette sampling around you.
 
 An effect is a single module that exports a single default value produced by `canvas()`:
 
@@ -100,7 +100,7 @@ Use stateful when you need particles, history buffers, trail accumulators, or an
 
 ## Resolution independence
 
-Always read `ctx.canvas.width` and `ctx.canvas.height` every frame. The daemon canvas is user-tunable in Settings → Rendering. The preview studio bounces aspect ratios intentionally so that hardcoded sizes break early and visibly.
+Always read `ctx.canvas.width` and `ctx.canvas.height` every frame. The daemon canvas is user-tunable in Settings → Rendering, and build/install loops should be checked against the real runtime rather than hardcoded dimensions.
 
 ```typescript
 canvas('Orbit', controls, (ctx, time, controls) => {
@@ -251,7 +251,7 @@ Presets are named control snapshots that ship with the effect. Users pick them f
 }
 ```
 
-Every preset must set every control; partial presets are allowed but discouraged because users expect presets to fully reset the effect. Presets show up as buttons in the studio and in the daemon UI.
+Every preset must set every control; partial presets are allowed but discouraged because users expect presets to fully reset the effect. Presets show up in the daemon UI with the rest of the effect metadata.
 
 ## Designing for LED hardware
 

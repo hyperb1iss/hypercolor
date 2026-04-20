@@ -40,7 +40,7 @@ effect(name, shader, controls?, options?)
 | `controls` | `ControlMap` | Controls that become GLSL uniforms |
 | `options` | `EffectFnOptions` | Metadata + `audio`, `preserveDrawingBuffer`, `setup`, `vertexShader` |
 
-Shader source is imported as a string. Scaffolded workspaces declare `.glsl` as a text import in `bunfig.toml`, so `import shader from './fragment.glsl'` just works in both `bun run dev` and `bun run build`.
+Shader source is imported as a string. Scaffolded workspaces declare `.glsl` as a text import in `bunfig.toml`, so `import shader from './fragment.glsl'` just works in `bun run build`.
 
 ## Built-in uniforms
 
@@ -58,7 +58,7 @@ Always UV-normalize against `iResolution` so the shader is resolution-independen
 vec2 uv = (gl_FragCoord.xy - 0.5 * iResolution.xy) / iResolution.y;
 ```
 
-The daemon canvas can change mid-session, and the studio swaps aspect ratios on purpose to break hardcoded dimensions early.
+The daemon canvas can change mid-session, so shaders should never assume a fixed aspect ratio or pixel size.
 
 ## Controls become uniforms
 
@@ -259,11 +259,11 @@ See [Color Science for RGB LEDs](@/effects/color-science.md) for the theory; the
 
 ## Debugging shaders
 
-The preview studio catches compile errors and surfaces them in the browser console, then keeps the last successful build visible so you don't lose your place. Useful patterns:
+`bun run build` catches shader compile and bundling errors before install. Useful patterns:
 
 - Drop intermediate values straight into `fragColor.rgb` to eyeball them: `fragColor = vec4(pulse, pulse, pulse, 1.0);`
 - Add a temporary toggle control (`debug: toggle('Debug', false)`) and branch on `iDebug > 0` to render a diagnostic pass
-- Check `iResolution.x / iResolution.y` by color-coding aspect ratio; the studio cycles through several
+- Check `iResolution.x / iResolution.y` by color-coding aspect ratio against the real daemon canvas sizes you care about
 
 When you ship, make sure `bun run validate` passes. The validator won't catch logic bugs, but it will catch a missing render surface, missing metadata, or unparseable controls before the daemon refuses the artifact.
 

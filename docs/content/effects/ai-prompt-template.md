@@ -5,7 +5,7 @@ weight = 10
 template = "page.html"
 +++
 
-Use this when you want a coding model to generate a Hypercolor effect that actually fits the SDK, the preview studio, and LED hardware. The constraints are specific because each one prevents a class of generic output the models default to.
+Use this when you want a coding model to generate a Hypercolor effect that actually fits the SDK and LED hardware. The constraints are specific because each one prevents a class of generic output the models default to.
 
 ## Prompt template
 
@@ -115,17 +115,17 @@ After the model returns code, run the normal pipeline:
 ```bash
 bunx hypercolor build --all
 bunx hypercolor validate dist/<id>.html
-bunx hypercolor dev
+bunx hypercolor install dist/<id>.html --daemon
 ```
 
-In the studio, check each of these before shipping:
+In the real app or on hardware, check each of these before shipping:
 
 - Does every control actually change something visible?
 - Do presets produce meaningfully different looks, or are they parameter nudges?
 - In silence, does the effect still feel alive?
 - At very low bass, does the effect collapse to nothing or hold a baseline?
 - Under an aggressive beat, does it blow out to white or stay chromatically interesting?
-- Does it hold up when the canvas aspect ratio changes (try the strip and ring presets)?
+- Does it hold up on the canvas sizes and hardware shapes you actually care about?
 
 If it passes, ship:
 

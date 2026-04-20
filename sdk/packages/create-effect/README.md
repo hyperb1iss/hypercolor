@@ -2,7 +2,7 @@
 
 Scaffolder for [Hypercolor](https://github.com/hyperb1iss/hypercolor) effect workspaces.
 
-One command gives you a ready-to-run Bun workspace with `@hypercolor/sdk` wired up, a starter effect, and the full authoring loop (live studio, build, validate, install).
+One command gives you a ready-to-run Bun workspace with `@hypercolor/sdk` wired up, a starter effect, and the full authoring loop for build, validate, and install.
 
 ## Quick start
 
@@ -23,7 +23,7 @@ Then:
 
 ```bash
 cd my-effects
-bun run dev
+bun run build
 ```
 
 ## Templates

@@ -29,19 +29,11 @@ aurora-lab/
   tsconfig.json
 ```
 
-Start the preview studio:
+Build the first artifact:
 
 ```bash
-bun run dev
+bun run build
 ```
-
-The studio opens at `http://localhost:4200` and includes:
-
-- Live iframe preview of the selected effect
-- Generated controls and preset buttons
-- Canvas size presets for daemon, strip, matrix, and ring layouts
-- Audio simulation controls with manual beat triggering
-- LED sampling preview for strip, matrix, and ring hardware shapes
 
 ## Your First Effect
 
@@ -109,7 +101,7 @@ export default canvas(
 )
 ```
 
-Always read `ctx.canvas.width` and `ctx.canvas.height` every frame. The daemon canvas is configurable, and the studio presets intentionally bounce between aspect ratios so resolution-dependent code breaks early.
+Always read `ctx.canvas.width` and `ctx.canvas.height` every frame. The daemon canvas is configurable, so resolution-dependent code should be checked against the real runtime.
 
 ## Controls and Metadata
 
@@ -160,14 +152,13 @@ export default effect(
 )
 ```
 
-The workspace `bunfig.toml` already declares `.glsl` as `text`, so `import shader from './fragment.glsl'` just works in both `bun run dev` and `bun run build`.
+The workspace `bunfig.toml` already declares `.glsl` as `text`, so `import shader from './fragment.glsl'` just works in `bun run build`.
 
-## Studio Workflow
+## Authoring Workflow
 
 The scaffolded scripts map straight to the authoring CLI:
 
 ```bash
-bun run dev
 bun run build
 bun run validate
 bun run ship
@@ -177,7 +168,6 @@ bun run ship:daemon
 The underlying commands are:
 
 ```bash
-bunx hypercolor dev
 bunx hypercolor build --all
 bunx hypercolor validate dist/aurora.html
 bunx hypercolor install dist/aurora.html

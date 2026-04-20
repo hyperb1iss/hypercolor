@@ -8,6 +8,22 @@ import { main } from '../src/cli'
 const SDK_ROOT = resolve(import.meta.dirname, '../../..')
 
 describe('sdk cli build + validate', () => {
+    test('dev command returns a deprecation error', async () => {
+        const output: string[] = []
+
+        const exitCode = await main(['dev'], {
+            cwd: SDK_ROOT,
+            stdout: {
+                error: (message: string) => output.push(message),
+                log: (message: string) => output.push(message),
+            },
+        })
+
+        expect(exitCode).toBe(1)
+        expect(output.some((line) => line.includes('has been removed'))).toBeTrue()
+        expect(output.some((line) => line.includes('bun run build'))).toBeTrue()
+    })
+
     test('build command writes an artifact for an explicit entry', async () => {
         const outDir = mkdtempSync(join(tmpdir(), 'hypercolor-cli-build-'))
         const output: string[] = []
