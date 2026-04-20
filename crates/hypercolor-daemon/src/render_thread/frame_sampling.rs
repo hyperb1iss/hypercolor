@@ -5,6 +5,7 @@ use std::time::Instant;
 use tracing::warn;
 
 use hypercolor_core::scene::interpolate_color;
+use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::canvas::RgbaF32;
 use hypercolor_core::types::event::FrameData;
 use hypercolor_types::event::ZoneColors;
@@ -14,9 +15,43 @@ use hypercolor_types::spatial::SpatialLayout;
 use super::frame_composer::RenderStageStats;
 use super::frame_scheduler::{FrameSceneSnapshot, SceneTransitionSnapshot};
 use super::pipeline_runtime::{RenderCaches, RetainedZoneFrame, SceneTransitionKey};
-use super::render_groups::LedSamplingStrategy;
 use super::sparkleflinger::{PendingZoneSampling, ZoneSamplingDispatch};
 use super::{RenderThreadState, micros_between};
+
+#[derive(Clone)]
+pub(super) enum LedSamplingStrategy {
+    SparkleFlinger(SpatialEngine),
+    PreSampled(Arc<SpatialLayout>),
+    RetainedPreSampled {
+        layout: Arc<SpatialLayout>,
+        zones: Arc<[ZoneColors]>,
+    },
+    ReusePublished(Arc<SpatialLayout>),
+}
+
+impl LedSamplingStrategy {
+    pub(super) fn requires_full_composition(&self, transition_active: bool) -> bool {
+        transition_active || matches!(self, Self::SparkleFlinger(_))
+    }
+
+    pub(super) fn sparkleflinger_engine(&self) -> Option<&SpatialEngine> {
+        match self {
+            Self::SparkleFlinger(spatial_engine) => Some(spatial_engine),
+            Self::PreSampled(_)
+            | Self::RetainedPreSampled { .. }
+            | Self::ReusePublished(_) => None,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(super) enum RetainedLedSamplingStrategy {
+    SparkleFlinger(SpatialEngine),
+    PreSampled {
+        layout: Arc<SpatialLayout>,
+        zones: Arc<[ZoneColors]>,
+    },
+}
 
 pub(crate) struct LedSamplingOutcome {
     pub(crate) layout: Arc<SpatialLayout>,

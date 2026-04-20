@@ -8,13 +8,12 @@ use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::scene::RenderGroupId;
 
 use super::frame_pacing::SkipDecision;
+use super::frame_sampling::LedSamplingStrategy;
 use super::frame_scheduler::FrameSceneSnapshot;
 use super::frame_sources::static_surface;
 use super::pipeline_runtime::{FrameInputs, RenderCaches};
 use super::producer_queue::{ProducerFrame, ProducerFrameState};
-use super::render_groups::{
-    GroupCanvasFrame, LedSamplingStrategy, RenderGroupEffectError, RenderGroupResult,
-};
+use super::render_groups::{GroupCanvasFrame, RenderGroupEffectError, RenderGroupResult};
 use super::sparkleflinger::{ComposedFrameSet, PreviewSurfaceRequest};
 use super::{RenderThreadState, micros_between, micros_u32};
 use crate::preview_runtime::PreviewDemandSummary;
@@ -103,11 +102,7 @@ fn render_group_requires_full_composition(
     transition_active: bool,
     led_sampling_strategy: &LedSamplingStrategy,
 ) -> bool {
-    transition_active
-        || matches!(
-            led_sampling_strategy,
-            LedSamplingStrategy::SparkleFlinger(_)
-        )
+    led_sampling_strategy.requires_full_composition(transition_active)
 }
 
 impl ComposeContext<'_> {
@@ -325,19 +320,16 @@ impl ComposeContext<'_> {
                     compiled_plan.metadata.transition_active,
                     &render_group_result.led_sampling_strategy,
                 );
-                let requires_cpu_sampling_canvas =
-                    match &render_group_result.led_sampling_strategy {
-                        LedSamplingStrategy::SparkleFlinger(spatial_engine) => {
-                            requires_cpu_sampling_canvas(
-                                self.render
-                                    .sparkleflinger
-                                    .can_sample_zone_plan(spatial_engine.sampling_plan().as_ref()),
-                            )
-                        }
-                        LedSamplingStrategy::PreSampled(_)
-                        | LedSamplingStrategy::RetainedPreSampled { .. }
-                        | LedSamplingStrategy::ReusePublished(_) => false,
-                    };
+                let requires_cpu_sampling_canvas = render_group_result
+                    .led_sampling_strategy
+                    .sparkleflinger_engine()
+                    .is_some_and(|spatial_engine| {
+                        requires_cpu_sampling_canvas(
+                            self.render
+                                .sparkleflinger
+                                .can_sample_zone_plan(spatial_engine.sampling_plan().as_ref()),
+                        )
+                    });
                 let composed = if requires_full_composition {
                     self.render.sparkleflinger.compose_for_outputs(
                         compiled_plan.plan.with_cpu_replay_cacheable(
@@ -631,7 +623,7 @@ mod tests {
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
     use crate::preview_runtime::PreviewDemandSummary;
-    use crate::render_thread::render_groups::LedSamplingStrategy;
+    use crate::render_thread::frame_sampling::LedSamplingStrategy;
 
     #[test]
     fn render_group_layer_count_adds_transition_base_once() {

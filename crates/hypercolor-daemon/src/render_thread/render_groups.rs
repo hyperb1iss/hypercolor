@@ -14,6 +14,7 @@ use hypercolor_types::scene::{DisplayFaceTarget, RenderGroup, RenderGroupId};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
+use super::frame_sampling::{LedSamplingStrategy, RetainedLedSamplingStrategy};
 use super::micros_u32;
 use super::producer_queue::ProducerFrame;
 
@@ -34,17 +35,6 @@ const DIRECT_SURFACE_POOL_SLOTS: usize = 4;
 pub(crate) struct GroupCanvasFrame {
     pub surface: PublishedSurface,
     pub display_target: DisplayFaceTarget,
-}
-
-#[derive(Clone)]
-pub(crate) enum LedSamplingStrategy {
-    SparkleFlinger(SpatialEngine),
-    PreSampled(Arc<SpatialLayout>),
-    RetainedPreSampled {
-        layout: Arc<SpatialLayout>,
-        zones: Arc<[ZoneColors]>,
-    },
-    ReusePublished(Arc<SpatialLayout>),
 }
 
 pub(crate) struct RenderGroupResult {
@@ -75,15 +65,6 @@ struct RetainedRenderGroupFrame {
     active_group_canvas_ids: Vec<RenderGroupId>,
     led_sampling_strategy: RetainedLedSamplingStrategy,
     logical_layer_count: u32,
-}
-
-#[derive(Clone)]
-enum RetainedLedSamplingStrategy {
-    SparkleFlinger(SpatialEngine),
-    PreSampled {
-        layout: Arc<SpatialLayout>,
-        zones: Arc<[ZoneColors]>,
-    },
 }
 
 #[derive(Clone)]

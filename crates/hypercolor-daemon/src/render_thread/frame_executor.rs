@@ -553,7 +553,7 @@ mod tests {
     use crate::performance::CompositorBackendKind;
     use crate::render_thread::frame_composer::RenderStageStats;
     use crate::render_thread::pipeline_runtime::SceneTransitionKey;
-    use crate::render_thread::render_groups::LedSamplingStrategy;
+    use crate::render_thread::frame_sampling::LedSamplingStrategy;
     use crate::render_thread::sparkleflinger::ComposedFrameSet;
 
     fn render_stage(
