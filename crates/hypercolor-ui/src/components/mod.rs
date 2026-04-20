@@ -30,4 +30,5 @@ pub mod settings_controls;
 pub mod settings_sections;
 pub mod shell;
 pub mod sidebar;
+pub mod silk_select;
 pub mod viewport_designer;

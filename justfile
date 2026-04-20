@@ -350,6 +350,14 @@ faces-build:
 face-build name:
     cd sdk && bun run build:effect src/faces/{{ name }}/main.ts
 
+# Capture screenshots for every effect via the running daemon (writes effects/screenshots/drafts/)
+capture-screenshots *FLAGS:
+    cd sdk && bun run capture:screenshots {{ FLAGS }}
+
+# Promote draft rank-1 frames into effects/screenshots/curated/ as WebP q=0.92
+promote-screenshots:
+    cd sdk && bun run capture:promote
+
 # ─── Site ─────────────────────────────────────────────────
 
 # Start marketing site dev server (:9440)

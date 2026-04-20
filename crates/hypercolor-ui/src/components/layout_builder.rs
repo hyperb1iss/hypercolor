@@ -15,6 +15,7 @@ use crate::components::layout_canvas::LayoutCanvas;
 use crate::components::layout_palette::LayoutPalette;
 use crate::components::layout_zone_properties::LayoutZoneProperties;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
+use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
 use crate::layout_geometry;
 use crate::layout_page_state::{LayoutPageState, PerLayoutState};
@@ -249,6 +250,25 @@ pub fn LayoutBuilder() -> impl IntoView {
             _ => false,
         }
     });
+
+    // Options + current value for the layout SilkSelect. Empty value doubles
+    // as "unselect current layout" — the first option is the sentinel.
+    let layout_options = Signal::derive(move || {
+        let Some(Ok(layouts)) = ctx.layouts_resource.get() else {
+            return Vec::<(String, String)>::new();
+        };
+        let mut opts = vec![(String::new(), "Select layout…".to_string())];
+        opts.extend(layouts.into_iter().map(|l| {
+            let label = if l.is_active {
+                format!("{} ({} zones) *", l.name, l.zone_count)
+            } else {
+                format!("{} ({} zones)", l.name, l.zone_count)
+            };
+            (l.id, label)
+        }));
+        opts
+    });
+    let layout_value = Signal::derive(move || selected_layout_id.get().unwrap_or_default());
 
     let preview_layout = use_debounce_fn_with_arg(
         |layout: SpatialLayout| {
@@ -765,49 +785,21 @@ pub fn LayoutBuilder() -> impl IntoView {
                         // Normal dropdown selector + rename button
                         view! {
                             <div class="flex items-center gap-2">
-                                <Suspense fallback=|| ()>
-                                    {move || {
-                                        ctx.layouts_resource.get().map(|result| {
-                                            let layouts = result.unwrap_or_default();
-                                            view! {
-                                                <select
-                                                    class="bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-sm text-fg-primary
-                                                           focus:outline-none focus:border-accent-muted glow-ring min-w-[180px] transition-all"
-                                                    on:change=move |ev| {
-                                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
-                                                        if let Some(el) = target {
-                                                            let val = el.value();
-                                                            if val.is_empty() {
-                                                                set_selected_layout_id.set(None);
-                                                            } else {
-                                                                set_selected_layout_id.set(Some(val));
-                                                            }
-                                                        }
-                                                    }
-                                                >
-                                                    <option value="" selected=move || selected_layout_id.get().is_none()>"Select layout..."</option>
-                                                    {layouts.into_iter().map(|l| {
-                                                        let lid = l.id.clone();
-                                                        let lid2 = l.id.clone();
-                                                        let label = if l.is_active {
-                                                            format!("{} ({} zones) *", l.name, l.zone_count)
-                                                        } else {
-                                                            format!("{} ({} zones)", l.name, l.zone_count)
-                                                        };
-                                                        view! {
-                                                            <option
-                                                                value=lid
-                                                                selected=move || selected_layout_id.get().as_deref() == Some(&lid2)
-                                                            >
-                                                                {label}
-                                                            </option>
-                                                        }
-                                                    }).collect_view()}
-                                                </select>
+                                <div class="min-w-[200px]">
+                                    <SilkSelect
+                                        value=layout_value
+                                        options=layout_options
+                                        on_change=Callback::new(move |val: String| {
+                                            if val.is_empty() {
+                                                set_selected_layout_id.set(None);
+                                            } else {
+                                                set_selected_layout_id.set(Some(val));
                                             }
                                         })
-                                    }}
-                                </Suspense>
+                                        placeholder="Loading layouts…"
+                                        class="bg-surface-sunken border border-edge-subtle px-3 py-1.5 text-sm text-fg-primary glow-ring"
+                                    />
+                                </div>
 
                                 // Rename button — only when a layout is selected
                                 <Show when=move || layout.with(|l| l.is_some())>

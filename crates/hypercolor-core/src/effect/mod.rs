@@ -31,7 +31,7 @@ pub use loader::{
 pub use meta_parser::{
     HtmlControlKind, HtmlControlMetadata, ParsedHtmlEffectMetadata, parse_html_effect_metadata,
 };
-pub use paths::{bundled_effects_root, resolve_html_source_path};
+pub use paths::{bundled_effects_root, bundled_screenshots_root, resolve_html_source_path};
 pub use pool::EffectPool;
 pub use registry::{EffectEntry, EffectRegistry, RescanReport};
 #[cfg(feature = "servo")]

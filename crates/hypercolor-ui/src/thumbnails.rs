@@ -10,6 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use gloo_net::http::{Method, RequestBuilder};
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::Closure;
@@ -19,9 +20,18 @@ use crate::color::{self, CanvasPalette};
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
 const LOCAL_STORAGE_KEY: &str = "hypercolor:thumbnails";
-const WEBP_QUALITY: f64 = 0.7;
+const WEBP_QUALITY: f64 = 0.88;
 /// How long an effect must play uninterrupted before we capture a thumbnail.
 pub const CAPTURE_STABLE_MS: f64 = 2500.0;
+/// Probe result cache for curated screenshots. Skips opportunistic capture
+/// when the daemon already serves authored artwork for this slug, so we don't
+/// burn localStorage quota on thumbnails that will be painted over anyway.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CuratedProbe {
+    Pending,
+    Present,
+    Absent,
+}
 
 /// Serialized palette — RGB strings ready for direct use in CSS `rgb(...)`.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -101,8 +111,22 @@ impl ThumbnailStore {
         let Ok(json) = serde_json::to_string(&cache) else {
             return;
         };
-        if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
-            let _ = storage.set_item(LOCAL_STORAGE_KEY, &json);
+        let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) else {
+            return;
+        };
+        if let Err(err) = storage.set_item(LOCAL_STORAGE_KEY, &json) {
+            // The entire thumbnail cache is persisted as one JSON blob, so a
+            // quota trip loses the whole set, not just this one insert. Log
+            // loudly so we notice when the localStorage ceiling starts biting
+            // (typical browser quota is ~5 MB for the origin).
+            web_sys::console::warn_2(
+                &JsValue::from_str(&format!(
+                    "thumbnail persist failed: cache_size_bytes={} entries={}",
+                    json.len(),
+                    cache.effects.len()
+                )),
+                &err,
+            );
         }
     }
 }
@@ -181,27 +205,80 @@ fn frame_to_rgba_vec(frame: &CanvasFrame) -> Vec<u8> {
     rgba
 }
 
+/// Kebab-case slug for an effect name. Mirrors the capture tool's slugify so
+/// the UI and `effects/screenshots/curated/<slug>/` stay aligned.
+fn slugify(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut prev_dash = true;
+    for ch in value.chars() {
+        let mapped = ch.to_ascii_lowercase();
+        if mapped.is_ascii_alphanumeric() {
+            out.push(mapped);
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    if out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+fn curated_screenshot_url(slug: &str) -> String {
+    format!("/api/v1/effects/screenshots/{slug}/default.webp")
+}
+
+/// Kick off a HEAD probe for a curated screenshot and update `probe_cache`
+/// with the result. Idempotent — callers should check for an existing entry
+/// before spawning.
+fn spawn_curated_probe(slug: String, probe_cache: StoredValue<HashMap<String, CuratedProbe>>) {
+    let url = curated_screenshot_url(&slug);
+    wasm_bindgen_futures::spawn_local(async move {
+        let request = match RequestBuilder::new(&url).method(Method::HEAD).build() {
+            Ok(req) => req,
+            Err(_) => {
+                probe_cache.update_value(|cache| {
+                    cache.insert(slug, CuratedProbe::Absent);
+                });
+                return;
+            }
+        };
+        let state = match request.send().await {
+            Ok(response) if response.status() == 200 => CuratedProbe::Present,
+            _ => CuratedProbe::Absent,
+        };
+        probe_cache.update_value(|cache| {
+            cache.insert(slug, state);
+        });
+    });
+}
+
 /// Background auto-capture loop.
 ///
 /// Watches the active effect + canvas frame stream. When a single effect
 /// has been playing for at least `CAPTURE_STABLE_MS` and no valid thumbnail
 /// exists for the current version, captures one frame and stores it.
 ///
-/// The `version_lookup` closure should return the effect's current version
-/// string — this is used to invalidate stale thumbnails when an effect
-/// changes.
+/// The `effect_lookup` closure maps an effect ID to `(slug, version)`. The
+/// slug is used to probe the daemon's curated screenshot endpoint; when a
+/// curated image exists we skip opportunistic capture entirely, since the
+/// effect card will paint the authored artwork on top anyway.
 pub fn install_auto_capture<F>(
     store: ThumbnailStore,
     active_effect_id: ReadSignal<Option<String>>,
     canvas_frame: ReadSignal<Option<CanvasFrame>>,
-    version_lookup: F,
+    effect_lookup: F,
 ) where
-    F: Fn(&str) -> Option<String> + 'static,
+    F: Fn(&str) -> Option<(String, String)> + 'static,
 {
     // Track when the current effect became active, so we can wait for the
     // stability window before capturing. Stored as (id, since_ms).
     let active_since: StoredValue<Option<(String, f64)>> = StoredValue::new(None);
     let pending_captures: StoredValue<HashSet<(String, String)>> = StoredValue::new(HashSet::new());
+    let curated_probes: StoredValue<HashMap<String, CuratedProbe>> =
+        StoredValue::new(HashMap::new());
 
     Effect::new(move |_| {
         // React to active effect changes — reset the stability timer.
@@ -226,7 +303,7 @@ pub fn install_auto_capture<F>(
         }
 
         // Check if we already have a fresh thumbnail for this version.
-        let Some(version) = version_lookup(&effect_id) else {
+        let Some((name, version)) = effect_lookup(&effect_id) else {
             return;
         };
         if store.get(&effect_id, &version).is_some() {
@@ -236,6 +313,21 @@ pub fn install_auto_capture<F>(
             .with_value(|pending| pending.contains(&(effect_id.clone(), version.clone())))
         {
             return;
+        }
+
+        let slug = slugify(&name);
+        let probe_state = curated_probes.with_value(|cache| cache.get(&slug).copied());
+        match probe_state {
+            Some(CuratedProbe::Present) => return,
+            Some(CuratedProbe::Pending) => return,
+            Some(CuratedProbe::Absent) => {}
+            None => {
+                curated_probes.update_value(|cache| {
+                    cache.insert(slug.clone(), CuratedProbe::Pending);
+                });
+                spawn_curated_probe(slug, curated_probes);
+                return;
+            }
         }
 
         // Defer the actual capture to an idle callback so we don't block
@@ -265,4 +357,17 @@ pub fn install_auto_capture<F>(
             );
         }
     });
+}
+
+#[cfg(test)]
+mod slug_tests {
+    use super::slugify;
+
+    #[test]
+    fn slugify_converts_effect_names() {
+        assert_eq!(slugify("Color Wave"), "color-wave");
+        assert_eq!(slugify("ADHD Hyperfocus"), "adhd-hyperfocus");
+        assert_eq!(slugify("  Spaced  Out  "), "spaced-out");
+        assert_eq!(slugify("Nyan Dash!"), "nyan-dash");
+    }
 }

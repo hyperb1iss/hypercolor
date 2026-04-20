@@ -22,6 +22,25 @@ pub fn bundled_effects_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../effects")
 }
 
+/// Return the curated screenshot directory.
+///
+/// Layout is `<root>/<slug>/<variant>.webp` — e.g.
+/// `color-wave/default.webp`, `color-wave/silk-sweep.webp`. Resolution order:
+/// 1. `$XDG_DATA_HOME/hypercolor/effects/screenshots/curated/` (installed location)
+/// 2. Repository `effects/screenshots/curated/` (development fallback)
+#[must_use]
+pub fn bundled_screenshots_root() -> PathBuf {
+    let installed = data_dir()
+        .join("effects")
+        .join("screenshots")
+        .join("curated");
+    if installed.is_dir() {
+        return installed;
+    }
+
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../effects/screenshots/curated")
+}
+
 /// Return the user effects directory.
 ///
 /// Defaults to `$XDG_DATA_HOME/hypercolor/effects/user/`
@@ -80,7 +99,9 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{bundled_effects_root, resolve_html_source_path, user_effects_dir};
+    use super::{
+        bundled_effects_root, bundled_screenshots_root, resolve_html_source_path, user_effects_dir,
+    };
 
     #[test]
     fn bundled_effects_root_returns_valid_path() {
@@ -91,6 +112,14 @@ mod tests {
             name == Some("effects") || name == Some("bundled"),
             "expected 'effects' or 'bundled', got {name:?}"
         );
+    }
+
+    #[test]
+    fn bundled_screenshots_root_ends_with_curated() {
+        let root = bundled_screenshots_root();
+        let name = root.file_name().and_then(|v| v.to_str());
+        assert_eq!(name, Some("curated"));
+        assert!(root.to_string_lossy().contains("screenshots"));
     }
 
     #[test]

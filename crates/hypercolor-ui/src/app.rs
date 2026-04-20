@@ -208,7 +208,7 @@ impl EffectsContext {
                         active.active_preset_id,
                     );
                 }
-                Ok(None) => clear_active_effect_state(&ctx),
+                Ok(None) => ctx.set_is_playing.set(false),
                 Err(_) => {}
             }
         });
@@ -700,7 +700,7 @@ pub fn App() -> impl IntoView {
                 effects
                     .iter()
                     .find(|entry| entry.effect.id == effect_id)
-                    .map(|entry| entry.effect.version.clone())
+                    .map(|entry| (entry.effect.name.clone(), entry.effect.version.clone()))
             })
         },
     );
@@ -763,7 +763,7 @@ pub fn App() -> impl IntoView {
                 active.active_preset_id,
             );
         } else if let Some(Ok(None)) = active_resource.get() {
-            clear_active_effect_state(&effects_ctx);
+            effects_ctx.set_is_playing.set(false);
         }
     });
 

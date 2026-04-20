@@ -658,6 +658,18 @@ fn batched_script_preview(scripts: &[String]) -> String {
     format!("{} scripts: {previews}", scripts.len())
 }
 
+fn can_reuse_cached_canvas(
+    frame_ready: bool,
+    script_count: usize,
+    cached: Option<&Canvas>,
+    width: u32,
+    height: u32,
+) -> bool {
+    !frame_ready
+        && script_count == 0
+        && cached.is_some_and(|cached| cached.width() == width && cached.height() == height)
+}
+
 fn combined_script(buffer: &mut String, scripts: &[String]) {
     let capacity = scripts.iter().map(String::len).sum::<usize>() + scripts.len();
     buffer.clear();
@@ -1194,11 +1206,18 @@ impl ServoWorkerRuntime {
             // on the Servo worker thread. Skipping that when nothing changed
             // was the single biggest memmove win in the profile, and
             // `Canvas::clone` is an Arc bump so reuse is effectively free.
-            if !frame_ready
-                && let Some(cached) = self.session(session_id)?.last_canvas.as_ref()
-                && cached.width() == width
-                && cached.height() == height
-            {
+            if can_reuse_cached_canvas(
+                frame_ready,
+                script_count,
+                self.session(session_id)?.last_canvas.as_ref(),
+                width,
+                height,
+            ) {
+                let cached = self
+                    .session(session_id)?
+                    .last_canvas
+                    .as_ref()
+                    .expect("cached canvas presence should match reuse check");
                 timings.total_us = elapsed_micros(frame_start);
                 log_servo_render_stage_timings(
                     session_id,
@@ -1241,14 +1260,6 @@ impl ServoWorkerRuntime {
             );
             Ok(canvas)
         })();
-
-        if let Some(webview) = self
-            .sessions
-            .get(&session_id)
-            .and_then(|session| session.webview.as_ref())
-        {
-            webview.set_throttled(true);
-        }
         result
     }
 
@@ -1781,6 +1792,23 @@ mod tests {
         };
 
         assert!(!effect_is_audio_reactive(&metadata));
+    }
+
+    #[test]
+    fn cached_canvas_reuse_requires_empty_script_batch() {
+        let cached = Canvas::new(320, 200);
+
+        assert!(can_reuse_cached_canvas(false, 0, Some(&cached), 320, 200));
+        assert!(!can_reuse_cached_canvas(false, 1, Some(&cached), 320, 200));
+        assert!(!can_reuse_cached_canvas(true, 0, Some(&cached), 320, 200));
+    }
+
+    #[test]
+    fn cached_canvas_reuse_requires_matching_dimensions() {
+        let cached = Canvas::new(320, 200);
+
+        assert!(!can_reuse_cached_canvas(false, 0, Some(&cached), 640, 360));
+        assert!(!can_reuse_cached_canvas(false, 0, None, 320, 200));
     }
 
     #[test]

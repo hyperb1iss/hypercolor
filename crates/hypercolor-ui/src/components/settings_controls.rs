@@ -5,6 +5,7 @@ use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
+use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
 
 // ── Section Header ─────────────────────────────────────────────────────────
@@ -234,30 +235,21 @@ pub fn SettingDropdown(
                 <div class="text-xs text-fg-tertiary/70 mt-0.5">{description}</div>
             </div>
             <div class="w-full md:w-auto md:min-w-[16rem] md:max-w-[30rem] md:shrink-0">
-                <select
-                    class="select-silk w-full max-w-full bg-surface-overlay/60 border border-edge-subtle rounded-lg px-3 py-1.5 text-sm text-fg-primary
-                           focus:outline-none focus:border-accent-muted cursor-pointer truncate"
-                    prop:value=move || value.get()
-                    on:change=move |ev| {
-                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
-                        if let Some(el) = target {
-                            let str_val = el.value();
-                            let json_val = if numeric {
-                                str_val.parse::<i64>()
-                                    .map(|n| serde_json::json!(n))
-                                    .unwrap_or_else(|_| serde_json::json!(str_val))
-                            } else {
-                                serde_json::json!(str_val)
-                            };
-                            on_change.run((key_owned.clone(), json_val));
-                        }
-                    }
-                >
-                    {move || options.get().into_iter().map(|(val, label)| {
-                        let is_selected = value.get() == val;
-                        view! { <option value=val selected=is_selected>{label}</option> }
-                    }).collect_view()}
-                </select>
+                <SilkSelect
+                    value=value
+                    options=options
+                    on_change=Callback::new(move |str_val: String| {
+                        let json_val = if numeric {
+                            str_val.parse::<i64>()
+                                .map(|n| serde_json::json!(n))
+                                .unwrap_or_else(|_| serde_json::json!(str_val))
+                        } else {
+                            serde_json::json!(str_val)
+                        };
+                        on_change.run((key_owned.clone(), json_val));
+                    })
+                    class="bg-surface-overlay/60 border border-edge-subtle px-3 py-1.5 text-sm text-fg-primary"
+                />
             </div>
         </div>
     }

@@ -1018,6 +1018,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             "/effects/install",
             axum::routing::post(effects::install_effect),
         )
+        .nest_service(
+            "/effects/screenshots",
+            ServeDir::new(hypercolor_core::effect::bundled_screenshots_root()),
+        )
         .route("/effects/{id}", axum::routing::get(effects::get_effect))
         .route(
             "/effects/{id}/layout",

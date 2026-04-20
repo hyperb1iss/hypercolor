@@ -8,7 +8,9 @@ use std::time::Duration;
 #[path = "support/effect_engine.rs"]
 mod effect_engine;
 
-use hypercolor_core::effect::{bundled_effects_root, parse_html_effect_metadata};
+use hypercolor_core::effect::{
+    bundled_effects_root, load_html_effect_file, parse_html_effect_metadata,
+};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
@@ -18,6 +20,12 @@ use uuid::Uuid;
 use effect_engine::EffectEngine;
 
 const FRAME_DT_SECONDS: f32 = 1.0 / 60.0;
+const AUDIO_TEST_FRAMES: usize = 120;
+const BASS_END: usize = 40;
+const MID_END: usize = 130;
+const SHOCKWAVE_PIXEL_THRESHOLD: u8 = 80;
+const SHOCKWAVE_DELTA_THRESHOLD: u8 = 56;
+const SHOCKWAVE_SURGE_PIXEL_COUNT: usize = 180;
 const BUILTIN_EFFECTS: &[&str] = &[
     "builtin/Rainbow.html",
     "builtin/Solid Color.html",
@@ -70,6 +78,193 @@ fn render_frames(path: &Path, frame_count: usize) -> Vec<Canvas> {
             frame
         })
         .collect()
+}
+
+fn bundled_html_metadata(relative: &str) -> EffectMetadata {
+    let path = bundled_effects_root().join(relative);
+    assert!(
+        path.exists(),
+        "expected generated HTML effect at {}; run `just effects-build` first",
+        path.display()
+    );
+
+    let entry = load_html_effect_file(&path)
+        .unwrap_or_else(|error| panic!("failed to load {}: {}", path.display(), error.message))
+        .unwrap_or_else(|| panic!("expected {} to load as an HTML effect", path.display()));
+
+    entry.metadata
+}
+
+fn render_audio_sequence(metadata: EffectMetadata, sequence: &[AudioData]) -> Vec<Canvas> {
+    let mut engine = EffectEngine::new();
+    engine
+        .activate_metadata(metadata)
+        .expect("servo activation should succeed for audio-reactive effect");
+
+    sequence
+        .iter()
+        .map(|audio| {
+            let frame = engine
+                .tick(FRAME_DT_SECONDS, audio)
+                .expect("servo tick should produce a frame");
+            thread::sleep(Duration::from_millis(16));
+            frame
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SequenceActivityMetrics {
+    average_dynamic_pixels: f32,
+    average_delta_pixels: f32,
+    max_surge_gap_frames: usize,
+    surge_frames: usize,
+}
+
+fn shockwave_emitters(canvas: &Canvas) -> [(f32, f32); 3] {
+    let width = canvas.width() as f32;
+    let height = canvas.height() as f32;
+    [
+        (width * 0.5, height * 0.16),
+        (width * 0.23, height * 0.58),
+        (width * 0.77, height * 0.58),
+    ]
+}
+
+fn shockwave_dynamic_pixels(canvas: &Canvas) -> usize {
+    let emitters = shockwave_emitters(canvas);
+    let exclusion_radius_sq = 20.0_f32 * 20.0_f32;
+    let width = canvas.width() as usize;
+
+    canvas
+        .pixels()
+        .enumerate()
+        .filter(|(index, [r, g, b, _])| {
+            if (*r).max(*g).max(*b) < SHOCKWAVE_PIXEL_THRESHOLD {
+                return false;
+            }
+
+            let x = (*index % width) as f32;
+            let y = (*index / width) as f32;
+
+            emitters.iter().all(|(cx, cy)| {
+                let dx = x - cx;
+                let dy = y - cy;
+                dx * dx + dy * dy > exclusion_radius_sq
+            })
+        })
+        .count()
+}
+
+fn shockwave_delta_pixels(previous: &Canvas, current: &Canvas) -> usize {
+    let emitters = shockwave_emitters(current);
+    let exclusion_radius_sq = 20.0_f32 * 20.0_f32;
+    let width = current.width() as usize;
+
+    previous
+        .pixels()
+        .zip(current.pixels())
+        .enumerate()
+        .filter(|(index, (before, after))| {
+            let x = (*index % width) as f32;
+            let y = (*index / width) as f32;
+            if emitters.iter().any(|(cx, cy)| {
+                let dx = x - cx;
+                let dy = y - cy;
+                dx * dx + dy * dy <= exclusion_radius_sq
+            }) {
+                return false;
+            }
+
+            let max_delta = before[0]
+                .abs_diff(after[0])
+                .max(before[1].abs_diff(after[1]))
+                .max(before[2].abs_diff(after[2]));
+            max_delta >= SHOCKWAVE_DELTA_THRESHOLD
+        })
+        .count()
+}
+
+fn sequence_activity_metrics(frames: &[Canvas]) -> SequenceActivityMetrics {
+    let mut dynamic_pixel_total = 0_usize;
+    let mut delta_pixel_total = 0_usize;
+    let mut surge_frames = 0_usize;
+    let mut surge_gap = 0_usize;
+    let mut max_surge_gap_frames = 0_usize;
+
+    for (index, frame) in frames.iter().enumerate() {
+        let dynamic_pixels = shockwave_dynamic_pixels(frame);
+        dynamic_pixel_total += dynamic_pixels;
+
+        if let Some(previous) = index.checked_sub(1).and_then(|prev| frames.get(prev)) {
+            let delta_pixels = shockwave_delta_pixels(previous, frame);
+            delta_pixel_total += delta_pixels;
+
+            if delta_pixels >= SHOCKWAVE_SURGE_PIXEL_COUNT {
+                surge_frames += 1;
+                surge_gap = 0;
+            } else {
+                surge_gap += 1;
+                max_surge_gap_frames = max_surge_gap_frames.max(surge_gap);
+            }
+        }
+    }
+
+    let frame_count = frames.len().max(1) as f32;
+    SequenceActivityMetrics {
+        average_dynamic_pixels: dynamic_pixel_total as f32 / frame_count,
+        average_delta_pixels: delta_pixel_total as f32 / frame_count,
+        max_surge_gap_frames,
+        surge_frames,
+    }
+}
+
+fn music_like_audio_frame(frame_index: usize) -> AudioData {
+    let mut audio = AudioData::silence();
+    let beat_period = 12;
+    let phase = frame_index % beat_period;
+    let beat = phase == 0;
+
+    let transient = ((beat_period - phase) as f32 / beat_period as f32).powf(1.6);
+    let sway = ((frame_index as f32) * 0.19).sin() * 0.5 + 0.5;
+
+    let bass = (0.34 + transient * 0.52).clamp(0.0, 1.0);
+    let mid = (0.16 + transient * 0.18 + sway * 0.08).clamp(0.0, 1.0);
+    let treble = (0.05 + transient * 0.08 + (1.0 - sway) * 0.05).clamp(0.0, 1.0);
+
+    for value in &mut audio.spectrum[..BASS_END] {
+        *value = bass;
+    }
+    for value in &mut audio.spectrum[BASS_END..MID_END] {
+        *value = mid;
+    }
+    for value in &mut audio.spectrum[MID_END..] {
+        *value = treble;
+    }
+
+    audio.rms_level = (0.16 + transient * 0.28).clamp(0.0, 1.0);
+    audio.peak_level = (audio.rms_level * 1.45).clamp(0.0, 1.0);
+    audio.spectral_centroid = (0.24 + treble * 0.5).clamp(0.0, 1.0);
+    audio.spectral_flux = (0.14 + transient * 0.68).clamp(0.0, 1.0);
+    audio.beat_detected = beat;
+    audio.beat_confidence = 0.86;
+    audio.beat_phase = phase as f32 / beat_period as f32;
+    audio.beat_pulse = match phase {
+        0 => 1.0,
+        1 => 0.72,
+        2 => 0.5,
+        3 => 0.38,
+        _ => 0.0,
+    };
+    audio.bpm = 120.0;
+    audio.onset_detected = phase <= 1;
+    audio.onset_pulse = match phase {
+        0 => 1.0,
+        1 => 0.55,
+        _ => 0.0,
+    };
+
+    audio
 }
 
 fn assert_dimensions(canvas: &Canvas) {
@@ -376,5 +571,28 @@ fn webgl_catalog_selection_finds_entries() {
     assert!(
         !webgl_paths.is_empty(),
         "custom catalog should include at least one WebGL effect"
+    );
+}
+
+#[test]
+#[ignore = "manual Servo regression; run with --features servo after just effects-build"]
+fn servo_renderer_audio_reactive_shockwave_prefers_live_music_over_fallback_pulse() {
+    let metadata = bundled_html_metadata("hypercolor/shockwave.html");
+    let active_audio: Vec<_> = (0..AUDIO_TEST_FRAMES).map(music_like_audio_frame).collect();
+    let silence_audio = vec![AudioData::silence(); AUDIO_TEST_FRAMES];
+
+    let active_frames = render_audio_sequence(metadata.clone(), &active_audio);
+    let silence_frames = render_audio_sequence(metadata, &silence_audio);
+
+    let active = sequence_activity_metrics(&active_frames);
+    let silence = sequence_activity_metrics(&silence_frames);
+
+    assert!(
+        active.average_delta_pixels > silence.average_delta_pixels * 1.35,
+        "expected live audio to create stronger frame-to-frame shockwave surges than fallback mode: active={active:?} silence={silence:?}"
+    );
+    assert!(
+        active.average_delta_pixels > 6_000.0,
+        "expected live audio to produce a meaningful amount of Shockwave surge motion: active={active:?} silence={silence:?}"
     );
 }

@@ -1187,7 +1187,10 @@ fn run_linux_pulse_capture(
         return;
     }
 
-    let actual_fragsize = stream.borrow_mut().get_buffer_attr().map(|attr| attr.fragsize);
+    let actual_fragsize = stream
+        .borrow_mut()
+        .get_buffer_attr()
+        .map(|attr| attr.fragsize);
     tracing::info!(
         source = %source_name,
         target_fragment_bytes = buffer_attr.fragsize,

@@ -29,6 +29,9 @@ bun.lock
 # Effects — generated build output (SDK effects)
 /effects/hypercolor/
 
+# Screenshot drafts — capture tool output, reviewed locally then promoted to curated/
+/effects/screenshots/drafts/
+
 # Trunk dev output
 crates/hypercolor-ui/.dist-dev/
 

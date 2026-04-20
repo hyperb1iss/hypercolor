@@ -6,8 +6,8 @@ use std::path::Path;
 use tempfile::TempDir;
 
 use hypercolor_core::effect::{
-    EffectRegistry, builtin::register_builtin_effects, default_effect_search_paths,
-    parse_html_effect_metadata, register_html_effects,
+    EffectRegistry, builtin::register_builtin_effects, bundled_effects_root,
+    default_effect_search_paths, parse_html_effect_metadata, register_html_effects,
 };
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::{EffectCategory, EffectSource};
@@ -363,4 +363,39 @@ fn register_html_effects_skips_builtin_html_ports_without_servo() {
     assert_eq!(report.loaded_effects, 0);
     assert_eq!(report.skipped_files, 1);
     assert_eq!(registry.len(), 0);
+}
+
+#[test]
+fn generated_audio_effects_keep_audio_reactive_metadata() {
+    for relative in [
+        "hypercolor/audio-pulse.html",
+        "hypercolor/frequency-cascade.html",
+        "hypercolor/iris.html",
+        "hypercolor/shockwave.html",
+    ] {
+        let path = bundled_effects_root().join(relative);
+        assert!(
+            path.exists(),
+            "expected generated HTML effect at {}; run `just effects-build` first",
+            path.display()
+        );
+
+        let html = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+        let parsed = parse_html_effect_metadata(&html);
+
+        assert!(
+            parsed.audio_reactive,
+            "expected {} to remain audio-reactive in generated metadata",
+            relative
+        );
+        assert!(
+            parsed
+                .tags
+                .iter()
+                .any(|tag| tag.eq_ignore_ascii_case("audio-reactive")),
+            "expected {} to retain the audio-reactive tag",
+            relative
+        );
+    }
 }

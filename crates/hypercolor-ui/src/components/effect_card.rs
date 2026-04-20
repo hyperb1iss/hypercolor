@@ -1,11 +1,13 @@
-//! Effect card — cinematic tile with live-captured background artwork,
-//! harmonized palette accents, and a single clean metadata row.
+//! Effect card — cinematic tile with curated or live-captured background
+//! artwork, harmonized palette accents, and a single clean metadata row.
 //!
-//! Cards read their own thumbnail from the `ThumbnailStore` context. When a
-//! thumbnail exists, its image becomes the card background and its extracted
-//! palette drives the accent glow. Otherwise the card falls back to a radial
-//! gradient using the category accent color, so the grid still feels
-//! deliberate before any captures have landed.
+//! Background resolution cascades (highest to lowest priority): a curated
+//! screenshot served by the daemon at
+//! `/api/v1/effects/screenshots/<slug>/default.webp`, then an opportunistic
+//! thumbnail captured client-side from the live canvas and cached in
+//! localStorage, then a category-coloured radial gradient. The curated image
+//! paints on top when it loads; otherwise its `onerror` hides the element and
+//! the lower layers remain visible.
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -23,6 +25,41 @@ fn source_label(source: &str) -> &'static str {
         "html" => "HTML",
         "shader" => "Shader",
         _ => "Other",
+    }
+}
+
+/// Kebab-case slug for an effect name. Mirrors the capture tool's slugify so
+/// the UI and `effects/screenshots/curated/<slug>/` stay aligned — used to
+/// build the curated screenshot URL.
+fn slugify(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut prev_dash = true;
+    for ch in value.chars() {
+        let mapped = ch.to_ascii_lowercase();
+        if mapped.is_ascii_alphanumeric() {
+            out.push(mapped);
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    if out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+#[cfg(test)]
+mod slug_tests {
+    use super::slugify;
+
+    #[test]
+    fn slugify_converts_names() {
+        assert_eq!(slugify("Color Wave"), "color-wave");
+        assert_eq!(slugify("ADHD Hyperfocus"), "adhd-hyperfocus");
+        assert_eq!(slugify("Neon City"), "neon-city");
+        assert_eq!(slugify("  Spaced  Out  "), "spaced-out");
     }
 }
 
@@ -90,6 +127,8 @@ pub fn EffectCard(
     let source_label_text = source_label(&source);
     let show_source_icon = source != "native";
     let is_html = source == "html";
+    let curated_url = format!("/api/v1/effects/screenshots/{}/default.webp", slugify(&effect.name));
+    let (curated_hidden, set_curated_hidden) = signal(false);
 
     view! {
         <div
@@ -107,9 +146,11 @@ pub fn EffectCard(
             }
             style:--glow-rgb=move || accent_rgb.get()
         >
-            // ── Background layer ─────────────────────────────────────────
-            // Thumbnail image when captured, radial-gradient placeholder
-            // keyed to the category otherwise.
+            // ── Background layers ────────────────────────────────────────
+            // Paint order (bottom to top): category gradient → opportunistic
+            // thumbnail div (when cached) → curated <img> (when reachable).
+            // `onerror` on the curated image hides it so a missing screenshot
+            // falls back through the stack naturally.
             {
                 let fallback = fallback_rgb.clone();
                 move || thumbnail.get().map_or_else(
@@ -139,6 +180,22 @@ pub fn EffectCard(
                     },
                 )
             }
+            // `loading="lazy"` on absolute-positioned images breaks Chrome's
+            // visibility math — cards below the first row never trigger a load.
+            // `decoding="async"` still lets the browser off-thread decode.
+            <img
+                class=move || {
+                    let base = "absolute inset-0 w-full h-full object-cover pointer-events-none \
+                                scale-[1.02] transition-transform duration-500 group-hover:scale-[1.06]";
+                    if curated_hidden.get() { "hidden" } else { base }
+                }
+                src=curated_url
+                alt=""
+                decoding="async"
+                fetchpriority="low"
+                on:error=move |_| set_curated_hidden.set(true)
+            />
+
 
             // ── Scrim ────────────────────────────────────────────────────
             // Bottom-up darken gradient so the text area has legibility.

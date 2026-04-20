@@ -2,10 +2,11 @@
 //!
 //! Every top-level route uses `<PageHeader>`. The shape is identical across
 //! pages so content below never shifts Y when the user navigates: 60px title
-//! row + 44px toolbar row + 1px bottom border. The title row holds the icon,
-//! title, tagline, and an optional trailing slot for page-level actions. The
-//! toolbar row is always rendered; callers fill it with search, tabs, or a
-//! context strip.
+//! row + 44px toolbar row. Elevation comes from a soft downward drop shadow
+//! rather than a hairline border. The title row holds the icon, title,
+//! tagline, and an optional trailing slot for page-level actions. The toolbar
+//! row is always rendered; callers fill it with search, tabs, or a context
+//! strip.
 //!
 //! Accents are chosen from a fixed palette of five SilkCircuit tokens plus a
 //! spectrum gradient for the Dashboard; each page gets a distinct identity.
@@ -101,7 +102,7 @@ pub fn PageHeader(
     );
 
     view! {
-        <header class="page-header sticky top-0 z-30 shrink-0 glass-subtle border-b border-edge-default">
+        <header class="page-header sticky top-0 z-30 shrink-0 glass-subtle page-header-elevation">
             <div class="h-[60px] px-6 flex items-center justify-between gap-4">
                 <div class="min-w-0 flex items-center gap-3">
                     <span class="shrink-0" style=icon_style>
@@ -121,7 +122,7 @@ pub fn PageHeader(
                 </div>
             </div>
 
-            <div class="h-[44px] px-6 flex items-center gap-3 border-t border-edge-subtle/40">
+            <div class="h-[44px] px-6 flex items-center gap-3">
                 {header_toolbar.map(|t| (t.children)())}
             </div>
         </header>

@@ -811,6 +811,18 @@ input[type="range"].slider-silk::-moz-range-track {
                 inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
+/* Soft downward elevation for the page header — reads as depth without
+   the hard 1px hairline. Matched in light theme below. */
+.page-header-elevation {
+    box-shadow: 0 10px 22px -8px rgba(0, 0, 0, 0.55),
+                0 3px 8px -3px rgba(0, 0, 0, 0.35);
+}
+
+[data-theme="light"] .page-header-elevation {
+    box-shadow: 0 10px 22px -8px rgba(0, 0, 0, 0.14),
+                0 3px 8px -3px rgba(0, 0, 0, 0.08);
+}
+
 .content-auto-card {
     content-visibility: auto;
     contain: layout paint style;

@@ -13,6 +13,7 @@ use crate::components::device_card::{
     device_class_icon, device_class_label, save_category_override,
 };
 use crate::components::device_pairing_modal::needs_pairing;
+use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
 use crate::toasts;
 
@@ -281,27 +282,31 @@ pub fn DeviceDetail(
                                 let current_class = classify_device(&dev_for_category);
                                 let current_icon = device_class_icon(&current_class);
                                 let (cat_label, set_cat_label) = signal(device_class_label(&current_class).to_string());
+                                let cat_options = Signal::stored(
+                                    ALL_DEVICE_CLASSES.iter()
+                                        .map(|c| {
+                                            let label = device_class_label(c).to_string();
+                                            (label.clone(), label)
+                                        })
+                                        .collect::<Vec<_>>()
+                                );
                                 view! {
                                     <div class="flex items-center gap-2 mb-3">
                                         <Icon icon=current_icon width="11px" height="11px" style="color: rgba(139, 133, 160, 0.5)" />
-                                        <select
-                                            class="bg-transparent border-none text-[10px] font-mono text-fg-tertiary cursor-pointer
-                                                   focus:outline-none hover:text-fg-secondary transition-colors appearance-none"
-                                            prop:value=move || cat_label.get()
-                                            on:change={
-                                                let did = dev_id_for_cat.clone();
-                                                move |ev| {
-                                                    let value = event_target_value(&ev);
-                                                    save_category_override(&did, &value);
-                                                    set_cat_label.set(value);
-                                                }
-                                            }
-                                        >
-                                            {ALL_DEVICE_CLASSES.iter().map(|c| {
-                                                let label = device_class_label(c);
-                                                view! { <option value=label>{label}</option> }
-                                            }).collect_view()}
-                                        </select>
+                                        <div class="min-w-[120px]">
+                                            <SilkSelect
+                                                value=Signal::derive(move || cat_label.get())
+                                                options=cat_options
+                                                on_change=Callback::new({
+                                                    let did = dev_id_for_cat.clone();
+                                                    move |val: String| {
+                                                        save_category_override(&did, &val);
+                                                        set_cat_label.set(val);
+                                                    }
+                                                })
+                                                class="bg-surface-overlay/40 border border-edge-subtle/50 px-2 py-0.5 text-[10px] font-mono text-fg-tertiary hover:text-fg-secondary"
+                                            />
+                                        </div>
                                         <span class="text-[8px] text-fg-tertiary/25">"(category)"</span>
                                     </div>
                                 }

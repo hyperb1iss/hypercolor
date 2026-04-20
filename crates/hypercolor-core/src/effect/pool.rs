@@ -352,9 +352,7 @@ mod tests {
     use crate::effect::registry::EffectRegistry;
     use crate::effect::traits::{EffectRenderer, FrameInput};
     use hypercolor_types::canvas::Canvas;
-    use hypercolor_types::effect::{
-        EffectCategory, EffectId, EffectMetadata, EffectSource,
-    };
+    use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
     use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole};
     use hypercolor_types::spatial::{
         DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,

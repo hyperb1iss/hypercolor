@@ -520,7 +520,7 @@ pub fn Sidebar() -> impl IntoView {
                             class="px-4 text-[9px] font-mono uppercase tracking-[0.15em]"
                             style:color="rgba(var(--np-primary), 0.85)"
                         >
-                            {move || if fx.is_playing.get() { "Now Playing" } else { "Stopped" }}
+                            {move || if fx.is_playing.get() { "Now Playing" } else { "Paused" }}
                         </div>
 
                         // Live canvas thumbnail — only on pages without their own preview
@@ -598,12 +598,12 @@ pub fn Sidebar() -> impl IntoView {
                             {move || if fx.is_playing.get() {
                                 view! {
                                     <button
-                                        class="p-2 rounded-lg text-error-red/40 hover:text-error-red hover:bg-error-red/[0.06] player-btn"
-                                        title="Stop effect"
-                                        aria-label="Stop effect"
+                                        class="p-2 rounded-lg text-neon-cyan hover:text-neon-cyan hover:bg-neon-cyan/[0.08] player-btn"
+                                        title="Pause effect"
+                                        aria-label="Pause effect"
                                         on:click=move |_| fx.stop_effect()
                                     >
-                                        <Icon icon=LuSquare width="16px" height="16px" />
+                                        <Icon icon=LuPause width="16px" height="16px" />
                                     </button>
                                 }.into_any()
                             } else {
