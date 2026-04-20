@@ -97,6 +97,7 @@ fn strip_zone(id: &str, device_id: &str, led_count: u32) -> DeviceZone {
         shape_preset: None,
         display_order: 0,
         attachment: None,
+        brightness: None,
     }
 }
 
@@ -121,6 +122,7 @@ fn point_zone(id: &str, device_id: &str, x: f32, y: f32) -> DeviceZone {
         shape_preset: None,
         display_order: 0,
         attachment: None,
+        brightness: None,
     }
 }
 
@@ -1451,6 +1453,82 @@ async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
 
     assert_eq!(left_zone.colors.first().copied(), Some([255, 0, 0]));
     assert_eq!(right_zone.colors.first().copied(), Some([0, 0, 255]));
+}
+
+#[tokio::test]
+async fn multi_group_scene_publishes_authoritative_canvas_and_global_canvas() {
+    let state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    let mut canvas_rx = state.event_bus.canvas_receiver();
+    let mut global_canvas_rx = state.event_bus.global_canvas_receiver();
+
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut scene = make_scene("Grouped Canvas Scene");
+    scene.groups = vec![
+        custom_group(
+            "Left",
+            solid_id,
+            HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+            test_layout(vec![point_zone("zone_left", "mock:left", 0.25, 0.5)]),
+        ),
+        custom_group(
+            "Right",
+            solid_id,
+            HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+            test_layout(vec![point_zone("zone_right", "mock:right", 0.75, 0.5)]),
+        ),
+    ];
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+
+    {
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .create(scene.clone())
+            .expect("create grouped canvas scene");
+        scene_manager
+            .activate(&scene.id, None)
+            .expect("activate grouped canvas scene");
+    }
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(2), canvas_rx.changed())
+        .await
+        .expect("expected grouped scene canvas within 2 seconds")
+        .expect("canvas sender should remain connected");
+    tokio::time::timeout(Duration::from_secs(2), global_canvas_rx.changed())
+        .await
+        .expect("expected grouped scene global canvas within 2 seconds")
+        .expect("global canvas sender should remain connected");
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let canvas = canvas_rx.borrow().clone();
+    let global_canvas = global_canvas_rx.borrow().clone();
+
+    for frame in [&canvas, &global_canvas] {
+        assert_eq!(frame.width, 320);
+        assert_eq!(frame.height, 200);
+        assert_eq!(frame.surface().get_pixel(80, 100), Rgba::new(255, 0, 0, 255));
+        assert_eq!(frame.surface().get_pixel(240, 100), Rgba::new(0, 0, 255, 255));
+        assert_eq!(frame.surface().get_pixel(160, 100), Rgba::new(0, 0, 0, 255));
+    }
 }
 
 #[tokio::test]

@@ -12,7 +12,7 @@ use hypercolor_types::canvas::{Canvas, PublishedSurface, RenderSurfacePool, Surf
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::{DisplayFaceTarget, RenderGroup, RenderGroupId};
 use hypercolor_types::sensor::SystemSnapshot;
-use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+use hypercolor_types::spatial::{DeviceZone, EdgeBehavior, SamplingMode, SpatialLayout};
 
 use super::frame_sampling::{LedSamplingStrategy, RetainedLedSamplingStrategy};
 use super::micros_u32;
@@ -297,7 +297,7 @@ impl RenderGroupRuntime {
         )
         .unwrap_or(u32::MAX);
         let preview_compose_start = Instant::now();
-        let ui_preview_frame = self.compose_ui_preview(groups);
+        let ui_preview_frame = self.compose_authoritative_scene(groups);
         let preview_compose_us = micros_u32(preview_compose_start.elapsed());
 
         let result = RenderGroupResult {
@@ -599,6 +599,31 @@ impl RenderGroupRuntime {
         );
     }
 
+    fn compose_authoritative_scene(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
+        let Some(mut lease) = self.preview_surface_pool.dequeue() else {
+            let mut preview = Canvas::new(self.preview_width, self.preview_height);
+            compose_authoritative_scene_canvas(
+                &mut preview,
+                groups,
+                &self.target_canvases,
+                self.preview_width,
+                self.preview_height,
+            );
+            return ProducerFrame::Canvas(preview);
+        };
+
+        compose_authoritative_scene_canvas(
+            lease.canvas_mut(),
+            groups,
+            &self.target_canvases,
+            self.preview_width,
+            self.preview_height,
+        );
+
+        ProducerFrame::Surface(lease.submit(0, 0))
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     fn compose_ui_preview(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
         let Some(mut lease) = self.preview_surface_pool.dequeue() else {
             let mut preview = Canvas::new(self.preview_width, self.preview_height);
@@ -624,6 +649,72 @@ impl RenderGroupRuntime {
     }
 }
 
+fn compose_authoritative_scene_canvas(
+    preview: &mut Canvas,
+    groups: &[RenderGroup],
+    target_canvases: &HashMap<RenderGroupId, Canvas>,
+    preview_width: u32,
+    preview_height: u32,
+) {
+    preview.clear();
+
+    for group in groups.iter().filter(|group| group_contributes_to_preview(group)) {
+        let Some(source) = target_canvases.get(&group.id) else {
+            continue;
+        };
+
+        for zone in &group.layout.zones {
+            blit_zone_rect(preview, source, zone, preview_width, preview_height);
+        }
+    }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "zone-rect compositor works in bounded normalized canvas space"
+)]
+fn blit_zone_rect(
+    target: &mut Canvas,
+    source: &Canvas,
+    zone: &DeviceZone,
+    target_width: u32,
+    target_height: u32,
+) {
+    let span_x = zone.size.x * zone.scale;
+    let span_y = zone.size.y * zone.scale;
+    if span_x <= 0.0 || span_y <= 0.0 || target_width == 0 || target_height == 0 {
+        return;
+    }
+
+    let start_x = (zone.position.x - (span_x * 0.5)).clamp(0.0, 1.0);
+    let start_y = (zone.position.y - (span_y * 0.5)).clamp(0.0, 1.0);
+    let end_x = (zone.position.x + (span_x * 0.5)).clamp(0.0, 1.0);
+    let end_y = (zone.position.y + (span_y * 0.5)).clamp(0.0, 1.0);
+    if end_x <= start_x || end_y <= start_y {
+        return;
+    }
+
+    let x0 = ((start_x * target_width as f32).floor() as u32).min(target_width);
+    let x1 = ((end_x * target_width as f32).ceil() as u32).min(target_width);
+    let y0 = ((start_y * target_height as f32).floor() as u32).min(target_height);
+    let y1 = ((end_y * target_height as f32).ceil() as u32).min(target_height);
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+
+    for y in y0..y1 {
+        let ny = (y as f32 + 0.5) / target_height as f32;
+        for x in x0..x1 {
+            let nx = (x as f32 + 0.5) / target_width as f32;
+            target.set_pixel(x, y, source.sample_bilinear(nx, ny));
+        }
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 fn compose_ui_preview_canvas(
     preview: &mut Canvas,
     groups: &[RenderGroup],
@@ -859,6 +950,7 @@ mod tests {
             shape_preset: None,
             display_order: 0,
             attachment: None,
+            brightness: None,
         }
     }
 
