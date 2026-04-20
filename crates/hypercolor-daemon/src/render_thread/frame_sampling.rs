@@ -42,6 +42,38 @@ impl LedSamplingStrategy {
             | Self::ReusePublished(_) => None,
         }
     }
+
+    pub(super) fn from_retained(retained: &RetainedLedSamplingStrategy) -> Self {
+        match retained {
+            RetainedLedSamplingStrategy::SparkleFlinger(spatial_engine) => {
+                Self::SparkleFlinger(spatial_engine.clone())
+            }
+            RetainedLedSamplingStrategy::PreSampled { layout, zones } => Self::RetainedPreSampled {
+                layout: Arc::clone(layout),
+                zones: Arc::clone(zones),
+            },
+        }
+    }
+
+    pub(super) fn retain(&self, zones: &[ZoneColors]) -> RetainedLedSamplingStrategy {
+        match self {
+            Self::PreSampled(layout) => RetainedLedSamplingStrategy::PreSampled {
+                layout: Arc::clone(layout),
+                zones: zones.to_vec().into(),
+            },
+            Self::SparkleFlinger(spatial_engine) => {
+                RetainedLedSamplingStrategy::SparkleFlinger(spatial_engine.clone())
+            }
+            Self::RetainedPreSampled { layout, zones } => RetainedLedSamplingStrategy::PreSampled {
+                layout: Arc::clone(layout),
+                zones: Arc::clone(zones),
+            },
+            Self::ReusePublished(layout) => RetainedLedSamplingStrategy::PreSampled {
+                layout: Arc::clone(layout),
+                zones: Arc::new([]),
+            },
+        }
+    }
 }
 
 #[derive(Clone)]

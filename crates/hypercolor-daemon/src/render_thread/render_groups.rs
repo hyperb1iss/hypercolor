@@ -160,17 +160,9 @@ impl RenderGroupRuntime {
             ui_preview_frame: retained.ui_preview_frame.clone(),
             group_canvases: Vec::new(),
             active_group_canvas_ids: retained.active_group_canvas_ids.clone(),
-            led_sampling_strategy: match &retained.led_sampling_strategy {
-                RetainedLedSamplingStrategy::SparkleFlinger(spatial_engine) => {
-                    LedSamplingStrategy::SparkleFlinger(spatial_engine.clone())
-                }
-                RetainedLedSamplingStrategy::PreSampled { layout, zones } => {
-                    LedSamplingStrategy::RetainedPreSampled {
-                        layout: Arc::clone(layout),
-                        zones: Arc::clone(zones),
-                    }
-                }
-            },
+            led_sampling_strategy: LedSamplingStrategy::from_retained(
+                &retained.led_sampling_strategy,
+            ),
             render_us: 0,
             sample_us: 0,
             preview_compose_us: 0,
@@ -570,27 +562,7 @@ impl RenderGroupRuntime {
             groups_revision,
             ui_preview_frame: result.ui_preview_frame.clone(),
             active_group_canvas_ids: result.active_group_canvas_ids.clone(),
-            led_sampling_strategy: match &result.led_sampling_strategy {
-                LedSamplingStrategy::PreSampled(layout) => RetainedLedSamplingStrategy::PreSampled {
-                    layout: Arc::clone(layout),
-                    zones: zones.to_vec().into(),
-                },
-                LedSamplingStrategy::SparkleFlinger(spatial_engine) => {
-                    RetainedLedSamplingStrategy::SparkleFlinger(spatial_engine.clone())
-                }
-                LedSamplingStrategy::RetainedPreSampled { layout, zones } => {
-                    RetainedLedSamplingStrategy::PreSampled {
-                        layout: Arc::clone(layout),
-                        zones: Arc::clone(zones),
-                    }
-                }
-                LedSamplingStrategy::ReusePublished(layout) => {
-                    RetainedLedSamplingStrategy::PreSampled {
-                        layout: Arc::clone(layout),
-                        zones: Arc::new([]),
-                    }
-                }
-            },
+            led_sampling_strategy: result.led_sampling_strategy.retain(zones),
             logical_layer_count: result.logical_layer_count,
         });
     }
