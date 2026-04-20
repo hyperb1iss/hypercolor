@@ -547,6 +547,7 @@ export default canvas.stateful(
         }
     },
     {
+        audio: true,
         description:
             'Bass drops detonate concentric shockwaves. Segmented bursts and cascade chevrons ripple outward on every impact.',
         presets: [
