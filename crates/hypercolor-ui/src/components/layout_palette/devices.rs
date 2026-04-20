@@ -10,6 +10,7 @@ use crate::icons::*;
 use crate::layout_utils;
 use crate::style_utils::{device_accent_colors, uuid_v4_hex};
 
+use super::brightness_slider::DeviceBrightnessSlider;
 use super::topology::topology_icon;
 use super::{PaletteState, fetch_attachments_for};
 
@@ -304,6 +305,14 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
                     )
                 }}
             </button>
+
+            // Master brightness — applies to the whole device (and every
+            // zone inside it for multi-zone groups).
+            <DeviceBrightnessSlider
+                device_id=dev.id.clone()
+                initial=dev.brightness
+                rgb=primary_rgb.clone()
+            />
 
             // Zone rows (multi-zone only)
             {has_multi_zones.then(|| {
