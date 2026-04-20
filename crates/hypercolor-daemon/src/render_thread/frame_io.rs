@@ -176,18 +176,14 @@ pub(crate) fn publish_frame_updates(
     if authoritative_canvas_receivers > 0 {
         let publish_global_canvas = {
             let current = state.event_bus.global_canvas_sender().borrow();
-            if let Some(surface) =
-                authoritative_global_surface(state, &frame_surface, &preview_surface)
-            {
+            if let Some(surface) = authoritative_global_surface(&frame_surface) {
                 should_publish_surface_frame(&current, surface)
             } else {
                 should_publish_canvas_frame(&current, &CanvasFrame::empty())
             }
         };
         if publish_global_canvas {
-            let global_frame = if let Some(surface) =
-                authoritative_global_surface(state, &frame_surface, &preview_surface)
-            {
+            let global_frame = if let Some(surface) = authoritative_global_surface(&frame_surface) {
                 CanvasFrame::from_surface(
                     surface
                         .clone()
@@ -383,17 +379,10 @@ fn should_publish_canvas_storage(current: &CanvasFrame, next: &Canvas) -> bool {
     stable_canvas_frame_identity(current) != stable_canvas_identity(next)
 }
 
-fn authoritative_global_surface<'a>(
-    state: &RenderThreadState,
-    frame_surface: &'a Option<PublishedSurface>,
-    preview_surface: &'a Option<PublishedSurface>,
-) -> Option<&'a PublishedSurface> {
-    frame_surface.as_ref().or_else(|| {
-        preview_surface.as_ref().filter(|surface| {
-            surface.width() == state.canvas_dims.width()
-                && surface.height() == state.canvas_dims.height()
-        })
-    })
+fn authoritative_global_surface(
+    frame_surface: &Option<PublishedSurface>,
+) -> Option<&PublishedSurface> {
+    frame_surface.as_ref()
 }
 
 fn stable_canvas_frame_identity(frame: &CanvasFrame) -> Option<StableCanvasFrameIdentity> {
@@ -641,11 +630,12 @@ pub(crate) fn parse_sector_zone_id(zone_id: &str) -> Option<(u32, u32)> {
 
 #[cfg(test)]
 mod tests {
+    use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
     use tokio::sync::watch;
 
     use hypercolor_core::types::event::{FrameData, ZoneColors};
 
-    use super::update_published_frame;
+    use super::{authoritative_global_surface, update_published_frame};
 
     fn sample_frame(
         zone_id: &str,
@@ -700,5 +690,23 @@ mod tests {
         assert_eq!(frame.frame_number, 1);
         assert_eq!(frame.timestamp_ms, 10);
         assert_eq!(frame.zones[0].zone_id, "zone");
+    }
+
+    #[test]
+    fn authoritative_global_surface_prefers_frame_surface() {
+        let frame_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 1, 16);
+        let frame_surface_option = Some(frame_surface.clone());
+
+        let selected = authoritative_global_surface(&frame_surface_option)
+            .expect("frame surface should be authoritative");
+
+        assert_eq!(selected.storage_identity(), frame_surface.storage_identity());
+    }
+
+    #[test]
+    fn authoritative_global_surface_requires_frame_surface() {
+        let selected = authoritative_global_surface(&None);
+
+        assert!(selected.is_none());
     }
 }
