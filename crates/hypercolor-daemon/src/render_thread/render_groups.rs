@@ -6,13 +6,15 @@ use anyhow::Result;
 
 use hypercolor_core::effect::{EffectPool, EffectRegistry};
 use hypercolor_core::input::{InteractionData, ScreenData};
-use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_core::spatial::{SpatialEngine, sample_led};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::{DisplayFaceTarget, RenderGroup, RenderGroupId};
 use hypercolor_types::sensor::SystemSnapshot;
-use hypercolor_types::spatial::{DeviceZone, EdgeBehavior, SamplingMode, SpatialLayout};
+use hypercolor_types::spatial::{
+    DeviceZone, EdgeBehavior, NormalizedPosition, SamplingMode, SpatialLayout,
+};
 
 use super::frame_sampling::{LedSamplingStrategy, RetainedLedSamplingStrategy};
 use super::micros_u32;
@@ -658,13 +660,23 @@ fn compose_authoritative_scene_canvas(
 ) {
     preview.clear();
 
-    for group in groups.iter().filter(|group| group_contributes_to_preview(group)) {
+    for group in groups
+        .iter()
+        .filter(|group| group_contributes_to_preview(group))
+    {
         let Some(source) = target_canvases.get(&group.id) else {
             continue;
         };
 
         for zone in &group.layout.zones {
-            blit_zone_rect(preview, source, zone, preview_width, preview_height);
+            blit_zone_projection(
+                preview,
+                source,
+                zone,
+                &group.layout,
+                preview_width,
+                preview_height,
+            );
         }
     }
 }
@@ -674,12 +686,13 @@ fn compose_authoritative_scene_canvas(
     clippy::as_conversions,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "zone-rect compositor works in bounded normalized canvas space"
+    reason = "zone projection rasterizes bounded normalized geometry into preview pixels"
 )]
-fn blit_zone_rect(
+fn blit_zone_projection(
     target: &mut Canvas,
     source: &Canvas,
     zone: &DeviceZone,
+    layout: &SpatialLayout,
     target_width: u32,
     target_height: u32,
 ) {
@@ -689,10 +702,33 @@ fn blit_zone_rect(
         return;
     }
 
-    let start_x = (zone.position.x - (span_x * 0.5)).clamp(0.0, 1.0);
-    let start_y = (zone.position.y - (span_y * 0.5)).clamp(0.0, 1.0);
-    let end_x = (zone.position.x + (span_x * 0.5)).clamp(0.0, 1.0);
-    let end_y = (zone.position.y + (span_y * 0.5)).clamp(0.0, 1.0);
+    let half_x = span_x * 0.5;
+    let half_y = span_y * 0.5;
+    let cos_t = zone.rotation.cos();
+    let sin_t = zone.rotation.sin();
+    let corners = [
+        (-half_x, -half_y),
+        (half_x, -half_y),
+        (half_x, half_y),
+        (-half_x, half_y),
+    ];
+    let (mut start_x, mut end_x) = (f32::INFINITY, f32::NEG_INFINITY);
+    let (mut start_y, mut end_y) = (f32::INFINITY, f32::NEG_INFINITY);
+    for (corner_x, corner_y) in corners {
+        let rotated_x = corner_x.mul_add(cos_t, -corner_y * sin_t);
+        let rotated_y = corner_x.mul_add(sin_t, corner_y * cos_t);
+        let scene_x = zone.position.x + rotated_x;
+        let scene_y = zone.position.y + rotated_y;
+        start_x = start_x.min(scene_x);
+        end_x = end_x.max(scene_x);
+        start_y = start_y.min(scene_y);
+        end_y = end_y.max(scene_y);
+    }
+
+    start_x = start_x.clamp(0.0, 1.0);
+    start_y = start_y.clamp(0.0, 1.0);
+    end_x = end_x.clamp(0.0, 1.0);
+    end_y = end_y.clamp(0.0, 1.0);
     if end_x <= start_x || end_y <= start_y {
         return;
     }
@@ -705,13 +741,62 @@ fn blit_zone_rect(
         return;
     }
 
+    let sampling_mode = zone
+        .sampling_mode
+        .clone()
+        .unwrap_or_else(|| layout.default_sampling_mode.clone());
+    let edge_behavior = zone.edge_behavior.unwrap_or(layout.default_edge_behavior);
     for y in y0..y1 {
-        let ny = (y as f32 + 0.5) / target_height as f32;
         for x in x0..x1 {
-            let nx = (x as f32 + 0.5) / target_width as f32;
-            target.set_pixel(x, y, source.sample_bilinear(nx, ny));
+            let Some(local_position) =
+                zone_local_position_for_scene_pixel(x, y, target_width, target_height, zone)
+            else {
+                continue;
+            };
+            target.set_pixel(
+                x,
+                y,
+                sample_led(source, local_position, zone, &sampling_mode, edge_behavior),
+            );
         }
     }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::as_conversions,
+    reason = "preview pixel centers are rasterized into normalized scene coordinates"
+)]
+fn zone_local_position_for_scene_pixel(
+    x: u32,
+    y: u32,
+    target_width: u32,
+    target_height: u32,
+    zone: &DeviceZone,
+) -> Option<hypercolor_types::spatial::NormalizedPosition> {
+    if target_width == 0 || target_height == 0 {
+        return None;
+    }
+
+    let span_x = zone.size.x * zone.scale;
+    let span_y = zone.size.y * zone.scale;
+    if span_x <= 0.0 || span_y <= 0.0 {
+        return None;
+    }
+
+    let scene_x = (x as f32 + 0.5) / target_width as f32;
+    let scene_y = (y as f32 + 0.5) / target_height as f32;
+    let delta_x = scene_x - zone.position.x;
+    let delta_y = scene_y - zone.position.y;
+    let cos_t = zone.rotation.cos();
+    let sin_t = zone.rotation.sin();
+    let local_x = (delta_x.mul_add(cos_t, delta_y * sin_t) / span_x) + 0.5;
+    let local_y = (delta_y.mul_add(cos_t, -delta_x * sin_t) / span_y) + 0.5;
+    if !(0.0..=1.0).contains(&local_x) || !(0.0..=1.0).contains(&local_y) {
+        return None;
+    }
+
+    Some(NormalizedPosition::new(local_x, local_y))
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -873,6 +958,7 @@ fn blit_scaled_tile(target: &mut Canvas, source: &Canvas, x0: u32, y0: u32, x1: 
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::f32::consts::FRAC_PI_4;
 
     use hypercolor_core::effect::EffectRegistry;
     use hypercolor_core::effect::builtin::register_builtin_effects;
@@ -952,6 +1038,13 @@ mod tests {
             attachment: None,
             brightness: None,
         }
+    }
+
+    fn rotated_zone(id: &str, rotation: f32, size: f32) -> DeviceZone {
+        let mut zone = point_zone(id);
+        zone.size = NormalizedPosition { x: size, y: size };
+        zone.rotation = rotation;
+        zone
     }
 
     fn builtin_registry() -> EffectRegistry {
@@ -1083,6 +1176,90 @@ mod tests {
 
         assert_eq!(surface.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
         assert_eq!(surface.get_pixel(3, 3), Rgba::new(255, 0, 0, 255));
+    }
+
+    #[test]
+    fn authoritative_scene_preview_clips_rotated_zone_geometry() {
+        let mut runtime = RenderGroupRuntime::new(8, 8);
+        let mut group = sample_group(8, 8);
+        group.layout.zones = vec![rotated_zone("zone_rotated", FRAC_PI_4, 0.5)];
+        let mut source = Canvas::new(8, 8);
+        source.fill(Rgba::new(255, 0, 0, 255));
+        runtime.target_canvases.insert(group.id, source);
+
+        let preview = runtime.compose_authoritative_scene(&[group]);
+        let ProducerFrame::Surface(surface) = preview else {
+            panic!("authoritative scene preview should publish a pooled surface");
+        };
+
+        assert_eq!(
+            surface.get_pixel(1, 1),
+            Rgba::new(0, 0, 0, 255),
+            "pixels outside the rotated zone should remain untouched"
+        );
+        assert_eq!(
+            surface.get_pixel(3, 3),
+            Rgba::new(255, 0, 0, 255),
+            "pixels inside the rotated zone should sample the source canvas"
+        );
+    }
+
+    #[test]
+    fn authoritative_scene_preview_preserves_group_overlap_order() {
+        let mut runtime = RenderGroupRuntime::new(8, 8);
+        let mut back_group = sample_group(8, 8);
+        back_group.layout.zones = vec![rotated_zone("zone_back", FRAC_PI_4, 0.5)];
+        let mut front_group = sample_group(8, 8);
+        front_group.layout.zones = vec![point_zone("zone_front")];
+        front_group.layout.zones[0].size = NormalizedPosition { x: 0.25, y: 0.25 };
+
+        let mut back_source = Canvas::new(8, 8);
+        back_source.fill(Rgba::new(255, 0, 0, 255));
+        let mut front_source = Canvas::new(8, 8);
+        front_source.fill(Rgba::new(0, 0, 255, 255));
+        runtime.target_canvases.insert(back_group.id, back_source);
+        runtime.target_canvases.insert(front_group.id, front_source);
+
+        let preview = runtime.compose_authoritative_scene(&[back_group, front_group]);
+        let ProducerFrame::Surface(surface) = preview else {
+            panic!("authoritative scene preview should publish a pooled surface");
+        };
+
+        assert_eq!(
+            surface.get_pixel(4, 4),
+            Rgba::new(0, 0, 255, 255),
+            "later groups should overwrite earlier groups in overlapping regions"
+        );
+        assert_eq!(
+            surface.get_pixel(2, 4),
+            Rgba::new(255, 0, 0, 255),
+            "pixels only covered by the back group should keep its content"
+        );
+    }
+
+    #[test]
+    fn authoritative_scene_preview_uses_zone_sampling_mode() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut group = sample_group(2, 2);
+        group.layout.zones = vec![point_zone("zone_sampling")];
+        group.layout.zones[0].size = NormalizedPosition { x: 1.0, y: 1.0 };
+        group.layout.zones[0].sampling_mode = Some(SamplingMode::Nearest);
+        let mut source = Canvas::new(2, 2);
+        source.set_pixel(0, 0, Rgba::new(255, 0, 0, 255));
+        source.set_pixel(1, 0, Rgba::new(0, 255, 0, 255));
+        source.set_pixel(0, 1, Rgba::new(0, 0, 255, 255));
+        source.set_pixel(1, 1, Rgba::new(255, 255, 0, 255));
+        runtime.target_canvases.insert(group.id, source);
+
+        let preview = runtime.compose_authoritative_scene(&[group]);
+        let ProducerFrame::Surface(surface) = preview else {
+            panic!("authoritative scene preview should publish a pooled surface");
+        };
+
+        assert_eq!(surface.get_pixel(1, 0), Rgba::new(255, 0, 0, 255));
+        assert_eq!(surface.get_pixel(2, 0), Rgba::new(0, 255, 0, 255));
+        assert_eq!(surface.get_pixel(1, 3), Rgba::new(0, 0, 255, 255));
+        assert_eq!(surface.get_pixel(2, 3), Rgba::new(255, 255, 0, 255));
     }
 
     #[test]
@@ -1416,7 +1593,8 @@ mod tests {
         let reused = runtime
             .reuse_scene(1)
             .expect("retained multi-group scene should be reusable");
-        let LedSamplingStrategy::RetainedPreSampled { layout, zones } = reused.led_sampling_strategy
+        let LedSamplingStrategy::RetainedPreSampled { layout, zones } =
+            reused.led_sampling_strategy
         else {
             panic!("retained multi-group scene should keep its raw pre-sampled zones");
         };
@@ -1472,7 +1650,9 @@ mod tests {
         let reused = runtime
             .reuse_scene(1)
             .expect("display-only scene should keep an empty retained LED layout");
-        let LedSamplingStrategy::RetainedPreSampled { layout, zones } = reused.led_sampling_strategy else {
+        let LedSamplingStrategy::RetainedPreSampled { layout, zones } =
+            reused.led_sampling_strategy
+        else {
             panic!("display-only scene should keep an empty retained LED layout");
         };
         assert!(layout.zones.is_empty());
