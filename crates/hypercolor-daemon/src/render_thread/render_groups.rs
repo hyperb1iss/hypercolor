@@ -40,7 +40,7 @@ pub(crate) struct GroupCanvasFrame {
 }
 
 pub(crate) struct RenderGroupResult {
-    pub ui_preview_frame: ProducerFrame,
+    pub scene_frame: ProducerFrame,
     pub group_canvases: Vec<(RenderGroupId, GroupCanvasFrame)>,
     pub active_group_canvas_ids: Vec<RenderGroupId>,
     pub led_sampling_strategy: LedSamplingStrategy,
@@ -63,7 +63,7 @@ pub(crate) struct RenderGroupEffectError {
 #[derive(Clone)]
 struct RetainedRenderGroupFrame {
     groups_revision: u64,
-    ui_preview_frame: ProducerFrame,
+    scene_frame: ProducerFrame,
     active_group_canvas_ids: Vec<RenderGroupId>,
     led_sampling_strategy: RetainedLedSamplingStrategy,
     logical_layer_count: u32,
@@ -159,7 +159,7 @@ impl RenderGroupRuntime {
         }
 
         Some(RenderGroupResult {
-            ui_preview_frame: retained.ui_preview_frame.clone(),
+            scene_frame: retained.scene_frame.clone(),
             group_canvases: Vec::new(),
             active_group_canvas_ids: retained.active_group_canvas_ids.clone(),
             led_sampling_strategy: LedSamplingStrategy::from_retained(
@@ -299,11 +299,11 @@ impl RenderGroupRuntime {
         )
         .unwrap_or(u32::MAX);
         let preview_compose_start = Instant::now();
-        let ui_preview_frame = self.compose_authoritative_scene(groups);
+        let scene_frame = self.compose_scene_frame(groups);
         let preview_compose_us = micros_u32(preview_compose_start.elapsed());
 
         let result = RenderGroupResult {
-            ui_preview_frame,
+            scene_frame,
             group_canvases,
             active_group_canvas_ids,
             led_sampling_strategy: LedSamplingStrategy::PreSampled(Arc::clone(
@@ -511,7 +511,7 @@ impl RenderGroupRuntime {
         zones.clear();
 
         Ok(Some(RenderGroupResult {
-            ui_preview_frame: ProducerFrame::Surface(preview_surface),
+            scene_frame: ProducerFrame::Surface(preview_surface),
             group_canvases,
             active_group_canvas_ids,
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(spatial_engine),
@@ -562,7 +562,7 @@ impl RenderGroupRuntime {
     ) {
         self.retained_frame = Some(RetainedRenderGroupFrame {
             groups_revision,
-            ui_preview_frame: result.ui_preview_frame.clone(),
+            scene_frame: result.scene_frame.clone(),
             active_group_canvas_ids: result.active_group_canvas_ids.clone(),
             led_sampling_strategy: result.led_sampling_strategy.retain(zones),
             logical_layer_count: result.logical_layer_count,
@@ -601,7 +601,7 @@ impl RenderGroupRuntime {
         );
     }
 
-    fn compose_authoritative_scene(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
+    fn compose_scene_frame(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
         let Some(mut lease) = self.preview_surface_pool.dequeue() else {
             let mut preview = Canvas::new(self.preview_width, self.preview_height);
             compose_authoritative_scene_canvas(
@@ -1187,7 +1187,7 @@ mod tests {
         source.fill(Rgba::new(255, 0, 0, 255));
         runtime.target_canvases.insert(group.id, source);
 
-        let preview = runtime.compose_authoritative_scene(&[group]);
+        let preview = runtime.compose_scene_frame(&[group]);
         let ProducerFrame::Surface(surface) = preview else {
             panic!("authoritative scene preview should publish a pooled surface");
         };
@@ -1220,7 +1220,7 @@ mod tests {
         runtime.target_canvases.insert(back_group.id, back_source);
         runtime.target_canvases.insert(front_group.id, front_source);
 
-        let preview = runtime.compose_authoritative_scene(&[back_group, front_group]);
+        let preview = runtime.compose_scene_frame(&[back_group, front_group]);
         let ProducerFrame::Surface(surface) = preview else {
             panic!("authoritative scene preview should publish a pooled surface");
         };
@@ -1251,7 +1251,7 @@ mod tests {
         source.set_pixel(1, 1, Rgba::new(255, 255, 0, 255));
         runtime.target_canvases.insert(group.id, source);
 
-        let preview = runtime.compose_authoritative_scene(&[group]);
+        let preview = runtime.compose_scene_frame(&[group]);
         let ProducerFrame::Surface(surface) = preview else {
             panic!("authoritative scene preview should publish a pooled surface");
         };
@@ -1308,7 +1308,7 @@ mod tests {
         )
         .expect("single group should render");
 
-        let ProducerFrame::Surface(surface) = &result.ui_preview_frame else {
+        let ProducerFrame::Surface(surface) = &result.scene_frame else {
             panic!("single full-size group should render into a surface");
         };
         let LedSamplingStrategy::SparkleFlinger(spatial_engine) =
@@ -1361,7 +1361,7 @@ mod tests {
         )
         .expect("single display group should render");
 
-        let ProducerFrame::Surface(preview_surface) = result.ui_preview_frame else {
+        let ProducerFrame::Surface(preview_surface) = result.scene_frame else {
             panic!("single display group should render into a surface");
         };
         let [(_, group_canvas_frame)] = &result.group_canvases[..] else {
@@ -1406,7 +1406,7 @@ mod tests {
         )
         .expect("mixed preview and display groups should render");
 
-        let ProducerFrame::Surface(preview_surface) = &result.ui_preview_frame else {
+        let ProducerFrame::Surface(preview_surface) = &result.scene_frame else {
             panic!("mixed full-preview scene should publish a surface-backed preview");
         };
         let [(_, group_canvas_frame)] = &result.group_canvases[..] else {

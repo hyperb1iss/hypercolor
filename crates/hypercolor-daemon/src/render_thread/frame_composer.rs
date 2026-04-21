@@ -306,13 +306,13 @@ impl ComposeContext<'_> {
     ) -> RenderStageStats {
         match render_group_result {
             Ok(render_group_result) => {
-                let ui_preview_frame = render_group_result.ui_preview_frame.clone();
+                let scene_frame = render_group_result.scene_frame.clone();
                 let composition_start = Instant::now();
                 let compiled_plan = self.render.composition_planner.compile_primary_frame(
                     self.state.canvas_dims.width(),
                     self.state.canvas_dims.height(),
                     &self.scene_snapshot.scene_runtime,
-                    ui_preview_frame,
+                    scene_frame,
                     true,
                 );
                 let preview_request = self.preview_surface_request();
@@ -341,7 +341,7 @@ impl ComposeContext<'_> {
                 } else {
                     self.render
                         .sparkleflinger
-                        .preview_only_frame(render_group_result.ui_preview_frame, preview_request)
+                        .preview_only_frame(render_group_result.scene_frame, preview_request)
                 };
                 let composition_bypassed = composed.bypassed;
                 let composition_done_at = Instant::now();
