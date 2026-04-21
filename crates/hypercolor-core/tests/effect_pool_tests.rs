@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
+use std::time::{Duration, SystemTime};
 
 use hypercolor_core::effect::{EffectPool, EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::input::InteractionData;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, Rgba};
-use hypercolor_types::effect::{ControlValue, EffectId};
+use hypercolor_types::effect::{ControlBinding, ControlValue, EffectId};
 use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
@@ -217,6 +218,118 @@ fn effect_pool_rebuilds_slot_when_registry_entry_changes_for_same_effect_id() {
 
     assert_eq!(top_left(&before_reload), Rgba::new(255, 0, 0, 255));
     assert_ne!(top_left(&after_reload), top_left(&before_reload));
+}
+
+#[test]
+fn effect_pool_rebuilds_slot_when_registry_modified_changes_for_same_effect_id() {
+    let mut registry = registry_with_builtins();
+    let rainbow_id = builtin_effect_id(&registry, "rainbow");
+    let group = render_group(RenderGroupId::new(), rainbow_id);
+
+    let mut pool = EffectPool::new();
+    pool.reconcile(std::slice::from_ref(&group), &registry)
+        .expect("initial group should reconcile");
+
+    let mut before_reload = Canvas::new(1, 1);
+    pool.render_group_into(
+        &group,
+        0.5,
+        &AudioData::silence(),
+        &InteractionData::default(),
+        None,
+        &EMPTY_SENSORS,
+        &mut before_reload,
+    )
+    .expect("rainbow effect should render before reload");
+
+    let mut updated_entry = registry
+        .get(&rainbow_id)
+        .expect("rainbow entry should exist")
+        .clone();
+    updated_entry.modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+    registry.register(updated_entry);
+
+    pool.reconcile(std::slice::from_ref(&group), &registry)
+        .expect("modified timestamp change should trigger rebuild");
+
+    let mut after_reload = Canvas::new(1, 1);
+    pool.render_group_into(
+        &group,
+        0.5,
+        &AudioData::silence(),
+        &InteractionData::default(),
+        None,
+        &EMPTY_SENSORS,
+        &mut after_reload,
+    )
+    .expect("rainbow effect should render after reload");
+
+    assert_eq!(
+        top_left(&after_reload),
+        top_left(&before_reload),
+        "rebuilding on modified changes should reset the renderer timeline"
+    );
+}
+
+#[test]
+fn effect_pool_does_not_rebuild_slot_for_control_binding_state() {
+    let registry = registry_with_builtins();
+    let rainbow_id = builtin_effect_id(&registry, "rainbow");
+    let mut group = render_group(RenderGroupId::new(), rainbow_id);
+    let bound_control_id = registry
+        .get(&rainbow_id)
+        .and_then(|entry| entry.metadata.controls.first())
+        .map(|control| control.control_id().to_owned())
+        .expect("rainbow should expose at least one control");
+    group.control_bindings.insert(
+        bound_control_id,
+        ControlBinding {
+            sensor: "cpu_temp".into(),
+            sensor_min: 0.0,
+            sensor_max: 100.0,
+            target_min: 0.0,
+            target_max: 1.0,
+            deadband: 0.0,
+            smoothing: 0.0,
+        },
+    );
+
+    let mut pool = EffectPool::new();
+    pool.reconcile(std::slice::from_ref(&group), &registry)
+        .expect("bound group should reconcile");
+
+    let mut first = Canvas::new(1, 1);
+    pool.render_group_into(
+        &group,
+        0.5,
+        &AudioData::silence(),
+        &InteractionData::default(),
+        None,
+        &EMPTY_SENSORS,
+        &mut first,
+    )
+    .expect("first rainbow frame should render");
+
+    pool.reconcile(std::slice::from_ref(&group), &registry)
+        .expect("stable registry metadata should not force rebuild");
+
+    let mut second = Canvas::new(1, 1);
+    pool.render_group_into(
+        &group,
+        0.5,
+        &AudioData::silence(),
+        &InteractionData::default(),
+        None,
+        &EMPTY_SENSORS,
+        &mut second,
+    )
+    .expect("second rainbow frame should render");
+
+    assert_ne!(
+        top_left(&second),
+        top_left(&first),
+        "binding state should not reset renderer timeline on reconcile"
+    );
 }
 
 #[test]

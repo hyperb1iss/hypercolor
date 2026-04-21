@@ -1,4 +1,6 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::time::SystemTime;
 
 use anyhow::{Result, anyhow};
 
@@ -11,7 +13,7 @@ use hypercolor_types::scene::{RenderGroup, RenderGroupId};
 use hypercolor_types::sensor::SystemSnapshot;
 
 use super::factory::create_renderer_for_metadata;
-use super::registry::EffectRegistry;
+use super::registry::{EffectEntry, EffectRegistry};
 use super::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 use crate::input::{InteractionData, ScreenData};
 
@@ -43,14 +45,14 @@ impl EffectPool {
                 continue;
             };
 
-            let metadata = lookup_effect_metadata(registry, effect_id)?;
+            let entry = lookup_effect_entry(registry, effect_id)?;
 
             let needs_rebuild = self
                 .slots
                 .get(&group.id)
-                .is_none_or(|slot| slot.effect_id != effect_id || slot.metadata != metadata);
+                .is_none_or(|slot| slot.needs_rebuild(effect_id, entry));
             if needs_rebuild {
-                let slot = EffectSlot::build(metadata, group)?;
+                let slot = EffectSlot::build(entry, group)?;
                 self.slots.insert(group.id, slot);
                 continue;
             }
@@ -111,6 +113,9 @@ impl Default for EffectPool {
 
 struct EffectSlot {
     effect_id: EffectId,
+    registry_metadata: EffectMetadata,
+    registry_source_path: PathBuf,
+    registry_modified: SystemTime,
     metadata: EffectMetadata,
     renderer: Box<dyn EffectRenderer>,
     controls: HashMap<String, ControlValue>,
@@ -120,17 +125,20 @@ struct EffectSlot {
 }
 
 impl EffectSlot {
-    fn build(metadata: EffectMetadata, group: &RenderGroup) -> Result<Self> {
-        let mut renderer = create_renderer_for_metadata(&metadata)?;
+    fn build(entry: &EffectEntry, group: &RenderGroup) -> Result<Self> {
+        let mut renderer = create_renderer_for_metadata(&entry.metadata)?;
         renderer.init_with_canvas_size(
-            &metadata,
+            &entry.metadata,
             group.layout.canvas_width,
             group.layout.canvas_height,
         )?;
 
         let mut slot = Self {
-            effect_id: metadata.id,
-            metadata,
+            effect_id: entry.metadata.id,
+            registry_metadata: entry.metadata.clone(),
+            registry_source_path: entry.source_path.clone(),
+            registry_modified: entry.modified,
+            metadata: entry.metadata.clone(),
             renderer,
             controls: HashMap::new(),
             binding_state: HashMap::new(),
@@ -139,6 +147,13 @@ impl EffectSlot {
         };
         slot.sync_group_state(group);
         Ok(slot)
+    }
+
+    fn needs_rebuild(&self, effect_id: EffectId, entry: &EffectEntry) -> bool {
+        self.effect_id != effect_id
+            || self.registry_metadata != entry.metadata
+            || self.registry_source_path != entry.source_path
+            || self.registry_modified != entry.modified
     }
 
     fn sync_group_state(&mut self, group: &RenderGroup) {
@@ -217,13 +232,9 @@ impl Drop for EffectSlot {
     }
 }
 
-fn lookup_effect_metadata(
-    registry: &EffectRegistry,
-    effect_id: EffectId,
-) -> Result<EffectMetadata> {
+fn lookup_effect_entry(registry: &EffectRegistry, effect_id: EffectId) -> Result<&EffectEntry> {
     registry
         .get(&effect_id)
-        .map(|entry| entry.metadata.clone())
         .ok_or_else(|| anyhow!("effect '{effect_id}' is not registered"))
 }
 

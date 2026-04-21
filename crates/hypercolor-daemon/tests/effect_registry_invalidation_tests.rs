@@ -5,6 +5,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use axum::body::Body;
 use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
+use hypercolor_core::effect::EffectRegistry;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
@@ -41,6 +42,14 @@ fn multipart_upload_request(file_name: &str, html: &str) -> Request<Body> {
         )
         .body(Body::from(body))
         .expect("failed to build multipart request")
+}
+
+fn rescan_request() -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/api/v1/effects/rescan")
+        .body(Body::empty())
+        .expect("failed to build rescan request")
 }
 
 fn sample_effect_metadata(name: &str) -> EffectMetadata {
@@ -129,5 +138,66 @@ async fn install_effect_invalidates_active_render_group_revision() {
     assert!(
         revision_after > revision_before,
         "effect registry updates should invalidate active render-group caches"
+    );
+}
+
+#[tokio::test]
+async fn rescan_effects_invalidates_active_render_group_revision() {
+    let (state, tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let app = api::build_router(Arc::clone(&state), None);
+    let metadata = sample_effect_metadata("seed");
+
+    {
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .upsert_primary_group(&metadata, HashMap::new(), None, sample_layout())
+            .expect("primary group should be created");
+    }
+
+    let revision_before = {
+        let scene_manager = state.scene_manager.read().await;
+        scene_manager.active_render_groups_revision()
+    };
+
+    let user_effects_dir = tempdir.path().join("effects");
+    {
+        let mut registry = state.effect_registry.write().await;
+        *registry = EffectRegistry::new(vec![user_effects_dir.clone()]);
+    }
+    std::fs::create_dir_all(&user_effects_dir).expect("user effects dir should be created");
+    std::fs::write(
+        user_effects_dir.join("rescan.html"),
+        r#"<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="hypercolor-version" content="1" />
+    <title>Rescan Effect</title>
+    <meta description="Manual rescan test" />
+    <meta publisher="Hypercolor" />
+  </head>
+  <body>
+    <canvas id="exCanvas"></canvas>
+  </body>
+</html>"#,
+    )
+    .expect("effect file should be written");
+
+    let response = app
+        .oneshot(rescan_request())
+        .await
+        .expect("rescan request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let revision_after = {
+        let scene_manager = state.scene_manager.read().await;
+        scene_manager.active_render_groups_revision()
+    };
+
+    assert!(
+        revision_after > revision_before,
+        "manual rescans should invalidate active render-group caches"
     );
 }
