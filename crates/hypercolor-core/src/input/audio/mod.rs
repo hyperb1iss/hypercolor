@@ -328,6 +328,10 @@ impl AudioInput {
         self.set_capture_active_state(active)
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "InputSource::sample_with_dt trait signature returns Result; callers threads errors uniformly"
+    )]
     fn sample_with_dt(&mut self, _dt: f32) -> anyhow::Result<InputData> {
         if !self.running {
             return Ok(InputData::None);
@@ -1511,7 +1515,6 @@ fn analysis_dt_seconds(sample_count: usize, sample_rate_hz: u32) -> f32 {
     #[expect(
         clippy::as_conversions,
         clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
         reason = "audio callback chunk durations only need frame-scale precision"
     )]
     let dt = (f64::from(safe_sample_count) / f64::from(sample_rate_hz)) as f32;

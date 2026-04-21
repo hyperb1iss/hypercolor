@@ -1603,6 +1603,97 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
     rt.shutdown().await.expect("shutdown");
 }
 
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn blended_display_faces_publish_authoritative_global_canvas_on_gpu() {
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+    let group_id = RenderGroupId::new();
+    let display_id = DeviceId::new();
+
+    let mut face_group = display_group(
+        group_id,
+        display_id,
+        solid_id,
+        HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+        test_layout(Vec::new()),
+    );
+    face_group
+        .display_target
+        .as_mut()
+        .expect("display group should carry a display target")
+        .blend_mode = hypercolor_types::scene::DisplayFaceBlendMode::Difference;
+
+    let mut scene = make_scene("GPU Display Face Scene");
+    scene.groups = vec![
+        custom_group(
+            "Primary",
+            solid_id,
+            HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+            test_layout(Vec::new()),
+        ),
+        face_group,
+    ];
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+
+    {
+        let mut scene_manager = state.scene_manager.write().await;
+        scene_manager
+            .create(scene.clone())
+            .expect("create gpu display face scene");
+        scene_manager
+            .activate(&scene.id, None)
+            .expect("activate gpu display face scene");
+    }
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut global_canvas_rx = state.event_bus.global_canvas_receiver();
+    let group_canvas_sender = state.event_bus.group_canvas_sender(group_id);
+    let mut group_canvas_rx = group_canvas_sender.subscribe();
+    let mut rt = RenderThread::spawn(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(2), global_canvas_rx.changed())
+        .await
+        .expect("authoritative global canvas should publish within timeout")
+        .expect("global canvas stream should stay open");
+    tokio::time::timeout(Duration::from_secs(2), group_canvas_rx.changed())
+        .await
+        .expect("display face canvas should publish within timeout")
+        .expect("display face canvas stream should stay open");
+
+    let global_frame = global_canvas_rx.borrow().clone();
+    let face_frame = group_canvas_rx.borrow().clone();
+
+    assert_eq!(global_frame.width, 320);
+    assert_eq!(global_frame.height, 200);
+    assert_eq!(
+        global_frame.surface().get_pixel(160, 100),
+        Rgba::new(255, 0, 0, 255)
+    );
+    assert_eq!(face_frame.width, 320);
+    assert_eq!(face_frame.height, 200);
+    assert_eq!(&face_frame.rgba_bytes()[0..4], [0, 0, 255, 255].as_slice());
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+}
+
 #[tokio::test]
 async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change() {
     let state = make_render_state(
@@ -2859,7 +2950,7 @@ async fn pipeline_gpu_retained_screen_preview_advances_frame_watch_when_input_st
 }
 
 #[cfg(feature = "wgpu")]
-#[expect(
+#[allow(
     clippy::too_many_lines,
     reason = "fresh GPU deferred-sampling coverage needs full render-thread setup"
 )]

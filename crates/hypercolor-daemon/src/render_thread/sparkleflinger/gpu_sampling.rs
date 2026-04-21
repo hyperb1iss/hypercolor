@@ -319,6 +319,10 @@ impl GpuSpatialSampler {
         }
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "callers dispatch uniformly with `?`; the GPU sampling path may fall back to fallible code without changing the signature"
+    )]
     pub(super) fn sample_texture_into(
         &mut self,
         device: &wgpu::Device,
@@ -460,7 +464,7 @@ impl GpuSpatialSampler {
                 self.release_readback_slot(pending_readback.slot);
                 return Err(error);
             }
-            finish_zone_color_readback(&pending_readback, zones)?;
+            finish_zone_color_readback(&pending_readback, zones);
             self.release_readback_slot(pending_readback.slot);
         }
 
@@ -481,10 +485,7 @@ impl GpuSpatialSampler {
         if !pending_readback.map_ready {
             return Ok(false);
         }
-        if let Err(error) = finish_zone_color_readback(pending_readback, zones) {
-            self.release_readback_slot(pending_readback.slot);
-            return Err(error);
-        }
+        finish_zone_color_readback(pending_readback, zones);
         self.release_readback_slot(pending_readback.slot);
         Ok(true)
     }
@@ -800,13 +801,12 @@ fn wait_for_zone_color_readback(
 fn finish_zone_color_readback(
     pending_readback: &PendingGpuSampleReadback,
     zones: &mut Vec<ZoneColors>,
-) -> Result<()> {
+) {
     let slice = pending_readback.buffer.slice(..pending_readback.used_bytes);
     let mapped = slice.get_mapped_range();
     rebuild_zone_colors_from_mapped_bytes(&pending_readback.zones, &mapped, zones);
     drop(mapped);
     pending_readback.buffer.unmap();
-    Ok(())
 }
 
 fn rebuild_zone_colors_from_mapped_bytes(

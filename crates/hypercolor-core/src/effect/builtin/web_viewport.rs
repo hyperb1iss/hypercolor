@@ -114,7 +114,7 @@ impl WebViewportRenderer {
         }
         match session.load_url(&url) {
             Ok(()) => {
-                self.url = url.clone();
+                self.url.clone_from(&url);
                 self.loaded_url = Some(url);
                 self.load_failed = false;
                 self.url_dirty_at = None;
@@ -187,7 +187,7 @@ impl EffectRenderer for WebViewportRenderer {
             self.loaded_url = None;
             let _ = session.load_url(BLANK_URL);
         } else {
-            self.url = url.clone();
+            self.url.clone_from(&url);
             self.loaded_url = Some(url);
             self.load_failed = false;
         }
@@ -417,8 +417,14 @@ fn default_scheme_for_host_input(value: &str) -> &'static str {
         }
     });
 
-    if host_without_port.eq_ignore_ascii_case("localhost")
-        || host_without_port.ends_with(".local")
+    let host_lower = host_without_port.to_ascii_lowercase();
+    #[allow(
+        clippy::case_sensitive_file_extension_comparisons,
+        reason = "matching an mDNS hostname suffix, not a filesystem extension; the lowercase conversion above already normalizes case"
+    )]
+    let is_mdns_local = host_lower.ends_with(".local");
+    if host_lower == "localhost"
+        || is_mdns_local
         || host_without_port.parse::<IpAddr>().is_ok()
     {
         "http"

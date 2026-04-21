@@ -47,6 +47,12 @@ const CONSOLE_SNIPPET_RADIUS: usize = 1;
 const CONSOLE_SNIPPET_LINE_MAX_CHARS: usize = 180;
 const JS_TIMER_MIN_DURATION_MS: i64 = 4;
 
+/// Per-frame Servo render timings, split by stage. All durations in
+/// microseconds; the shared `_us` suffix is deliberate.
+#[allow(
+    clippy::struct_field_names,
+    reason = "every field is a duration in microseconds; the suffix is the unit"
+)]
 #[derive(Debug, Clone, Copy, Default)]
 struct ServoRenderStageTimings {
     evaluate_scripts_us: u64,
@@ -846,6 +852,10 @@ struct ServoWorkerRuntime {
 }
 
 impl ServoWorkerRuntime {
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "signature matches fallible construction used elsewhere in the worker; collapsing would force call-site churn"
+    )]
     fn new() -> Result<Self> {
         install_rustls_provider();
 
@@ -1154,6 +1164,10 @@ impl ServoWorkerRuntime {
         Ok(())
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "callers invoke with `?` alongside other fallible session ops; keeping the Result keeps the dispatch uniform"
+    )]
     fn destroy_session(&mut self, session_id: ServoSessionId) -> Result<()> {
         let Some(mut session) = self.sessions.remove(&session_id) else {
             return Ok(());
@@ -1177,7 +1191,7 @@ impl ServoWorkerRuntime {
     ) -> Result<Canvas> {
         let script_count = scripts.len();
         let script_bytes = scripts.iter().map(String::len).sum::<usize>();
-        let result = (|| {
+        (|| {
             let frame_start = Instant::now();
             let mut timings = ServoRenderStageTimings::default();
             self.resize_if_needed(session_id, width, height)?;
@@ -1259,8 +1273,7 @@ impl ServoWorkerRuntime {
                 timings,
             );
             Ok(canvas)
-        })();
-        result
+        })()
     }
 
     fn evaluate_scripts(&mut self, session_id: ServoSessionId, scripts: &[String]) -> Result<()> {
@@ -1512,6 +1525,10 @@ pub(super) mod test_support {
         )
     }
 
+    #[allow(
+        clippy::type_complexity,
+        reason = "test harness returns all the plumbing in one tuple; breaking it into a named type would only move the noise"
+    )]
     pub fn spawn_render_test_worker() -> (
         ServoWorker,
         Receiver<RecordedRenderCommand>,

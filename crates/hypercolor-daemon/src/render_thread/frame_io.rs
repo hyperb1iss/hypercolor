@@ -176,14 +176,18 @@ pub(crate) fn publish_frame_updates(
     if authoritative_canvas_receivers > 0 {
         let publish_global_canvas = {
             let current = state.event_bus.global_canvas_sender().borrow();
-            if let Some(surface) = authoritative_global_surface(&frame_surface) {
+            if let Some(surface) =
+                authoritative_global_surface(frame_surface.as_ref(), preview_surface.as_ref())
+            {
                 should_publish_surface_frame(&current, surface)
             } else {
                 should_publish_canvas_frame(&current, &CanvasFrame::empty())
             }
         };
         if publish_global_canvas {
-            let global_frame = if let Some(surface) = authoritative_global_surface(&frame_surface) {
+            let global_frame = if let Some(surface) =
+                authoritative_global_surface(frame_surface.as_ref(), preview_surface.as_ref())
+            {
                 CanvasFrame::from_surface(
                     surface
                         .clone()
@@ -379,10 +383,13 @@ fn should_publish_canvas_storage(current: &CanvasFrame, next: &Canvas) -> bool {
     stable_canvas_frame_identity(current) != stable_canvas_identity(next)
 }
 
-fn authoritative_global_surface(
-    frame_surface: &Option<PublishedSurface>,
-) -> Option<&PublishedSurface> {
-    frame_surface.as_ref()
+fn authoritative_global_surface<'a>(
+    frame_surface: Option<&'a PublishedSurface>,
+    preview_surface: Option<&'a PublishedSurface>,
+) -> Option<&'a PublishedSurface> {
+    // The GPU compositor can satisfy authoritative global-canvas consumers
+    // from the composed preview surface without forcing a CPU sampling readback.
+    frame_surface.or(preview_surface)
 }
 
 fn stable_canvas_frame_identity(frame: &CanvasFrame) -> Option<StableCanvasFrameIdentity> {
@@ -697,15 +704,25 @@ mod tests {
         let frame_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 1, 16);
         let frame_surface_option = Some(frame_surface.clone());
 
-        let selected = authoritative_global_surface(&frame_surface_option)
+        let selected = authoritative_global_surface(frame_surface_option.as_ref(), None)
             .expect("frame surface should be authoritative");
 
         assert_eq!(selected.storage_identity(), frame_surface.storage_identity());
     }
 
     #[test]
-    fn authoritative_global_surface_requires_frame_surface() {
-        let selected = authoritative_global_surface(&None);
+    fn authoritative_global_surface_falls_back_to_preview_surface() {
+        let preview_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 2, 32);
+
+        let selected = authoritative_global_surface(None, Some(&preview_surface))
+            .expect("preview surface should back authoritative consumers");
+
+        assert_eq!(selected.storage_identity(), preview_surface.storage_identity());
+    }
+
+    #[test]
+    fn authoritative_global_surface_requires_any_surface() {
+        let selected = authoritative_global_surface(None, None);
 
         assert!(selected.is_none());
     }

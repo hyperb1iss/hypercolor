@@ -519,7 +519,7 @@ impl GpuSparkleFlinger {
             GpuCompositorOutputSurface::Back
         };
         self.current_output = Some(current_output);
-        self.cached_composition_key = readback_key.clone();
+        self.cached_composition_key.clone_from(&readback_key);
         self.output_generation = self.output_generation.saturating_add(1);
         self.cached_sample_result = None;
         if !requires_cpu_sampling_canvas && !requires_preview_surface {
@@ -977,6 +977,10 @@ impl GpuSparkleFlinger {
         }
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "sibling compose_* methods return Result; keeping this one wrapped preserves call-site uniformity"
+    )]
     fn compose_bypass_layer(
         &mut self,
         plan: &CompositionPlan,
@@ -1048,7 +1052,7 @@ impl GpuSparkleFlinger {
             surfaces.back_contents = None;
         }
         self.current_output = Some(GpuCompositorOutputSurface::Front);
-        self.cached_composition_key = readback_key.clone();
+        self.cached_composition_key.clone_from(&readback_key);
         if !same_output {
             self.output_generation = self.output_generation.saturating_add(1);
             self.cached_sample_result = None;
@@ -1339,6 +1343,10 @@ impl GpuSparkleFlinger {
     }
 }
 
+#[allow(
+    clippy::missing_fields_in_debug,
+    reason = "compositor owns non-Debug GPU handles; surfacing probe + snapshot is sufficient for tracing"
+)]
 impl fmt::Debug for GpuSparkleFlinger {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GpuSparkleFlinger")
@@ -2352,6 +2360,10 @@ mod tests {
         lease.submit(0, 0)
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "test helper mirrors the Option<PreviewSurfaceRequest> shape accepted by compositor entry points"
+    )]
     fn full_preview_request(plan: &CompositionPlan) -> Option<PreviewSurfaceRequest> {
         Some(PreviewSurfaceRequest {
             width: plan.width,

@@ -809,6 +809,10 @@ pub(super) struct MetricsPacing {
 }
 
 #[derive(Debug, Serialize)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "JSON keys mirror protocol field names from the WebSocket spec"
+)]
 pub(super) struct MetricsEffectHealth {
     pub(super) errors_total: u64,
     pub(super) fallbacks_applied_total: u64,

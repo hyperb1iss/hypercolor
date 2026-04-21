@@ -41,6 +41,10 @@ pub(crate) fn resolve_compositor_acceleration_mode(
 }
 
 #[cfg(feature = "wgpu")]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "sibling resolvers return Result; uniform shape keeps the dispatch match clean"
+)]
 fn resolve_auto_mode(
     requested_mode: RenderAccelerationMode,
 ) -> Result<CompositorAccelerationResolution> {

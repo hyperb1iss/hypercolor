@@ -287,16 +287,23 @@ impl SparkleFlinger {
         Ok(None)
     }
 
+    #[cfg_attr(
+        not(feature = "wgpu"),
+        allow(
+            unused_variables,
+            reason = "GPU-only parameters still present in the CPU-only build"
+        )
+    )]
     pub fn sample_zone_plan_into(
         &mut self,
-        _prepared_zones: &[PreparedZonePlan],
-        _zones: &mut Vec<ZoneColors>,
+        prepared_zones: &[PreparedZonePlan],
+        zones: &mut Vec<ZoneColors>,
     ) -> Result<bool> {
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(_) => Ok(false),
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, .. } => {
-                gpu.sample_zone_plan_into(_prepared_zones, _zones)
+                gpu.sample_zone_plan_into(prepared_zones, zones)
             }
         }
     }
@@ -389,27 +396,41 @@ impl SparkleFlinger {
         }
     }
 
+    #[cfg_attr(
+        not(feature = "wgpu"),
+        allow(
+            unused_variables,
+            reason = "GPU-only parameter still present in the CPU-only build"
+        )
+    )]
     pub(crate) fn pending_zone_sampling_matches_current_work(
         &self,
         pending: &PendingZoneSampling,
-        _prepared_zones: &[PreparedZonePlan],
+        prepared_zones: &[PreparedZonePlan],
     ) -> bool {
         match (&self.backend, pending) {
             (SparkleFlingerBackend::Cpu(_), _) => false,
             #[cfg(feature = "wgpu")]
             (SparkleFlingerBackend::Gpu { gpu, .. }, PendingZoneSampling::Gpu(pending)) => {
-                gpu.pending_zone_sampling_matches_current_work(pending, _prepared_zones)
+                gpu.pending_zone_sampling_matches_current_work(pending, prepared_zones)
             }
             #[allow(unreachable_patterns)]
             _ => false,
         }
     }
 
-    pub fn can_sample_zone_plan(&self, _prepared_zones: &[PreparedZonePlan]) -> bool {
+    #[cfg_attr(
+        not(feature = "wgpu"),
+        allow(
+            unused_variables,
+            reason = "GPU-only parameter still present in the CPU-only build"
+        )
+    )]
+    pub fn can_sample_zone_plan(&self, prepared_zones: &[PreparedZonePlan]) -> bool {
         match &self.backend {
             SparkleFlingerBackend::Cpu(_) => false,
             #[cfg(feature = "wgpu")]
-            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.can_sample_zone_plan(_prepared_zones),
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.can_sample_zone_plan(prepared_zones),
         }
     }
 

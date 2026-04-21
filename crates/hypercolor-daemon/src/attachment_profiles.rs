@@ -209,7 +209,7 @@ fn merge_slots_preserving_ids(
             };
 
             let mut merged = slot.clone();
-            merged.id = previous_slot.id.clone();
+            merged.id.clone_from(&previous_slot.id);
             merged
         })
         .collect()
