@@ -314,6 +314,13 @@ impl SceneManager {
         self.active_render_groups_revision
     }
 
+    /// Invalidate caches derived from the active render groups when an
+    /// external dependency changes without mutating the scene graph itself.
+    pub fn invalidate_active_render_groups(&mut self) {
+        self.active_render_groups_revision =
+            self.active_render_groups_revision.saturating_add(1);
+    }
+
     // ── Transition ──────────────────────────────────────────────────
 
     /// Advance the active transition by `delta_secs`.

@@ -39,6 +39,13 @@ use crate::scene_transactions::apply_layout_update;
 
 const MAX_EFFECT_UPLOAD_BYTES: usize = 1024 * 1024;
 
+pub(crate) async fn invalidate_active_render_groups_after_effect_registry_update(
+    state: &AppState,
+) {
+    let mut scene_manager = state.scene_manager.write().await;
+    scene_manager.invalidate_active_render_groups();
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ApplyEffectRequest {
     pub controls: Option<serde_json::Value>,
@@ -953,6 +960,10 @@ pub async fn rescan_effects(State(state): State<Arc<AppState>>) -> Response {
         registry.rescan()
     };
 
+    if report.added > 0 || report.removed > 0 || report.updated > 0 {
+        invalidate_active_render_groups_after_effect_registry_update(state.as_ref()).await;
+    }
+
     info!(
         added = report.added,
         removed = report.removed,
@@ -1051,6 +1062,8 @@ pub async fn install_effect(
         let replaced = registry.register(entry.clone()).is_some();
         if replaced { (0, 1) } else { (1, 0) }
     };
+
+    invalidate_active_render_groups_after_effect_registry_update(state.as_ref()).await;
 
     state
         .event_bus

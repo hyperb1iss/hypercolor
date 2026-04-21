@@ -43,12 +43,13 @@ impl EffectPool {
                 continue;
             };
 
+            let metadata = lookup_effect_metadata(registry, effect_id)?;
+
             let needs_rebuild = self
                 .slots
                 .get(&group.id)
-                .is_none_or(|slot| slot.effect_id != effect_id);
+                .is_none_or(|slot| slot.effect_id != effect_id || slot.metadata != metadata);
             if needs_rebuild {
-                let metadata = lookup_effect_metadata(registry, effect_id)?;
                 let slot = EffectSlot::build(metadata, group)?;
                 self.slots.insert(group.id, slot);
                 continue;

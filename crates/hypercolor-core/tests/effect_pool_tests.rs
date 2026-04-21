@@ -165,6 +165,61 @@ fn effect_pool_hot_swaps_effects_for_same_group() {
 }
 
 #[test]
+fn effect_pool_rebuilds_slot_when_registry_entry_changes_for_same_effect_id() {
+    let mut registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let rainbow_entry = registry
+        .iter()
+        .find_map(|(_, entry)| {
+            (entry.metadata.source.source_stem() == Some("rainbow")).then_some(entry.clone())
+        })
+        .expect("rainbow effect should be registered");
+    let group_id = RenderGroupId::new();
+    let mut group = render_group(group_id, solid_id);
+    group
+        .controls
+        .insert("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
+
+    let mut pool = EffectPool::new();
+    pool.reconcile(std::slice::from_ref(&group), &registry)
+        .expect("initial group should reconcile");
+
+    let mut before_reload = Canvas::new(1, 1);
+    pool.render_group_into(
+        &group,
+        0.016,
+        &AudioData::silence(),
+        &InteractionData::default(),
+        None,
+        &EMPTY_SENSORS,
+        &mut before_reload,
+    )
+    .expect("solid effect should render");
+
+    let mut replacement = rainbow_entry;
+    replacement.metadata.id = solid_id;
+    registry.register(replacement);
+
+    pool.reconcile(std::slice::from_ref(&group), &registry)
+        .expect("registry change should trigger rebuild");
+
+    let mut after_reload = Canvas::new(1, 1);
+    pool.render_group_into(
+        &group,
+        0.016,
+        &AudioData::silence(),
+        &InteractionData::default(),
+        None,
+        &EMPTY_SENSORS,
+        &mut after_reload,
+    )
+    .expect("reloaded effect should render");
+
+    assert_eq!(top_left(&before_reload), Rgba::new(255, 0, 0, 255));
+    assert_ne!(top_left(&after_reload), top_left(&before_reload));
+}
+
+#[test]
 fn effect_pool_prunes_removed_groups() {
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");

@@ -426,6 +426,7 @@ impl DaemonState {
     async fn spawn_effect_watcher(&mut self) {
         let registry = Arc::clone(&self.effect_registry);
         let event_bus = Arc::clone(&self.event_bus);
+        let scene_manager = Arc::clone(&self.scene_manager);
 
         let search_paths = {
             let reg = self.effect_registry.read().await;
@@ -458,6 +459,11 @@ impl DaemonState {
                     let mut reg = registry.write().await;
                     reg.reload_single(&path)
                 };
+
+                if report.added > 0 || report.removed > 0 || report.updated > 0 {
+                    let mut scene_manager = scene_manager.write().await;
+                    scene_manager.invalidate_active_render_groups();
+                }
 
                 event_bus.publish(
                     hypercolor_types::event::HypercolorEvent::EffectRegistryUpdated {
