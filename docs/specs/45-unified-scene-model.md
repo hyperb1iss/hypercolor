@@ -1,6 +1,6 @@
 # 45 — Unified Scene Model
 
-**Status:** Draft
+**Status:** Superseded by Spec 48 for canonical render-pipeline architecture
 **Owner:** TBD
 **Target:** remove the dual EffectEngine/SceneManager render path; make scenes the universal orchestration layer for LED effects, display faces, and future per-zone/per-device composition.
 
