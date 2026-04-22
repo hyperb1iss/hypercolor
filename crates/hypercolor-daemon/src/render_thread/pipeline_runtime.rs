@@ -543,8 +543,24 @@ pub(crate) struct RenderCaches {
     pub(crate) zone_transition_planner: ZoneTransitionPlanner,
     pub(crate) render_group_runtime: RenderGroupRuntime,
     pub(crate) render_surface_pool: RenderSurfacePool,
-    pub(crate) render_scene_state: RenderSceneState,
     pub(crate) output_artifacts: OutputArtifactsState,
+}
+
+pub(crate) struct SceneSnapshotState {
+    pub(crate) snapshot_cache: SceneSnapshotCache,
+    pub(crate) render_state: RenderSceneState,
+}
+
+impl SceneSnapshotState {
+    pub(crate) fn new(
+        initial_spatial_engine: SpatialEngine,
+        screen_capture_configured: bool,
+    ) -> Self {
+        Self {
+            snapshot_cache: SceneSnapshotCache::new(),
+            render_state: RenderSceneState::new(initial_spatial_engine, screen_capture_configured),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -649,7 +665,7 @@ impl RenderCaches {
 }
 
 pub(crate) struct PipelineRuntime {
-    pub(crate) scene_snapshot_cache: SceneSnapshotCache,
+    pub(crate) scene: SceneSnapshotState,
     pub(crate) frame_loop: FrameLoopState,
     pub(crate) render: RenderCaches,
     pub(crate) frame_policy: FramePolicy,
@@ -677,7 +693,7 @@ impl PipelineRuntime {
         configured_max_fps_tier: FpsTier,
     ) -> Result<Self> {
         Ok(Self {
-            scene_snapshot_cache: SceneSnapshotCache::new(),
+            scene: SceneSnapshotState::new(initial_spatial_engine, screen_capture_configured),
             frame_loop: FrameLoopState {
                 clock: FrameClockState::default(),
                 inputs: InputReuseState::default(),
@@ -696,10 +712,6 @@ impl PipelineRuntime {
                 render_surface_pool: RenderSurfacePool::with_slot_count(
                     SurfaceDescriptor::rgba8888(canvas_width, canvas_height),
                     desired_render_surface_slots(0),
-                ),
-                render_scene_state: RenderSceneState::new(
-                    initial_spatial_engine,
-                    screen_capture_configured,
                 ),
                 output_artifacts: OutputArtifactsState::default(),
             },

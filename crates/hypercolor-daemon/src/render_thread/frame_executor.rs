@@ -40,7 +40,7 @@ pub(crate) async fn execute_frame(
     scheduled_start: Instant,
     skip_decision: SkipDecision,
 ) -> FrameExecution {
-    let scene_snapshot_cache = &mut runtime.scene_snapshot_cache;
+    let scene = &mut runtime.scene;
     let frame_loop = &mut runtime.frame_loop;
     let render = &mut runtime.render;
     let frame_start = Instant::now();
@@ -54,8 +54,8 @@ pub(crate) async fn execute_frame(
     );
     let reused_canvas = matches!(skip_decision, SkipDecision::ReuseCanvas);
 
-    let pending_resize = render
-        .render_scene_state
+    let pending_resize = scene
+        .render_state
         .apply_transactions(&state.scene_transactions);
     if let Some((width, height)) = pending_resize {
         info!(width, height, "Applying live canvas resize");
@@ -65,15 +65,15 @@ pub(crate) async fn execute_frame(
     }
     let mut scene_snapshot = build_frame_scene_snapshot(
         state,
-        scene_snapshot_cache,
-        &render.render_scene_state,
+        &mut scene.snapshot_cache,
+        &scene.render_state,
         delta_secs,
     )
     .await;
     refresh_effect_scene_snapshot(
         state,
-        scene_snapshot_cache,
-        &render.render_scene_state,
+        &mut scene.snapshot_cache,
+        &scene.render_state,
         &mut scene_snapshot,
     )
     .await;
@@ -106,8 +106,8 @@ pub(crate) async fn execute_frame(
 
     if refresh_effect_scene_snapshot(
         state,
-        scene_snapshot_cache,
-        &render.render_scene_state,
+        &mut scene.snapshot_cache,
+        &scene.render_state,
         &mut scene_snapshot,
     )
     .await
@@ -181,8 +181,8 @@ pub(crate) async fn execute_frame(
     .await;
     let _ = refresh_effect_scene_snapshot(
         state,
-        scene_snapshot_cache,
-        &render.render_scene_state,
+        &mut scene.snapshot_cache,
+        &scene.render_state,
         &mut scene_snapshot,
     )
     .await;
