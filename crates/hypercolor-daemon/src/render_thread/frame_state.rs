@@ -35,12 +35,6 @@ pub(crate) struct EffectSceneSnapshot {
     pub(crate) dependency_key: SceneDependencyKey,
 }
 
-impl EffectSceneSnapshot {
-    pub(crate) const fn registry_generation(self) -> u64 {
-        self.dependency_key.dependency_generation
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CachedRenderGroupDemand {
     pub(crate) dependency_key: SceneDependencyKey,
@@ -70,7 +64,7 @@ pub(crate) async fn build_frame_scene_snapshot(
         budget_us: render_loop_snapshot.budget_us,
         output_power: *state.power_state.borrow(),
         effect_demand: effect_scene.demand,
-        effect_registry_generation: effect_scene.registry_generation(),
+        effect_dependency_key: effect_scene.dependency_key,
         scene_runtime,
         spatial_engine: render_scene_state.spatial_engine().clone(),
     })
@@ -90,9 +84,9 @@ pub(crate) async fn refresh_effect_scene_snapshot(
     )
     .await;
     let changed = refreshed.demand != scene_snapshot.effect_demand
-        || refreshed.registry_generation() != scene_snapshot.effect_registry_generation;
+        || refreshed.dependency_key != scene_snapshot.effect_dependency_key;
     scene_snapshot.effect_demand = refreshed.demand;
-    scene_snapshot.effect_registry_generation = refreshed.registry_generation();
+    scene_snapshot.effect_dependency_key = refreshed.dependency_key;
     changed
 }
 
@@ -459,7 +453,10 @@ mod tests {
             current_effect_scene_snapshot(&state, &scene_runtime, &mut cached, false).await;
         assert!(second.demand.audio_capture_active);
         assert!(second.demand.screen_capture_active);
-        assert!(second.registry_generation() > first.registry_generation());
+        assert!(
+            second.dependency_key.dependency_generation
+                > first.dependency_key.dependency_generation
+        );
     }
 
     #[tokio::test]
@@ -487,7 +484,7 @@ mod tests {
             budget_us: 16_666,
             output_power: OutputPowerState::default(),
             effect_demand: effect_scene.demand,
-            effect_registry_generation: effect_scene.registry_generation(),
+            effect_dependency_key: effect_scene.dependency_key,
             scene_runtime,
             spatial_engine: SpatialEngine::new(sample_layout()),
         });

@@ -64,7 +64,7 @@ pub(crate) struct FrameSceneSnapshot {
     pub budget_us: u32,
     pub output_power: OutputPowerState,
     pub effect_demand: EffectDemand,
-    pub effect_registry_generation: u64,
+    pub effect_dependency_key: SceneDependencyKey,
     pub scene_runtime: SceneRuntimeSnapshot,
     pub spatial_engine: SpatialEngine,
 }
@@ -75,7 +75,7 @@ pub(crate) struct FrameSceneSnapshotInputs {
     pub budget_us: u32,
     pub output_power: OutputPowerState,
     pub effect_demand: EffectDemand,
-    pub effect_registry_generation: u64,
+    pub effect_dependency_key: SceneDependencyKey,
     pub scene_runtime: SceneRuntimeSnapshot,
     pub spatial_engine: SpatialEngine,
 }
@@ -130,7 +130,7 @@ impl FrameScheduler {
             budget_us: inputs.budget_us,
             output_power: inputs.output_power,
             effect_demand: inputs.effect_demand,
-            effect_registry_generation: inputs.effect_registry_generation,
+            effect_dependency_key: inputs.effect_dependency_key,
             scene_runtime: inputs.scene_runtime,
             spatial_engine: inputs.spatial_engine,
         }
@@ -239,7 +239,7 @@ mod tests {
                 audio_capture_active: false,
                 screen_capture_active: true,
             },
-            effect_registry_generation: 7,
+            effect_dependency_key: SceneDependencyKey::new(1, 7),
             scene_runtime: SceneRuntimeSnapshot {
                 active_scene_id: None,
                 active_transition: Some(SceneTransitionSnapshot {
@@ -262,7 +262,7 @@ mod tests {
         assert_eq!(snapshot.budget_us, 16_666);
         assert!(snapshot.effect_demand.effect_running);
         assert!(snapshot.effect_demand.screen_capture_active);
-        assert_eq!(snapshot.effect_registry_generation, 7);
+        assert_eq!(snapshot.effect_dependency_key, SceneDependencyKey::new(1, 7));
         assert!(snapshot.scene_runtime.active_transition.is_some());
         assert_eq!(snapshot.scene_runtime.active_render_group_count(), 1);
         assert_eq!(snapshot.spatial_engine.layout().canvas_width, 320);
