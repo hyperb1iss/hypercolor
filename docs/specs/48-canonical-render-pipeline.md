@@ -1,6 +1,6 @@
 # 48 — Canonical Render Pipeline
 
-**Status:** Proposed
+**Status:** Active (core architecture landed; remaining work is simplification)
 **Author:** Nova
 **Date:** 2026-04-21
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`
@@ -12,9 +12,9 @@
 ## 1. Overview
 
 Hypercolor now renders primarily through scenes and render groups, not through
-the legacy single-effect mental model. This spec defines the canonical goal
-state for that architecture so the code, docs, and future refactors all point
-at the same thing.
+the legacy single-effect mental model. This spec defines the canonical
+architecture for that pipeline so the code, docs, and future refactors all
+point at the same thing.
 
 The core idea is simple:
 
@@ -34,9 +34,9 @@ demand, preview composition, and hardware output coherent.
 
 ## 2. Problem Statement
 
-The codebase is already much closer to a unified scene model than the older
-specs describe, but the architecture is not yet fully explainable because a few
-critical seams still behave like separate systems:
+When this spec was written, the codebase was already much closer to a unified
+scene model than the older specs described, but a few critical seams still
+behaved like separate systems:
 
 1. Effect registry reloads can change metadata or source content without
    invalidating active renderers or capture-demand caches.
@@ -46,8 +46,8 @@ critical seams still behave like separate systems:
 3. Performance and architecture docs still describe an older, simpler hot path
    than the one the daemon actually runs today.
 
-The goal state is not a new architecture. It is the formalized, cleaned-up
-version of the one the daemon already mostly has.
+That gap is now largely closed. The remaining work is simplification and
+vocabulary cleanup inside the same architecture, not a new render model.
 
 ---
 
@@ -221,15 +221,25 @@ markers that explain why a cached frame or renderer is still valid.
 
 ---
 
-## 8. Delivery Priority
+## 8. Delivery Status
 
-This spec defines the target, but the implementation priority is:
+The core architecture described here is now shipped:
 
-1. Fix active-scene invalidation for effect registry updates.
-2. Make capture demand observe live registry metadata.
-3. Replace non-canonical preview composition for multi-group scenes with a path
-   that matches LED semantics.
-4. Update architecture/performance docs to match the shipped system.
+1. Active-scene invalidation observes effect-registry updates.
+2. Capture demand observes live registry metadata.
+3. Multi-group LED scenes now derive hardware sampling from the canonical
+   scene-composition contract instead of a separate per-group LED-only path.
+4. Architecture docs and internal vocabulary have been realigned around the
+   scene-canvas model.
+
+The remaining work is simplification, not architectural replacement:
+
+1. Keep collapsing pacing, admission, retention, and throttling into one frame-
+   policy surface.
+2. Keep converging invalidation on a small set of explainable dependency
+   tokens.
+3. Remove leftover duplicate preview-only helpers and stale terminology where
+   they no longer describe real runtime behavior.
 
 ---
 
