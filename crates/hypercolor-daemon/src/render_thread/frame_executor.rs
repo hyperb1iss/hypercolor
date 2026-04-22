@@ -281,9 +281,9 @@ pub(crate) async fn execute_frame(
         };
         let device_brightness_generation = manager.output_brightness_generation();
         let can_reuse_routed_outputs = reuses_published_frame
-            && frame_loop.last_output_brightness_bits == Some(global_brightness_bits)
-            && frame_loop.last_device_output_brightness_generation
-                == Some(device_brightness_generation)
+            && frame_loop
+                .output_reuse
+                .matches(global_brightness_bits, device_brightness_generation)
             && manager.can_reuse_routed_frame_outputs(layout.as_ref());
         let write_stats = if can_reuse_routed_outputs {
             manager.reuse_routed_frame_outputs(layout.as_ref())
@@ -307,8 +307,9 @@ pub(crate) async fn execute_frame(
                 )
                 .await
         };
-        frame_loop.last_output_brightness_bits = Some(global_brightness_bits);
-        frame_loop.last_device_output_brightness_generation = Some(device_brightness_generation);
+        frame_loop
+            .output_reuse
+            .record(global_brightness_bits, device_brightness_generation);
         let async_failures = manager.async_write_failures();
         (write_stats, async_failures)
     };

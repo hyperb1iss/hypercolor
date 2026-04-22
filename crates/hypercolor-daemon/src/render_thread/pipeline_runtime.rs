@@ -87,14 +87,41 @@ pub(crate) struct ThrottleState {
     pub(crate) sleep_black_pushed: bool,
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct OutputReuseState {
+    pub(crate) last_output_brightness_bits: Option<u32>,
+    pub(crate) last_device_output_brightness_generation: Option<u64>,
+}
+
+impl OutputReuseState {
+    pub(crate) fn matches(
+        &self,
+        output_brightness_bits: u32,
+        device_output_brightness_generation: u64,
+    ) -> bool {
+        self.last_output_brightness_bits == Some(output_brightness_bits)
+            && self.last_device_output_brightness_generation
+                == Some(device_output_brightness_generation)
+    }
+
+    pub(crate) fn record(
+        &mut self,
+        output_brightness_bits: u32,
+        device_output_brightness_generation: u64,
+    ) {
+        self.last_output_brightness_bits = Some(output_brightness_bits);
+        self.last_device_output_brightness_generation =
+            Some(device_output_brightness_generation);
+    }
+}
+
 pub(crate) struct FrameLoopState {
     pub(crate) cached_inputs: FrameInputs,
     pub(crate) last_tick: Instant,
     pub(crate) throttle: ThrottleState,
     pub(crate) publication_cadence: PublicationCadenceState,
     pub(crate) capture_demand: CaptureDemandState,
-    pub(crate) last_output_brightness_bits: Option<u32>,
-    pub(crate) last_device_output_brightness_generation: Option<u64>,
+    pub(crate) output_reuse: OutputReuseState,
 }
 
 pub(crate) struct RenderCaches {
@@ -254,8 +281,7 @@ impl PipelineRuntime {
                 throttle: ThrottleState::default(),
                 publication_cadence: PublicationCadenceState::default(),
                 capture_demand: CaptureDemandState::default(),
-                last_output_brightness_bits: None,
-                last_device_output_brightness_generation: None,
+                output_reuse: OutputReuseState::default(),
             },
             render: RenderCaches {
                 screen_queue: ProducerQueue::new(),
