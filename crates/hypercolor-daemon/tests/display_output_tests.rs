@@ -2506,6 +2506,92 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
 }
 
 #[tokio::test]
+async fn automatic_display_output_refreshes_cached_targets_when_display_face_route_changes() {
+    let _guard = display_output_test_guard().await;
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+    let group_id = RenderGroupId::new();
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![display_zone(
+            &format!("device:{device_id}"),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 320, 200, false))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
+    });
+
+    let red = solid_canvas(Rgba::new(255, 0, 0, 255));
+    let blue = solid_canvas(Rgba::new(0, 0, 255, 255));
+
+    let _ = event_bus
+        .global_canvas_sender()
+        .send(CanvasFrame::from_canvas(&red, 1, 16));
+    let writes = wait_for_display_write_count(&display_writes, 1).await;
+    let first_image = decode_jpeg(writes.first().expect("expected initial display frame"));
+    let first_pixel = first_image.get_pixel(first_image.width() / 2, first_image.height() / 2);
+    assert!(
+        first_pixel[0] > 200,
+        "expected scene canvas route to start red, got {first_pixel:?}"
+    );
+
+    publish_direct_display_face_route(event_bus.as_ref(), device_id, group_id);
+    event_bus
+        .group_canvas_sender(group_id)
+        .send_replace(CanvasFrame::from_canvas(&blue, 2, 32));
+    let _ = event_bus
+        .global_canvas_sender()
+        .send(CanvasFrame::from_canvas(&red, 3, 48));
+
+    let writes = wait_for_display_write_count(&display_writes, 2).await;
+    let second_image = decode_jpeg(writes.last().expect("expected refreshed direct-face frame"));
+    let second_pixel =
+        second_image.get_pixel(second_image.width() / 2, second_image.height() / 2);
+    assert!(
+        second_pixel[2] > 200,
+        "expected face-route refresh to switch the cached target to blue, got {second_pixel:?}"
+    );
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
 async fn automatic_display_output_refreshes_static_hold_frames_while_sleeping() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());

@@ -112,13 +112,45 @@ pub(super) struct DisplayWorkerConfigSignature {
 
 #[derive(Default)]
 struct DisplayTargetCache {
-    initialized: bool,
     version: u64,
+    cache_key: Option<DisplayTargetCacheKey>,
+    targets: Arc<[Arc<DisplayTarget>]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DisplayTargetDependencyKey {
     registry_generation: u64,
     display_group_targets_revision: u64,
+}
+
+impl DisplayTargetDependencyKey {
+    const fn new(registry_generation: u64, display_group_targets_revision: u64) -> Self {
+        Self {
+            registry_generation,
+            display_group_targets_revision,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DisplayTargetCacheKey {
+    dependency_key: DisplayTargetDependencyKey,
     layout_ptr: usize,
     logical_signature: u64,
-    targets: Arc<[Arc<DisplayTarget>]>,
+}
+
+impl DisplayTargetCacheKey {
+    const fn new(
+        dependency_key: DisplayTargetDependencyKey,
+        layout_ptr: usize,
+        logical_signature: u64,
+    ) -> Self {
+        Self {
+            dependency_key,
+            layout_ptr,
+            logical_signature,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -610,13 +642,11 @@ async fn display_targets(
     )]
     let layout_ptr = Arc::as_ptr(&layout) as usize;
     let logical_signature = logical_device_store_signature(&logical_store);
+    let dependency_key =
+        DisplayTargetDependencyKey::new(registry_generation, display_group_targets_revision);
+    let cache_key = DisplayTargetCacheKey::new(dependency_key, layout_ptr, logical_signature);
 
-    if cache.initialized
-        && cache.registry_generation == registry_generation
-        && cache.display_group_targets_revision == display_group_targets_revision
-        && cache.layout_ptr == layout_ptr
-        && cache.logical_signature == logical_signature
-    {
+    if cache.cache_key == Some(cache_key) {
         return DisplayTargetsSnapshot {
             version: cache.version,
             targets: Arc::clone(&cache.targets),
@@ -701,12 +731,8 @@ async fn display_targets(
             .cmp(&right.backend_id)
             .then(left.device_id.to_string().cmp(&right.device_id.to_string()))
     });
-    cache.initialized = true;
     cache.version = cache.version.saturating_add(1);
-    cache.registry_generation = registry_generation;
-    cache.display_group_targets_revision = display_group_targets_revision;
-    cache.layout_ptr = layout_ptr;
-    cache.logical_signature = logical_signature;
+    cache.cache_key = Some(cache_key);
     cache.targets = Arc::from(targets);
     DisplayTargetsSnapshot {
         version: cache.version,
