@@ -11,6 +11,7 @@ use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::app::DevicesContext;
+use crate::components::control_panel::ControlDropdownDismissHandlers;
 use crate::components::layout_canvas::LayoutCanvas;
 use crate::components::layout_palette::LayoutPalette;
 use crate::components::layout_zone_properties::LayoutZoneProperties;
@@ -268,6 +269,7 @@ pub fn LayoutBuilder() -> impl IntoView {
     let (creating, set_creating) = signal(false);
     let (new_layout_name, set_new_layout_name) = signal(String::new());
     let (renaming, set_renaming) = signal(false);
+    let (layout_menu_open, set_layout_menu_open) = signal(false);
     let (rename_value, set_rename_value) = signal(String::new());
     let (initialized, set_initialized) = signal(false);
     let (keep_aspect_ratio, set_keep_aspect_ratio) = signal(initial_state.keep_aspect_ratio);
@@ -918,83 +920,32 @@ pub fn LayoutBuilder() -> impl IntoView {
                 accent=PageAccent::Coral
             >
                 <HeaderTrailing slot>
-                    // Save / Revert / Apply buttons — visible only when a layout is loaded.
-                    // Delete remains in the toolbar row, fenced from these primary actions.
+                    // Title row stays lean: just Undo/Redo as icon buttons.
+                    // Save/Revert live on a dirty-state strip below the header
+                    // so they only appear when actually relevant; destructive
+                    // and per-layout actions live in the toolbar-row overflow.
                     {move || layout.get().map(|_| {
-                        let dirty = is_dirty.get();
-                        let is_active = selected_layout_is_active.get();
-                        let undo_style = if can_undo.get() {
-                            "background: rgba(225, 53, 255, 0.08); border-color: rgba(225, 53, 255, 0.2); color: rgb(225, 53, 255)"
-                        } else {
-                            "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
-                        };
-                        let redo_style = if can_redo.get() {
-                            "background: rgba(128, 255, 234, 0.08); border-color: rgba(128, 255, 234, 0.2); color: rgb(128, 255, 234)"
-                        } else {
-                            "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
-                        };
-                        let apply_style = if is_active || dirty {
-                            "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
-                        } else {
-                            "background: rgba(128, 255, 234, 0.1); border-color: rgba(128, 255, 234, 0.2); color: rgb(128, 255, 234)"
-                        };
-                        let save_style = if dirty {
-                            "background: rgba(80, 250, 123, 0.12); border-color: rgba(80, 250, 123, 0.3); color: rgb(80, 250, 123); \
-                             box-shadow: 0 0 12px rgba(80, 250, 123, 0.15)"
-                        } else {
-                            "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
-                        };
-                        let revert_style = if dirty {
-                            "background: rgba(241, 250, 140, 0.08); border-color: rgba(241, 250, 140, 0.2); color: rgb(241, 250, 140)"
-                        } else {
-                            "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
-                        };
                         view! {
-                            <div class="flex items-center gap-2">
+                            <div class="flex items-center gap-1">
                                 <button
-                                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
-                                    style=undo_style
+                                    class="w-8 h-8 flex items-center justify-center rounded-md text-fg-tertiary
+                                           hover:text-fg-primary hover:bg-surface-hover/40 transition-all btn-press
+                                           disabled:opacity-30 disabled:pointer-events-none"
+                                    title="Undo (Ctrl+Z)"
                                     on:click=move |_| set_layout.undo()
                                     disabled=move || !can_undo.get()
                                 >
-                                    <Icon icon=LuUndo2 width="14px" height="14px" />
-                                    "Undo"
+                                    <Icon icon=LuUndo2 width="15px" height="15px" />
                                 </button>
                                 <button
-                                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
-                                    style=redo_style
+                                    class="w-8 h-8 flex items-center justify-center rounded-md text-fg-tertiary
+                                           hover:text-fg-primary hover:bg-surface-hover/40 transition-all btn-press
+                                           disabled:opacity-30 disabled:pointer-events-none"
+                                    title="Redo (Ctrl+Shift+Z)"
                                     on:click=move |_| set_layout.redo()
                                     disabled=move || !can_redo.get()
                                 >
-                                    <Icon icon=LuRedo2 width="14px" height="14px" />
-                                    "Redo"
-                                </button>
-                                <button
-                                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
-                                    style=apply_style
-                                    on:click=move |_| apply_layout()
-                                    disabled=move || is_dirty.get() || selected_layout_is_active.get()
-                                >
-                                    <Icon icon=LuCheck width="14px" height="14px" />
-                                    {move || if selected_layout_is_active.get() { "Active" } else { "Apply" }}
-                                </button>
-                                <button
-                                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
-                                    style=revert_style
-                                    on:click=move |_| revert_layout()
-                                    disabled=move || !is_dirty.get()
-                                >
-                                    <Icon icon=LuUndo2 width="14px" height="14px" />
-                                    "Revert"
-                                </button>
-                                <button
-                                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
-                                    style=save_style
-                                    on:click=move |_| save_layout()
-                                    disabled=move || !is_dirty.get()
-                                >
-                                    <Icon icon=LuSave width="14px" height="14px" />
-                                    "Save"
+                                    <Icon icon=LuRedo2 width="15px" height="15px" />
                                 </button>
                             </div>
                         }
@@ -1070,10 +1021,6 @@ pub fn LayoutBuilder() -> impl IntoView {
                         }.into_any()
                     }}
 
-                    // Dirty indicator
-                    <Show when=move || is_dirty.get()>
-                        <div class="w-2 h-2 rounded-full bg-electric-yellow dot-alive" title="Unsaved changes" />
-                    </Show>
                 </div>
 
                 // New layout button / inline form
@@ -1120,39 +1067,155 @@ pub fn LayoutBuilder() -> impl IntoView {
                     }.into_any()
                 }}
 
-                // Duplicate button — only when a layout is loaded
-                {move || layout.get().map(|_| {
-                    view! {
-                        <button
-                            class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium border whitespace-nowrap transition-all btn-press"
-                            style="background: rgba(128, 255, 234, 0.06); border-color: rgba(128, 255, 234, 0.15); color: rgba(128, 255, 234, 0.8)"
-                            title="Duplicate current layout"
-                            on:click=move |_| duplicate_layout()
-                        >
-                            <Icon icon=LuCopy width="12px" height="12px" />
-                            "Duplicate"
-                        </button>
-                    }
-                })}
-
                 <div class="flex-1" />
 
-                // Delete — destructive action, only when a layout is loaded.
-                // Fenced visually by its error-red styling; primary Apply/Revert/Save
-                // live in the title-row trailing slot.
+                // Overflow menu — per-layout actions (Apply, Duplicate, Delete)
+                // collapsed into a single kebab. Keeps the toolbar row quiet
+                // during normal use; the popover opens on demand.
                 {move || layout.get().map(|_| view! {
-                    <button
-                        class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press
-                               text-status-error/40 hover:text-status-error"
-                        style="background: rgba(255, 99, 99, 0.04); border-color: rgba(255, 99, 99, 0.12)"
-                        on:click=move |_| delete_layout()
-                    >
-                        <Icon icon=LuTrash2 width="14px" height="14px" />
-                        "Delete"
-                    </button>
+                    <div class="relative layout-action-menu">
+                        <button
+                            class="w-8 h-8 flex items-center justify-center rounded-md
+                                   text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40
+                                   transition-all btn-press"
+                            title="Layout actions"
+                            on:click=move |_| set_layout_menu_open.update(|v| *v = !*v)
+                        >
+                            <Icon icon=LuEllipsis width="15px" height="15px" />
+                        </button>
+                        <Show when=move || layout_menu_open.get()>
+                            <ControlDropdownDismissHandlers
+                                class_name="layout-action-menu".to_string()
+                                is_open=layout_menu_open
+                                set_open=set_layout_menu_open
+                            />
+                            <div
+                                class="absolute right-0 top-full mt-1 z-[100] w-48
+                                       rounded-lg overflow-hidden
+                                       bg-surface-overlay/98 backdrop-blur-xl
+                                       border border-edge-subtle dropdown-glow
+                                       animate-slide-down"
+                                on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                    if ev.key() == "Escape" {
+                                        set_layout_menu_open.set(false);
+                                    }
+                                }
+                            >
+                                // Apply / Active — reflects the live state of this layout.
+                                // When active, shows as a green read-only marker.
+                                // When inactive + clean, shows "Apply" as an actionable button.
+                                // When inactive + dirty, hides (save first).
+                                <Show when=move || selected_layout_is_active.get()>
+                                    <div class="w-full px-3 py-2 text-xs flex items-center gap-2
+                                                text-fg-tertiary cursor-default">
+                                        <Icon icon=LuCheck width="12px" height="12px"
+                                              style="color: rgb(80, 250, 123); flex-shrink: 0" />
+                                        <span>"Active"</span>
+                                    </div>
+                                </Show>
+                                <Show when=move || !selected_layout_is_active.get() && !is_dirty.get()>
+                                    <button
+                                        class="dropdown-option w-full text-left px-3 py-2 text-xs cursor-pointer
+                                               flex items-center gap-2 text-fg-secondary hover:text-fg-primary"
+                                        on:click=move |_| {
+                                            apply_layout();
+                                            set_layout_menu_open.set(false);
+                                        }
+                                    >
+                                        <Icon icon=LuCheck width="12px" height="12px"
+                                              style="color: rgb(128, 255, 234); flex-shrink: 0" />
+                                        <span>"Apply"</span>
+                                    </button>
+                                </Show>
+                                <button
+                                    class="dropdown-option w-full text-left px-3 py-2 text-xs cursor-pointer
+                                           flex items-center gap-2 text-fg-secondary hover:text-fg-primary"
+                                    on:click=move |_| {
+                                        if let Some(current) = layout.get_untracked() {
+                                            set_rename_value.set(current.name.clone());
+                                            set_renaming.set(true);
+                                        }
+                                        set_layout_menu_open.set(false);
+                                    }
+                                >
+                                    <Icon icon=LuPencil width="12px" height="12px"
+                                          style="color: rgba(139, 133, 160, 0.7); flex-shrink: 0" />
+                                    <span>"Rename"</span>
+                                </button>
+                                <button
+                                    class="dropdown-option w-full text-left px-3 py-2 text-xs cursor-pointer
+                                           flex items-center gap-2 text-fg-secondary hover:text-fg-primary"
+                                    on:click=move |_| {
+                                        duplicate_layout();
+                                        set_layout_menu_open.set(false);
+                                    }
+                                >
+                                    <Icon icon=LuCopy width="12px" height="12px"
+                                          style="color: rgba(128, 255, 234, 0.7); flex-shrink: 0" />
+                                    <span>"Duplicate"</span>
+                                </button>
+                                <div class="h-px bg-edge-subtle/40 mx-2 my-1" />
+                                <button
+                                    class="dropdown-option w-full text-left px-3 py-2 text-xs cursor-pointer
+                                           flex items-center gap-2 text-status-error/70 hover:text-status-error"
+                                    on:click=move |_| {
+                                        delete_layout();
+                                        set_layout_menu_open.set(false);
+                                    }
+                                >
+                                    <Icon icon=LuTrash2 width="12px" height="12px"
+                                          style="color: rgba(255, 99, 99, 0.7); flex-shrink: 0" />
+                                    <span>"Delete"</span>
+                                </button>
+                            </div>
+                        </Show>
+                    </div>
                 })}
                 </HeaderToolbar>
             </PageHeader>
+
+            // Dirty-state strip — slides in under the header when the
+            // current layout has unsaved edits. Pairs Revert + Save, with
+            // Save as the accent action (green glow when dirty).
+            <Show when=move || is_dirty.get() && layout.with(|l| l.is_some())>
+                <div
+                    class="shrink-0 flex items-center gap-3 px-5 py-2 border-b border-edge-subtle/40
+                           animate-slide-down"
+                    style="background: linear-gradient(90deg,
+                               rgba(241, 250, 140, 0.06) 0%,
+                               rgba(80, 250, 123, 0.04) 100%)"
+                >
+                    <span class="w-2 h-2 rounded-full bg-electric-yellow dot-alive shrink-0" />
+                    <span class="text-xs text-fg-secondary">
+                        {move || {
+                            let name = layout
+                                .with(|l| l.as_ref().map(|l| l.name.clone()))
+                                .unwrap_or_default();
+                            format!("Unsaved changes on {name}")
+                        }}
+                    </span>
+                    <div class="flex-1" />
+                    <button
+                        class="flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium border
+                               transition-all btn-press"
+                        style="background: rgba(241, 250, 140, 0.08); border-color: rgba(241, 250, 140, 0.25); color: rgb(241, 250, 140)"
+                        on:click=move |_| revert_layout()
+                    >
+                        <Icon icon=LuUndo2 width="12px" height="12px" />
+                        "Revert"
+                    </button>
+                    <button
+                        class="flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium border
+                               transition-all btn-press"
+                        style="background: rgba(80, 250, 123, 0.14); border-color: rgba(80, 250, 123, 0.35); color: rgb(80, 250, 123); \
+                               box-shadow: 0 0 14px rgba(80, 250, 123, 0.18)"
+                        on:click=move |_| save_layout()
+                    >
+                        <Icon icon=LuSave width="12px" height="12px" />
+                        "Save"
+                    </button>
+                </div>
+            </Show>
 
             // Three-column layout
             <Show
