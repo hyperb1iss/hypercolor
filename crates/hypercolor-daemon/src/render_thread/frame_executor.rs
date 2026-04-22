@@ -7,7 +7,7 @@ use tracing::{info, trace, warn};
 use hypercolor_core::types::event::FrameTiming;
 
 use super::frame_composer::{ComposeRequest, compose_frame};
-use super::frame_io::{preview_publication_due, publish_frame_updates, sample_inputs};
+use super::frame_io::{publish_frame_updates, sample_inputs};
 use super::frame_policy::{FrameAdmissionSample, FrameExecution, SkipDecision};
 use super::frame_sampling::{
     LedSamplingOutcome, resolve_led_sampling, try_finish_deferred_zone_sampling,
@@ -186,16 +186,14 @@ pub(crate) async fn execute_frame(
             }
         }
     }
-    let canvas_preview_due = preview_publication_due(
+    let canvas_preview_due = frame_loop.publication_cadence.canvas_preview_due(
         scene_snapshot.elapsed_ms,
-        frame_loop.publication_cadence.last_canvas_preview_publish_ms,
         state.preview_canvas_receiver_count(),
         state.preview_runtime.tracked_canvas_receiver_count(),
         state.preview_runtime.tracked_canvas_demand().max_fps,
     );
-    let screen_canvas_preview_due = preview_publication_due(
+    let screen_canvas_preview_due = frame_loop.publication_cadence.screen_canvas_preview_due(
         scene_snapshot.elapsed_ms,
-        frame_loop.publication_cadence.last_screen_canvas_preview_publish_ms,
         state.event_bus.screen_canvas_receiver_count(),
         state.preview_runtime.screen_canvas_receiver_count(),
         state.preview_runtime.screen_canvas_demand().max_fps,

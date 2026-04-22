@@ -14,8 +14,6 @@ use super::pipeline_runtime::{FrameInputs, PublicationCadenceState};
 use super::render_groups::GroupCanvasFrame;
 use super::{RenderThreadState, micros_u32, usize_to_u32};
 
-const AUDIO_LEVEL_EVENT_INTERVAL_MS: u32 = 100;
-
 pub(crate) struct PublishFrameStats {
     pub(crate) elapsed_us: u32,
     pub(crate) full_frame_copy_count: u32,
@@ -107,11 +105,8 @@ pub(crate) fn publish_frame_updates(
     let publish_start = Instant::now();
     let event_subscribers = state.event_bus.subscriber_count();
     let spectrum_receivers = state.event_bus.spectrum_receiver_count();
-    let publish_audio_level = should_publish_audio_level_event(
-        elapsed_ms,
-        publication_cadence.last_audio_level_update_ms,
-        event_subscribers > 0,
-    );
+    let publish_audio_level =
+        publication_cadence.should_publish_audio_level(elapsed_ms, event_subscribers > 0);
     let audio_signal = (spectrum_receivers > 0 || publish_audio_level)
         .then(|| AudioSignalSnapshot::from_audio(audio));
     let mut full_frame_copy_count = 0_u32;
@@ -139,7 +134,7 @@ pub(crate) fn publish_frame_updates(
         audio,
         audio_signal.as_ref(),
         elapsed_ms,
-        &mut publication_cadence.last_audio_level_update_ms,
+        publication_cadence,
         publish_audio_level,
     );
     let frame_data_us = micros_u32(frame_data_start.elapsed());
@@ -213,9 +208,8 @@ pub(crate) fn publish_frame_updates(
                 should_publish_canvas_frame(&current, &CanvasFrame::empty())
             };
             changed
-                && preview_publication_due(
+                && publication_cadence.canvas_preview_due(
                     elapsed_ms,
-                    publication_cadence.last_canvas_preview_publish_ms,
                     canvas_receivers,
                     tracked_canvas_receivers,
                     state.preview_runtime.tracked_canvas_demand().max_fps,
@@ -236,7 +230,7 @@ pub(crate) fn publish_frame_updates(
             } else {
                 CanvasFrame::empty()
             };
-            publication_cadence.last_canvas_preview_publish_ms = Some(elapsed_ms);
+            publication_cadence.record_canvas_publication(elapsed_ms);
             state
                 .preview_runtime
                 .record_canvas_publication(frame_number, elapsed_ms);
@@ -257,9 +251,8 @@ pub(crate) fn publish_frame_updates(
                 should_publish_canvas_frame(&current, &CanvasFrame::empty())
             };
             changed
-                && preview_publication_due(
+                && publication_cadence.screen_canvas_preview_due(
                     elapsed_ms,
-                    publication_cadence.last_screen_canvas_preview_publish_ms,
                     screen_canvas_receivers,
                     tracked_screen_canvas_receivers,
                     state.preview_runtime.screen_canvas_demand().max_fps,
@@ -271,7 +264,7 @@ pub(crate) fn publish_frame_updates(
             } else {
                 CanvasFrame::empty()
             };
-            publication_cadence.last_screen_canvas_preview_publish_ms = Some(elapsed_ms);
+            publication_cadence.record_screen_canvas_publication(elapsed_ms);
             state
                 .preview_runtime
                 .record_screen_canvas_publication(frame_number, elapsed_ms);
@@ -292,9 +285,8 @@ pub(crate) fn publish_frame_updates(
                 should_publish_canvas_frame(&current, &CanvasFrame::empty())
             };
             changed
-                && preview_publication_due(
+                && publication_cadence.web_viewport_preview_due(
                     elapsed_ms,
-                    publication_cadence.last_web_viewport_preview_publish_ms,
                     web_viewport_canvas_receivers,
                     tracked_receivers,
                     state.preview_runtime.web_viewport_canvas_demand().max_fps,
@@ -313,7 +305,7 @@ pub(crate) fn publish_frame_updates(
             } else {
                 CanvasFrame::empty()
             };
-            publication_cadence.last_web_viewport_preview_publish_ms = Some(elapsed_ms);
+            publication_cadence.record_web_viewport_publication(elapsed_ms);
             state
                 .preview_runtime
                 .record_web_viewport_canvas_publication(frame_number, elapsed_ms);
@@ -423,14 +415,14 @@ fn maybe_publish_audio_level_event(
     audio: &AudioData,
     signal: Option<&AudioSignalSnapshot>,
     elapsed_ms: u32,
-    last_audio_level_update_ms: &mut Option<u32>,
+    publication_cadence: &mut PublicationCadenceState,
     should_publish: bool,
 ) {
     if !should_publish {
         return;
     }
 
-    *last_audio_level_update_ms = Some(elapsed_ms);
+    publication_cadence.record_audio_level_update(elapsed_ms);
     let signal = signal
         .copied()
         .unwrap_or_else(|| AudioSignalSnapshot::from_audio(audio));
@@ -441,55 +433,6 @@ fn maybe_publish_audio_level_event(
         treble: signal.treble,
         beat: signal.beat,
     });
-}
-
-fn should_publish_audio_level_event(
-    elapsed_ms: u32,
-    last_audio_level_update_ms: Option<u32>,
-    has_event_subscribers: bool,
-) -> bool {
-    has_event_subscribers
-        && !last_audio_level_update_ms.is_some_and(|last_sent| {
-            elapsed_ms.saturating_sub(last_sent) < AUDIO_LEVEL_EVENT_INTERVAL_MS
-        })
-}
-
-fn preview_publish_fps_limit(
-    total_receivers: usize,
-    tracked_receivers: usize,
-    tracked_max_fps: u32,
-) -> Option<u32> {
-    (total_receivers > 0 && total_receivers == tracked_receivers).then_some(tracked_max_fps.max(1))
-}
-
-fn should_publish_preview_frame(
-    elapsed_ms: u32,
-    last_publish_ms: Option<u32>,
-    target_fps: Option<u32>,
-) -> bool {
-    let Some(target_fps) = target_fps else {
-        return true;
-    };
-    let interval_ms = 1000_u32.div_ceil(target_fps.max(1));
-    last_publish_ms.is_none_or(|last_sent| elapsed_ms.saturating_sub(last_sent) >= interval_ms)
-}
-
-pub(crate) fn preview_publication_due(
-    elapsed_ms: u32,
-    last_publish_ms: Option<u32>,
-    total_receivers: usize,
-    tracked_receivers: usize,
-    tracked_max_fps: u32,
-) -> bool {
-    if total_receivers == 0 {
-        return false;
-    }
-
-    should_publish_preview_frame(
-        elapsed_ms,
-        last_publish_ms,
-        preview_publish_fps_limit(total_receivers, tracked_receivers, tracked_max_fps),
-    )
 }
 
 fn update_spectrum_from_audio(

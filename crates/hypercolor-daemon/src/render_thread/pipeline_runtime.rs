@@ -28,6 +28,8 @@ use super::scene_snapshot::SceneSnapshotCache;
 use super::scene_state::RenderSceneState;
 use super::sparkleflinger::{PendingZoneSampling, SparkleFlinger};
 
+const AUDIO_LEVEL_EVENT_INTERVAL_MS: u32 = 100;
+
 pub(crate) struct FrameInputs {
     pub(crate) audio: AudioData,
     pub(crate) interaction: hypercolor_core::input::InteractionData,
@@ -81,6 +83,83 @@ pub(crate) struct PublicationCadenceState {
     pub(crate) last_web_viewport_preview_publish_ms: Option<u32>,
 }
 
+impl PublicationCadenceState {
+    pub(crate) fn should_publish_audio_level(
+        &self,
+        elapsed_ms: u32,
+        has_event_subscribers: bool,
+    ) -> bool {
+        has_event_subscribers
+            && !self.last_audio_level_update_ms.is_some_and(|last_sent| {
+                elapsed_ms.saturating_sub(last_sent) < AUDIO_LEVEL_EVENT_INTERVAL_MS
+            })
+    }
+
+    pub(crate) fn record_audio_level_update(&mut self, elapsed_ms: u32) {
+        self.last_audio_level_update_ms = Some(elapsed_ms);
+    }
+
+    pub(crate) fn canvas_preview_due(
+        &self,
+        elapsed_ms: u32,
+        total_receivers: usize,
+        tracked_receivers: usize,
+        tracked_max_fps: u32,
+    ) -> bool {
+        preview_publication_due(
+            elapsed_ms,
+            self.last_canvas_preview_publish_ms,
+            total_receivers,
+            tracked_receivers,
+            tracked_max_fps,
+        )
+    }
+
+    pub(crate) fn record_canvas_publication(&mut self, elapsed_ms: u32) {
+        self.last_canvas_preview_publish_ms = Some(elapsed_ms);
+    }
+
+    pub(crate) fn screen_canvas_preview_due(
+        &self,
+        elapsed_ms: u32,
+        total_receivers: usize,
+        tracked_receivers: usize,
+        tracked_max_fps: u32,
+    ) -> bool {
+        preview_publication_due(
+            elapsed_ms,
+            self.last_screen_canvas_preview_publish_ms,
+            total_receivers,
+            tracked_receivers,
+            tracked_max_fps,
+        )
+    }
+
+    pub(crate) fn record_screen_canvas_publication(&mut self, elapsed_ms: u32) {
+        self.last_screen_canvas_preview_publish_ms = Some(elapsed_ms);
+    }
+
+    pub(crate) fn web_viewport_preview_due(
+        &self,
+        elapsed_ms: u32,
+        total_receivers: usize,
+        tracked_receivers: usize,
+        tracked_max_fps: u32,
+    ) -> bool {
+        preview_publication_due(
+            elapsed_ms,
+            self.last_web_viewport_preview_publish_ms,
+            total_receivers,
+            tracked_receivers,
+            tracked_max_fps,
+        )
+    }
+
+    pub(crate) fn record_web_viewport_publication(&mut self, elapsed_ms: u32) {
+        self.last_web_viewport_preview_publish_ms = Some(elapsed_ms);
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ThrottleState {
     pub(crate) idle_black_pushed: bool,
@@ -113,6 +192,45 @@ impl OutputReuseState {
         self.last_device_output_brightness_generation =
             Some(device_output_brightness_generation);
     }
+}
+
+fn preview_publish_fps_limit(
+    total_receivers: usize,
+    tracked_receivers: usize,
+    tracked_max_fps: u32,
+) -> Option<u32> {
+    (total_receivers > 0 && total_receivers == tracked_receivers)
+        .then_some(tracked_max_fps.max(1))
+}
+
+fn should_publish_preview_frame(
+    elapsed_ms: u32,
+    last_publish_ms: Option<u32>,
+    target_fps: Option<u32>,
+) -> bool {
+    let Some(target_fps) = target_fps else {
+        return true;
+    };
+    let interval_ms = 1000_u32.div_ceil(target_fps.max(1));
+    last_publish_ms.is_none_or(|last_sent| elapsed_ms.saturating_sub(last_sent) >= interval_ms)
+}
+
+fn preview_publication_due(
+    elapsed_ms: u32,
+    last_publish_ms: Option<u32>,
+    total_receivers: usize,
+    tracked_receivers: usize,
+    tracked_max_fps: u32,
+) -> bool {
+    if total_receivers == 0 {
+        return false;
+    }
+
+    should_publish_preview_frame(
+        elapsed_ms,
+        last_publish_ms,
+        preview_publish_fps_limit(total_receivers, tracked_receivers, tracked_max_fps),
+    )
 }
 
 pub(crate) struct FrameLoopState {
