@@ -62,8 +62,7 @@ pub(crate) async fn execute_frame(
         info!(width, height, "Applying live canvas resize");
         state.canvas_dims.set(width, height);
         render.apply_canvas_resize(width, height);
-        frame_loop.throttle.idle_black_pushed = false;
-        frame_loop.throttle.sleep_black_pushed = false;
+        frame_loop.throttle.reset_for_canvas_resize();
     }
     let mut scene_snapshot = build_frame_scene_snapshot(
         state,
@@ -82,17 +81,7 @@ pub(crate) async fn execute_frame(
     let output_power = scene_snapshot.output_power;
     frame_loop
         .capture_demand
-        .reconcile_audio(
-            state,
-            !output_power.sleeping && scene_snapshot.effect_demand.audio_capture_active,
-        )
-        .await;
-    frame_loop
-        .capture_demand
-        .reconcile_screen(
-            state,
-            !output_power.sleeping && scene_snapshot.effect_demand.screen_capture_active,
-        )
+        .reconcile_effect_demand(state, output_power.sleeping, scene_snapshot.effect_demand)
         .await;
     let scene_snapshot_done_us = micros_u32(frame_start.elapsed());
     if output_power.sleeping {
@@ -114,7 +103,7 @@ pub(crate) async fn execute_frame(
             return frame;
         }
     } else {
-        frame_loop.throttle.sleep_black_pushed = false;
+        frame_loop.throttle.clear_sleep();
     }
 
     if refresh_effect_scene_snapshot(
@@ -128,17 +117,7 @@ pub(crate) async fn execute_frame(
         let refreshed_demand = scene_snapshot.effect_demand;
         frame_loop
             .capture_demand
-            .reconcile_audio(
-                state,
-                !output_power.sleeping && refreshed_demand.audio_capture_active,
-            )
-            .await;
-        frame_loop
-            .capture_demand
-            .reconcile_screen(
-                state,
-                !output_power.sleeping && refreshed_demand.screen_capture_active,
-            )
+            .reconcile_effect_demand(state, output_power.sleeping, refreshed_demand)
             .await;
     }
 
@@ -551,7 +530,7 @@ pub(crate) async fn execute_frame(
     };
 
     if !scene_snapshot.effect_demand.effect_running {
-        frame_loop.throttle.idle_black_pushed = true;
+        frame_loop.throttle.note_idle_frame_without_effect();
     }
 
     FrameExecution {

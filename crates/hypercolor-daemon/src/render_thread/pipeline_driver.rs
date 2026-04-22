@@ -63,14 +63,5 @@ async fn handle_inactive_render_loop(
 }
 
 async fn clear_capture_demand(state: &RenderThreadState, runtime: &mut PipelineRuntime) {
-    runtime
-        .frame_loop
-        .capture_demand
-        .reconcile_audio(state, false)
-        .await;
-    runtime
-        .frame_loop
-        .capture_demand
-        .reconcile_screen(state, false)
-        .await;
+    runtime.frame_loop.capture_demand.clear(state).await;
 }

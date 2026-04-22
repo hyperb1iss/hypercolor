@@ -34,17 +34,17 @@ pub(crate) async fn maybe_idle_throttle(
     let can_idle_throttle = can_idle_throttle(effect_running, screen_capture_active);
 
     if effect_running {
-        throttle.idle_black_pushed = false;
+        throttle.note_effect_running();
         return None;
     }
 
-    if can_idle_throttle && !throttle.idle_black_pushed {
+    if can_idle_throttle && !throttle.idle_black_pushed() {
         debug!(
             "No active effect or capture input; layout changes render black until an effect or input source starts"
         );
     }
 
-    if can_idle_throttle && throttle.idle_black_pushed {
+    if can_idle_throttle && throttle.idle_black_pushed() {
         let mut render_loop = state.render_loop.write().await;
         return Some(complete_throttle_frame(
             &mut render_loop,
@@ -72,7 +72,7 @@ pub(crate) async fn maybe_sleep_throttle(
     publication_cadence: &mut PublicationCadenceState,
 ) -> Option<FrameExecution> {
     let power_state = scene_snapshot.output_power;
-    if throttle.sleep_black_pushed {
+    if throttle.sleep_black_pushed() {
         let mut render_loop = state.render_loop.write().await;
         return Some(complete_throttle_frame(
             &mut render_loop,
@@ -120,7 +120,7 @@ pub(crate) async fn maybe_sleep_throttle(
             publish_us,
             "published cleared frame/canvas for release sleep"
         );
-        throttle.sleep_black_pushed = true;
+        throttle.note_sleep_frame_published();
         let mut render_loop = state.render_loop.write().await;
         return Some(complete_throttle_frame(
             &mut render_loop,
@@ -260,7 +260,7 @@ pub(crate) async fn maybe_sleep_throttle(
         });
     }
 
-    throttle.sleep_black_pushed = true;
+    throttle.note_sleep_frame_published();
     let mut render_loop = state.render_loop.write().await;
     Some(complete_throttle_frame(
         &mut render_loop,

@@ -166,6 +166,37 @@ pub(crate) struct ThrottleState {
     pub(crate) sleep_black_pushed: bool,
 }
 
+impl ThrottleState {
+    pub(crate) fn reset_for_canvas_resize(&mut self) {
+        self.idle_black_pushed = false;
+        self.sleep_black_pushed = false;
+    }
+
+    pub(crate) fn note_effect_running(&mut self) {
+        self.idle_black_pushed = false;
+    }
+
+    pub(crate) fn idle_black_pushed(&self) -> bool {
+        self.idle_black_pushed
+    }
+
+    pub(crate) fn note_idle_frame_without_effect(&mut self) {
+        self.idle_black_pushed = true;
+    }
+
+    pub(crate) fn clear_sleep(&mut self) {
+        self.sleep_black_pushed = false;
+    }
+
+    pub(crate) fn sleep_black_pushed(&self) -> bool {
+        self.sleep_black_pushed
+    }
+
+    pub(crate) fn note_sleep_frame_published(&mut self) {
+        self.sleep_black_pushed = true;
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct OutputReuseState {
     pub(crate) last_output_brightness_bits: Option<u32>,
