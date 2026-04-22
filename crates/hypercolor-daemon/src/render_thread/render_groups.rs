@@ -50,6 +50,21 @@ pub(crate) struct RenderGroupResult {
     pub logical_layer_count: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RenderGroupDependencyKey {
+    groups_revision: u64,
+    registry_generation: u64,
+}
+
+impl RenderGroupDependencyKey {
+    const fn new(groups_revision: u64, registry_generation: u64) -> Self {
+        Self {
+            groups_revision,
+            registry_generation,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("render group '{group_name}' effect '{effect_name}' ({effect_id}) failed: {error}")]
 pub(crate) struct RenderGroupEffectError {
@@ -62,8 +77,7 @@ pub(crate) struct RenderGroupEffectError {
 
 #[derive(Clone)]
 struct RetainedRenderGroupFrame {
-    groups_revision: u64,
-    registry_generation: u64,
+    dependency_key: RenderGroupDependencyKey,
     scene_frame: ProducerFrame,
     active_group_canvas_ids: Vec<RenderGroupId>,
     led_sampling_strategy: RetainedLedSamplingStrategy,
@@ -84,8 +98,7 @@ pub(crate) struct RenderGroupRuntime {
     direct_surface_pools: HashMap<RenderGroupId, RenderSurfacePool>,
     retained_direct_group_frames: HashMap<RenderGroupId, RetainedDirectGroupFrame>,
     scene_surface_pool: RenderSurfacePool,
-    reconciled_groups_revision: Option<u64>,
-    reconciled_registry_generation: Option<u64>,
+    reconciled_dependency_key: Option<RenderGroupDependencyKey>,
     retained_frame: Option<RetainedRenderGroupFrame>,
     last_effect_error: Option<RenderGroupEffectError>,
     combined_led_layout: Arc<SpatialLayout>,
@@ -111,8 +124,7 @@ impl RenderGroupRuntime {
                 SurfaceDescriptor::rgba8888(scene_width, scene_height),
                 SCENE_SURFACE_POOL_SLOTS,
             ),
-            reconciled_groups_revision: None,
-            reconciled_registry_generation: None,
+            reconciled_dependency_key: None,
             retained_frame: None,
             last_effect_error: None,
             combined_led_layout: Arc::new(empty_group_layout(scene_width, scene_height)),
@@ -166,10 +178,9 @@ impl RenderGroupRuntime {
         groups_revision: u64,
         registry_generation: u64,
     ) -> Option<RenderGroupResult> {
+        let dependency_key = RenderGroupDependencyKey::new(groups_revision, registry_generation);
         let retained = self.retained_frame.as_ref()?;
-        if retained.groups_revision != groups_revision
-            || retained.registry_generation != registry_generation
-        {
+        if retained.dependency_key != dependency_key {
             return None;
         }
 
@@ -205,14 +216,14 @@ impl RenderGroupRuntime {
         sensors: &SystemSnapshot,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<RenderGroupResult> {
-        let registry_generation = registry.generation();
-        self.reconcile(groups, groups_revision, registry_generation, registry)?;
+        let dependency_key = RenderGroupDependencyKey::new(groups_revision, registry.generation());
+        self.reconcile(groups, dependency_key, registry)?;
 
         if let Some(result) = self.render_single_full_scene_group(
             groups,
             elapsed_ms,
             display_group_target_fps,
-            registry_generation,
+            dependency_key.registry_generation,
             registry,
             delta_secs,
             audio,
@@ -222,7 +233,7 @@ impl RenderGroupRuntime {
             zones,
         )? {
             self.clear_effect_error();
-            self.retain_frame(groups_revision, registry_generation, &result, &[]);
+            self.retain_frame(dependency_key, &result, &[]);
             return Ok(result);
         }
 
@@ -239,7 +250,7 @@ impl RenderGroupRuntime {
                     group,
                     elapsed_ms,
                     display_group_target_fps,
-                    registry_generation,
+                    dependency_key.registry_generation,
                 ) {
                     active_group_canvas_ids.push(group.id);
                     group_canvases.push((group.id, retained));
@@ -274,7 +285,12 @@ impl RenderGroupRuntime {
                         .clone()
                         .expect("direct display group should carry a display target"),
                 };
-                self.retain_direct_group_frame(group.id, elapsed_ms, registry_generation, &frame);
+                self.retain_direct_group_frame(
+                    group.id,
+                    elapsed_ms,
+                    dependency_key.registry_generation,
+                    &frame,
+                );
                 group_canvases.push((group.id, frame));
                 continue;
             }
@@ -325,20 +341,17 @@ impl RenderGroupRuntime {
             logical_layer_count,
         };
         self.clear_effect_error();
-        self.retain_frame(groups_revision, registry_generation, &result, zones);
+        self.retain_frame(dependency_key, &result, zones);
         Ok(result)
     }
 
     fn reconcile(
         &mut self,
         groups: &[RenderGroup],
-        groups_revision: u64,
-        registry_generation: u64,
+        dependency_key: RenderGroupDependencyKey,
         registry: &EffectRegistry,
     ) -> Result<()> {
-        if self.reconciled_groups_revision == Some(groups_revision)
-            && self.reconciled_registry_generation == Some(registry_generation)
-        {
+        if self.reconciled_dependency_key == Some(dependency_key) {
             return Ok(());
         }
 
@@ -381,8 +394,7 @@ impl RenderGroupRuntime {
         ));
         self.combined_led_spatial_engine =
             SpatialEngine::new(self.combined_led_layout.as_ref().clone());
-        self.reconciled_groups_revision = Some(groups_revision);
-        self.reconciled_registry_generation = Some(registry_generation);
+        self.reconciled_dependency_key = Some(dependency_key);
 
         Ok(())
     }
@@ -576,14 +588,12 @@ impl RenderGroupRuntime {
 
     fn retain_frame(
         &mut self,
-        groups_revision: u64,
-        registry_generation: u64,
+        dependency_key: RenderGroupDependencyKey,
         result: &RenderGroupResult,
         zones: &[ZoneColors],
     ) {
         self.retained_frame = Some(RetainedRenderGroupFrame {
-            groups_revision,
-            registry_generation,
+            dependency_key,
             scene_frame: result.scene_frame.clone(),
             active_group_canvas_ids: result.active_group_canvas_ids.clone(),
             led_sampling_strategy: result.led_sampling_strategy.retain(zones),
