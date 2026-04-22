@@ -29,6 +29,7 @@ mod pipeline_driver;
 mod pipeline_runtime;
 mod producer_queue;
 mod render_groups;
+mod screen_canvas;
 mod scene_dependency;
 mod scene_snapshot;
 mod scene_state;
@@ -303,8 +304,8 @@ mod tests {
     use hypercolor_core::types::canvas::Rgba;
     use hypercolor_core::types::event::ZoneColors;
 
-    use super::frame_io::{parse_sector_zone_id, screen_data_to_canvas};
     use super::frame_policy::SkipDecision;
+    use super::screen_canvas::{parse_sector_zone_id, screen_data_to_canvas};
     use super::micros_u32;
 
     fn frame_stats(

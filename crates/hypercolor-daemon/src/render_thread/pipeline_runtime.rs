@@ -23,6 +23,7 @@ use super::desired_render_surface_slots;
 use super::frame_policy::FramePolicy;
 use super::producer_queue::ProducerQueue;
 use super::render_groups::RenderGroupRuntime;
+use super::screen_canvas::screen_data_to_canvas;
 use super::scene_snapshot::SceneSnapshotCache;
 use super::scene_state::RenderSceneState;
 use super::sparkleflinger::{PendingZoneSampling, SparkleFlinger};
@@ -51,12 +52,7 @@ impl FrameInputs {
     pub(crate) fn screen_canvas_for_frame(&mut self, width: u32, height: u32) -> Option<Canvas> {
         if self.screen_canvas.is_none() {
             self.screen_canvas = self.screen_data.as_ref().and_then(|data| {
-                super::frame_io::screen_data_to_canvas(
-                    data,
-                    width,
-                    height,
-                    &mut self.screen_sector_grid,
-                )
+                screen_data_to_canvas(data, width, height, &mut self.screen_sector_grid)
             });
         }
 
