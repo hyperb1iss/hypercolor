@@ -1,12 +1,11 @@
 use std::time::Duration;
 
+use hypercolor_core::engine::FrameStats;
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 
 use super::frame_admission::FrameAdmissionController;
-use super::frame_pacing::NextWake;
 
 pub(crate) use super::frame_admission::FrameAdmissionSample;
-pub(crate) use super::frame_pacing::{FrameExecution, SkipDecision};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FrameThrottleKind {
@@ -21,6 +20,40 @@ impl FrameThrottleKind {
             Self::SessionSleep => Duration::from_millis(250),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SkipDecision {
+    None,
+    ReuseInputs,
+    ReuseCanvas,
+}
+
+impl SkipDecision {
+    pub(crate) fn from_frame_stats(stats: &FrameStats) -> Self {
+        if !stats.budget_exceeded {
+            return Self::None;
+        }
+
+        if stats.consecutive_misses >= 2 {
+            Self::ReuseCanvas
+        } else {
+            Self::ReuseInputs
+        }
+    }
+}
+
+pub(crate) struct FrameExecution {
+    pub(crate) next_wake: NextWake,
+    pub(crate) next_skip_decision: SkipDecision,
+}
+
+/// Scheduler decision for when the next render iteration should begin.
+pub(crate) enum NextWake {
+    /// Continue on the regular render cadence using the current FPS interval.
+    Interval(Duration),
+    /// Hold the loop for a fixed delay before checking again.
+    Delay(Duration),
 }
 
 pub(crate) struct FramePolicy {
@@ -79,8 +112,7 @@ mod tests {
 
     use hypercolor_core::engine::{FpsTier, RenderLoop};
 
-    use super::{FrameAdmissionSample, FramePolicy, FrameThrottleKind, SkipDecision};
-    use crate::render_thread::frame_pacing::NextWake;
+    use super::{FrameAdmissionSample, FramePolicy, FrameThrottleKind, NextWake, SkipDecision};
 
     fn clean_sample() -> FrameAdmissionSample {
         FrameAdmissionSample {

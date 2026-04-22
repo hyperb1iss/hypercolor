@@ -305,10 +305,8 @@ mod tests {
     use hypercolor_core::types::event::ZoneColors;
 
     use super::frame_io::{parse_sector_zone_id, screen_data_to_canvas};
-    use super::frame_policy::FramePolicy;
-    use super::frame_pacing::{
-        PRECISE_WAKE_GUARD, SkipDecision, advance_deadline, coarse_sleep_deadline,
-    };
+    use super::frame_pacing::{PRECISE_WAKE_GUARD, advance_deadline, coarse_sleep_deadline};
+    use super::frame_policy::{FramePolicy, SkipDecision};
     use super::micros_u32;
 
     fn frame_stats(

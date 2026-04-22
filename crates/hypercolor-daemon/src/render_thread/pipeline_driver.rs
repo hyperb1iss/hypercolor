@@ -4,8 +4,8 @@ use tracing::{debug, info};
 
 use super::RenderThreadState;
 use super::frame_executor::execute_frame;
-use super::frame_pacing::{NextWake, advance_deadline, wait_until_frame_deadline};
-use super::frame_policy::SkipDecision;
+use super::frame_pacing::{advance_deadline, wait_until_frame_deadline};
+use super::frame_policy::{NextWake, SkipDecision};
 use super::frame_state::{reconcile_audio_capture, reconcile_screen_capture};
 use super::pipeline_runtime::PipelineRuntime;
 
