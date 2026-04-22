@@ -139,9 +139,7 @@ impl ComposeContext<'_> {
                                 .scene_runtime
                                 .active_render_groups
                                 .as_ref(),
-                            self.scene_snapshot
-                                .scene_runtime
-                                .active_render_groups_revision,
+                            live_dependency_key,
                             self.scene_snapshot.elapsed_ms,
                             &self
                                 .scene_snapshot
@@ -165,9 +163,7 @@ impl ComposeContext<'_> {
                             .scene_runtime
                             .active_render_groups
                             .as_ref(),
-                        self.scene_snapshot
-                            .scene_runtime
-                            .active_render_groups_revision,
+                        live_dependency_key,
                         self.scene_snapshot.elapsed_ms,
                         &self
                             .scene_snapshot

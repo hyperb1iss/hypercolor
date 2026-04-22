@@ -186,7 +186,7 @@ impl RenderGroupRuntime {
     pub(crate) fn render_scene(
         &mut self,
         groups: &[RenderGroup],
-        groups_revision: u64,
+        dependency_key: SceneDependencyKey,
         elapsed_ms: u32,
         display_group_target_fps: &HashMap<RenderGroupId, u32>,
         registry: &EffectRegistry,
@@ -197,7 +197,6 @@ impl RenderGroupRuntime {
         sensors: &SystemSnapshot,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<RenderGroupResult> {
-        let dependency_key = SceneDependencyKey::new(groups_revision, registry.generation());
         self.reconcile(groups, dependency_key, registry)?;
 
         if let Some(result) = self.render_single_full_scene_group(
@@ -1114,7 +1113,7 @@ mod tests {
     ) -> Result<RenderGroupResult> {
         runtime.render_scene(
             groups,
-            groups_revision,
+            SceneDependencyKey::new(groups_revision, registry.generation()),
             elapsed_ms,
             display_group_target_fps,
             registry,
