@@ -20,16 +20,16 @@ use super::frame_sampling::{LedSamplingStrategy, RetainedLedSamplingStrategy};
 use super::micros_u32;
 use super::producer_queue::ProducerFrame;
 
-/// Slot count for the full-resolution preview surface pool. Sized to absorb
+/// Slot count for the full-resolution scene surface pool. Sized to absorb
 /// typical downstream pins: the canvas watch channel, display-output
 /// dispatch, and one in-flight JPEG encode per HTML-face worker. Undersizing
 /// forces `begin_dequeue` to reallocate a fresh canvas every frame whenever
 /// all slots are still shared downstream, which shows up as producer-stage
 /// stalls proportional to `canvas_width * canvas_height * 4` bytes.
-const PREVIEW_SURFACE_POOL_SLOTS: usize = 6;
+const SCENE_SURFACE_POOL_SLOTS: usize = 6;
 
 /// Slot count for per-group direct-canvas pools (HTML-face render groups).
-/// Same failure mode as the preview pool, but at smaller canvas sizes; still
+/// Same failure mode as the scene surface pool, but at smaller canvas sizes; still
 /// needs room for watch channel + in-flight display encode.
 const DIRECT_SURFACE_POOL_SLOTS: usize = 4;
 
@@ -46,7 +46,7 @@ pub(crate) struct RenderGroupResult {
     pub led_sampling_strategy: LedSamplingStrategy,
     pub render_us: u32,
     pub sample_us: u32,
-    pub preview_compose_us: u32,
+    pub scene_compose_us: u32,
     pub logical_layer_count: u32,
 }
 
@@ -83,19 +83,19 @@ pub(crate) struct RenderGroupRuntime {
     spatial_engines: HashMap<RenderGroupId, SpatialEngine>,
     direct_surface_pools: HashMap<RenderGroupId, RenderSurfacePool>,
     retained_direct_group_frames: HashMap<RenderGroupId, RetainedDirectGroupFrame>,
-    preview_surface_pool: RenderSurfacePool,
+    scene_surface_pool: RenderSurfacePool,
     reconciled_groups_revision: Option<u64>,
     reconciled_registry_generation: Option<u64>,
     retained_frame: Option<RetainedRenderGroupFrame>,
     last_effect_error: Option<RenderGroupEffectError>,
     combined_led_layout: Arc<SpatialLayout>,
     combined_led_spatial_engine: SpatialEngine,
-    preview_width: u32,
-    preview_height: u32,
+    scene_width: u32,
+    scene_height: u32,
 }
 
 impl RenderGroupRuntime {
-    pub(crate) fn new(preview_width: u32, preview_height: u32) -> Self {
+    pub(crate) fn new(scene_width: u32, scene_height: u32) -> Self {
         Self {
             effect_pool: EffectPool::new(),
             target_canvases: HashMap::new(),
@@ -107,34 +107,34 @@ impl RenderGroupRuntime {
             // encode). 3 is enough when the UI isn't running but starves
             // as soon as HTML-face devices JPEG-encode in parallel,
             // causing every dequeue to realloc a fresh full-res canvas.
-            preview_surface_pool: RenderSurfacePool::with_slot_count(
-                SurfaceDescriptor::rgba8888(preview_width, preview_height),
-                PREVIEW_SURFACE_POOL_SLOTS,
+            scene_surface_pool: RenderSurfacePool::with_slot_count(
+                SurfaceDescriptor::rgba8888(scene_width, scene_height),
+                SCENE_SURFACE_POOL_SLOTS,
             ),
             reconciled_groups_revision: None,
             reconciled_registry_generation: None,
             retained_frame: None,
             last_effect_error: None,
-            combined_led_layout: Arc::new(empty_group_layout(preview_width, preview_height)),
+            combined_led_layout: Arc::new(empty_group_layout(scene_width, scene_height)),
             combined_led_spatial_engine: SpatialEngine::new(empty_group_layout(
-                preview_width,
-                preview_height,
+                scene_width,
+                scene_height,
             )),
-            preview_width,
-            preview_height,
+            scene_width,
+            scene_height,
         }
     }
 
-    /// Total count of times `preview_surface_pool.dequeue()` had to reuse
-    /// a still-shared Published slot (and therefore allocate a fresh
-    /// canvas). Monotonically increasing; non-zero growth means the pool
-    /// is undersized for current downstream fan-out.
+    /// Total count of times the backing scene-surface pool had to reuse a
+    /// still-shared Published slot (and therefore allocate a fresh canvas).
+    /// Monotonically increasing; non-zero growth means the pool is
+    /// undersized for current downstream fan-out.
     #[must_use]
-    pub(crate) fn preview_surface_pool_saturation_reallocs(&self) -> u64 {
-        self.preview_surface_pool.saturation_reallocs()
+    pub(crate) fn scene_surface_pool_saturation_reallocs(&self) -> u64 {
+        self.scene_surface_pool.saturation_reallocs()
     }
 
-    /// Same as `preview_surface_pool_saturation_reallocs` but summed across
+    /// Same as `scene_surface_pool_saturation_reallocs` but summed across
     /// every direct-canvas group pool (one per HTML-face render group).
     #[must_use]
     pub(crate) fn direct_surface_pool_saturation_reallocs(&self) -> u64 {
@@ -144,12 +144,12 @@ impl RenderGroupRuntime {
             .sum()
     }
 
-    /// Count of slots the preview pool has appended above its initial
-    /// capacity since construction. Non-zero values are benign and
+    /// Count of slots the backing scene-surface pool has appended above its
+    /// initial capacity since construction. Non-zero values are benign and
     /// reflect the pool settling at its working-set size.
     #[must_use]
-    pub(crate) fn preview_surface_pool_grown_slots(&self) -> u32 {
-        self.preview_surface_pool.grown_slots()
+    pub(crate) fn scene_surface_pool_grown_slots(&self) -> u32 {
+        self.scene_surface_pool.grown_slots()
     }
 
     /// Total grown slots across every direct-canvas group pool.
@@ -182,7 +182,7 @@ impl RenderGroupRuntime {
             ),
             render_us: 0,
             sample_us: 0,
-            preview_compose_us: 0,
+            scene_compose_us: 0,
             logical_layer_count: retained.logical_layer_count,
         })
     }
@@ -208,7 +208,7 @@ impl RenderGroupRuntime {
         let registry_generation = registry.generation();
         self.reconcile(groups, groups_revision, registry_generation, registry)?;
 
-        if let Some(result) = self.render_single_full_preview_group(
+        if let Some(result) = self.render_single_full_scene_group(
             groups,
             elapsed_ms,
             display_group_target_fps,
@@ -302,13 +302,13 @@ impl RenderGroupRuntime {
         let logical_layer_count = u32::try_from(
             groups
                 .iter()
-                .filter(|group| group_contributes_to_preview(group))
+                .filter(|group| group_contributes_to_scene_canvas(group))
                 .count(),
         )
         .unwrap_or(u32::MAX);
-        let preview_compose_start = Instant::now();
+        let scene_compose_start = Instant::now();
         let scene_frame = self.compose_scene_frame(groups);
-        let preview_compose_us = micros_u32(preview_compose_start.elapsed());
+        let scene_compose_us = micros_u32(scene_compose_start.elapsed());
 
         let result = RenderGroupResult {
             scene_frame,
@@ -321,7 +321,7 @@ impl RenderGroupRuntime {
             },
             render_us,
             sample_us: 0,
-            preview_compose_us,
+            scene_compose_us,
             logical_layer_count,
         };
         self.clear_effect_error();
@@ -345,9 +345,9 @@ impl RenderGroupRuntime {
         self.effect_pool.reconcile(groups, registry)?;
 
         let desired_ids = groups.iter().map(|group| group.id).collect::<HashSet<_>>();
-        let preview_group_ids = groups
+        let scene_group_ids = groups
             .iter()
-            .filter(|group| group_contributes_to_preview(group))
+            .filter(|group| group_contributes_to_scene_canvas(group))
             .map(|group| group.id)
             .collect::<HashSet<_>>();
         let direct_group_ids = groups
@@ -356,7 +356,7 @@ impl RenderGroupRuntime {
             .map(|group| group.id)
             .collect::<HashSet<_>>();
         self.target_canvases
-            .retain(|group_id, _| preview_group_ids.contains(group_id));
+            .retain(|group_id, _| scene_group_ids.contains(group_id));
         self.spatial_engines
             .retain(|group_id, _| desired_ids.contains(group_id));
         self.direct_surface_pools
@@ -365,7 +365,7 @@ impl RenderGroupRuntime {
             .retain(|group_id, _| direct_group_ids.contains(group_id));
 
         for group in groups {
-            if group_contributes_to_preview(group) {
+            if group_contributes_to_scene_canvas(group) {
                 self.ensure_group_canvas(group);
             }
             if group_publishes_direct_canvas(group) {
@@ -376,8 +376,8 @@ impl RenderGroupRuntime {
 
         self.combined_led_layout = Arc::new(combine_led_group_layouts(
             groups,
-            self.preview_width,
-            self.preview_height,
+            self.scene_width,
+            self.scene_height,
         ));
         self.combined_led_spatial_engine =
             SpatialEngine::new(self.combined_led_layout.as_ref().clone());
@@ -426,7 +426,7 @@ impl RenderGroupRuntime {
         }
     }
 
-    fn render_single_full_preview_group(
+    fn render_single_full_scene_group(
         &mut self,
         groups: &[RenderGroup],
         elapsed_ms: u32,
@@ -440,19 +440,19 @@ impl RenderGroupRuntime {
         sensors: &SystemSnapshot,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<Option<RenderGroupResult>> {
-        let Some(preview_group) = self.single_full_preview_group(groups) else {
+        let Some(scene_group) = self.single_full_scene_group(groups) else {
             return Ok(None);
         };
-        let Some(spatial_engine) = self.spatial_engines.get(&preview_group.id).cloned() else {
+        let Some(spatial_engine) = self.spatial_engines.get(&scene_group.id).cloned() else {
             return Ok(None);
         };
-        let Some(mut lease) = self.preview_surface_pool.dequeue() else {
+        let Some(mut lease) = self.scene_surface_pool.dequeue() else {
             return Ok(None);
         };
 
         let render_start = Instant::now();
         if let Err(error) = self.effect_pool.render_group_into(
-            preview_group,
+            scene_group,
             delta_secs,
             audio,
             interaction,
@@ -462,7 +462,7 @@ impl RenderGroupRuntime {
         ) {
             lease.release();
             return Err(anyhow::Error::new(render_group_effect_error(
-                preview_group,
+                scene_group,
                 registry,
                 error,
             )));
@@ -470,15 +470,15 @@ impl RenderGroupRuntime {
         let mut render_us = micros_u32(render_start.elapsed());
 
         let sample_us = 0_u32;
-        if !preview_group.layout.zones.is_empty() {
+        if !scene_group.layout.zones.is_empty() {
             zones.clear();
         }
-        let preview_surface = lease.submit(0, 0);
+        let scene_surface = lease.submit(0, 0);
 
         let mut group_canvases = Vec::new();
         let mut active_group_canvas_ids = Vec::new();
         for group in groups {
-            if !group.enabled || group.effect_id.is_none() || group.id == preview_group.id {
+            if !group.enabled || group.effect_id.is_none() || group.id == scene_group.id {
                 continue;
             }
             if !group_publishes_direct_canvas(group) {
@@ -531,13 +531,13 @@ impl RenderGroupRuntime {
         zones.clear();
 
         Ok(Some(RenderGroupResult {
-            scene_frame: ProducerFrame::Surface(preview_surface),
+            scene_frame: ProducerFrame::Surface(scene_surface),
             group_canvases,
             active_group_canvas_ids,
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(spatial_engine),
             render_us,
             sample_us,
-            preview_compose_us: 0,
+            scene_compose_us: 0,
             logical_layer_count: 1,
         }))
     }
@@ -558,16 +558,16 @@ impl RenderGroupRuntime {
         self.last_effect_error = None;
     }
 
-    fn single_full_preview_group<'a>(&self, groups: &'a [RenderGroup]) -> Option<&'a RenderGroup> {
-        let mut preview_groups = groups
+    fn single_full_scene_group<'a>(&self, groups: &'a [RenderGroup]) -> Option<&'a RenderGroup> {
+        let mut scene_groups = groups
             .iter()
-            .filter(|group| group_contributes_to_preview(group));
-        let group = preview_groups.next()?;
-        if preview_groups.next().is_some() {
+            .filter(|group| group_contributes_to_scene_canvas(group));
+        let group = scene_groups.next()?;
+        if scene_groups.next().is_some() {
             return None;
         }
-        if group.layout.canvas_width != self.preview_width
-            || group.layout.canvas_height != self.preview_height
+        if group.layout.canvas_width != self.scene_width
+            || group.layout.canvas_height != self.scene_height
         {
             return None;
         }
@@ -630,49 +630,49 @@ impl RenderGroupRuntime {
     }
 
     fn compose_scene_frame(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
-        let Some(mut lease) = self.preview_surface_pool.dequeue() else {
-            let mut preview = Canvas::new(self.preview_width, self.preview_height);
+        let Some(mut lease) = self.scene_surface_pool.dequeue() else {
+            let mut scene_canvas = Canvas::new(self.scene_width, self.scene_height);
             compose_authoritative_scene_canvas(
-                &mut preview,
+                &mut scene_canvas,
                 groups,
                 &self.target_canvases,
-                self.preview_width,
-                self.preview_height,
+                self.scene_width,
+                self.scene_height,
             );
-            return ProducerFrame::Canvas(preview);
+            return ProducerFrame::Canvas(scene_canvas);
         };
 
         compose_authoritative_scene_canvas(
             lease.canvas_mut(),
             groups,
             &self.target_canvases,
-            self.preview_width,
-            self.preview_height,
+            self.scene_width,
+            self.scene_height,
         );
 
         ProducerFrame::Surface(lease.submit(0, 0))
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    fn compose_ui_preview(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
-        let Some(mut lease) = self.preview_surface_pool.dequeue() else {
-            let mut preview = Canvas::new(self.preview_width, self.preview_height);
-            compose_ui_preview_canvas(
-                &mut preview,
+    fn compose_preview_grid_for_test(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
+        let Some(mut lease) = self.scene_surface_pool.dequeue() else {
+            let mut preview_grid = Canvas::new(self.scene_width, self.scene_height);
+            compose_preview_grid_canvas(
+                &mut preview_grid,
                 groups,
                 &self.target_canvases,
-                self.preview_width,
-                self.preview_height,
+                self.scene_width,
+                self.scene_height,
             );
-            return ProducerFrame::Canvas(preview);
+            return ProducerFrame::Canvas(preview_grid);
         };
 
-        compose_ui_preview_canvas(
+        compose_preview_grid_canvas(
             lease.canvas_mut(),
             groups,
             &self.target_canvases,
-            self.preview_width,
-            self.preview_height,
+            self.scene_width,
+            self.scene_height,
         );
 
         ProducerFrame::Surface(lease.submit(0, 0))
@@ -680,17 +680,17 @@ impl RenderGroupRuntime {
 }
 
 fn compose_authoritative_scene_canvas(
-    preview: &mut Canvas,
+    scene_canvas: &mut Canvas,
     groups: &[RenderGroup],
     target_canvases: &HashMap<RenderGroupId, Canvas>,
-    preview_width: u32,
-    preview_height: u32,
+    scene_width: u32,
+    scene_height: u32,
 ) {
-    preview.clear();
+    scene_canvas.clear();
 
     for group in groups
         .iter()
-        .filter(|group| group_contributes_to_preview(group))
+        .filter(|group| group_contributes_to_scene_canvas(group))
     {
         let Some(source) = target_canvases.get(&group.id) else {
             continue;
@@ -698,12 +698,12 @@ fn compose_authoritative_scene_canvas(
 
         for zone in &group.layout.zones {
             blit_zone_projection(
-                preview,
+                scene_canvas,
                 source,
                 zone,
                 &group.layout,
-                preview_width,
-                preview_height,
+                scene_width,
+                scene_height,
             );
         }
     }
@@ -714,7 +714,7 @@ fn compose_authoritative_scene_canvas(
     clippy::as_conversions,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "zone projection rasterizes bounded normalized geometry into preview pixels"
+    reason = "zone projection rasterizes bounded normalized geometry into scene pixels"
 )]
 fn blit_zone_projection(
     target: &mut Canvas,
@@ -793,7 +793,7 @@ fn blit_zone_projection(
 #[expect(
     clippy::cast_precision_loss,
     clippy::as_conversions,
-    reason = "preview pixel centers are rasterized into normalized scene coordinates"
+    reason = "scene pixel centers are rasterized into normalized scene coordinates"
 )]
 fn zone_local_position_for_scene_pixel(
     x: u32,
@@ -828,7 +828,7 @@ fn zone_local_position_for_scene_pixel(
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-fn compose_ui_preview_canvas(
+fn compose_preview_grid_canvas(
     preview: &mut Canvas,
     groups: &[RenderGroup],
     target_canvases: &HashMap<RenderGroupId, Canvas>,
@@ -837,7 +837,7 @@ fn compose_ui_preview_canvas(
 ) {
     let preview_count = groups
         .iter()
-        .filter(|group| group_contributes_to_preview(group))
+        .filter(|group| group_contributes_to_scene_canvas(group))
         .count();
 
     if preview_count == 0 {
@@ -848,7 +848,7 @@ fn compose_ui_preview_canvas(
     if preview_count == 1
         && let Some(source) = groups
             .iter()
-            .find(|group| group_contributes_to_preview(group))
+            .find(|group| group_contributes_to_scene_canvas(group))
             .and_then(|group| target_canvases.get(&group.id))
     {
         if source.width() == preview_width && source.height() == preview_height {
@@ -866,7 +866,7 @@ fn compose_ui_preview_canvas(
     let rows = preview_count.div_ceil(columns);
     for (index, group) in groups
         .iter()
-        .filter(|group| group_contributes_to_preview(group))
+        .filter(|group| group_contributes_to_scene_canvas(group))
         .enumerate()
     {
         let Some(source) = target_canvases.get(&group.id) else {
@@ -887,7 +887,7 @@ fn group_is_active(group: &RenderGroup) -> bool {
     group.enabled && group.effect_id.is_some()
 }
 
-fn group_contributes_to_preview(group: &RenderGroup) -> bool {
+fn group_contributes_to_scene_canvas(group: &RenderGroup) -> bool {
     group_is_active(group) && group.display_target.is_none()
 }
 
@@ -940,7 +940,7 @@ fn combine_led_group_layouts(groups: &[RenderGroup], width: u32, height: u32) ->
     let mut layout = empty_group_layout(width, height);
     layout.zones = groups
         .iter()
-        .filter(|group| group_contributes_to_preview(group))
+        .filter(|group| group_contributes_to_scene_canvas(group))
         .flat_map(|group| group.layout.zones.clone())
         .collect();
     layout
@@ -1200,7 +1200,7 @@ mod tests {
         source.fill(Rgba::new(12, 34, 56, 255));
         runtime.target_canvases.insert(group.id, source);
 
-        let preview = runtime.compose_ui_preview(&[group]);
+        let preview = runtime.compose_preview_grid_for_test(&[group]);
         let ProducerFrame::Surface(surface) = preview else {
             panic!("single-group preview should publish a pooled surface");
         };
@@ -1222,7 +1222,7 @@ mod tests {
         source.set_pixel(1, 1, Rgba::new(255, 255, 0, 255));
         runtime.target_canvases.insert(group.id, source);
 
-        let preview = runtime.compose_ui_preview(&[group]);
+        let preview = runtime.compose_preview_grid_for_test(&[group]);
         let ProducerFrame::Surface(surface) = preview else {
             panic!("scaled single-group preview should publish a pooled surface");
         };
@@ -1256,7 +1256,7 @@ mod tests {
             .target_canvases
             .insert(display_group.id, display_canvas);
 
-        let preview = runtime.compose_ui_preview(&[preview_group, display_group]);
+        let preview = runtime.compose_preview_grid_for_test(&[preview_group, display_group]);
         let ProducerFrame::Surface(surface) = preview else {
             panic!("mixed preview should publish a pooled surface");
         };
@@ -1266,7 +1266,7 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_scene_preview_clips_rotated_zone_geometry() {
+    fn authoritative_scene_canvas_clips_rotated_zone_geometry() {
         let mut runtime = RenderGroupRuntime::new(8, 8);
         let mut group = sample_group(8, 8);
         group.layout.zones = vec![rotated_zone("zone_rotated", FRAC_PI_4, 0.5)];
@@ -1274,9 +1274,9 @@ mod tests {
         source.fill(Rgba::new(255, 0, 0, 255));
         runtime.target_canvases.insert(group.id, source);
 
-        let preview = runtime.compose_scene_frame(&[group]);
-        let ProducerFrame::Surface(surface) = preview else {
-            panic!("authoritative scene preview should publish a pooled surface");
+        let scene_frame = runtime.compose_scene_frame(&[group]);
+        let ProducerFrame::Surface(surface) = scene_frame else {
+            panic!("authoritative scene canvas should publish a pooled surface");
         };
 
         assert_eq!(
@@ -1292,7 +1292,7 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_scene_preview_preserves_group_overlap_order() {
+    fn authoritative_scene_canvas_preserves_group_overlap_order() {
         let mut runtime = RenderGroupRuntime::new(8, 8);
         let mut back_group = sample_group(8, 8);
         back_group.layout.zones = vec![rotated_zone("zone_back", FRAC_PI_4, 0.5)];
@@ -1307,9 +1307,9 @@ mod tests {
         runtime.target_canvases.insert(back_group.id, back_source);
         runtime.target_canvases.insert(front_group.id, front_source);
 
-        let preview = runtime.compose_scene_frame(&[back_group, front_group]);
-        let ProducerFrame::Surface(surface) = preview else {
-            panic!("authoritative scene preview should publish a pooled surface");
+        let scene_frame = runtime.compose_scene_frame(&[back_group, front_group]);
+        let ProducerFrame::Surface(surface) = scene_frame else {
+            panic!("authoritative scene canvas should publish a pooled surface");
         };
 
         assert_eq!(
@@ -1325,7 +1325,7 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_scene_preview_uses_zone_sampling_mode() {
+    fn authoritative_scene_canvas_uses_zone_sampling_mode() {
         let mut runtime = RenderGroupRuntime::new(4, 4);
         let mut group = sample_group(2, 2);
         group.layout.zones = vec![point_zone("zone_sampling")];
@@ -1338,9 +1338,9 @@ mod tests {
         source.set_pixel(1, 1, Rgba::new(255, 255, 0, 255));
         runtime.target_canvases.insert(group.id, source);
 
-        let preview = runtime.compose_scene_frame(&[group]);
-        let ProducerFrame::Surface(surface) = preview else {
-            panic!("authoritative scene preview should publish a pooled surface");
+        let scene_frame = runtime.compose_scene_frame(&[group]);
+        let ProducerFrame::Surface(surface) = scene_frame else {
+            panic!("authoritative scene canvas should publish a pooled surface");
         };
 
         assert_eq!(surface.get_pixel(1, 0), Rgba::new(255, 0, 0, 255));
@@ -1456,7 +1456,7 @@ mod tests {
     }
 
     #[test]
-    fn single_full_preview_group_renders_directly_into_surface() {
+    fn single_full_scene_group_renders_directly_into_surface() {
         let mut runtime = RenderGroupRuntime::new(4, 4);
         let registry = builtin_registry();
         let solid_id = builtin_effect_id(&registry, "solid_color");
@@ -1531,7 +1531,7 @@ mod tests {
     }
 
     #[test]
-    fn single_full_preview_display_group_keeps_shared_preview_blank() {
+    fn single_full_display_group_keeps_shared_scene_canvas_blank() {
         let mut runtime = RenderGroupRuntime::new(4, 4);
         let registry = builtin_registry();
         let solid_id = builtin_effect_id(&registry, "solid_color");
@@ -1554,7 +1554,7 @@ mod tests {
         )
         .expect("single display group should render");
 
-        let ProducerFrame::Surface(preview_surface) = result.scene_frame else {
+        let ProducerFrame::Surface(scene_surface) = result.scene_frame else {
             panic!("single display group should render into a surface");
         };
         let [(_, group_canvas_frame)] = &result.group_canvases[..] else {
@@ -1562,7 +1562,7 @@ mod tests {
         };
 
         assert_eq!(result.logical_layer_count, 0);
-        assert_eq!(preview_surface.get_pixel(0, 0), Rgba::new(0, 0, 0, 255));
+        assert_eq!(scene_surface.get_pixel(0, 0), Rgba::new(0, 0, 0, 255));
         assert_eq!(
             group_canvas_frame.surface.get_pixel(0, 0),
             Rgba::new(0, 0, 255, 255)
@@ -1571,15 +1571,15 @@ mod tests {
     }
 
     #[test]
-    fn full_preview_group_with_display_group_keeps_display_faces_out_of_led_sampling() {
+    fn full_scene_group_with_display_group_keeps_display_faces_out_of_led_sampling() {
         let mut runtime = RenderGroupRuntime::new(4, 4);
         let registry = builtin_registry();
         let solid_id = builtin_effect_id(&registry, "solid_color");
-        let mut preview_group = sample_group(4, 4);
-        preview_group.effect_id = Some(solid_id);
-        preview_group.controls =
+        let mut scene_group = sample_group(4, 4);
+        scene_group.effect_id = Some(solid_id);
+        scene_group.controls =
             HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]);
-        preview_group.layout.zones = vec![point_zone("zone_preview")];
+        scene_group.layout.zones = vec![point_zone("zone_preview")];
         let mut display_group = sample_display_group(4, 4);
         display_group.effect_id = Some(solid_id);
         display_group.controls =
@@ -1590,17 +1590,17 @@ mod tests {
 
         let result = render_scene_for_test(
             &mut runtime,
-            &[preview_group.clone(), display_group.clone()],
+            &[scene_group.clone(), display_group.clone()],
             1,
             0,
             &display_group_target_fps,
             &registry,
             &mut zones,
         )
-        .expect("mixed preview and display groups should render");
+        .expect("mixed scene and display groups should render");
 
-        let ProducerFrame::Surface(preview_surface) = &result.scene_frame else {
-            panic!("mixed full-preview scene should publish a surface-backed preview");
+        let ProducerFrame::Surface(scene_surface) = &result.scene_frame else {
+            panic!("mixed full-scene render should publish a surface-backed scene canvas");
         };
         let [(_, group_canvas_frame)] = &result.group_canvases[..] else {
             panic!("display group should publish a direct surface");
@@ -1608,12 +1608,12 @@ mod tests {
         let LedSamplingStrategy::SparkleFlinger(spatial_engine) =
             result.led_sampling_strategy.clone()
         else {
-            panic!("single preview scene should hand LED sampling to SparkleFlinger");
+            panic!("single scene group should hand LED sampling to SparkleFlinger");
         };
         let sampled = spatial_engine.sample(&Canvas::from_rgba(
-            preview_surface.rgba_bytes(),
-            preview_surface.width(),
-            preview_surface.height(),
+            scene_surface.rgba_bytes(),
+            scene_surface.width(),
+            scene_surface.height(),
         ));
         let reused = runtime
             .reuse_scene(1, registry.generation())
@@ -1621,10 +1621,10 @@ mod tests {
         let LedSamplingStrategy::SparkleFlinger(reused_spatial_engine) =
             reused.led_sampling_strategy
         else {
-            panic!("retained single-preview scene should stay SparkleFlinger-owned");
+            panic!("retained single-scene render should stay SparkleFlinger-owned");
         };
 
-        assert_eq!(preview_surface.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
+        assert_eq!(scene_surface.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
         assert_eq!(
             group_canvas_frame.surface.get_pixel(0, 0),
             Rgba::new(0, 0, 255, 255)
@@ -1770,14 +1770,14 @@ mod tests {
             &registry,
             &mut zones,
         )
-        .expect("mixed preview and display groups should render");
+        .expect("mixed scene and display groups should render");
         let [(_, group_canvas_frame)] = &result.group_canvases[..] else {
             panic!("display group should publish a direct surface");
         };
         let LedSamplingStrategy::SparkleFlinger(spatial_engine) =
             result.led_sampling_strategy.clone()
         else {
-            panic!("multi-group preview scenes should sample LEDs from the canonical scene canvas");
+            panic!("multi-group scene renders should sample LEDs from the canonical scene canvas");
         };
         let sampled = spatial_engine.sample(&canvas_from_scene_frame(&result.scene_frame));
 
@@ -1858,7 +1858,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_zone_preview_groups_keep_empty_presampled_led_strategy() {
+    fn zero_zone_scene_groups_keep_empty_presampled_led_strategy() {
         let mut runtime = RenderGroupRuntime::new(4, 4);
         let registry = builtin_registry();
         let solid_id = builtin_effect_id(&registry, "solid_color");
@@ -1883,10 +1883,10 @@ mod tests {
             &registry,
             &mut zones,
         )
-        .expect("zero-zone preview groups should render");
+        .expect("zero-zone scene groups should render");
 
         let LedSamplingStrategy::PreSampled(layout) = result.led_sampling_strategy else {
-            panic!("preview scenes without LED zones should keep the empty pre-sampled path");
+            panic!("scene groups without LED zones should keep the empty pre-sampled path");
         };
         assert!(layout.zones.is_empty());
         assert!(zones.is_empty());

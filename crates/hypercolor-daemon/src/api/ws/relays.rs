@@ -1172,8 +1172,8 @@ pub(super) async fn build_metrics_message(
                 input_sampling_ms: round_2(us_to_ms(latest_frame.input_us)),
                 producer_rendering_ms: round_2(us_to_ms(latest_frame.producer_us)),
                 producer_effect_rendering_ms: round_2(us_to_ms(latest_frame.producer_render_us)),
-                producer_preview_compose_ms: round_2(us_to_ms(
-                    latest_frame.producer_preview_compose_us,
+                producer_scene_compose_ms: round_2(us_to_ms(
+                    latest_frame.producer_scene_compose_us,
                 )),
                 composition_ms: round_2(us_to_ms(latest_frame.composition_us)),
                 effect_rendering_ms: round_2(us_to_ms(latest_frame.render_us)),
@@ -1252,9 +1252,9 @@ pub(super) async fn build_metrics_message(
                 published_slots: latest_frame.render_surface_published_slots,
                 dequeued_slots: latest_frame.render_surface_dequeued_slots,
                 canvas_receivers: latest_frame.canvas_receiver_count,
-                preview_pool_saturation_reallocs: latest_frame.preview_pool_saturation_reallocs,
+                scene_pool_saturation_reallocs: latest_frame.scene_pool_saturation_reallocs,
                 direct_pool_saturation_reallocs: latest_frame.direct_pool_saturation_reallocs,
-                preview_pool_grown_slots: latest_frame.preview_pool_grown_slots,
+                scene_pool_grown_slots: latest_frame.scene_pool_grown_slots,
                 direct_pool_grown_slots: latest_frame.direct_pool_grown_slots,
             },
             preview: MetricsPreview {

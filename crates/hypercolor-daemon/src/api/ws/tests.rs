@@ -170,7 +170,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
             input_us: 200,
             producer_us: 900,
             producer_render_us: 640,
-            producer_preview_compose_us: 110,
+            producer_scene_compose_us: 110,
             composition_us: 300,
             render_us: 1_200,
             sample_us: 150,
@@ -205,9 +205,9 @@ async fn metrics_message_includes_latest_frame_timeline() {
             render_surface_free_slots: 1,
             render_surface_published_slots: 4,
             render_surface_dequeued_slots: 1,
-            preview_pool_saturation_reallocs: 0,
+            scene_pool_saturation_reallocs: 0,
             direct_pool_saturation_reallocs: 0,
-            preview_pool_grown_slots: 0,
+            scene_pool_grown_slots: 0,
             direct_pool_grown_slots: 0,
             canvas_receiver_count: 2,
             full_frame_copy_count: 1,
@@ -282,6 +282,8 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["render_surfaces"]["slot_count"], 6);
     assert_eq!(json["render_surfaces"]["published_slots"], 4);
     assert_eq!(json["render_surfaces"]["canvas_receivers"], 2);
+    assert_eq!(json["render_surfaces"]["preview_pool_saturation_reallocs"], 0);
+    assert_eq!(json["render_surfaces"]["preview_pool_grown_slots"], 0);
     assert_eq!(json["preview"]["canvas_receivers"], 1);
     assert_eq!(json["preview"]["screen_canvas_receivers"], 1);
     assert_eq!(json["preview"]["canvas_frames_published"], 1);

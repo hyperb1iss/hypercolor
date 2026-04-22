@@ -761,7 +761,8 @@ pub(super) struct MetricsStages {
     pub(super) input_sampling_ms: f64,
     pub(super) producer_rendering_ms: f64,
     pub(super) producer_effect_rendering_ms: f64,
-    pub(super) producer_preview_compose_ms: f64,
+    #[serde(rename = "producer_preview_compose_ms")]
+    pub(super) producer_scene_compose_ms: f64,
     pub(super) composition_ms: f64,
     pub(super) effect_rendering_ms: f64,
     pub(super) spatial_sampling_ms: f64,
@@ -867,17 +868,19 @@ pub(super) struct MetricsRenderSurfaces {
     pub(super) published_slots: u32,
     pub(super) dequeued_slots: u32,
     pub(super) canvas_receivers: u32,
-    /// Monotonic counter: how many times the render-group preview pool
+    /// Monotonic counter: how many times the render-group scene surface pool
     /// hit its growth cap and had to reuse a still-shared slot, forcing
     /// a fresh `Canvas::new` on every frame. A rising value means the
     /// cap is too low for current fan-out.
-    pub(super) preview_pool_saturation_reallocs: u64,
+    #[serde(rename = "preview_pool_saturation_reallocs")]
+    pub(super) scene_pool_saturation_reallocs: u64,
     /// Same counter summed across per-group direct-canvas pools.
     pub(super) direct_pool_saturation_reallocs: u64,
-    /// Current slot count above the preview pool's initial size.
+    /// Current slot count above the scene surface pool's initial size.
     /// Benign when stable — the pool converged on its working set. A
     /// climbing value over time could indicate a pinned-Arc leak.
-    pub(super) preview_pool_grown_slots: u32,
+    #[serde(rename = "preview_pool_grown_slots")]
+    pub(super) scene_pool_grown_slots: u32,
     /// Same gauge summed across per-group direct-canvas pools.
     pub(super) direct_pool_grown_slots: u32,
 }

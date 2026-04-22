@@ -115,15 +115,15 @@ pub(crate) struct RenderSurfaceSnapshot {
     pub(crate) published_slots: u32,
     pub(crate) dequeued_slots: u32,
     pub(crate) canvas_receivers: u32,
-    /// Monotonic counter from the render-group runtime's preview pool:
+    /// Monotonic counter from the render-group runtime's scene surface pool:
     /// how many times a dequeue had to reuse a still-shared Published
     /// slot and allocate a fresh canvas. Only fires at the pool's cap.
-    pub(crate) preview_pool_saturation_reallocs: u64,
+    pub(crate) scene_pool_saturation_reallocs: u64,
     /// Same counter summed across per-group direct-canvas pools.
     pub(crate) direct_pool_saturation_reallocs: u64,
-    /// Current slot count above the preview pool's initial size. Grows
+    /// Current slot count above the scene surface pool's initial size. Grows
     /// once per high-water mark, then settles.
-    pub(crate) preview_pool_grown_slots: u32,
+    pub(crate) scene_pool_grown_slots: u32,
     /// Same gauge summed across per-group direct-canvas pools.
     pub(crate) direct_pool_grown_slots: u32,
 }
@@ -199,14 +199,13 @@ impl RenderCaches {
         snapshot.free_slots = u32::try_from(slot_counts.free).unwrap_or(u32::MAX);
         snapshot.published_slots = u32::try_from(slot_counts.published).unwrap_or(u32::MAX);
         snapshot.dequeued_slots = u32::try_from(slot_counts.dequeued).unwrap_or(u32::MAX);
-        snapshot.preview_pool_saturation_reallocs = self
+        snapshot.scene_pool_saturation_reallocs = self
             .render_group_runtime
-            .preview_surface_pool_saturation_reallocs();
+            .scene_surface_pool_saturation_reallocs();
         snapshot.direct_pool_saturation_reallocs = self
             .render_group_runtime
             .direct_surface_pool_saturation_reallocs();
-        snapshot.preview_pool_grown_slots =
-            self.render_group_runtime.preview_surface_pool_grown_slots();
+        snapshot.scene_pool_grown_slots = self.render_group_runtime.scene_surface_pool_grown_slots();
         snapshot.direct_pool_grown_slots =
             self.render_group_runtime.direct_surface_pool_grown_slots();
 
