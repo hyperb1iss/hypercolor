@@ -72,15 +72,24 @@ struct CachedDisplayGroupTargetFps {
     values: HashMap<RenderGroupId, u32>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CachedEffectDemand {
+    dependency_key: SceneDependencyKey,
+    screen_capture_configured: bool,
+    demand: EffectDemand,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct SceneSnapshotCache {
     cached_display_group_target_fps: Option<CachedDisplayGroupTargetFps>,
+    cached_effect_demand: Option<CachedEffectDemand>,
 }
 
 impl SceneSnapshotCache {
     pub const fn new() -> Self {
         Self {
             cached_display_group_target_fps: None,
+            cached_effect_demand: None,
         }
     }
 
@@ -105,13 +114,39 @@ impl SceneSnapshotCache {
         });
     }
 
+    pub(crate) fn cached_effect_demand(
+        &self,
+        dependency_key: SceneDependencyKey,
+        screen_capture_configured: bool,
+    ) -> Option<EffectDemand> {
+        self.cached_effect_demand
+            .filter(|cache| {
+                cache.dependency_key == dependency_key
+                    && cache.screen_capture_configured == screen_capture_configured
+            })
+            .map(|cache| cache.demand)
+    }
+
+    pub(crate) fn cache_effect_demand(
+        &mut self,
+        dependency_key: SceneDependencyKey,
+        screen_capture_configured: bool,
+        demand: EffectDemand,
+    ) {
+        self.cached_effect_demand = Some(CachedEffectDemand {
+            dependency_key,
+            screen_capture_configured,
+            demand,
+        });
+    }
+
 }
 
 #[cfg(test)]
 mod tests {
     use hypercolor_types::scene::RenderGroupId;
 
-    use super::{SceneDependencyKey, SceneSnapshotCache};
+    use super::{EffectDemand, SceneDependencyKey, SceneSnapshotCache};
 
     #[test]
     fn scene_snapshot_cache_caches_display_group_target_fps_by_revision_and_registry_generation() {
@@ -142,5 +177,33 @@ mod tests {
                 .cached_display_group_target_fps(SceneDependencyKey::new(1, 8))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn scene_snapshot_cache_caches_effect_demand_by_dependency_key_and_capture_mode() {
+        let mut scheduler = SceneSnapshotCache::new();
+        let dependency_key = SceneDependencyKey::new(1, 7);
+        let demand = EffectDemand {
+            effect_running: true,
+            audio_capture_active: true,
+            screen_capture_active: false,
+        };
+
+        assert!(scheduler.cached_effect_demand(dependency_key, false).is_none());
+
+        scheduler.cache_effect_demand(dependency_key, false, demand);
+
+        assert_eq!(scheduler.cached_effect_demand(dependency_key, false), Some(demand));
+        assert!(
+            scheduler
+                .cached_effect_demand(SceneDependencyKey::new(2, 7), false)
+                .is_none()
+        );
+        assert!(
+            scheduler
+                .cached_effect_demand(SceneDependencyKey::new(1, 8), false)
+                .is_none()
+        );
+        assert!(scheduler.cached_effect_demand(dependency_key, true).is_none());
     }
 }

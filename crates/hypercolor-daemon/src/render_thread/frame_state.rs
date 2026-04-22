@@ -34,26 +34,18 @@ pub(crate) struct EffectSceneSnapshot {
     pub(crate) dependency_key: SceneDependencyKey,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CachedRenderGroupDemand {
-    pub(crate) dependency_key: SceneDependencyKey,
-    pub(crate) screen_capture_configured: bool,
-    pub(crate) demand: EffectDemand,
-}
-
 pub(crate) async fn build_frame_scene_snapshot(
     state: &RenderThreadState,
     scene_snapshot_cache: &mut SceneSnapshotCache,
     render_scene_state: &RenderSceneState,
-    last_render_group_demand: &mut Option<CachedRenderGroupDemand>,
     delta_secs: f32,
 ) -> FrameSceneSnapshot {
     let scene_runtime =
         current_scene_runtime_snapshot(state, scene_snapshot_cache, delta_secs).await;
     let effect_scene = current_effect_scene_snapshot(
         state,
+        scene_snapshot_cache,
         &scene_runtime,
-        last_render_group_demand,
         render_scene_state.screen_capture_configured(),
     )
     .await;
@@ -72,14 +64,14 @@ pub(crate) async fn build_frame_scene_snapshot(
 
 pub(crate) async fn refresh_effect_scene_snapshot(
     state: &RenderThreadState,
+    scene_snapshot_cache: &mut SceneSnapshotCache,
     render_scene_state: &RenderSceneState,
     scene_snapshot: &mut FrameSceneSnapshot,
-    last_render_group_demand: &mut Option<CachedRenderGroupDemand>,
 ) -> bool {
     let refreshed = current_effect_scene_snapshot(
         state,
+        scene_snapshot_cache,
         &scene_snapshot.scene_runtime,
-        last_render_group_demand,
         render_scene_state.screen_capture_configured(),
     )
     .await;
@@ -187,18 +179,17 @@ async fn snapshot_display_group_target_fps(
 
 async fn current_effect_scene_snapshot(
     state: &RenderThreadState,
+    scene_snapshot_cache: &mut SceneSnapshotCache,
     scene_runtime: &SceneRuntimeSnapshot,
-    last_render_group_demand: &mut Option<CachedRenderGroupDemand>,
     screen_capture_configured: bool,
 ) -> EffectSceneSnapshot {
     let registry = state.effect_registry.read().await;
     let dependency_key = scene_runtime.dependency_key(registry.generation());
-    if let Some(cached) = last_render_group_demand.as_ref()
-        && cached.dependency_key == dependency_key
-        && cached.screen_capture_configured == screen_capture_configured
+    if let Some(demand) =
+        scene_snapshot_cache.cached_effect_demand(dependency_key, screen_capture_configured)
     {
         return EffectSceneSnapshot {
-            demand: cached.demand,
+            demand,
             dependency_key,
         };
     }
@@ -232,11 +223,7 @@ async fn current_effect_scene_snapshot(
         audio_capture_active,
         screen_capture_active,
     };
-    *last_render_group_demand = Some(CachedRenderGroupDemand {
-        dependency_key,
-        screen_capture_configured,
-        demand,
-    });
+    scene_snapshot_cache.cache_effect_demand(dependency_key, screen_capture_configured, demand);
 
     EffectSceneSnapshot {
         demand,
@@ -331,8 +318,8 @@ mod tests {
     use crate::session::OutputPowerState;
 
     use super::{
-        CachedRenderGroupDemand, build_frame_scene_snapshot, current_effect_scene_snapshot,
-        refresh_effect_scene_snapshot, render_loop_snapshot,
+        build_frame_scene_snapshot, current_effect_scene_snapshot, refresh_effect_scene_snapshot,
+        render_loop_snapshot,
     };
     use crate::render_thread::scene_snapshot::{
         FrameSceneSnapshot, SceneRuntimeSnapshot, SceneSnapshotCache,
@@ -438,13 +425,11 @@ mod tests {
             false,
         );
         let expected_loop_snapshot = render_loop_snapshot(&state).await;
-        let mut cached = None::<CachedRenderGroupDemand>;
 
         let snapshot = build_frame_scene_snapshot(
             &state,
             &mut scene_snapshot_cache,
             &render_scene_state,
-            &mut cached,
             0.0,
         )
         .await;
@@ -472,9 +457,15 @@ mod tests {
             active_render_group_count: 1,
             active_display_group_target_fps: HashMap::new(),
         };
-        let mut cached = None::<CachedRenderGroupDemand>;
+        let mut scene_snapshot_cache = SceneSnapshotCache::new();
 
-        let first = current_effect_scene_snapshot(&state, &scene_runtime, &mut cached, false).await;
+        let first = current_effect_scene_snapshot(
+            &state,
+            &mut scene_snapshot_cache,
+            &scene_runtime,
+            false,
+        )
+        .await;
         assert!(!first.demand.audio_capture_active);
         assert!(!first.demand.screen_capture_active);
 
@@ -483,8 +474,13 @@ mod tests {
             registry.register(sample_entry(effect_id, true, true));
         }
 
-        let second =
-            current_effect_scene_snapshot(&state, &scene_runtime, &mut cached, false).await;
+        let second = current_effect_scene_snapshot(
+            &state,
+            &mut scene_snapshot_cache,
+            &scene_runtime,
+            false,
+        )
+        .await;
         assert!(second.demand.audio_capture_active);
         assert!(second.demand.screen_capture_active);
         assert!(
@@ -507,10 +503,15 @@ mod tests {
             active_render_group_count: 1,
             active_display_group_target_fps: HashMap::new(),
         };
-        let mut cached = None::<CachedRenderGroupDemand>;
+        let mut scene_snapshot_cache = SceneSnapshotCache::new();
         let render_scene_state = RenderSceneState::new(SpatialEngine::new(sample_layout()), false);
-        let effect_scene =
-            current_effect_scene_snapshot(&state, &scene_runtime, &mut cached, false).await;
+        let effect_scene = current_effect_scene_snapshot(
+            &state,
+            &mut scene_snapshot_cache,
+            &scene_runtime,
+            false,
+        )
+        .await;
         let mut scene_snapshot = FrameSceneSnapshot {
             frame_token: 42,
             elapsed_ms: 123,
@@ -529,9 +530,9 @@ mod tests {
 
         let changed = refresh_effect_scene_snapshot(
             &state,
+            &mut scene_snapshot_cache,
             &render_scene_state,
             &mut scene_snapshot,
-            &mut cached,
         )
         .await;
 

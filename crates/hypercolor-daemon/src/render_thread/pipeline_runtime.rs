@@ -20,7 +20,6 @@ use super::RenderThreadState;
 use super::composition_planner::CompositionPlanner;
 use super::desired_render_surface_slots;
 use super::frame_policy::FramePolicy;
-use super::frame_state::CachedRenderGroupDemand;
 use super::producer_queue::ProducerQueue;
 use super::render_groups::RenderGroupRuntime;
 use super::scene_snapshot::SceneSnapshotCache;
@@ -88,7 +87,6 @@ pub(crate) struct FrameLoopState {
     pub(crate) last_web_viewport_preview_publish_ms: Option<u32>,
     pub(crate) last_audio_capture_active: Option<bool>,
     pub(crate) last_screen_capture_active: Option<bool>,
-    pub(crate) last_render_group_demand: Option<CachedRenderGroupDemand>,
     pub(crate) last_output_brightness_bits: Option<u32>,
     pub(crate) last_device_output_brightness_generation: Option<u64>,
 }
@@ -255,7 +253,6 @@ impl PipelineRuntime {
                 last_web_viewport_preview_publish_ms: None,
                 last_audio_capture_active: None,
                 last_screen_capture_active: None,
-                last_render_group_demand: None,
                 last_output_brightness_bits: None,
                 last_device_output_brightness_generation: None,
             },

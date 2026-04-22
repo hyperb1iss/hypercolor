@@ -72,15 +72,14 @@ pub(crate) async fn execute_frame(
         state,
         scene_snapshot_cache,
         &render.render_scene_state,
-        &mut frame_loop.last_render_group_demand,
         delta_secs,
     )
     .await;
     refresh_effect_scene_snapshot(
         state,
+        scene_snapshot_cache,
         &render.render_scene_state,
         &mut scene_snapshot,
-        &mut frame_loop.last_render_group_demand,
     )
     .await;
     let output_power = scene_snapshot.output_power;
@@ -124,9 +123,9 @@ pub(crate) async fn execute_frame(
 
     if refresh_effect_scene_snapshot(
         state,
+        scene_snapshot_cache,
         &render.render_scene_state,
         &mut scene_snapshot,
-        &mut frame_loop.last_render_group_demand,
     )
     .await
     {
@@ -215,9 +214,9 @@ pub(crate) async fn execute_frame(
     .await;
     let _ = refresh_effect_scene_snapshot(
         state,
+        scene_snapshot_cache,
         &render.render_scene_state,
         &mut scene_snapshot,
-        &mut frame_loop.last_render_group_demand,
     )
     .await;
 
