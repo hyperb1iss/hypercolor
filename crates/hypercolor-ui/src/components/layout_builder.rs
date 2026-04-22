@@ -920,32 +920,65 @@ pub fn LayoutBuilder() -> impl IntoView {
                 accent=PageAccent::Coral
             >
                 <HeaderTrailing slot>
-                    // Title row stays lean: just Undo/Redo as icon buttons.
-                    // Save/Revert live on a dirty-state strip below the header
-                    // so they only appear when actually relevant; destructive
-                    // and per-layout actions live in the toolbar-row overflow.
+                    // Single-line action cluster: [Undo][Redo]  [Revert][Save].
+                    // Save doubles as the dirty indicator — glows when there
+                    // are unsaved changes, dims when clean. Revert follows the
+                    // same active/disabled pattern. No separate dirty strip.
                     {move || layout.get().map(|_| {
+                        let dirty = is_dirty.get();
+                        let save_style = if dirty {
+                            "background: rgba(80, 250, 123, 0.14); border-color: rgba(80, 250, 123, 0.35); color: rgb(80, 250, 123); \
+                             box-shadow: 0 0 14px rgba(80, 250, 123, 0.18)"
+                        } else {
+                            "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
+                        };
+                        let revert_style = if dirty {
+                            "background: rgba(241, 250, 140, 0.08); border-color: rgba(241, 250, 140, 0.25); color: rgb(241, 250, 140)"
+                        } else {
+                            "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
+                        };
                         view! {
-                            <div class="flex items-center gap-1">
+                            <div class="flex items-center gap-2">
+                                <div class="flex items-center gap-1">
+                                    <button
+                                        class="w-8 h-8 flex items-center justify-center rounded-md text-fg-tertiary
+                                               hover:text-fg-primary hover:bg-surface-hover/40 transition-all btn-press
+                                               disabled:opacity-30 disabled:pointer-events-none"
+                                        title="Undo (Ctrl+Z)"
+                                        on:click=move |_| set_layout.undo()
+                                        disabled=move || !can_undo.get()
+                                    >
+                                        <Icon icon=LuUndo2 width="15px" height="15px" />
+                                    </button>
+                                    <button
+                                        class="w-8 h-8 flex items-center justify-center rounded-md text-fg-tertiary
+                                               hover:text-fg-primary hover:bg-surface-hover/40 transition-all btn-press
+                                               disabled:opacity-30 disabled:pointer-events-none"
+                                        title="Redo (Ctrl+Shift+Z)"
+                                        on:click=move |_| set_layout.redo()
+                                        disabled=move || !can_redo.get()
+                                    >
+                                        <Icon icon=LuRedo2 width="15px" height="15px" />
+                                    </button>
+                                </div>
+                                <div class="w-px h-5 bg-edge-subtle/40 mx-1" />
                                 <button
-                                    class="w-8 h-8 flex items-center justify-center rounded-md text-fg-tertiary
-                                           hover:text-fg-primary hover:bg-surface-hover/40 transition-all btn-press
-                                           disabled:opacity-30 disabled:pointer-events-none"
-                                    title="Undo (Ctrl+Z)"
-                                    on:click=move |_| set_layout.undo()
-                                    disabled=move || !can_undo.get()
+                                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
+                                    style=revert_style
+                                    on:click=move |_| revert_layout()
+                                    disabled=move || !is_dirty.get()
                                 >
-                                    <Icon icon=LuUndo2 width="15px" height="15px" />
+                                    <Icon icon=LuUndo2 width="14px" height="14px" />
+                                    "Revert"
                                 </button>
                                 <button
-                                    class="w-8 h-8 flex items-center justify-center rounded-md text-fg-tertiary
-                                           hover:text-fg-primary hover:bg-surface-hover/40 transition-all btn-press
-                                           disabled:opacity-30 disabled:pointer-events-none"
-                                    title="Redo (Ctrl+Shift+Z)"
-                                    on:click=move |_| set_layout.redo()
-                                    disabled=move || !can_redo.get()
+                                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
+                                    style=save_style
+                                    on:click=move |_| save_layout()
+                                    disabled=move || !is_dirty.get()
                                 >
-                                    <Icon icon=LuRedo2 width="15px" height="15px" />
+                                    <Icon icon=LuSave width="14px" height="14px" />
+                                    "Save"
                                 </button>
                             </div>
                         }
@@ -1173,49 +1206,6 @@ pub fn LayoutBuilder() -> impl IntoView {
                 })}
                 </HeaderToolbar>
             </PageHeader>
-
-            // Dirty-state strip — slides in under the header when the
-            // current layout has unsaved edits. Pairs Revert + Save, with
-            // Save as the accent action (green glow when dirty).
-            <Show when=move || is_dirty.get() && layout.with(|l| l.is_some())>
-                <div
-                    class="shrink-0 flex items-center gap-3 px-5 py-2 border-b border-edge-subtle/40
-                           animate-slide-down"
-                    style="background: linear-gradient(90deg,
-                               rgba(241, 250, 140, 0.06) 0%,
-                               rgba(80, 250, 123, 0.04) 100%)"
-                >
-                    <span class="w-2 h-2 rounded-full bg-electric-yellow dot-alive shrink-0" />
-                    <span class="text-xs text-fg-secondary">
-                        {move || {
-                            let name = layout
-                                .with(|l| l.as_ref().map(|l| l.name.clone()))
-                                .unwrap_or_default();
-                            format!("Unsaved changes on {name}")
-                        }}
-                    </span>
-                    <div class="flex-1" />
-                    <button
-                        class="flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium border
-                               transition-all btn-press"
-                        style="background: rgba(241, 250, 140, 0.08); border-color: rgba(241, 250, 140, 0.25); color: rgb(241, 250, 140)"
-                        on:click=move |_| revert_layout()
-                    >
-                        <Icon icon=LuUndo2 width="12px" height="12px" />
-                        "Revert"
-                    </button>
-                    <button
-                        class="flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium border
-                               transition-all btn-press"
-                        style="background: rgba(80, 250, 123, 0.14); border-color: rgba(80, 250, 123, 0.35); color: rgb(80, 250, 123); \
-                               box-shadow: 0 0 14px rgba(80, 250, 123, 0.18)"
-                        on:click=move |_| save_layout()
-                    >
-                        <Icon icon=LuSave width="12px" height="12px" />
-                        "Save"
-                    </button>
-                </div>
-            </Show>
 
             // Three-column layout
             <Show
