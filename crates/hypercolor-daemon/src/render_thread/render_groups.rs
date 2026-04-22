@@ -653,7 +653,7 @@ impl RenderGroupRuntime {
         ProducerFrame::Surface(lease.submit(0, 0))
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     fn compose_preview_grid_for_test(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
         let Some(mut lease) = self.scene_surface_pool.dequeue() else {
             let mut preview_grid = Canvas::new(self.scene_width, self.scene_height);
@@ -827,7 +827,7 @@ fn zone_local_position_for_scene_pixel(
     Some(NormalizedPosition::new(local_x, local_y))
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 fn compose_preview_grid_canvas(
     preview: &mut Canvas,
     groups: &[RenderGroup],
@@ -946,6 +946,7 @@ fn combine_led_group_layouts(groups: &[RenderGroup], width: u32, height: u32) ->
     layout
 }
 
+#[cfg(test)]
 fn tile_columns(count: usize) -> usize {
     let mut side = 1_usize;
     while side.saturating_mul(side) < count.max(1) {
@@ -954,6 +955,7 @@ fn tile_columns(count: usize) -> usize {
     side.max(1)
 }
 
+#[cfg(test)]
 fn tile_origin(index: usize, count: usize, extent: u32) -> u32 {
     let numerator = u64::try_from(index)
         .unwrap_or(u64::MAX)
@@ -962,6 +964,7 @@ fn tile_origin(index: usize, count: usize, extent: u32) -> u32 {
     u32::try_from(numerator / denominator).unwrap_or(extent)
 }
 
+#[cfg(test)]
 #[expect(
     clippy::cast_precision_loss,
     clippy::as_conversions,
