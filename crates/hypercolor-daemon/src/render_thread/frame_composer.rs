@@ -482,7 +482,7 @@ impl ComposeContext<'_> {
             self.publish_screen_canvas_preview,
             self.scene_snapshot.effect_demand.effect_running,
             self.scene_snapshot.effect_demand.screen_capture_active,
-            self.state.authoritative_canvas_receiver_count(),
+            self.state.scene_canvas_receiver_count(),
             self.state.preview_canvas_receiver_count(),
             self.state.preview_runtime.tracked_canvas_receiver_count(),
             self.state.preview_runtime.tracked_canvas_demand(),
@@ -525,9 +525,9 @@ fn requires_published_surface(
     publish_screen_canvas_preview: bool,
     effect_running: bool,
     screen_capture_active: bool,
-    authoritative_canvas_receivers: usize,
+    scene_canvas_receivers: usize,
 ) -> bool {
-    authoritative_canvas_receivers > 0
+    scene_canvas_receivers > 0
         || publish_canvas_preview
         || (publish_screen_canvas_preview && !effect_running && screen_capture_active)
 }
@@ -547,7 +547,7 @@ fn preview_surface_request(
     publish_screen_canvas_preview: bool,
     effect_running: bool,
     screen_capture_active: bool,
-    authoritative_canvas_receivers: usize,
+    scene_canvas_receivers: usize,
     canvas_receivers: usize,
     tracked_canvas_receivers: usize,
     canvas_demand: PreviewDemandSummary,
@@ -562,12 +562,12 @@ fn preview_surface_request(
         publish_screen_canvas_preview,
         effect_running,
         screen_capture_active,
-        authoritative_canvas_receivers,
+        scene_canvas_receivers,
     ) {
         return None;
     }
 
-    if authoritative_canvas_receivers > 0 {
+    if scene_canvas_receivers > 0 {
         return Some(PreviewSurfaceRequest {
             width: canvas_width,
             height: canvas_height,
@@ -681,7 +681,7 @@ mod tests {
     }
 
     #[test]
-    fn published_surface_depends_on_authoritative_global_receivers() {
+    fn published_surface_depends_on_scene_canvas_receivers() {
         assert!(requires_published_surface(false, false, false, false, 1));
     }
 

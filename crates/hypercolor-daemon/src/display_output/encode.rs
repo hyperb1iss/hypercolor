@@ -142,8 +142,8 @@ pub(super) fn encode_canvas_frame(
     }
 }
 
-pub(super) fn encode_face_effect_blend(
-    effect_source: Option<&CanvasFrame>,
+pub(super) fn encode_face_scene_blend(
+    scene_source: Option<&CanvasFrame>,
     face_source: &CanvasFrame,
     viewport: &DisplayViewport,
     geometry: &DisplayGeometry,
@@ -152,14 +152,14 @@ pub(super) fn encode_face_effect_blend(
     face_opacity: f32,
     encode_state: &mut DisplayEncodeState,
 ) -> Result<Vec<u8>> {
-    if let Some(effect_source) = effect_source {
-        render_canvas_frame_rgba(effect_source, viewport, geometry, encode_state, false)?;
+    if let Some(scene_source) = scene_source {
+        render_canvas_frame_rgba(scene_source, viewport, geometry, encode_state, false)?;
     } else {
         prepare_black_rgba_frame(geometry, &mut encode_state.rgba_buffer);
     }
 
     render_direct_canvas_frame_rgba(face_source, geometry, encode_state, true)?;
-    blend_face_rgba_with_effect(
+    blend_face_rgba_with_scene(
         &mut encode_state.rgba_buffer,
         &encode_state.scratch_rgba_buffer,
         face_blend_mode,
@@ -482,7 +482,7 @@ fn prepare_black_rgba_frame(geometry: &DisplayGeometry, rgba_buffer: &mut Vec<u8
     }
 }
 
-fn blend_face_rgba_with_effect(
+fn blend_face_rgba_with_scene(
     target_rgba: &mut [u8],
     source_rgba: &[u8],
     blend_mode: DisplayFaceBlendMode,

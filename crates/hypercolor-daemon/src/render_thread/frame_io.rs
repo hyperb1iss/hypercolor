@@ -172,21 +172,21 @@ pub(crate) fn publish_frame_updates(
     }
     let group_canvas_us = micros_u32(group_canvas_start.elapsed());
     let preview_start = Instant::now();
-    let authoritative_canvas_receivers = state.authoritative_canvas_receiver_count();
-    if authoritative_canvas_receivers > 0 {
-        let publish_global_canvas = {
-            let current = state.event_bus.global_canvas_sender().borrow();
+    let scene_canvas_receivers = state.scene_canvas_receiver_count();
+    if scene_canvas_receivers > 0 {
+        let publish_scene_canvas = {
+            let current = state.event_bus.scene_canvas_sender().borrow();
             if let Some(surface) =
-                authoritative_global_surface(frame_surface.as_ref(), preview_surface.as_ref())
+                authoritative_scene_surface(frame_surface.as_ref(), preview_surface.as_ref())
             {
                 should_publish_surface_frame(&current, surface)
             } else {
                 should_publish_canvas_frame(&current, &CanvasFrame::empty())
             }
         };
-        if publish_global_canvas {
-            let global_frame = if let Some(surface) =
-                authoritative_global_surface(frame_surface.as_ref(), preview_surface.as_ref())
+        if publish_scene_canvas {
+            let scene_frame = if let Some(surface) =
+                authoritative_scene_surface(frame_surface.as_ref(), preview_surface.as_ref())
             {
                 CanvasFrame::from_surface(
                     surface
@@ -196,7 +196,7 @@ pub(crate) fn publish_frame_updates(
             } else {
                 CanvasFrame::empty()
             };
-            let _ = state.event_bus.global_canvas_sender().send(global_frame);
+            let _ = state.event_bus.scene_canvas_sender().send(scene_frame);
         }
     }
     state
@@ -383,11 +383,11 @@ fn should_publish_canvas_storage(current: &CanvasFrame, next: &Canvas) -> bool {
     stable_canvas_frame_identity(current) != stable_canvas_identity(next)
 }
 
-fn authoritative_global_surface<'a>(
+fn authoritative_scene_surface<'a>(
     frame_surface: Option<&'a PublishedSurface>,
     preview_surface: Option<&'a PublishedSurface>,
 ) -> Option<&'a PublishedSurface> {
-    // The GPU compositor can satisfy authoritative global-canvas consumers
+    // The GPU compositor can satisfy authoritative scene-canvas consumers
     // from the composed preview surface without forcing a CPU sampling readback.
     frame_surface.or(preview_surface)
 }
@@ -642,7 +642,7 @@ mod tests {
 
     use hypercolor_core::types::event::{FrameData, ZoneColors};
 
-    use super::{authoritative_global_surface, update_published_frame};
+    use super::{authoritative_scene_surface, update_published_frame};
 
     fn sample_frame(
         zone_id: &str,
@@ -700,29 +700,35 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_global_surface_prefers_frame_surface() {
+    fn authoritative_scene_surface_prefers_frame_surface() {
         let frame_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 1, 16);
         let frame_surface_option = Some(frame_surface.clone());
 
-        let selected = authoritative_global_surface(frame_surface_option.as_ref(), None)
+        let selected = authoritative_scene_surface(frame_surface_option.as_ref(), None)
             .expect("frame surface should be authoritative");
 
-        assert_eq!(selected.storage_identity(), frame_surface.storage_identity());
+        assert_eq!(
+            selected.storage_identity(),
+            frame_surface.storage_identity()
+        );
     }
 
     #[test]
-    fn authoritative_global_surface_falls_back_to_preview_surface() {
+    fn authoritative_scene_surface_falls_back_to_preview_surface() {
         let preview_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 2, 32);
 
-        let selected = authoritative_global_surface(None, Some(&preview_surface))
+        let selected = authoritative_scene_surface(None, Some(&preview_surface))
             .expect("preview surface should back authoritative consumers");
 
-        assert_eq!(selected.storage_identity(), preview_surface.storage_identity());
+        assert_eq!(
+            selected.storage_identity(),
+            preview_surface.storage_identity()
+        );
     }
 
     #[test]
-    fn authoritative_global_surface_requires_any_surface() {
-        let selected = authoritative_global_surface(None, None);
+    fn authoritative_scene_surface_requires_any_surface() {
+        let selected = authoritative_scene_surface(None, None);
 
         assert!(selected.is_none());
     }

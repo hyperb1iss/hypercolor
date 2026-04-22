@@ -14,7 +14,7 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::encode::{
-    DisplayEncodeState, display_brightness_factor, encode_canvas_frame, encode_face_effect_blend,
+    DisplayEncodeState, display_brightness_factor, encode_canvas_frame, encode_face_scene_blend,
 };
 use super::render::display_viewport_signature;
 use super::{
@@ -82,10 +82,10 @@ struct CapturedDisplaySource {
 
 #[derive(Clone)]
 enum CapturedDisplayFrameSource {
-    Global(CapturedDisplaySource),
+    Scene(CapturedDisplaySource),
     DirectFace(CapturedDisplaySource),
     FaceComposite {
-        effect_source: CapturedDisplaySource,
+        scene_source: CapturedDisplaySource,
         face_source: CapturedDisplaySource,
         blend_mode: hypercolor_types::scene::DisplayFaceBlendMode,
         opacity_bits: u32,
@@ -103,25 +103,25 @@ struct DisplayFrameInputState {
 impl CapturedDisplayFrameSource {
     fn matches(&self, source: &DisplayWorkerFrameSource) -> bool {
         match (self, source) {
-            (Self::Global(captured), DisplayWorkerFrameSource::Global(frame))
+            (Self::Scene(captured), DisplayWorkerFrameSource::Scene(frame))
             | (Self::DirectFace(captured), DisplayWorkerFrameSource::DirectFace(frame)) => {
                 display_source_matches(Some(captured), Some(frame))
             }
             (
                 Self::FaceComposite {
-                    effect_source,
+                    scene_source,
                     face_source,
                     blend_mode,
                     opacity_bits,
                 },
                 DisplayWorkerFrameSource::FaceComposite {
-                    effect_frame,
+                    scene_frame,
                     face_frame,
                     blend_mode: current_blend_mode,
                     opacity,
                 },
             ) => {
-                display_source_matches(Some(effect_source), Some(effect_frame))
+                display_source_matches(Some(scene_source), Some(scene_frame))
                     && display_source_matches(Some(face_source), Some(face_frame))
                     && blend_mode == current_blend_mode
                     && *opacity_bits == opacity.to_bits()
@@ -132,22 +132,22 @@ impl CapturedDisplayFrameSource {
 
     fn capture(source: &DisplayWorkerFrameSource) -> Self {
         match source {
-            DisplayWorkerFrameSource::Global(frame) => Self::Global(
+            DisplayWorkerFrameSource::Scene(frame) => Self::Scene(
                 capture_display_source(Some(frame))
-                    .expect("display worker should only capture a valid global frame"),
+                    .expect("display worker should only capture a valid scene frame"),
             ),
             DisplayWorkerFrameSource::DirectFace(frame) => Self::DirectFace(
                 capture_display_source(Some(frame))
                     .expect("display worker should only capture a valid direct face frame"),
             ),
             DisplayWorkerFrameSource::FaceComposite {
-                effect_frame,
+                scene_frame,
                 face_frame,
                 blend_mode,
                 opacity,
             } => Self::FaceComposite {
-                effect_source: capture_display_source(Some(effect_frame))
-                    .expect("display worker should only capture a valid effect composition frame"),
+                scene_source: capture_display_source(Some(scene_frame))
+                    .expect("display worker should only capture a valid scene composition frame"),
                 face_source: capture_display_source(Some(face_frame))
                     .expect("display worker should only capture a valid face composition frame"),
                 blend_mode: *blend_mode,
@@ -425,14 +425,14 @@ async fn run_display_worker(
         let encode_result = tokio::task::spawn_blocking(move || {
             let mut encode_state = encode_state;
             let encoded = match encode_source {
-                DisplayWorkerFrameSource::Global(effect_source) => encode_canvas_frame(
-                    effect_source.as_ref(),
+                DisplayWorkerFrameSource::Scene(scene_source) => encode_canvas_frame(
+                    scene_source.as_ref(),
                     &viewport,
                     &geometry,
                     brightness,
                     &mut encode_state,
                 ),
-                DisplayWorkerFrameSource::DirectFace(face_source) => encode_face_effect_blend(
+                DisplayWorkerFrameSource::DirectFace(face_source) => encode_face_scene_blend(
                     None,
                     face_source.as_ref(),
                     &viewport,
@@ -443,12 +443,12 @@ async fn run_display_worker(
                     &mut encode_state,
                 ),
                 DisplayWorkerFrameSource::FaceComposite {
-                    effect_frame,
+                    scene_frame,
                     face_frame,
                     blend_mode,
                     opacity,
-                } => encode_face_effect_blend(
-                    Some(effect_frame.as_ref()),
+                } => encode_face_scene_blend(
+                    Some(scene_frame.as_ref()),
                     face_frame.as_ref(),
                     &viewport,
                     &geometry,

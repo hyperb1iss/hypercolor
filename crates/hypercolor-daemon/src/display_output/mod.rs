@@ -123,13 +123,13 @@ struct DisplayTargetCache {
 
 #[derive(Clone, Debug)]
 enum DisplayCanvasSource {
-    Global,
+    Scene,
     GroupDirect { group_id: RenderGroupId },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum DisplayCanvasSourceSignature {
-    Global,
+    Scene,
     GroupDirect { group_id: RenderGroupId },
 }
 
@@ -162,10 +162,10 @@ struct DisplayTargetsSnapshot {
 
 #[derive(Clone, Debug)]
 pub(super) enum DisplayWorkerFrameSource {
-    Global(Arc<CanvasFrame>),
+    Scene(Arc<CanvasFrame>),
     DirectFace(Arc<CanvasFrame>),
     FaceComposite {
-        effect_frame: Arc<CanvasFrame>,
+        scene_frame: Arc<CanvasFrame>,
         face_frame: Arc<CanvasFrame>,
         blend_mode: DisplayFaceBlendMode,
         opacity: f32,
@@ -192,10 +192,10 @@ struct StableDisplayFrameSetIdentity {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StableDisplayFrameSourceIdentity {
-    Global(DisplaySourceIdentity),
+    Scene(DisplaySourceIdentity),
     DirectFace(DisplaySourceIdentity),
     FaceComposite {
-        effect_frame: DisplaySourceIdentity,
+        scene_frame: DisplaySourceIdentity,
         face_frame: DisplaySourceIdentity,
         blend_mode: DisplayFaceBlendMode,
         opacity_bits: u32,
@@ -231,15 +231,15 @@ impl DisplayTarget {
             .map_or(1.0, |target| target.opacity.clamp(0.0, 1.0))
     }
 
-    fn requires_global_canvas(&self) -> bool {
-        matches!(self.canvas_source, DisplayCanvasSource::Global) || self.blends_with_effect()
+    fn requires_scene_canvas(&self) -> bool {
+        matches!(self.canvas_source, DisplayCanvasSource::Scene) || self.blends_with_effect()
     }
 }
 
 impl DisplayCanvasSource {
     fn signature(&self) -> DisplayCanvasSourceSignature {
         match self {
-            Self::Global => DisplayCanvasSourceSignature::Global,
+            Self::Scene => DisplayCanvasSourceSignature::Scene,
             Self::GroupDirect { group_id } => DisplayCanvasSourceSignature::GroupDirect {
                 group_id: *group_id,
             },
@@ -320,8 +320,8 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
         &mut targets_cache,
     )
     .await;
-    let mut canvas_rx = display_requires_global_canvas(initial_targets.targets.as_ref())
-        .then(|| state.event_bus.global_canvas_receiver());
+    let mut scene_canvas_rx = display_requires_scene_canvas(initial_targets.targets.as_ref())
+        .then(|| state.event_bus.scene_canvas_receiver());
     reconcile_display_workers(&state, &mut workers, initial_targets.targets.as_ref()).await;
     let mut last_reconciled_target_version = Some(initial_targets.version);
     let mut last_dispatched_sources =
@@ -330,18 +330,18 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
     dispatch_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        if let Some(canvas_rx) = canvas_rx.as_mut() {
+        if let Some(scene_canvas_rx) = scene_canvas_rx.as_mut() {
             tokio::select! {
                 _ = &mut shutdown_rx => {
                     debug!("display output task shutting down");
                     break;
                 }
-                changed = canvas_rx.changed() => {
+                changed = scene_canvas_rx.changed() => {
                     if changed.is_err() {
                         debug!("display output task exiting because canvas stream closed");
                         break;
                     }
-                    let _ = canvas_rx.borrow_and_update();
+                    let _ = scene_canvas_rx.borrow_and_update();
                 }
                 _ = dispatch_tick.tick() => {
                 }
@@ -371,24 +371,24 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
             last_dispatched_sources.clear();
         }
         sync_display_canvas_receiver(
-            &mut canvas_rx,
+            &mut scene_canvas_rx,
             state.event_bus.as_ref(),
-            display_requires_global_canvas(targets.targets.as_ref()),
+            display_requires_scene_canvas(targets.targets.as_ref()),
         );
         if targets.targets.is_empty() {
             last_dispatched_sources.clear();
             continue;
         }
 
-        let global_frame = canvas_rx.as_ref().and_then(|canvas_rx| {
-            let frame = canvas_rx.borrow();
+        let scene_frame = scene_canvas_rx.as_ref().and_then(|scene_canvas_rx| {
+            let frame = scene_canvas_rx.borrow();
             stable_display_source_identity(&frame)
                 .map(|identity| (identity, Arc::new(frame.clone())))
         });
 
         for target in targets.targets.iter() {
             let face_frame = match &target.canvas_source {
-                DisplayCanvasSource::Global => None,
+                DisplayCanvasSource::Scene => None,
                 DisplayCanvasSource::GroupDirect { .. } => {
                     let Some(sender) = target.group_canvas_sender.as_ref() else {
                         continue;
@@ -399,7 +399,7 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
             };
             let Some((frames, dispatch_identity)) = build_display_worker_frame_set(
                 target.as_ref(),
-                global_frame.as_ref(),
+                scene_frame.as_ref(),
                 face_frame.as_ref(),
             ) else {
                 continue;
@@ -431,18 +431,18 @@ fn stable_display_source_identity(frame: &CanvasFrame) -> Option<DisplaySourceId
 
 fn build_display_worker_frame_set(
     target: &DisplayTarget,
-    global_frame: Option<&(DisplaySourceIdentity, Arc<CanvasFrame>)>,
+    scene_frame: Option<&(DisplaySourceIdentity, Arc<CanvasFrame>)>,
     face_frame: Option<&Arc<CanvasFrame>>,
 ) -> Option<(DisplayWorkerFrameSet, StableDisplayFrameSetIdentity)> {
     match &target.canvas_source {
-        DisplayCanvasSource::Global => {
-            let (frame_identity, frame) = global_frame?;
+        DisplayCanvasSource::Scene => {
+            let (frame_identity, frame) = scene_frame?;
             Some((
                 DisplayWorkerFrameSet {
-                    source: DisplayWorkerFrameSource::Global(Arc::clone(frame)),
+                    source: DisplayWorkerFrameSource::Scene(Arc::clone(frame)),
                 },
                 StableDisplayFrameSetIdentity {
-                    source: StableDisplayFrameSourceIdentity::Global(*frame_identity),
+                    source: StableDisplayFrameSourceIdentity::Scene(*frame_identity),
                 },
             ))
         }
@@ -450,19 +450,19 @@ fn build_display_worker_frame_set(
             let face_frame = face_frame?;
             let face_identity = stable_display_source_identity(face_frame.as_ref())?;
             if target.blends_with_effect() {
-                let Some((effect_identity, effect_frame)) = global_frame else {
+                let Some((scene_identity, scene_frame)) = scene_frame else {
                     trace!(
                         backend_id = %target.backend_id,
                         device_id = %target.device_id,
                         group_canvas = true,
-                        "skipping blended display face until a matching effect frame is available"
+                        "skipping blended display face until a matching scene frame is available"
                     );
                     return None;
                 };
                 Some((
                     DisplayWorkerFrameSet {
                         source: DisplayWorkerFrameSource::FaceComposite {
-                            effect_frame: Arc::clone(effect_frame),
+                            scene_frame: Arc::clone(scene_frame),
                             face_frame: Arc::clone(face_frame),
                             blend_mode: target.face_blend_mode(),
                             opacity: target.face_opacity(),
@@ -470,7 +470,7 @@ fn build_display_worker_frame_set(
                     },
                     StableDisplayFrameSetIdentity {
                         source: StableDisplayFrameSourceIdentity::FaceComposite {
-                            effect_frame: *effect_identity,
+                            scene_frame: *scene_identity,
                             face_frame: face_identity,
                             blend_mode: target.face_blend_mode(),
                             opacity_bits: target.face_opacity().to_bits(),
@@ -498,15 +498,15 @@ fn sync_display_canvas_receiver(
 ) {
     if subscribe {
         if receiver.is_none() {
-            *receiver = Some(event_bus.global_canvas_receiver());
+            *receiver = Some(event_bus.scene_canvas_receiver());
         }
     } else {
         let _ = receiver.take();
     }
 }
 
-fn display_requires_global_canvas(targets: &[Arc<DisplayTarget>]) -> bool {
-    targets.iter().any(|target| target.requires_global_canvas())
+fn display_requires_scene_canvas(targets: &[Arc<DisplayTarget>]) -> bool {
+    targets.iter().any(|target| target.requires_scene_canvas())
 }
 
 async fn reconcile_display_workers(
@@ -653,11 +653,11 @@ async fn display_targets(
         let canvas_source = display_face_targets
             .get(&tracked.info.id)
             .map(|(group_id, _)| *group_id)
-            .map_or(DisplayCanvasSource::Global, |group_id| {
+            .map_or(DisplayCanvasSource::Scene, |group_id| {
                 DisplayCanvasSource::GroupDirect { group_id }
             });
         let group_canvas_sender = match &canvas_source {
-            DisplayCanvasSource::Global => None,
+            DisplayCanvasSource::Scene => None,
             DisplayCanvasSource::GroupDirect { group_id } => {
                 Some(event_bus.group_canvas_sender(*group_id))
             }
