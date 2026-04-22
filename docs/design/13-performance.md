@@ -116,6 +116,8 @@ model is:
 │  Thread 1: Display Output ───────────────────────── dedicated    │
 │    - Watches canonical scene canvas + direct group canvases       │
 │    - Applies per-display viewport/blend policy                    │
+│    - Rebuilds target routing from explicit device/face/layout     │
+│      dependency keys                                              │
 │    - Encodes and pushes LCD/display frames                        │
 │                                                                   │
 │  Thread 2: Audio Capture ──────────────────── SCHED_FIFO (RT)    │

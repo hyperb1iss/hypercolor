@@ -49,10 +49,7 @@ impl SceneRuntimeSnapshot {
         self.active_render_group_count
     }
 
-    pub(crate) const fn dependency_key(
-        &self,
-        dependency_generation: u64,
-    ) -> SceneDependencyKey {
+    pub(crate) const fn dependency_key(&self, dependency_generation: u64) -> SceneDependencyKey {
         SceneDependencyKey::new(self.active_render_groups_revision, dependency_generation)
     }
 }
@@ -153,8 +150,8 @@ mod tests {
     use crate::session::OutputPowerState;
 
     use super::{
-        EffectDemand, FrameSceneSnapshotInputs, FrameScheduler, SceneRuntimeSnapshot,
-        SceneDependencyKey, SceneTransitionSnapshot,
+        EffectDemand, FrameSceneSnapshotInputs, FrameScheduler, SceneDependencyKey,
+        SceneRuntimeSnapshot, SceneTransitionSnapshot,
     };
 
     fn empty_spatial_engine() -> SpatialEngine {
@@ -262,7 +259,10 @@ mod tests {
         assert_eq!(snapshot.budget_us, 16_666);
         assert!(snapshot.effect_demand.effect_running);
         assert!(snapshot.effect_demand.screen_capture_active);
-        assert_eq!(snapshot.effect_dependency_key, SceneDependencyKey::new(1, 7));
+        assert_eq!(
+            snapshot.effect_dependency_key,
+            SceneDependencyKey::new(1, 7)
+        );
         assert!(snapshot.scene_runtime.active_transition.is_some());
         assert_eq!(snapshot.scene_runtime.active_render_group_count(), 1);
         assert_eq!(snapshot.spatial_engine.layout().canvas_width, 320);
@@ -275,7 +275,11 @@ mod tests {
         let values = std::collections::HashMap::from([(group_id, 30)]);
         let dependency_key = SceneDependencyKey::new(1, 7);
 
-        assert!(scheduler.cached_display_group_target_fps(dependency_key).is_none());
+        assert!(
+            scheduler
+                .cached_display_group_target_fps(dependency_key)
+                .is_none()
+        );
 
         scheduler.cache_display_group_target_fps(dependency_key, &values);
 
@@ -283,11 +287,15 @@ mod tests {
             scheduler.cached_display_group_target_fps(dependency_key),
             Some(values.clone())
         );
-        assert!(scheduler
-            .cached_display_group_target_fps(SceneDependencyKey::new(2, 7))
-            .is_none());
-        assert!(scheduler
-            .cached_display_group_target_fps(SceneDependencyKey::new(1, 8))
-            .is_none());
+        assert!(
+            scheduler
+                .cached_display_group_target_fps(SceneDependencyKey::new(2, 7))
+                .is_none()
+        );
+        assert!(
+            scheduler
+                .cached_display_group_target_fps(SceneDependencyKey::new(1, 8))
+                .is_none()
+        );
     }
 }

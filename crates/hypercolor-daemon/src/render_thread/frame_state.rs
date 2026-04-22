@@ -333,9 +333,7 @@ mod tests {
     use super::{
         CachedRenderGroupDemand, current_effect_scene_snapshot, refresh_effect_scene_snapshot,
     };
-    use crate::render_thread::frame_scheduler::{
-        FrameSceneSnapshotInputs, SceneRuntimeSnapshot,
-    };
+    use crate::render_thread::frame_scheduler::{FrameSceneSnapshotInputs, SceneRuntimeSnapshot};
     use crate::render_thread::scene_state::RenderSceneState;
 
     fn sample_layout() -> SpatialLayout {

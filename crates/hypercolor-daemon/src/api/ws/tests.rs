@@ -282,7 +282,10 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["render_surfaces"]["slot_count"], 6);
     assert_eq!(json["render_surfaces"]["published_slots"], 4);
     assert_eq!(json["render_surfaces"]["canvas_receivers"], 2);
-    assert_eq!(json["render_surfaces"]["preview_pool_saturation_reallocs"], 0);
+    assert_eq!(
+        json["render_surfaces"]["preview_pool_saturation_reallocs"],
+        0
+    );
     assert_eq!(json["render_surfaces"]["preview_pool_grown_slots"], 0);
     assert_eq!(json["preview"]["canvas_receivers"], 1);
     assert_eq!(json["preview"]["screen_canvas_receivers"], 1);

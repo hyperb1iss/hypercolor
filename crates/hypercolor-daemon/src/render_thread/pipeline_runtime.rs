@@ -205,7 +205,8 @@ impl RenderCaches {
         snapshot.direct_pool_saturation_reallocs = self
             .render_group_runtime
             .direct_surface_pool_saturation_reallocs();
-        snapshot.scene_pool_grown_slots = self.render_group_runtime.scene_surface_pool_grown_slots();
+        snapshot.scene_pool_grown_slots =
+            self.render_group_runtime.scene_surface_pool_grown_slots();
         snapshot.direct_pool_grown_slots =
             self.render_group_runtime.direct_surface_pool_grown_slots();
 

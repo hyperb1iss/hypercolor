@@ -171,6 +171,19 @@ This invalidation must cover at least:
 - retained scene frames whose semantics are no longer valid
 - any routing cache keyed by active-group topology
 
+In practice, the active-scene path now expresses this through explicit
+dependency tokens instead of scattered revision pairs:
+
+- `SceneDependencyKey` for render-thread caches derived from active groups and
+  effect-registry semantics
+- `DisplayTargetDependencyKey` for display-output routing caches derived from
+  device-registry state and live display-face routing
+
+Effect-registry semantic invalidation should likewise flow through explicit
+mutation surfaces such as register, remove, and `update`. Legacy raw mutable
+access may remain for compatibility, but it is not the semantic invalidation
+contract.
+
 ### 5.2 Hot reload contract
 
 If an effect file is rescanned, reloaded, or replaced and that effect is active
@@ -217,7 +230,10 @@ eventually read like one policy system rather than several adjacent ones.
 ### 7.3 One invalidation vocabulary
 
 The code should converge on a small set of clear dependency tokens or revision
-markers that explain why a cached frame or renderer is still valid.
+markers that explain why a cached frame or renderer is still valid. The render
+thread and display-output path now both use named dependency keys, so the
+remaining work is to keep shrinking one-off local cache identities toward that
+same level of explicitness.
 
 ---
 
@@ -231,13 +247,18 @@ The core architecture described here is now shipped:
    scene-composition contract instead of a separate per-group LED-only path.
 4. Architecture docs and internal vocabulary have been realigned around the
    scene-canvas model.
+5. Render-thread and display-output cache validity now hang off explicit
+   dependency-key contracts instead of loose revision-field comparisons.
+6. Effect-registry semantic invalidation is now documented around explicit
+   mutation surfaces, with raw mutable access retained only as a deprecated
+   compatibility path.
 
 The remaining work is simplification, not architectural replacement:
 
 1. Keep collapsing pacing, admission, retention, and throttling into one frame-
    policy surface.
-2. Keep converging invalidation on a small set of explainable dependency
-   tokens.
+2. Keep converging the remaining local cache identities on the same explicit
+   dependency-token style.
 3. Keep shrinking compatibility aliases and stale terminology where they no
    longer describe real runtime behavior, without reintroducing duplicate scene
    and preview execution paths.

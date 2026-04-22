@@ -8,8 +8,8 @@ use hypercolor_core::types::event::{FrameData, FrameTiming};
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::frame_io::publish_frame_updates;
-use super::frame_policy::FramePolicy;
 use super::frame_pacing::FrameExecution;
+use super::frame_policy::FramePolicy;
 use super::frame_scheduler::FrameSceneSnapshot;
 use super::frame_sources::static_surface;
 use super::pipeline_runtime::{CachedStaticSurface, RenderSurfaceSnapshot};
@@ -263,10 +263,7 @@ pub(crate) async fn maybe_sleep_throttle(
 
     *sleep_black_pushed = true;
     let mut render_loop = state.render_loop.write().await;
-    Some(frame_policy.complete_delay_frame(
-        &mut render_loop,
-        SESSION_SLEEP_THROTTLE_SLEEP,
-    ))
+    Some(frame_policy.complete_delay_frame(&mut render_loop, SESSION_SLEEP_THROTTLE_SLEEP))
 }
 
 pub(crate) fn should_idle_throttle(effect_running: bool, screen_capture_active: bool) -> bool {
