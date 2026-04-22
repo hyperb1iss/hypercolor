@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
@@ -25,6 +25,17 @@ use hypercolor_daemon::display_output::{DisplayOutputState, DisplayOutputThread}
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_daemon::preview_runtime::PreviewRuntime;
 use hypercolor_daemon::session::OutputPowerState;
+
+const DISPLAY_TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn display_output_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+async fn display_output_test_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    display_output_test_lock().lock().await
+}
 
 struct RecordingDisplayBackend {
     expected_device_id: DeviceId,
@@ -390,7 +401,7 @@ fn publish_direct_display_face_route(
 }
 
 async fn wait_for_display_writes(display_writes: &Arc<Mutex<Vec<Vec<u8>>>>) -> Vec<Vec<u8>> {
-    wait_for_display_writes_with_timeout(display_writes, Duration::from_secs(1)).await
+    wait_for_display_writes_with_timeout(display_writes, DISPLAY_TEST_TIMEOUT).await
 }
 
 async fn wait_for_display_writes_with_timeout(
@@ -415,7 +426,7 @@ async fn wait_for_display_write_count(
     display_writes: &Arc<Mutex<Vec<Vec<u8>>>>,
     expected_count: usize,
 ) -> Vec<Vec<u8>> {
-    tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::time::timeout(DISPLAY_TEST_TIMEOUT, async {
         loop {
             let writes = display_writes.lock().await.clone();
             if writes.len() >= expected_count {
@@ -433,7 +444,7 @@ async fn wait_for_display_frame_snapshot(
     display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
     device_id: DeviceId,
 ) -> DisplayFrameSnapshot {
-    tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::time::timeout(DISPLAY_TEST_TIMEOUT, async {
         loop {
             if let Some(frame) = display_frames.read().await.frame(device_id) {
                 return frame;
@@ -447,7 +458,7 @@ async fn wait_for_display_frame_snapshot(
 }
 
 async fn wait_for_global_canvas_receiver_count(event_bus: &HypercolorBus, expected_count: usize) {
-    tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::time::timeout(DISPLAY_TEST_TIMEOUT, async {
         loop {
             if event_bus.global_canvas_receiver_count() >= expected_count {
                 return;
@@ -508,6 +519,7 @@ fn mixed_led_display_device_info(device_id: DeviceId, width: u32, height: u32) -
 
 #[tokio::test]
 async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_devices() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -570,6 +582,7 @@ async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_device
 
 #[tokio::test]
 async fn automatic_display_output_subscribes_to_authoritative_global_canvas_not_preview_runtime() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -639,6 +652,7 @@ async fn automatic_display_output_subscribes_to_authoritative_global_canvas_not_
 
 #[tokio::test]
 async fn automatic_display_output_skips_devices_without_display_capabilities() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -687,6 +701,7 @@ async fn automatic_display_output_skips_devices_without_display_capabilities() {
 
 #[tokio::test]
 async fn automatic_display_output_skips_display_devices_that_are_not_in_layout() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -739,6 +754,7 @@ async fn automatic_display_output_skips_display_devices_that_are_not_in_layout()
 
 #[tokio::test]
 async fn automatic_display_output_uses_layout_zone_viewport() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -810,6 +826,7 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
 
 #[tokio::test]
 async fn automatic_display_output_uses_logical_device_viewport_alias() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -898,6 +915,7 @@ async fn automatic_display_output_uses_logical_device_viewport_alias() {
 
 #[tokio::test]
 async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_display_zone() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -971,6 +989,7 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
 
 #[tokio::test]
 async fn display_group_canvas_routes_to_device_worker() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -1046,6 +1065,7 @@ async fn display_group_canvas_routes_to_device_worker() {
 
 #[tokio::test]
 async fn automatic_display_output_updates_direct_faces_without_global_canvas_ticks() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -1125,6 +1145,7 @@ async fn automatic_display_output_updates_direct_faces_without_global_canvas_tic
 
 #[tokio::test]
 async fn display_group_alpha_blends_face_with_effect_canvas() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -1210,6 +1231,7 @@ async fn display_group_alpha_blends_face_with_effect_canvas() {
 
 #[tokio::test]
 async fn display_group_alpha_waits_for_effect_frame_before_blending() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -1294,6 +1316,7 @@ async fn display_group_alpha_waits_for_effect_frame_before_blending() {
 
 #[tokio::test]
 async fn display_output_uses_render_published_face_route_metadata() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -1378,6 +1401,7 @@ async fn display_output_uses_render_published_face_route_metadata() {
 
 #[tokio::test]
 async fn display_group_replace_keeps_transparent_face_pixels_from_bleeding_effect_canvas() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -1447,6 +1471,7 @@ async fn display_group_replace_keeps_transparent_face_pixels_from_bleeding_effec
 
 #[tokio::test]
 async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -1531,7 +1556,7 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
 
-    tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::time::timeout(DISPLAY_TEST_TIMEOUT, async {
         loop {
             if display_write_times.lock().await.len() >= 2 {
                 return;
@@ -1554,6 +1579,7 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
 
 #[tokio::test]
 async fn display_group_screen_blends_face_color_with_effect_canvas() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -1639,6 +1665,7 @@ async fn display_group_screen_blends_face_color_with_effect_canvas() {
 
 #[tokio::test]
 async fn display_group_tint_turns_face_into_effect_tinted_material() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -1724,6 +1751,7 @@ async fn display_group_tint_turns_face_into_effect_tinted_material() {
 
 #[tokio::test]
 async fn display_group_luma_reveal_lets_bright_face_regions_adopt_effect_color() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -1809,6 +1837,7 @@ async fn display_group_luma_reveal_lets_bright_face_regions_adopt_effect_color()
 
 #[tokio::test]
 async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -1905,6 +1934,7 @@ async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
 
 #[tokio::test]
 async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -1997,6 +2027,7 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
 
 #[tokio::test]
 async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -2062,6 +2093,7 @@ async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails()
 
 #[tokio::test]
 async fn automatic_display_output_skips_unchanged_frames() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -2147,6 +2179,7 @@ async fn automatic_display_output_skips_unchanged_frames() {
 
 #[tokio::test]
 async fn automatic_display_output_skips_metadata_only_owned_surface_updates() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -2220,6 +2253,7 @@ async fn automatic_display_output_skips_metadata_only_owned_surface_updates() {
 
 #[tokio::test]
 async fn automatic_display_output_applies_device_brightness_before_encoding() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -2311,6 +2345,7 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
 
 #[tokio::test]
 async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -2386,6 +2421,7 @@ async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
 
 #[tokio::test]
 async fn automatic_display_output_refreshes_cached_targets_when_layout_changes() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
@@ -2471,6 +2507,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
 
 #[tokio::test]
 async fn automatic_display_output_refreshes_static_hold_frames_while_sleeping() {
+    let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
     let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
