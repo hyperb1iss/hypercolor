@@ -39,11 +39,6 @@ pub(crate) struct FrameAdmissionSample {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct FrameAdmissionDecision {
-    pub(crate) ceiling_tier: FpsTier,
-}
-
-#[derive(Debug, Clone)]
 pub(crate) struct FrameAdmissionController {
     configured_max_tier: FpsTier,
     current_ceiling_tier: FpsTier,
@@ -85,7 +80,7 @@ impl FrameAdmissionController {
         }
     }
 
-    pub(crate) fn record_frame(&mut self, sample: FrameAdmissionSample) -> FrameAdmissionDecision {
+    pub(crate) fn record_frame(&mut self, sample: FrameAdmissionSample) -> FpsTier {
         self.recent_total_us[self.recent_total_next] = sample.total_us;
         self.recent_total_next =
             (self.recent_total_next + 1).wrapping_rem(ADMISSION_HISTORY_CAPACITY);
@@ -123,9 +118,7 @@ impl FrameAdmissionController {
         }
 
         self.current_ceiling_tier = self.resolve_ceiling_tier();
-        FrameAdmissionDecision {
-            ceiling_tier: self.current_ceiling_tier,
-        }
+        self.current_ceiling_tier
     }
 
     fn resolve_ceiling_tier(&mut self) -> FpsTier {
@@ -290,7 +283,7 @@ mod tests {
     fn configured_non_full_ceiling_is_preserved() {
         let mut admission = FrameAdmissionController::new(FpsTier::Medium);
         let decision = admission.record_frame(sample(5_000, 1_000, 300));
-        assert_eq!(decision.ceiling_tier, FpsTier::Medium);
+        assert_eq!(decision, FpsTier::Medium);
     }
 
     #[test]
@@ -298,7 +291,7 @@ mod tests {
         let mut admission = FrameAdmissionController::new(FpsTier::Full);
         for _ in 0..3 {
             let decision = admission.record_frame(sample(8_000, 4_500, 1_000));
-            assert_eq!(decision.ceiling_tier, FpsTier::Full);
+            assert_eq!(decision, FpsTier::Full);
         }
     }
 
@@ -306,19 +299,19 @@ mod tests {
     fn sustained_copy_pressure_blocks_full_tier() {
         let mut admission = FrameAdmissionController::new(FpsTier::Full);
         let clean = admission.record_frame(sample(8_000, 4_500, 1_000));
-        assert_eq!(clean.ceiling_tier, FpsTier::Full);
+        assert_eq!(clean, FpsTier::Full);
 
         let first_copy = admission.record_frame(FrameAdmissionSample {
             full_frame_copy_count: 1,
             ..sample(8_000, 4_500, 1_000)
         });
-        assert_eq!(first_copy.ceiling_tier, FpsTier::Full);
+        assert_eq!(first_copy, FpsTier::Full);
 
         let second_copy = admission.record_frame(FrameAdmissionSample {
             full_frame_copy_count: 1,
             ..sample(8_000, 4_500, 1_000)
         });
-        assert_eq!(second_copy.ceiling_tier, FpsTier::High);
+        assert_eq!(second_copy, FpsTier::High);
     }
 
     #[test]
@@ -326,7 +319,7 @@ mod tests {
         let mut admission = FrameAdmissionController::new(FpsTier::Full);
         for _ in 0..2 {
             let decision = admission.record_frame(sample(18_000, 12_000, 1_000));
-            if decision.ceiling_tier == FpsTier::High {
+            if decision == FpsTier::High {
                 return;
             }
         }
@@ -348,11 +341,11 @@ mod tests {
 
         for _ in 0..clean_frames_before_readmit {
             let decision = admission.record_frame(sample(7_000, 4_000, 800));
-            assert_eq!(decision.ceiling_tier, FpsTier::High);
+            assert_eq!(decision, FpsTier::High);
         }
 
         let admitted = admission.record_frame(sample(7_000, 4_000, 800));
-        assert_eq!(admitted.ceiling_tier, FpsTier::Full);
+        assert_eq!(admitted, FpsTier::Full);
     }
 
     #[test]
@@ -360,10 +353,10 @@ mod tests {
         let mut admission = FrameAdmissionController::new(FpsTier::Full);
 
         let first = admission.record_frame(sample(18_000, 11_000, 1_000));
-        assert_eq!(first.ceiling_tier, FpsTier::Full);
+        assert_eq!(first, FpsTier::Full);
 
         let recovered = admission.record_frame(sample(7_500, 4_000, 900));
-        assert_eq!(recovered.ceiling_tier, FpsTier::Full);
+        assert_eq!(recovered, FpsTier::Full);
     }
 
     #[test]
@@ -374,13 +367,13 @@ mod tests {
             output_errors: 1,
             ..sample(8_000, 4_500, 1_000)
         });
-        assert_eq!(first.ceiling_tier, FpsTier::Full);
+        assert_eq!(first, FpsTier::Full);
 
         let second = admission.record_frame(FrameAdmissionSample {
             output_errors: 1,
             ..sample(8_000, 4_500, 1_000)
         });
-        assert_eq!(second.ceiling_tier, FpsTier::High);
+        assert_eq!(second, FpsTier::High);
     }
 
     #[test]
@@ -392,7 +385,7 @@ mod tests {
                 publish_us: 3_200,
                 ..sample(9_000, 4_500, 1_000)
             });
-            if decision.ceiling_tier == FpsTier::High {
+            if decision == FpsTier::High {
                 return;
             }
         }

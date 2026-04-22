@@ -72,8 +72,8 @@ impl FramePolicy {
         render_loop: &mut RenderLoop,
         sample: FrameAdmissionSample,
     ) -> FrameExecution {
-        let admission = self.admission.record_frame(sample);
-        match render_loop.frame_complete_with_max_tier(Some(admission.ceiling_tier)) {
+        let ceiling_tier = self.admission.record_frame(sample);
+        match render_loop.frame_complete_with_max_tier(Some(ceiling_tier)) {
             Some(frame_stats) => FrameExecution {
                 next_wake: NextWake::Interval(render_loop.target_interval()),
                 next_skip_decision: SkipDecision::from_frame_stats(&frame_stats),
