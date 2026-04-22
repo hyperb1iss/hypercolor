@@ -238,8 +238,9 @@ The remaining work is simplification, not architectural replacement:
    policy surface.
 2. Keep converging invalidation on a small set of explainable dependency
    tokens.
-3. Remove leftover duplicate preview-only helpers and stale terminology where
-   they no longer describe real runtime behavior.
+3. Keep shrinking compatibility aliases and stale terminology where they no
+   longer describe real runtime behavior, without reintroducing duplicate scene
+   and preview execution paths.
 
 ---
 
