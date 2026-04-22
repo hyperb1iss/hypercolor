@@ -23,7 +23,6 @@ mod frame_executor;
 mod frame_io;
 mod frame_policy;
 mod frame_sampling;
-mod frame_sources;
 mod frame_throttle;
 mod pipeline_driver;
 mod pipeline_runtime;

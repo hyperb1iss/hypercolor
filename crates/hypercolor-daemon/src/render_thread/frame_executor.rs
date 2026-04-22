@@ -9,12 +9,12 @@ use hypercolor_core::types::event::FrameTiming;
 use super::frame_composer::{ComposeRequest, compose_frame};
 use super::frame_io::publish_frame_updates;
 use super::frame_policy::{FrameAdmissionSample, FrameExecution, SkipDecision};
-use super::pipeline_runtime::{PendingZoneSamplingStatus, PipelineRuntime};
 use super::frame_sampling::{
     LedSamplingOutcome, resolve_led_sampling, try_finish_deferred_zone_sampling,
     try_finish_retired_zone_sampling,
 };
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
+use super::pipeline_runtime::{PendingZoneSamplingStatus, PipelineRuntime};
 use super::scene_snapshot::{build_frame_scene_snapshot, refresh_effect_scene_snapshot};
 use super::sparkleflinger::ComposedFrameSet;
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
@@ -92,8 +92,7 @@ pub(crate) async fn execute_frame(
             frame_start,
             scene_snapshot_done_us,
             sleep_render_surfaces,
-            &mut render.static_surface_cache,
-            &mut render.recycled_frame,
+            &mut render.output_artifacts,
             &mut frame_loop.throttle,
             &mut frame_loop.publication_cadence,
         )
@@ -270,7 +269,7 @@ pub(crate) async fn execute_frame(
         } else {
             manager
                 .write_frame_with_brightness(
-                    &render.recycled_frame.zones,
+                    render.output_artifacts.zones(),
                     layout.as_ref(),
                     global_brightness,
                     None,
@@ -355,7 +354,7 @@ pub(crate) async fn execute_frame(
     };
     let publish_stats = publish_frame_updates(
         state,
-        &mut render.recycled_frame,
+        render.output_artifacts.frame_mut(),
         &inputs.audio,
         sampling_canvas,
         &render_stage.group_canvases,

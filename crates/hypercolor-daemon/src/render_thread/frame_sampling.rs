@@ -14,10 +14,7 @@ use hypercolor_types::spatial::SpatialLayout;
 
 use super::frame_composer::RenderStageStats;
 use super::pipeline_runtime::{
-    PendingZoneSamplingStatus,
-    RenderCaches,
-    RetainedZoneFrame,
-    SceneTransitionKey,
+    PendingZoneSamplingStatus, RenderCaches, RetainedZoneFrame, SceneTransitionKey,
 };
 use super::scene_snapshot::{FrameSceneSnapshot, SceneTransitionSnapshot};
 use super::sparkleflinger::{PendingZoneSampling, ZoneSamplingDispatch};
@@ -333,7 +330,7 @@ pub(crate) fn resolve_led_sampling(
         if completed_sampling_matches_current {
             render
                 .deferred_sampling
-                .clone_scratch_into(&mut render.recycled_frame.zones);
+                .clone_scratch_into(render.output_artifacts.zones_mut());
             gpu_zone_sampling = true;
             gpu_sample_retry_hit = true;
         }
@@ -347,7 +344,7 @@ pub(crate) fn resolve_led_sampling(
                 let stale_sample_finish = Instant::now();
                 match render.sparkleflinger.try_finish_pending_zone_sampling(
                     &mut pending,
-                    &mut render.recycled_frame.zones,
+                    render.output_artifacts.zones_mut(),
                 ) {
                     Ok(true) => {
                         gpu_zone_sampling = true;
@@ -405,7 +402,7 @@ pub(crate) fn resolve_led_sampling(
                 let gpu_sample_start = Instant::now();
                 match render.sparkleflinger.begin_sample_zone_plan_into(
                     prepared_zones.as_ref(),
-                    &mut render.recycled_frame.zones,
+                    render.output_artifacts.zones_mut(),
                 ) {
                     Ok(ZoneSamplingDispatch::Unsupported) => false,
                     Ok(ZoneSamplingDispatch::Ready) => {
@@ -425,7 +422,7 @@ pub(crate) fn resolve_led_sampling(
                             discard_zone_sampling_backlog(render);
                             match render.sparkleflinger.begin_sample_zone_plan_into(
                                 prepared_zones.as_ref(),
-                                &mut render.recycled_frame.zones,
+                                render.output_artifacts.zones_mut(),
                             ) {
                                 Ok(ZoneSamplingDispatch::Ready) => true,
                                 Ok(ZoneSamplingDispatch::Pending(pending)) => {
@@ -497,7 +494,7 @@ pub(crate) fn resolve_led_sampling(
                 LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
         } else if let Err(error) = render
             .sparkleflinger
-            .finish_pending_zone_sampling(pending, &mut render.recycled_frame.zones)
+            .finish_pending_zone_sampling(pending, render.output_artifacts.zones_mut())
         {
             warn!(%error, "GPU spatial sampling finalize failed; falling back to CPU");
             gpu_zone_sampling = false;
@@ -527,7 +524,7 @@ pub(crate) fn resolve_led_sampling(
                     .sampling_canvas
                     .as_ref()
                     .expect("CPU spatial sampling requires a materialized canvas"),
-                &mut render.recycled_frame.zones,
+                render.output_artifacts.zones_mut(),
             );
         render_stage.sampled_us = micros_between(cpu_sample_start, Instant::now());
     }
@@ -537,7 +534,7 @@ pub(crate) fn resolve_led_sampling(
         && let Some(transition_key) = scene_transition_key(transition)
         && let Some(current_zones) = current_scene_sampled_zones(
             &render_stage.led_sampling_strategy,
-            &render.recycled_frame.zones,
+            render.output_artifacts.zones(),
         )
         .map(<[ZoneColors]>::to_vec)
     {
@@ -565,7 +562,7 @@ pub(crate) fn resolve_led_sampling(
                 transition_layout.as_ref(),
                 transition.eased_progress.clamp(0.0, 1.0),
                 &transition.color_interpolation,
-                &mut render.recycled_frame.zones,
+                render.output_artifacts.zones_mut(),
             );
             layout = Arc::clone(&transition_layout);
             render_stage.led_sampling_strategy = LedSamplingStrategy::PreSampled(transition_layout);
@@ -596,7 +593,7 @@ pub(crate) fn resolve_led_sampling(
         } else {
             render
                 .zone_transition_planner
-                .record_stable(Arc::clone(&layout), &render.recycled_frame.zones);
+                .record_stable(Arc::clone(&layout), render.output_artifacts.zones());
         }
     }
 

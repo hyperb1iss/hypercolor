@@ -2,20 +2,16 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, trace};
 
+use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::Canvas;
-use hypercolor_core::types::event::{FrameData, FrameTiming};
-use hypercolor_core::engine::RenderLoop;
+use hypercolor_core::types::event::FrameTiming;
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::frame_io::publish_frame_updates;
 use super::frame_policy::{FrameExecution, NextWake, SkipDecision};
-use super::frame_sources::static_surface;
 use super::pipeline_runtime::{
-    CachedStaticSurface,
-    PublicationCadenceState,
-    RenderSurfaceSnapshot,
-    ThrottleState,
+    OutputArtifactsState, PublicationCadenceState, RenderSurfaceSnapshot, ThrottleState,
 };
 use super::scene_snapshot::FrameSceneSnapshot;
 use super::{RenderThreadState, micros_between, u64_to_u32};
@@ -66,8 +62,7 @@ pub(crate) async fn maybe_sleep_throttle(
     frame_start: Instant,
     scene_snapshot_done_us: u32,
     render_surfaces: RenderSurfaceSnapshot,
-    static_surface_cache: &mut Option<CachedStaticSurface>,
-    recycled_frame: &mut FrameData,
+    output_artifacts: &mut OutputArtifactsState,
     throttle: &mut ThrottleState,
     publication_cadence: &mut PublicationCadenceState,
 ) -> Option<FrameExecution> {
@@ -81,17 +76,16 @@ pub(crate) async fn maybe_sleep_throttle(
     }
 
     if power_state.off_output_behavior == OffOutputBehavior::Release {
-        recycled_frame.zones.clear();
+        output_artifacts.clear_zones();
         let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
-        let surface = static_surface(
-            static_surface_cache,
+        let surface = output_artifacts.static_surface(
             state.canvas_dims.width(),
             state.canvas_dims.height(),
             [0, 0, 0],
         );
         let publish_stats = publish_frame_updates(
             state,
-            recycled_frame,
+            output_artifacts.frame_mut(),
             &AudioData::silence(),
             Some(Canvas::from_published_surface(&surface)),
             &[],
@@ -128,8 +122,7 @@ pub(crate) async fn maybe_sleep_throttle(
         ));
     }
 
-    let surface = static_surface(
-        static_surface_cache,
+    let surface = output_artifacts.static_surface(
         state.canvas_dims.width(),
         state.canvas_dims.height(),
         power_state.off_output_color,
@@ -138,8 +131,8 @@ pub(crate) async fn maybe_sleep_throttle(
     let sample_start = Instant::now();
     scene_snapshot
         .spatial_engine
-        .sample_into(&canvas, &mut recycled_frame.zones);
-    let zone_colors = &recycled_frame.zones;
+        .sample_into(&canvas, output_artifacts.zones_mut());
+    let zone_colors = output_artifacts.zones();
     let layout = scene_snapshot.spatial_engine.layout();
     let sample_done_at = Instant::now();
     let sample_us = micros_between(sample_start, sample_done_at);
@@ -164,7 +157,7 @@ pub(crate) async fn maybe_sleep_throttle(
     let timing_total_us = sample_us.saturating_add(push_us);
     let publish_stats = publish_frame_updates(
         state,
-        recycled_frame,
+        output_artifacts.frame_mut(),
         &AudioData::silence(),
         Some(canvas),
         &[],

@@ -9,11 +9,10 @@ use hypercolor_types::scene::RenderGroupId;
 
 use super::frame_policy::SkipDecision;
 use super::frame_sampling::LedSamplingStrategy;
-use super::scene_snapshot::FrameSceneSnapshot;
-use super::frame_sources::static_surface;
 use super::pipeline_runtime::{FrameInputs, RenderCaches};
 use super::producer_queue::{ProducerFrame, ProducerFrameState};
 use super::render_groups::{GroupCanvasFrame, RenderGroupEffectError, RenderGroupResult};
+use super::scene_snapshot::FrameSceneSnapshot;
 use super::sparkleflinger::{ComposedFrameSet, PreviewSurfaceRequest};
 use super::{RenderThreadState, micros_between, micros_u32};
 use crate::preview_runtime::PreviewDemandSummary;
@@ -135,6 +134,7 @@ impl ComposeContext<'_> {
                 {
                     (Ok(retained), true)
                 } else {
+                    let zones = self.render.output_artifacts.zones_mut();
                     (
                         self.render.render_group_runtime.render_scene(
                             self.scene_snapshot
@@ -153,12 +153,13 @@ impl ComposeContext<'_> {
                             &self.inputs.interaction,
                             self.inputs.screen_data.as_ref(),
                             self.inputs.sensors.as_ref(),
-                            &mut self.render.recycled_frame.zones,
+                            zones,
                         ),
                         false,
                     )
                 }
             } else {
+                let zones = self.render.output_artifacts.zones_mut();
                 (
                     self.render.render_group_runtime.render_scene(
                         self.scene_snapshot
@@ -177,7 +178,7 @@ impl ComposeContext<'_> {
                         &self.inputs.interaction,
                         self.inputs.screen_data.as_ref(),
                         self.inputs.sensors.as_ref(),
-                        &mut self.render.recycled_frame.zones,
+                        zones,
                     ),
                     false,
                 )
@@ -215,8 +216,7 @@ impl ComposeContext<'_> {
             state: producer_state,
         } = if self.scene_snapshot.effect_demand.screen_capture_active {
             self.latch_screen_frame().unwrap_or_else(|| ProducedFrame {
-                frame: ProducerFrame::Surface(static_surface(
-                    &mut self.render.static_surface_cache,
+                frame: ProducerFrame::Surface(self.render.output_artifacts.static_surface(
                     self.state.canvas_dims.width(),
                     self.state.canvas_dims.height(),
                     [0, 0, 0],
@@ -227,8 +227,7 @@ impl ComposeContext<'_> {
             })
         } else {
             ProducedFrame {
-                frame: ProducerFrame::Surface(static_surface(
-                    &mut self.render.static_surface_cache,
+                frame: ProducerFrame::Surface(self.render.output_artifacts.static_surface(
                     self.state.canvas_dims.width(),
                     self.state.canvas_dims.height(),
                     [0, 0, 0],
@@ -371,12 +370,12 @@ impl ComposeContext<'_> {
             Err(error) => {
                 self.publish_effect_error(&error);
                 warn!(%error, "failed to render active scene groups; publishing black frame");
-                let source_frame = ProducerFrame::Surface(static_surface(
-                    &mut self.render.static_surface_cache,
-                    self.state.canvas_dims.width(),
-                    self.state.canvas_dims.height(),
-                    [0, 0, 0],
-                ));
+                let source_frame =
+                    ProducerFrame::Surface(self.render.output_artifacts.static_surface(
+                        self.state.canvas_dims.width(),
+                        self.state.canvas_dims.height(),
+                        [0, 0, 0],
+                    ));
                 let composition_start = Instant::now();
                 let compiled_plan = self.render.composition_planner.compile_primary_frame(
                     self.state.canvas_dims.width(),

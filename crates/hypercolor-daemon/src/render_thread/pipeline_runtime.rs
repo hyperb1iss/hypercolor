@@ -7,7 +7,7 @@ use hypercolor_core::input::{InputData, InteractionData, ScreenData};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{
-    Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor,
+    Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
 };
 use hypercolor_core::types::event::{FrameData, HypercolorEvent};
 use hypercolor_types::config::RenderAccelerationMode;
@@ -17,18 +17,18 @@ use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::SpatialLayout;
 use std::sync::Arc;
 
-use super::{RenderThreadState, micros_u32};
 use super::capture_demand::CaptureDemandState;
 use super::composition_planner::CompositionPlanner;
 use super::desired_render_surface_slots;
-use super::frame_policy::SkipDecision;
 use super::frame_policy::FramePolicy;
+use super::frame_policy::SkipDecision;
 use super::producer_queue::ProducerQueue;
 use super::render_groups::RenderGroupRuntime;
-use super::screen_canvas::screen_data_to_canvas;
 use super::scene_snapshot::SceneSnapshotCache;
 use super::scene_state::RenderSceneState;
+use super::screen_canvas::screen_data_to_canvas;
 use super::sparkleflinger::{PendingZoneSampling, SparkleFlinger};
+use super::{RenderThreadState, micros_u32};
 
 const AUDIO_LEVEL_EVENT_INTERVAL_MS: u32 = 100;
 
@@ -171,6 +171,73 @@ pub(crate) struct StaticSurfaceKey {
 pub(crate) struct CachedStaticSurface {
     pub(crate) key: StaticSurfaceKey,
     pub(crate) surface: PublishedSurface,
+}
+
+pub(crate) struct OutputArtifactsState {
+    static_surface_cache: Option<CachedStaticSurface>,
+    recycled_frame: FrameData,
+}
+
+impl Default for OutputArtifactsState {
+    fn default() -> Self {
+        Self {
+            static_surface_cache: None,
+            recycled_frame: FrameData::empty(),
+        }
+    }
+}
+
+impl OutputArtifactsState {
+    pub(crate) fn static_surface(
+        &mut self,
+        width: u32,
+        height: u32,
+        color: [u8; 3],
+    ) -> PublishedSurface {
+        let key = StaticSurfaceKey {
+            width,
+            height,
+            color,
+        };
+
+        if let Some(cached) = self.static_surface_cache.as_ref()
+            && cached.key == key
+        {
+            return cached.surface.clone();
+        }
+
+        let mut canvas = Canvas::new(width, height);
+        if color != [0, 0, 0] {
+            canvas.fill(Rgba::new(color[0], color[1], color[2], 255));
+        }
+
+        let surface = PublishedSurface::from_owned_canvas(canvas, 0, 0);
+        self.static_surface_cache = Some(CachedStaticSurface {
+            key,
+            surface: surface.clone(),
+        });
+        surface
+    }
+
+    pub(crate) fn reset_for_canvas_resize(&mut self) {
+        self.static_surface_cache = None;
+    }
+
+    pub(crate) fn clear_zones(&mut self) {
+        self.recycled_frame.zones.clear();
+    }
+
+    pub(crate) fn zones(&self) -> &[ZoneColors] {
+        &self.recycled_frame.zones
+    }
+
+    pub(crate) fn zones_mut(&mut self) -> &mut Vec<ZoneColors> {
+        &mut self.recycled_frame.zones
+    }
+
+    pub(crate) fn frame_mut(&mut self) -> &mut FrameData {
+        &mut self.recycled_frame
+    }
 }
 
 pub(crate) enum PendingZoneSamplingStatus {
@@ -417,8 +484,7 @@ impl OutputReuseState {
         device_output_brightness_generation: u64,
     ) {
         self.last_output_brightness_bits = Some(output_brightness_bits);
-        self.last_device_output_brightness_generation =
-            Some(device_output_brightness_generation);
+        self.last_device_output_brightness_generation = Some(device_output_brightness_generation);
     }
 }
 
@@ -427,8 +493,7 @@ fn preview_publish_fps_limit(
     tracked_receivers: usize,
     tracked_max_fps: u32,
 ) -> Option<u32> {
-    (total_receivers > 0 && total_receivers == tracked_receivers)
-        .then_some(tracked_max_fps.max(1))
+    (total_receivers > 0 && total_receivers == tracked_receivers).then_some(tracked_max_fps.max(1))
 }
 
 fn should_publish_preview_frame(
@@ -479,8 +544,7 @@ pub(crate) struct RenderCaches {
     pub(crate) render_group_runtime: RenderGroupRuntime,
     pub(crate) render_surface_pool: RenderSurfacePool,
     pub(crate) render_scene_state: RenderSceneState,
-    pub(crate) static_surface_cache: Option<CachedStaticSurface>,
-    pub(crate) recycled_frame: FrameData,
+    pub(crate) output_artifacts: OutputArtifactsState,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -553,7 +617,7 @@ impl RenderCaches {
         self.render_group_runtime = RenderGroupRuntime::new(width, height);
         self.composition_planner = CompositionPlanner::new();
         self.zone_transition_planner = ZoneTransitionPlanner::default();
-        self.static_surface_cache = None;
+        self.output_artifacts.reset_for_canvas_resize();
     }
 
     pub(crate) fn render_surface_snapshot(
@@ -637,8 +701,7 @@ impl PipelineRuntime {
                     initial_spatial_engine,
                     screen_capture_configured,
                 ),
-                static_surface_cache: None,
-                recycled_frame: FrameData::empty(),
+                output_artifacts: OutputArtifactsState::default(),
             },
             frame_policy: FramePolicy::new(configured_max_fps_tier),
         })
