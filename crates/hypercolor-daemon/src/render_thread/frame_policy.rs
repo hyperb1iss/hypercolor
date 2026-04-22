@@ -3,7 +3,9 @@ use std::time::Duration;
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 
 use super::frame_admission::{FrameAdmissionController, FrameAdmissionSample};
-use super::frame_pacing::{FrameExecution, NextWake, SkipDecision};
+use super::frame_pacing::NextWake;
+
+pub(crate) use super::frame_pacing::{FrameExecution, SkipDecision};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FrameThrottleKind {
@@ -69,9 +71,9 @@ mod tests {
 
     use hypercolor_core::engine::{FpsTier, RenderLoop};
 
-    use super::{FramePolicy, FrameThrottleKind};
+    use super::{FramePolicy, FrameThrottleKind, SkipDecision};
     use crate::render_thread::frame_admission::FrameAdmissionSample;
-    use crate::render_thread::frame_pacing::{NextWake, SkipDecision};
+    use crate::render_thread::frame_pacing::NextWake;
 
     fn clean_sample() -> FrameAdmissionSample {
         FrameAdmissionSample {

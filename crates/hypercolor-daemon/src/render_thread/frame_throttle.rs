@@ -8,8 +8,7 @@ use hypercolor_core::types::event::{FrameData, FrameTiming};
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::frame_io::publish_frame_updates;
-use super::frame_pacing::FrameExecution;
-use super::frame_policy::{FramePolicy, FrameThrottleKind};
+use super::frame_policy::{FrameExecution, FramePolicy, FrameThrottleKind};
 use super::frame_scheduler::FrameSceneSnapshot;
 use super::frame_sources::static_surface;
 use super::pipeline_runtime::{CachedStaticSurface, RenderSurfaceSnapshot};

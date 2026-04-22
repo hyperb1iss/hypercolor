@@ -9,7 +9,7 @@ use hypercolor_core::types::event::FrameTiming;
 use super::frame_admission::FrameAdmissionSample;
 use super::frame_composer::{ComposeRequest, compose_frame};
 use super::frame_io::{preview_publication_due, publish_frame_updates, sample_inputs};
-use super::frame_pacing::{FrameExecution, SkipDecision};
+use super::frame_policy::{FrameExecution, SkipDecision};
 use super::frame_sampling::{
     LedSamplingOutcome, resolve_led_sampling, try_finish_deferred_zone_sampling,
     try_finish_retired_zone_sampling,

@@ -7,7 +7,7 @@ use hypercolor_core::types::canvas::Canvas;
 use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::scene::RenderGroupId;
 
-use super::frame_pacing::SkipDecision;
+use super::frame_policy::SkipDecision;
 use super::frame_sampling::LedSamplingStrategy;
 use super::frame_scheduler::FrameSceneSnapshot;
 use super::frame_sources::static_surface;
