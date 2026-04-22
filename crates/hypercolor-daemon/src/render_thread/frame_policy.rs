@@ -1,9 +1,10 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hypercolor_core::engine::FrameStats;
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 
 use super::frame_admission::FrameAdmissionController;
+use crate::deadline::advance_deadline;
 
 pub(crate) use super::frame_admission::FrameAdmissionSample;
 
@@ -54,6 +55,15 @@ pub(crate) enum NextWake {
     Interval(Duration),
     /// Hold the loop for a fixed delay before checking again.
     Delay(Duration),
+}
+
+impl NextWake {
+    pub(crate) fn resolve_deadline(self, scheduled_start: Instant, now: Instant) -> Instant {
+        match self {
+            Self::Interval(interval) => advance_deadline(scheduled_start, interval, now),
+            Self::Delay(delay) => now.checked_add(delay).unwrap_or(now),
+        }
+    }
 }
 
 pub(crate) struct FramePolicy {
@@ -108,7 +118,7 @@ impl FramePolicy {
 #[cfg(test)]
 mod tests {
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use hypercolor_core::engine::{FpsTier, RenderLoop};
 
@@ -200,5 +210,27 @@ mod tests {
         assert!(!FramePolicy::should_idle_throttle(true, false));
         assert!(!FramePolicy::should_idle_throttle(false, true));
         assert!(!FramePolicy::should_idle_throttle(true, true));
+    }
+
+    #[test]
+    fn next_wake_interval_resolution_catches_up_to_now_when_late() {
+        let scheduled_start = Instant::now();
+        let late_now = scheduled_start + Duration::from_millis(50);
+
+        let next = NextWake::Interval(Duration::from_millis(16))
+            .resolve_deadline(scheduled_start, late_now);
+
+        assert_eq!(next, late_now);
+    }
+
+    #[test]
+    fn next_wake_delay_resolution_resets_from_current_time() {
+        let scheduled_start = Instant::now();
+        let now = scheduled_start + Duration::from_millis(50);
+
+        let next = NextWake::Delay(Duration::from_millis(120))
+            .resolve_deadline(scheduled_start, now);
+
+        assert_eq!(next, now + Duration::from_millis(120));
     }
 }

@@ -2,11 +2,11 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info};
 
-use crate::deadline::{advance_deadline, wait_until_deadline};
+use crate::deadline::wait_until_deadline;
 
 use super::RenderThreadState;
 use super::frame_executor::execute_frame;
-use super::frame_policy::{NextWake, SkipDecision};
+use super::frame_policy::SkipDecision;
 use super::frame_state::{reconcile_audio_capture, reconcile_screen_capture};
 use super::pipeline_runtime::PipelineRuntime;
 
@@ -42,14 +42,9 @@ pub(crate) async fn run_pipeline(state: RenderThreadState, mut runtime: Pipeline
 
         let frame = execute_frame(&state, &mut runtime, scheduled_start, skip_decision).await;
         skip_decision = frame.next_skip_decision;
-        next_frame_at = match frame.next_wake {
-            NextWake::Interval(interval) => {
-                advance_deadline(scheduled_start, interval, Instant::now())
-            }
-            NextWake::Delay(delay) => Instant::now()
-                .checked_add(delay)
-                .unwrap_or_else(Instant::now),
-        };
+        next_frame_at = frame
+            .next_wake
+            .resolve_deadline(scheduled_start, Instant::now());
     }
 
     info!("render pipeline exited");
