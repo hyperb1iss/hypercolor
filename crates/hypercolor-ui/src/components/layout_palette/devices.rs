@@ -44,6 +44,7 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
     let collapsed_devices = state.collapsed_devices;
     let set_collapsed_devices = state.set_collapsed_devices;
 
+    let physical_device_id = dev.id.clone();
     let device_id = dev.layout_device_id.clone();
     let device_name = dev.name.clone();
     let connection_label = dev.connection_label.clone();
@@ -141,15 +142,20 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
     let rgb_for_zones = primary_rgb.clone();
     let rgb = primary_rgb.clone();
     let rgb2 = secondary_rgb.clone();
-    let palette_device_id = device_id.clone();
+    let header_device_id = device_id.clone();
+    let header_physical_device_id = physical_device_id.clone();
+    let channel_override_device_id = physical_device_id.clone();
     let mut entries: Vec<(Option<api::ZoneSummary>, String, usize)> = if has_multi_zones {
         dev.zones
             .iter()
             .cloned()
             .map(|zone| {
                 let leds = zone.led_count;
-                let display_name =
-                    channel_names::effective_channel_name(&palette_device_id, &zone.id, &zone.name);
+                let display_name = channel_names::effective_channel_name(
+                    &channel_override_device_id,
+                    &zone.id,
+                    &zone.name,
+                );
                 (Some(zone), display_name, leds)
             })
             .collect()
@@ -205,7 +211,7 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
                         set_compound_depth.set(CompoundDepth::Root);
                         layout.with_untracked(|l| {
                             if let Some(l) = l.as_ref() {
-                                let ids = compound_selection::device_compound_ids(l, &palette_device_id);
+                                let ids = compound_selection::device_compound_ids(l, &header_device_id);
                                 if !ids.is_empty() {
                                     set_selected_zone_ids.set(ids);
                                 }
@@ -221,14 +227,14 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
                             }
                         });
                         if was_collapsed {
-                            fetch_attachments_for(state, collapse_key.clone());
+                            fetch_attachments_for(state, header_physical_device_id.clone());
                         }
                     } else {
                         // Single-zone device: select as compound
                         set_compound_depth.set(CompoundDepth::Root);
                         layout.with_untracked(|l| {
                             if let Some(l) = l.as_ref() {
-                                let ids = compound_selection::device_compound_ids(l, &palette_device_id);
+                                let ids = compound_selection::device_compound_ids(l, &header_device_id);
                                 if !ids.is_empty() {
                                     set_selected_zone_ids.set(ids);
                                 }
@@ -286,6 +292,7 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
                         state,
                         &dev,
                         &device_id,
+                        &physical_device_id,
                         rgb_for_indicator.clone(),
                         any_zone_in_layout,
                         is_collapsed,
@@ -296,6 +303,7 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
                         state,
                         &dev,
                         &device_id,
+                        &physical_device_id,
                         rgb_for_indicator.clone(),
                         single_topo,
                         single_zone_in_layout,
@@ -311,6 +319,7 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
                     state,
                     entries,
                     device_id.clone(),
+                    physical_device_id.clone(),
                     dev.name.clone(),
                     rgb_for_zones,
                     primary_rgb.clone(),
@@ -326,7 +335,8 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
 fn render_multizone_header_actions(
     state: PaletteState,
     dev: &api::DeviceSummary,
-    device_id: &str,
+    layout_device_id: &str,
+    channel_device_id: &str,
     toggle_all_rgb: String,
     any_zone_in_layout: Signal<bool>,
     is_collapsed: Signal<bool>,
@@ -341,14 +351,15 @@ fn render_multizone_header_actions(
     let removed_zone_cache = state.removed_zone_cache;
     let set_removed_zone_cache = state.set_removed_zone_cache;
 
-    let toggle_all_did = device_id.to_owned();
+    let toggle_all_did = layout_device_id.to_owned();
+    let toggle_all_channel_did = channel_device_id.to_owned();
     let toggle_all_dname = dev.name.clone();
     let toggle_all_zones = dev.zones.clone();
-    let vis_did = device_id.to_owned();
+    let vis_did = layout_device_id.to_owned();
 
     // Device-level visibility: are ALL zones for this device hidden?
     let device_all_hidden = {
-        let did = device_id.to_owned();
+        let did = layout_device_id.to_owned();
         Signal::derive(move || {
             let hidden = hidden_zones.get();
             layout.with(|current| {
@@ -411,6 +422,7 @@ fn render_multizone_header_actions(
             // Add-all / remove-all toggle
             {move || {
                 let did = toggle_all_did.clone();
+                let channel_did = toggle_all_channel_did.clone();
                 let dname = toggle_all_dname.clone();
                 let zones = toggle_all_zones.clone();
                 if any_zone_in_layout.get() {
@@ -447,6 +459,7 @@ fn render_multizone_header_actions(
                                 ev.stop_propagation();
                                 layout_utils::add_all_device_zones(
                                     &did,
+                                    &channel_did,
                                     &dname,
                                     &zones,
                                     fallback_leds,
@@ -490,7 +503,8 @@ fn render_multizone_header_actions(
 fn render_singlezone_header_actions(
     state: PaletteState,
     dev: &api::DeviceSummary,
-    device_id: &str,
+    layout_device_id: &str,
+    channel_device_id: &str,
     toggle_rgb: String,
     single_topo: Option<AnyView>,
     single_zone_in_layout: Signal<bool>,
@@ -506,14 +520,15 @@ fn render_singlezone_header_actions(
     let removed_zone_cache = state.removed_zone_cache;
     let set_removed_zone_cache = state.set_removed_zone_cache;
 
-    let toggle_did = device_id.to_owned();
+    let toggle_did = layout_device_id.to_owned();
+    let toggle_channel_did = channel_device_id.to_owned();
     let toggle_dname = dev.name.clone();
     let toggle_zone = single_zone_summary.clone();
-    let vis_single_did = device_id.to_owned();
+    let vis_single_did = layout_device_id.to_owned();
 
     // Single-zone device visibility
     let single_zone_hidden = {
-        let did = device_id.to_owned();
+        let did = layout_device_id.to_owned();
         Signal::derive(move || {
             let hidden = hidden_zones.get();
             layout.with(|current| {
@@ -578,6 +593,7 @@ fn render_singlezone_header_actions(
             // Add / remove toggle
             {move || {
                 let did = toggle_did.clone();
+                let channel_did = toggle_channel_did.clone();
                 let zone = toggle_zone.clone();
                 let dname = toggle_dname.clone();
                 if single_zone_in_layout.get() {
@@ -626,6 +642,7 @@ fn render_singlezone_header_actions(
                                     let order = layout_utils::next_display_order(&layout);
                                     layout_utils::create_default_zone(
                                         &did,
+                                        &channel_did,
                                         &dname,
                                         zone.as_ref(),
                                         fallback_leds,
@@ -658,7 +675,8 @@ fn render_singlezone_header_actions(
 fn render_zone_rows(
     state: PaletteState,
     entries: Vec<(Option<api::ZoneSummary>, String, usize)>,
-    device_id: String,
+    layout_device_id: String,
+    channel_device_id: String,
     device_name: String,
     rgb_for_zones: String,
     import_border_rgb: String,
@@ -681,7 +699,7 @@ fn render_zone_rows(
     let import_in_flight = state.import_in_flight;
     let set_import_in_flight = state.set_import_in_flight;
 
-    let import_device_id = device_id.clone();
+    let import_device_id = channel_device_id.clone();
 
     view! {
         <div
@@ -697,7 +715,7 @@ fn render_zone_rows(
             {entries.into_iter().map(|(zone_summary, display_name, led_count)| {
                 let zone_name_key = zone_summary.as_ref().map(|z| z.name.clone());
                 let in_layout = {
-                    let did = device_id.clone();
+                    let did = layout_device_id.clone();
                     let zone_name = zone_name_key.clone();
                     Signal::derive(move || {
                         layout.with(|current| {
@@ -715,7 +733,7 @@ fn render_zone_rows(
 
                 // Is this specific zone selected?
                 let zone_is_selected = {
-                    let did = device_id.clone();
+                    let did = layout_device_id.clone();
                     let zn = zone_name_key.clone();
                     Signal::derive(move || {
                         selected_zone_ids.with(|ids| {
@@ -740,7 +758,7 @@ fn render_zone_rows(
 
                 // Find zone_id to select on click
                 let zone_id_for_select = {
-                    let did = device_id.clone();
+                    let did = layout_device_id.clone();
                     let zn = zone_name_key.clone();
                     Signal::derive(move || {
                         layout.with(|current| {
@@ -757,7 +775,8 @@ fn render_zone_rows(
 
                 let topo_icon = topology_icon(zone_summary.as_ref());
                 let zone_for_toggle = zone_summary.clone();
-                let did_for_toggle = device_id.clone();
+                let did_for_toggle = layout_device_id.clone();
+                let channel_did_for_toggle = channel_device_id.clone();
                 let dname_for_toggle = device_name.clone();
                 let zone_rgb2 = rgb_for_zones.clone();
                 let zone_rgb3 = rgb_for_zones.clone();
@@ -770,7 +789,7 @@ fn render_zone_rows(
                     .as_ref()
                     .map(|zone| zone.id.clone())
                     .unwrap_or_else(|| display_name.clone());
-                let binding_device_id = device_id.clone();
+                let binding_device_id = channel_device_id.clone();
                 let zone_bindings = Signal::derive(move || {
                     let cache = attachment_cache.get();
                     cache.get(&binding_device_id)
@@ -924,6 +943,7 @@ fn render_zone_rows(
                             // Add or remove zone
                             {move || {
                                 let did = did_for_toggle.clone();
+                                let channel_did = channel_did_for_toggle.clone();
                                 let zn = toggle_zone_name.clone();
                                 let zone_entry = zone_for_toggle.clone();
                                 let dname = dname_for_toggle.clone();
@@ -972,6 +992,7 @@ fn render_zone_rows(
                                                     let order = layout_utils::next_display_order(&layout);
                                                     layout_utils::create_default_zone(
                                                         &did,
+                                                        &channel_did,
                                                         &dname,
                                                         zone_entry.as_ref(),
                                                         fallback_leds,

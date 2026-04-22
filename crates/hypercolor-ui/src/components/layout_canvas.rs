@@ -3,7 +3,7 @@
 use leptos::ev;
 use leptos::prelude::*;
 
-use crate::app::WsContext;
+use crate::app::{DevicesContext, WsContext};
 use crate::components::canvas_preview::CanvasPreview;
 use crate::compound_selection::{self, CompoundDepth};
 use crate::layout_geometry::{self, ResizeHandle};
@@ -24,6 +24,9 @@ pub fn LayoutCanvas() -> impl IntoView {
     let set_compound_depth = editor.set_compound_depth;
     let set_layout = editor.set_layout;
     let set_is_dirty = editor.set_is_dirty;
+    let devices_ctx = expect_context::<DevicesContext>();
+    let zone_display_ctx =
+        expect_context::<crate::components::layout_builder::LayoutZoneDisplayContext>();
 
     let ws = expect_context::<WsContext>();
     let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
@@ -148,6 +151,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                 );
                             }
                     });
+                    set_layout.finish_interaction();
                 }
                 set_interaction.set(None);
             }
@@ -165,6 +169,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                 );
                             }
                     });
+                    set_layout.finish_interaction();
                 }
                 set_interaction.set(None);
             }
@@ -337,6 +342,13 @@ pub fn LayoutCanvas() -> impl IntoView {
                             let zone_style = Signal::derive({
                                 let zid = zid.clone();
                                 move || {
+                                    let devices = devices_ctx
+                                        .devices_resource
+                                        .get()
+                                        .and_then(Result::ok)
+                                        .unwrap_or_default();
+                                    let attachment_profiles =
+                                        zone_display_ctx.attachment_profiles.get().unwrap_or_default();
                                     layout.with(|current| {
                                         let layout = current.as_ref()?;
                                         let zone = layout.zones.iter().find(|z| z.id == zid)?;
@@ -348,6 +360,11 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         let scale = zone.scale;
 
                                         let (primary, secondary) = device_accent_colors(&zone.device_id);
+                                        let display = layout_utils::effective_zone_display(
+                                            zone,
+                                            &devices,
+                                            &attachment_profiles,
+                                        );
 
                                         // For Ring/Arc zones, omit explicit height and use
                                         // aspect-ratio: 1 so the browser enforces a perfect
@@ -372,7 +389,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             position_style,
                                             primary_rgb: primary,
                                             secondary_rgb: secondary,
-                                            name: zone.name.clone(),
+                                            name: display.label,
                                             led_count: zone.topology.led_count(),
                                             shape: zone.shape.clone(),
                                         })
@@ -506,6 +523,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             .and_then(|l| l.zones.iter().find(|z| z.id == zid_drag).map(|z| (z.position.x, z.position.y)));
 
                                         if let Some((zx, zy)) = zone_pos {
+                                            set_layout.begin_interaction();
                                             // Snapshot positions of all selected zones for compound drag
                                             let initial_positions = layout.with_untracked(|l| {
                                                 let ids = selected_zone_ids.get_untracked();
@@ -687,7 +705,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                     ev.prevent_default();
                                                     let zone_id = zid_resize_nw.clone();
                                                     begin_resize(
-                                                        &viewport_ref, &layout, &set_selected_zone_ids, &set_interaction,
+                                                        &viewport_ref, &layout, &set_layout, &set_selected_zone_ids, &set_interaction,
                                                         &zone_id, ResizeHandle::NorthWest, ev.client_x(), ev.client_y(),
                                                     );
                                                 }
@@ -700,7 +718,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                     ev.prevent_default();
                                                     let zone_id = zid_resize_ne.clone();
                                                     begin_resize(
-                                                        &viewport_ref, &layout, &set_selected_zone_ids, &set_interaction,
+                                                        &viewport_ref, &layout, &set_layout, &set_selected_zone_ids, &set_interaction,
                                                         &zone_id, ResizeHandle::NorthEast, ev.client_x(), ev.client_y(),
                                                     );
                                                 }
@@ -713,7 +731,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                     ev.prevent_default();
                                                     let zone_id = zid_resize_sw.clone();
                                                     begin_resize(
-                                                        &viewport_ref, &layout, &set_selected_zone_ids, &set_interaction,
+                                                        &viewport_ref, &layout, &set_layout, &set_selected_zone_ids, &set_interaction,
                                                         &zone_id, ResizeHandle::SouthWest, ev.client_x(), ev.client_y(),
                                                     );
                                                 }
@@ -726,7 +744,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                     ev.prevent_default();
                                                     let zone_id = zid_resize_se.clone();
                                                     begin_resize(
-                                                        &viewport_ref, &layout, &set_selected_zone_ids, &set_interaction,
+                                                        &viewport_ref, &layout, &set_layout, &set_selected_zone_ids, &set_interaction,
                                                         &zone_id, ResizeHandle::SouthEast, ev.client_x(), ev.client_y(),
                                                     );
                                                 }
@@ -816,13 +834,14 @@ pub fn LayoutCanvas() -> impl IntoView {
                         match depth {
                             CompoundDepth::Root => None,
                             CompoundDepth::Device { ref device_id } => {
-                                let name = layout.with(|l| {
-                                    l.as_ref().and_then(|l| {
-                                        l.zones.iter()
-                                            .find(|z| z.device_id == *device_id)
-                                            .map(|z| z.name.split(" \u{00b7} ").next().unwrap_or(&z.name).to_string())
+                                let name = devices_ctx
+                                    .devices_resource
+                                    .get()
+                                    .and_then(Result::ok)
+                                    .and_then(|devices| {
+                                        layout_utils::effective_device_name(device_id, &devices)
                                     })
-                                }).unwrap_or_else(|| "Device".to_string());
+                                    .unwrap_or_else(|| "Device".to_string());
                                 Some(view! {
                                     <div class="absolute bottom-2 left-1/2 -translate-x-1/2 z-50
                                                 flex items-center gap-2 px-3 py-1.5 rounded-lg
@@ -841,16 +860,27 @@ pub fn LayoutCanvas() -> impl IntoView {
                                 }.into_any())
                             }
                             CompoundDepth::Slot { ref device_id, ref slot_id } => {
-                                let (dev_name, slot_name) = layout.with(|l| {
-                                    let layout = l.as_ref()?;
-                                    let zone = layout.zones.iter().find(|z| {
-                                        z.device_id == *device_id
-                                            && z.attachment.as_ref().is_some_and(|a| a.slot_id == *slot_id)
-                                    })?;
-                                    let dev = zone.name.split(" \u{00b7} ").next().unwrap_or(&zone.name).to_string();
-                                    let slot = slot_id.replace('-', " ");
-                                    Some((dev, slot))
-                                }).unwrap_or_else(|| ("Device".to_string(), slot_id.replace('-', " ")));
+                                let (dev_name, slot_name) = devices_ctx
+                                    .devices_resource
+                                    .get()
+                                    .and_then(Result::ok)
+                                    .map(|devices| {
+                                        let dev_name = layout_utils::effective_device_name(
+                                            device_id,
+                                            &devices,
+                                        )
+                                        .unwrap_or_else(|| "Device".to_string());
+                                        let slot_name = layout_utils::effective_slot_name(
+                                            device_id,
+                                            slot_id,
+                                            &devices,
+                                        )
+                                        .unwrap_or_else(|| slot_id.replace('-', " "));
+                                        (dev_name, slot_name)
+                                    })
+                                    .unwrap_or_else(|| {
+                                        ("Device".to_string(), slot_id.replace('-', " "))
+                                    });
                                 Some(view! {
                                     <div class="absolute bottom-2 left-1/2 -translate-x-1/2 z-50
                                                 flex items-center gap-2 px-3 py-1.5 rounded-lg
@@ -929,6 +959,7 @@ enum InteractionState {
 fn begin_resize(
     viewport_ref: &NodeRef<leptos::html::Div>,
     layout: &Signal<Option<SpatialLayout>>,
+    set_layout: &crate::components::layout_builder::LayoutWriteHandle,
     set_selected_zone_ids: &WriteSignal<std::collections::HashSet<String>>,
     set_interaction: &WriteSignal<Option<InteractionState>>,
     zone_id: &str,
@@ -965,6 +996,7 @@ fn begin_resize(
     };
 
     set_selected_zone_ids.set(std::collections::HashSet::from([zone_id.to_owned()]));
+    set_layout.begin_interaction();
     set_interaction.set(Some(InteractionState::Resize(ResizeState {
         zone_id: zone_id.to_owned(),
         handle,

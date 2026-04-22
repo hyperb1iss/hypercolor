@@ -24,7 +24,7 @@ pub(super) struct PaletteState {
     pub layout: Signal<Option<hypercolor_types::spatial::SpatialLayout>>,
     pub selected_zone_ids: Signal<std::collections::HashSet<String>>,
     pub hidden_zones: Signal<std::collections::HashSet<String>>,
-    pub set_layout: WriteSignal<Option<hypercolor_types::spatial::SpatialLayout>>,
+    pub set_layout: crate::components::layout_builder::LayoutWriteHandle,
     pub set_selected_zone_ids: WriteSignal<std::collections::HashSet<String>>,
     pub set_is_dirty: WriteSignal<bool>,
     pub set_hidden_zones: WriteSignal<std::collections::HashSet<String>>,

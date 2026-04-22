@@ -5,6 +5,7 @@ use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
 use crate::app::DevicesContext;
+use crate::async_helpers::spawn_identify;
 use crate::components::device_brightness_slider::DeviceBrightnessSlider;
 use crate::icons::*;
 use crate::layout_geometry::{self, SizeAxis};
@@ -21,6 +22,8 @@ pub fn LayoutZoneProperties() -> impl IntoView {
     let set_selected_zone_ids = editor.set_selected_zone_ids;
     let set_is_dirty = editor.set_is_dirty;
     let compound_depth = editor.compound_depth;
+    let zone_display_ctx =
+        expect_context::<crate::components::layout_builder::LayoutZoneDisplayContext>();
 
     // Brightness aggregate for the currently-selected zones — returns
     // `(value_0_to_100, mixed)`. Each `DeviceZone` carries its own
@@ -662,9 +665,18 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                 };
 
                 let ctx = expect_context::<DevicesContext>();
+                let devices = ctx
+                    .devices_resource
+                    .get_untracked()
+                    .and_then(Result::ok)
+                    .unwrap_or_default();
+                let attachment_profiles =
+                    zone_display_ctx.attachment_profiles.get().unwrap_or_default();
+                let zone_display =
+                    crate::layout_utils::effective_zone_display(&zone, &devices, &attachment_profiles);
 
                 let zone_id = zone.id.clone();
-                let zone_name = zone.name.clone();
+                let zone_name = zone_display.label.clone();
                 let device_id_display = zone.device_id.clone();
                 let device_id_title = zone.device_id.clone();
                 let channel_name = zone.zone_name.clone();
@@ -683,28 +695,13 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                 let led_count = zone.topology.led_count();
                 let topology_label = topology_name(&zone.topology);
                 let attachment = zone.attachment.clone();
-
-                let default_name = {
-                    let device_name = ctx
-                        .devices_resource
-                        .get_untracked()
-                        .and_then(|r| r.ok())
-                        .and_then(|devices| {
-                            devices
-                                .iter()
-                                .find(|d| d.layout_device_id == zone.device_id)
-                                .map(|d| d.name.clone())
-                        })
-                        .unwrap_or_else(|| zone.device_id.clone());
-                    match &zone.zone_name {
-                        Some(zn) if !zn.eq_ignore_ascii_case(&device_name) => {
-                            format!("{device_name} \u{00b7} {zn}")
-                        }
-                        _ => device_name,
-                    }
-                };
+                let default_name = zone_display.default_label.clone();
                 let name_is_default = zone_name == default_name;
                 let display_order = zone.display_order;
+                let identify_target = zone_display.identify_target.clone();
+                let reset_device_name =
+                    crate::layout_utils::effective_device_name(&zone.device_id, &devices)
+                        .unwrap_or_else(|| zone.device_id.clone());
 
                 let zid_name = zone_id.clone();
                 let zid_name_reset = zone_id.clone();
@@ -722,10 +719,10 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                 let zid_front = zone_id.clone();
                 let zid_up = zone_id.clone();
                 let zid_down = zone_id.clone();
+                let identify_action = identify_target.clone();
                 let zid_reset_defaults = zone_id.clone();
                 let reset_device_id = zone.device_id.clone();
                 let reset_zone_name = zone.zone_name.clone();
-                let reset_device_name = default_name.split(" \u{00b7} ").next().unwrap_or(&default_name).to_string();
                 let zid_back = zone_id.clone();
                 let zid_remove = zone_id;
 
@@ -915,6 +912,42 @@ pub fn LayoutZoneProperties() -> impl IntoView {
 
                             // Zone actions — destructive separated by divider
                             <div class="flex items-center gap-0.5 shrink-0">
+                                {identify_action.map(|target| view! {
+                                    <button
+                                        class="shrink-0 p-1 rounded-md text-fg-tertiary/30 hover:text-accent hover:bg-accent/8
+                                               transition-colors btn-press"
+                                        title="Identify zone"
+                                        on:click=move |_| match target.clone() {
+                                            crate::layout_utils::ZoneIdentifyTarget::Device { device_id, zone_id } => {
+                                                spawn_identify(
+                                                    "zone",
+                                                    async move { crate::api::identify_zone(&device_id, &zone_id).await },
+                                                );
+                                            }
+                                            crate::layout_utils::ZoneIdentifyTarget::Attachment {
+                                                device_id,
+                                                slot_id,
+                                                binding_index,
+                                                instance,
+                                            } => {
+                                                spawn_identify(
+                                                    "component",
+                                                    async move {
+                                                        crate::api::identify_attachment(
+                                                            &device_id,
+                                                            &slot_id,
+                                                            binding_index,
+                                                            instance,
+                                                        )
+                                                        .await
+                                                    },
+                                                );
+                                            }
+                                        }
+                                    >
+                                        <Icon icon=LuZap width="12px" height="12px" />
+                                    </button>
+                                })}
                                 <button
                                     class="shrink-0 p-1 rounded-md text-fg-tertiary/30 hover:text-accent hover:bg-accent/8
                                            transition-colors btn-press"

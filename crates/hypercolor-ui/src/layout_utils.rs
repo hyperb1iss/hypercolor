@@ -1,7 +1,7 @@
 //! Shared layout zone CRUD helpers — used by layout palette, zone properties,
 //! and anywhere zones are added, removed, or restored from cache.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
 
@@ -14,6 +14,27 @@ use hypercolor_types::spatial::{DeviceZone, NormalizedPosition, SpatialLayout};
 
 /// Type alias for the removed-zone stash, keyed by (device_id, zone_name).
 pub type ZoneCache = std::collections::HashMap<(String, Option<String>), DeviceZone>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ZoneIdentifyTarget {
+    Device {
+        device_id: String,
+        zone_id: String,
+    },
+    Attachment {
+        device_id: String,
+        slot_id: String,
+        binding_index: Option<usize>,
+        instance: Option<u32>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveZoneDisplay {
+    pub label: String,
+    pub default_label: String,
+    pub identify_target: Option<ZoneIdentifyTarget>,
+}
 
 /// Compute the next `display_order` value for a new zone added to the layout.
 pub fn next_display_order(layout: &Signal<Option<SpatialLayout>>) -> i32 {
@@ -40,6 +61,7 @@ pub fn current_canvas_dimensions(layout: &Signal<Option<SpatialLayout>>) -> (u32
 #[allow(clippy::too_many_arguments)]
 pub fn create_default_zone(
     device_id: &str,
+    channel_device_id: &str,
     device_name: &str,
     zone: Option<&ZoneSummary>,
     total_leds: usize,
@@ -58,7 +80,8 @@ pub fn create_default_zone(
     let display_name = zone.map_or_else(
         || device_name.to_owned(),
         |z| {
-            let channel_name = channel_names::effective_channel_name(device_id, &z.id, &z.name);
+            let channel_name =
+                channel_names::effective_channel_name(channel_device_id, &z.id, &z.name);
             prefixed_channel_display_name(device_name, &channel_name)
         },
     );
@@ -95,7 +118,7 @@ pub fn create_default_zone(
 pub fn remove_device_zone(
     device_id: &str,
     zone_name: Option<&str>,
-    set_layout: &WriteSignal<Option<SpatialLayout>>,
+    set_layout: &crate::components::layout_builder::LayoutWriteHandle,
     set_selected_zone_ids: &WriteSignal<HashSet<String>>,
     set_is_dirty: &WriteSignal<bool>,
     set_removed_zone_cache: &WriteSignal<ZoneCache>,
@@ -123,7 +146,7 @@ pub fn remove_device_zone(
 /// stashing each in the cache so re-adding restores settings.
 pub fn remove_all_device_zones(
     device_id: &str,
-    set_layout: &WriteSignal<Option<SpatialLayout>>,
+    set_layout: &crate::components::layout_builder::LayoutWriteHandle,
     set_selected_zone_ids: &WriteSignal<HashSet<String>>,
     set_is_dirty: &WriteSignal<bool>,
     set_removed_zone_cache: &WriteSignal<ZoneCache>,
@@ -147,11 +170,12 @@ pub fn remove_all_device_zones(
 #[allow(clippy::too_many_arguments)]
 pub fn add_all_device_zones(
     device_id: &str,
+    channel_device_id: &str,
     device_name: &str,
     zones: &[ZoneSummary],
     total_leds: usize,
     layout: &Signal<Option<SpatialLayout>>,
-    set_layout: &WriteSignal<Option<SpatialLayout>>,
+    set_layout: &crate::components::layout_builder::LayoutWriteHandle,
     set_selected_zone_ids: &WriteSignal<HashSet<String>>,
     set_is_dirty: &WriteSignal<bool>,
     removed_zone_cache: &Signal<ZoneCache>,
@@ -226,6 +250,7 @@ pub fn add_all_device_zones(
                 } else {
                     create_default_zone(
                         device_id,
+                        channel_device_id,
                         device_name,
                         Some(zone),
                         total_leds,
@@ -255,6 +280,86 @@ pub fn prefixed_channel_display_name(device_name: &str, channel_name: &str) -> S
     } else {
         format!("{device_name} · {channel_name}")
     }
+}
+
+pub fn effective_zone_display(
+    zone: &DeviceZone,
+    devices: &[api::DeviceSummary],
+    attachment_profiles: &HashMap<String, api::DeviceAttachmentsResponse>,
+) -> EffectiveZoneDisplay {
+    let Some(device) = devices
+        .iter()
+        .find(|device| device.layout_device_id == zone.device_id)
+    else {
+        return EffectiveZoneDisplay {
+            label: zone.name.clone(),
+            default_label: zone.name.clone(),
+            identify_target: None,
+        };
+    };
+
+    if let Some(attachment) = zone.attachment.as_ref() {
+        return effective_attachment_zone_display(zone, device, attachment, attachment_profiles);
+    }
+
+    effective_device_zone_display(zone, device)
+}
+
+pub fn effective_device_name(
+    layout_device_id: &str,
+    devices: &[api::DeviceSummary],
+) -> Option<String> {
+    devices
+        .iter()
+        .find(|device| device.layout_device_id == layout_device_id)
+        .map(|device| device.name.clone())
+}
+
+pub fn effective_slot_name(
+    layout_device_id: &str,
+    slot_alias: &str,
+    devices: &[api::DeviceSummary],
+) -> Option<String> {
+    let device = devices
+        .iter()
+        .find(|device| device.layout_device_id == layout_device_id)?;
+    let zone = resolve_device_zone_summary(device, Some(slot_alias))?;
+    Some(channel_names::effective_channel_name(
+        &device.id, &zone.id, &zone.name,
+    ))
+}
+
+pub fn sync_device_display_name_in_layout(
+    layout: &mut SpatialLayout,
+    layout_device_id: &str,
+    previous_name: &str,
+    new_name: &str,
+) -> bool {
+    if previous_name == new_name {
+        return false;
+    }
+
+    let previous_prefix = format!("{previous_name} · ");
+    let mut changed = false;
+
+    for zone in &mut layout.zones {
+        if zone.device_id != layout_device_id || zone.attachment.is_some() {
+            continue;
+        }
+
+        if zone.name == previous_name {
+            zone.name.clone_from(&new_name.to_owned());
+            changed = true;
+            continue;
+        }
+
+        if let Some(suffix) = zone.name.strip_prefix(&previous_prefix) {
+            zone.name = format!("{new_name} · {suffix}");
+            changed = true;
+        }
+    }
+
+    changed
 }
 
 pub fn apply_slot_display_names_to_seeded_attachment_layout(
@@ -311,6 +416,207 @@ pub fn sync_channel_display_name_in_layout(
     }
 
     changed
+}
+
+fn effective_device_zone_display(
+    zone: &DeviceZone,
+    device: &api::DeviceSummary,
+) -> EffectiveZoneDisplay {
+    let matched_zone = resolve_device_zone_summary(device, zone.zone_name.as_deref());
+    let identify_target = matched_zone.map(|matched_zone| ZoneIdentifyTarget::Device {
+        device_id: device.id.clone(),
+        zone_id: matched_zone.id.clone(),
+    });
+
+    let Some(slot_alias) = zone.zone_name.as_deref() else {
+        let label = if zone.name == device.name {
+            device.name.clone()
+        } else {
+            zone.name.clone()
+        };
+        return EffectiveZoneDisplay {
+            default_label: device.name.clone(),
+            label,
+            identify_target,
+        };
+    };
+
+    let channel_label = matched_zone.map_or_else(
+        || slot_alias.to_owned(),
+        |matched_zone| {
+            channel_names::effective_channel_name(&device.id, &matched_zone.id, &matched_zone.name)
+        },
+    );
+    let raw_channel_label = matched_zone.map_or_else(
+        || slot_alias.to_owned(),
+        |matched_zone| matched_zone.name.clone(),
+    );
+    let default_label = prefixed_channel_display_name(&device.name, &channel_label);
+    let raw_default_label = prefixed_channel_display_name(&device.name, &raw_channel_label);
+    let old_suffix_matches = zone.name.rsplit_once(" · ").is_some_and(|(_, suffix)| {
+        suffix.eq_ignore_ascii_case(&channel_label)
+            || suffix.eq_ignore_ascii_case(&raw_channel_label)
+    });
+    let label =
+        if zone.name == default_label || zone.name == raw_default_label || old_suffix_matches {
+            default_label.clone()
+        } else {
+            zone.name.clone()
+        };
+
+    EffectiveZoneDisplay {
+        label,
+        default_label,
+        identify_target,
+    }
+}
+
+fn effective_attachment_zone_display(
+    zone: &DeviceZone,
+    device: &api::DeviceSummary,
+    attachment: &hypercolor_types::spatial::ZoneAttachment,
+    attachment_profiles: &HashMap<String, api::DeviceAttachmentsResponse>,
+) -> EffectiveZoneDisplay {
+    let binding = attachment_profiles
+        .get(&zone.device_id)
+        .and_then(|profile| resolve_attachment_binding(profile, attachment));
+    let label = binding.as_ref().and_then(|(binding_index, _)| {
+        attachment_profiles
+            .get(&zone.device_id)
+            .and_then(|profile| {
+                attachment_binding_display_name(profile, *binding_index, attachment.instance)
+            })
+    });
+    let identify_target = Some(ZoneIdentifyTarget::Attachment {
+        device_id: device.id.clone(),
+        slot_id: attachment.slot_id.clone(),
+        binding_index: binding.as_ref().map(|(binding_index, _)| *binding_index),
+        instance: Some(attachment.instance),
+    });
+
+    EffectiveZoneDisplay {
+        label: label.clone().unwrap_or_else(|| zone.name.clone()),
+        default_label: label.unwrap_or_else(|| zone.name.clone()),
+        identify_target,
+    }
+}
+
+fn resolve_device_zone_summary<'a>(
+    device: &'a api::DeviceSummary,
+    slot_alias: Option<&str>,
+) -> Option<&'a api::ZoneSummary> {
+    let slot_alias = slot_alias?;
+    device.zones.iter().find(|zone| {
+        zone.id == slot_alias || zone_name_matches_slot_alias(Some(slot_alias), Some(&zone.name))
+    })
+}
+
+fn resolve_attachment_binding<'a>(
+    profile: &'a api::DeviceAttachmentsResponse,
+    attachment: &hypercolor_types::spatial::ZoneAttachment,
+) -> Option<(usize, &'a api::AttachmentBindingSummary)> {
+    let slot = profile
+        .slots
+        .iter()
+        .find(|slot| slot.id == attachment.slot_id)?;
+
+    let enabled_bindings = profile
+        .bindings
+        .iter()
+        .enumerate()
+        .filter(|(_, binding)| binding.slot_id == attachment.slot_id && binding.enabled)
+        .collect::<Vec<_>>();
+
+    let exact_led_match = attachment.led_start.and_then(|target_led_start| {
+        enabled_bindings.iter().copied().find(|(_, binding)| {
+            if binding.template_id != attachment.template_id {
+                return false;
+            }
+            let instances = binding.instances.max(1);
+            let template_led_count = binding.effective_led_count / instances;
+            if template_led_count == 0 {
+                return false;
+            }
+
+            let expected_led_start = slot
+                .led_start
+                .saturating_add(binding.led_offset)
+                .saturating_add(attachment.instance.saturating_mul(template_led_count));
+            let led_count_matches = attachment
+                .led_count
+                .is_none_or(|led_count| led_count == template_led_count);
+
+            expected_led_start == target_led_start && led_count_matches
+        })
+    });
+    if exact_led_match.is_some() {
+        return exact_led_match;
+    }
+
+    let template_matches = enabled_bindings
+        .iter()
+        .copied()
+        .filter(|(_, binding)| binding.template_id == attachment.template_id)
+        .collect::<Vec<_>>();
+    if template_matches.len() == 1 {
+        return template_matches.into_iter().next();
+    }
+
+    enabled_bindings.into_iter().next()
+}
+
+fn attachment_binding_display_name(
+    profile: &api::DeviceAttachmentsResponse,
+    binding_index: usize,
+    instance: u32,
+) -> Option<String> {
+    let slot_id = profile.bindings.get(binding_index)?.slot_id.clone();
+    let mut slot_labels = profile
+        .bindings
+        .iter()
+        .enumerate()
+        .filter(|(_, binding)| binding.slot_id == slot_id && binding.enabled)
+        .flat_map(|(current_index, binding)| {
+            (0..binding.instances.max(1)).map(move |current_instance| {
+                (
+                    current_index,
+                    current_instance,
+                    attachment_binding_base_name(binding, current_instance),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut totals = HashMap::<String, usize>::new();
+    for (_, _, label) in &slot_labels {
+        *totals.entry(label.clone()).or_insert(0) += 1;
+    }
+
+    let mut seen = HashMap::<String, usize>::new();
+    for (current_index, current_instance, label) in &mut slot_labels {
+        if totals.get(label).copied().unwrap_or_default() > 1 {
+            let next = seen.entry(label.clone()).or_insert(0);
+            *next += 1;
+            *label = format!("{label} {next}");
+        }
+
+        if *current_index == binding_index && *current_instance == instance {
+            return Some(label.clone());
+        }
+    }
+
+    None
+}
+
+fn attachment_binding_base_name(binding: &api::AttachmentBindingSummary, instance: u32) -> String {
+    match binding.name.as_deref() {
+        Some(name) if binding.instances > 1 => {
+            format!("{name} - {} {}", binding.template_name, instance + 1)
+        }
+        Some(name) => name.to_owned(),
+        None if binding.instances > 1 => format!("{} {}", binding.template_name, instance + 1),
+        None => binding.template_name.clone(),
+    }
 }
 
 pub fn replace_attachment_layout(

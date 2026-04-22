@@ -48,20 +48,50 @@ pub fn DeviceDetail(
 
     let save_name = move || {
         let id = device_id.get();
+        let Some(current_device) = device.get() else {
+            set_editing_name.set(false);
+            return;
+        };
         let new_name = name_input.get();
-        if new_name.trim().is_empty() {
+        let next_name = new_name.trim().to_string();
+        if next_name.is_empty() {
             set_editing_name.set(false);
             return;
         }
+        let previous_name = current_device.name.clone();
+        let layout_device_id = current_device.layout_device_id.clone();
         set_editing_name.set(false);
         let devices_resource = ctx.devices_resource;
         leptos::task::spawn_local(async move {
             let req = api::UpdateDeviceRequest {
-                name: Some(new_name),
+                name: Some(next_name.clone()),
                 enabled: None,
                 brightness: None,
             };
-            let _ = api::update_device(&id, &req).await;
+            if api::update_device(&id, &req).await.is_ok()
+                && let Ok(mut layout) = api::fetch_active_layout().await
+            {
+                let layout_id = layout.id.clone();
+                if crate::layout_utils::sync_device_display_name_in_layout(
+                    &mut layout,
+                    &layout_device_id,
+                    &previous_name,
+                    &next_name,
+                ) {
+                    let _ = api::update_layout(
+                        &layout_id,
+                        &api::UpdateLayoutApiRequest {
+                            name: None,
+                            description: None,
+                            canvas_width: None,
+                            canvas_height: None,
+                            zones: Some(layout.zones),
+                        },
+                    )
+                    .await;
+                    let _ = api::apply_layout(&layout_id).await;
+                }
+            }
             devices_resource.refetch();
         });
     };

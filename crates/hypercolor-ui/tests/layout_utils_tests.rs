@@ -6,13 +6,15 @@ mod api;
 mod layout_geometry;
 
 mod channel_names {
-    pub fn load_channel_name(_device_id: &str, _slot_id: &str) -> Option<String> {
-        None
+    pub fn load_channel_name(device_id: &str, slot_id: &str) -> Option<String> {
+        match (device_id, slot_id) {
+            ("physical:prism8", "channel-1") => Some("Radiator".to_owned()),
+            _ => None,
+        }
     }
 
     pub fn effective_channel_name(device_id: &str, slot_id: &str, default_name: &str) -> String {
-        let _ = (device_id, slot_id);
-        default_name.to_owned()
+        load_channel_name(device_id, slot_id).unwrap_or_else(|| default_name.to_owned())
     }
 }
 
@@ -26,6 +28,21 @@ mod toasts {
     pub fn toast_success(_msg: &str) {}
     pub fn toast_error(_msg: &str) {}
     pub fn toast_info(_msg: &str) {}
+}
+
+mod components {
+    pub mod layout_builder {
+        #[derive(Clone, Copy)]
+        pub struct LayoutWriteHandle;
+
+        impl LayoutWriteHandle {
+            pub fn update(
+                self,
+                _f: impl FnOnce(&mut Option<hypercolor_types::spatial::SpatialLayout>),
+            ) {
+            }
+        }
+    }
 }
 
 #[path = "../src/layout_utils.rs"]
@@ -44,7 +61,6 @@ fn ring_zone(
     zone_name: Option<&str>,
     display_order: i32,
     attachment: Option<ZoneAttachment>,
-    brightness: None,
 ) -> DeviceZone {
     DeviceZone {
         id: id.to_owned(),
@@ -69,6 +85,64 @@ fn ring_zone(
         shape_preset: None,
         display_order,
         attachment,
+        brightness: None,
+    }
+}
+
+fn sample_zone_summary(id: &str, name: &str, led_count: usize) -> api::ZoneSummary {
+    api::ZoneSummary {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        led_count,
+        topology: "ring".to_owned(),
+        topology_hint: Some(api::ZoneTopologySummary::Ring {
+            count: u32::try_from(led_count).unwrap_or(u32::MAX),
+        }),
+    }
+}
+
+fn sample_device_summary(name: &str, zones: Vec<api::ZoneSummary>) -> api::DeviceSummary {
+    api::DeviceSummary {
+        id: "physical:prism8".to_owned(),
+        layout_device_id: "usb:prism8:test".to_owned(),
+        name: name.to_owned(),
+        backend: "test".to_owned(),
+        status: "connected".to_owned(),
+        brightness: 100,
+        firmware_version: None,
+        network_ip: None,
+        network_hostname: None,
+        connection_label: None,
+        total_leds: 20,
+        auth: None,
+        zones,
+    }
+}
+
+fn sample_attachment_profile(name: Option<&str>) -> api::DeviceAttachmentsResponse {
+    api::DeviceAttachmentsResponse {
+        device_id: "physical:prism8".to_owned(),
+        device_name: "Prism 8".to_owned(),
+        slots: vec![hypercolor_types::attachment::AttachmentSlot {
+            id: "channel-1".to_owned(),
+            name: "Channel 1".to_owned(),
+            led_start: 0,
+            led_count: 20,
+            suggested_categories: Vec::new(),
+            allowed_templates: Vec::new(),
+            allow_custom: true,
+        }],
+        bindings: vec![api::AttachmentBindingSummary {
+            slot_id: "channel-1".to_owned(),
+            template_id: "fan-template-1".to_owned(),
+            template_name: "Halo Ring".to_owned(),
+            name: name.map(str::to_owned),
+            enabled: true,
+            instances: 1,
+            led_offset: 0,
+            effective_led_count: 20,
+        }],
+        suggested_zones: Vec::new(),
     }
 }
 
@@ -259,4 +333,118 @@ fn sync_channel_display_name_in_layout_updates_slot_zone_name() {
     assert_eq!(source_zone.name, "Prism 8 · Radiator");
     assert_eq!(source_zone.zone_name.as_deref(), Some("Channel 1"));
     assert_eq!(layout.zones[1].name, "Front Fan 1");
+}
+
+#[test]
+fn effective_zone_display_uses_physical_device_channel_override() {
+    let zone = ring_zone(
+        "source-channel-1",
+        "Prism 8 · Channel 1",
+        "usb:prism8:test",
+        Some("Channel 1"),
+        0,
+        None,
+    );
+    let devices = vec![sample_device_summary(
+        "Prism 8",
+        vec![sample_zone_summary("channel-1", "Channel 1", 20)],
+    )];
+
+    let display = layout_utils::effective_zone_display(&zone, &devices, &HashMap::new());
+
+    assert_eq!(display.label, "Prism 8 · Radiator");
+    assert_eq!(display.default_label, "Prism 8 · Radiator");
+    assert_eq!(
+        display.identify_target,
+        Some(layout_utils::ZoneIdentifyTarget::Device {
+            device_id: "physical:prism8".to_owned(),
+            zone_id: "channel-1".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn effective_zone_display_uses_attachment_binding_override() {
+    let zone = ring_zone(
+        "front-fan-1",
+        "Halo Ring",
+        "usb:prism8:test",
+        Some("channel-1"),
+        1,
+        Some(ZoneAttachment {
+            template_id: "fan-template-1".to_owned(),
+            slot_id: "channel-1".to_owned(),
+            instance: 0,
+            led_start: Some(0),
+            led_count: Some(20),
+            led_mapping: None,
+        }),
+    );
+    let devices = vec![sample_device_summary(
+        "Prism 8",
+        vec![sample_zone_summary("channel-1", "Channel 1", 20)],
+    )];
+    let attachment_profiles = HashMap::from([(
+        "usb:prism8:test".to_owned(),
+        sample_attachment_profile(Some("Front Fan")),
+    )]);
+
+    let display = layout_utils::effective_zone_display(&zone, &devices, &attachment_profiles);
+
+    assert_eq!(display.label, "Front Fan");
+    assert_eq!(display.default_label, "Front Fan");
+    assert_eq!(
+        display.identify_target,
+        Some(layout_utils::ZoneIdentifyTarget::Attachment {
+            device_id: "physical:prism8".to_owned(),
+            slot_id: "channel-1".to_owned(),
+            binding_index: Some(0),
+            instance: Some(0),
+        })
+    );
+}
+
+#[test]
+fn sync_device_display_name_in_layout_updates_plain_and_prefixed_defaults() {
+    let mut layout = SpatialLayout {
+        id: "layout".to_owned(),
+        name: "Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![
+            ring_zone("single", "Prism 8", "usb:prism8:test", None, 0, None),
+            ring_zone(
+                "slot",
+                "Prism 8 · Channel 1",
+                "usb:prism8:test",
+                Some("Channel 1"),
+                1,
+                None,
+            ),
+            ring_zone(
+                "custom",
+                "Top Radiator",
+                "usb:prism8:test",
+                Some("Channel 2"),
+                2,
+                None,
+            ),
+        ],
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+
+    assert!(layout_utils::sync_device_display_name_in_layout(
+        &mut layout,
+        "usb:prism8:test",
+        "Prism 8",
+        "Aurora Hub",
+    ));
+
+    assert_eq!(layout.zones[0].name, "Aurora Hub");
+    assert_eq!(layout.zones[1].name, "Aurora Hub · Channel 1");
+    assert_eq!(layout.zones[2].name, "Top Radiator");
 }

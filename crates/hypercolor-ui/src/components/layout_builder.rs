@@ -18,9 +18,10 @@ use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, 
 use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
 use crate::layout_geometry;
+use crate::layout_history::{LayoutEditorSnapshot, LayoutHistoryState};
 use crate::layout_page_state::{LayoutPageState, PerLayoutState};
 use crate::toasts;
-use hypercolor_types::spatial::SpatialLayout;
+use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
 
 // Panel size defaults and constraints
 const SIDEBAR_DEFAULT: f64 = 280.0;
@@ -90,6 +91,138 @@ fn replacement_layout_name(layouts: &[api::LayoutSummary]) -> String {
     }
 }
 
+fn keyboard_target_is_text_input(target: Option<web_sys::EventTarget>) -> bool {
+    target
+        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+        .is_some_and(|element| {
+            let tag = element.tag_name();
+            tag.eq_ignore_ascii_case("input")
+                || tag.eq_ignore_ascii_case("textarea")
+                || tag.eq_ignore_ascii_case("select")
+                || element.has_attribute("contenteditable")
+                || element
+                    .closest("[contenteditable='true']")
+                    .ok()
+                    .flatten()
+                    .is_some()
+        })
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct LayoutWriteHandle {
+    layout: ReadSignal<Option<SpatialLayout>>,
+    set_layout: WriteSignal<Option<SpatialLayout>>,
+    selected_zone_ids: ReadSignal<std::collections::HashSet<String>>,
+    set_selected_zone_ids: WriteSignal<std::collections::HashSet<String>>,
+    compound_depth: ReadSignal<crate::compound_selection::CompoundDepth>,
+    set_compound_depth: WriteSignal<crate::compound_selection::CompoundDepth>,
+    removed_zone_cache: ReadSignal<crate::layout_utils::ZoneCache>,
+    set_removed_zone_cache: WriteSignal<crate::layout_utils::ZoneCache>,
+    history: RwSignal<LayoutHistoryState>,
+}
+
+impl LayoutWriteHandle {
+    fn capture_snapshot(self) -> Option<LayoutEditorSnapshot> {
+        let current = self.layout.get_untracked()?;
+        Some(LayoutEditorSnapshot {
+            zones: current.zones,
+            selected_zone_ids: self.selected_zone_ids.get_untracked(),
+            compound_depth: self.compound_depth.get_untracked(),
+            removed_zone_cache: self.removed_zone_cache.get_untracked(),
+        })
+    }
+
+    fn apply_snapshot(self, snapshot: LayoutEditorSnapshot) {
+        let LayoutEditorSnapshot {
+            zones,
+            selected_zone_ids,
+            compound_depth,
+            removed_zone_cache,
+        } = snapshot;
+        self.set_layout.update(move |current| {
+            if let Some(layout) = current {
+                layout.zones = zones;
+            }
+        });
+        self.set_selected_zone_ids.set(selected_zone_ids);
+        self.set_compound_depth.set(compound_depth);
+        self.set_removed_zone_cache.set(removed_zone_cache);
+    }
+
+    pub fn update(self, f: impl FnOnce(&mut Option<SpatialLayout>)) {
+        let before = self.capture_snapshot();
+        self.set_layout.update(f);
+        let (Some(before), Some(after)) = (before, self.capture_snapshot()) else {
+            return;
+        };
+        self.history
+            .update(|state| state.record_edit(before, &after));
+    }
+
+    pub fn update_without_history(self, f: impl FnOnce(&mut Option<SpatialLayout>)) {
+        self.set_layout.update(f);
+    }
+
+    pub fn set(self, value: Option<SpatialLayout>) {
+        self.history.update(LayoutHistoryState::discard_interaction);
+        self.set_layout.set(value);
+    }
+
+    pub fn reset_history(self) {
+        self.history.update(LayoutHistoryState::reset);
+    }
+
+    pub fn begin_interaction(self) {
+        if let Some(snapshot) = self.capture_snapshot() {
+            self.history
+                .update(|state| state.begin_interaction(snapshot));
+        }
+    }
+
+    pub fn finish_interaction(self) {
+        if let Some(current) = self.capture_snapshot() {
+            self.history
+                .update(|state| state.finish_interaction(&current));
+        } else {
+            self.history.update(LayoutHistoryState::discard_interaction);
+        }
+    }
+
+    pub fn replace_zones_with_history(self, zones: Vec<DeviceZone>) {
+        self.update(move |current| {
+            if let Some(layout) = current {
+                layout.zones = zones;
+            }
+        });
+    }
+
+    pub fn undo(self) {
+        let Some(current) = self.capture_snapshot() else {
+            return;
+        };
+        let mut restored = None;
+        self.history.update(|state| {
+            restored = state.undo(current.clone());
+        });
+        if let Some(snapshot) = restored {
+            self.apply_snapshot(snapshot);
+        }
+    }
+
+    pub fn redo(self) {
+        let Some(current) = self.capture_snapshot() else {
+            return;
+        };
+        let mut restored = None;
+        self.history.update(|state| {
+            restored = state.redo(current.clone());
+        });
+        if let Some(snapshot) = restored {
+            self.apply_snapshot(snapshot);
+        }
+    }
+}
+
 /// Shared layout editor state — provided via context to palette, canvas, and zone properties.
 #[derive(Clone, Copy)]
 pub(crate) struct LayoutEditorContext {
@@ -97,7 +230,7 @@ pub(crate) struct LayoutEditorContext {
     pub selected_zone_ids: Signal<std::collections::HashSet<String>>,
     pub hidden_zones: Signal<std::collections::HashSet<String>>,
     pub keep_aspect_ratio: Signal<bool>,
-    pub set_layout: WriteSignal<Option<SpatialLayout>>,
+    pub set_layout: LayoutWriteHandle,
     pub set_selected_zone_ids: WriteSignal<std::collections::HashSet<String>>,
     pub compound_depth: Signal<crate::compound_selection::CompoundDepth>,
     pub set_compound_depth: WriteSignal<crate::compound_selection::CompoundDepth>,
@@ -106,6 +239,12 @@ pub(crate) struct LayoutEditorContext {
     pub set_keep_aspect_ratio: WriteSignal<bool>,
     pub removed_zone_cache: Signal<crate::layout_utils::ZoneCache>,
     pub set_removed_zone_cache: WriteSignal<crate::layout_utils::ZoneCache>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct LayoutZoneDisplayContext {
+    pub attachment_profiles:
+        LocalResource<std::collections::HashMap<String, api::DeviceAttachmentsResponse>>,
 }
 
 /// Layout builder — wraps toolbar, palette, canvas viewport, and zone properties.
@@ -120,7 +259,7 @@ pub fn LayoutBuilder() -> impl IntoView {
     let per_layout_map = StoredValue::new(initial_state.per_layout);
 
     let (selected_layout_id, set_selected_layout_id) = signal(None::<String>);
-    let (layout, set_layout) = signal(None::<SpatialLayout>);
+    let (layout, set_layout_signal) = signal(None::<SpatialLayout>);
     let (saved_layout, set_saved_layout) = signal(None::<SpatialLayout>);
     let (selected_zone_ids, set_selected_zone_ids) =
         signal(std::collections::HashSet::<String>::new());
@@ -140,6 +279,18 @@ pub fn LayoutBuilder() -> impl IntoView {
     // Writable dirty signal for child components (actual dirty state is derived
     // from layout vs saved_layout comparison, but children need to signal changes).
     let (_dirty_marker, set_is_dirty) = signal(false);
+    let history = RwSignal::new(LayoutHistoryState::default());
+    let set_layout = LayoutWriteHandle {
+        layout,
+        set_layout: set_layout_signal,
+        selected_zone_ids,
+        set_selected_zone_ids,
+        compound_depth,
+        set_compound_depth,
+        removed_zone_cache,
+        set_removed_zone_cache,
+        history,
+    };
 
     let layout_signal = Signal::derive(move || layout.get());
     let zone_ids_signal = Signal::derive(move || selected_zone_ids.get());
@@ -162,6 +313,43 @@ pub fn LayoutBuilder() -> impl IntoView {
         set_compound_depth,
         removed_zone_cache: removed_zone_cache.into(),
         set_removed_zone_cache,
+    });
+
+    let attachment_profiles = LocalResource::new(move || {
+        let current_layout = layout.get();
+        let devices = ctx
+            .devices_resource
+            .get()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+
+        async move {
+            let mut device_ids = std::collections::HashMap::<String, String>::new();
+            if let Some(current_layout) = current_layout {
+                for zone in current_layout.zones {
+                    if zone.attachment.is_none() {
+                        continue;
+                    }
+                    if let Some(device) = devices
+                        .iter()
+                        .find(|device| device.layout_device_id == zone.device_id)
+                    {
+                        device_ids.insert(zone.device_id, device.id.clone());
+                    }
+                }
+            }
+
+            let mut profiles = std::collections::HashMap::new();
+            for (layout_device_id, device_id) in device_ids {
+                if let Ok(profile) = api::fetch_device_attachments(&device_id).await {
+                    profiles.insert(layout_device_id, profile);
+                }
+            }
+            profiles
+        }
+    });
+    provide_context(LayoutZoneDisplayContext {
+        attachment_profiles,
     });
 
     // --- Resizable panel state ---
@@ -241,6 +429,8 @@ pub fn LayoutBuilder() -> impl IntoView {
             .get()
             .is_some_and(|entry| entry.is_active)
     });
+    let can_undo = Signal::derive(move || history.get().can_undo());
+    let can_redo = Signal::derive(move || history.get().can_redo());
     // Derive dirty state by comparing working layout to saved snapshot.
     let is_dirty = Signal::derive(move || {
         let current = layout.get();
@@ -278,6 +468,36 @@ pub fn LayoutBuilder() -> impl IntoView {
         },
         75.0,
     );
+    let _history_shortcuts =
+        window_event_listener(ev::keydown, move |ev: web_sys::KeyboardEvent| {
+            if keyboard_target_is_text_input(ev.target()) {
+                return;
+            }
+            if ev.alt_key() || !(ev.ctrl_key() || ev.meta_key()) {
+                return;
+            }
+            match ev.key().as_str() {
+                "z" | "Z" if ev.shift_key() => {
+                    if can_redo.get_untracked() {
+                        ev.prevent_default();
+                        set_layout.redo();
+                    }
+                }
+                "z" | "Z" => {
+                    if can_undo.get_untracked() {
+                        ev.prevent_default();
+                        set_layout.undo();
+                    }
+                }
+                "y" | "Y" => {
+                    if can_redo.get_untracked() {
+                        ev.prevent_default();
+                        set_layout.redo();
+                    }
+                }
+                _ => {}
+            }
+        });
 
     // Auto-select the active layout (or first available, or create a default) on mount
     Effect::new(move |_| {
@@ -350,6 +570,7 @@ pub fn LayoutBuilder() -> impl IntoView {
                 );
             });
         }
+        set_layout.reset_history();
 
         if let Some(fetch_id) = id.clone() {
             let set_layout = set_layout;
@@ -484,7 +705,7 @@ pub fn LayoutBuilder() -> impl IntoView {
         let Some(saved) = saved_layout.get_untracked() else {
             return;
         };
-        set_layout.set(Some(saved));
+        set_layout.replace_zones_with_history(saved.zones.clone());
         toasts::toast_info("Layout reverted");
     };
 
@@ -628,7 +849,7 @@ pub fn LayoutBuilder() -> impl IntoView {
             match api::update_layout(&id, &req).await {
                 Ok(_) => {
                     // Update the in-memory layout name so the dropdown reflects it immediately
-                    set_layout.update(|l| {
+                    set_layout.update_without_history(|l| {
                         if let Some(layout) = l {
                             layout.name.clone_from(&new_name);
                         }
@@ -702,6 +923,16 @@ pub fn LayoutBuilder() -> impl IntoView {
                     {move || layout.get().map(|_| {
                         let dirty = is_dirty.get();
                         let is_active = selected_layout_is_active.get();
+                        let undo_style = if can_undo.get() {
+                            "background: rgba(225, 53, 255, 0.08); border-color: rgba(225, 53, 255, 0.2); color: rgb(225, 53, 255)"
+                        } else {
+                            "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
+                        };
+                        let redo_style = if can_redo.get() {
+                            "background: rgba(128, 255, 234, 0.08); border-color: rgba(128, 255, 234, 0.2); color: rgb(128, 255, 234)"
+                        } else {
+                            "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
+                        };
                         let apply_style = if is_active || dirty {
                             "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
                         } else {
@@ -720,6 +951,24 @@ pub fn LayoutBuilder() -> impl IntoView {
                         };
                         view! {
                             <div class="flex items-center gap-2">
+                                <button
+                                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
+                                    style=undo_style
+                                    on:click=move |_| set_layout.undo()
+                                    disabled=move || !can_undo.get()
+                                >
+                                    <Icon icon=LuUndo2 width="14px" height="14px" />
+                                    "Undo"
+                                </button>
+                                <button
+                                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
+                                    style=redo_style
+                                    on:click=move |_| set_layout.redo()
+                                    disabled=move || !can_redo.get()
+                                >
+                                    <Icon icon=LuRedo2 width="14px" height="14px" />
+                                    "Redo"
+                                </button>
                                 <button
                                     class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
                                     style=apply_style
