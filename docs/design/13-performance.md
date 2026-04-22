@@ -93,39 +93,51 @@ The EWMA (exponentially weighted moving average) provides a smoothed frame time 
 
 ### Thread Map
 
-Hypercolor uses a hybrid threading model: a tokio async runtime for I/O-bound work (network, IPC, web server) and dedicated OS threads for latency-sensitive workloads (audio, render loop).
+Hypercolor uses a hybrid threading model: a dedicated render thread with its
+own small tokio runtime, a separate display-output thread for LCD-class
+devices, and shared async workers for API and backend I/O. The simple mental
+model is:
+
+- the render thread owns frame production
+- the display thread owns direct display delivery
+- the API/runtime threads own network, IPC, and background orchestration
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                        Process: hypercolord                       │
 │                                                                   │
-│  Thread 0: Main / Render Loop ─────────────────────── pinned     │
-│    - Frame timing                                                 │
-│    - Effect dispatch (wgpu submit or Servo pump)                  │
-│    - Spatial sampling                                             │
-│    - Device output dispatch (async, non-blocking)                 │
+│  Thread 0: Render Thread ─────────────────────────── dedicated   │
+│    - Frame timing + adaptive FPS                                  │
+│    - Scene snapshot + input sampling                              │
+│    - Render-group execution                                       │
+│    - Spatial sampling + hardware routing                          │
+│    - Scene/display publication to the bus                         │
 │                                                                   │
-│  Thread 1: Audio Capture ──────────────────── SCHED_FIFO (RT)    │
+│  Thread 1: Display Output ───────────────────────── dedicated    │
+│    - Watches canonical scene canvas + direct group canvases       │
+│    - Applies per-display viewport/blend policy                    │
+│    - Encodes and pushes LCD/display frames                        │
+│                                                                   │
+│  Thread 2: Audio Capture ──────────────────── SCHED_FIFO (RT)    │
 │    - cpal callback thread (system-managed)                        │
-│    - Ring buffer write (lock-free)                                │
-│    - FFT processing at audio callback rate                        │
+│    - Audio snapshot production                                    │
 │                                                                   │
-│  Thread 2: Screen Capture ─────────────────────────── pinned     │
+│  Thread 3: Screen Capture ───────────────────────── background    │
 │    - PipeWire/X11 frame receiver                                  │
-│    - Downsample to canvas resolution                              │
-│    - Triple-buffered output                                       │
+│    - Screen snapshot production                                   │
 │                                                                   │
-│  Thread 3: Servo Main ───────────────────────────── (if active)  │
+│  Thread 4: Servo Main ───────────────────────────── (if active)  │
 │    - SpiderMonkey JS execution (single-threaded)                  │
 │    - DOM layout + style                                           │
 │    - Canvas 2D / WebGL rendering                                  │
 │    - Compositing → pixel readback                                 │
 │                                                                   │
-│  Threads 4..N: Servo Workers ────────────────────── (if active)  │
+│  Threads 5..N: Servo Workers ────────────────────── (if active)  │
 │    - Servo's internal thread pool (style, layout, networking)     │
 │    - Typically 2-4 threads, mostly idle for our workload          │
 │                                                                   │
-│  Tokio Runtime (multi-thread, 2-4 worker threads):                │
+│  Tokio runtimes / worker threads:                                 │
+│    - Render thread runtime (2 workers)                            │
 │    - Axum web server + WebSocket streaming                        │
 │    - Device backend I/O (TCP for OpenRGB, UDP for WLED/DDP)       │
 │    - D-Bus service (zbus)                                         │
@@ -188,18 +200,24 @@ fn spawn_render_thread(core_id: usize) {
 
 ### Inter-Thread Communication
 
-All hot-path communication uses lock-free primitives. No `Mutex` on the render path.
+Most hot-path communication uses latest-value channels or bounded async queues.
+The render pipeline still takes a few short-lived mutexes at stage boundaries
+for subsystems that are intentionally not `Sync` (`InputManager`,
+`BackendManager`, effect engine internals). The real invariant is not
+"zero locks anywhere"; it is "no long-lived contention and no blocking I/O in
+the frame-critical path."
 
 | Channel | Type | Direction | Semantics |
 |---|---|---|---|
-| Audio data | `triple_buffer::Output<AudioFrame>` | audio → render | Latest-value, lock-free, zero-copy |
-| Screen data | `triple_buffer::Output<ScreenFrame>` | screen → render | Latest-value, lock-free |
-| LED frame data | `tokio::sync::watch` | render → frontends | Latest-value, async |
-| Device colors | `tokio::sync::mpsc` (bounded) | render → device tasks | Backpressure, per-backend |
+| Frame data | `tokio::sync::watch` | render → consumers | Latest-value, async |
+| Scene canvas | `tokio::sync::watch` | render → display/UI consumers | Canonical full-scene surface |
+| Direct group canvases | per-group `tokio::sync::watch` | render → display workers | Latest-value direct display surfaces |
 | Events | `tokio::sync::broadcast` | any → subscribers | Fan-out, bounded |
-| Metrics | `crossbeam::channel` (bounded) | any → metrics aggregator | Batched, non-blocking try_send |
+| Metrics | shared snapshots + event bus | render/runtime → observers | Latest-value + discrete events |
 
-**Why triple buffering for audio/screen?** The producer (audio callback, screen capture) writes to a back buffer while the consumer (render loop) reads from the front buffer. A third buffer ensures the producer is never blocked waiting for the consumer. This eliminates the primary source of priority inversion between the RT audio thread and the normal-priority render thread.
+Audio and screen capture still behave like latest-value producers, but they are
+now best understood as render-thread sampled inputs rather than standalone
+lock-free transport contracts.
 
 ---
 

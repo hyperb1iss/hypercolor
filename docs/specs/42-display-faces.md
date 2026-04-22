@@ -8,7 +8,7 @@
 > same `<meta>` property system. No new rendering framework, no separate
 > browser process — just more WebViews in the same Servo instance.
 
-**Status:** Draft (v1)
+**Status:** Draft (v1, aligned with Spec 48 scene/display split)
 **Author:** Nova
 **Date:** 2026-04-12
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`
@@ -44,10 +44,13 @@ Virtual Display Simulator (41)
 
 Hypercolor's display overlay system (Spec 40) shipped native Rust overlay
 renderers — clocks, sensor gauges, text, and images — composited onto the
-viewport-sampled effect canvas in each display worker. These native
-renderers produce functional but visually basic output: no CSS animations,
-no rich typography, no canvas-based procedural visuals, no gradients or
-glow effects. They are a fraction of what HTML/CSS/JS can deliver.
+viewport-sampled effect canvas in each display worker. In the newer scene
+pipeline defined by Spec 48, display faces are better understood as
+**direct display canvases that sit beside the canonical scene canvas**, not as
+layers inside the scene canvas itself. These native renderers produce
+functional but visually basic output: no CSS animations, no rich typography,
+no canvas-based procedural visuals, no gradients or glow effects. They are a
+fraction of what HTML/CSS/JS can deliver.
 
 SignalRGB's LCD face system demonstrates the right model: each face is a
 standalone HTML file that uses the same property/meter API as effects,
@@ -224,7 +227,9 @@ Servo's.
 
 ### 5.1 Conceptual Model
 
-A display face is an effect in a RenderGroup with a display device target:
+A display face is an effect in a RenderGroup with a display device target. It
+publishes through the display-canvas branch of the pipeline, while the
+canonical scene canvas continues to represent the shared LED composition:
 
 ```
 Scene

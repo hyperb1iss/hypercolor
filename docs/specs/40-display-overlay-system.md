@@ -6,7 +6,7 @@
 > future display transport (HDMI, DisplayPort, e-paper, DSI panels) without
 > changes to the compositor.
 
-**Status:** Draft (v2, revised per cross-model review)
+**Status:** Draft (v2, partially superseded by Specs 42 and 48)
 **Author:** Nova
 **Date:** 2026-04-10
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`
@@ -50,8 +50,10 @@ effect without replacing the entire display content.
 
 This spec adds a **per-display overlay compositor** that layers user-configured
 widgets on top of the viewport-sampled effect canvas before the final transport
-encode. The overlay system is **display-specific** — LED strips and LED zones
-are unaffected, and LCD devices can each carry independent overlay stacks.
+encode. In the canonical render pipeline from Spec 48, this is now a
+**display-local composition path**, not the defining model for display content
+as a whole. LED strips and LED zones remain unaffected, and LCD devices can
+each carry independent overlay stacks.
 
 The approach is transport-agnostic: the compositor operates on the post-
 viewport RGBA staging buffer that every display worker already owns. As long
@@ -59,6 +61,11 @@ as a device's HAL driver exposes itself through `DeviceTopologyHint::Display`
 with a width, height, and optional circular flag, it can host overlays. That
 includes hypothetical future transports like USB-attached HDMI capture
 devices, e-paper panels, or directly framebuffered DRM outputs.
+
+Spec 42's HTML display faces are now the preferred long-term model for rich
+display content. Native overlays remain useful for lightweight widgets and
+fallback environments, but they should be read as one display-worker-local
+strategy inside the broader scene/display architecture.
 
 The approach:
 
