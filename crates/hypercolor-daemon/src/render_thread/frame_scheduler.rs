@@ -8,6 +8,21 @@ use crate::session::OutputPowerState;
 
 use super::frame_state::EffectDemand;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SceneDependencyKey {
+    pub(crate) groups_revision: u64,
+    pub(crate) dependency_generation: u64,
+}
+
+impl SceneDependencyKey {
+    pub(crate) const fn new(groups_revision: u64, dependency_generation: u64) -> Self {
+        Self {
+            groups_revision,
+            dependency_generation,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct SceneTransitionSnapshot {
     pub from_scene: Option<SceneId>,
@@ -74,8 +89,7 @@ pub(crate) struct FrameSceneSnapshotInputs {
 
 #[derive(Debug, Clone, Default)]
 struct CachedDisplayGroupTargetFps {
-    groups_revision: u64,
-    registry_generation: u64,
+    dependency_key: SceneDependencyKey,
     values: HashMap<RenderGroupId, u32>,
 }
 
@@ -93,27 +107,21 @@ impl FrameScheduler {
 
     pub(crate) fn cached_display_group_target_fps(
         &self,
-        groups_revision: u64,
-        registry_generation: u64,
+        dependency_key: SceneDependencyKey,
     ) -> Option<HashMap<RenderGroupId, u32>> {
         self.cached_display_group_target_fps
             .as_ref()
-            .filter(|cache| {
-                cache.groups_revision == groups_revision
-                    && cache.registry_generation == registry_generation
-            })
+            .filter(|cache| cache.dependency_key == dependency_key)
             .map(|cache| cache.values.clone())
     }
 
     pub(crate) fn cache_display_group_target_fps(
         &mut self,
-        groups_revision: u64,
-        registry_generation: u64,
+        dependency_key: SceneDependencyKey,
         values: &HashMap<RenderGroupId, u32>,
     ) {
         self.cached_display_group_target_fps = Some(CachedDisplayGroupTargetFps {
-            groups_revision,
-            registry_generation,
+            dependency_key,
             values: values.clone(),
         });
     }
@@ -153,7 +161,7 @@ mod tests {
 
     use super::{
         EffectDemand, FrameSceneSnapshotInputs, FrameScheduler, SceneRuntimeSnapshot,
-        SceneTransitionSnapshot,
+        SceneDependencyKey, SceneTransitionSnapshot,
     };
 
     fn empty_spatial_engine() -> SpatialEngine {
@@ -272,16 +280,21 @@ mod tests {
         let mut scheduler = FrameScheduler::new();
         let group_id = RenderGroupId::new();
         let values = std::collections::HashMap::from([(group_id, 30)]);
+        let dependency_key = SceneDependencyKey::new(1, 7);
 
-        assert!(scheduler.cached_display_group_target_fps(1, 7).is_none());
+        assert!(scheduler.cached_display_group_target_fps(dependency_key).is_none());
 
-        scheduler.cache_display_group_target_fps(1, 7, &values);
+        scheduler.cache_display_group_target_fps(dependency_key, &values);
 
         assert_eq!(
-            scheduler.cached_display_group_target_fps(1, 7),
+            scheduler.cached_display_group_target_fps(dependency_key),
             Some(values.clone())
         );
-        assert!(scheduler.cached_display_group_target_fps(2, 7).is_none());
-        assert!(scheduler.cached_display_group_target_fps(1, 8).is_none());
+        assert!(scheduler
+            .cached_display_group_target_fps(SceneDependencyKey::new(2, 7))
+            .is_none());
+        assert!(scheduler
+            .cached_display_group_target_fps(SceneDependencyKey::new(1, 8))
+            .is_none());
     }
 }

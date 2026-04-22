@@ -9,7 +9,7 @@ use hypercolor_types::scene::{RenderGroup, RenderGroupId};
 use super::RenderThreadState;
 use super::frame_scheduler::{
     FrameSceneSnapshot, FrameSceneSnapshotInputs, FrameScheduler, SceneRuntimeSnapshot,
-    SceneTransitionSnapshot,
+    SceneDependencyKey, SceneTransitionSnapshot,
 };
 use super::scene_state::RenderSceneState;
 use crate::display_output::capped_group_direct_display_target_fps;
@@ -31,13 +31,18 @@ pub(crate) struct EffectDemand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EffectSceneSnapshot {
     pub(crate) demand: EffectDemand,
-    pub(crate) registry_generation: u64,
+    pub(crate) dependency_key: SceneDependencyKey,
+}
+
+impl EffectSceneSnapshot {
+    pub(crate) const fn registry_generation(self) -> u64 {
+        self.dependency_key.dependency_generation
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CachedRenderGroupDemand {
-    pub(crate) groups_revision: u64,
-    pub(crate) registry_generation: u64,
+    pub(crate) dependency_key: SceneDependencyKey,
     pub(crate) screen_capture_configured: bool,
     pub(crate) demand: EffectDemand,
 }
@@ -64,7 +69,7 @@ pub(crate) async fn build_frame_scene_snapshot(
         budget_us: render_loop_snapshot.budget_us,
         output_power: *state.power_state.borrow(),
         effect_demand: effect_scene.demand,
-        effect_registry_generation: effect_scene.registry_generation,
+        effect_registry_generation: effect_scene.registry_generation(),
         scene_runtime,
         spatial_engine: render_scene_state.spatial_engine().clone(),
     })
@@ -84,9 +89,9 @@ pub(crate) async fn refresh_effect_scene_snapshot(
     )
     .await;
     let changed = refreshed.demand != scene_snapshot.effect_demand
-        || refreshed.registry_generation != scene_snapshot.effect_registry_generation;
+        || refreshed.registry_generation() != scene_snapshot.effect_registry_generation;
     scene_snapshot.effect_demand = refreshed.demand;
-    scene_snapshot.effect_registry_generation = refreshed.registry_generation;
+    scene_snapshot.effect_registry_generation = refreshed.registry_generation();
     changed
 }
 
@@ -155,10 +160,8 @@ async fn snapshot_display_group_target_fps(
     groups_revision: u64,
     groups: &[RenderGroup],
 ) -> HashMap<RenderGroupId, u32> {
-    let registry_generation = device_registry.generation();
-    if let Some(cached) =
-        frame_scheduler.cached_display_group_target_fps(groups_revision, registry_generation)
-    {
+    let dependency_key = SceneDependencyKey::new(groups_revision, device_registry.generation());
+    if let Some(cached) = frame_scheduler.cached_display_group_target_fps(dependency_key) {
         return cached;
     }
 
@@ -183,11 +186,7 @@ async fn snapshot_display_group_target_fps(
             ))
         })
         .collect();
-    frame_scheduler.cache_display_group_target_fps(
-        groups_revision,
-        registry_generation,
-        &target_fps,
-    );
+    frame_scheduler.cache_display_group_target_fps(dependency_key, &target_fps);
     target_fps
 }
 
@@ -198,15 +197,17 @@ async fn current_effect_scene_snapshot(
     screen_capture_configured: bool,
 ) -> EffectSceneSnapshot {
     let registry = state.effect_registry.read().await;
-    let registry_generation = registry.generation();
+    let dependency_key = SceneDependencyKey::new(
+        scene_runtime.active_render_groups_revision,
+        registry.generation(),
+    );
     if let Some(cached) = last_render_group_demand.as_ref()
-        && cached.groups_revision == scene_runtime.active_render_groups_revision
-        && cached.registry_generation == registry_generation
+        && cached.dependency_key == dependency_key
         && cached.screen_capture_configured == screen_capture_configured
     {
         return EffectSceneSnapshot {
             demand: cached.demand,
-            registry_generation,
+            dependency_key,
         };
     }
 
@@ -240,15 +241,14 @@ async fn current_effect_scene_snapshot(
         screen_capture_active,
     };
     *last_render_group_demand = Some(CachedRenderGroupDemand {
-        groups_revision: scene_runtime.active_render_groups_revision,
-        registry_generation,
+        dependency_key,
         screen_capture_configured,
         demand,
     });
 
     EffectSceneSnapshot {
         demand,
-        registry_generation,
+        dependency_key,
     }
 }
 
@@ -461,7 +461,7 @@ mod tests {
             current_effect_scene_snapshot(&state, &scene_runtime, &mut cached, false).await;
         assert!(second.demand.audio_capture_active);
         assert!(second.demand.screen_capture_active);
-        assert!(second.registry_generation > first.registry_generation);
+        assert!(second.registry_generation() > first.registry_generation());
     }
 
     #[tokio::test]
@@ -481,20 +481,15 @@ mod tests {
         let mut cached = None::<CachedRenderGroupDemand>;
         let mut frame_scheduler = crate::render_thread::frame_scheduler::FrameScheduler::new();
         let render_scene_state = RenderSceneState::new(SpatialEngine::new(sample_layout()), false);
+        let effect_scene =
+            current_effect_scene_snapshot(&state, &scene_runtime, &mut cached, false).await;
         let mut scene_snapshot = frame_scheduler.build_snapshot(FrameSceneSnapshotInputs {
             frame_token: 42,
             elapsed_ms: 123,
             budget_us: 16_666,
             output_power: OutputPowerState::default(),
-            effect_demand: current_effect_scene_snapshot(
-                &state,
-                &scene_runtime,
-                &mut cached,
-                false,
-            )
-            .await
-            .demand,
-            effect_registry_generation: state.effect_registry.read().await.generation(),
+            effect_demand: effect_scene.demand,
+            effect_registry_generation: effect_scene.registry_generation(),
             scene_runtime,
             spatial_engine: SpatialEngine::new(sample_layout()),
         });
