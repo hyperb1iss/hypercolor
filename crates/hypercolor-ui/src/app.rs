@@ -27,7 +27,7 @@ use crate::thumbnails::{self, ThumbnailStore};
 use crate::toasts;
 use crate::ws::messages::scene_event_affects_active_effect;
 use crate::ws::{
-    AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, DeviceEventHint, EffectErrorHint,
+    AudioLevel, BackpressureNotice, CanvasFrame, DeviceEventHint, EffectErrorHint,
     PerformanceMetrics, SceneEventHint, WsManager,
 };
 
@@ -103,7 +103,6 @@ pub struct WsContext {
     /// is safe — subsequent subscribes retarget without dropping the
     /// existing relay task on the server.
     pub set_display_preview_device: WriteSignal<Option<String>>,
-    pub connection_state: ReadSignal<ConnectionState>,
     pub preview_fps: ReadSignal<f32>,
     pub preview_target_fps: ReadSignal<u32>,
     pub set_preview_cap: WriteSignal<u32>,
@@ -573,7 +572,6 @@ pub fn App() -> impl IntoView {
         web_viewport_canvas_frame: ws.web_viewport_canvas_frame,
         display_preview_frame: ws.display_preview_frame,
         set_display_preview_device: ws.set_display_preview_device,
-        connection_state: ws.connection_state,
         preview_fps: ws.preview_fps,
         preview_target_fps: ws.preview_target_fps,
         set_preview_cap: ws.set_preview_cap,

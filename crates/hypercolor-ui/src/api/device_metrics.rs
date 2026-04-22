@@ -44,7 +44,6 @@ pub struct DeviceMetricsSnapshot {
 
 /// Fetch the latest shared device metrics snapshot from REST.
 pub async fn fetch_device_metrics() -> Result<DeviceMetricsSnapshot, String> {
-    let snapshot: DeviceMetricsSnapshot =
-        client::fetch_json("/api/v1/devices/metrics").await?;
+    let snapshot: DeviceMetricsSnapshot = client::fetch_json("/api/v1/devices/metrics").await?;
     Ok(snapshot)
 }

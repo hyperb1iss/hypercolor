@@ -63,6 +63,7 @@ pub(crate) struct RenderGroupEffectError {
 #[derive(Clone)]
 struct RetainedRenderGroupFrame {
     groups_revision: u64,
+    registry_generation: u64,
     scene_frame: ProducerFrame,
     active_group_canvas_ids: Vec<RenderGroupId>,
     led_sampling_strategy: RetainedLedSamplingStrategy,
@@ -73,6 +74,7 @@ struct RetainedRenderGroupFrame {
 struct RetainedDirectGroupFrame {
     frame: GroupCanvasFrame,
     rendered_at_ms: u32,
+    registry_generation: u64,
 }
 
 pub(crate) struct RenderGroupRuntime {
@@ -83,6 +85,7 @@ pub(crate) struct RenderGroupRuntime {
     retained_direct_group_frames: HashMap<RenderGroupId, RetainedDirectGroupFrame>,
     preview_surface_pool: RenderSurfacePool,
     reconciled_groups_revision: Option<u64>,
+    reconciled_registry_generation: Option<u64>,
     retained_frame: Option<RetainedRenderGroupFrame>,
     last_effect_error: Option<RenderGroupEffectError>,
     combined_led_layout: Arc<SpatialLayout>,
@@ -108,6 +111,7 @@ impl RenderGroupRuntime {
                 PREVIEW_SURFACE_POOL_SLOTS,
             ),
             reconciled_groups_revision: None,
+            reconciled_registry_generation: None,
             retained_frame: None,
             last_effect_error: None,
             combined_led_layout: Arc::new(empty_group_layout(preview_width, preview_height)),
@@ -152,9 +156,15 @@ impl RenderGroupRuntime {
             .sum()
     }
 
-    pub(crate) fn reuse_scene(&self, groups_revision: u64) -> Option<RenderGroupResult> {
+    pub(crate) fn reuse_scene(
+        &self,
+        groups_revision: u64,
+        registry_generation: u64,
+    ) -> Option<RenderGroupResult> {
         let retained = self.retained_frame.as_ref()?;
-        if retained.groups_revision != groups_revision {
+        if retained.groups_revision != groups_revision
+            || retained.registry_generation != registry_generation
+        {
             return None;
         }
 
@@ -190,12 +200,14 @@ impl RenderGroupRuntime {
         sensors: &SystemSnapshot,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<RenderGroupResult> {
-        self.reconcile(groups, groups_revision, registry)?;
+        let registry_generation = registry.generation();
+        self.reconcile(groups, groups_revision, registry_generation, registry)?;
 
         if let Some(result) = self.render_single_full_preview_group(
             groups,
             elapsed_ms,
             display_group_target_fps,
+            registry_generation,
             registry,
             delta_secs,
             audio,
@@ -205,7 +217,7 @@ impl RenderGroupRuntime {
             zones,
         )? {
             self.clear_effect_error();
-            self.retain_frame(groups_revision, &result, &[]);
+            self.retain_frame(groups_revision, registry_generation, &result, &[]);
             return Ok(result);
         }
 
@@ -224,6 +236,7 @@ impl RenderGroupRuntime {
                     group,
                     elapsed_ms,
                     display_group_target_fps,
+                    registry_generation,
                 ) {
                     active_group_canvas_ids.push(group.id);
                     group_canvases.push((group.id, retained));
@@ -258,7 +271,7 @@ impl RenderGroupRuntime {
                         .clone()
                         .expect("direct display group should carry a display target"),
                 };
-                self.retain_direct_group_frame(group.id, elapsed_ms, &frame);
+                self.retain_direct_group_frame(group.id, elapsed_ms, registry_generation, &frame);
                 group_canvases.push((group.id, frame));
                 continue;
             }
@@ -315,7 +328,7 @@ impl RenderGroupRuntime {
             logical_layer_count,
         };
         self.clear_effect_error();
-        self.retain_frame(groups_revision, &result, zones);
+        self.retain_frame(groups_revision, registry_generation, &result, zones);
         Ok(result)
     }
 
@@ -323,9 +336,12 @@ impl RenderGroupRuntime {
         &mut self,
         groups: &[RenderGroup],
         groups_revision: u64,
+        registry_generation: u64,
         registry: &EffectRegistry,
     ) -> Result<()> {
-        if self.reconciled_groups_revision == Some(groups_revision) {
+        if self.reconciled_groups_revision == Some(groups_revision)
+            && self.reconciled_registry_generation == Some(registry_generation)
+        {
             return Ok(());
         }
 
@@ -367,6 +383,7 @@ impl RenderGroupRuntime {
             self.preview_height,
         ));
         self.reconciled_groups_revision = Some(groups_revision);
+        self.reconciled_registry_generation = Some(registry_generation);
 
         Ok(())
     }
@@ -415,6 +432,7 @@ impl RenderGroupRuntime {
         groups: &[RenderGroup],
         elapsed_ms: u32,
         display_group_target_fps: &HashMap<RenderGroupId, u32>,
+        registry_generation: u64,
         registry: &EffectRegistry,
         delta_secs: f32,
         audio: &AudioData,
@@ -468,9 +486,12 @@ impl RenderGroupRuntime {
                 continue;
             }
 
-            if let Some(retained) =
-                self.reuse_retained_direct_group_frame(group, elapsed_ms, display_group_target_fps)
-            {
+            if let Some(retained) = self.reuse_retained_direct_group_frame(
+                group,
+                elapsed_ms,
+                display_group_target_fps,
+                registry_generation,
+            ) {
                 active_group_canvas_ids.push(group.id);
                 group_canvases.push((group.id, retained));
                 continue;
@@ -505,7 +526,7 @@ impl RenderGroupRuntime {
                     .clone()
                     .expect("direct display group should carry a display target"),
             };
-            self.retain_direct_group_frame(group.id, elapsed_ms, &frame);
+            self.retain_direct_group_frame(group.id, elapsed_ms, registry_generation, &frame);
             group_canvases.push((group.id, frame));
         }
         zones.clear();
@@ -557,11 +578,13 @@ impl RenderGroupRuntime {
     fn retain_frame(
         &mut self,
         groups_revision: u64,
+        registry_generation: u64,
         result: &RenderGroupResult,
         zones: &[ZoneColors],
     ) {
         self.retained_frame = Some(RetainedRenderGroupFrame {
             groups_revision,
+            registry_generation,
             scene_frame: result.scene_frame.clone(),
             active_group_canvas_ids: result.active_group_canvas_ids.clone(),
             led_sampling_strategy: result.led_sampling_strategy.retain(zones),
@@ -574,6 +597,7 @@ impl RenderGroupRuntime {
         group: &RenderGroup,
         elapsed_ms: u32,
         display_group_target_fps: &HashMap<RenderGroupId, u32>,
+        registry_generation: u64,
     ) -> Option<GroupCanvasFrame> {
         if !group_publishes_direct_canvas(group) || !group.layout.zones.is_empty() {
             return None;
@@ -581,6 +605,9 @@ impl RenderGroupRuntime {
 
         let target_fps = *display_group_target_fps.get(&group.id)?;
         let retained = self.retained_direct_group_frames.get(&group.id)?;
+        if retained.registry_generation != registry_generation {
+            return None;
+        }
         let frame_interval_ms = 1000_u32.div_ceil(target_fps.max(1));
         (elapsed_ms.saturating_sub(retained.rendered_at_ms) < frame_interval_ms)
             .then(|| retained.frame.clone())
@@ -590,6 +617,7 @@ impl RenderGroupRuntime {
         &mut self,
         group_id: RenderGroupId,
         elapsed_ms: u32,
+        registry_generation: u64,
         frame: &GroupCanvasFrame,
     ) {
         self.retained_direct_group_frames.insert(
@@ -597,6 +625,7 @@ impl RenderGroupRuntime {
             RetainedDirectGroupFrame {
                 frame: frame.clone(),
                 rendered_at_ms: elapsed_ms,
+                registry_generation,
             },
         );
     }
@@ -1062,6 +1091,18 @@ mod tests {
             .expect("builtin effect should exist")
     }
 
+    fn builtin_entry(
+        registry: &EffectRegistry,
+        stem: &str,
+    ) -> hypercolor_core::effect::EffectEntry {
+        registry
+            .iter()
+            .find_map(|(_, entry)| {
+                (entry.metadata.source.source_stem() == Some(stem)).then_some(entry.clone())
+            })
+            .expect("builtin effect should exist")
+    }
+
     fn render_scene_for_test(
         runtime: &mut RenderGroupRuntime,
         groups: &[RenderGroup],
@@ -1263,6 +1304,112 @@ mod tests {
     }
 
     #[test]
+    fn axis_aligned_bilinear_fast_path_matches_general_projection() {
+        let mut zone = point_zone("zone_fast_bilinear");
+        zone.position = NormalizedPosition::new(0.5, 0.5);
+        zone.size = NormalizedPosition::new(0.75, 0.5);
+        zone.scale = 1.0;
+        zone.rotation = 0.0;
+        zone.sampling_mode = Some(SamplingMode::Bilinear);
+        let layout = SpatialLayout {
+            id: "fast-path-layout".into(),
+            name: "Fast Path Layout".into(),
+            description: None,
+            canvas_width: 4,
+            canvas_height: 4,
+            zones: vec![zone.clone()],
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        };
+        let mut source = Canvas::new(4, 4);
+        for y in 0..4 {
+            for x in 0..4 {
+                source.set_pixel(
+                    x,
+                    y,
+                    Rgba::new((x * 40) as u8, (y * 50) as u8, ((x + y) * 30) as u8, 255),
+                );
+            }
+        }
+        let mut fast = Canvas::new(8, 8);
+        let mut general = Canvas::new(8, 8);
+
+        blit_zone_projection(&mut fast, &source, &zone, &layout, 8, 8);
+        blit_general_zone_projection(
+            &mut general,
+            &source,
+            &zone,
+            zone.sampling_mode
+                .as_ref()
+                .expect("sampling mode should be set"),
+            EdgeBehavior::Clamp,
+            0,
+            0,
+            8,
+            8,
+            8,
+            8,
+        );
+
+        assert_eq!(fast.as_rgba_bytes(), general.as_rgba_bytes());
+    }
+
+    #[test]
+    fn axis_aligned_nearest_fast_path_matches_general_projection() {
+        let mut zone = point_zone("zone_fast_nearest");
+        zone.position = NormalizedPosition::new(0.35, 0.6);
+        zone.size = NormalizedPosition::new(0.5, 0.5);
+        zone.scale = 1.0;
+        zone.rotation = 0.0;
+        zone.sampling_mode = Some(SamplingMode::Nearest);
+        let layout = SpatialLayout {
+            id: "fast-path-layout-nearest".into(),
+            name: "Fast Path Layout Nearest".into(),
+            description: None,
+            canvas_width: 4,
+            canvas_height: 4,
+            zones: vec![zone.clone()],
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        };
+        let mut source = Canvas::new(4, 4);
+        for y in 0..4 {
+            for x in 0..4 {
+                source.set_pixel(
+                    x,
+                    y,
+                    Rgba::new((x * 60) as u8, (y * 70) as u8, ((x + y) * 20) as u8, 255),
+                );
+            }
+        }
+        let mut fast = Canvas::new(8, 8);
+        let mut general = Canvas::new(8, 8);
+
+        blit_zone_projection(&mut fast, &source, &zone, &layout, 8, 8);
+        blit_general_zone_projection(
+            &mut general,
+            &source,
+            &zone,
+            zone.sampling_mode
+                .as_ref()
+                .expect("sampling mode should be set"),
+            EdgeBehavior::Clamp,
+            0,
+            0,
+            8,
+            8,
+            8,
+            8,
+        );
+
+        assert_eq!(fast.as_rgba_bytes(), general.as_rgba_bytes());
+    }
+
+    #[test]
     fn single_full_preview_group_renders_directly_into_surface() {
         let mut runtime = RenderGroupRuntime::new(4, 4);
         let registry = builtin_registry();
@@ -1423,7 +1570,7 @@ mod tests {
             preview_surface.height(),
         ));
         let reused = runtime
-            .reuse_scene(1)
+            .reuse_scene(1, registry.generation())
             .expect("retained scene should be reusable");
         let LedSamplingStrategy::SparkleFlinger(reused_spatial_engine) =
             reused.led_sampling_strategy
@@ -1591,7 +1738,7 @@ mod tests {
         assert_eq!(layout.zones[0].id, "zone_left");
         assert_eq!(layout.zones[1].id, "zone_right");
         let reused = runtime
-            .reuse_scene(1)
+            .reuse_scene(1, registry.generation())
             .expect("retained multi-group scene should be reusable");
         let LedSamplingStrategy::RetainedPreSampled { layout, zones } =
             reused.led_sampling_strategy
@@ -1648,7 +1795,7 @@ mod tests {
         );
         assert!(zones.is_empty());
         let reused = runtime
-            .reuse_scene(1)
+            .reuse_scene(1, registry.generation())
             .expect("display-only scene should keep an empty retained LED layout");
         let LedSamplingStrategy::RetainedPreSampled { layout, zones } =
             reused.led_sampling_strategy
@@ -1657,6 +1804,123 @@ mod tests {
         };
         assert!(layout.zones.is_empty());
         assert!(zones.is_empty());
+    }
+
+    #[test]
+    fn retained_scene_invalidates_when_registry_generation_changes() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut registry = builtin_registry();
+        let solid_id = builtin_effect_id(&registry, "solid_color");
+        let mut replacement = builtin_entry(&registry, "rainbow");
+        replacement.metadata.id = solid_id;
+        let mut group = sample_group(4, 4);
+        group.effect_id = Some(solid_id);
+        group.controls =
+            HashMap::from([("color".into(), ControlValue::Color([0.0, 1.0, 0.0, 1.0]))]);
+        let display_group_target_fps = HashMap::new();
+        let mut zones = Vec::new();
+
+        let first = render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&group),
+            1,
+            0,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("single group should render");
+        let ProducerFrame::Surface(first_surface) = &first.scene_frame else {
+            panic!("single group should publish a surface-backed scene frame");
+        };
+
+        assert!(
+            runtime.reuse_scene(1, registry.generation()).is_some(),
+            "retained scene should be reusable before the registry changes"
+        );
+
+        registry.register(replacement);
+
+        assert!(
+            runtime.reuse_scene(1, registry.generation()).is_none(),
+            "registry generation changes should invalidate retained scene reuse"
+        );
+
+        let second = render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&group),
+            1,
+            1,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("registry generation change should force a rerender");
+        let ProducerFrame::Surface(second_surface) = &second.scene_frame else {
+            panic!("single group should keep publishing a surface-backed scene frame");
+        };
+
+        assert_ne!(
+            second_surface.get_pixel(0, 0),
+            first_surface.get_pixel(0, 0),
+            "same group revision should still rebuild when the registry entry changes"
+        );
+    }
+
+    #[test]
+    fn retained_direct_canvas_invalidates_when_registry_generation_changes() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut registry = builtin_registry();
+        let solid_id = builtin_effect_id(&registry, "solid_color");
+        let mut replacement = builtin_entry(&registry, "rainbow");
+        replacement.metadata.id = solid_id;
+        let mut group = sample_display_group(4, 4);
+        group.effect_id = Some(solid_id);
+        group.controls =
+            HashMap::from([("color".into(), ControlValue::Color([0.0, 1.0, 0.0, 1.0]))]);
+        let display_group_target_fps = HashMap::from([(group.id, 30)]);
+        let mut zones = Vec::new();
+
+        let first = render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&group),
+            1,
+            0,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("display group should render");
+        let [(_, first_frame)] = &first.group_canvases[..] else {
+            panic!("display group should publish a direct surface");
+        };
+
+        registry.register(replacement);
+
+        let second = render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&group),
+            1,
+            10,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("registry generation change should bypass retained direct-canvas reuse");
+        let [(_, second_frame)] = &second.group_canvases[..] else {
+            panic!("display group should keep publishing a direct surface");
+        };
+
+        assert_ne!(
+            second_frame.surface.get_pixel(0, 0),
+            first_frame.surface.get_pixel(0, 0),
+            "direct canvases should rerender immediately when the active registry entry changes"
+        );
+        assert!(
+            second_frame.surface.storage_identity() != first_frame.surface.storage_identity()
+                || second_frame.surface.generation() != first_frame.surface.generation(),
+            "the retained direct surface should not be reused across registry generations"
+        );
     }
 
     #[test]

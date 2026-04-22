@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
@@ -46,6 +47,7 @@ pub(super) const RECENT_CONSOLE_SAMPLE_SIZE: usize = 6;
 const CONSOLE_SNIPPET_RADIUS: usize = 1;
 const CONSOLE_SNIPPET_LINE_MAX_CHARS: usize = 180;
 const JS_TIMER_MIN_DURATION_MS: i64 = 4;
+const MAX_GL_ERROR_BATCH: usize = 8;
 
 /// Per-frame Servo render timings, split by stage. All durations in
 /// microseconds; the shared `_us` suffix is deliberate.
@@ -67,6 +69,7 @@ struct ServoRenderStageTimings {
 // daemon lifetime.
 static SERVO_WORKER: OnceLock<Mutex<SharedServoWorkerState>> = OnceLock::new();
 static SERVO_CIRCUIT_BREAKER: ServoCircuitBreaker = ServoCircuitBreaker::new();
+static SERVO_READBACK_GL_WARNING_EMITTED: AtomicBool = AtomicBool::new(false);
 
 /// Acquire a client handle to the shared Servo worker, spawning it on first use.
 pub(super) fn acquire_servo_worker() -> Result<ServoWorkerClient> {
@@ -545,13 +548,18 @@ fn read_framebuffer_into_canvas(session: &ServoSession, width: i32, height: i32)
 
     session.rendering_context.prepare_for_rendering();
     let gl = session.rendering_context.gleam_gl_api();
+    let stale_errors = collect_gl_errors_until_clear(gl::NO_ERROR, || gl.get_error());
+    if !stale_errors.is_empty() {
+        trace!(
+            errors = %format_gl_error_codes(&stale_errors),
+            "Cleared stale GL errors before Servo framebuffer readback"
+        );
+    }
     gl.bind_vertex_array(0);
 
     let mut pixels = gl.read_pixels(0, 0, width, height, gl::RGBA, gl::UNSIGNED_BYTE);
-    let gl_error = gl.get_error();
-    if gl_error != gl::NO_ERROR {
-        warn!("GL error 0x{gl_error:x} raised during Servo framebuffer readback");
-    }
+    let gl_errors = collect_gl_errors_until_clear(gl::NO_ERROR, || gl.get_error());
+    log_servo_readback_gl_errors(&gl_errors);
 
     let stride = usize::try_from(width)
         .ok()
@@ -573,6 +581,59 @@ fn read_framebuffer_into_canvas(session: &ServoSession, width: i32, height: i32)
     flip_rows_in_place(&mut pixels, stride);
 
     Ok(Canvas::from_vec(pixels, width_u32, height_u32))
+}
+
+fn with_temporarily_unthrottled<T, E>(
+    mut set_throttled: impl FnMut(bool) -> std::result::Result<(), E>,
+    run: impl FnOnce() -> std::result::Result<T, E>,
+) -> std::result::Result<T, E> {
+    set_throttled(false)?;
+    let result = run();
+    let restore_result = set_throttled(true);
+    match (result, restore_result) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(value), Ok(())) => Ok(value),
+    }
+}
+
+fn collect_gl_errors_until_clear(no_error: u32, mut next_error: impl FnMut() -> u32) -> Vec<u32> {
+    let mut errors = Vec::new();
+    for _ in 0..MAX_GL_ERROR_BATCH {
+        let error = next_error();
+        if error == no_error {
+            break;
+        }
+        errors.push(error);
+    }
+    errors
+}
+
+fn format_gl_error_codes(errors: &[u32]) -> String {
+    errors
+        .iter()
+        .map(|error| format!("0x{error:x}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn log_servo_readback_gl_errors(errors: &[u32]) {
+    if errors.is_empty() {
+        return;
+    }
+
+    let formatted = format_gl_error_codes(errors);
+    if !SERVO_READBACK_GL_WARNING_EMITTED.swap(true, Ordering::AcqRel) {
+        warn!(
+            errors = %formatted,
+            "GL errors raised during Servo framebuffer readback; suppressing repeated warnings"
+        );
+    } else {
+        trace!(
+            errors = %formatted,
+            "Repeated GL errors during Servo framebuffer readback"
+        );
+    }
 }
 
 /// Swap pairs of rows in a row-major RGBA buffer to flip it vertically.
@@ -1201,11 +1262,19 @@ impl ServoWorkerRuntime {
             timings.evaluate_scripts_us = elapsed_micros(evaluate_scripts_start);
 
             // Let timers/RAF advance for one daemon-driven frame after scripts
-            // have injected controls/audio for this tick. Leaving the webview
-            // unthrottled between ticks lets effect-side RAF/timer loops free-run.
-            self.active_webview(session_id)?.set_throttled(false);
+            // have injected controls/audio for this tick, then re-throttle so
+            // effect-side RAF/timer loops do not free-run between daemon ticks.
             let event_loop_start = Instant::now();
-            self.servo.spin_event_loop();
+            with_temporarily_unthrottled(
+                |throttled| {
+                    self.active_webview(session_id)?.set_throttled(throttled);
+                    Ok::<(), anyhow::Error>(())
+                },
+                || {
+                    self.servo.spin_event_loop();
+                    Ok::<(), anyhow::Error>(())
+                },
+            )?;
             timings.event_loop_us = elapsed_micros(event_loop_start);
             let frame_ready = self.session(session_id)?.delegate.take_frame_ready();
             if frame_ready {
@@ -1926,6 +1995,61 @@ mod tests {
         let mut pixels = vec![0u8; 16];
         flip_rows_in_place(&mut pixels, 0);
         assert_eq!(pixels, vec![0u8; 16]);
+    }
+
+    #[test]
+    fn temporarily_unthrottled_restores_throttle_after_success() {
+        let mut transitions = Vec::new();
+        let result = with_temporarily_unthrottled(
+            |throttled| {
+                transitions.push(throttled);
+                Ok::<(), &'static str>(())
+            },
+            || Ok::<_, &'static str>("ok"),
+        )
+        .expect("temporary unthrottle should succeed");
+
+        assert_eq!(result, "ok");
+        assert_eq!(transitions, vec![false, true]);
+    }
+
+    #[test]
+    fn temporarily_unthrottled_restores_throttle_after_failure() {
+        let mut transitions = Vec::new();
+        let result = with_temporarily_unthrottled(
+            |throttled| {
+                transitions.push(throttled);
+                Ok::<(), &'static str>(())
+            },
+            || Err::<(), &'static str>("boom"),
+        );
+
+        assert_eq!(result, Err("boom"));
+        assert_eq!(transitions, vec![false, true]);
+    }
+
+    #[test]
+    fn collect_gl_errors_stops_after_no_error() {
+        let mut errors = vec![0x502, 0x501, 0].into_iter();
+        let collected = collect_gl_errors_until_clear(0, || {
+            errors
+                .next()
+                .expect("test iterator should have enough entries")
+        });
+
+        assert_eq!(collected, vec![0x502, 0x501]);
+    }
+
+    #[test]
+    fn collect_gl_errors_caps_the_batch_size() {
+        let mut calls = 0usize;
+        let collected = collect_gl_errors_until_clear(0, || {
+            calls += 1;
+            0x502
+        });
+
+        assert_eq!(collected.len(), MAX_GL_ERROR_BATCH);
+        assert_eq!(calls, MAX_GL_ERROR_BATCH);
     }
 
     #[test]

@@ -3,7 +3,6 @@
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_use::use_debounce_fn;
-use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::app::{EffectsContext, WsContext};
@@ -13,9 +12,9 @@ use crate::components::effect_card::EffectCard;
 use crate::components::install_effect_panel::InstallEffectPanel;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::page_search_bar::PageSearchBar;
-use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::preview_cabinet::PreviewCabinet;
 use crate::components::resize_handle::ResizeHandle;
+use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
 use crate::toasts;
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};

@@ -45,24 +45,12 @@ impl PageAccent {
 
     fn title_gradient(self) -> &'static str {
         match self {
-            PageAccent::Purple => {
-                "linear-gradient(105deg,#80ffea 0%,#c8d4ff 48%,#e135ff 100%)"
-            }
-            PageAccent::Cyan => {
-                "linear-gradient(105deg,#80ffea 0%,#e8f4ff 55%,#80ffea 100%)"
-            }
-            PageAccent::Coral => {
-                "linear-gradient(105deg,#80ffea 0%,#e8d4ff 50%,#ff6ac1 100%)"
-            }
-            PageAccent::Green => {
-                "linear-gradient(105deg,#80ffea 0%,#d4eaff 50%,#50fa7b 100%)"
-            }
-            PageAccent::Yellow => {
-                "linear-gradient(105deg,#80ffea 0%,#e8f0ff 50%,#f1fa8c 100%)"
-            }
-            PageAccent::Spectrum => {
-                "linear-gradient(105deg,#80ffea 0%,#e135ff 52%,#50fa7b 100%)"
-            }
+            PageAccent::Purple => "linear-gradient(105deg,#80ffea 0%,#c8d4ff 48%,#e135ff 100%)",
+            PageAccent::Cyan => "linear-gradient(105deg,#80ffea 0%,#e8f4ff 55%,#80ffea 100%)",
+            PageAccent::Coral => "linear-gradient(105deg,#80ffea 0%,#e8d4ff 50%,#ff6ac1 100%)",
+            PageAccent::Green => "linear-gradient(105deg,#80ffea 0%,#d4eaff 50%,#50fa7b 100%)",
+            PageAccent::Yellow => "linear-gradient(105deg,#80ffea 0%,#e8f0ff 50%,#f1fa8c 100%)",
+            PageAccent::Spectrum => "linear-gradient(105deg,#80ffea 0%,#e135ff 52%,#50fa7b 100%)",
         }
     }
 }
@@ -93,9 +81,8 @@ pub fn PageHeader(
 ) -> impl IntoView {
     let icon_rgb = accent.icon_rgb();
     let gradient = accent.title_gradient();
-    let icon_style = format!(
-        "color: rgb({icon_rgb}); filter: drop-shadow(0 0 10px rgba({icon_rgb}, 0.55))"
-    );
+    let icon_style =
+        format!("color: rgb({icon_rgb}); filter: drop-shadow(0 0 10px rgba({icon_rgb}, 0.55))");
     let title_style = format!(
         "font-family:'Orbitron',sans-serif; font-weight:900; font-size:20px; \
          letter-spacing:-0.01em; line-height:1; background-image:{gradient}"

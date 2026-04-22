@@ -39,9 +39,7 @@ use crate::scene_transactions::apply_layout_update;
 
 const MAX_EFFECT_UPLOAD_BYTES: usize = 1024 * 1024;
 
-pub(crate) async fn invalidate_active_render_groups_after_effect_registry_update(
-    state: &AppState,
-) {
+pub(crate) async fn invalidate_active_render_groups_after_effect_registry_update(state: &AppState) {
     let mut scene_manager = state.scene_manager.write().await;
     scene_manager.invalidate_active_render_groups();
 }

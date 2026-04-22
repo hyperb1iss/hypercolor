@@ -37,9 +37,7 @@ impl LedSamplingStrategy {
     pub(super) fn sparkleflinger_engine(&self) -> Option<&SpatialEngine> {
         match self {
             Self::SparkleFlinger(spatial_engine) => Some(spatial_engine),
-            Self::PreSampled(_)
-            | Self::RetainedPreSampled { .. }
-            | Self::ReusePublished(_) => None,
+            Self::PreSampled(_) | Self::RetainedPreSampled { .. } | Self::ReusePublished(_) => None,
         }
     }
 
@@ -577,12 +575,14 @@ pub(crate) fn resolve_led_sampling(
         if render.zone_transition_planner.active_transition != Some(transition_key) {
             render.zone_transition_planner.active_transition = Some(transition_key);
             render.zone_transition_planner.transition_base = Some(
-                render.zone_transition_planner.last_stable.clone().unwrap_or_else(|| {
-                    RetainedZoneFrame {
+                render
+                    .zone_transition_planner
+                    .last_stable
+                    .clone()
+                    .unwrap_or_else(|| RetainedZoneFrame {
                         layout: Arc::clone(&layout),
                         zones: current_zones.clone(),
-                    }
-                }),
+                    }),
             );
         }
 
@@ -605,7 +605,8 @@ pub(crate) fn resolve_led_sampling(
                 .saturating_add(micros_between(transition_blend_start, Instant::now()));
         }
     } else if retained_scene_zones.is_some() {
-        render_stage.led_sampling_strategy = LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
+        render_stage.led_sampling_strategy =
+            LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
     }
 
     let reuses_published_frame = matches!(

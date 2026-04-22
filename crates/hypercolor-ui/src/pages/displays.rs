@@ -1513,12 +1513,10 @@ fn FaceAssignmentCard(
         Some(Ok(Some(face))) => Some(face.effect.author),
         _ => None,
     });
-    let face_description = Signal::derive(move || {
-        match display_face.get() {
+    let face_description = Signal::derive(move || match display_face.get() {
         Some(Ok(Some(face))) => face.effect.description,
         Some(Err(error)) => error,
         _ => "Choose a face to start rendering.".to_owned(),
-    }
     });
     let has_face = Signal::derive(move || matches!(display_face.get(), Some(Ok(Some(_)))));
 

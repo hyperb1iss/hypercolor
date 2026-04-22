@@ -31,11 +31,13 @@ pub(crate) struct EffectDemand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EffectSceneSnapshot {
     pub(crate) demand: EffectDemand,
+    pub(crate) registry_generation: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CachedRenderGroupDemand {
     pub(crate) groups_revision: u64,
+    pub(crate) registry_generation: u64,
     pub(crate) screen_capture_configured: bool,
     pub(crate) demand: EffectDemand,
 }
@@ -62,6 +64,7 @@ pub(crate) async fn build_frame_scene_snapshot(
         budget_us: render_loop_snapshot.budget_us,
         output_power: *state.power_state.borrow(),
         effect_demand: effect_scene.demand,
+        effect_registry_generation: effect_scene.registry_generation,
         scene_runtime,
         spatial_engine: render_scene_state.spatial_engine().clone(),
     })
@@ -174,16 +177,19 @@ async fn current_effect_scene_snapshot(
     last_render_group_demand: &mut Option<CachedRenderGroupDemand>,
     screen_capture_configured: bool,
 ) -> EffectSceneSnapshot {
+    let registry = state.effect_registry.read().await;
+    let registry_generation = registry.generation();
     if let Some(cached) = last_render_group_demand.as_ref()
         && cached.groups_revision == scene_runtime.active_render_groups_revision
+        && cached.registry_generation == registry_generation
         && cached.screen_capture_configured == screen_capture_configured
     {
         return EffectSceneSnapshot {
             demand: cached.demand,
+            registry_generation,
         };
     }
 
-    let registry = state.effect_registry.read().await;
     let mut effect_running = false;
     let mut audio_capture_active = false;
     let mut screen_capture_active = false;
@@ -215,11 +221,15 @@ async fn current_effect_scene_snapshot(
     };
     *last_render_group_demand = Some(CachedRenderGroupDemand {
         groups_revision: scene_runtime.active_render_groups_revision,
+        registry_generation,
         screen_capture_configured,
         demand,
     });
 
-    EffectSceneSnapshot { demand }
+    EffectSceneSnapshot {
+        demand,
+        registry_generation,
+    }
 }
 
 pub(crate) async fn reconcile_audio_capture(
@@ -275,6 +285,158 @@ pub(crate) async fn reconcile_screen_capture(
                 "Failed to update screen capture demand"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use tokio::sync::{Mutex, RwLock, watch};
+    use uuid::Uuid;
+
+    use hypercolor_core::bus::HypercolorBus;
+    use hypercolor_core::device::{BackendManager, DeviceRegistry};
+    use hypercolor_core::effect::{EffectEntry, EffectRegistry};
+    use hypercolor_core::engine::{FpsTier, RenderLoop};
+    use hypercolor_core::input::InputManager;
+    use hypercolor_core::scene::SceneManager;
+    use hypercolor_core::spatial::SpatialEngine;
+    use hypercolor_types::config::RenderAccelerationMode;
+    use hypercolor_types::effect::{
+        EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
+    };
+    use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole};
+    use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+
+    use crate::device_settings::DeviceSettingsStore;
+    use crate::performance::PerformanceTracker;
+    use crate::preview_runtime::PreviewRuntime;
+    use crate::render_thread::{CanvasDims, RenderThreadState};
+    use crate::scene_transactions::SceneTransactionQueue;
+    use crate::session::OutputPowerState;
+
+    use super::{CachedRenderGroupDemand, current_effect_scene_snapshot};
+    use crate::render_thread::frame_scheduler::SceneRuntimeSnapshot;
+
+    fn sample_layout() -> SpatialLayout {
+        SpatialLayout {
+            id: "frame-state-test".into(),
+            name: "Frame State Test".into(),
+            description: None,
+            canvas_width: 320,
+            canvas_height: 200,
+            zones: Vec::new(),
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        }
+    }
+
+    fn sample_entry(id: EffectId, audio_reactive: bool, screen_reactive: bool) -> EffectEntry {
+        EffectEntry {
+            metadata: EffectMetadata {
+                id,
+                name: "test-effect".into(),
+                author: "test".into(),
+                version: "0.1.0".into(),
+                description: "test effect".into(),
+                category: EffectCategory::Ambient,
+                tags: Vec::new(),
+                controls: Vec::new(),
+                presets: Vec::new(),
+                audio_reactive,
+                screen_reactive,
+                source: EffectSource::Native {
+                    path: PathBuf::from("native/test-effect.wgsl"),
+                },
+                license: None,
+            },
+            source_path: PathBuf::from("/effects/native/test-effect.wgsl"),
+            modified: std::time::SystemTime::now(),
+            state: EffectState::Loading,
+        }
+    }
+
+    fn sample_group(effect_id: EffectId) -> RenderGroup {
+        RenderGroup {
+            id: RenderGroupId::new(),
+            name: "Test Group".into(),
+            description: None,
+            effect_id: Some(effect_id),
+            controls: HashMap::new(),
+            control_bindings: HashMap::new(),
+            preset_id: None,
+            layout: sample_layout(),
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+            display_target: None,
+            role: RenderGroupRole::Custom,
+            controls_version: 0,
+        }
+    }
+
+    fn minimal_render_thread_state(registry: EffectRegistry) -> RenderThreadState {
+        let (_, power_state) = watch::channel(OutputPowerState::default());
+        let event_bus = Arc::new(HypercolorBus::new());
+        RenderThreadState {
+            effect_registry: Arc::new(RwLock::new(registry)),
+            spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(sample_layout()))),
+            backend_manager: Arc::new(Mutex::new(BackendManager::new())),
+            device_registry: DeviceRegistry::new(),
+            performance: Arc::new(RwLock::new(PerformanceTracker::default())),
+            discovery_runtime: None,
+            event_bus: Arc::clone(&event_bus),
+            preview_runtime: Arc::new(PreviewRuntime::new(event_bus)),
+            render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
+            scene_manager: Arc::new(RwLock::new(SceneManager::with_default())),
+            input_manager: Arc::new(Mutex::new(InputManager::new())),
+            power_state,
+            device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
+                "device-settings.json",
+            )))),
+            scene_transactions: SceneTransactionQueue::default(),
+            screen_capture_configured: false,
+            canvas_dims: CanvasDims::new(320, 200),
+            render_acceleration_mode: RenderAccelerationMode::Cpu,
+            configured_max_fps_tier: FpsTier::Full,
+        }
+    }
+
+    #[tokio::test]
+    async fn effect_scene_snapshot_invalidates_cached_capture_demand_on_registry_generation() {
+        let effect_id = EffectId::from(Uuid::now_v7());
+        let mut registry = EffectRegistry::default();
+        registry.register(sample_entry(effect_id, false, false));
+        let state = minimal_render_thread_state(registry);
+        let scene_runtime = SceneRuntimeSnapshot {
+            active_scene_id: None,
+            active_transition: None,
+            active_render_groups: vec![sample_group(effect_id)].into(),
+            active_render_groups_revision: 7,
+            active_render_group_count: 1,
+            active_display_group_target_fps: HashMap::new(),
+        };
+        let mut cached = None::<CachedRenderGroupDemand>;
+
+        let first = current_effect_scene_snapshot(&state, &scene_runtime, &mut cached, false).await;
+        assert!(!first.demand.audio_capture_active);
+        assert!(!first.demand.screen_capture_active);
+
+        {
+            let mut registry = state.effect_registry.write().await;
+            registry.register(sample_entry(effect_id, true, true));
+        }
+
+        let second =
+            current_effect_scene_snapshot(&state, &scene_runtime, &mut cached, false).await;
+        assert!(second.demand.audio_capture_active);
+        assert!(second.demand.screen_capture_active);
+        assert!(second.registry_generation > first.registry_generation);
     }
 }
 

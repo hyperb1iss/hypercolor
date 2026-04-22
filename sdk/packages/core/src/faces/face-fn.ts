@@ -119,6 +119,11 @@ function resolveFaceFontFamilies(
     return [...families]
 }
 
+function frameDue(timestamp: number, lastFrameTime: number, fpsCap: number): boolean {
+    if (!Number.isFinite(fpsCap) || fpsCap <= 0) return true
+    return timestamp - lastFrameTime >= 1000 / fpsCap
+}
+
 // ── Metadata ────────────────────────────────────────────────────────────
 
 interface FaceDef {
@@ -236,8 +241,16 @@ function startFaceLoop(
 ): void {
     const updateFn = setupFn(ctx)
     const sensorAccessor = buildSensorAccessor()
+    let lastFrameTime = Number.NEGATIVE_INFINITY
 
     function tick(timestamp: number): void {
+        const fpsCap = (window as { __hypercolorFpsCap?: number }).__hypercolorFpsCap ?? 0
+        if (!frameDue(timestamp, lastFrameTime, fpsCap)) {
+            requestAnimationFrame(tick)
+            return
+        }
+        lastFrameTime = timestamp
+
         const time = timestamp / 1000
 
         // Clear the canvas overlay each frame
@@ -340,6 +353,7 @@ export function face(name: string, controls: ControlMap, options: FaceOptions, s
 }
 
 export const __testing = {
+    frameDue,
     resolveFaceControls,
     resolveFaceFontControls,
     resolveFaceFontFamilies,

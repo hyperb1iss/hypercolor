@@ -10,62 +10,12 @@ use crate::app::{EffectsContext, FrameAnalysisContext};
 use crate::components::sidebar::Sidebar;
 use crate::icons::*;
 
-/// Read the current theme from the DOM.
-fn read_theme() -> String {
-    web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.document_element())
-        .and_then(|el| el.get_attribute("data-theme"))
-        .unwrap_or_else(|| "dark".to_string())
-}
-
-/// Apply a theme to the DOM and persist to localStorage.
-fn apply_theme(theme: &str) {
-    if let Some(doc) = web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.document_element())
-    {
-        let _ = doc.set_attribute("data-theme", theme);
-    }
-    crate::storage::set("hc-theme", theme);
-}
-
-/// Shared theme state — provided via context for sidebar and other consumers.
-#[derive(Clone, Copy)]
-pub struct ThemeContext {
-    pub is_dark: Memo<bool>,
-    pub toggle: Callback<()>,
-}
-
-/// Shared command palette trigger.
-#[derive(Clone, Copy)]
-pub struct PaletteContext {
-    pub open: Callback<()>,
-}
-
 /// Top-level layout shell. Sidebar left, header + content right.
 #[component]
 pub fn Shell(children: Children) -> impl IntoView {
     let (palette_open, set_palette_open) = signal(false);
-    let (theme, set_theme) = signal(read_theme());
-    let is_dark = Memo::new(move |_| theme.get() == "dark");
     let location = use_location();
     let is_layout_route = Memo::new(move |_| location.pathname.get() == "/layout");
-
-    let toggle_theme = Callback::new(move |()| {
-        let next = if is_dark.get() { "light" } else { "dark" };
-        apply_theme(next);
-        set_theme.set(next.to_string());
-    });
-
-    provide_context(ThemeContext {
-        is_dark,
-        toggle: toggle_theme,
-    });
-
-    provide_context(PaletteContext {
-        open: Callback::new(move |()| set_palette_open.set(true)),
-    });
 
     // Ambient hue extraction — driven by the shared frame-analysis pass in app context.
     let shell_ref = NodeRef::<leptos::html::Div>::new();

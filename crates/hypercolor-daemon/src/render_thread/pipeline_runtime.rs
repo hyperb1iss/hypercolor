@@ -11,8 +11,8 @@ use hypercolor_core::types::canvas::{
 use hypercolor_core::types::event::FrameData;
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::event::ZoneColors;
-use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::scene::SceneId;
+use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::SpatialLayout;
 use std::sync::Arc;
 

@@ -12,13 +12,13 @@ use super::messages::{
     PerformanceMetrics, PreviewFrameChannel, SceneEventHint, decode_preview_frame,
     handle_json_message,
 };
-use crate::api::DeviceMetricsSnapshot;
 use super::preview::{
     DEFAULT_PREVIEW_FPS_CAP, clear_preview_subscription, clear_screen_preview_subscription,
     clear_web_viewport_preview_subscription, request_preview_subscription,
     request_screen_preview_subscription, request_web_viewport_preview_subscription,
     send_canvas_unsubscribe, send_screen_canvas_unsubscribe, send_web_viewport_canvas_unsubscribe,
 };
+use crate::api::DeviceMetricsSnapshot;
 
 /// Reconnection delay bounds (milliseconds).
 const RECONNECT_BASE_MS: i32 = 500;
@@ -43,8 +43,8 @@ struct SocketCallbacks {
 
 /// Reactive WebSocket connection to the daemon.
 ///
-/// Returns signals for canvas data, connection state, preview FPS, and daemon
-/// performance metrics. Canvas streaming is subscribed on demand.
+/// Returns signals for canvas data, preview FPS, and daemon performance
+/// metrics. Canvas streaming is subscribed on demand.
 pub struct WsManager {
     pub canvas_frame: ReadSignal<Option<CanvasFrame>>,
     pub screen_canvas_frame: ReadSignal<Option<CanvasFrame>>,
@@ -54,7 +54,6 @@ pub struct WsManager {
     /// frame arrives; reset to `None` when the target changes or the
     /// connection drops.
     pub display_preview_frame: ReadSignal<Option<CanvasFrame>>,
-    pub connection_state: ReadSignal<ConnectionState>,
     pub preview_fps: ReadSignal<f32>,
     pub metrics: ReadSignal<Option<PerformanceMetrics>>,
     /// Latest per-device output telemetry snapshot. `None` until the devices
@@ -510,7 +509,6 @@ impl WsManager {
             screen_canvas_frame,
             web_viewport_canvas_frame,
             display_preview_frame,
-            connection_state,
             preview_fps,
             metrics,
             device_metrics,

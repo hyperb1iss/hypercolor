@@ -4,6 +4,13 @@ import { combo, font } from '../src/controls/specs'
 import { __testing } from '../src/faces/face-fn'
 
 describe('face font loading', () => {
+    test('fps cap gates face animation frames', () => {
+        expect(__testing.frameDue(0, Number.NEGATIVE_INFINITY, 30)).toBe(true)
+        expect(__testing.frameDue(10, 0, 30)).toBe(false)
+        expect(__testing.frameDue(34, 0, 30)).toBe(true)
+        expect(__testing.frameDue(5, 0, 0)).toBe(true)
+    })
+
     test('loads only the active font selections', () => {
         const controls = __testing.resolveFaceControls({
             heroFont: font('Hero Font', 'Rajdhani', { families: ['Rajdhani', 'Orbitron', 'Space Mono'] }),

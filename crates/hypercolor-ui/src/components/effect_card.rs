@@ -127,7 +127,10 @@ pub fn EffectCard(
     let source_label_text = source_label(&source);
     let show_source_icon = source != "native";
     let is_html = source == "html";
-    let curated_url = format!("/api/v1/effects/screenshots/{}/default.webp", slugify(&effect.name));
+    let curated_url = format!(
+        "/api/v1/effects/screenshots/{}/default.webp",
+        slugify(&effect.name)
+    );
     let (curated_hidden, set_curated_hidden) = signal(false);
 
     view! {

@@ -44,7 +44,9 @@ pub fn DeviceMetricsStrip(
         let Some(state) = entry.get() else {
             return "var(--color-fg-tertiary)";
         };
-        let target = f32::from(u16::try_from(state.current.fps_target.min(u32::from(u16::MAX))).unwrap_or(0));
+        let target = f32::from(
+            u16::try_from(state.current.fps_target.min(u32::from(u16::MAX))).unwrap_or(0),
+        );
         if target <= 0.0 {
             return "var(--color-fg-tertiary)";
         }

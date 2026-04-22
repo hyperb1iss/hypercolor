@@ -423,10 +423,7 @@ fn default_scheme_for_host_input(value: &str) -> &'static str {
         reason = "matching an mDNS hostname suffix, not a filesystem extension; the lowercase conversion above already normalizes case"
     )]
     let is_mdns_local = host_lower.ends_with(".local");
-    if host_lower == "localhost"
-        || is_mdns_local
-        || host_without_port.parse::<IpAddr>().is_ok()
-    {
+    if host_lower == "localhost" || is_mdns_local || host_without_port.parse::<IpAddr>().is_ok() {
         "http"
     } else {
         "https"

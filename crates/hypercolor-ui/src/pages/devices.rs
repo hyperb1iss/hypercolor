@@ -4,7 +4,6 @@
 use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use wasm_bindgen::JsCast;
 
 use crate::api::DeviceSummary;
 use crate::app::{DevicesContext, WsContext};
@@ -13,8 +12,8 @@ use crate::components::device_detail::DeviceDetail;
 use crate::components::device_pairing_modal::{DevicePairingModal, ForgetCredentialsModal};
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::page_search_bar::PageSearchBar;
-use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::resize_handle::ResizeHandle;
+use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
 use crate::style_utils::filter_chips;
 use crate::toasts;
@@ -85,7 +84,9 @@ pub fn DevicesPage() -> impl IntoView {
     // one consumer is registered, so this keeps the payload off pages that
     // don't plot it.
     let ws_ctx = expect_context::<WsContext>();
-    ws_ctx.set_device_metrics_consumers.update(|n| *n = n.saturating_add(1));
+    ws_ctx
+        .set_device_metrics_consumers
+        .update(|n| *n = n.saturating_add(1));
     on_cleanup(move || {
         ws_ctx
             .set_device_metrics_consumers

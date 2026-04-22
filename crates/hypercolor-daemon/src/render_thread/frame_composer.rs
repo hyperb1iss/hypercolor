@@ -126,6 +126,7 @@ impl ComposeContext<'_> {
                     self.scene_snapshot
                         .scene_runtime
                         .active_render_groups_revision,
+                    self.scene_snapshot.effect_registry_generation,
                 ) {
                     (Ok(retained), true)
                 } else {

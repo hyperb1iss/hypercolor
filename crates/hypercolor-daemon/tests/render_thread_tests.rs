@@ -1525,8 +1525,14 @@ async fn multi_group_scene_publishes_authoritative_canvas_and_global_canvas() {
     for frame in [&canvas, &global_canvas] {
         assert_eq!(frame.width, 320);
         assert_eq!(frame.height, 200);
-        assert_eq!(frame.surface().get_pixel(80, 100), Rgba::new(255, 0, 0, 255));
-        assert_eq!(frame.surface().get_pixel(240, 100), Rgba::new(0, 0, 255, 255));
+        assert_eq!(
+            frame.surface().get_pixel(80, 100),
+            Rgba::new(255, 0, 0, 255)
+        );
+        assert_eq!(
+            frame.surface().get_pixel(240, 100),
+            Rgba::new(0, 0, 255, 255)
+        );
         assert_eq!(frame.surface().get_pixel(160, 100), Rgba::new(0, 0, 0, 255));
     }
 }

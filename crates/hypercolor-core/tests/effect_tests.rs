@@ -1070,6 +1070,31 @@ fn registry_get_mut() {
 }
 
 #[test]
+fn registry_generation_advances_on_semantic_mutation() {
+    let mut registry = EffectRegistry::default();
+    assert_eq!(registry.generation(), 0);
+
+    let entry = sample_entry("mutable", EffectCategory::Utility, vec![]);
+    let id = entry.metadata.id;
+    registry.register(entry);
+    let after_register = registry.generation();
+
+    assert!(after_register > 0);
+
+    let found = registry
+        .get_mut(&id)
+        .expect("mutable lookup should bump generation");
+    found.state = EffectState::Running;
+    let after_get_mut = registry.generation();
+
+    assert!(after_get_mut > after_register);
+
+    let removed = registry.remove(&id);
+    assert!(removed.is_some());
+    assert!(registry.generation() > after_get_mut);
+}
+
+#[test]
 fn registry_search_paths() {
     let paths = vec![
         PathBuf::from("/effects/native"),

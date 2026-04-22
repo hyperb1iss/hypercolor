@@ -64,6 +64,9 @@ pub struct EffectRegistry {
 
     /// Root directories to scan for effects.
     search_paths: Vec<PathBuf>,
+
+    /// Monotonic revision for invalidation-sensitive registry changes.
+    generation: u64,
 }
 
 impl EffectRegistry {
@@ -74,6 +77,7 @@ impl EffectRegistry {
         Self {
             effects: HashMap::new(),
             search_paths,
+            generation: 0,
         }
     }
 
@@ -81,6 +85,12 @@ impl EffectRegistry {
     #[must_use]
     pub fn search_paths(&self) -> &[PathBuf] {
         &self.search_paths
+    }
+
+    /// Returns the current registry generation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Returns the total number of registered effects.
@@ -102,7 +112,9 @@ impl EffectRegistry {
     pub fn register(&mut self, entry: EffectEntry) -> Option<EffectEntry> {
         let id = entry.metadata.id;
         debug!(id = %id, name = %entry.metadata.name, "Registering effect");
-        self.effects.insert(id, entry)
+        let replaced = self.effects.insert(id, entry);
+        self.bump_generation();
+        replaced
     }
 
     /// Remove an effect from the registry by id.
@@ -110,7 +122,11 @@ impl EffectRegistry {
     /// Returns the removed entry, or `None` if not found.
     pub fn remove(&mut self, id: &EffectId) -> Option<EffectEntry> {
         debug!(id = %id, "Removing effect from registry");
-        self.effects.remove(id)
+        let removed = self.effects.remove(id);
+        if removed.is_some() {
+            self.bump_generation();
+        }
+        removed
     }
 
     /// Look up an effect by its unique id.
@@ -121,6 +137,9 @@ impl EffectRegistry {
 
     /// Look up an effect mutably by its unique id.
     pub fn get_mut(&mut self, id: &EffectId) -> Option<&mut EffectEntry> {
+        if self.effects.contains_key(id) {
+            self.bump_generation();
+        }
         self.effects.get_mut(id)
     }
 
@@ -279,9 +298,9 @@ impl EffectRegistry {
             .collect();
 
         let count = stale.len();
-        for id in &stale {
+        for id in stale {
             info!(id = %id, path = %path.display(), "Removing deleted effect");
-            self.effects.remove(id);
+            let _ = self.remove(&id);
         }
         count
     }
@@ -300,12 +319,16 @@ impl EffectRegistry {
             .map(|(id, _)| *id)
             .collect();
 
-        for id in &stale {
+        for id in stale.iter().copied() {
             warn!(id = %id, "Pruning missing effect from registry");
-            self.effects.remove(id);
+            let _ = self.remove(&id);
         }
 
         stale
+    }
+
+    fn bump_generation(&mut self) {
+        self.generation = self.generation.saturating_add(1);
     }
 }
 

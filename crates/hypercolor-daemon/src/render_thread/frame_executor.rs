@@ -545,15 +545,15 @@ mod tests {
     };
 
     use super::should_advance_gpu_preview;
+    use crate::performance::CompositorBackendKind;
+    use crate::render_thread::frame_composer::RenderStageStats;
+    use crate::render_thread::frame_sampling::LedSamplingStrategy;
     use crate::render_thread::frame_sampling::{
         blend_scene_zone_frames, build_transition_layout,
         can_hold_published_frame_for_deferred_sampling,
         can_reuse_published_frame_for_deferred_sampling,
     };
-    use crate::performance::CompositorBackendKind;
-    use crate::render_thread::frame_composer::RenderStageStats;
     use crate::render_thread::pipeline_runtime::SceneTransitionKey;
-    use crate::render_thread::frame_sampling::LedSamplingStrategy;
     use crate::render_thread::sparkleflinger::ComposedFrameSet;
 
     fn render_stage(
