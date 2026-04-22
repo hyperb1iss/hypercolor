@@ -304,7 +304,7 @@ mod tests {
     use hypercolor_core::types::event::ZoneColors;
 
     use super::frame_io::{parse_sector_zone_id, screen_data_to_canvas};
-    use super::frame_policy::{FramePolicy, SkipDecision};
+    use super::frame_policy::SkipDecision;
     use super::micros_u32;
 
     fn frame_stats(
@@ -344,21 +344,6 @@ mod tests {
             SkipDecision::from_frame_stats(&stats),
             SkipDecision::ReuseCanvas
         );
-    }
-
-    #[test]
-    fn idle_throttle_enabled_only_when_fully_idle() {
-        assert!(FramePolicy::should_idle_throttle(false, false));
-    }
-
-    #[test]
-    fn idle_throttle_disabled_when_effect_running() {
-        assert!(!FramePolicy::should_idle_throttle(true, false));
-    }
-
-    #[test]
-    fn idle_throttle_disabled_when_capture_enabled() {
-        assert!(!FramePolicy::should_idle_throttle(false, true));
     }
 
     #[test]

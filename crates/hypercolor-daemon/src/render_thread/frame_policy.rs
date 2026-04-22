@@ -9,21 +9,6 @@ use crate::deadline::advance_deadline;
 pub(crate) use super::frame_admission::FrameAdmissionSample;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FrameThrottleKind {
-    Idle,
-    SessionSleep,
-}
-
-impl FrameThrottleKind {
-    const fn delay(self) -> Duration {
-        match self {
-            Self::Idle => Duration::from_millis(120),
-            Self::SessionSleep => Duration::from_millis(250),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SkipDecision {
     None,
     ReuseInputs,
@@ -95,34 +80,15 @@ impl FramePolicy {
         }
     }
 
-    pub(crate) fn complete_throttle_frame(
-        &mut self,
-        render_loop: &mut RenderLoop,
-        throttle: FrameThrottleKind,
-    ) -> FrameExecution {
-        let _ = render_loop.frame_complete();
-        FrameExecution {
-            next_wake: NextWake::Delay(throttle.delay()),
-            next_skip_decision: SkipDecision::None,
-        }
-    }
-
-    pub(crate) const fn should_idle_throttle(
-        effect_running: bool,
-        screen_capture_active: bool,
-    ) -> bool {
-        !effect_running && !screen_capture_active
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::thread;
     use std::time::{Duration, Instant};
 
     use hypercolor_core::engine::{FpsTier, RenderLoop};
 
-    use super::{FrameAdmissionSample, FramePolicy, FrameThrottleKind, NextWake, SkipDecision};
+    use super::{FrameAdmissionSample, FramePolicy, NextWake, SkipDecision};
 
     fn clean_sample() -> FrameAdmissionSample {
         FrameAdmissionSample {
@@ -167,49 +133,6 @@ mod tests {
         assert!(matches!(second.next_wake, NextWake::Interval(_)));
         assert_eq!(second.next_skip_decision, SkipDecision::None);
         assert_eq!(render_loop.stats().max_tier, FpsTier::High);
-    }
-
-    #[test]
-    fn idle_throttle_completion_returns_idle_delay_without_skip() {
-        let mut render_loop = RenderLoop::new(60);
-        render_loop.start();
-        assert!(render_loop.tick());
-        thread::sleep(Duration::from_millis(1));
-
-        let mut policy = FramePolicy::new(FpsTier::Full);
-        let execution = policy.complete_throttle_frame(&mut render_loop, FrameThrottleKind::Idle);
-
-        assert!(matches!(
-            execution.next_wake,
-            NextWake::Delay(delay) if delay == Duration::from_millis(120)
-        ));
-        assert_eq!(execution.next_skip_decision, SkipDecision::None);
-    }
-
-    #[test]
-    fn session_sleep_throttle_completion_returns_sleep_delay_without_skip() {
-        let mut render_loop = RenderLoop::new(60);
-        render_loop.start();
-        assert!(render_loop.tick());
-        thread::sleep(Duration::from_millis(1));
-
-        let mut policy = FramePolicy::new(FpsTier::Full);
-        let execution =
-            policy.complete_throttle_frame(&mut render_loop, FrameThrottleKind::SessionSleep);
-
-        assert!(matches!(
-            execution.next_wake,
-            NextWake::Delay(delay) if delay == Duration::from_millis(250)
-        ));
-        assert_eq!(execution.next_skip_decision, SkipDecision::None);
-    }
-
-    #[test]
-    fn idle_throttle_predicate_requires_no_effect_and_no_screen_capture() {
-        assert!(FramePolicy::should_idle_throttle(false, false));
-        assert!(!FramePolicy::should_idle_throttle(true, false));
-        assert!(!FramePolicy::should_idle_throttle(false, true));
-        assert!(!FramePolicy::should_idle_throttle(true, true));
     }
 
     #[test]
