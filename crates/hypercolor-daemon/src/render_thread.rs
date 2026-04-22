@@ -305,10 +305,10 @@ mod tests {
     use hypercolor_core::types::event::ZoneColors;
 
     use super::frame_io::{parse_sector_zone_id, screen_data_to_canvas};
+    use super::frame_policy::FramePolicy;
     use super::frame_pacing::{
         PRECISE_WAKE_GUARD, SkipDecision, advance_deadline, coarse_sleep_deadline,
     };
-    use super::frame_throttle::should_idle_throttle;
     use super::micros_u32;
 
     fn frame_stats(
@@ -352,17 +352,17 @@ mod tests {
 
     #[test]
     fn idle_throttle_enabled_only_when_fully_idle() {
-        assert!(should_idle_throttle(false, false));
+        assert!(FramePolicy::should_idle_throttle(false, false));
     }
 
     #[test]
     fn idle_throttle_disabled_when_effect_running() {
-        assert!(!should_idle_throttle(true, false));
+        assert!(!FramePolicy::should_idle_throttle(true, false));
     }
 
     #[test]
     fn idle_throttle_disabled_when_capture_enabled() {
-        assert!(!should_idle_throttle(false, true));
+        assert!(!FramePolicy::should_idle_throttle(false, true));
     }
 
     #[test]

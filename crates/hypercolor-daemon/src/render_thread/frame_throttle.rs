@@ -23,7 +23,8 @@ pub(crate) async fn maybe_idle_throttle(
     screen_capture_active: bool,
     idle_black_pushed: &mut bool,
 ) -> Option<FrameExecution> {
-    let can_idle_throttle = should_idle_throttle(effect_running, screen_capture_active);
+    let can_idle_throttle =
+        FramePolicy::should_idle_throttle(effect_running, screen_capture_active);
 
     if effect_running {
         *idle_black_pushed = false;
@@ -264,8 +265,4 @@ pub(crate) async fn maybe_sleep_throttle(
     *sleep_black_pushed = true;
     let mut render_loop = state.render_loop.write().await;
     Some(frame_policy.complete_throttle_frame(&mut render_loop, FrameThrottleKind::SessionSleep))
-}
-
-pub(crate) fn should_idle_throttle(effect_running: bool, screen_capture_active: bool) -> bool {
-    !effect_running && !screen_capture_active
 }

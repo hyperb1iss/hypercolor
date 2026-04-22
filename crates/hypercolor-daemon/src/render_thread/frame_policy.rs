@@ -2,9 +2,10 @@ use std::time::Duration;
 
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 
-use super::frame_admission::{FrameAdmissionController, FrameAdmissionSample};
+use super::frame_admission::FrameAdmissionController;
 use super::frame_pacing::NextWake;
 
+pub(crate) use super::frame_admission::FrameAdmissionSample;
 pub(crate) use super::frame_pacing::{FrameExecution, SkipDecision};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +63,13 @@ impl FramePolicy {
             next_skip_decision: SkipDecision::None,
         }
     }
+
+    pub(crate) const fn should_idle_throttle(
+        effect_running: bool,
+        screen_capture_active: bool,
+    ) -> bool {
+        !effect_running && !screen_capture_active
+    }
 }
 
 #[cfg(test)]
@@ -71,8 +79,7 @@ mod tests {
 
     use hypercolor_core::engine::{FpsTier, RenderLoop};
 
-    use super::{FramePolicy, FrameThrottleKind, SkipDecision};
-    use crate::render_thread::frame_admission::FrameAdmissionSample;
+    use super::{FrameAdmissionSample, FramePolicy, FrameThrottleKind, SkipDecision};
     use crate::render_thread::frame_pacing::NextWake;
 
     fn clean_sample() -> FrameAdmissionSample {
@@ -153,5 +160,13 @@ mod tests {
             NextWake::Delay(delay) if delay == Duration::from_millis(250)
         ));
         assert_eq!(execution.next_skip_decision, SkipDecision::None);
+    }
+
+    #[test]
+    fn idle_throttle_predicate_requires_no_effect_and_no_screen_capture() {
+        assert!(FramePolicy::should_idle_throttle(false, false));
+        assert!(!FramePolicy::should_idle_throttle(true, false));
+        assert!(!FramePolicy::should_idle_throttle(false, true));
+        assert!(!FramePolicy::should_idle_throttle(true, true));
     }
 }
