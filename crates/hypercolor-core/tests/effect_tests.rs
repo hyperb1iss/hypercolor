@@ -1053,9 +1053,37 @@ fn registry_by_directory() {
 }
 
 #[test]
-fn registry_get_mut() {
+fn registry_update_applies_nonsemantic_mutation_without_invalidation() {
     let mut registry = EffectRegistry::default();
     let entry = sample_entry("mutable", EffectCategory::Utility, vec![]);
+    let id = entry.metadata.id;
+
+    registry.register(entry);
+    let generation_before_mut = registry.generation();
+
+    let changed = registry
+        .update(&id, |entry| {
+            entry.state = EffectState::Running;
+        })
+        .expect("should find effect");
+
+    assert!(!changed);
+    assert_eq!(
+        registry.get(&id).expect("entry").state,
+        EffectState::Running
+    );
+    assert_eq!(
+        registry.generation(),
+        generation_before_mut,
+        "raw mutable access should not invalidate semantic caches on its own"
+    );
+}
+
+#[test]
+#[allow(deprecated)]
+fn registry_get_mut_preserves_legacy_nonsemantic_behavior() {
+    let mut registry = EffectRegistry::default();
+    let entry = sample_entry("legacy", EffectCategory::Utility, vec![]);
     let id = entry.metadata.id;
 
     registry.register(entry);
@@ -1071,7 +1099,7 @@ fn registry_get_mut() {
     assert_eq!(
         registry.generation(),
         generation_before_mut,
-        "raw mutable access should not invalidate semantic caches on its own"
+        "legacy raw mutable access should remain non-semantic for compatibility"
     );
 }
 
@@ -1121,14 +1149,14 @@ fn registry_generation_ignores_noop_semantic_writes() {
 
     let changed = registry
         .update(&id, |stored| {
-            stored.state = EffectState::Running;
+            stored.metadata.audio_reactive = false;
         })
         .expect("entry should exist");
     assert!(!changed);
     assert_eq!(
         registry.generation(),
         after_register,
-        "non-semantic state churn should not invalidate active-scene caches"
+        "writing the same semantic metadata should not invalidate active-scene caches"
     );
 }
 

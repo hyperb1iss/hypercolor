@@ -149,21 +149,20 @@ impl EffectRegistry {
         self.effects.get(id)
     }
 
-    /// Look up an effect mutably by its unique id.
+    /// Legacy mutable access for non-semantic state churn.
     ///
     /// This does not affect the semantic invalidation generation. Callers that
     /// intentionally mutate an entry in a way that should invalidate cached
     /// render state should use [`update`](Self::update).
+    #[deprecated(
+        note = "use EffectRegistry::update for semantic mutations; raw mutable access does not advance invalidation generation"
+    )]
     pub fn get_mut(&mut self, id: &EffectId) -> Option<&mut EffectEntry> {
         self.effects.get_mut(id)
     }
 
     /// Apply a semantic mutation to an effect entry and advance generation.
-    pub fn update(
-        &mut self,
-        id: &EffectId,
-        update: impl FnOnce(&mut EffectEntry),
-    ) -> Option<bool> {
+    pub fn update(&mut self, id: &EffectId, update: impl FnOnce(&mut EffectEntry)) -> Option<bool> {
         let invalidates = {
             let entry = self.effects.get_mut(id)?;
             let before = entry.clone();
