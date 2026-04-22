@@ -55,6 +55,7 @@ pub mod banner;
 mod config;
 mod discovery_worker;
 mod lifecycle;
+pub mod logging;
 mod services;
 mod signals;
 

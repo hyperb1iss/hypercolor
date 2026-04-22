@@ -85,15 +85,12 @@ async fn async_main() -> Result<()> {
     }
     let log_level = resolve_log_level(args.log_level.as_deref(), &config);
 
-    // 1. Initialize tracing with the requested log level.
+    // 1. Initialize tracing with the requested log level + SilkCircuit theme.
     //    The `RUST_LOG` env var takes precedence if set.
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(default_env_filter(&log_level)));
 
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .log_internal_errors(false)
-        .init();
+    hypercolor_daemon::startup::logging::install(env_filter);
 
     let listen_addr = args.bind.as_deref().map_or_else(
         || format!("{}:{}", config.daemon.listen_address, config.daemon.port),

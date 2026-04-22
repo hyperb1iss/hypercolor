@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
 fn init_tracing(log_level: &str) {
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    hypercolor_daemon::startup::logging::install(env_filter);
 }
 
 async fn run_detect(args: DetectArgs) -> Result<()> {
