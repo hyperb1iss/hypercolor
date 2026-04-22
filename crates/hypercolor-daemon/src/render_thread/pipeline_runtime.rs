@@ -19,7 +19,7 @@ use std::sync::Arc;
 use super::RenderThreadState;
 use super::composition_planner::CompositionPlanner;
 use super::desired_render_surface_slots;
-use super::frame_admission::FrameAdmissionController;
+use super::frame_policy::FramePolicy;
 use super::frame_scheduler::FrameScheduler;
 use super::frame_state::CachedRenderGroupDemand;
 use super::producer_queue::ProducerQueue;
@@ -218,7 +218,7 @@ pub(crate) struct PipelineRuntime {
     pub(crate) frame_scheduler: FrameScheduler,
     pub(crate) frame_loop: FrameLoopState,
     pub(crate) render: RenderCaches,
-    pub(crate) frame_admission: FrameAdmissionController,
+    pub(crate) frame_policy: FramePolicy,
 }
 
 impl PipelineRuntime {
@@ -279,7 +279,7 @@ impl PipelineRuntime {
                 static_surface_cache: None,
                 recycled_frame: FrameData::empty(),
             },
-            frame_admission: FrameAdmissionController::new(configured_max_fps_tier),
+            frame_policy: FramePolicy::new(configured_max_fps_tier),
         })
     }
 }

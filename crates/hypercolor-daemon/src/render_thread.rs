@@ -21,6 +21,7 @@ mod frame_composer;
 mod frame_executor;
 mod frame_io;
 pub(crate) mod frame_pacing;
+mod frame_policy;
 mod frame_sampling;
 mod frame_scheduler;
 mod frame_sources;

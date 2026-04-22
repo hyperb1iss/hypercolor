@@ -1,6 +1,6 @@
 use std::future::{Future, poll_fn};
 use std::task::Poll;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use tracing::{info, trace, warn};
 
@@ -9,7 +9,7 @@ use hypercolor_core::types::event::FrameTiming;
 use super::frame_admission::FrameAdmissionSample;
 use super::frame_composer::{ComposeRequest, compose_frame};
 use super::frame_io::{preview_publication_due, publish_frame_updates, sample_inputs};
-use super::frame_pacing::{FrameExecution, NextWake, SkipDecision};
+use super::frame_pacing::{FrameExecution, SkipDecision};
 use super::frame_sampling::{
     LedSamplingOutcome, resolve_led_sampling, try_finish_deferred_zone_sampling,
     try_finish_retired_zone_sampling,
@@ -103,6 +103,7 @@ pub(crate) async fn execute_frame(
             render.render_surface_snapshot(state.published_canvas_receiver_count());
         if let Some(frame) = maybe_sleep_throttle(
             state,
+            &mut runtime.frame_policy,
             &scene_snapshot,
             frame_start,
             scene_snapshot_done_us,
@@ -148,6 +149,7 @@ pub(crate) async fn execute_frame(
 
     if let Some(frame) = maybe_idle_throttle(
         state,
+        &mut runtime.frame_policy,
         scene_snapshot.effect_demand.effect_running,
         scene_snapshot.effect_demand.screen_capture_active,
         &mut frame_loop.idle_black_pushed,
@@ -541,24 +543,21 @@ pub(crate) async fn execute_frame(
 
     let (next_wake, next_skip_decision) = {
         let mut rl = state.render_loop.write().await;
-        let admission = runtime.frame_admission.record_frame(FrameAdmissionSample {
-            total_us,
-            producer_us: render_stage.producer_us,
-            composition_us: render_stage.composition_us,
-            push_us,
-            publish_us,
-            wake_late_us,
-            jitter_us,
-            full_frame_copy_count,
-            output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),
-        });
-        match rl.frame_complete_with_max_tier(Some(admission.ceiling_tier)) {
-            Some(frame_stats) => (
-                NextWake::Interval(rl.target_interval()),
-                SkipDecision::from_frame_stats(&frame_stats),
-            ),
-            None => (NextWake::Delay(Duration::ZERO), SkipDecision::None),
-        }
+        let execution = runtime.frame_policy.complete_render_frame(
+            &mut rl,
+            FrameAdmissionSample {
+                total_us,
+                producer_us: render_stage.producer_us,
+                composition_us: render_stage.composition_us,
+                push_us,
+                publish_us,
+                wake_late_us,
+                jitter_us,
+                full_frame_copy_count,
+                output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),
+            },
+        );
+        (execution.next_wake, execution.next_skip_decision)
     };
 
     if !scene_snapshot.effect_demand.effect_running {

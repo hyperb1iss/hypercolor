@@ -8,7 +8,8 @@ use hypercolor_core::types::event::{FrameData, FrameTiming};
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::frame_io::publish_frame_updates;
-use super::frame_pacing::{FrameExecution, NextWake, SkipDecision};
+use super::frame_policy::FramePolicy;
+use super::frame_pacing::FrameExecution;
 use super::frame_scheduler::FrameSceneSnapshot;
 use super::frame_sources::static_surface;
 use super::pipeline_runtime::{CachedStaticSurface, RenderSurfaceSnapshot};
@@ -21,6 +22,7 @@ const SESSION_SLEEP_THROTTLE_SLEEP: Duration = Duration::from_millis(250);
 
 pub(crate) async fn maybe_idle_throttle(
     state: &RenderThreadState,
+    frame_policy: &mut FramePolicy,
     effect_running: bool,
     screen_capture_active: bool,
     idle_black_pushed: &mut bool,
@@ -39,15 +41,8 @@ pub(crate) async fn maybe_idle_throttle(
     }
 
     if can_idle_throttle && *idle_black_pushed {
-        {
-            let mut render_loop = state.render_loop.write().await;
-            let _ = render_loop.frame_complete();
-        }
-
-        return Some(FrameExecution {
-            next_wake: NextWake::Delay(IDLE_THROTTLE_SLEEP),
-            next_skip_decision: SkipDecision::None,
-        });
+        let mut render_loop = state.render_loop.write().await;
+        return Some(frame_policy.complete_delay_frame(&mut render_loop, IDLE_THROTTLE_SLEEP));
     }
 
     None
@@ -60,6 +55,7 @@ pub(crate) async fn maybe_idle_throttle(
 )]
 pub(crate) async fn maybe_sleep_throttle(
     state: &RenderThreadState,
+    frame_policy: &mut FramePolicy,
     scene_snapshot: &FrameSceneSnapshot,
     frame_start: Instant,
     scene_snapshot_done_us: u32,
@@ -74,15 +70,10 @@ pub(crate) async fn maybe_sleep_throttle(
 ) -> Option<FrameExecution> {
     let power_state = scene_snapshot.output_power;
     if *sleep_black_pushed {
-        {
-            let mut render_loop = state.render_loop.write().await;
-            let _ = render_loop.frame_complete();
-        }
-
-        return Some(FrameExecution {
-            next_wake: NextWake::Delay(SESSION_SLEEP_THROTTLE_SLEEP),
-            next_skip_decision: SkipDecision::None,
-        });
+        let mut render_loop = state.render_loop.write().await;
+        return Some(
+            frame_policy.complete_delay_frame(&mut render_loop, SESSION_SLEEP_THROTTLE_SLEEP),
+        );
     }
 
     if power_state.off_output_behavior == OffOutputBehavior::Release {
@@ -124,20 +115,15 @@ pub(crate) async fn maybe_sleep_throttle(
             },
         );
         let publish_us = publish_stats.elapsed_us;
-        {
-            let mut render_loop = state.render_loop.write().await;
-            let _ = render_loop.frame_complete();
-        }
-
         trace!(
             publish_us,
             "published cleared frame/canvas for release sleep"
         );
         *sleep_black_pushed = true;
-        return Some(FrameExecution {
-            next_wake: NextWake::Delay(SESSION_SLEEP_THROTTLE_SLEEP),
-            next_skip_decision: SkipDecision::None,
-        });
+        let mut render_loop = state.render_loop.write().await;
+        return Some(
+            frame_policy.complete_delay_frame(&mut render_loop, SESSION_SLEEP_THROTTLE_SLEEP),
+        );
     }
 
     let surface = static_surface(
@@ -275,16 +261,12 @@ pub(crate) async fn maybe_sleep_throttle(
         });
     }
 
-    {
-        let mut render_loop = state.render_loop.write().await;
-        let _ = render_loop.frame_complete();
-    }
-
     *sleep_black_pushed = true;
-    Some(FrameExecution {
-        next_wake: NextWake::Delay(SESSION_SLEEP_THROTTLE_SLEEP),
-        next_skip_decision: SkipDecision::None,
-    })
+    let mut render_loop = state.render_loop.write().await;
+    Some(frame_policy.complete_delay_frame(
+        &mut render_loop,
+        SESSION_SLEEP_THROTTLE_SLEEP,
+    ))
 }
 
 pub(crate) fn should_idle_throttle(effect_running: bool, screen_capture_active: bool) -> bool {
