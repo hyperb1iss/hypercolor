@@ -1059,6 +1059,7 @@ fn registry_get_mut() {
     let id = entry.metadata.id;
 
     registry.register(entry);
+    let generation_before_mut = registry.generation();
 
     let found = registry.get_mut(&id).expect("should find effect");
     found.state = EffectState::Running;
@@ -1066,6 +1067,11 @@ fn registry_get_mut() {
     assert_eq!(
         registry.get(&id).expect("entry").state,
         EffectState::Running
+    );
+    assert_eq!(
+        registry.generation(),
+        generation_before_mut,
+        "raw mutable access should not invalidate semantic caches on its own"
     );
 }
 
@@ -1081,17 +1087,49 @@ fn registry_generation_advances_on_semantic_mutation() {
 
     assert!(after_register > 0);
 
-    let found = registry
-        .get_mut(&id)
-        .expect("mutable lookup should bump generation");
-    found.state = EffectState::Running;
-    let after_get_mut = registry.generation();
+    let changed = registry
+        .update(&id, |entry| {
+            entry.metadata.audio_reactive = true;
+        })
+        .expect("semantic update should bump generation");
+    assert!(changed);
+    let after_update = registry.generation();
 
-    assert!(after_get_mut > after_register);
+    assert!(after_update > after_register);
 
     let removed = registry.remove(&id);
     assert!(removed.is_some());
-    assert!(registry.generation() > after_get_mut);
+    assert!(registry.generation() > after_update);
+}
+
+#[test]
+fn registry_generation_ignores_noop_semantic_writes() {
+    let mut registry = EffectRegistry::default();
+    let entry = sample_entry("stable", EffectCategory::Utility, vec![]);
+    let id = entry.metadata.id;
+
+    registry.register(entry.clone());
+    let after_register = registry.generation();
+
+    let replaced = registry.register(entry);
+    assert!(replaced.is_some());
+    assert_eq!(
+        registry.generation(),
+        after_register,
+        "re-registering an identical entry should not invalidate active-scene caches"
+    );
+
+    let changed = registry
+        .update(&id, |stored| {
+            stored.state = EffectState::Running;
+        })
+        .expect("entry should exist");
+    assert!(!changed);
+    assert_eq!(
+        registry.generation(),
+        after_register,
+        "non-semantic state churn should not invalidate active-scene caches"
+    );
 }
 
 #[test]

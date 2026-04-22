@@ -1127,6 +1127,35 @@ mod tests {
         )
     }
 
+    fn blit_general_zone_projection(
+        target: &mut Canvas,
+        source: &Canvas,
+        zone: &DeviceZone,
+        sampling_mode: &SamplingMode,
+        edge_behavior: EdgeBehavior,
+        x0: u32,
+        y0: u32,
+        x1: u32,
+        y1: u32,
+        target_width: u32,
+        target_height: u32,
+    ) {
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let Some(local_position) =
+                    zone_local_position_for_scene_pixel(x, y, target_width, target_height, zone)
+                else {
+                    continue;
+                };
+                target.set_pixel(
+                    x,
+                    y,
+                    sample_led(source, local_position, zone, sampling_mode, edge_behavior),
+                );
+            }
+        }
+    }
+
     #[test]
     fn note_effect_error_dedupes_until_cleared() {
         let mut runtime = RenderGroupRuntime::new(4, 4);

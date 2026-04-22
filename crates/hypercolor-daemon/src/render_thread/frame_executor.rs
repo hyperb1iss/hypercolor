@@ -16,6 +16,7 @@ use super::frame_sampling::{
 };
 use super::frame_state::{
     build_frame_scene_snapshot, reconcile_audio_capture, reconcile_screen_capture,
+    refresh_effect_scene_snapshot,
 };
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
 use super::pipeline_runtime::PipelineRuntime;
@@ -68,7 +69,7 @@ pub(crate) async fn execute_frame(
         frame_loop.idle_black_pushed = false;
         frame_loop.sleep_black_pushed = false;
     }
-    let scene_snapshot = build_frame_scene_snapshot(
+    let mut scene_snapshot = build_frame_scene_snapshot(
         state,
         frame_scheduler,
         &render.render_scene_state,
@@ -76,17 +77,23 @@ pub(crate) async fn execute_frame(
         delta_secs,
     )
     .await;
+    refresh_effect_scene_snapshot(
+        state,
+        &render.render_scene_state,
+        &mut scene_snapshot,
+        &mut frame_loop.last_render_group_demand,
+    )
+    .await;
     let output_power = scene_snapshot.output_power;
-    let effect_demand = scene_snapshot.effect_demand;
     reconcile_audio_capture(
         state,
-        !output_power.sleeping && effect_demand.audio_capture_active,
+        !output_power.sleeping && scene_snapshot.effect_demand.audio_capture_active,
         &mut frame_loop.last_audio_capture_active,
     )
     .await;
     reconcile_screen_capture(
         state,
-        !output_power.sleeping && effect_demand.screen_capture_active,
+        !output_power.sleeping && scene_snapshot.effect_demand.screen_capture_active,
         &mut frame_loop.last_screen_capture_active,
     )
     .await;
@@ -116,10 +123,33 @@ pub(crate) async fn execute_frame(
         frame_loop.sleep_black_pushed = false;
     }
 
+    if refresh_effect_scene_snapshot(
+        state,
+        &render.render_scene_state,
+        &mut scene_snapshot,
+        &mut frame_loop.last_render_group_demand,
+    )
+    .await
+    {
+        let refreshed_demand = scene_snapshot.effect_demand;
+        reconcile_audio_capture(
+            state,
+            !output_power.sleeping && refreshed_demand.audio_capture_active,
+            &mut frame_loop.last_audio_capture_active,
+        )
+        .await;
+        reconcile_screen_capture(
+            state,
+            !output_power.sleeping && refreshed_demand.screen_capture_active,
+            &mut frame_loop.last_screen_capture_active,
+        )
+        .await;
+    }
+
     if let Some(frame) = maybe_idle_throttle(
         state,
-        effect_demand.effect_running,
-        effect_demand.screen_capture_active,
+        scene_snapshot.effect_demand.effect_running,
+        scene_snapshot.effect_demand.screen_capture_active,
         &mut frame_loop.idle_black_pushed,
     )
     .await
@@ -183,6 +213,13 @@ pub(crate) async fn execute_frame(
         }
         Poll::Pending => Poll::Ready(true),
     })
+    .await;
+    let _ = refresh_effect_scene_snapshot(
+        state,
+        &render.render_scene_state,
+        &mut scene_snapshot,
+        &mut frame_loop.last_render_group_demand,
+    )
     .await;
 
     let mut render_stage = compose_frame(ComposeRequest {
@@ -524,7 +561,7 @@ pub(crate) async fn execute_frame(
         }
     };
 
-    if !effect_demand.effect_running {
+    if !scene_snapshot.effect_demand.effect_running {
         frame_loop.idle_black_pushed = true;
     }
 

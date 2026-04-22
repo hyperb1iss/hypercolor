@@ -120,19 +120,20 @@ impl ComposeContext<'_> {
             return self.compose_idle_frame_set(stage_start);
         }
 
-        let (render_group_result, effect_retained) =
+        let producer_start = Instant::now();
+        let (render_group_result, effect_retained) = {
+            let registry = self.state.effect_registry.read().await;
+            let live_registry_generation = registry.generation();
             if self.skip_decision == SkipDecision::ReuseCanvas {
                 if let Some(retained) = self.render.render_group_runtime.reuse_scene(
                     self.scene_snapshot
                         .scene_runtime
                         .active_render_groups_revision,
-                    self.scene_snapshot.effect_registry_generation,
+                    live_registry_generation,
                 ) {
                     (Ok(retained), true)
                 } else {
-                    let producer_start = Instant::now();
-                    let result = {
-                        let registry = self.state.effect_registry.read().await;
+                    (
                         self.render.render_group_runtime.render_scene(
                             self.scene_snapshot
                                 .scene_runtime
@@ -153,23 +154,12 @@ impl ComposeContext<'_> {
                             self.inputs.screen_data.as_ref(),
                             self.inputs.sensors.as_ref(),
                             &mut self.render.recycled_frame.zones,
-                        )
-                    };
-                    let producer_done_at = Instant::now();
-                    let producer_us = micros_between(producer_start, producer_done_at);
-                    let producer_done_us = micros_between(stage_start, producer_done_at);
-                    return self.finish_render_group_frame_set(
-                        result,
-                        producer_us,
-                        producer_done_us,
+                        ),
                         false,
-                        stage_start,
-                    );
+                    )
                 }
             } else {
-                let producer_start = Instant::now();
-                let result = {
-                    let registry = self.state.effect_registry.read().await;
+                (
                     self.render.render_group_runtime.render_scene(
                         self.scene_snapshot
                             .scene_runtime
@@ -190,19 +180,23 @@ impl ComposeContext<'_> {
                         self.inputs.screen_data.as_ref(),
                         self.inputs.sensors.as_ref(),
                         &mut self.render.recycled_frame.zones,
-                    )
-                };
-                let producer_done_at = Instant::now();
-                let producer_us = micros_between(producer_start, producer_done_at);
-                let producer_done_us = micros_between(stage_start, producer_done_at);
-                return self.finish_render_group_frame_set(
-                    result,
-                    producer_us,
-                    producer_done_us,
+                    ),
                     false,
-                    stage_start,
-                );
-            };
+                )
+            }
+        };
+        if !effect_retained {
+            let producer_done_at = Instant::now();
+            let producer_us = micros_between(producer_start, producer_done_at);
+            let producer_done_us = micros_between(stage_start, producer_done_at);
+            return self.finish_render_group_frame_set(
+                render_group_result,
+                producer_us,
+                producer_done_us,
+                false,
+                stage_start,
+            );
+        }
 
         let producer_us = 0;
         let producer_done_us = micros_u32(stage_start.elapsed());

@@ -47,6 +47,14 @@ pub struct EffectEntry {
     pub state: EffectState,
 }
 
+impl EffectEntry {
+    fn matches_active_scene_semantics(&self, other: &Self) -> bool {
+        self.metadata == other.metadata
+            && self.source_path == other.source_path
+            && self.modified == other.modified
+    }
+}
+
 // ── EffectRegistry ───────────────────────────────────────────────────────────
 
 /// Central index of all discovered effects.
@@ -112,8 +120,14 @@ impl EffectRegistry {
     pub fn register(&mut self, entry: EffectEntry) -> Option<EffectEntry> {
         let id = entry.metadata.id;
         debug!(id = %id, name = %entry.metadata.name, "Registering effect");
+        let invalidates = self
+            .effects
+            .get(&id)
+            .is_none_or(|existing| !existing.matches_active_scene_semantics(&entry));
         let replaced = self.effects.insert(id, entry);
-        self.bump_generation();
+        if invalidates {
+            self.bump_generation();
+        }
         replaced
     }
 
@@ -136,11 +150,30 @@ impl EffectRegistry {
     }
 
     /// Look up an effect mutably by its unique id.
+    ///
+    /// This does not affect the semantic invalidation generation. Callers that
+    /// intentionally mutate an entry in a way that should invalidate cached
+    /// render state should use [`update`](Self::update).
     pub fn get_mut(&mut self, id: &EffectId) -> Option<&mut EffectEntry> {
-        if self.effects.contains_key(id) {
+        self.effects.get_mut(id)
+    }
+
+    /// Apply a semantic mutation to an effect entry and advance generation.
+    pub fn update(
+        &mut self,
+        id: &EffectId,
+        update: impl FnOnce(&mut EffectEntry),
+    ) -> Option<bool> {
+        let invalidates = {
+            let entry = self.effects.get_mut(id)?;
+            let before = entry.clone();
+            update(entry);
+            !before.matches_active_scene_semantics(entry)
+        };
+        if invalidates {
             self.bump_generation();
         }
-        self.effects.get_mut(id)
+        Some(invalidates)
     }
 
     /// Returns an iterator over all registered effects.

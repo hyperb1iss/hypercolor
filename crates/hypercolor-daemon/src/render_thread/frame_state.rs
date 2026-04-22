@@ -70,6 +70,26 @@ pub(crate) async fn build_frame_scene_snapshot(
     })
 }
 
+pub(crate) async fn refresh_effect_scene_snapshot(
+    state: &RenderThreadState,
+    render_scene_state: &RenderSceneState,
+    scene_snapshot: &mut FrameSceneSnapshot,
+    last_render_group_demand: &mut Option<CachedRenderGroupDemand>,
+) -> bool {
+    let refreshed = current_effect_scene_snapshot(
+        state,
+        &scene_snapshot.scene_runtime,
+        last_render_group_demand,
+        render_scene_state.screen_capture_configured(),
+    )
+    .await;
+    let changed = refreshed.demand != scene_snapshot.effect_demand
+        || refreshed.registry_generation != scene_snapshot.effect_registry_generation;
+    scene_snapshot.effect_demand = refreshed.demand;
+    scene_snapshot.effect_registry_generation = refreshed.registry_generation;
+    changed
+}
+
 async fn current_scene_runtime_snapshot(
     state: &RenderThreadState,
     frame_scheduler: &mut FrameScheduler,
@@ -318,8 +338,13 @@ mod tests {
     use crate::scene_transactions::SceneTransactionQueue;
     use crate::session::OutputPowerState;
 
-    use super::{CachedRenderGroupDemand, current_effect_scene_snapshot};
-    use crate::render_thread::frame_scheduler::SceneRuntimeSnapshot;
+    use super::{
+        CachedRenderGroupDemand, current_effect_scene_snapshot, refresh_effect_scene_snapshot,
+    };
+    use crate::render_thread::frame_scheduler::{
+        FrameSceneSnapshotInputs, SceneRuntimeSnapshot,
+    };
+    use crate::render_thread::scene_state::RenderSceneState;
 
     fn sample_layout() -> SpatialLayout {
         SpatialLayout {
@@ -437,6 +462,59 @@ mod tests {
         assert!(second.demand.audio_capture_active);
         assert!(second.demand.screen_capture_active);
         assert!(second.registry_generation > first.registry_generation);
+    }
+
+    #[tokio::test]
+    async fn refresh_effect_scene_snapshot_picks_up_mid_frame_registry_changes() {
+        let effect_id = EffectId::from(Uuid::now_v7());
+        let mut registry = EffectRegistry::default();
+        registry.register(sample_entry(effect_id, false, false));
+        let state = minimal_render_thread_state(registry);
+        let scene_runtime = SceneRuntimeSnapshot {
+            active_scene_id: None,
+            active_transition: None,
+            active_render_groups: vec![sample_group(effect_id)].into(),
+            active_render_groups_revision: 7,
+            active_render_group_count: 1,
+            active_display_group_target_fps: HashMap::new(),
+        };
+        let mut cached = None::<CachedRenderGroupDemand>;
+        let mut frame_scheduler = crate::render_thread::frame_scheduler::FrameScheduler::new();
+        let render_scene_state = RenderSceneState::new(SpatialEngine::new(sample_layout()), false);
+        let mut scene_snapshot = frame_scheduler.build_snapshot(FrameSceneSnapshotInputs {
+            frame_token: 42,
+            elapsed_ms: 123,
+            budget_us: 16_666,
+            output_power: OutputPowerState::default(),
+            effect_demand: current_effect_scene_snapshot(
+                &state,
+                &scene_runtime,
+                &mut cached,
+                false,
+            )
+            .await
+            .demand,
+            effect_registry_generation: state.effect_registry.read().await.generation(),
+            scene_runtime,
+            spatial_engine: SpatialEngine::new(sample_layout()),
+        });
+
+        {
+            let mut registry = state.effect_registry.write().await;
+            registry.register(sample_entry(effect_id, true, true));
+        }
+
+        let changed = refresh_effect_scene_snapshot(
+            &state,
+            &render_scene_state,
+            &mut scene_snapshot,
+            &mut cached,
+        )
+        .await;
+
+        assert!(changed);
+        assert!(scene_snapshot.effect_demand.audio_capture_active);
+        assert!(scene_snapshot.effect_demand.screen_capture_active);
     }
 }
 
