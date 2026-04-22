@@ -13,12 +13,10 @@ use super::frame_sampling::{
     LedSamplingOutcome, resolve_led_sampling, try_finish_deferred_zone_sampling,
     try_finish_retired_zone_sampling,
 };
-use super::frame_state::{
-    build_frame_scene_snapshot, reconcile_audio_capture, reconcile_screen_capture,
-    refresh_effect_scene_snapshot,
-};
+use super::frame_state::{reconcile_audio_capture, reconcile_screen_capture};
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
 use super::pipeline_runtime::PipelineRuntime;
+use super::scene_snapshot::{build_frame_scene_snapshot, refresh_effect_scene_snapshot};
 use super::sparkleflinger::ComposedFrameSet;
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
