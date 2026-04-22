@@ -1,6 +1,7 @@
 //! Shared viewport primitives for effect controls and sampling.
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::spatial::NormalizedRect;
 
@@ -8,7 +9,7 @@ use crate::spatial::NormalizedRect;
 pub const MIN_VIEWPORT_EDGE: f32 = 0.02;
 
 /// Normalized viewport rectangle in `[0.0, 1.0]` source space.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ViewportRect {
     pub x: f32,
     pub y: f32,

@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use hypercolor_core::engine::RenderLoopState;
 use hypercolor_types::sensor::SystemSnapshot;
 use serde::Serialize;
+use utoipa::ToSchema;
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
@@ -27,7 +28,7 @@ const DEFAULT_CONFIG_FILE_NAME: &str = "hypercolor.toml";
 
 // ── Response Types ───────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SystemStatus {
     pub running: bool,
     pub version: String,
@@ -52,7 +53,7 @@ pub struct SystemStatus {
     pub event_bus_subscribers: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct RenderLoopStatus {
     pub state: String,
     pub fps_tier: String,
@@ -63,7 +64,7 @@ pub struct RenderLoopStatus {
     pub total_frames: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct LatestFrameStatus {
     pub frame_token: u64,
     pub compositor_backend: String,
@@ -91,7 +92,7 @@ pub struct LatestFrameStatus {
     pub render_surfaces: RenderSurfaceStatus,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct RenderSurfaceStatus {
     pub slot_count: u32,
     pub free_slots: u32,
@@ -100,7 +101,7 @@ pub struct RenderSurfaceStatus {
     pub canvas_receivers: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct EffectHealthStatus {
     pub errors_total: u64,
     pub fallbacks_applied_total: u64,
@@ -108,7 +109,7 @@ pub struct EffectHealthStatus {
     pub servo_breaker_opens_total: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PreviewRuntimeStatus {
     pub canvas_receivers: u32,
     pub screen_canvas_receivers: u32,
@@ -120,7 +121,7 @@ pub struct PreviewRuntimeStatus {
     pub screen_canvas_demand: PreviewDemandStatus,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PreviewDemandStatus {
     pub subscribers: u32,
     pub max_fps: u32,
@@ -132,7 +133,7 @@ pub struct PreviewDemandStatus {
     pub any_jpeg: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct HealthResponse {
     pub status: String,
     pub version: String,
@@ -140,14 +141,14 @@ pub struct HealthResponse {
     pub checks: HealthChecks,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct HealthChecks {
     pub render_loop: String,
     pub device_backends: String,
     pub event_bus: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ServerInfo {
     #[serde(flatten)]
     pub identity: ServerIdentity,
@@ -158,6 +159,18 @@ pub struct ServerInfo {
 // ── Handlers ─────────────────────────────────────────────────────────────
 
 /// `GET /api/v1/status` — Full system status overview.
+#[utoipa::path(
+    get,
+    path = "/api/v1/status",
+    responses(
+        (
+            status = 200,
+            description = "Full daemon status overview",
+            body = crate::api::envelope::ApiResponse<SystemStatus>
+        )
+    ),
+    tag = "system"
+)]
 pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     let device_count = state.device_registry.len().await;
     let effect_count = state.effect_registry.read().await.len();
@@ -252,6 +265,18 @@ pub async fn get_sensor(State(state): State<Arc<AppState>>, Path(label): Path<St
 }
 
 /// `GET /api/v1/server` — Lightweight server identity for discovery probes.
+#[utoipa::path(
+    get,
+    path = "/api/v1/server",
+    responses(
+        (
+            status = 200,
+            description = "Lightweight server identity for discovery probes",
+            body = crate::api::envelope::ApiResponse<ServerInfo>
+        )
+    ),
+    tag = "system"
+)]
 pub async fn get_server(State(state): State<Arc<AppState>>) -> Response {
     let device_count = state.device_registry.len().await;
 
@@ -263,6 +288,15 @@ pub async fn get_server(State(state): State<Arc<AppState>>) -> Response {
 }
 
 /// `GET /health` — Lightweight health check (no envelope).
+#[utoipa::path(
+    get,
+    path = "/health",
+    responses(
+        (status = 200, description = "Daemon is healthy", body = HealthResponse),
+        (status = 503, description = "Daemon is degraded", body = HealthResponse)
+    ),
+    tag = "system"
+)]
 pub async fn health_check(State(state): State<Arc<AppState>>) -> Response {
     let uptime_seconds = state.start_time.elapsed().as_secs();
     let render_loop = {

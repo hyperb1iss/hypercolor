@@ -55,6 +55,8 @@ fast_image_resize = { workspace = true }
 tokio-util = { workspace = true }
 mdns-sd = { workspace = true }
 owo-colors = { workspace = true }
+utoipa = { workspace = true }
+utoipa-swagger-ui = { workspace = true }
 httpdate = "1.0"
 wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }

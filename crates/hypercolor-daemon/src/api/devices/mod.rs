@@ -18,6 +18,7 @@ use axum::extract::{Path, Query, State};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
+use utoipa::ToSchema;
 
 use hypercolor_core::device::{BackendIo, BackendManager};
 use hypercolor_driver_api::DeviceAuthSummary;
@@ -71,13 +72,13 @@ pub struct IdentifyAttachmentRequest {
     pub instance: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct DeviceListResponse {
     pub items: Vec<DeviceSummary>,
     pub pagination: Pagination,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct DeviceSummary {
     pub id: String,
     pub layout_device_id: String,
@@ -95,7 +96,7 @@ pub struct DeviceSummary {
     pub zones: Vec<ZoneSummary>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ZoneSummary {
     pub id: String,
     pub name: String,
@@ -104,7 +105,7 @@ pub struct ZoneSummary {
     pub topology_hint: ZoneTopologySummary,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ZoneTopologySummary {
     Strip,
@@ -124,7 +125,7 @@ pub enum ZoneTopologySummary {
     Custom,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct Pagination {
     pub offset: usize,
     pub limit: usize,
@@ -152,6 +153,30 @@ enum ResolveDeviceError {
 // ── Handlers ─────────────────────────────────────────────────────────────
 
 /// `GET /api/v1/devices` — List all tracked devices.
+#[utoipa::path(
+    get,
+    path = "/api/v1/devices",
+    params(
+        ("offset" = Option<usize>, Query, description = "Number of devices to skip"),
+        ("limit" = Option<usize>, Query, description = "Maximum number of devices to return"),
+        ("status" = Option<String>, Query, description = "Filter by device status"),
+        ("backend" = Option<String>, Query, description = "Filter by backend family"),
+        ("q" = Option<String>, Query, description = "Case-insensitive name/vendor search")
+    ),
+    responses(
+        (
+            status = 200,
+            description = "Tracked devices",
+            body = crate::api::envelope::ApiResponse<DeviceListResponse>
+        ),
+        (
+            status = 422,
+            description = "Query validation failed",
+            body = crate::api::envelope::ApiErrorResponse
+        )
+    ),
+    tag = "devices"
+)]
 pub async fn list_devices(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ListDevicesQuery>,
@@ -263,6 +288,24 @@ pub async fn debug_device_routing(State(state): State<Arc<AppState>>) -> Respons
 }
 
 /// `GET /api/v1/devices/:id` — Get a single device.
+#[utoipa::path(
+    get,
+    path = "/api/v1/devices/{id}",
+    params(("id" = String, Path, description = "Device id or display name")),
+    responses(
+        (
+            status = 200,
+            description = "Device detail",
+            body = crate::api::envelope::ApiResponse<DeviceSummary>
+        ),
+        (
+            status = 404,
+            description = "Device was not found",
+            body = crate::api::envelope::ApiErrorResponse
+        )
+    ),
+    tag = "devices"
+)]
 pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let device_id = match resolve_device_id_or_response(&state, &id).await {
         Ok(id) => id,

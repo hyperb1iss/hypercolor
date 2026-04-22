@@ -19,6 +19,7 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+utoipa = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

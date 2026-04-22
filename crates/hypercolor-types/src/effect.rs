@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::canvas::srgb_to_linear;
@@ -150,7 +151,7 @@ pub enum EffectState {
 ///
 /// Position is normalized `0.0..=1.0` along the gradient axis.
 /// Color is stored as linear RGBA (`[f32; 4]`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct GradientStop {
     /// Position along the gradient axis, `0.0` = start, `1.0` = end.
     pub position: f32,
@@ -163,7 +164,7 @@ pub struct GradientStop {
 /// Widget kind for a user-facing effect control.
 ///
 /// Each variant maps to a specific UI component in the control panel.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlType {
     /// Numeric slider with optional step quantization.
@@ -188,7 +189,7 @@ pub enum ControlType {
 ///
 /// This keeps `LightScript` metadata semantics intact even when
 /// multiple kinds map to the same UI widget type.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlKind {
     /// Generic numeric value.
@@ -229,7 +230,7 @@ pub enum ControlKind {
 /// | `Dropdown`       | `Enum(String)`             |
 /// | `TextInput`      | `Text(String)`             |
 /// | `Rect`           | `Rect(ViewportRect)`       |
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlValue {
     /// Floating-point numeric value. Used by `Slider` controls.
@@ -369,7 +370,7 @@ fn parse_hex_color(text: &str) -> Option<[f32; 4]> {
 // ── ControlBinding ────────────────────────────────────────────────────────────
 
 /// Live mapping from a system sensor reading into a control value.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ControlBinding {
     /// Stable sensor label to sample from the current system snapshot.
     pub sensor: String,
@@ -414,7 +415,7 @@ impl ControlBinding {
 }
 
 /// Live preview stream a control should bind to in the UI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PreviewSource {
     ScreenCapture,
@@ -428,7 +429,7 @@ pub enum PreviewSource {
 ///
 /// The UI auto-generates widgets from these definitions. The engine
 /// injects current values into the active renderer every frame.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ControlDefinition {
     /// Stable control identifier used in API payloads and renderer globals.
     #[serde(default)]
@@ -583,7 +584,7 @@ impl ControlDefinition {
 /// An effect-defined preset — a named snapshot of control values bundled
 /// with the effect itself. Unlike user-created [`super::library::EffectPreset`]s,
 /// these are authored by the effect developer and are read-only at runtime.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct PresetTemplate {
     /// Human-readable preset name (e.g. "Sunset Glow", "Deep Ocean").
     pub name: String,

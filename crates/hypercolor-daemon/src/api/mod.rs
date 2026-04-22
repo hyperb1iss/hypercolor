@@ -15,6 +15,7 @@ pub mod effects;
 pub mod envelope;
 pub mod layouts;
 pub mod library;
+pub mod openapi;
 pub mod preview;
 pub mod profiles;
 pub mod scenes;
@@ -1178,6 +1179,8 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     if mcp_config.enabled {
         router = router.merge(crate::mcp::build_router(Arc::clone(&state), &mcp_config));
     }
+
+    router = router.merge(openapi::router());
 
     // Serve the web UI with SPA fallback when a UI directory is configured.
     if let Some(ui_path) = ui_dir {

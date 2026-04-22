@@ -7,12 +7,13 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 // ── Meta ─────────────────────────────────────────────────────────────────
 
 /// Response metadata included in every envelope.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Meta {
     /// API version string.
     pub api_version: String,
@@ -36,7 +37,7 @@ impl Meta {
 // ── Success Envelope ─────────────────────────────────────────────────────
 
 /// Standard success response wrapper.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ApiResponse<T: Serialize> {
     /// The response payload.
     pub data: T,
@@ -76,7 +77,7 @@ impl<T: Serialize> ApiResponse<T> {
 // ── Error Envelope ───────────────────────────────────────────────────────
 
 /// Machine-readable error codes matching the spec.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     /// 400 — Malformed request.
@@ -117,7 +118,7 @@ impl ErrorCode {
 }
 
 /// Error detail payload.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ErrorBody {
     /// Machine-readable error code.
     pub code: ErrorCode,
@@ -128,7 +129,7 @@ pub struct ErrorBody {
 }
 
 /// Standard error response wrapper.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ApiErrorResponse {
     /// The error detail.
     pub error: ErrorBody,

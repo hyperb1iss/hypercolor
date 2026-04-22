@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tracing::{info, warn};
+use utoipa::ToSchema;
 
 use hypercolor_core::effect::{
     EffectRegistry, HtmlControlKind, ParsedHtmlEffectMetadata, load_html_effect_file,
@@ -44,8 +45,9 @@ pub(crate) async fn invalidate_active_render_groups_after_effect_registry_update
     scene_manager.invalidate_active_render_groups();
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ApplyEffectRequest {
+    #[schema(value_type = Object)]
     pub controls: Option<serde_json::Value>,
     pub transition: Option<TransitionRequest>,
     /// Optional preset ID to associate with the render group in the same
@@ -57,7 +59,7 @@ pub struct ApplyEffectRequest {
     pub preset_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct TransitionRequest {
     #[serde(rename = "type")]
     pub transition_type: Option<String>,
@@ -70,13 +72,13 @@ struct AppliedTransition {
     duration_ms: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct EffectListResponse {
     pub items: Vec<EffectSummary>,
     pub pagination: super::devices::Pagination,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct EffectSummary {
     pub id: String,
     pub name: String,
@@ -90,7 +92,7 @@ pub struct EffectSummary {
     pub audio_reactive: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ActiveEffectResponse {
     pub id: Option<String>,
     pub name: Option<String>,
@@ -133,7 +135,7 @@ pub struct SetEffectLayoutRequest {
     pub layout_id: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct EffectDetailResponse {
     pub id: String,
     pub name: String,
@@ -151,7 +153,7 @@ pub struct EffectDetailResponse {
     pub active_control_values: Option<HashMap<String, ControlValue>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct LayoutLinkSummary {
     pub id: String,
     pub name: String,
@@ -160,7 +162,7 @@ pub struct LayoutLinkSummary {
     pub zone_count: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct EffectLayoutApplyResult {
     pub associated_layout_id: String,
     pub resolved: bool,
@@ -168,7 +170,7 @@ pub struct EffectLayoutApplyResult {
     pub layout: Option<LayoutLinkSummary>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct InstalledEffectResponse {
     pub id: String,
     pub name: String,
@@ -176,6 +178,29 @@ pub struct InstalledEffectResponse {
     pub path: String,
     pub controls: usize,
     pub presets: usize,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct EffectRefSummary {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplyTransitionResponse {
+    #[serde(rename = "type")]
+    pub transition_type: String,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplyEffectResponse {
+    pub effect: EffectRefSummary,
+    #[schema(value_type = Object)]
+    pub applied_controls: serde_json::Value,
+    pub layout: Option<EffectLayoutApplyResult>,
+    pub transition: ApplyTransitionResponse,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -187,6 +212,18 @@ enum ResolveLayoutLinkError {
 // ── Handlers ─────────────────────────────────────────────────────────────
 
 /// `GET /api/v1/effects` — List all registered effects.
+#[utoipa::path(
+    get,
+    path = "/api/v1/effects",
+    responses(
+        (
+            status = 200,
+            description = "Effect catalog",
+            body = crate::api::envelope::ApiResponse<EffectListResponse>
+        )
+    ),
+    tag = "effects"
+)]
 pub async fn list_effects(State(state): State<Arc<AppState>>) -> Response {
     let registry = state.effect_registry.read().await;
     let mut items: Vec<EffectSummary> = registry
@@ -228,6 +265,24 @@ pub async fn list_effects(State(state): State<Arc<AppState>>) -> Response {
 }
 
 /// `GET /api/v1/effects/:id` — Get a single effect's metadata.
+#[utoipa::path(
+    get,
+    path = "/api/v1/effects/{id}",
+    params(("id" = String, Path, description = "Effect id or name")),
+    responses(
+        (
+            status = 200,
+            description = "Effect detail",
+            body = crate::api::envelope::ApiResponse<EffectDetailResponse>
+        ),
+        (
+            status = 404,
+            description = "Effect was not found",
+            body = crate::api::envelope::ApiErrorResponse
+        )
+    ),
+    tag = "effects"
+)]
 pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let registry = state.effect_registry.read().await;
 
@@ -394,6 +449,40 @@ pub async fn delete_effect_layout(
 }
 
 /// `POST /api/v1/effects/:id/apply` — Start rendering an effect.
+#[utoipa::path(
+    post,
+    path = "/api/v1/effects/{id}/apply",
+    params(("id" = String, Path, description = "Effect id or name")),
+    request_body = ApplyEffectRequest,
+    responses(
+        (
+            status = 200,
+            description = "Effect applied",
+            body = crate::api::envelope::ApiResponse<ApplyEffectResponse>
+        ),
+        (
+            status = 400,
+            description = "Request was malformed",
+            body = crate::api::envelope::ApiErrorResponse
+        ),
+        (
+            status = 404,
+            description = "Effect or preset was not found",
+            body = crate::api::envelope::ApiErrorResponse
+        ),
+        (
+            status = 422,
+            description = "Request validation failed",
+            body = crate::api::envelope::ApiErrorResponse
+        ),
+        (
+            status = 500,
+            description = "The effect could not be applied",
+            body = crate::api::envelope::ApiErrorResponse
+        )
+    ),
+    tag = "effects"
+)]
 pub async fn apply_effect(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -511,22 +600,34 @@ pub async fn apply_effect(
     let applied_layout = apply_associated_layout(state.as_ref(), &metadata.id.to_string()).await;
     super::persist_runtime_session(&state).await;
 
-    ApiResponse::ok(serde_json::json!({
-        "effect": {
-            "id": metadata.id.to_string(),
-            "name": metadata.name,
+    ApiResponse::ok(ApplyEffectResponse {
+        effect: EffectRefSummary {
+            id: metadata.id.to_string(),
+            name: metadata.name,
         },
-        "applied_controls": controls,
-        "layout": applied_layout,
-        "transition": {
-            "type": applied_transition.transition_type,
-            "duration_ms": applied_transition.duration_ms,
+        applied_controls: serde_json::Value::Object(controls),
+        layout: applied_layout,
+        transition: ApplyTransitionResponse {
+            transition_type: applied_transition.transition_type.to_owned(),
+            duration_ms: applied_transition.duration_ms,
         },
-        "warnings": [],
-    }))
+        warnings: Vec::new(),
+    })
 }
 
 /// `GET /api/v1/effects/active` — Get the currently active effect.
+#[utoipa::path(
+    get,
+    path = "/api/v1/effects/active",
+    responses(
+        (
+            status = 200,
+            description = "Current active effect, or an idle payload if none is running",
+            body = crate::api::envelope::ApiResponse<ActiveEffectResponse>
+        )
+    ),
+    tag = "effects"
+)]
 pub async fn get_active_effect(State(state): State<Arc<AppState>>) -> Response {
     let Some((group, meta)) = active_primary_effect(state.as_ref()).await else {
         return ApiResponse::ok(ActiveEffectResponse::idle());
