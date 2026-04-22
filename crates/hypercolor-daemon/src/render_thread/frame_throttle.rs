@@ -9,9 +9,9 @@ use hypercolor_types::session::OffOutputBehavior;
 
 use super::frame_io::publish_frame_updates;
 use super::frame_policy::{FrameExecution, FramePolicy, FrameThrottleKind};
-use super::frame_scheduler::FrameSceneSnapshot;
 use super::frame_sources::static_surface;
 use super::pipeline_runtime::{CachedStaticSurface, RenderSurfaceSnapshot};
+use super::scene_snapshot::FrameSceneSnapshot;
 use super::{RenderThreadState, micros_between, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
 use crate::performance::{CompositorBackendKind, FrameTimeline, LatestFrameMetrics};

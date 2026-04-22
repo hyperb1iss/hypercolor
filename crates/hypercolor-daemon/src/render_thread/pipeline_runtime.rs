@@ -20,10 +20,10 @@ use super::RenderThreadState;
 use super::composition_planner::CompositionPlanner;
 use super::desired_render_surface_slots;
 use super::frame_policy::FramePolicy;
-use super::frame_scheduler::FrameScheduler;
 use super::frame_state::CachedRenderGroupDemand;
 use super::producer_queue::ProducerQueue;
 use super::render_groups::RenderGroupRuntime;
+use super::scene_snapshot::SceneSnapshotCache;
 use super::scene_state::RenderSceneState;
 use super::sparkleflinger::{PendingZoneSampling, SparkleFlinger};
 
@@ -215,7 +215,7 @@ impl RenderCaches {
 }
 
 pub(crate) struct PipelineRuntime {
-    pub(crate) frame_scheduler: FrameScheduler,
+    pub(crate) scene_snapshot_cache: SceneSnapshotCache,
     pub(crate) frame_loop: FrameLoopState,
     pub(crate) render: RenderCaches,
     pub(crate) frame_policy: FramePolicy,
@@ -243,7 +243,7 @@ impl PipelineRuntime {
         configured_max_fps_tier: FpsTier,
     ) -> Result<Self> {
         Ok(Self {
-            frame_scheduler: FrameScheduler::new(),
+            scene_snapshot_cache: SceneSnapshotCache::new(),
             frame_loop: FrameLoopState {
                 cached_inputs: FrameInputs::silence(),
                 last_tick: Instant::now(),

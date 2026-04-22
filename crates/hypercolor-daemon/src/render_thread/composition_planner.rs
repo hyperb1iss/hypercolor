@@ -1,6 +1,6 @@
 use hypercolor_types::scene::SceneId;
 
-use super::frame_scheduler::SceneRuntimeSnapshot;
+use super::scene_snapshot::SceneRuntimeSnapshot;
 use super::producer_queue::ProducerFrame;
 use super::sparkleflinger::{CompositionLayer, CompositionMode, CompositionPlan};
 
@@ -240,7 +240,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::{CompositionPlanner, PlannedSceneLayer};
-    use crate::render_thread::frame_scheduler::{SceneRuntimeSnapshot, SceneTransitionSnapshot};
+    use crate::render_thread::scene_snapshot::{SceneRuntimeSnapshot, SceneTransitionSnapshot};
     use crate::render_thread::producer_queue::ProducerFrame;
     use crate::render_thread::sparkleflinger::SparkleFlinger;
 

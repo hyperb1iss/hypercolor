@@ -43,7 +43,7 @@ pub(crate) async fn execute_frame(
     scheduled_start: Instant,
     skip_decision: SkipDecision,
 ) -> FrameExecution {
-    let frame_scheduler = &mut runtime.frame_scheduler;
+    let scene_snapshot_cache = &mut runtime.scene_snapshot_cache;
     let frame_loop = &mut runtime.frame_loop;
     let render = &mut runtime.render;
     let frame_start = Instant::now();
@@ -70,7 +70,7 @@ pub(crate) async fn execute_frame(
     }
     let mut scene_snapshot = build_frame_scene_snapshot(
         state,
-        frame_scheduler,
+        scene_snapshot_cache,
         &render.render_scene_state,
         &mut frame_loop.last_render_group_demand,
         delta_secs,

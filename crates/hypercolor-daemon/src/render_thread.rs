@@ -22,7 +22,6 @@ mod frame_executor;
 mod frame_io;
 mod frame_policy;
 mod frame_sampling;
-mod frame_scheduler;
 mod frame_sources;
 mod frame_state;
 mod frame_throttle;
@@ -31,6 +30,7 @@ mod pipeline_runtime;
 mod producer_queue;
 mod render_groups;
 mod scene_dependency;
+mod scene_snapshot;
 mod scene_state;
 #[doc(hidden)]
 pub mod sparkleflinger;

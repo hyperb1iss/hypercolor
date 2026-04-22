@@ -13,7 +13,7 @@ use hypercolor_types::scene::ColorInterpolation;
 use hypercolor_types::spatial::SpatialLayout;
 
 use super::frame_composer::RenderStageStats;
-use super::frame_scheduler::{FrameSceneSnapshot, SceneTransitionSnapshot};
+use super::scene_snapshot::{FrameSceneSnapshot, SceneTransitionSnapshot};
 use super::pipeline_runtime::{RenderCaches, RetainedZoneFrame, SceneTransitionKey};
 use super::sparkleflinger::{PendingZoneSampling, ZoneSamplingDispatch};
 use super::{RenderThreadState, micros_between};

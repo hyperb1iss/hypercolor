@@ -7,11 +7,10 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::scene::{RenderGroup, RenderGroupId};
 
 use super::RenderThreadState;
-use super::frame_scheduler::{
-    FrameSceneSnapshot, FrameSceneSnapshotInputs, FrameScheduler, SceneRuntimeSnapshot,
-    SceneTransitionSnapshot,
-};
 use super::scene_dependency::SceneDependencyKey;
+use super::scene_snapshot::{
+    FrameSceneSnapshot, SceneRuntimeSnapshot, SceneSnapshotCache, SceneTransitionSnapshot,
+};
 use super::scene_state::RenderSceneState;
 use crate::display_output::capped_group_direct_display_target_fps;
 
@@ -44,12 +43,13 @@ pub(crate) struct CachedRenderGroupDemand {
 
 pub(crate) async fn build_frame_scene_snapshot(
     state: &RenderThreadState,
-    frame_scheduler: &mut FrameScheduler,
+    scene_snapshot_cache: &mut SceneSnapshotCache,
     render_scene_state: &RenderSceneState,
     last_render_group_demand: &mut Option<CachedRenderGroupDemand>,
     delta_secs: f32,
 ) -> FrameSceneSnapshot {
-    let scene_runtime = current_scene_runtime_snapshot(state, frame_scheduler, delta_secs).await;
+    let scene_runtime =
+        current_scene_runtime_snapshot(state, scene_snapshot_cache, delta_secs).await;
     let effect_scene = current_effect_scene_snapshot(
         state,
         &scene_runtime,
@@ -58,7 +58,7 @@ pub(crate) async fn build_frame_scene_snapshot(
     )
     .await;
     let render_loop_snapshot = render_loop_snapshot(state).await;
-    frame_scheduler.build_snapshot(FrameSceneSnapshotInputs {
+    FrameSceneSnapshot {
         frame_token: render_loop_snapshot.frame_token,
         elapsed_ms: render_loop_snapshot.elapsed_ms,
         budget_us: render_loop_snapshot.budget_us,
@@ -67,7 +67,7 @@ pub(crate) async fn build_frame_scene_snapshot(
         effect_dependency_key: effect_scene.dependency_key,
         scene_runtime,
         spatial_engine: render_scene_state.spatial_engine().clone(),
-    })
+    }
 }
 
 pub(crate) async fn refresh_effect_scene_snapshot(
@@ -92,7 +92,7 @@ pub(crate) async fn refresh_effect_scene_snapshot(
 
 async fn current_scene_runtime_snapshot(
     state: &RenderThreadState,
-    frame_scheduler: &mut FrameScheduler,
+    scene_snapshot_cache: &mut SceneSnapshotCache,
     delta_secs: f32,
 ) -> SceneRuntimeSnapshot {
     let transitioning = {
@@ -103,23 +103,23 @@ async fn current_scene_runtime_snapshot(
     if transitioning {
         let mut manager = state.scene_manager.write().await;
         manager.tick_transition(delta_secs);
-        return snapshot_scene_runtime(state, frame_scheduler, &manager).await;
+        return snapshot_scene_runtime(state, scene_snapshot_cache, &manager).await;
     }
 
     let manager = state.scene_manager.read().await;
-    snapshot_scene_runtime(state, frame_scheduler, &manager).await
+    snapshot_scene_runtime(state, scene_snapshot_cache, &manager).await
 }
 
 async fn snapshot_scene_runtime(
     state: &RenderThreadState,
-    frame_scheduler: &mut FrameScheduler,
+    scene_snapshot_cache: &mut SceneSnapshotCache,
     manager: &SceneManager,
 ) -> SceneRuntimeSnapshot {
     let active_render_groups = manager.active_render_groups();
     let active_render_groups_revision = manager.active_render_groups_revision();
     let active_display_group_target_fps = snapshot_display_group_target_fps(
         &state.device_registry,
-        frame_scheduler,
+        scene_snapshot_cache,
         active_render_groups_revision,
         active_render_groups.as_ref(),
     )
@@ -151,12 +151,12 @@ async fn snapshot_scene_runtime(
 
 async fn snapshot_display_group_target_fps(
     device_registry: &hypercolor_core::device::DeviceRegistry,
-    frame_scheduler: &mut FrameScheduler,
+    scene_snapshot_cache: &mut SceneSnapshotCache,
     groups_revision: u64,
     groups: &[RenderGroup],
 ) -> HashMap<RenderGroupId, u32> {
     let dependency_key = SceneDependencyKey::new(groups_revision, device_registry.generation());
-    if let Some(cached) = frame_scheduler.cached_display_group_target_fps(dependency_key) {
+    if let Some(cached) = scene_snapshot_cache.cached_display_group_target_fps(dependency_key) {
         return cached;
     }
 
@@ -181,7 +181,7 @@ async fn snapshot_display_group_target_fps(
             ))
         })
         .collect();
-    frame_scheduler.cache_display_group_target_fps(dependency_key, &target_fps);
+    scene_snapshot_cache.cache_display_group_target_fps(dependency_key, &target_fps);
     target_fps
 }
 
@@ -331,9 +331,12 @@ mod tests {
     use crate::session::OutputPowerState;
 
     use super::{
-        CachedRenderGroupDemand, current_effect_scene_snapshot, refresh_effect_scene_snapshot,
+        CachedRenderGroupDemand, build_frame_scene_snapshot, current_effect_scene_snapshot,
+        refresh_effect_scene_snapshot, render_loop_snapshot,
     };
-    use crate::render_thread::frame_scheduler::{FrameSceneSnapshotInputs, SceneRuntimeSnapshot};
+    use crate::render_thread::scene_snapshot::{
+        FrameSceneSnapshot, SceneRuntimeSnapshot, SceneSnapshotCache,
+    };
     use crate::render_thread::scene_state::RenderSceneState;
 
     fn sample_layout() -> SpatialLayout {
@@ -423,6 +426,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn build_frame_scene_snapshot_carries_render_loop_and_scene_state_values() {
+        let state = minimal_render_thread_state(EffectRegistry::default());
+        let mut scene_snapshot_cache = SceneSnapshotCache::new();
+        let render_scene_state = RenderSceneState::new(
+            SpatialEngine::new(SpatialLayout {
+                canvas_width: 512,
+                canvas_height: 288,
+                ..sample_layout()
+            }),
+            false,
+        );
+        let expected_loop_snapshot = render_loop_snapshot(&state).await;
+        let mut cached = None::<CachedRenderGroupDemand>;
+
+        let snapshot = build_frame_scene_snapshot(
+            &state,
+            &mut scene_snapshot_cache,
+            &render_scene_state,
+            &mut cached,
+            0.0,
+        )
+        .await;
+
+        assert_eq!(snapshot.frame_token, expected_loop_snapshot.frame_token);
+        assert_eq!(snapshot.elapsed_ms, expected_loop_snapshot.elapsed_ms);
+        assert_eq!(snapshot.budget_us, expected_loop_snapshot.budget_us);
+        assert_eq!(snapshot.output_power, OutputPowerState::default());
+        assert!(!snapshot.effect_demand.effect_running);
+        assert_eq!(snapshot.spatial_engine.layout().canvas_width, 512);
+        assert_eq!(snapshot.spatial_engine.layout().canvas_height, 288);
+    }
+
+    #[tokio::test]
     async fn effect_scene_snapshot_invalidates_cached_capture_demand_on_registry_generation() {
         let effect_id = EffectId::from(Uuid::now_v7());
         let mut registry = EffectRegistry::default();
@@ -472,11 +508,10 @@ mod tests {
             active_display_group_target_fps: HashMap::new(),
         };
         let mut cached = None::<CachedRenderGroupDemand>;
-        let mut frame_scheduler = crate::render_thread::frame_scheduler::FrameScheduler::new();
         let render_scene_state = RenderSceneState::new(SpatialEngine::new(sample_layout()), false);
         let effect_scene =
             current_effect_scene_snapshot(&state, &scene_runtime, &mut cached, false).await;
-        let mut scene_snapshot = frame_scheduler.build_snapshot(FrameSceneSnapshotInputs {
+        let mut scene_snapshot = FrameSceneSnapshot {
             frame_token: 42,
             elapsed_ms: 123,
             budget_us: 16_666,
@@ -485,7 +520,7 @@ mod tests {
             effect_dependency_key: effect_scene.dependency_key,
             scene_runtime,
             spatial_engine: SpatialEngine::new(sample_layout()),
-        });
+        };
 
         {
             let mut registry = state.effect_registry.write().await;

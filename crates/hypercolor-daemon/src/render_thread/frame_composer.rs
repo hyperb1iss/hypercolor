@@ -9,7 +9,7 @@ use hypercolor_types::scene::RenderGroupId;
 
 use super::frame_policy::SkipDecision;
 use super::frame_sampling::LedSamplingStrategy;
-use super::frame_scheduler::FrameSceneSnapshot;
+use super::scene_snapshot::FrameSceneSnapshot;
 use super::frame_sources::static_surface;
 use super::pipeline_runtime::{FrameInputs, RenderCaches};
 use super::producer_queue::{ProducerFrame, ProducerFrameState};
