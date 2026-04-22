@@ -1238,6 +1238,89 @@ fn append_auto_layout_zones_for_basilisk_v3_uses_custom_mouse_geometry() {
 }
 
 #[test]
+fn append_auto_layout_zones_for_corsair_link_pump_uses_custom_layered_geometry() {
+    let device_id = DeviceId::new();
+    let info = DeviceInfo {
+        id: device_id,
+        name: "Corsair iCUE LINK System Hub".to_owned(),
+        vendor: "Corsair".to_owned(),
+        family: DeviceFamily::Corsair,
+        model: None,
+        connection_type: ConnectionType::Usb,
+        zones: vec![
+            ZoneInfo {
+                name: "iCUE LINK H-Series AIO (AIO123)".to_owned(),
+                led_count: 20,
+                topology: DeviceTopologyHint::Ring { count: 20 },
+                color_format: DeviceColorFormat::Rgb,
+            },
+            ZoneInfo {
+                name: "iCUE LINK Cooler Pump LCD (LCD123)".to_owned(),
+                led_count: 24,
+                topology: DeviceTopologyHint::Ring { count: 24 },
+                color_format: DeviceColorFormat::Rgb,
+            },
+        ],
+        firmware_version: None,
+        capabilities: DeviceCapabilities::default(),
+    };
+    let mut layout = SpatialLayout {
+        id: "default".to_owned(),
+        name: "Default Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: Vec::new(),
+
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+
+    let added =
+        discovery::append_auto_layout_zones_for_device(&mut layout, "usb:1b1c:0c3f:test", &info);
+
+    assert_eq!(added, 2);
+    let aio = layout
+        .zones
+        .iter()
+        .find(|zone| zone.zone_name.as_deref() == Some("iCUE LINK H-Series AIO (AIO123)"))
+        .expect("expected AIO auto-layout zone");
+    let lcd = layout
+        .zones
+        .iter()
+        .find(|zone| zone.zone_name.as_deref() == Some("iCUE LINK Cooler Pump LCD (LCD123)"))
+        .expect("expected pump LCD auto-layout zone");
+
+    assert_eq!(aio.position, lcd.position);
+    match &aio.topology {
+        LedTopology::Custom { positions } => {
+            assert_eq!(positions.len(), 20);
+            assert!((positions[0].x - 1.0).abs() < 0.001);
+            assert!((positions[0].y - 0.5).abs() < 0.001);
+            assert!((positions[16].x - (8.0 / 12.0)).abs() < 0.001);
+            assert!((positions[19].y - (4.0 / 12.0)).abs() < 0.001);
+        }
+        other => panic!("expected custom topology, got {other:?}"),
+    }
+    match &lcd.topology {
+        LedTopology::Custom { positions } => {
+            assert_eq!(positions.len(), 24);
+            assert!((positions[0].x - 1.0).abs() < 0.001);
+            assert!((positions[0].y - 0.5).abs() < 0.001);
+            assert!((positions[12].x - 0.0).abs() < 0.001);
+            assert!((positions[12].y - 0.5).abs() < 0.001);
+        }
+        other => panic!("expected custom topology, got {other:?}"),
+    }
+    assert_eq!(aio.size, NormalizedPosition::new(0.16, 0.16));
+    assert_eq!(lcd.size, NormalizedPosition::new(0.19, 0.19));
+    assert_eq!(aio.shape, Some(hypercolor_types::spatial::ZoneShape::Ring));
+    assert_eq!(lcd.shape, Some(hypercolor_types::spatial::ZoneShape::Ring));
+}
+
+#[test]
 fn append_auto_layout_zones_for_dense_matrix_device_clamps_height_without_panicking() {
     let device_id = DeviceId::new();
     let info = DeviceInfo {
@@ -1387,6 +1470,127 @@ fn reconcile_auto_layout_zones_for_device_updates_existing_seiren_auto_zone() {
         other => panic!("expected custom topology, got {other:?}"),
     }
     assert_eq!(layout.zones[0].size, NormalizedPosition::new(0.2, 0.08));
+}
+
+#[test]
+fn reconcile_auto_layout_zones_for_corsair_link_pump_repairs_geometry_without_touching_rotation() {
+    let device_id = DeviceId::new();
+    let info = DeviceInfo {
+        id: device_id,
+        name: "Corsair iCUE LINK System Hub".to_owned(),
+        vendor: "Corsair".to_owned(),
+        family: DeviceFamily::Corsair,
+        model: None,
+        connection_type: ConnectionType::Usb,
+        zones: vec![
+            ZoneInfo {
+                name: "iCUE LINK H-Series AIO (AIO123)".to_owned(),
+                led_count: 20,
+                topology: DeviceTopologyHint::Ring { count: 20 },
+                color_format: DeviceColorFormat::Rgb,
+            },
+            ZoneInfo {
+                name: "iCUE LINK Cooler Pump LCD (LCD123)".to_owned(),
+                led_count: 24,
+                topology: DeviceTopologyHint::Ring { count: 24 },
+                color_format: DeviceColorFormat::Rgb,
+            },
+        ],
+        firmware_version: None,
+        capabilities: DeviceCapabilities::default(),
+    };
+    let mut layout = SpatialLayout {
+        id: "default".to_owned(),
+        name: "Default Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![
+            DeviceZone {
+                id: "auto-usb-1b1c-0c3f-test-aio".to_owned(),
+                name: "Corsair iCUE LINK System Hub: iCUE LINK H-Series AIO (AIO123)".to_owned(),
+                device_id: "usb:1b1c:0c3f:test".to_owned(),
+                zone_name: Some("iCUE LINK H-Series AIO (AIO123)".to_owned()),
+                position: NormalizedPosition::new(0.42, 0.55),
+                size: NormalizedPosition::new(0.08, 0.08),
+                rotation: 0.25,
+                scale: 1.0,
+                display_order: 0,
+                orientation: None,
+                topology: LedTopology::Ring {
+                    count: 20,
+                    start_angle: 0.0,
+                    direction: hypercolor_types::spatial::Winding::Clockwise,
+                },
+                led_positions: Vec::new(),
+                led_mapping: None,
+                sampling_mode: Some(SamplingMode::Bilinear),
+                edge_behavior: Some(EdgeBehavior::Clamp),
+                shape: Some(hypercolor_types::spatial::ZoneShape::Ring),
+                shape_preset: None,
+                attachment: None,
+                brightness: None,
+            },
+            DeviceZone {
+                id: "auto-usb-1b1c-0c3f-test-lcd".to_owned(),
+                name: "Corsair iCUE LINK System Hub: iCUE LINK Cooler Pump LCD (LCD123)".to_owned(),
+                device_id: "usb:1b1c:0c3f:test".to_owned(),
+                zone_name: Some("iCUE LINK Cooler Pump LCD (LCD123)".to_owned()),
+                position: NormalizedPosition::new(0.42, 0.47),
+                size: NormalizedPosition::new(0.08, 0.08),
+                rotation: 3.0,
+                scale: 1.0,
+                display_order: 0,
+                orientation: None,
+                topology: LedTopology::Ring {
+                    count: 24,
+                    start_angle: 0.0,
+                    direction: hypercolor_types::spatial::Winding::Clockwise,
+                },
+                led_positions: Vec::new(),
+                led_mapping: None,
+                sampling_mode: Some(SamplingMode::Bilinear),
+                edge_behavior: Some(EdgeBehavior::Clamp),
+                shape: Some(hypercolor_types::spatial::ZoneShape::Ring),
+                shape_preset: None,
+                attachment: None,
+                brightness: None,
+            },
+        ],
+
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+
+    let repaired =
+        discovery::reconcile_auto_layout_zones_for_device(&mut layout, "usb:1b1c:0c3f:test", &info);
+
+    assert_eq!(repaired, 2);
+    let aio = layout
+        .zones
+        .iter()
+        .find(|zone| zone.zone_name.as_deref() == Some("iCUE LINK H-Series AIO (AIO123)"))
+        .expect("expected repaired AIO zone");
+    let lcd = layout
+        .zones
+        .iter()
+        .find(|zone| zone.zone_name.as_deref() == Some("iCUE LINK Cooler Pump LCD (LCD123)"))
+        .expect("expected repaired LCD zone");
+
+    assert!((aio.rotation - 0.25).abs() < f32::EPSILON);
+    assert!((lcd.rotation - 3.0).abs() < f32::EPSILON);
+    assert_eq!(aio.size, NormalizedPosition::new(0.16, 0.16));
+    assert_eq!(lcd.size, NormalizedPosition::new(0.19, 0.19));
+    match &aio.topology {
+        LedTopology::Custom { positions } => assert_eq!(positions.len(), 20),
+        other => panic!("expected custom topology, got {other:?}"),
+    }
+    match &lcd.topology {
+        LedTopology::Custom { positions } => assert_eq!(positions.len(), 24),
+        other => panic!("expected custom topology, got {other:?}"),
+    }
 }
 
 #[test]

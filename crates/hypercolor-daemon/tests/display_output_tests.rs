@@ -2581,8 +2581,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
 
     let writes = wait_for_display_write_count(&display_writes, 2).await;
     let second_image = decode_jpeg(writes.last().expect("expected refreshed direct-face frame"));
-    let second_pixel =
-        second_image.get_pixel(second_image.width() / 2, second_image.height() / 2);
+    let second_pixel = second_image.get_pixel(second_image.width() / 2, second_image.height() / 2);
     assert!(
         second_pixel[2] > 200,
         "expected face-route refresh to switch the cached target to blue, got {second_pixel:?}"

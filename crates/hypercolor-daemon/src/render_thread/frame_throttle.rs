@@ -71,8 +71,7 @@ pub(crate) async fn maybe_sleep_throttle(
     if *sleep_black_pushed {
         let mut render_loop = state.render_loop.write().await;
         return Some(
-            frame_policy
-                .complete_throttle_frame(&mut render_loop, FrameThrottleKind::SessionSleep),
+            frame_policy.complete_throttle_frame(&mut render_loop, FrameThrottleKind::SessionSleep),
         );
     }
 
@@ -122,8 +121,7 @@ pub(crate) async fn maybe_sleep_throttle(
         *sleep_black_pushed = true;
         let mut render_loop = state.render_loop.write().await;
         return Some(
-            frame_policy
-                .complete_throttle_frame(&mut render_loop, FrameThrottleKind::SessionSleep),
+            frame_policy.complete_throttle_frame(&mut render_loop, FrameThrottleKind::SessionSleep),
         );
     }
 

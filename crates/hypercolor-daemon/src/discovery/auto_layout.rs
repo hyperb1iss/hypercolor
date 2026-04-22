@@ -233,12 +233,16 @@ pub fn append_auto_layout_zones_for_device(
             || spatial_topology_for_zone(zone_info),
             |spec| spec.topology.clone(),
         );
-        let (position, default_size) = auto_layout_geometry(
+        let (default_position, default_size) = auto_layout_geometry(
             slot_center,
             index,
             eligible_zones.len(),
             &zone_info.topology,
         );
+        let position = override_spec
+            .as_ref()
+            .filter(|spec| spec.co_located)
+            .map_or(default_position, |_| slot_center);
         let size = override_spec
             .as_ref()
             .and_then(|spec| spec.size)
@@ -456,6 +460,7 @@ struct AutoLayoutOverride {
     topology: LedTopology,
     size: Option<NormalizedPosition>,
     shape: Option<ZoneShape>,
+    co_located: bool,
 }
 
 fn auto_layout_override(
@@ -484,6 +489,7 @@ fn auto_layout_override(
             },
             size: Some(NormalizedPosition::new(0.2, 0.08)),
             shape: Some(ZoneShape::Rectangle),
+            co_located: false,
         });
     }
 
@@ -510,6 +516,89 @@ fn auto_layout_override(
             },
             size: Some(NormalizedPosition::new(0.16, 0.18)),
             shape: Some(ZoneShape::Rectangle),
+            co_located: false,
+        });
+    }
+
+    if layout_device_id.starts_with("usb:1b1c:0c3f:")
+        && zone_info.led_count == 20
+        && zone_info.name.contains("AIO")
+    {
+        return Some(AutoLayoutOverride {
+            topology: LedTopology::Custom {
+                positions: normalized_grid_positions(
+                    13,
+                    13,
+                    &[
+                        (12, 6),
+                        (11, 8),
+                        (10, 10),
+                        (8, 11),
+                        (6, 12),
+                        (4, 11),
+                        (2, 10),
+                        (1, 8),
+                        (0, 6),
+                        (1, 4),
+                        (2, 2),
+                        (4, 1),
+                        (6, 0),
+                        (8, 1),
+                        (10, 2),
+                        (11, 4),
+                        (8, 6),
+                        (6, 8),
+                        (4, 6),
+                        (6, 4),
+                    ],
+                ),
+            },
+            size: Some(NormalizedPosition::new(0.16, 0.16)),
+            shape: Some(ZoneShape::Ring),
+            co_located: true,
+        });
+    }
+
+    if layout_device_id.starts_with("usb:1b1c:0c3f:")
+        && zone_info.led_count == 24
+        && zone_info.name.contains("Cooler Pump LCD")
+    {
+        return Some(AutoLayoutOverride {
+            topology: LedTopology::Custom {
+                positions: normalized_grid_positions(
+                    11,
+                    11,
+                    &[
+                        (10, 5),
+                        (9, 6),
+                        (9, 7),
+                        (8, 8),
+                        (7, 9),
+                        (6, 9),
+                        (5, 10),
+                        (4, 9),
+                        (3, 9),
+                        (2, 8),
+                        (1, 7),
+                        (1, 6),
+                        (0, 5),
+                        (1, 4),
+                        (1, 3),
+                        (2, 2),
+                        (3, 1),
+                        (4, 1),
+                        (5, 0),
+                        (6, 1),
+                        (7, 1),
+                        (8, 2),
+                        (9, 3),
+                        (9, 4),
+                    ],
+                ),
+            },
+            size: Some(NormalizedPosition::new(0.19, 0.19)),
+            shape: Some(ZoneShape::Ring),
+            co_located: true,
         });
     }
 
