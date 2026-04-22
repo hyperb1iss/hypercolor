@@ -81,11 +81,16 @@ pub(crate) struct PublicationCadenceState {
     pub(crate) last_web_viewport_preview_publish_ms: Option<u32>,
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct ThrottleState {
+    pub(crate) idle_black_pushed: bool,
+    pub(crate) sleep_black_pushed: bool,
+}
+
 pub(crate) struct FrameLoopState {
     pub(crate) cached_inputs: FrameInputs,
     pub(crate) last_tick: Instant,
-    pub(crate) idle_black_pushed: bool,
-    pub(crate) sleep_black_pushed: bool,
+    pub(crate) throttle: ThrottleState,
     pub(crate) publication_cadence: PublicationCadenceState,
     pub(crate) capture_demand: CaptureDemandState,
     pub(crate) last_output_brightness_bits: Option<u32>,
@@ -246,8 +251,7 @@ impl PipelineRuntime {
             frame_loop: FrameLoopState {
                 cached_inputs: FrameInputs::silence(),
                 last_tick: Instant::now(),
-                idle_black_pushed: false,
-                sleep_black_pushed: false,
+                throttle: ThrottleState::default(),
                 publication_cadence: PublicationCadenceState::default(),
                 capture_demand: CaptureDemandState::default(),
                 last_output_brightness_bits: None,

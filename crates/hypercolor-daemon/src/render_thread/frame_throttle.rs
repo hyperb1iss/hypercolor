@@ -15,6 +15,7 @@ use super::pipeline_runtime::{
     CachedStaticSurface,
     PublicationCadenceState,
     RenderSurfaceSnapshot,
+    ThrottleState,
 };
 use super::scene_snapshot::FrameSceneSnapshot;
 use super::{RenderThreadState, micros_between, u64_to_u32};
@@ -28,22 +29,22 @@ pub(crate) async fn maybe_idle_throttle(
     state: &RenderThreadState,
     effect_running: bool,
     screen_capture_active: bool,
-    idle_black_pushed: &mut bool,
+    throttle: &mut ThrottleState,
 ) -> Option<FrameExecution> {
     let can_idle_throttle = can_idle_throttle(effect_running, screen_capture_active);
 
     if effect_running {
-        *idle_black_pushed = false;
+        throttle.idle_black_pushed = false;
         return None;
     }
 
-    if can_idle_throttle && !*idle_black_pushed {
+    if can_idle_throttle && !throttle.idle_black_pushed {
         debug!(
             "No active effect or capture input; layout changes render black until an effect or input source starts"
         );
     }
 
-    if can_idle_throttle && *idle_black_pushed {
+    if can_idle_throttle && throttle.idle_black_pushed {
         let mut render_loop = state.render_loop.write().await;
         return Some(complete_throttle_frame(
             &mut render_loop,
@@ -67,11 +68,11 @@ pub(crate) async fn maybe_sleep_throttle(
     render_surfaces: RenderSurfaceSnapshot,
     static_surface_cache: &mut Option<CachedStaticSurface>,
     recycled_frame: &mut FrameData,
-    sleep_black_pushed: &mut bool,
+    throttle: &mut ThrottleState,
     publication_cadence: &mut PublicationCadenceState,
 ) -> Option<FrameExecution> {
     let power_state = scene_snapshot.output_power;
-    if *sleep_black_pushed {
+    if throttle.sleep_black_pushed {
         let mut render_loop = state.render_loop.write().await;
         return Some(complete_throttle_frame(
             &mut render_loop,
@@ -119,7 +120,7 @@ pub(crate) async fn maybe_sleep_throttle(
             publish_us,
             "published cleared frame/canvas for release sleep"
         );
-        *sleep_black_pushed = true;
+        throttle.sleep_black_pushed = true;
         let mut render_loop = state.render_loop.write().await;
         return Some(complete_throttle_frame(
             &mut render_loop,
@@ -259,7 +260,7 @@ pub(crate) async fn maybe_sleep_throttle(
         });
     }
 
-    *sleep_black_pushed = true;
+    throttle.sleep_black_pushed = true;
     let mut render_loop = state.render_loop.write().await;
     Some(complete_throttle_frame(
         &mut render_loop,

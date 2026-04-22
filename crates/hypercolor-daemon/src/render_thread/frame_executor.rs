@@ -62,8 +62,8 @@ pub(crate) async fn execute_frame(
         info!(width, height, "Applying live canvas resize");
         state.canvas_dims.set(width, height);
         render.apply_canvas_resize(width, height);
-        frame_loop.idle_black_pushed = false;
-        frame_loop.sleep_black_pushed = false;
+        frame_loop.throttle.idle_black_pushed = false;
+        frame_loop.throttle.sleep_black_pushed = false;
     }
     let mut scene_snapshot = build_frame_scene_snapshot(
         state,
@@ -106,7 +106,7 @@ pub(crate) async fn execute_frame(
             sleep_render_surfaces,
             &mut render.static_surface_cache,
             &mut render.recycled_frame,
-            &mut frame_loop.sleep_black_pushed,
+            &mut frame_loop.throttle,
             &mut frame_loop.publication_cadence,
         )
         .await
@@ -114,7 +114,7 @@ pub(crate) async fn execute_frame(
             return frame;
         }
     } else {
-        frame_loop.sleep_black_pushed = false;
+        frame_loop.throttle.sleep_black_pushed = false;
     }
 
     if refresh_effect_scene_snapshot(
@@ -146,7 +146,7 @@ pub(crate) async fn execute_frame(
         state,
         scene_snapshot.effect_demand.effect_running,
         scene_snapshot.effect_demand.screen_capture_active,
-        &mut frame_loop.idle_black_pushed,
+        &mut frame_loop.throttle,
     )
     .await
     {
@@ -552,7 +552,7 @@ pub(crate) async fn execute_frame(
     };
 
     if !scene_snapshot.effect_demand.effect_running {
-        frame_loop.idle_black_pushed = true;
+        frame_loop.throttle.idle_black_pushed = true;
     }
 
     FrameExecution {
