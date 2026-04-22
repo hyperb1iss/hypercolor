@@ -2,9 +2,10 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info};
 
+use crate::deadline::{advance_deadline, wait_until_deadline};
+
 use super::RenderThreadState;
 use super::frame_executor::execute_frame;
-use super::frame_pacing::{advance_deadline, wait_until_frame_deadline};
 use super::frame_policy::{NextWake, SkipDecision};
 use super::frame_state::{reconcile_audio_capture, reconcile_screen_capture};
 use super::pipeline_runtime::PipelineRuntime;
@@ -21,7 +22,7 @@ pub(crate) async fn run_pipeline(state: RenderThreadState, mut runtime: Pipeline
 
     loop {
         let scheduled_start = next_frame_at;
-        wait_until_frame_deadline(scheduled_start).await;
+        wait_until_deadline(scheduled_start).await;
 
         let should_render = {
             let mut render_loop = state.render_loop.write().await;

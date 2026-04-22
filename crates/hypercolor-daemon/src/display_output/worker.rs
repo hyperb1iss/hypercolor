@@ -22,8 +22,8 @@ use super::{
     DisplayViewportSignature, DisplayWorkerConfigSignature, DisplayWorkerFrameSet,
     DisplayWorkerFrameSource,
 };
+use crate::deadline::advance_deadline;
 use crate::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
-use crate::render_thread::frame_pacing::advance_deadline;
 use crate::session::OutputPowerState;
 
 async fn publish_display_frame_snapshot(

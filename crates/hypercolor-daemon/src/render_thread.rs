@@ -20,7 +20,6 @@ mod frame_admission;
 mod frame_composer;
 mod frame_executor;
 mod frame_io;
-pub(crate) mod frame_pacing;
 mod frame_policy;
 mod frame_sampling;
 mod frame_scheduler;
@@ -297,7 +296,7 @@ fn panic_payload_message(panic: &(dyn Any + Send + 'static)) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use hypercolor_core::engine::FpsTier;
     use hypercolor_core::input::ScreenData;
@@ -305,7 +304,6 @@ mod tests {
     use hypercolor_core::types::event::ZoneColors;
 
     use super::frame_io::{parse_sector_zone_id, screen_data_to_canvas};
-    use super::frame_pacing::{PRECISE_WAKE_GUARD, advance_deadline, coarse_sleep_deadline};
     use super::frame_policy::{FramePolicy, SkipDecision};
     use super::micros_u32;
 
@@ -367,49 +365,6 @@ mod tests {
     fn micros_u32_saturates_large_duration() {
         let very_large = Duration::from_secs(u64::MAX);
         assert_eq!(micros_u32(very_large), u32::MAX);
-    }
-
-    #[test]
-    fn advance_deadline_preserves_phase_when_scheduler_wakes_late() {
-        let start = Instant::now();
-        let late_now = start + Duration::from_millis(18);
-
-        let next = advance_deadline(start, Duration::from_millis(16), late_now);
-
-        assert_eq!(next, late_now);
-    }
-
-    #[test]
-    fn advance_deadline_keeps_regular_cadence_when_on_time() {
-        let start = Instant::now();
-        let now = start + Duration::from_millis(8);
-
-        let next = advance_deadline(start, Duration::from_millis(16), now);
-
-        assert_eq!(next, start + Duration::from_millis(16));
-    }
-
-    #[test]
-    fn coarse_sleep_deadline_uses_guard_band_when_there_is_headroom() {
-        let now = Instant::now();
-        let deadline = now + Duration::from_millis(16);
-
-        let coarse = coarse_sleep_deadline(deadline, now).expect("guard band should apply");
-
-        assert_eq!(
-            coarse,
-            deadline
-                .checked_sub(PRECISE_WAKE_GUARD)
-                .expect("guard band should fit within deadline")
-        );
-    }
-
-    #[test]
-    fn coarse_sleep_deadline_skips_sleep_when_deadline_is_inside_guard_band() {
-        let now = Instant::now();
-        let deadline = now + PRECISE_WAKE_GUARD / 2;
-
-        assert!(coarse_sleep_deadline(deadline, now).is_none());
     }
 
     #[test]
