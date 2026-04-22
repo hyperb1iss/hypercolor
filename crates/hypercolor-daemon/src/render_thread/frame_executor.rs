@@ -9,12 +9,12 @@ use hypercolor_core::types::event::FrameTiming;
 use super::frame_composer::{ComposeRequest, compose_frame};
 use super::frame_io::publish_frame_updates;
 use super::frame_policy::{FrameAdmissionSample, FrameExecution, SkipDecision};
+use super::pipeline_runtime::{PendingZoneSamplingStatus, PipelineRuntime};
 use super::frame_sampling::{
     LedSamplingOutcome, resolve_led_sampling, try_finish_deferred_zone_sampling,
     try_finish_retired_zone_sampling,
 };
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
-use super::pipeline_runtime::PipelineRuntime;
 use super::scene_snapshot::{build_frame_scene_snapshot, refresh_effect_scene_snapshot};
 use super::sparkleflinger::ComposedFrameSet;
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
@@ -145,19 +145,16 @@ pub(crate) async fn execute_frame(
     );
     let mut stale_deferred_sampling = None;
     let mut completed_deferred_sampling = None;
-    if let Some(mut deferred_sampling) = render.deferred_zone_sampling.take() {
-        match render.sparkleflinger.try_finish_pending_zone_sampling(
-            &mut deferred_sampling,
-            &mut render.deferred_zone_sampling_scratch,
-        ) {
-            Ok(true) => {
+    if let Some(status) = render.deferred_sampling.take_pending_status(
+        &mut render.sparkleflinger,
+        "Deferred GPU spatial sampling finalize failed; dropping deferred sample result",
+    ) {
+        match status {
+            PendingZoneSamplingStatus::Completed(deferred_sampling) => {
                 completed_deferred_sampling = Some(deferred_sampling);
             }
-            Ok(false) => {
+            PendingZoneSamplingStatus::Stale(deferred_sampling) => {
                 stale_deferred_sampling = Some(deferred_sampling);
-            }
-            Err(error) => {
-                warn!(%error, "Deferred GPU spatial sampling finalize failed; dropping deferred sample result");
             }
         }
     }

@@ -173,6 +173,105 @@ pub(crate) struct CachedStaticSurface {
     pub(crate) surface: PublishedSurface,
 }
 
+pub(crate) enum PendingZoneSamplingStatus {
+    Completed(PendingZoneSampling),
+    Stale(PendingZoneSampling),
+}
+
+#[derive(Default)]
+pub(crate) struct DeferredSamplingState {
+    pending: Option<PendingZoneSampling>,
+    retired: VecDeque<PendingZoneSampling>,
+    scratch: Vec<ZoneColors>,
+}
+
+impl DeferredSamplingState {
+    pub(crate) fn scratch_mut(&mut self) -> &mut Vec<ZoneColors> {
+        &mut self.scratch
+    }
+
+    pub(crate) fn clone_scratch_into(&self, target: &mut Vec<ZoneColors>) {
+        target.clone_from(&self.scratch);
+    }
+
+    pub(crate) fn store_pending(&mut self, pending: PendingZoneSampling) {
+        self.pending = Some(pending);
+    }
+
+    pub(crate) fn take_pending_status(
+        &mut self,
+        sparkleflinger: &mut SparkleFlinger,
+        error_message: &'static str,
+    ) -> Option<PendingZoneSamplingStatus> {
+        let mut pending = self.pending.take()?;
+        match sparkleflinger.try_finish_pending_zone_sampling(&mut pending, &mut self.scratch) {
+            Ok(true) => Some(PendingZoneSamplingStatus::Completed(pending)),
+            Ok(false) => Some(PendingZoneSamplingStatus::Stale(pending)),
+            Err(error) => {
+                tracing::warn!(%error, "{error_message}");
+                None
+            }
+        }
+    }
+
+    pub(crate) fn finish_retired(
+        &mut self,
+        sparkleflinger: &mut SparkleFlinger,
+        error_message: &'static str,
+    ) {
+        let retired_count = self.retired.len();
+        for _ in 0..retired_count {
+            let Some(mut retired_sampling) = self.retired.pop_front() else {
+                break;
+            };
+            match sparkleflinger
+                .try_finish_pending_zone_sampling(&mut retired_sampling, &mut self.scratch)
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.retired.push_back(retired_sampling);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "{error_message}");
+                }
+            }
+        }
+    }
+
+    pub(crate) fn retire_or_return(
+        &mut self,
+        sparkleflinger: &mut SparkleFlinger,
+        pending: PendingZoneSampling,
+    ) -> Option<PendingZoneSampling> {
+        self.finish_retired(
+            sparkleflinger,
+            "Retired GPU spatial sampling cleanup failed; dropping stale deferred sample result",
+        );
+
+        let retired_capacity = sparkleflinger.max_pending_zone_sampling().saturating_sub(1);
+        if self.retired.len() >= retired_capacity {
+            return Some(pending);
+        }
+
+        self.retired.push_back(pending);
+        None
+    }
+
+    pub(crate) fn discard_backlog(&mut self, sparkleflinger: &mut SparkleFlinger) {
+        if let Some(pending) = self.pending.take() {
+            sparkleflinger.discard_pending_zone_sampling(pending);
+        }
+        while let Some(pending) = self.retired.pop_front() {
+            sparkleflinger.discard_pending_zone_sampling(pending);
+        }
+    }
+
+    pub(crate) fn clear_for_canvas_resize(&mut self, sparkleflinger: &mut SparkleFlinger) {
+        self.discard_backlog(sparkleflinger);
+        self.scratch.clear();
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct PublicationCadenceState {
     pub(crate) last_audio_level_update_ms: Option<u32>,
@@ -375,9 +474,7 @@ pub(crate) struct RenderCaches {
     pub(crate) screen_queue: ProducerQueue,
     pub(crate) composition_planner: CompositionPlanner,
     pub(crate) sparkleflinger: SparkleFlinger,
-    pub(crate) deferred_zone_sampling: Option<PendingZoneSampling>,
-    pub(crate) retired_zone_sampling: VecDeque<PendingZoneSampling>,
-    pub(crate) deferred_zone_sampling_scratch: Vec<hypercolor_types::event::ZoneColors>,
+    pub(crate) deferred_sampling: DeferredSamplingState,
     pub(crate) zone_transition_planner: ZoneTransitionPlanner,
     pub(crate) render_group_runtime: RenderGroupRuntime,
     pub(crate) render_surface_pool: RenderSurfacePool,
@@ -447,19 +544,14 @@ impl RenderCaches {
     /// Existing published surfaces stay valid until their leases drop; new
     /// dequeues get the updated dimensions.
     pub(crate) fn apply_canvas_resize(&mut self, width: u32, height: u32) {
-        if let Some(pending) = self.deferred_zone_sampling.take() {
-            self.sparkleflinger.discard_pending_zone_sampling(pending);
-        }
-        while let Some(pending) = self.retired_zone_sampling.pop_front() {
-            self.sparkleflinger.discard_pending_zone_sampling(pending);
-        }
+        self.deferred_sampling
+            .clear_for_canvas_resize(&mut self.sparkleflinger);
         self.render_surface_pool = RenderSurfacePool::with_slot_count(
             SurfaceDescriptor::rgba8888(width, height),
             desired_render_surface_slots(0),
         );
         self.render_group_runtime = RenderGroupRuntime::new(width, height);
         self.composition_planner = CompositionPlanner::new();
-        self.deferred_zone_sampling_scratch.clear();
         self.zone_transition_planner = ZoneTransitionPlanner::default();
         self.static_surface_cache = None;
     }
@@ -534,9 +626,7 @@ impl PipelineRuntime {
                 screen_queue: ProducerQueue::new(),
                 composition_planner: CompositionPlanner::new(),
                 sparkleflinger: SparkleFlinger::new(render_acceleration_mode)?,
-                deferred_zone_sampling: None,
-                retired_zone_sampling: VecDeque::new(),
-                deferred_zone_sampling_scratch: Vec::new(),
+                deferred_sampling: DeferredSamplingState::default(),
                 zone_transition_planner: ZoneTransitionPlanner::default(),
                 render_group_runtime: RenderGroupRuntime::new(canvas_width, canvas_height),
                 render_surface_pool: RenderSurfacePool::with_slot_count(
