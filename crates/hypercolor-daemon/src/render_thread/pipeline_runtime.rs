@@ -77,15 +77,20 @@ pub(crate) struct CachedStaticSurface {
     pub(crate) surface: PublishedSurface,
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct PublicationCadenceState {
+    pub(crate) last_audio_level_update_ms: Option<u32>,
+    pub(crate) last_canvas_preview_publish_ms: Option<u32>,
+    pub(crate) last_screen_canvas_preview_publish_ms: Option<u32>,
+    pub(crate) last_web_viewport_preview_publish_ms: Option<u32>,
+}
+
 pub(crate) struct FrameLoopState {
     pub(crate) cached_inputs: FrameInputs,
     pub(crate) last_tick: Instant,
     pub(crate) idle_black_pushed: bool,
     pub(crate) sleep_black_pushed: bool,
-    pub(crate) last_audio_level_update_ms: Option<u32>,
-    pub(crate) last_canvas_preview_publish_ms: Option<u32>,
-    pub(crate) last_screen_canvas_preview_publish_ms: Option<u32>,
-    pub(crate) last_web_viewport_preview_publish_ms: Option<u32>,
+    pub(crate) publication_cadence: PublicationCadenceState,
     pub(crate) capture_demand: CaptureDemandState,
     pub(crate) last_output_brightness_bits: Option<u32>,
     pub(crate) last_device_output_brightness_generation: Option<u64>,
@@ -247,10 +252,7 @@ impl PipelineRuntime {
                 last_tick: Instant::now(),
                 idle_black_pushed: false,
                 sleep_black_pushed: false,
-                last_audio_level_update_ms: None,
-                last_canvas_preview_publish_ms: None,
-                last_screen_canvas_preview_publish_ms: None,
-                last_web_viewport_preview_publish_ms: None,
+                publication_cadence: PublicationCadenceState::default(),
                 capture_demand: CaptureDemandState::default(),
                 last_output_brightness_bits: None,
                 last_device_output_brightness_generation: None,

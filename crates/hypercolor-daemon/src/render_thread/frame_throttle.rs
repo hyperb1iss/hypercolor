@@ -11,7 +11,11 @@ use hypercolor_types::session::OffOutputBehavior;
 use super::frame_io::publish_frame_updates;
 use super::frame_policy::{FrameExecution, NextWake, SkipDecision};
 use super::frame_sources::static_surface;
-use super::pipeline_runtime::{CachedStaticSurface, RenderSurfaceSnapshot};
+use super::pipeline_runtime::{
+    CachedStaticSurface,
+    PublicationCadenceState,
+    RenderSurfaceSnapshot,
+};
 use super::scene_snapshot::FrameSceneSnapshot;
 use super::{RenderThreadState, micros_between, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
@@ -64,10 +68,7 @@ pub(crate) async fn maybe_sleep_throttle(
     static_surface_cache: &mut Option<CachedStaticSurface>,
     recycled_frame: &mut FrameData,
     sleep_black_pushed: &mut bool,
-    last_audio_level_update_ms: &mut Option<u32>,
-    last_canvas_preview_publish_ms: &mut Option<u32>,
-    last_screen_canvas_preview_publish_ms: &mut Option<u32>,
-    last_web_viewport_preview_publish_ms: &mut Option<u32>,
+    publication_cadence: &mut PublicationCadenceState,
 ) -> Option<FrameExecution> {
     let power_state = scene_snapshot.output_power;
     if *sleep_black_pushed {
@@ -100,10 +101,7 @@ pub(crate) async fn maybe_sleep_throttle(
             None,
             frame_num_u32,
             scene_snapshot.elapsed_ms,
-            last_audio_level_update_ms,
-            last_canvas_preview_publish_ms,
-            last_screen_canvas_preview_publish_ms,
-            last_web_viewport_preview_publish_ms,
+            publication_cadence,
             false,
             false,
             FrameTiming {
@@ -176,10 +174,7 @@ pub(crate) async fn maybe_sleep_throttle(
         None,
         frame_num_u32,
         scene_snapshot.elapsed_ms,
-        last_audio_level_update_ms,
-        last_canvas_preview_publish_ms,
-        last_screen_canvas_preview_publish_ms,
-        last_web_viewport_preview_publish_ms,
+        publication_cadence,
         false,
         false,
         FrameTiming {

@@ -10,7 +10,7 @@ use hypercolor_types::sensor::SystemSnapshot;
 use std::sync::Arc;
 use tokio::sync::watch;
 
-use super::pipeline_runtime::FrameInputs;
+use super::pipeline_runtime::{FrameInputs, PublicationCadenceState};
 use super::render_groups::GroupCanvasFrame;
 use super::{RenderThreadState, micros_u32, usize_to_u32};
 
@@ -99,10 +99,7 @@ pub(crate) fn publish_frame_updates(
     web_viewport_preview_canvas: Option<Canvas>,
     frame_number: u32,
     elapsed_ms: u32,
-    last_audio_level_update_ms: &mut Option<u32>,
-    last_canvas_preview_publish_ms: &mut Option<u32>,
-    last_screen_canvas_preview_publish_ms: &mut Option<u32>,
-    last_web_viewport_preview_publish_ms: &mut Option<u32>,
+    publication_cadence: &mut PublicationCadenceState,
     reuse_existing_frame: bool,
     refresh_existing_frame_metadata: bool,
     timing: FrameTiming,
@@ -112,7 +109,7 @@ pub(crate) fn publish_frame_updates(
     let spectrum_receivers = state.event_bus.spectrum_receiver_count();
     let publish_audio_level = should_publish_audio_level_event(
         elapsed_ms,
-        *last_audio_level_update_ms,
+        publication_cadence.last_audio_level_update_ms,
         event_subscribers > 0,
     );
     let audio_signal = (spectrum_receivers > 0 || publish_audio_level)
@@ -142,7 +139,7 @@ pub(crate) fn publish_frame_updates(
         audio,
         audio_signal.as_ref(),
         elapsed_ms,
-        last_audio_level_update_ms,
+        &mut publication_cadence.last_audio_level_update_ms,
         publish_audio_level,
     );
     let frame_data_us = micros_u32(frame_data_start.elapsed());
@@ -218,7 +215,7 @@ pub(crate) fn publish_frame_updates(
             changed
                 && preview_publication_due(
                     elapsed_ms,
-                    *last_canvas_preview_publish_ms,
+                    publication_cadence.last_canvas_preview_publish_ms,
                     canvas_receivers,
                     tracked_canvas_receivers,
                     state.preview_runtime.tracked_canvas_demand().max_fps,
@@ -239,7 +236,7 @@ pub(crate) fn publish_frame_updates(
             } else {
                 CanvasFrame::empty()
             };
-            *last_canvas_preview_publish_ms = Some(elapsed_ms);
+            publication_cadence.last_canvas_preview_publish_ms = Some(elapsed_ms);
             state
                 .preview_runtime
                 .record_canvas_publication(frame_number, elapsed_ms);
@@ -262,7 +259,7 @@ pub(crate) fn publish_frame_updates(
             changed
                 && preview_publication_due(
                     elapsed_ms,
-                    *last_screen_canvas_preview_publish_ms,
+                    publication_cadence.last_screen_canvas_preview_publish_ms,
                     screen_canvas_receivers,
                     tracked_screen_canvas_receivers,
                     state.preview_runtime.screen_canvas_demand().max_fps,
@@ -274,7 +271,7 @@ pub(crate) fn publish_frame_updates(
             } else {
                 CanvasFrame::empty()
             };
-            *last_screen_canvas_preview_publish_ms = Some(elapsed_ms);
+            publication_cadence.last_screen_canvas_preview_publish_ms = Some(elapsed_ms);
             state
                 .preview_runtime
                 .record_screen_canvas_publication(frame_number, elapsed_ms);
@@ -297,7 +294,7 @@ pub(crate) fn publish_frame_updates(
             changed
                 && preview_publication_due(
                     elapsed_ms,
-                    *last_web_viewport_preview_publish_ms,
+                    publication_cadence.last_web_viewport_preview_publish_ms,
                     web_viewport_canvas_receivers,
                     tracked_receivers,
                     state.preview_runtime.web_viewport_canvas_demand().max_fps,
@@ -316,7 +313,7 @@ pub(crate) fn publish_frame_updates(
             } else {
                 CanvasFrame::empty()
             };
-            *last_web_viewport_preview_publish_ms = Some(elapsed_ms);
+            publication_cadence.last_web_viewport_preview_publish_ms = Some(elapsed_ms);
             state
                 .preview_runtime
                 .record_web_viewport_canvas_publication(frame_number, elapsed_ms);

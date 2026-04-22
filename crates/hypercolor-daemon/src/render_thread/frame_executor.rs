@@ -107,10 +107,7 @@ pub(crate) async fn execute_frame(
             &mut render.static_surface_cache,
             &mut render.recycled_frame,
             &mut frame_loop.sleep_black_pushed,
-            &mut frame_loop.last_audio_level_update_ms,
-            &mut frame_loop.last_canvas_preview_publish_ms,
-            &mut frame_loop.last_screen_canvas_preview_publish_ms,
-            &mut frame_loop.last_web_viewport_preview_publish_ms,
+            &mut frame_loop.publication_cadence,
         )
         .await
         {
@@ -191,14 +188,14 @@ pub(crate) async fn execute_frame(
     }
     let canvas_preview_due = preview_publication_due(
         scene_snapshot.elapsed_ms,
-        frame_loop.last_canvas_preview_publish_ms,
+        frame_loop.publication_cadence.last_canvas_preview_publish_ms,
         state.preview_canvas_receiver_count(),
         state.preview_runtime.tracked_canvas_receiver_count(),
         state.preview_runtime.tracked_canvas_demand().max_fps,
     );
     let screen_canvas_preview_due = preview_publication_due(
         scene_snapshot.elapsed_ms,
-        frame_loop.last_screen_canvas_preview_publish_ms,
+        frame_loop.publication_cadence.last_screen_canvas_preview_publish_ms,
         state.event_bus.screen_canvas_receiver_count(),
         state.preview_runtime.screen_canvas_receiver_count(),
         state.preview_runtime.screen_canvas_demand().max_fps,
@@ -398,10 +395,7 @@ pub(crate) async fn execute_frame(
         render_stage.web_viewport_preview,
         frame_num_u32,
         scene_snapshot.elapsed_ms,
-        &mut frame_loop.last_audio_level_update_ms,
-        &mut frame_loop.last_canvas_preview_publish_ms,
-        &mut frame_loop.last_screen_canvas_preview_publish_ms,
-        &mut frame_loop.last_web_viewport_preview_publish_ms,
+        &mut frame_loop.publication_cadence,
         reuses_published_frame,
         refresh_reused_frame_metadata,
         FrameTiming {
