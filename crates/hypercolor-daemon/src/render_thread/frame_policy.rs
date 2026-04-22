@@ -5,6 +5,21 @@ use hypercolor_core::engine::{FpsTier, RenderLoop};
 use super::frame_admission::{FrameAdmissionController, FrameAdmissionSample};
 use super::frame_pacing::{FrameExecution, NextWake, SkipDecision};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FrameThrottleKind {
+    Idle,
+    SessionSleep,
+}
+
+impl FrameThrottleKind {
+    const fn delay(self) -> Duration {
+        match self {
+            Self::Idle => Duration::from_millis(120),
+            Self::SessionSleep => Duration::from_millis(250),
+        }
+    }
+}
+
 pub(crate) struct FramePolicy {
     admission: FrameAdmissionController,
 }
@@ -34,14 +49,14 @@ impl FramePolicy {
         }
     }
 
-    pub(crate) fn complete_delay_frame(
+    pub(crate) fn complete_throttle_frame(
         &mut self,
         render_loop: &mut RenderLoop,
-        delay: Duration,
+        throttle: FrameThrottleKind,
     ) -> FrameExecution {
         let _ = render_loop.frame_complete();
         FrameExecution {
-            next_wake: NextWake::Delay(delay),
+            next_wake: NextWake::Delay(throttle.delay()),
             next_skip_decision: SkipDecision::None,
         }
     }
@@ -54,7 +69,7 @@ mod tests {
 
     use hypercolor_core::engine::{FpsTier, RenderLoop};
 
-    use super::FramePolicy;
+    use super::{FramePolicy, FrameThrottleKind};
     use crate::render_thread::frame_admission::FrameAdmissionSample;
     use crate::render_thread::frame_pacing::{NextWake, SkipDecision};
 
@@ -104,18 +119,36 @@ mod tests {
     }
 
     #[test]
-    fn delayed_frame_completion_returns_delay_without_skip() {
+    fn idle_throttle_completion_returns_idle_delay_without_skip() {
         let mut render_loop = RenderLoop::new(60);
         render_loop.start();
         assert!(render_loop.tick());
         thread::sleep(Duration::from_millis(1));
 
         let mut policy = FramePolicy::new(FpsTier::Full);
-        let execution = policy.complete_delay_frame(&mut render_loop, Duration::from_millis(120));
+        let execution = policy.complete_throttle_frame(&mut render_loop, FrameThrottleKind::Idle);
 
         assert!(matches!(
             execution.next_wake,
             NextWake::Delay(delay) if delay == Duration::from_millis(120)
+        ));
+        assert_eq!(execution.next_skip_decision, SkipDecision::None);
+    }
+
+    #[test]
+    fn session_sleep_throttle_completion_returns_sleep_delay_without_skip() {
+        let mut render_loop = RenderLoop::new(60);
+        render_loop.start();
+        assert!(render_loop.tick());
+        thread::sleep(Duration::from_millis(1));
+
+        let mut policy = FramePolicy::new(FpsTier::Full);
+        let execution =
+            policy.complete_throttle_frame(&mut render_loop, FrameThrottleKind::SessionSleep);
+
+        assert!(matches!(
+            execution.next_wake,
+            NextWake::Delay(delay) if delay == Duration::from_millis(250)
         ));
         assert_eq!(execution.next_skip_decision, SkipDecision::None);
     }

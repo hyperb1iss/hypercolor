@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use tracing::{debug, trace};
 
@@ -9,16 +9,13 @@ use hypercolor_types::session::OffOutputBehavior;
 
 use super::frame_io::publish_frame_updates;
 use super::frame_pacing::FrameExecution;
-use super::frame_policy::FramePolicy;
+use super::frame_policy::{FramePolicy, FrameThrottleKind};
 use super::frame_scheduler::FrameSceneSnapshot;
 use super::frame_sources::static_surface;
 use super::pipeline_runtime::{CachedStaticSurface, RenderSurfaceSnapshot};
 use super::{RenderThreadState, micros_between, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
 use crate::performance::{CompositorBackendKind, FrameTimeline, LatestFrameMetrics};
-
-const IDLE_THROTTLE_SLEEP: Duration = Duration::from_millis(120);
-const SESSION_SLEEP_THROTTLE_SLEEP: Duration = Duration::from_millis(250);
 
 pub(crate) async fn maybe_idle_throttle(
     state: &RenderThreadState,
@@ -42,7 +39,9 @@ pub(crate) async fn maybe_idle_throttle(
 
     if can_idle_throttle && *idle_black_pushed {
         let mut render_loop = state.render_loop.write().await;
-        return Some(frame_policy.complete_delay_frame(&mut render_loop, IDLE_THROTTLE_SLEEP));
+        return Some(
+            frame_policy.complete_throttle_frame(&mut render_loop, FrameThrottleKind::Idle),
+        );
     }
 
     None
@@ -72,7 +71,8 @@ pub(crate) async fn maybe_sleep_throttle(
     if *sleep_black_pushed {
         let mut render_loop = state.render_loop.write().await;
         return Some(
-            frame_policy.complete_delay_frame(&mut render_loop, SESSION_SLEEP_THROTTLE_SLEEP),
+            frame_policy
+                .complete_throttle_frame(&mut render_loop, FrameThrottleKind::SessionSleep),
         );
     }
 
@@ -122,7 +122,8 @@ pub(crate) async fn maybe_sleep_throttle(
         *sleep_black_pushed = true;
         let mut render_loop = state.render_loop.write().await;
         return Some(
-            frame_policy.complete_delay_frame(&mut render_loop, SESSION_SLEEP_THROTTLE_SLEEP),
+            frame_policy
+                .complete_throttle_frame(&mut render_loop, FrameThrottleKind::SessionSleep),
         );
     }
 
@@ -263,13 +264,9 @@ pub(crate) async fn maybe_sleep_throttle(
 
     *sleep_black_pushed = true;
     let mut render_loop = state.render_loop.write().await;
-    Some(frame_policy.complete_delay_frame(&mut render_loop, SESSION_SLEEP_THROTTLE_SLEEP))
+    Some(frame_policy.complete_throttle_frame(&mut render_loop, FrameThrottleKind::SessionSleep))
 }
 
 pub(crate) fn should_idle_throttle(effect_running: bool, screen_capture_active: bool) -> bool {
-    if effect_running || screen_capture_active {
-        return false;
-    }
-
-    true
+    !effect_running && !screen_capture_active
 }
