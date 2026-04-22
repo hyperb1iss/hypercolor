@@ -74,7 +74,7 @@ struct RetainedRenderGroupFrame {
 struct RetainedDirectGroupFrame {
     frame: GroupCanvasFrame,
     rendered_at_ms: u32,
-    registry_generation: u64,
+    dependency_key: SceneDependencyKey,
 }
 
 pub(crate) struct RenderGroupRuntime {
@@ -159,7 +159,10 @@ impl RenderGroupRuntime {
             .sum()
     }
 
-    pub(crate) fn reuse_scene(&self, dependency_key: SceneDependencyKey) -> Option<RenderGroupResult> {
+    pub(crate) fn reuse_scene(
+        &self,
+        dependency_key: SceneDependencyKey,
+    ) -> Option<RenderGroupResult> {
         let retained = self.retained_frame.as_ref()?;
         if retained.dependency_key != dependency_key {
             return None;
@@ -203,7 +206,7 @@ impl RenderGroupRuntime {
             groups,
             elapsed_ms,
             display_group_target_fps,
-            dependency_key.dependency_generation,
+            dependency_key,
             registry,
             delta_secs,
             audio,
@@ -230,7 +233,7 @@ impl RenderGroupRuntime {
                     group,
                     elapsed_ms,
                     display_group_target_fps,
-                    dependency_key.dependency_generation,
+                    dependency_key,
                 ) {
                     active_group_canvas_ids.push(group.id);
                     group_canvases.push((group.id, retained));
@@ -265,12 +268,7 @@ impl RenderGroupRuntime {
                         .clone()
                         .expect("direct display group should carry a display target"),
                 };
-                self.retain_direct_group_frame(
-                    group.id,
-                    elapsed_ms,
-                    dependency_key.dependency_generation,
-                    &frame,
-                );
+                self.retain_direct_group_frame(group.id, elapsed_ms, dependency_key, &frame);
                 group_canvases.push((group.id, frame));
                 continue;
             }
@@ -423,7 +421,7 @@ impl RenderGroupRuntime {
         groups: &[RenderGroup],
         elapsed_ms: u32,
         display_group_target_fps: &HashMap<RenderGroupId, u32>,
-        registry_generation: u64,
+        dependency_key: SceneDependencyKey,
         registry: &EffectRegistry,
         delta_secs: f32,
         audio: &AudioData,
@@ -481,7 +479,7 @@ impl RenderGroupRuntime {
                 group,
                 elapsed_ms,
                 display_group_target_fps,
-                registry_generation,
+                dependency_key,
             ) {
                 active_group_canvas_ids.push(group.id);
                 group_canvases.push((group.id, retained));
@@ -517,7 +515,7 @@ impl RenderGroupRuntime {
                     .clone()
                     .expect("direct display group should carry a display target"),
             };
-            self.retain_direct_group_frame(group.id, elapsed_ms, registry_generation, &frame);
+            self.retain_direct_group_frame(group.id, elapsed_ms, dependency_key, &frame);
             group_canvases.push((group.id, frame));
         }
         zones.clear();
@@ -586,7 +584,7 @@ impl RenderGroupRuntime {
         group: &RenderGroup,
         elapsed_ms: u32,
         display_group_target_fps: &HashMap<RenderGroupId, u32>,
-        registry_generation: u64,
+        dependency_key: SceneDependencyKey,
     ) -> Option<GroupCanvasFrame> {
         if !group_publishes_direct_canvas(group) || !group.layout.zones.is_empty() {
             return None;
@@ -594,7 +592,7 @@ impl RenderGroupRuntime {
 
         let target_fps = *display_group_target_fps.get(&group.id)?;
         let retained = self.retained_direct_group_frames.get(&group.id)?;
-        if retained.registry_generation != registry_generation {
+        if retained.dependency_key != dependency_key {
             return None;
         }
         let frame_interval_ms = 1000_u32.div_ceil(target_fps.max(1));
@@ -606,7 +604,7 @@ impl RenderGroupRuntime {
         &mut self,
         group_id: RenderGroupId,
         elapsed_ms: u32,
-        registry_generation: u64,
+        dependency_key: SceneDependencyKey,
         frame: &GroupCanvasFrame,
     ) {
         self.retained_direct_group_frames.insert(
@@ -614,7 +612,7 @@ impl RenderGroupRuntime {
             RetainedDirectGroupFrame {
                 frame: frame.clone(),
                 rendered_at_ms: elapsed_ms,
-                registry_generation,
+                dependency_key,
             },
         );
     }
@@ -1158,11 +1156,9 @@ mod tests {
     fn canvas_from_scene_frame(frame: &ProducerFrame) -> Canvas {
         match frame {
             ProducerFrame::Canvas(canvas) => canvas.clone(),
-            ProducerFrame::Surface(surface) => Canvas::from_rgba(
-                surface.rgba_bytes(),
-                surface.width(),
-                surface.height(),
-            ),
+            ProducerFrame::Surface(surface) => {
+                Canvas::from_rgba(surface.rgba_bytes(), surface.width(), surface.height())
+            }
         }
     }
 
@@ -1788,7 +1784,8 @@ mod tests {
         let reused = runtime
             .reuse_scene(SceneDependencyKey::new(1, registry.generation()))
             .expect("retained multi-group scene should be reusable");
-        let LedSamplingStrategy::SparkleFlinger(reused_spatial_engine) = reused.led_sampling_strategy
+        let LedSamplingStrategy::SparkleFlinger(reused_spatial_engine) =
+            reused.led_sampling_strategy
         else {
             panic!("retained multi-group scene should stay scene-canvas owned");
         };
@@ -2003,6 +2000,53 @@ mod tests {
             second_frame.surface.storage_identity() != first_frame.surface.storage_identity()
                 || second_frame.surface.generation() != first_frame.surface.generation(),
             "the retained direct surface should not be reused across registry generations"
+        );
+    }
+
+    #[test]
+    fn retained_direct_canvas_invalidates_when_groups_revision_changes() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let registry = builtin_registry();
+        let solid_id = builtin_effect_id(&registry, "solid_color");
+        let mut group = sample_display_group(4, 4);
+        group.effect_id = Some(solid_id);
+        group.controls =
+            HashMap::from([("color".into(), ControlValue::Color([0.0, 1.0, 0.0, 1.0]))]);
+        let display_group_target_fps = HashMap::from([(group.id, 30)]);
+        let mut zones = Vec::new();
+
+        let first = render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&group),
+            1,
+            0,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("display group should render");
+        let [(_, first_frame)] = &first.group_canvases[..] else {
+            panic!("display group should publish a direct surface");
+        };
+
+        let second = render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&group),
+            2,
+            10,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("group revision change should bypass retained direct-canvas reuse");
+        let [(_, second_frame)] = &second.group_canvases[..] else {
+            panic!("display group should keep publishing a direct surface");
+        };
+
+        assert!(
+            second_frame.surface.storage_identity() != first_frame.surface.storage_identity()
+                || second_frame.surface.generation() != first_frame.surface.generation(),
+            "the retained direct surface should not be reused across group revisions"
         );
     }
 
