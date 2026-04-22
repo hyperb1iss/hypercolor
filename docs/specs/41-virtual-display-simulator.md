@@ -35,7 +35,7 @@ Display Overlay System (40)
 
 Hypercolor already has two useful visual surfaces:
 
-- the **global canvas preview**, which shows the effect renderer output
+- the **scene canvas preview**, which shows the canonical shared LED scene
 - the **physical display output path**, which crops the canvas through a
   display viewport, applies overlays, brightness, and transport-specific
   encoding
@@ -132,7 +132,7 @@ different question.
 
 ### Option A — UI-Only Crop Preview
 
-Add a preview panel that crops the global canvas according to a selected
+Add a preview panel that crops the scene canvas according to a selected
 display zone.
 
 **Pros**
@@ -230,8 +230,8 @@ the highest-value inspection point:
 
 ### 5.4 Preview Surface
 
-The simulator preview surface should be separate from the global canvas
-preview. The global canvas answers "what did the effect render?" The simulator
+The simulator preview surface should be separate from the scene canvas
+preview. The scene canvas answers "what did the active LED scene render?" The simulator
 surface answers "what would this display actually show?"
 
 Initial browser UX can be as small as:

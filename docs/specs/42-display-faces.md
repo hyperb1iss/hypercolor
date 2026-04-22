@@ -1043,7 +1043,7 @@ TurboJPEG handles at <5ms for 480×480.
 
 Add a `face_fps_cap` config field (default 30, max 60) and apply it when
 `DisplayCanvasSource::GroupDirect` is active. Keep the 15 fps cap for the
-global canvas path (viewport remapping + overlay compositing is still
+scene-canvas path (viewport remapping + overlay compositing is still
 heavy).
 
 ### 16.2 Render Budget Realism
@@ -1140,7 +1140,7 @@ violate this at activation time.
 ### 16.8 DisplayOutputState Scene Visibility
 
 `DisplayOutputState` currently has **no scene or RenderGroup inputs**. It
-knows about devices, spatial layout, and the global canvas — but not
+knows about devices, spatial layout, and the scene canvas — but not
 which RenderGroup targets which display.
 
 **Resolution:** Add a `watch::Receiver<Arc<ActiveFaceAssignments>>` to
