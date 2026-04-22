@@ -7,7 +7,7 @@ use tracing::{info, trace, warn};
 use hypercolor_core::types::event::FrameTiming;
 
 use super::frame_composer::{ComposeRequest, compose_frame};
-use super::frame_io::{publish_frame_updates, sample_inputs};
+use super::frame_io::publish_frame_updates;
 use super::frame_policy::{FrameAdmissionSample, FrameExecution, SkipDecision};
 use super::frame_sampling::{
     LedSamplingOutcome, resolve_led_sampling, try_finish_deferred_zone_sampling,
@@ -44,10 +44,9 @@ pub(crate) async fn execute_frame(
     let frame_loop = &mut runtime.frame_loop;
     let render = &mut runtime.render;
     let frame_start = Instant::now();
-    let frame_interval = frame_start.saturating_duration_since(frame_loop.last_tick);
-    let delta_secs = frame_interval.as_secs_f32();
-    frame_loop.last_tick = frame_start;
-    let frame_interval_us = micros_u32(frame_interval);
+    let frame_tick = frame_loop.clock.advance(frame_start);
+    let delta_secs = frame_tick.delta_secs;
+    let frame_interval_us = frame_tick.frame_interval_us;
     let wake_late_us = micros_u32(frame_start.saturating_duration_since(scheduled_start));
     let reused_inputs = matches!(
         skip_decision,
@@ -133,13 +132,10 @@ pub(crate) async fn execute_frame(
     }
 
     let input_start = Instant::now();
-    let inputs = match skip_decision {
-        SkipDecision::None => {
-            frame_loop.cached_inputs = sample_inputs(state, delta_secs).await;
-            &mut frame_loop.cached_inputs
-        }
-        SkipDecision::ReuseInputs | SkipDecision::ReuseCanvas => &mut frame_loop.cached_inputs,
-    };
+    let inputs = frame_loop
+        .inputs
+        .inputs_for_frame(state, skip_decision, delta_secs)
+        .await;
     let input_done_at = Instant::now();
     let input_us = micros_between(input_start, input_done_at);
     let input_done_us = micros_between(frame_start, input_done_at);

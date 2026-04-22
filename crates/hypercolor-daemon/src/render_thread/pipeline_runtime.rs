@@ -3,12 +3,13 @@ use std::time::Instant;
 
 use anyhow::Result;
 use hypercolor_core::engine::FpsTier;
+use hypercolor_core::input::{InputData, InteractionData, ScreenData};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor,
 };
-use hypercolor_core::types::event::FrameData;
+use hypercolor_core::types::event::{FrameData, HypercolorEvent};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::SceneId;
@@ -16,10 +17,11 @@ use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::SpatialLayout;
 use std::sync::Arc;
 
-use super::RenderThreadState;
+use super::{RenderThreadState, micros_u32};
 use super::capture_demand::CaptureDemandState;
 use super::composition_planner::CompositionPlanner;
 use super::desired_render_surface_slots;
+use super::frame_policy::SkipDecision;
 use super::frame_policy::FramePolicy;
 use super::producer_queue::ProducerQueue;
 use super::render_groups::RenderGroupRuntime;
@@ -39,11 +41,107 @@ pub(crate) struct FrameInputs {
     pub(crate) screen_sector_grid: Vec<[u8; 3]>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FrameTick {
+    pub(crate) frame_interval_us: u32,
+    pub(crate) delta_secs: f32,
+}
+
+#[derive(Debug)]
+pub(crate) struct FrameClockState {
+    last_tick: Instant,
+}
+
+impl Default for FrameClockState {
+    fn default() -> Self {
+        Self {
+            last_tick: Instant::now(),
+        }
+    }
+}
+
+impl FrameClockState {
+    pub(crate) fn advance(&mut self, frame_start: Instant) -> FrameTick {
+        let frame_interval = frame_start.saturating_duration_since(self.last_tick);
+        self.last_tick = frame_start;
+        FrameTick {
+            frame_interval_us: micros_u32(frame_interval),
+            delta_secs: frame_interval.as_secs_f32(),
+        }
+    }
+}
+
+pub(crate) struct InputReuseState {
+    cached_inputs: FrameInputs,
+}
+
+impl Default for InputReuseState {
+    fn default() -> Self {
+        Self {
+            cached_inputs: FrameInputs::silence(),
+        }
+    }
+}
+
+impl InputReuseState {
+    pub(crate) async fn inputs_for_frame<'a>(
+        &'a mut self,
+        state: &RenderThreadState,
+        skip_decision: SkipDecision,
+        delta_secs: f32,
+    ) -> &'a mut FrameInputs {
+        if matches!(skip_decision, SkipDecision::None) {
+            self.cached_inputs = FrameInputs::sample(state, delta_secs).await;
+        }
+
+        &mut self.cached_inputs
+    }
+}
+
 impl FrameInputs {
+    pub(crate) async fn sample(state: &RenderThreadState, delta_secs: f32) -> Self {
+        let (samples, events) = {
+            let mut input_manager = state.input_manager.lock().await;
+            (
+                input_manager.sample_all_with_delta_secs(delta_secs),
+                input_manager.drain_events(),
+            )
+        };
+
+        for event in events {
+            state
+                .event_bus
+                .publish(HypercolorEvent::InputEventReceived { event });
+        }
+
+        let mut audio = AudioData::silence();
+        let mut interaction = InteractionData::default();
+        let mut screen_data: Option<ScreenData> = None;
+        let mut sensors = Arc::new(SystemSnapshot::empty());
+        for sample in samples {
+            match sample {
+                InputData::Audio(snapshot) => audio = snapshot,
+                InputData::Interaction(snapshot) => interaction = snapshot,
+                InputData::Screen(snapshot) => screen_data = Some(snapshot),
+                InputData::Sensors(snapshot) => sensors = snapshot,
+                InputData::None => {}
+            }
+        }
+
+        Self {
+            audio,
+            interaction,
+            screen_data,
+            sensors,
+            screen_canvas: None,
+            screen_sector_grid: Vec::new(),
+        }
+    }
+
     pub(crate) fn silence() -> Self {
         Self {
             audio: AudioData::silence(),
-            interaction: hypercolor_core::input::InteractionData::default(),
+            interaction: InteractionData::default(),
             screen_data: None,
             sensors: Arc::new(SystemSnapshot::empty()),
             screen_canvas: None,
@@ -265,8 +363,8 @@ fn preview_publication_due(
 }
 
 pub(crate) struct FrameLoopState {
-    pub(crate) cached_inputs: FrameInputs,
-    pub(crate) last_tick: Instant,
+    pub(crate) clock: FrameClockState,
+    pub(crate) inputs: InputReuseState,
     pub(crate) throttle: ThrottleState,
     pub(crate) publication_cadence: PublicationCadenceState,
     pub(crate) capture_demand: CaptureDemandState,
@@ -425,8 +523,8 @@ impl PipelineRuntime {
         Ok(Self {
             scene_snapshot_cache: SceneSnapshotCache::new(),
             frame_loop: FrameLoopState {
-                cached_inputs: FrameInputs::silence(),
-                last_tick: Instant::now(),
+                clock: FrameClockState::default(),
+                inputs: InputReuseState::default(),
                 throttle: ThrottleState::default(),
                 publication_cadence: PublicationCadenceState::default(),
                 capture_demand: CaptureDemandState::default(),

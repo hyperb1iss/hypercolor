@@ -1,16 +1,13 @@
 use std::time::Instant;
 
 use hypercolor_core::bus::CanvasFrame;
-use hypercolor_core::input::{InputData, InteractionData, ScreenData};
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface, PublishedSurfaceStorageIdentity};
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
 use hypercolor_types::scene::RenderGroupId;
-use hypercolor_types::sensor::SystemSnapshot;
-use std::sync::Arc;
 use tokio::sync::watch;
 
-use super::pipeline_runtime::{FrameInputs, PublicationCadenceState};
+use super::pipeline_runtime::PublicationCadenceState;
 use super::render_groups::GroupCanvasFrame;
 use super::{RenderThreadState, micros_u32, usize_to_u32};
 
@@ -39,45 +36,6 @@ struct StableCanvasFrameIdentity {
     storage: PublishedSurfaceStorageIdentity,
     width: u32,
     height: u32,
-}
-
-pub(crate) async fn sample_inputs(state: &RenderThreadState, delta_secs: f32) -> FrameInputs {
-    let (samples, events) = {
-        let mut input_manager = state.input_manager.lock().await;
-        (
-            input_manager.sample_all_with_delta_secs(delta_secs),
-            input_manager.drain_events(),
-        )
-    };
-
-    for event in events {
-        state
-            .event_bus
-            .publish(HypercolorEvent::InputEventReceived { event });
-    }
-
-    let mut audio = AudioData::silence();
-    let mut interaction = InteractionData::default();
-    let mut screen_data: Option<ScreenData> = None;
-    let mut sensors = Arc::new(SystemSnapshot::empty());
-    for sample in samples {
-        match sample {
-            InputData::Audio(snapshot) => audio = snapshot,
-            InputData::Interaction(snapshot) => interaction = snapshot,
-            InputData::Screen(snapshot) => screen_data = Some(snapshot),
-            InputData::Sensors(snapshot) => sensors = snapshot,
-            InputData::None => {}
-        }
-    }
-
-    FrameInputs {
-        audio,
-        interaction,
-        screen_data,
-        sensors,
-        screen_canvas: None,
-        screen_sector_grid: Vec::new(),
-    }
 }
 
 #[expect(
