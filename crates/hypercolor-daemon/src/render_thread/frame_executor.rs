@@ -6,6 +6,7 @@ use tracing::{info, trace, warn};
 
 use hypercolor_core::types::event::FrameTiming;
 
+use super::capture_demand::{reconcile_audio_capture, reconcile_screen_capture};
 use super::frame_composer::{ComposeRequest, compose_frame};
 use super::frame_io::{preview_publication_due, publish_frame_updates, sample_inputs};
 use super::frame_policy::{FrameAdmissionSample, FrameExecution, SkipDecision};
@@ -13,7 +14,6 @@ use super::frame_sampling::{
     LedSamplingOutcome, resolve_led_sampling, try_finish_deferred_zone_sampling,
     try_finish_retired_zone_sampling,
 };
-use super::frame_state::{reconcile_audio_capture, reconcile_screen_capture};
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
 use super::pipeline_runtime::PipelineRuntime;
 use super::scene_snapshot::{build_frame_scene_snapshot, refresh_effect_scene_snapshot};

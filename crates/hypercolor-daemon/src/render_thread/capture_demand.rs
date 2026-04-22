@@ -1,6 +1,7 @@
 use tracing::warn;
 
 use super::RenderThreadState;
+
 pub(crate) async fn reconcile_audio_capture(
     state: &RenderThreadState,
     desired_active: bool,

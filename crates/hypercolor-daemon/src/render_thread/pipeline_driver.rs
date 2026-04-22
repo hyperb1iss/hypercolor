@@ -4,10 +4,10 @@ use tracing::{debug, info};
 
 use crate::deadline::wait_until_deadline;
 
+use super::capture_demand::{reconcile_audio_capture, reconcile_screen_capture};
 use super::RenderThreadState;
 use super::frame_executor::execute_frame;
 use super::frame_policy::SkipDecision;
-use super::frame_state::{reconcile_audio_capture, reconcile_screen_capture};
 use super::pipeline_runtime::PipelineRuntime;
 
 const PAUSED_POLL_INTERVAL: Duration = Duration::from_millis(50);

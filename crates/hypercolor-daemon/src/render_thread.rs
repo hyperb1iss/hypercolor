@@ -16,6 +16,7 @@
 //! ```
 
 mod composition_planner;
+mod capture_demand;
 mod frame_admission;
 mod frame_composer;
 mod frame_executor;
@@ -23,7 +24,6 @@ mod frame_io;
 mod frame_policy;
 mod frame_sampling;
 mod frame_sources;
-mod frame_state;
 mod frame_throttle;
 mod pipeline_driver;
 mod pipeline_runtime;
