@@ -197,10 +197,7 @@ async fn current_effect_scene_snapshot(
     screen_capture_configured: bool,
 ) -> EffectSceneSnapshot {
     let registry = state.effect_registry.read().await;
-    let dependency_key = SceneDependencyKey::new(
-        scene_runtime.active_render_groups_revision,
-        registry.generation(),
-    );
+    let dependency_key = scene_runtime.dependency_key(registry.generation());
     if let Some(cached) = last_render_group_demand.as_ref()
         && cached.dependency_key == dependency_key
         && cached.screen_capture_configured == screen_capture_configured

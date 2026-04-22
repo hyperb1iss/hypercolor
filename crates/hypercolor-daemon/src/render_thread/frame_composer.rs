@@ -123,13 +123,14 @@ impl ComposeContext<'_> {
         let producer_start = Instant::now();
         let (render_group_result, effect_retained) = {
             let registry = self.state.effect_registry.read().await;
-            let live_registry_generation = registry.generation();
+            let live_dependency_key = self
+                .scene_snapshot
+                .scene_runtime
+                .dependency_key(registry.generation());
             if self.skip_decision == SkipDecision::ReuseCanvas {
                 if let Some(retained) = self.render.render_group_runtime.reuse_scene(
-                    self.scene_snapshot
-                        .scene_runtime
-                        .active_render_groups_revision,
-                    live_registry_generation,
+                    live_dependency_key.groups_revision,
+                    live_dependency_key.dependency_generation,
                 ) {
                     (Ok(retained), true)
                 } else {

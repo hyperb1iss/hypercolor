@@ -62,6 +62,13 @@ impl SceneRuntimeSnapshot {
     pub(crate) fn active_render_group_count(&self) -> u32 {
         self.active_render_group_count
     }
+
+    pub(crate) const fn dependency_key(
+        &self,
+        dependency_generation: u64,
+    ) -> SceneDependencyKey {
+        SceneDependencyKey::new(self.active_render_groups_revision, dependency_generation)
+    }
 }
 
 #[derive(Debug, Clone)]
