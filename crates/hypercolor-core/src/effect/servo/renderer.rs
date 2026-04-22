@@ -600,14 +600,6 @@ fn animation_cadence(metadata: &EffectMetadata) -> AnimationCadence {
         return AnimationCadence::Fixed(DEFAULT_DISPLAY_FPS_CAP);
     }
 
-    if metadata
-        .tags
-        .iter()
-        .any(|tag| tag.eq_ignore_ascii_case("canvas2d"))
-    {
-        return AnimationCadence::Fixed(DEFAULT_EFFECT_FPS_CAP);
-    }
-
     AnimationCadence::MatchRenderLoop
 }
 
@@ -720,12 +712,6 @@ mod tests {
         metadata
     }
 
-    fn canvas2d_html_metadata(path: PathBuf) -> EffectMetadata {
-        let mut metadata = html_metadata(path);
-        metadata.tags.push("canvas2d".to_owned());
-        metadata
-    }
-
     fn attach_renderer_session(
         renderer: &mut ServoRenderer,
         worker: &crate::effect::servo::worker::ServoWorker,
@@ -818,15 +804,6 @@ mod tests {
     #[test]
     fn display_animation_cadence_stays_fixed_at_30_fps() {
         let metadata = display_html_metadata(PathBuf::from("display.html"));
-
-        assert_eq!(animation_cadence(&metadata), AnimationCadence::Fixed(30));
-        assert_eq!(animation_cadence(&metadata).fps_cap(1.0 / 60.0), 30);
-        assert_eq!(animation_cadence(&metadata).fps_cap(1.0 / 20.0), 30);
-    }
-
-    #[test]
-    fn canvas2d_animation_cadence_stays_fixed_at_30_fps() {
-        let metadata = canvas2d_html_metadata(PathBuf::from("canvas.html"));
 
         assert_eq!(animation_cadence(&metadata), AnimationCadence::Fixed(30));
         assert_eq!(animation_cadence(&metadata).fps_cap(1.0 / 60.0), 30);

@@ -583,20 +583,6 @@ fn read_framebuffer_into_canvas(session: &ServoSession, width: i32, height: i32)
     Ok(Canvas::from_vec(pixels, width_u32, height_u32))
 }
 
-fn with_temporarily_unthrottled<T, E>(
-    mut set_throttled: impl FnMut(bool) -> std::result::Result<(), E>,
-    run: impl FnOnce() -> std::result::Result<T, E>,
-) -> std::result::Result<T, E> {
-    set_throttled(false)?;
-    let result = run();
-    let restore_result = set_throttled(true);
-    match (result, restore_result) {
-        (Err(error), _) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
-        (Ok(value), Ok(())) => Ok(value),
-    }
-}
-
 fn collect_gl_errors_until_clear(no_error: u32, mut next_error: impl FnMut() -> u32) -> Vec<u32> {
     let mut errors = Vec::new();
     for _ in 0..MAX_GL_ERROR_BATCH {
@@ -1261,20 +1247,10 @@ impl ServoWorkerRuntime {
             self.evaluate_scripts(session_id, scripts)?;
             timings.evaluate_scripts_us = elapsed_micros(evaluate_scripts_start);
 
-            // Let timers/RAF advance for one daemon-driven frame after scripts
-            // have injected controls/audio for this tick, then re-throttle so
-            // effect-side RAF/timer loops do not free-run between daemon ticks.
+            // Let timers/RAF advance after this tick's control/audio injection.
             let event_loop_start = Instant::now();
-            with_temporarily_unthrottled(
-                |throttled| {
-                    self.active_webview(session_id)?.set_throttled(throttled);
-                    Ok::<(), anyhow::Error>(())
-                },
-                || {
-                    self.servo.spin_event_loop();
-                    Ok::<(), anyhow::Error>(())
-                },
-            )?;
+            self.active_webview(session_id)?.set_throttled(false);
+            self.servo.spin_event_loop();
             timings.event_loop_us = elapsed_micros(event_loop_start);
             let frame_ready = self.session(session_id)?.delegate.take_frame_ready();
             if frame_ready {
@@ -1995,37 +1971,6 @@ mod tests {
         let mut pixels = vec![0u8; 16];
         flip_rows_in_place(&mut pixels, 0);
         assert_eq!(pixels, vec![0u8; 16]);
-    }
-
-    #[test]
-    fn temporarily_unthrottled_restores_throttle_after_success() {
-        let mut transitions = Vec::new();
-        let result = with_temporarily_unthrottled(
-            |throttled| {
-                transitions.push(throttled);
-                Ok::<(), &'static str>(())
-            },
-            || Ok::<_, &'static str>("ok"),
-        )
-        .expect("temporary unthrottle should succeed");
-
-        assert_eq!(result, "ok");
-        assert_eq!(transitions, vec![false, true]);
-    }
-
-    #[test]
-    fn temporarily_unthrottled_restores_throttle_after_failure() {
-        let mut transitions = Vec::new();
-        let result = with_temporarily_unthrottled(
-            |throttled| {
-                transitions.push(throttled);
-                Ok::<(), &'static str>(())
-            },
-            || Err::<(), &'static str>("boom"),
-        );
-
-        assert_eq!(result, Err("boom"));
-        assert_eq!(transitions, vec![false, true]);
     }
 
     #[test]
