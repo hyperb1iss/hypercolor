@@ -4,7 +4,6 @@ use tracing::{debug, info};
 
 use crate::deadline::wait_until_deadline;
 
-use super::capture_demand::{reconcile_audio_capture, reconcile_screen_capture};
 use super::RenderThreadState;
 use super::frame_executor::execute_frame;
 use super::frame_policy::SkipDecision;
@@ -64,16 +63,14 @@ async fn handle_inactive_render_loop(
 }
 
 async fn clear_capture_demand(state: &RenderThreadState, runtime: &mut PipelineRuntime) {
-    reconcile_audio_capture(
-        state,
-        false,
-        &mut runtime.frame_loop.last_audio_capture_active,
-    )
-    .await;
-    reconcile_screen_capture(
-        state,
-        false,
-        &mut runtime.frame_loop.last_screen_capture_active,
-    )
-    .await;
+    runtime
+        .frame_loop
+        .capture_demand
+        .reconcile_audio(state, false)
+        .await;
+    runtime
+        .frame_loop
+        .capture_demand
+        .reconcile_screen(state, false)
+        .await;
 }

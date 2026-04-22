@@ -17,6 +17,7 @@ use hypercolor_types::spatial::SpatialLayout;
 use std::sync::Arc;
 
 use super::RenderThreadState;
+use super::capture_demand::CaptureDemandState;
 use super::composition_planner::CompositionPlanner;
 use super::desired_render_surface_slots;
 use super::frame_policy::FramePolicy;
@@ -85,8 +86,7 @@ pub(crate) struct FrameLoopState {
     pub(crate) last_canvas_preview_publish_ms: Option<u32>,
     pub(crate) last_screen_canvas_preview_publish_ms: Option<u32>,
     pub(crate) last_web_viewport_preview_publish_ms: Option<u32>,
-    pub(crate) last_audio_capture_active: Option<bool>,
-    pub(crate) last_screen_capture_active: Option<bool>,
+    pub(crate) capture_demand: CaptureDemandState,
     pub(crate) last_output_brightness_bits: Option<u32>,
     pub(crate) last_device_output_brightness_generation: Option<u64>,
 }
@@ -251,8 +251,7 @@ impl PipelineRuntime {
                 last_canvas_preview_publish_ms: None,
                 last_screen_canvas_preview_publish_ms: None,
                 last_web_viewport_preview_publish_ms: None,
-                last_audio_capture_active: None,
-                last_screen_capture_active: None,
+                capture_demand: CaptureDemandState::default(),
                 last_output_brightness_bits: None,
                 last_device_output_brightness_generation: None,
             },

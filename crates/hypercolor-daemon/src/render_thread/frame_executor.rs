@@ -6,7 +6,6 @@ use tracing::{info, trace, warn};
 
 use hypercolor_core::types::event::FrameTiming;
 
-use super::capture_demand::{reconcile_audio_capture, reconcile_screen_capture};
 use super::frame_composer::{ComposeRequest, compose_frame};
 use super::frame_io::{preview_publication_due, publish_frame_updates, sample_inputs};
 use super::frame_policy::{FrameAdmissionSample, FrameExecution, SkipDecision};
@@ -81,18 +80,20 @@ pub(crate) async fn execute_frame(
     )
     .await;
     let output_power = scene_snapshot.output_power;
-    reconcile_audio_capture(
-        state,
-        !output_power.sleeping && scene_snapshot.effect_demand.audio_capture_active,
-        &mut frame_loop.last_audio_capture_active,
-    )
-    .await;
-    reconcile_screen_capture(
-        state,
-        !output_power.sleeping && scene_snapshot.effect_demand.screen_capture_active,
-        &mut frame_loop.last_screen_capture_active,
-    )
-    .await;
+    frame_loop
+        .capture_demand
+        .reconcile_audio(
+            state,
+            !output_power.sleeping && scene_snapshot.effect_demand.audio_capture_active,
+        )
+        .await;
+    frame_loop
+        .capture_demand
+        .reconcile_screen(
+            state,
+            !output_power.sleeping && scene_snapshot.effect_demand.screen_capture_active,
+        )
+        .await;
     let scene_snapshot_done_us = micros_u32(frame_start.elapsed());
     if output_power.sleeping {
         let sleep_render_surfaces =
@@ -128,18 +129,20 @@ pub(crate) async fn execute_frame(
     .await
     {
         let refreshed_demand = scene_snapshot.effect_demand;
-        reconcile_audio_capture(
-            state,
-            !output_power.sleeping && refreshed_demand.audio_capture_active,
-            &mut frame_loop.last_audio_capture_active,
-        )
-        .await;
-        reconcile_screen_capture(
-            state,
-            !output_power.sleeping && refreshed_demand.screen_capture_active,
-            &mut frame_loop.last_screen_capture_active,
-        )
-        .await;
+        frame_loop
+            .capture_demand
+            .reconcile_audio(
+                state,
+                !output_power.sleeping && refreshed_demand.audio_capture_active,
+            )
+            .await;
+        frame_loop
+            .capture_demand
+            .reconcile_screen(
+                state,
+                !output_power.sleeping && refreshed_demand.screen_capture_active,
+            )
+            .await;
     }
 
     if let Some(frame) = maybe_idle_throttle(
