@@ -322,7 +322,6 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
                     physical_device_id.clone(),
                     dev.name.clone(),
                     rgb_for_zones,
-                    primary_rgb.clone(),
                     is_collapsed,
                     fallback_leds,
                 )
@@ -679,12 +678,10 @@ fn render_zone_rows(
     channel_device_id: String,
     device_name: String,
     rgb_for_zones: String,
-    import_border_rgb: String,
     is_collapsed: Signal<bool>,
     fallback_leds: usize,
 ) -> AnyView {
     let zone_border_rgb = rgb_for_zones.clone();
-    let devices_ctx = state.devices_ctx;
     let layout = state.layout;
     let selected_zone_ids = state.selected_zone_ids;
     let hidden_zones = state.hidden_zones;
@@ -696,10 +693,6 @@ fn render_zone_rows(
     let removed_zone_cache = state.removed_zone_cache;
     let set_removed_zone_cache = state.set_removed_zone_cache;
     let attachment_cache = state.attachment_cache;
-    let import_in_flight = state.import_in_flight;
-    let set_import_in_flight = state.set_import_in_flight;
-
-    let import_device_id = channel_device_id.clone();
 
     view! {
         <div
@@ -888,7 +881,7 @@ fn render_zone_rows(
                                             .clone()
                                             .unwrap_or_else(|| bindings[0].template_name.clone())
                                     } else {
-                                        format!("{attachment_count} attached")
+                                        format!("{attachment_count} components")
                                     };
 
                                     Some(view! {
@@ -1020,37 +1013,6 @@ fn render_zone_rows(
                     </div>
                 }
             }).collect_view()}
-
-            // Import attachments button (if device has bindings)
-            {move || {
-                let did = import_device_id.clone();
-                let has_bindings = attachment_cache.get()
-                    .get(&did)
-                    .is_some_and(|b| !b.is_empty());
-                has_bindings.then(|| {
-                    let did = did.clone();
-                    view! {
-                        <div class="mt-1 pt-1.5 border-t" style=format!("border-color: rgba({import_border_rgb}, 0.08)")>
-                            <button
-                                class="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-[10px] font-medium transition-all btn-press disabled:opacity-40 disabled:cursor-not-allowed"
-                                style="background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.12); color: rgb(128, 255, 234)"
-                                disabled=move || import_in_flight.get()
-                                on:click=move |ev| {
-                                    ev.stop_propagation();
-                                    layout_utils::import_device_attachments(
-                                        did.clone(),
-                                        set_import_in_flight,
-                                        devices_ctx.layouts_resource,
-                                    );
-                                }
-                            >
-                                <Icon icon=LuLayoutTemplate width="10px" height="10px" style="color: inherit" />
-                                {move || if import_in_flight.get() { "Importing..." } else { "Import Attachments" }}
-                            </button>
-                        </div>
-                    }
-                })
-            }}
         </div>
     }
     .into_any()

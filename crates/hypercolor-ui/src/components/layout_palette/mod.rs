@@ -20,7 +20,6 @@ use offline::render_offline_devices_section;
 /// field is already `Copy` on its own (Leptos signals, memos, contexts).
 #[derive(Clone, Copy)]
 pub(super) struct PaletteState {
-    pub devices_ctx: DevicesContext,
     pub layout: Signal<Option<hypercolor_types::spatial::SpatialLayout>>,
     pub selected_zone_ids: Signal<std::collections::HashSet<String>>,
     pub hidden_zones: Signal<std::collections::HashSet<String>>,
@@ -39,8 +38,6 @@ pub(super) struct PaletteState {
         ReadSignal<std::collections::HashMap<String, Vec<api::AttachmentBindingSummary>>>,
     pub set_attachment_cache:
         WriteSignal<std::collections::HashMap<String, Vec<api::AttachmentBindingSummary>>>,
-    pub import_in_flight: ReadSignal<bool>,
-    pub set_import_in_flight: WriteSignal<bool>,
     /// Write-side of the master "hide all" snapshot. Individual device/zone
     /// toggles clear this so manual changes invalidate the saved state.
     pub set_master_hidden_snapshot: WriteSignal<Option<std::collections::HashSet<String>>>,
@@ -67,12 +64,10 @@ pub fn LayoutPalette() -> impl IntoView {
         String,
         Vec<api::AttachmentBindingSummary>,
     >::new());
-    let (import_in_flight, set_import_in_flight) = signal(false);
     let (master_hidden_snapshot, set_master_hidden_snapshot) =
         signal(None::<std::collections::HashSet<String>>);
 
     let state = PaletteState {
-        devices_ctx,
         layout: ctx.layout,
         selected_zone_ids: ctx.selected_zone_ids,
         hidden_zones: ctx.hidden_zones,
@@ -89,8 +84,6 @@ pub fn LayoutPalette() -> impl IntoView {
         set_collapsed_devices,
         attachment_cache,
         set_attachment_cache,
-        import_in_flight,
-        set_import_in_flight,
         set_master_hidden_snapshot,
     };
 

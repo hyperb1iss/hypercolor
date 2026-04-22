@@ -9,7 +9,6 @@ use crate::api::{self, ZoneSummary};
 use crate::channel_names;
 use crate::layout_geometry;
 use crate::style_utils::uuid_v4_hex;
-use crate::toasts;
 use hypercolor_types::spatial::{DeviceZone, NormalizedPosition, SpatialLayout};
 
 /// Type alias for the removed-zone stash, keyed by (device_id, zone_name).
@@ -629,82 +628,6 @@ pub fn replace_attachment_layout(
         .retain(|zone| !(zone.device_id == device_id && zone.attachment.is_some()));
 
     layout.zones.extend(seeded.zones);
-}
-
-/// Import a device's attachment zones into the active layout.
-pub fn import_device_attachments(
-    device_id: String,
-    set_in_flight: WriteSignal<bool>,
-    layouts_resource: leptos::prelude::LocalResource<Result<Vec<api::LayoutSummary>, String>>,
-) {
-    set_in_flight.set(true);
-    leptos::task::spawn_local(async move {
-        let result: Result<(usize, String), String> = async {
-            let devices = api::fetch_devices().await?;
-            let device = devices
-                .iter()
-                .find(|d| d.id == device_id)
-                .ok_or_else(|| "Device not found".to_string())?
-                .clone();
-            let attachments = api::fetch_device_attachments(&device_id).await?;
-            if attachments.suggested_zones.is_empty() {
-                return Ok((0_usize, String::new()));
-            }
-
-            let mut layout = api::fetch_active_layout().await?;
-            let layout_name = layout.name.clone();
-            let layout_id = layout.id.clone();
-            let mut seeded = layout_geometry::seeded_attachment_layout(
-                &device.layout_device_id,
-                &device.name,
-                &attachments.suggested_zones,
-                0,
-            );
-            let slot_display_names = attachments
-                .slots
-                .iter()
-                .filter_map(|slot| {
-                    channel_names::load_channel_name(&device.id, &slot.id)
-                        .map(|display_name| (slot.id.clone(), display_name))
-                })
-                .collect::<std::collections::HashMap<_, _>>();
-            apply_slot_display_names_to_seeded_attachment_layout(
-                &mut seeded,
-                &device.name,
-                &slot_display_names,
-            );
-            let imported_count = seeded.zones.len();
-            replace_attachment_layout(&mut layout, &device.layout_device_id, seeded);
-
-            let req = api::UpdateLayoutApiRequest {
-                name: None,
-                description: None,
-                canvas_width: None,
-                canvas_height: None,
-                zones: Some(layout.zones),
-            };
-            api::update_layout(&layout_id, &req).await?;
-            api::apply_layout(&layout_id).await?;
-
-            Ok((imported_count, layout_name))
-        }
-        .await;
-
-        set_in_flight.set(false);
-        match result {
-            Ok((0, _)) => toasts::toast_info("No attachment zones ready to import"),
-            Ok((count, layout_name)) => {
-                layouts_resource.refetch();
-                let noun = if count == 1 { "zone" } else { "zones" };
-                toasts::toast_success(&format!(
-                    "Imported {count} attachment {noun} into {layout_name}"
-                ));
-            }
-            Err(error) => {
-                toasts::toast_error(&format!("Attachment import failed: {error}"));
-            }
-        }
-    });
 }
 
 /// Check if a slot ID matches a zone name (case-insensitive or slugified).
