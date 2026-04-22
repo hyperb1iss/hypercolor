@@ -31,6 +31,7 @@ mod pipeline_driver;
 mod pipeline_runtime;
 mod producer_queue;
 mod render_groups;
+mod scene_dependency;
 mod scene_state;
 #[doc(hidden)]
 pub mod sparkleflinger;

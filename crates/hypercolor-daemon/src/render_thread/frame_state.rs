@@ -9,8 +9,9 @@ use hypercolor_types::scene::{RenderGroup, RenderGroupId};
 use super::RenderThreadState;
 use super::frame_scheduler::{
     FrameSceneSnapshot, FrameSceneSnapshotInputs, FrameScheduler, SceneRuntimeSnapshot,
-    SceneDependencyKey, SceneTransitionSnapshot,
+    SceneTransitionSnapshot,
 };
+use super::scene_dependency::SceneDependencyKey;
 use super::scene_state::RenderSceneState;
 use crate::display_output::capped_group_direct_display_target_fps;
 

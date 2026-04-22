@@ -7,21 +7,7 @@ use hypercolor_types::scene::{ColorInterpolation, RenderGroup, RenderGroupId, Sc
 use crate::session::OutputPowerState;
 
 use super::frame_state::EffectDemand;
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct SceneDependencyKey {
-    pub(crate) groups_revision: u64,
-    pub(crate) dependency_generation: u64,
-}
-
-impl SceneDependencyKey {
-    pub(crate) const fn new(groups_revision: u64, dependency_generation: u64) -> Self {
-        Self {
-            groups_revision,
-            dependency_generation,
-        }
-    }
-}
+use super::scene_dependency::SceneDependencyKey;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SceneTransitionSnapshot {

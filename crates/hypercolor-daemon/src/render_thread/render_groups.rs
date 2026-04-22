@@ -17,9 +17,9 @@ use hypercolor_types::spatial::{
 };
 
 use super::frame_sampling::{LedSamplingStrategy, RetainedLedSamplingStrategy};
-use super::frame_scheduler::SceneDependencyKey;
 use super::micros_u32;
 use super::producer_queue::ProducerFrame;
+use super::scene_dependency::SceneDependencyKey;
 
 /// Slot count for the full-resolution scene surface pool. Sized to absorb
 /// typical downstream pins: the canvas watch channel, display-output
@@ -51,27 +51,6 @@ pub(crate) struct RenderGroupResult {
     pub logical_layer_count: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct RenderGroupDependencyKey {
-    groups_revision: u64,
-    registry_generation: u64,
-}
-
-impl RenderGroupDependencyKey {
-    const fn new(groups_revision: u64, registry_generation: u64) -> Self {
-        Self {
-            groups_revision,
-            registry_generation,
-        }
-    }
-}
-
-impl From<SceneDependencyKey> for RenderGroupDependencyKey {
-    fn from(value: SceneDependencyKey) -> Self {
-        Self::new(value.groups_revision, value.dependency_generation)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("render group '{group_name}' effect '{effect_name}' ({effect_id}) failed: {error}")]
 pub(crate) struct RenderGroupEffectError {
@@ -84,7 +63,7 @@ pub(crate) struct RenderGroupEffectError {
 
 #[derive(Clone)]
 struct RetainedRenderGroupFrame {
-    dependency_key: RenderGroupDependencyKey,
+    dependency_key: SceneDependencyKey,
     scene_frame: ProducerFrame,
     active_group_canvas_ids: Vec<RenderGroupId>,
     led_sampling_strategy: RetainedLedSamplingStrategy,
@@ -105,7 +84,7 @@ pub(crate) struct RenderGroupRuntime {
     direct_surface_pools: HashMap<RenderGroupId, RenderSurfacePool>,
     retained_direct_group_frames: HashMap<RenderGroupId, RetainedDirectGroupFrame>,
     scene_surface_pool: RenderSurfacePool,
-    reconciled_dependency_key: Option<RenderGroupDependencyKey>,
+    reconciled_dependency_key: Option<SceneDependencyKey>,
     retained_frame: Option<RetainedRenderGroupFrame>,
     last_effect_error: Option<RenderGroupEffectError>,
     combined_led_layout: Arc<SpatialLayout>,
@@ -181,7 +160,6 @@ impl RenderGroupRuntime {
     }
 
     pub(crate) fn reuse_scene(&self, dependency_key: SceneDependencyKey) -> Option<RenderGroupResult> {
-        let dependency_key = RenderGroupDependencyKey::from(dependency_key);
         let retained = self.retained_frame.as_ref()?;
         if retained.dependency_key != dependency_key {
             return None;
@@ -219,14 +197,14 @@ impl RenderGroupRuntime {
         sensors: &SystemSnapshot,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<RenderGroupResult> {
-        let dependency_key = RenderGroupDependencyKey::new(groups_revision, registry.generation());
+        let dependency_key = SceneDependencyKey::new(groups_revision, registry.generation());
         self.reconcile(groups, dependency_key, registry)?;
 
         if let Some(result) = self.render_single_full_scene_group(
             groups,
             elapsed_ms,
             display_group_target_fps,
-            dependency_key.registry_generation,
+            dependency_key.dependency_generation,
             registry,
             delta_secs,
             audio,
@@ -253,7 +231,7 @@ impl RenderGroupRuntime {
                     group,
                     elapsed_ms,
                     display_group_target_fps,
-                    dependency_key.registry_generation,
+                    dependency_key.dependency_generation,
                 ) {
                     active_group_canvas_ids.push(group.id);
                     group_canvases.push((group.id, retained));
@@ -291,7 +269,7 @@ impl RenderGroupRuntime {
                 self.retain_direct_group_frame(
                     group.id,
                     elapsed_ms,
-                    dependency_key.registry_generation,
+                    dependency_key.dependency_generation,
                     &frame,
                 );
                 group_canvases.push((group.id, frame));
@@ -351,7 +329,7 @@ impl RenderGroupRuntime {
     fn reconcile(
         &mut self,
         groups: &[RenderGroup],
-        dependency_key: RenderGroupDependencyKey,
+        dependency_key: SceneDependencyKey,
         registry: &EffectRegistry,
     ) -> Result<()> {
         if self.reconciled_dependency_key == Some(dependency_key) {
@@ -591,7 +569,7 @@ impl RenderGroupRuntime {
 
     fn retain_frame(
         &mut self,
-        dependency_key: RenderGroupDependencyKey,
+        dependency_key: SceneDependencyKey,
         result: &RenderGroupResult,
         zones: &[ZoneColors],
     ) {
