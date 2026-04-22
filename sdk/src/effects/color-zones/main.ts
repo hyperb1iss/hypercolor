@@ -1,13 +1,47 @@
-import { canvas, color, combo, num, scaleContext } from '@hypercolor/sdk'
+import { canvas, color, combo, num } from '@hypercolor/sdk'
 
-import { BUILTIN_DESIGN_BASIS, hexToRgb, mixRgb, rgbToCss, scaleRgb, withLift } from '../_builtin/common'
+import { BUILTIN_DESIGN_BASIS, hexToRgb } from '../_builtin/common'
 
-interface ZoneRect {
-    x: number
-    y: number
-    width: number
-    height: number
-    color: ReturnType<typeof hexToRgb>
+interface LinRgb {
+    r: number
+    g: number
+    b: number
+}
+
+// sRGB byte -> linear-light [0, 1]. Precomputed once for all 256 values.
+const SRGB_BYTE_TO_LINEAR = (() => {
+    const table = new Float32Array(256)
+    for (let i = 0; i < 256; i++) {
+        const n = i / 255
+        table[i] = n <= 0.04045 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4
+    }
+    return table
+})()
+
+// linear-light [0, 1] -> sRGB byte. Indexed by round(linear * 1024).
+const LINEAR_TO_SRGB_BYTE = (() => {
+    const table = new Uint8Array(1025)
+    for (let i = 0; i <= 1024; i++) {
+        const l = i / 1024
+        const s = l <= 0.0031308 ? l * 12.92 : 1.055 * l ** (1 / 2.4) - 0.055
+        table[i] = Math.max(0, Math.min(255, Math.round(s * 255)))
+    }
+    return table
+})()
+
+function linearToByte(linear: number): number {
+    if (linear <= 0) return 0
+    if (linear >= 1) return 255
+    return LINEAR_TO_SRGB_BYTE[Math.round(linear * 1024)]
+}
+
+function hexToLinearRgb(hex: string): LinRgb {
+    const rgb = hexToRgb(hex)
+    return {
+        b: SRGB_BYTE_TO_LINEAR[Math.round(rgb.b) | 0],
+        g: SRGB_BYTE_TO_LINEAR[Math.round(rgb.g) | 0],
+        r: SRGB_BYTE_TO_LINEAR[Math.round(rgb.r) | 0],
+    }
 }
 
 function gridDimensions(layout: string, zoneCount: number): [number, number] {
@@ -24,52 +58,17 @@ function gridDimensions(layout: string, zoneCount: number): [number, number] {
     return [3, 3]
 }
 
-function buildRects(
-    width: number,
-    height: number,
-    layout: string,
-    zoneCount: number,
-    colors: ReturnType<typeof hexToRgb>[],
-): ZoneRect[] {
-    const [rows, cols] = gridDimensions(layout, zoneCount)
-    const rects: ZoneRect[] = []
-    const cellWidth = width / cols
-    const cellHeight = height / rows
-
-    for (let row = 0; row < rows; row++) {
-        for (let col = 0; col < cols; col++) {
-            const index = row * cols + col
-            if (index >= zoneCount) continue
-
-            rects.push({
-                color: colors[index],
-                height: cellHeight,
-                width: cellWidth,
-                x: col * cellWidth,
-                y: row * cellHeight,
-            })
-        }
-    }
-
-    return rects
-}
-
-function averageColor(colors: ReturnType<typeof hexToRgb>[]): ReturnType<typeof hexToRgb> {
-    const count = Math.max(colors.length, 1)
-    const sum = colors.reduce(
-        (acc, color) => ({
-            b: acc.b + color.b,
-            g: acc.g + color.g,
-            r: acc.r + color.r,
-        }),
-        { b: 0, g: 0, r: 0 },
-    )
-
-    return {
-        b: sum.b / count,
-        g: sum.g / count,
-        r: sum.r / count,
-    }
+// Blend-controlled smoothstep: blend=0 is a hard step at 0.5, blend=1 spans
+// the full [0, 1] range. Matches the native Rust ColorZonesRenderer.
+function smoothstepBlend(t: number, blend: number): number {
+    if (blend <= 1e-6) return t < 0.5 ? 0 : 1
+    const half = blend * 0.5
+    const lower = 0.5 - half
+    const upper = 0.5 + half
+    if (t <= lower) return 0
+    if (t >= upper) return 1
+    const n = (t - lower) / (upper - lower)
+    return n * n * (3 - 2 * n)
 }
 
 export default canvas(
@@ -95,104 +94,126 @@ export default canvas(
         zone9: color('Zone 9', '#6c2bff', { group: 'Zone Colors' }),
     },
     (ctx, _time, controls) => {
-        const s = scaleContext(ctx.canvas, BUILTIN_DESIGN_BASIS)
-        const width = s.width
-        const height = s.height
-        const zoneCount = Number.parseInt(controls.zoneCount as string, 10) || 3
-        const brightness = (controls.brightness as number) / 100
-        const blend = (controls.blend as number) / 100
-        const sheen = (controls.sheen as number) / 100
-        const vignette = (controls.vignette as number) / 100
-        const colors = [
-            hexToRgb(controls.zone1 as string),
-            hexToRgb(controls.zone2 as string),
-            hexToRgb(controls.zone3 as string),
-            hexToRgb(controls.zone4 as string),
-            hexToRgb(controls.zone5 as string),
-            hexToRgb(controls.zone6 as string),
-            hexToRgb(controls.zone7 as string),
-            hexToRgb(controls.zone8 as string),
-            hexToRgb(controls.zone9 as string),
+        const width = ctx.canvas.width
+        const height = ctx.canvas.height
+        if (width <= 0 || height <= 0) return
+
+        const zoneCount = Math.max(1, Math.min(9, Number.parseInt(controls.zoneCount as string, 10) || 3))
+        const brightness = Math.max(0, Math.min(1, (controls.brightness as number) / 100))
+        const blend = Math.max(0, Math.min(1, (controls.blend as number) / 100))
+        const sheenAmount = Math.max(0, Math.min(1, (controls.sheen as number) / 100))
+        const vignetteAmount = Math.max(0, Math.min(1, (controls.vignette as number) / 100))
+        const layout = controls.layout as string
+
+        const [rows, cols] = gridDimensions(layout, zoneCount)
+
+        const zones: LinRgb[] = [
+            hexToLinearRgb(controls.zone1 as string),
+            hexToLinearRgb(controls.zone2 as string),
+            hexToLinearRgb(controls.zone3 as string),
+            hexToLinearRgb(controls.zone4 as string),
+            hexToLinearRgb(controls.zone5 as string),
+            hexToLinearRgb(controls.zone6 as string),
+            hexToLinearRgb(controls.zone7 as string),
+            hexToLinearRgb(controls.zone8 as string),
+            hexToLinearRgb(controls.zone9 as string),
         ]
-            .slice(0, zoneCount)
-            .map((colorValue) => scaleRgb(colorValue, brightness))
 
-        const rects = buildRects(width, height, controls.layout as string, zoneCount, colors)
-        const ambient = scaleRgb(mixRgb(averageColor(colors), { r: 0, g: 0, b: 0 }, 0.72), 0.9)
+        // Apply brightness in linear-light space so "dim" looks right on LEDs
+        // after the display/driver applies gamma.
+        const scaled: LinRgb[] = zones.map((z) => ({
+            b: z.b * brightness,
+            g: z.g * brightness,
+            r: z.r * brightness,
+        }))
 
-        ctx.fillStyle = rgbToCss(ambient)
-        ctx.fillRect(0, 0, width, height)
-
-        for (const rect of rects) {
-            ctx.fillStyle = rgbToCss(rect.color)
-            ctx.fillRect(rect.x, rect.y, rect.width, rect.height)
+        const zoneAt = (row: number, col: number): LinRgb => {
+            const clampedCol = Math.max(0, Math.min(cols - 1, col))
+            const clampedRow = Math.max(0, Math.min(rows - 1, row))
+            const idx = Math.min(clampedRow * cols + clampedCol, zoneCount - 1)
+            return scaled[idx]
         }
 
-        if (blend > 0) {
-            const [rows, cols] = gridDimensions(controls.layout as string, zoneCount)
-            const seamWidth = Math.max(8, Math.min(width / cols, height / rows) * blend * 0.6)
+        const maxBaseCol = Math.max(0, cols - 2)
+        const maxBaseRow = Math.max(0, rows - 2)
 
-            for (let row = 0; row < rows; row++) {
-                for (let col = 0; col < cols - 1; col++) {
-                    const leftIndex = row * cols + col
-                    const rightIndex = leftIndex + 1
-                    if (rightIndex >= rects.length) continue
+        const image = ctx.createImageData(width, height)
+        const data = image.data
 
-                    const left = rects[leftIndex]
-                    const right = rects[rightIndex]
-                    const seamX = left.x + left.width
-                    const gradient = ctx.createLinearGradient(seamX - seamWidth * 0.5, 0, seamX + seamWidth * 0.5, 0)
-                    gradient.addColorStop(0, rgbToCss(left.color))
-                    gradient.addColorStop(0.5, rgbToCss(scaleRgb(mixRgb(left.color, right.color, 0.5), 1.02)))
-                    gradient.addColorStop(1, rgbToCss(right.color))
-                    ctx.fillStyle = gradient
-                    ctx.fillRect(seamX - seamWidth * 0.5, left.y, seamWidth, left.height)
+        // Sheen: soft diagonal silk band across the upper-left → lower-right axis.
+        // Peak at ~0.35 along the diagonal, gentle falloff.
+        const sheenPeak = 0.35
+        const sheenFalloff = 3.0
+        const sheenGain = sheenAmount * 0.18
+
+        // Vignette: quadratic darkening from center to corners.
+        // At amount=1.0, corners drop to ~45% brightness. At amount=0.1, ~94%.
+        const vignetteGain = vignetteAmount * 0.55
+
+        for (let y = 0; y < height; y++) {
+            const ny = (y + 0.5) / height
+            const gy = ny * rows
+            const baseRow = Math.max(0, Math.min(maxBaseRow, Math.floor(gy - 0.5)))
+            const centerTop = baseRow + 0.5
+            const fy = Math.max(0, Math.min(1, gy - centerTop))
+            const sy = smoothstepBlend(fy, blend)
+            const bottomRow = baseRow + 1
+
+            const dy = ny - 0.5
+
+            for (let x = 0; x < width; x++) {
+                const nx = (x + 0.5) / width
+                const gx = nx * cols
+                const baseCol = Math.max(0, Math.min(maxBaseCol, Math.floor(gx - 0.5)))
+                const centerLeft = baseCol + 0.5
+                const fx = Math.max(0, Math.min(1, gx - centerLeft))
+                const sx = smoothstepBlend(fx, blend)
+                const rightCol = baseCol + 1
+
+                const c00 = zoneAt(baseRow, baseCol)
+                const c10 = zoneAt(baseRow, rightCol)
+                const c01 = zoneAt(bottomRow, baseCol)
+                const c11 = zoneAt(bottomRow, rightCol)
+
+                // Bilinear interpolation in linear-light RGB.
+                const topR = c00.r + (c10.r - c00.r) * sx
+                const topG = c00.g + (c10.g - c00.g) * sx
+                const topB = c00.b + (c10.b - c00.b) * sx
+                const botR = c01.r + (c11.r - c01.r) * sx
+                const botG = c01.g + (c11.g - c01.g) * sx
+                const botB = c01.b + (c11.b - c01.b) * sx
+                let r = topR + (botR - topR) * sy
+                let g = topG + (botG - topG) * sy
+                let b = topB + (botB - topB) * sy
+
+                if (vignetteGain > 0) {
+                    const dx = nx - 0.5
+                    // Normalize radial distance so corners reach 1.0 (2 * 0.5^2 = 0.5).
+                    const distSq = Math.min(1, (dx * dx + dy * dy) * 2)
+                    const shade = 1 - distSq * vignetteGain
+                    r *= shade
+                    g *= shade
+                    b *= shade
                 }
-            }
 
-            for (let row = 0; row < rows - 1; row++) {
-                for (let col = 0; col < cols; col++) {
-                    const topIndex = row * cols + col
-                    const bottomIndex = topIndex + cols
-                    if (bottomIndex >= rects.length) continue
-
-                    const top = rects[topIndex]
-                    const bottom = rects[bottomIndex]
-                    const seamY = top.y + top.height
-                    const gradient = ctx.createLinearGradient(0, seamY - seamWidth * 0.5, 0, seamY + seamWidth * 0.5)
-                    gradient.addColorStop(0, rgbToCss(top.color))
-                    gradient.addColorStop(0.5, rgbToCss(scaleRgb(mixRgb(top.color, bottom.color, 0.5), 1.02)))
-                    gradient.addColorStop(1, rgbToCss(bottom.color))
-                    ctx.fillStyle = gradient
-                    ctx.fillRect(top.x, seamY - seamWidth * 0.5, top.width, seamWidth)
+                if (sheenGain > 0) {
+                    const diag = (nx + ny) * 0.5
+                    const band = Math.max(0, 1 - Math.abs(diag - sheenPeak) * sheenFalloff)
+                    const bump = band * band * sheenGain
+                    r += bump
+                    g += bump
+                    b += bump
                 }
+
+                const i = (y * width + x) * 4
+                data[i] = linearToByte(r)
+                data[i + 1] = linearToByte(g)
+                data[i + 2] = linearToByte(b)
+                data[i + 3] = 255
             }
         }
 
-        if (sheen > 0) {
-            const sheenGradient = ctx.createLinearGradient(0, 0, width, height)
-            sheenGradient.addColorStop(0, rgbToCss(withLift(ambient, 0.5), 0.12 + sheen * 0.08))
-            sheenGradient.addColorStop(0.45, 'rgba(255, 255, 255, 0)')
-            sheenGradient.addColorStop(0.7, rgbToCss(withLift(ambient, 0.75), 0.04 + sheen * 0.06))
-            sheenGradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
-            ctx.fillStyle = sheenGradient
-            ctx.fillRect(0, 0, width, height)
-        }
-
-        if (vignette > 0) {
-            const shadow = ctx.createRadialGradient(
-                width / 2,
-                height / 2,
-                Math.min(width, height) * 0.2,
-                width / 2,
-                height / 2,
-                Math.max(width, height) * 0.72,
-            )
-            shadow.addColorStop(0, 'rgba(0, 0, 0, 0)')
-            shadow.addColorStop(1, `rgba(0, 0, 0, ${0.08 + vignette * 0.38})`)
-            ctx.fillStyle = shadow
-            ctx.fillRect(0, 0, width, height)
-        }
+        ctx.putImageData(image, 0, 0)
     },
     {
         author: 'Hypercolor',
