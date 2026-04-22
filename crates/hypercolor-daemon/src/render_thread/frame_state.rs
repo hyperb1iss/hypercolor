@@ -9,7 +9,8 @@ use hypercolor_types::scene::{RenderGroup, RenderGroupId};
 use super::RenderThreadState;
 use super::scene_dependency::SceneDependencyKey;
 use super::scene_snapshot::{
-    FrameSceneSnapshot, SceneRuntimeSnapshot, SceneSnapshotCache, SceneTransitionSnapshot,
+    EffectDemand, EffectSceneSnapshot, FrameSceneSnapshot, SceneRuntimeSnapshot,
+    SceneSnapshotCache, SceneTransitionSnapshot,
 };
 use super::scene_state::RenderSceneState;
 use crate::display_output::capped_group_direct_display_target_fps;
@@ -19,19 +20,6 @@ pub(crate) struct RenderLoopSnapshot {
     pub(crate) frame_token: u64,
     pub(crate) elapsed_ms: u32,
     pub(crate) budget_us: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct EffectDemand {
-    pub(crate) effect_running: bool,
-    pub(crate) audio_capture_active: bool,
-    pub(crate) screen_capture_active: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct EffectSceneSnapshot {
-    pub(crate) demand: EffectDemand,
-    pub(crate) dependency_key: SceneDependencyKey,
 }
 
 pub(crate) async fn build_frame_scene_snapshot(

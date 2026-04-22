@@ -6,7 +6,6 @@ use hypercolor_types::scene::{ColorInterpolation, RenderGroup, RenderGroupId, Sc
 
 use crate::session::OutputPowerState;
 
-use super::frame_state::EffectDemand;
 use super::scene_dependency::SceneDependencyKey;
 
 #[derive(Debug, Clone)]
@@ -52,6 +51,19 @@ impl SceneRuntimeSnapshot {
     pub(crate) const fn dependency_key(&self, dependency_generation: u64) -> SceneDependencyKey {
         SceneDependencyKey::new(self.active_render_groups_revision, dependency_generation)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EffectDemand {
+    pub(crate) effect_running: bool,
+    pub(crate) audio_capture_active: bool,
+    pub(crate) screen_capture_active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EffectSceneSnapshot {
+    pub(crate) demand: EffectDemand,
+    pub(crate) dependency_key: SceneDependencyKey,
 }
 
 #[derive(Debug, Clone)]
