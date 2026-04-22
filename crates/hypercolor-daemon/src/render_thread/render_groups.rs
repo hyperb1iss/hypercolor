@@ -17,6 +17,7 @@ use hypercolor_types::spatial::{
 };
 
 use super::frame_sampling::{LedSamplingStrategy, RetainedLedSamplingStrategy};
+use super::frame_scheduler::SceneDependencyKey;
 use super::micros_u32;
 use super::producer_queue::ProducerFrame;
 
@@ -62,6 +63,12 @@ impl RenderGroupDependencyKey {
             groups_revision,
             registry_generation,
         }
+    }
+}
+
+impl From<SceneDependencyKey> for RenderGroupDependencyKey {
+    fn from(value: SceneDependencyKey) -> Self {
+        Self::new(value.groups_revision, value.dependency_generation)
     }
 }
 
@@ -173,12 +180,8 @@ impl RenderGroupRuntime {
             .sum()
     }
 
-    pub(crate) fn reuse_scene(
-        &self,
-        groups_revision: u64,
-        registry_generation: u64,
-    ) -> Option<RenderGroupResult> {
-        let dependency_key = RenderGroupDependencyKey::new(groups_revision, registry_generation);
+    pub(crate) fn reuse_scene(&self, dependency_key: SceneDependencyKey) -> Option<RenderGroupResult> {
+        let dependency_key = RenderGroupDependencyKey::from(dependency_key);
         let retained = self.retained_frame.as_ref()?;
         if retained.dependency_key != dependency_key {
             return None;
@@ -1629,7 +1632,7 @@ mod tests {
             scene_surface.height(),
         ));
         let reused = runtime
-            .reuse_scene(1, registry.generation())
+            .reuse_scene(SceneDependencyKey::new(1, registry.generation()))
             .expect("retained scene should be reusable");
         let LedSamplingStrategy::SparkleFlinger(reused_spatial_engine) =
             reused.led_sampling_strategy
@@ -1806,7 +1809,7 @@ mod tests {
         assert_eq!(sampled[1].zone_id, "zone_right");
         assert_eq!(sampled[1].colors.first().copied(), Some([0, 255, 0]));
         let reused = runtime
-            .reuse_scene(1, registry.generation())
+            .reuse_scene(SceneDependencyKey::new(1, registry.generation()))
             .expect("retained multi-group scene should be reusable");
         let LedSamplingStrategy::SparkleFlinger(reused_spatial_engine) = reused.led_sampling_strategy
         else {
@@ -1859,7 +1862,7 @@ mod tests {
         );
         assert!(zones.is_empty());
         let reused = runtime
-            .reuse_scene(1, registry.generation())
+            .reuse_scene(SceneDependencyKey::new(1, registry.generation()))
             .expect("display-only scene should keep an empty retained LED layout");
         let LedSamplingStrategy::RetainedPreSampled { layout, zones } =
             reused.led_sampling_strategy
@@ -1934,14 +1937,18 @@ mod tests {
         };
 
         assert!(
-            runtime.reuse_scene(1, registry.generation()).is_some(),
+            runtime
+                .reuse_scene(SceneDependencyKey::new(1, registry.generation()))
+                .is_some(),
             "retained scene should be reusable before the registry changes"
         );
 
         registry.register(replacement);
 
         assert!(
-            runtime.reuse_scene(1, registry.generation()).is_none(),
+            runtime
+                .reuse_scene(SceneDependencyKey::new(1, registry.generation()))
+                .is_none(),
             "registry generation changes should invalidate retained scene reuse"
         );
 

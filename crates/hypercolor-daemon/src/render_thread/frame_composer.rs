@@ -128,10 +128,9 @@ impl ComposeContext<'_> {
                 .scene_runtime
                 .dependency_key(registry.generation());
             if self.skip_decision == SkipDecision::ReuseCanvas {
-                if let Some(retained) = self.render.render_group_runtime.reuse_scene(
-                    live_dependency_key.groups_revision,
-                    live_dependency_key.dependency_generation,
-                ) {
+                if let Some(retained) =
+                    self.render.render_group_runtime.reuse_scene(live_dependency_key)
+                {
                     (Ok(retained), true)
                 } else {
                     (
