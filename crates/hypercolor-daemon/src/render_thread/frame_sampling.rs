@@ -115,20 +115,6 @@ pub(crate) fn can_hold_published_frame_for_deferred_sampling(
             .all(|(zone_colors, layout_zone)| zone_colors.zone_id == layout_zone.id)
 }
 
-pub(crate) fn try_finish_deferred_zone_sampling(
-    sampling: &mut SamplingRuntime<'_>,
-    error_message: &'static str,
-) {
-    sampling.keep_pending_if_stale(error_message);
-}
-
-pub(crate) fn try_finish_retired_zone_sampling(
-    sampling: &mut SamplingRuntime<'_>,
-    error_message: &'static str,
-) {
-    sampling.finish_retired(error_message);
-}
-
 fn try_retire_stale_zone_sampling(
     sampling: &mut SamplingRuntime<'_>,
     pending: PendingZoneSampling,

@@ -603,6 +603,12 @@ pub(crate) struct SamplingRuntime<'a> {
     pub(crate) output_artifacts: &'a mut OutputArtifactsState,
 }
 
+#[derive(Default)]
+pub(crate) struct PendingSamplingWork {
+    pub(crate) completed: Option<PendingZoneSampling>,
+    pub(crate) stale: Option<PendingZoneSampling>,
+}
+
 impl SamplingRuntime<'_> {
     pub(crate) fn take_pending_status(
         &mut self,
@@ -625,6 +631,28 @@ impl SamplingRuntime<'_> {
             .finish_retired(self.sparkleflinger, error_message);
     }
 
+    pub(crate) fn prepare_pending_work(
+        &mut self,
+        retired_error_message: &'static str,
+        pending_error_message: &'static str,
+    ) -> PendingSamplingWork {
+        self.finish_retired(retired_error_message);
+
+        let mut work = PendingSamplingWork::default();
+        if let Some(status) = self.take_pending_status(pending_error_message) {
+            match status {
+                PendingZoneSamplingStatus::Completed(deferred_sampling) => {
+                    work.completed = Some(deferred_sampling);
+                }
+                PendingZoneSamplingStatus::Stale(deferred_sampling) => {
+                    work.stale = Some(deferred_sampling);
+                }
+            }
+        }
+
+        work
+    }
+
     pub(crate) fn retire_or_return(
         &mut self,
         pending: PendingZoneSampling,
@@ -635,6 +663,15 @@ impl SamplingRuntime<'_> {
 
     pub(crate) fn discard_backlog(&mut self) {
         self.deferred_sampling.discard_backlog(self.sparkleflinger);
+    }
+
+    pub(crate) fn finish_sampling_cleanup(
+        &mut self,
+        deferred_error_message: &'static str,
+        retired_error_message: &'static str,
+    ) {
+        self.keep_pending_if_stale(deferred_error_message);
+        self.finish_retired(retired_error_message);
     }
 }
 
