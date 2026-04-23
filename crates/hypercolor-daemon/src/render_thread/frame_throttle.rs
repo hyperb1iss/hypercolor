@@ -8,7 +8,7 @@ use hypercolor_core::types::canvas::Canvas;
 use hypercolor_core::types::event::FrameTiming;
 use hypercolor_types::session::OffOutputBehavior;
 
-use super::frame_io::{FramePublicationSurfaces, publish_frame_updates};
+use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
 use super::frame_policy::{FrameExecution, NextWake, SkipDecision};
 use super::pipeline_runtime::{
     OutputArtifactsState, PublicationCadenceState, RenderSurfaceSnapshot, ThrottleState,
@@ -85,32 +85,34 @@ pub(crate) async fn maybe_sleep_throttle(
         );
         let publish_stats = publish_frame_updates(
             state,
-            output_artifacts.frame_mut(),
-            &AudioData::silence(),
-            FramePublicationSurfaces {
-                canvas: Some(Canvas::from_published_surface(&surface)),
-                frame_surface: Some(surface),
-                preview_surface: None,
-                screen_capture_surface: None,
-                web_viewport_preview_canvas: None,
-                effect_running: false,
-                screen_capture_active: false,
-            },
-            &[],
-            &[],
-            frame_num_u32,
-            scene_snapshot.elapsed_ms,
             publication_cadence,
-            false,
-            false,
-            FrameTiming {
-                producer_us: 0,
-                composition_us: 0,
-                render_us: 0,
-                sample_us: 0,
-                push_us: 0,
-                total_us: 0,
-                budget_us: scene_snapshot.budget_us,
+            FramePublicationRequest {
+                recycled_frame: output_artifacts.frame_mut(),
+                audio: &AudioData::silence(),
+                surfaces: FramePublicationSurfaces {
+                    canvas: Some(Canvas::from_published_surface(&surface)),
+                    frame_surface: Some(surface),
+                    preview_surface: None,
+                    screen_capture_surface: None,
+                    web_viewport_preview_canvas: None,
+                    effect_running: false,
+                    screen_capture_active: false,
+                },
+                group_canvases: &[],
+                active_group_canvas_ids: &[],
+                frame_number: frame_num_u32,
+                elapsed_ms: scene_snapshot.elapsed_ms,
+                reuse_existing_frame: false,
+                refresh_existing_frame_metadata: false,
+                timing: FrameTiming {
+                    producer_us: 0,
+                    composition_us: 0,
+                    render_us: 0,
+                    sample_us: 0,
+                    push_us: 0,
+                    total_us: 0,
+                    budget_us: scene_snapshot.budget_us,
+                },
             },
         );
         let publish_us = publish_stats.elapsed_us;
@@ -161,32 +163,34 @@ pub(crate) async fn maybe_sleep_throttle(
     let timing_total_us = sample_us.saturating_add(push_us);
     let publish_stats = publish_frame_updates(
         state,
-        output_artifacts.frame_mut(),
-        &AudioData::silence(),
-        FramePublicationSurfaces {
-            canvas: Some(canvas),
-            frame_surface: Some(surface),
-            preview_surface: None,
-            screen_capture_surface: None,
-            web_viewport_preview_canvas: None,
-            effect_running: false,
-            screen_capture_active: false,
-        },
-        &[],
-        &[],
-        frame_num_u32,
-        scene_snapshot.elapsed_ms,
         publication_cadence,
-        false,
-        false,
-        FrameTiming {
-            producer_us: 0,
-            composition_us: 0,
-            render_us: 0,
-            sample_us,
-            push_us,
-            total_us: timing_total_us,
-            budget_us: scene_snapshot.budget_us,
+        FramePublicationRequest {
+            recycled_frame: output_artifacts.frame_mut(),
+            audio: &AudioData::silence(),
+            surfaces: FramePublicationSurfaces {
+                canvas: Some(canvas),
+                frame_surface: Some(surface),
+                preview_surface: None,
+                screen_capture_surface: None,
+                web_viewport_preview_canvas: None,
+                effect_running: false,
+                screen_capture_active: false,
+            },
+            group_canvases: &[],
+            active_group_canvas_ids: &[],
+            frame_number: frame_num_u32,
+            elapsed_ms: scene_snapshot.elapsed_ms,
+            reuse_existing_frame: false,
+            refresh_existing_frame_metadata: false,
+            timing: FrameTiming {
+                producer_us: 0,
+                composition_us: 0,
+                render_us: 0,
+                sample_us,
+                push_us,
+                total_us: timing_total_us,
+                budget_us: scene_snapshot.budget_us,
+            },
         },
     );
     let publish_us = publish_stats.elapsed_us;

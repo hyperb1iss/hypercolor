@@ -56,6 +56,19 @@ impl FramePublicationSurfaces {
     }
 }
 
+pub(crate) struct FramePublicationRequest<'a> {
+    pub(crate) recycled_frame: &'a mut FrameData,
+    pub(crate) audio: &'a AudioData,
+    pub(crate) surfaces: FramePublicationSurfaces,
+    pub(crate) group_canvases: &'a [(RenderGroupId, GroupCanvasFrame)],
+    pub(crate) active_group_canvas_ids: &'a [RenderGroupId],
+    pub(crate) frame_number: u32,
+    pub(crate) elapsed_ms: u32,
+    pub(crate) reuse_existing_frame: bool,
+    pub(crate) refresh_existing_frame_metadata: bool,
+    pub(crate) timing: FrameTiming,
+}
+
 #[derive(Clone, Copy)]
 struct AudioSignalSnapshot {
     level: f32,
@@ -73,24 +86,23 @@ struct StableCanvasFrameIdentity {
     height: u32,
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "frame publishing needs state + all frame components"
-)]
 pub(crate) fn publish_frame_updates(
     state: &RenderThreadState,
-    recycled_frame: &mut FrameData,
-    audio: &AudioData,
-    mut surfaces: FramePublicationSurfaces,
-    group_canvases: &[(RenderGroupId, GroupCanvasFrame)],
-    active_group_canvas_ids: &[RenderGroupId],
-    frame_number: u32,
-    elapsed_ms: u32,
     publication_cadence: &mut PublicationCadenceState,
-    reuse_existing_frame: bool,
-    refresh_existing_frame_metadata: bool,
-    timing: FrameTiming,
+    request: FramePublicationRequest<'_>,
 ) -> PublishFrameStats {
+    let FramePublicationRequest {
+        recycled_frame,
+        audio,
+        mut surfaces,
+        group_canvases,
+        active_group_canvas_ids,
+        frame_number,
+        elapsed_ms,
+        reuse_existing_frame,
+        refresh_existing_frame_metadata,
+        timing,
+    } = request;
     let publish_start = Instant::now();
     let event_subscribers = state.event_bus.subscriber_count();
     let spectrum_receivers = state.event_bus.spectrum_receiver_count();

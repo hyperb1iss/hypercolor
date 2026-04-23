@@ -7,7 +7,7 @@ use tracing::{info, trace, warn};
 use hypercolor_core::types::event::FrameTiming;
 
 use super::frame_composer::{ComposeRequest, compose_frame};
-use super::frame_io::{FramePublicationSurfaces, publish_frame_updates};
+use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
 use super::frame_policy::{FrameAdmissionSample, FrameExecution, SkipDecision};
 use super::frame_sampling::{LedSamplingOutcome, resolve_led_sampling};
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
@@ -289,35 +289,37 @@ pub(crate) async fn execute_frame(
     } = render_stage.composed_frame;
     let publish_stats = publish_frame_updates(
         state,
-        render.output_artifacts.frame_mut(),
-        &inputs.audio,
-        FramePublicationSurfaces {
-            canvas: sampling_canvas,
-            frame_surface: sampling_surface,
-            preview_surface,
-            screen_capture_surface: inputs
-                .screen_data
-                .as_ref()
-                .and_then(|data| data.canvas_downscale.clone()),
-            web_viewport_preview_canvas: render_stage.web_viewport_preview,
-            effect_running: scene_snapshot.effect_demand.effect_running,
-            screen_capture_active: scene_snapshot.effect_demand.screen_capture_active,
-        },
-        &render_stage.group_canvases,
-        &render_stage.active_group_canvas_ids,
-        frame_num_u32,
-        scene_snapshot.elapsed_ms,
         &mut frame_loop.publication_cadence,
-        reuses_published_frame,
-        refresh_reused_frame_metadata,
-        FrameTiming {
-            producer_us: render_stage.producer_us,
-            composition_us: render_stage.composition_us,
-            render_us,
-            sample_us,
-            push_us,
-            total_us: timing_total_us,
-            budget_us: scene_snapshot.budget_us,
+        FramePublicationRequest {
+            recycled_frame: render.output_artifacts.frame_mut(),
+            audio: &inputs.audio,
+            surfaces: FramePublicationSurfaces {
+                canvas: sampling_canvas,
+                frame_surface: sampling_surface,
+                preview_surface,
+                screen_capture_surface: inputs
+                    .screen_data
+                    .as_ref()
+                    .and_then(|data| data.canvas_downscale.clone()),
+                web_viewport_preview_canvas: render_stage.web_viewport_preview,
+                effect_running: scene_snapshot.effect_demand.effect_running,
+                screen_capture_active: scene_snapshot.effect_demand.screen_capture_active,
+            },
+            group_canvases: &render_stage.group_canvases,
+            active_group_canvas_ids: &render_stage.active_group_canvas_ids,
+            frame_number: frame_num_u32,
+            elapsed_ms: scene_snapshot.elapsed_ms,
+            reuse_existing_frame: reuses_published_frame,
+            refresh_existing_frame_metadata: refresh_reused_frame_metadata,
+            timing: FrameTiming {
+                producer_us: render_stage.producer_us,
+                composition_us: render_stage.composition_us,
+                render_us,
+                sample_us,
+                push_us,
+                total_us: timing_total_us,
+                budget_us: scene_snapshot.budget_us,
+            },
         },
     );
     let publish_us = publish_stats.elapsed_us;
