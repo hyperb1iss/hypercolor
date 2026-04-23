@@ -16,7 +16,7 @@ hue = ["dep:webrtc-dtls", "dep:webrtc-util"]
 nanoleaf = []
 nvidia = ["dep:nvml-wrapper"]
 default = ["hue", "nanoleaf"]
-servo = ["dep:servo", "dep:dpi", "dep:rustls", "dep:gleam"]
+servo = ["dep:servo", "dep:dpi", "dep:gleam"]
 
 [dependencies]
 hypercolor-types = { workspace = true }
@@ -58,7 +58,7 @@ servo = { version = "0.1.0", default-features = false, features = ["baked-in-res
 # Pinned to match servo-paint-api's `Rc<dyn gleam::gl::Gl>` so the direct
 # glReadPixels path in servo/worker.rs can call into Servo's context.
 gleam = { version = "0.15", optional = true }
-rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libpulse-binding = { workspace = true }

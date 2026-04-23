@@ -43,6 +43,8 @@ impl HueStreamSession {
         config_id: &str,
         channels: Vec<HueChannel>,
     ) -> Result<Self> {
+        install_rustls_provider();
+
         let client_key = decode_hex(client_key_hex)?;
         if client_key.is_empty() {
             bail!(
@@ -178,6 +180,10 @@ pub fn encode_packet_into(
     }
 
     Ok(())
+}
+
+fn install_rustls_provider() {
+    let _install_result = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 
 #[expect(
