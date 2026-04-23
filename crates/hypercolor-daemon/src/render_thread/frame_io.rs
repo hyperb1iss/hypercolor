@@ -79,11 +79,23 @@ struct AudioSignalSnapshot {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CanvasPublicationKey {
-    generation: u64,
-    storage: PublishedSurfaceStorageIdentity,
+struct CanvasExtent {
     width: u32,
     height: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CanvasPublicationIdentity {
+    Empty,
+    StorageBacked {
+        storage: PublishedSurfaceStorageIdentity,
+        extent: CanvasExtent,
+    },
+    SlotBacked {
+        generation: u64,
+        storage: PublishedSurfaceStorageIdentity,
+        extent: CanvasExtent,
+    },
 }
 
 pub(crate) fn publish_frame_updates(
@@ -366,15 +378,15 @@ fn update_published_frame(
 }
 
 fn should_publish_canvas_frame(current: &CanvasFrame, next: &CanvasFrame) -> bool {
-    canvas_frame_publication_key(current) != canvas_frame_publication_key(next)
+    canvas_frame_publication_identity(current) != canvas_frame_publication_identity(next)
 }
 
 fn should_publish_surface_frame(current: &CanvasFrame, next: &PublishedSurface) -> bool {
-    canvas_frame_publication_key(current) != published_surface_publication_key(next)
+    canvas_frame_publication_identity(current) != published_surface_publication_identity(next)
 }
 
 fn should_publish_canvas_storage(current: &CanvasFrame, next: &Canvas) -> bool {
-    canvas_frame_publication_key(current) != canvas_storage_publication_key(next)
+    canvas_frame_publication_identity(current) != canvas_storage_publication_identity(next)
 }
 
 fn authoritative_scene_surface<'a>(
@@ -386,33 +398,62 @@ fn authoritative_scene_surface<'a>(
     frame_surface.or(preview_surface)
 }
 
-fn canvas_frame_publication_key(frame: &CanvasFrame) -> Option<CanvasPublicationKey> {
-    (frame.width > 0 && frame.height > 0).then(|| CanvasPublicationKey {
-        generation: frame.surface().generation(),
-        storage: frame.surface().storage_identity(),
-        width: frame.width,
-        height: frame.height,
-    })
+fn canvas_frame_publication_identity(frame: &CanvasFrame) -> CanvasPublicationIdentity {
+    surface_publication_identity(
+        frame.surface().generation(),
+        frame.surface().storage_identity(),
+        frame.width,
+        frame.height,
+    )
 }
 
-fn published_surface_publication_key(
-    surface: &PublishedSurface,
-) -> Option<CanvasPublicationKey> {
-    (surface.width() > 0 && surface.height() > 0).then(|| CanvasPublicationKey {
-        generation: surface.generation(),
-        storage: surface.storage_identity(),
-        width: surface.width(),
-        height: surface.height(),
-    })
+fn published_surface_publication_identity(surface: &PublishedSurface) -> CanvasPublicationIdentity {
+    surface_publication_identity(
+        surface.generation(),
+        surface.storage_identity(),
+        surface.width(),
+        surface.height(),
+    )
 }
 
-fn canvas_storage_publication_key(canvas: &Canvas) -> Option<CanvasPublicationKey> {
-    (canvas.width() > 0 && canvas.height() > 0).then(|| CanvasPublicationKey {
-        generation: 0,
-        storage: canvas.storage_identity(),
-        width: canvas.width(),
-        height: canvas.height(),
-    })
+fn canvas_storage_publication_identity(canvas: &Canvas) -> CanvasPublicationIdentity {
+    storage_publication_identity(canvas.storage_identity(), canvas.width(), canvas.height())
+}
+
+fn surface_publication_identity(
+    generation: u64,
+    storage: PublishedSurfaceStorageIdentity,
+    width: u32,
+    height: u32,
+) -> CanvasPublicationIdentity {
+    if width == 0 || height == 0 {
+        return CanvasPublicationIdentity::Empty;
+    }
+
+    if generation == 0 {
+        return storage_publication_identity(storage, width, height);
+    }
+
+    CanvasPublicationIdentity::SlotBacked {
+        generation,
+        storage,
+        extent: CanvasExtent { width, height },
+    }
+}
+
+fn storage_publication_identity(
+    storage: PublishedSurfaceStorageIdentity,
+    width: u32,
+    height: u32,
+) -> CanvasPublicationIdentity {
+    if width == 0 || height == 0 {
+        return CanvasPublicationIdentity::Empty;
+    }
+
+    CanvasPublicationIdentity::StorageBacked {
+        storage,
+        extent: CanvasExtent { width, height },
+    }
 }
 
 fn maybe_publish_audio_level_event(
@@ -473,13 +514,15 @@ impl AudioSignalSnapshot {
 mod tests {
     use hypercolor_core::bus::CanvasFrame;
     use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+    use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
     use tokio::sync::watch;
 
     use hypercolor_core::types::event::{FrameData, ZoneColors};
 
     use super::{
-        FramePublicationSurfaces, authoritative_scene_surface, canvas_frame_publication_key,
-        published_surface_publication_key, update_published_frame,
+        FramePublicationSurfaces, authoritative_scene_surface, canvas_frame_publication_identity,
+        canvas_storage_publication_identity, published_surface_publication_identity,
+        update_published_frame,
     };
 
     fn sample_frame(
@@ -573,17 +616,42 @@ mod tests {
 
     #[test]
     fn canvas_frame_publication_key_is_empty_for_empty_frame() {
-        assert!(canvas_frame_publication_key(&CanvasFrame::empty()).is_none());
+        assert_eq!(
+            canvas_frame_publication_identity(&CanvasFrame::empty()),
+            super::CanvasPublicationIdentity::Empty
+        );
     }
 
     #[test]
-    fn published_surface_publication_key_matches_canvas_frame_surface_identity() {
+    fn published_surface_publication_identity_matches_canvas_frame_surface_identity() {
         let surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 7, 42);
         let frame = CanvasFrame::from_surface(surface.clone());
 
         assert_eq!(
-            canvas_frame_publication_key(&frame),
-            published_surface_publication_key(&surface)
+            canvas_frame_publication_identity(&frame),
+            published_surface_publication_identity(&surface)
+        );
+    }
+
+    #[test]
+    fn owned_canvas_publication_identity_matches_owned_canvas_frame_surface_identity() {
+        let canvas = Canvas::new(4, 4);
+        let expected_identity = canvas_storage_publication_identity(&canvas);
+        let frame = CanvasFrame::from_owned_canvas(canvas, 7, 42);
+
+        assert_eq!(
+            canvas_frame_publication_identity(&frame),
+            expected_identity
+        );
+    }
+
+    #[test]
+    fn slot_backed_publication_identity_distinguishes_generation_changes() {
+        let storage = PublishedSurfaceStorageIdentity::CpuRgba { id: 7 };
+
+        assert_ne!(
+            super::surface_publication_identity(1, storage, 2, 1),
+            super::surface_publication_identity(2, storage, 2, 1)
         );
     }
 
