@@ -5,6 +5,7 @@ use leptos_router::hooks::use_query_map;
 
 use crate::api;
 use crate::app::{DisplaysContext, WsContext};
+use crate::components::display_preview_surface::DisplayPreviewSurface;
 use crate::icons::{LuLayers, LuMonitor};
 
 #[component]
@@ -45,6 +46,7 @@ pub fn DisplayPreviewPage() -> impl IntoView {
     on_cleanup(move || {
         ws.set_display_preview_device.set(None);
     });
+    let preview_frame = Signal::derive(move || ws.display_preview_frame.get());
 
     Effect::new(move |_| {
         let Some(display) = selected_display.get() else {
@@ -63,46 +65,6 @@ pub fn DisplayPreviewPage() -> impl IntoView {
                 set_display_face.set(Some(result));
             }
         });
-    });
-
-    let (preview_blob_url, set_preview_blob_url) = signal(None::<String>);
-    Effect::new(move |previous: Option<Option<String>>| {
-        if let Some(Some(old_url)) = previous.as_ref() {
-            let _ = web_sys::Url::revoke_object_url(old_url);
-        }
-
-        let Some(frame) = ws.display_preview_frame.get() else {
-            set_preview_blob_url.set(None);
-            return None;
-        };
-        if !matches!(
-            frame.pixel_format(),
-            crate::ws::messages::CanvasPixelFormat::Jpeg
-        ) {
-            set_preview_blob_url.set(None);
-            return None;
-        }
-
-        let parts = js_sys::Array::new();
-        parts.push(frame.pixels_js());
-        let options = web_sys::BlobPropertyBag::new();
-        options.set_type("image/jpeg");
-        let blob = match web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options) {
-            Ok(blob) => blob,
-            Err(_) => {
-                set_preview_blob_url.set(None);
-                return None;
-            }
-        };
-        let url = match web_sys::Url::create_object_url_with_blob(&blob) {
-            Ok(url) => url,
-            Err(_) => {
-                set_preview_blob_url.set(None);
-                return None;
-            }
-        };
-        set_preview_blob_url.set(Some(url.clone()));
-        Some(url)
     });
 
     let face_name = Signal::derive(move || match display_face.get() {
@@ -153,19 +115,14 @@ pub fn DisplayPreviewPage() -> impl IntoView {
                             .into_any();
                         };
 
-                        let src = preview_blob_url
-                            .get()
-                            .unwrap_or_else(|| api::display_preview_url(&display.id, None));
                         let aspect = format!("{} / {}", display.width, display.height);
-                        let rounded_class = if display.circular {
-                            "rounded-full"
+                        let container_class = if display.circular {
+                            "relative max-h-[calc(100vh-3rem)] max-w-[calc(100vw-3rem)] overflow-hidden rounded-full border border-white/10 bg-black shadow-[0_0_80px_rgba(0,0,0,0.65)]"
                         } else {
-                            "rounded-[2rem]"
+                            "relative max-h-[calc(100vh-3rem)] max-w-[calc(100vw-3rem)] overflow-hidden rounded-[2rem] border border-white/10 bg-black shadow-[0_0_80px_rgba(0,0,0,0.65)]"
                         };
                         let alt_text = format!("Full-screen preview of {}", display.name);
-                        let frame_class = format!(
-                            "relative max-h-[calc(100vh-3rem)] max-w-[calc(100vw-3rem)] overflow-hidden border border-white/10 bg-black shadow-[0_0_80px_rgba(0,0,0,0.65)] {rounded_class}"
-                        );
+                        let fallback_src = api::display_preview_url(&display.id, None);
 
                         view! {
                             <div class="absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-3 p-4">
@@ -182,19 +139,13 @@ pub fn DisplayPreviewPage() -> impl IntoView {
                                     </div>
                                 })}
                             </div>
-                            <div
-                                class=frame_class
-                                style=move || format!("aspect-ratio: {aspect};")
-                            >
-                                <img
-                                    class="h-full w-full object-cover"
-                                    src=src
-                                    alt=alt_text
-                                    loading="eager"
-                                    decoding="async"
-                                    draggable="false"
-                                />
-                            </div>
+                            <DisplayPreviewSurface
+                                frame=preview_frame
+                                fallback_src=fallback_src
+                                aspect_ratio=aspect
+                                aria_label=alt_text
+                                container_class=container_class
+                            />
                         }
                         .into_any()
                     }

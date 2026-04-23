@@ -165,6 +165,8 @@ pub fn CanvasPreview(
     #[prop(default = "100%".to_string())] max_width: String,
     #[prop(default = "pixelated".to_string())] image_rendering: String,
     #[prop(optional)] aspect_ratio: Option<String>,
+    #[prop(default = "Live effect canvas preview".to_string())] aria_label: String,
+    #[prop(default = true)] register_main_preview_consumer: bool,
     #[prop(default = false)] report_presenter_telemetry: bool,
     #[prop(optional)] consumer_count: Option<WriteSignal<u32>>,
 ) -> impl IntoView {
@@ -188,7 +190,11 @@ pub fn CanvasPreview(
         .map(|context| context.set_presenter);
     let smooth_scaling = image_rendering != "pixelated";
     let preview_registered = Arc::new(AtomicBool::new(false));
-    let consumer_count = consumer_count.or_else(|| ws.map(|ws| ws.set_preview_consumers));
+    let consumer_count = if register_main_preview_consumer {
+        consumer_count.or_else(|| ws.map(|ws| ws.set_preview_consumers))
+    } else {
+        consumer_count
+    };
 
     {
         let schedule_canvas_ref = canvas_ref;
@@ -559,7 +565,7 @@ pub fn CanvasPreview(
                 class="w-full h-full block bg-black"
                 style=canvas_style
                 role="img"
-                aria-label="Live effect canvas preview"
+                aria-label=aria_label
             />
             {if show_fps {
                 Some(view! {

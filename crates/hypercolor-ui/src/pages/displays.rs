@@ -11,6 +11,7 @@ use leptos_use::{use_debounce_fn, use_debounce_fn_with_arg};
 
 use crate::api;
 use crate::app::{DisplaysContext, EffectsContext, WsContext};
+use crate::components::display_preview_surface::DisplayPreviewSurface;
 use crate::components::control_panel::ControlPanel;
 use crate::components::page_header::{PageAccent, PageHeader};
 use crate::components::resize_handle::ResizeHandle;
@@ -1280,52 +1281,7 @@ fn DisplayWorkspace(
             ctx.set_display_preview_device.set(None);
         }
     });
-
-    // Blob URL lifecycle for the WS display preview frame. Every incoming
-    // JPEG frame gets a fresh object URL; the previous URL is revoked on
-    // the next tick so we don't leak blob memory. When no frame is
-    // available, the signal is None and the <img> falls back to the
-    // REST preview endpoint (cached JPEG, useful while the WS warms up
-    // or when the daemon isn't yet pushing frames).
-    let (preview_blob_url, set_preview_blob_url) = signal(None::<String>);
-    Effect::new(move |previous: Option<Option<String>>| {
-        if let Some(Some(old_url)) = previous.as_ref() {
-            let _ = web_sys::Url::revoke_object_url(old_url);
-        }
-        let Some(ctx) = ws else { return None };
-        let Some(frame) = ctx.display_preview_frame.get() else {
-            set_preview_blob_url.set(None);
-            return None;
-        };
-        if !matches!(
-            frame.pixel_format(),
-            crate::ws::messages::CanvasPixelFormat::Jpeg
-        ) {
-            set_preview_blob_url.set(None);
-            return None;
-        }
-
-        let parts = js_sys::Array::new();
-        parts.push(frame.pixels_js());
-        let options = web_sys::BlobPropertyBag::new();
-        options.set_type("image/jpeg");
-        let blob = match web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options) {
-            Ok(blob) => blob,
-            Err(_) => {
-                set_preview_blob_url.set(None);
-                return None;
-            }
-        };
-        let url = match web_sys::Url::create_object_url_with_blob(&blob) {
-            Ok(url) => url,
-            Err(_) => {
-                set_preview_blob_url.set(None);
-                return None;
-            }
-        };
-        set_preview_blob_url.set(Some(url.clone()));
-        Some(url)
-    });
+    let preview_frame = Signal::derive(move || ws.and_then(|ctx| ctx.display_preview_frame.get()));
 
     let subtitle = Signal::derive(move || {
         selected_display.with(|display| {
@@ -1405,45 +1361,25 @@ fn DisplayWorkspace(
                             </div>
                         }.into_any();
                     };
-                    // Prefer the live WS blob URL when a frame has arrived;
-                    // fall back to the REST preview endpoint while the WS
-                    // channel is warming up or disconnected so the user
-                    // never sees a black rectangle mid-connection.
                     let refresh_tick = face_refresh_tick.get();
-                    let src = preview_blob_url
-                        .get()
-                        .unwrap_or_else(|| api::display_preview_url(&display.id, Some(refresh_tick)));
                     let aspect = format!("{} / {}", display.width, display.height);
-                    let rounded_class = if display.circular {
-                        "rounded-full"
+                    let container_class = if display.circular {
+                        "max-h-full max-w-full overflow-hidden rounded-full border border-edge-default bg-black shadow-2xl"
                     } else {
-                        "rounded-lg"
+                        "max-h-full max-w-full overflow-hidden rounded-lg border border-edge-default bg-black shadow-2xl"
                     };
                     let aria_label = format!("Live preview of {}", display.name);
-                    let container_class = format!(
-                        "max-h-full max-w-full overflow-hidden border border-edge-default bg-black shadow-2xl {rounded_class}"
-                    );
+                    let fallback_src =
+                        api::display_preview_url(&display.id, Some(refresh_tick));
 
                     view! {
-                        <div
-                            class=container_class
-                            style=move || format!("aspect-ratio: {aspect};")
-                            role="img"
-                            aria-label=aria_label
-                        >
-                            // alt is empty so the browser doesn't render the
-                            // fallback string while the preview URL loads —
-                            // the circular clip otherwise crops it mid-word.
-                            // The parent div carries the accessible label.
-                            <img
-                                class="h-full w-full object-cover"
-                                src=src
-                                alt=""
-                                loading="eager"
-                                decoding="async"
-                                draggable="false"
-                            />
-                        </div>
+                        <DisplayPreviewSurface
+                            frame=preview_frame
+                            fallback_src=fallback_src
+                            aspect_ratio=aspect
+                            aria_label=aria_label
+                            container_class=container_class
+                        />
                     }.into_any()
                 }}
             </div>
