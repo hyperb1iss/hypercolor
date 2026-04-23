@@ -2,6 +2,7 @@
 
 use std::rc::Rc;
 
+use hypercolor_leptos_ext::ws::ExponentialBackoff;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -21,9 +22,6 @@ use super::preview::{
 };
 use crate::api::DeviceMetricsSnapshot;
 
-/// Reconnection delay bounds (milliseconds).
-const RECONNECT_BASE_MS: i32 = 500;
-const RECONNECT_MAX_MS: i32 = 15_000;
 const BACKPRESSURE_RECOVERY_MS: f64 = 2_000.0;
 
 fn quantize_preview_fps(value: f64) -> f32 {
@@ -551,14 +549,10 @@ fn schedule_reconnect(
     let attempt = reconnect_attempts.get_value();
     reconnect_attempts.set_value(attempt.saturating_add(1));
 
-    // Exponential backoff: 500ms, 1s, 2s, 4s, 8s, capped at 15s
-    let base_delay = RECONNECT_BASE_MS.saturating_mul(1_i32.wrapping_shl(attempt.min(5)));
-    let delay = base_delay.min(RECONNECT_MAX_MS);
-
-    // Add jitter (±25%) to prevent thundering herd on daemon restart
-    let jitter = (js_sys::Math::random() * 0.5 - 0.25) * f64::from(delay);
-    #[allow(clippy::cast_possible_truncation)]
-    let final_delay = (f64::from(delay) + jitter).max(100.0) as i32;
+    let delay = ExponentialBackoff::HYPERCOLOR_DEFAULT
+        .delay_for_attempt_with_sample(attempt, js_sys::Math::random())
+        .unwrap_or(ExponentialBackoff::HYPERCOLOR_DEFAULT.base);
+    let final_delay = i32::try_from(delay.as_millis()).unwrap_or(i32::MAX).max(100);
 
     let callback = Closure::once_into_js(move || {
         if let Some(connect_fn) = connect.get_value() {
