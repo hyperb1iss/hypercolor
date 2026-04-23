@@ -13,7 +13,7 @@ use super::frame_policy::{FrameExecution, SkipDecision};
 use super::frame_reporting::{FrameCompletionReport, report_active_frame_completion};
 use super::frame_sampling::{LedSamplingOutcome, resolve_led_sampling};
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
-use super::pipeline_runtime::{OutputFrameSource, PendingSamplingWork, PipelineRuntime};
+use super::pipeline_runtime::{OutputFrameSource, OutputReuseKey, PendingSamplingWork, PipelineRuntime};
 use super::scene_snapshot::{build_frame_scene_snapshot, refresh_effect_scene_snapshot};
 use super::sparkleflinger::ComposedFrameSet;
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
@@ -219,10 +219,11 @@ pub(crate) async fn execute_frame(
             state.backend_manager.lock().await
         };
         let device_brightness_generation = manager.output_brightness_generation();
+        let output_reuse_key =
+            OutputReuseKey::new(global_brightness_bits, device_brightness_generation);
         let output_source = frame_loop.output_reuse.select_frame_source(
             reuses_published_frame,
-            global_brightness_bits,
-            device_brightness_generation,
+            output_reuse_key,
             || manager.can_reuse_routed_frame_outputs(layout.as_ref()),
         );
         let write_stats = match output_source {
@@ -253,7 +254,7 @@ pub(crate) async fn execute_frame(
         };
         frame_loop
             .output_reuse
-            .record(global_brightness_bits, device_brightness_generation);
+            .record(output_reuse_key);
         let async_failures = manager.async_write_failures();
         (write_stats, async_failures)
     };
