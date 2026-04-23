@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use tracing::{debug, info};
 
@@ -8,8 +8,6 @@ use super::RenderThreadState;
 use super::frame_executor::execute_frame;
 use super::frame_policy::SkipDecision;
 use super::pipeline_runtime::PipelineRuntime;
-
-const PAUSED_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 pub(crate) async fn run_pipeline(state: RenderThreadState, mut runtime: PipelineRuntime) {
     info!(
@@ -29,9 +27,8 @@ pub(crate) async fn run_pipeline(state: RenderThreadState, mut runtime: Pipeline
         };
 
         if !should_render {
-            if handle_inactive_render_loop(&state, &mut runtime).await {
-                next_frame_at = Instant::now();
-                tokio::time::sleep(PAUSED_POLL_INTERVAL).await;
+            if let Some(execution) = handle_inactive_render_loop(&state, &mut runtime).await {
+                next_frame_at = execution.resolve_deadline(scheduled_start, Instant::now());
                 continue;
             }
 
@@ -50,14 +47,14 @@ pub(crate) async fn run_pipeline(state: RenderThreadState, mut runtime: Pipeline
 async fn handle_inactive_render_loop(
     state: &RenderThreadState,
     runtime: &mut PipelineRuntime,
-) -> bool {
+) -> Option<super::frame_policy::FrameExecution> {
     let loop_state = {
         let render_loop = state.render_loop.read().await;
         render_loop.state()
     };
 
     clear_capture_demand(state, runtime).await;
-    loop_state == hypercolor_core::engine::RenderLoopState::Paused
+    runtime.frame_policy.inactive_loop_execution(loop_state)
 }
 
 async fn clear_capture_demand(state: &RenderThreadState, runtime: &mut PipelineRuntime) {

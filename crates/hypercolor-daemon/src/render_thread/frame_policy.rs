@@ -1,12 +1,14 @@
 use std::time::{Duration, Instant};
 
 use hypercolor_core::engine::FrameStats;
-use hypercolor_core::engine::{FpsTier, RenderLoop};
+use hypercolor_core::engine::{FpsTier, RenderLoop, RenderLoopState};
 
 use super::frame_admission::FrameAdmissionController;
 use crate::deadline::advance_deadline;
 
 pub(crate) use super::frame_admission::FrameAdmissionSample;
+
+const PAUSED_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SkipDecision {
@@ -98,13 +100,22 @@ impl FramePolicy {
         let _ = render_loop.frame_complete();
         FrameExecution::throttle(delay)
     }
+
+    pub(crate) fn inactive_loop_execution(
+        &self,
+        loop_state: RenderLoopState,
+    ) -> Option<FrameExecution> {
+        (loop_state == RenderLoopState::Paused).then_some(FrameExecution::throttle(
+            PAUSED_POLL_INTERVAL,
+        ))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
 
-    use hypercolor_core::engine::{FpsTier, RenderLoop};
+    use hypercolor_core::engine::{FpsTier, RenderLoop, RenderLoopState};
 
     use super::{FrameAdmissionSample, FrameExecution, FramePolicy, NextWake, SkipDecision};
 
@@ -201,5 +212,28 @@ mod tests {
             NextWake::Delay(delay) if delay == Duration::from_millis(120)
         ));
         assert_eq!(execution.next_skip_decision, SkipDecision::None);
+    }
+
+    #[test]
+    fn inactive_loop_execution_uses_paused_poll_delay() {
+        let policy = FramePolicy::new(FpsTier::Full);
+        let execution = policy
+            .inactive_loop_execution(RenderLoopState::Paused)
+            .expect("paused loop should poll again");
+
+        assert!(matches!(
+            execution.next_wake,
+            NextWake::Delay(delay) if delay == Duration::from_millis(50)
+        ));
+        assert_eq!(execution.next_skip_decision, SkipDecision::None);
+    }
+
+    #[test]
+    fn inactive_loop_execution_ignores_stopped_state() {
+        let policy = FramePolicy::new(FpsTier::Full);
+
+        assert!(policy
+            .inactive_loop_execution(RenderLoopState::Stopped)
+            .is_none());
     }
 }
