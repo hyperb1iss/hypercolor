@@ -9,11 +9,7 @@ pub struct ConfigContext {
     pub audio_enabled: Memo<bool>,
 }
 
-pub fn apply_config_key(
-    config: &mut HypercolorConfig,
-    key: &str,
-    value: &serde_json::Value,
-) {
+pub fn apply_config_key(config: &mut HypercolorConfig, key: &str, value: &serde_json::Value) {
     let Ok(mut root) = serde_json::to_value(&*config) else {
         return;
     };

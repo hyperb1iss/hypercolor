@@ -1,11 +1,11 @@
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 use leptos_icons::Icon;
 use leptos_router::hooks::use_query_map;
 
 use crate::api;
 use crate::app::{DisplaysContext, WsContext};
 use crate::components::display_preview_surface::DisplayPreviewSurface;
+use crate::display_preview_state::{use_display_face_resource, use_display_preview_subscription};
 use crate::icons::{LuLayers, LuMonitor};
 
 #[component]
@@ -14,8 +14,6 @@ pub fn DisplayPreviewPage() -> impl IntoView {
     let displays = expect_context::<DisplaysContext>().displays_resource;
     let query = use_query_map();
     let requested_display_id = Memo::new(move |_| query.with(|map| map.get("display")));
-    let (display_face, set_display_face) =
-        signal(None::<Result<Option<api::DisplayFaceResponse>, String>>);
 
     let selected_display = Memo::new(move |_| {
         let snapshot = displays.get();
@@ -37,35 +35,12 @@ pub fn DisplayPreviewPage() -> impl IntoView {
         };
         !items.iter().any(|display| display.id == requested)
     });
-
-    Effect::new(move |_| {
-        let device_id =
-            selected_display.with(|display| display.as_ref().map(|item| item.id.clone()));
-        ws.set_display_preview_device.set(device_id);
+    let selected_display_id = Signal::derive(move || {
+        selected_display.with(|display| display.as_ref().map(|item| item.id.clone()))
     });
-    on_cleanup(move || {
-        ws.set_display_preview_device.set(None);
-    });
+    use_display_preview_subscription(ws, selected_display_id);
     let preview_frame = Signal::derive(move || ws.display_preview_frame.get());
-
-    Effect::new(move |_| {
-        let Some(display) = selected_display.get() else {
-            set_display_face.set(None);
-            return;
-        };
-        let display_id = display.id.clone();
-        let requested_id = display_id.clone();
-        spawn_local(async move {
-            let result = api::fetch_display_face(&requested_id).await;
-            if selected_display
-                .get_untracked()
-                .as_ref()
-                .is_some_and(|current| current.id == requested_id)
-            {
-                set_display_face.set(Some(result));
-            }
-        });
-    });
+    let display_face = use_display_face_resource(selected_display_id, Signal::derive(|| 0_u64));
 
     let face_name = Signal::derive(move || match display_face.get() {
         Some(Ok(Some(face))) => Some(face.effect.name),

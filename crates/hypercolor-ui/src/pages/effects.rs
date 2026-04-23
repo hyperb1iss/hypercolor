@@ -99,6 +99,7 @@ pub fn EffectsPage() -> impl IntoView {
     ));
     let pending_control_updates =
         StoredValue::new(std::collections::HashMap::<String, serde_json::Value>::new());
+    let control_request_epoch = StoredValue::new(0_u64);
     let preferences_store = use_context::<crate::preferences::PreferencesStore>();
     let flush_control_updates = use_debounce_fn(
         move || {
@@ -111,26 +112,49 @@ pub fn EffectsPage() -> impl IntoView {
 
             let controls_json =
                 serde_json::Value::Object(updates.into_iter().collect::<serde_json::Map<_, _>>());
+            let request_epoch = control_request_epoch
+                .try_update_value(|epoch| {
+                    *epoch = epoch.wrapping_add(1);
+                    *epoch
+                })
+                .unwrap_or_default();
+            let active_effect_id = fx.active_effect_id.get_untracked();
             leptos::task::spawn_local(async move {
-                let _ = api::update_controls(&controls_json).await;
+                match api::update_controls(&controls_json).await {
+                    Ok(()) => {
+                        let is_latest_request = control_request_epoch.get_value() == request_epoch;
+                        let has_pending_updates =
+                            pending_control_updates.with_value(|pending| !pending.is_empty());
+                        let same_effect = fx.active_effect_id.get_untracked() == active_effect_id;
+                        if is_latest_request
+                            && !has_pending_updates
+                            && same_effect
+                            && let Some(store) = preferences_store
+                            && let Some(effect_id) = active_effect_id
+                        {
+                            store.save(
+                                effect_id,
+                                crate::preferences::EffectPreferences {
+                                    preset_id: fx.active_preset_id.get_untracked(),
+                                    control_values: fx.active_control_values.get_untracked(),
+                                },
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        let is_latest_request = control_request_epoch.get_value() == request_epoch;
+                        let has_pending_updates =
+                            pending_control_updates.with_value(|pending| !pending.is_empty());
+                        let same_effect = fx.active_effect_id.get_untracked() == active_effect_id;
+                        if is_latest_request && !has_pending_updates && same_effect {
+                            fx.refresh_active_effect();
+                            toasts::toast_error(&format!(
+                                "Failed to update effect controls: {error}"
+                            ));
+                        }
+                    }
+                }
             });
-
-            // Persist the resulting control state so switching effects
-            // and coming back lands on the same tweaks. The daemon has
-            // already seen the change via `update_controls`, so we can
-            // just mirror the current `active_control_values` signal —
-            // the debounce already smoothed out slider drags for us.
-            if let Some(store) = preferences_store
-                && let Some(effect_id) = fx.active_effect_id.get_untracked()
-            {
-                store.save(
-                    effect_id,
-                    crate::preferences::EffectPreferences {
-                        preset_id: fx.active_preset_id.get_untracked(),
-                        control_values: fx.active_control_values.get_untracked(),
-                    },
-                );
-            }
         },
         75.0,
     );

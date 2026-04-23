@@ -338,8 +338,7 @@ mod tests {
     use super::{
         PreviewSubscriptionRequest, REMOTE_PREVIEW_WIDTH_LOW, REMOTE_PREVIEW_WIDTH_MEDIUM,
         preview_canvas_format_for_host, preview_canvas_request_dimensions_for_host,
-        remote_preview_width_for_fps,
-        web_viewport_preview_request_dimensions,
+        remote_preview_width_for_fps, web_viewport_preview_request_dimensions,
     };
 
     #[test]

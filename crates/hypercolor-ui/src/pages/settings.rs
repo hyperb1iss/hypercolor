@@ -6,9 +6,9 @@ use leptos_use::{UseIntersectionObserverOptions, use_intersection_observer_with_
 use wasm_bindgen::JsCast;
 
 use crate::api;
-use crate::config_state::{ConfigContext, apply_config_key};
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::settings_sections::*;
+use crate::config_state::{ConfigContext, apply_config_key};
 use crate::icons::*;
 
 /// Section IDs for nav and scroll spy.

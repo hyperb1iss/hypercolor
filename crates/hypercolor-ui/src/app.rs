@@ -12,8 +12,8 @@ use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 use crate::api;
 use crate::color::CanvasFrameAnalysis;
 use crate::components::preset_matching::controls_to_json;
-use crate::config_state::ConfigContext;
 use crate::components::shell::Shell;
+use crate::config_state::ConfigContext;
 use crate::device_event_logic::should_refetch_devices_for_event;
 use crate::effect_search::IndexedEffect;
 use crate::pages::dashboard::DashboardPage;
@@ -523,11 +523,8 @@ pub fn App() -> impl IntoView {
             }
         });
     });
-    let audio_enabled = Memo::new(move |_| {
-        config
-            .get()
-            .is_some_and(|current| current.audio.enabled)
-    });
+    let audio_enabled =
+        Memo::new(move |_| config.get().is_some_and(|current| current.audio.enabled));
     provide_context(ConfigContext {
         config,
         set_config,

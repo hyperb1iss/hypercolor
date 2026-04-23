@@ -11,10 +11,11 @@ use leptos_use::{use_debounce_fn, use_debounce_fn_with_arg};
 
 use crate::api;
 use crate::app::{DisplaysContext, EffectsContext, WsContext};
-use crate::components::display_preview_surface::DisplayPreviewSurface;
 use crate::components::control_panel::ControlPanel;
+use crate::components::display_preview_surface::DisplayPreviewSurface;
 use crate::components::page_header::{PageAccent, PageHeader};
 use crate::components::resize_handle::ResizeHandle;
+use crate::display_preview_state::{use_display_face_resource, use_display_preview_subscription};
 use crate::icons::*;
 use crate::preferences::{EffectPreferences, PreferencesStore};
 use crate::toasts;
@@ -218,30 +219,25 @@ pub fn DisplaysPage() -> impl IntoView {
         let items = snapshot.as_ref()?.as_ref().ok()?;
         items.iter().find(|display| display.id == id).cloned()
     });
+    let selected_display_id = Signal::derive(move || {
+        selected_display.with(|display| display.as_ref().map(|item| item.id.clone()))
+    });
+    let display_face_resource = use_display_face_resource(
+        selected_display_id,
+        Signal::derive(move || face_refresh_tick.get()),
+    );
 
-    // Refetch the assigned face whenever the selected display changes or an
-    // external scene mutation lands. Last-good is preserved while the request
-    // is in flight so the face card doesn't flash empty state during swaps.
     Effect::new(move |_| {
-        let Some(display) = selected_display.get() else {
+        if selected_display_id.get().is_none() {
             set_display_face.set(None);
             set_face_picker_open.set(false);
             set_face_assignment_pending.set(false);
             return;
-        };
-        let _tick = face_refresh_tick.get();
-        let display_id = display.id.clone();
-        let requested_id = display_id.clone();
-        spawn_local(async move {
-            let result = api::fetch_display_face(&requested_id).await;
-            if selected_display
-                .get_untracked()
-                .as_ref()
-                .is_some_and(|current| current.id == requested_id)
-            {
-                set_display_face.set(Some(result));
-            }
-        });
+        }
+
+        if let Some(result) = display_face_resource.get() {
+            set_display_face.set(Some(result));
+        }
     });
 
     // Lazy-load the face catalog the first time the picker opens.
@@ -1268,19 +1264,14 @@ fn DisplayWorkspace(
 ) -> impl IntoView {
     let ws = use_context::<crate::app::WsContext>();
 
-    // Subscribe the `display_preview` WS channel to whichever display is
-    // currently selected. The WsManager handles actual subscribe/unsubscribe
-    // messages and clears `display_preview_frame` on deselect.
-    Effect::new(move |_| {
-        let Some(ctx) = ws else { return };
-        let device_id = selected_display.with(|d| d.as_ref().map(|s| s.id.clone()));
-        ctx.set_display_preview_device.set(device_id);
-    });
-    on_cleanup(move || {
-        if let Some(ctx) = ws {
-            ctx.set_display_preview_device.set(None);
-        }
-    });
+    if let Some(ctx) = ws {
+        use_display_preview_subscription(
+            ctx,
+            Signal::derive(move || {
+                selected_display.with(|display| display.as_ref().map(|item| item.id.clone()))
+            }),
+        );
+    }
     let preview_frame = Signal::derive(move || ws.and_then(|ctx| ctx.display_preview_frame.get()));
 
     let subtitle = Signal::derive(move || {

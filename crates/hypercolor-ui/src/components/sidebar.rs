@@ -722,7 +722,8 @@ fn SidebarAudioToggle() -> impl IntoView {
             }
         });
         spawn_api_call("Failed to toggle audio", async move {
-            let result = api::set_config_value("audio.enabled", &serde_json::json!(new_state)).await;
+            let result =
+                api::set_config_value("audio.enabled", &serde_json::json!(new_state)).await;
             if result.is_err() {
                 config_ctx.refresh.run(());
             }
