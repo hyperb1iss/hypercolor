@@ -1,9 +1,14 @@
 mod channel;
+mod frame;
 mod reconnect;
 mod schema;
 pub mod transport;
 
 pub use channel::Channel;
+pub use frame::{
+    BinaryFrame, BinaryFrameDecode, BinaryFrameEncode, DecodeError, validate_frame_prefix,
+    write_frame_prefix,
+};
 pub use hypercolor_leptos_ext_macros::BinaryFrame;
 pub use reconnect::{Connector, ExponentialBackoff, Jitter, ReconnectOutcome, ReconnectPolicy};
 pub use schema::{SchemaRange, negotiate_highest_common_schema};
