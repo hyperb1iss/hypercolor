@@ -2160,12 +2160,12 @@ impl IpcListener {
 
 ## 9. WebSocket Bridge
 
-The WebSocket at `ws://127.0.0.1:9420/ws` is the primary real-time channel for the SvelteKit web frontend. It carries JSON messages for commands and events, plus binary messages for frame and spectrum data.
+The WebSocket at `ws://127.0.0.1:9420/api/v1/ws` is the primary real-time channel for the SvelteKit web frontend. It carries JSON messages for commands and events, plus binary messages for frame and spectrum data.
 
 ### 9.1 Connection & Handshake
 
 ```
-GET /ws HTTP/1.1
+GET /api/v1/ws HTTP/1.1
 Host: 127.0.0.1:9420
 Upgrade: websocket
 Connection: Upgrade
@@ -2672,7 +2672,7 @@ async fn handle_ws(ws: WebSocket, bus: HypercolorBus) {
 
 // Axum route handler passes the bus via State
 let app = Router::new()
-    .route("/ws", get(ws_handler))
+    .route("/api/v1/ws", get(ws_handler))
     .with_state(bus.clone());
 ```
 

@@ -472,7 +472,7 @@ fn token_from_query(query: Option<&str>) -> Option<String> {
 }
 
 fn allows_query_token(request: &Request<Body>) -> bool {
-    matches!(request.uri().path(), "/ws" | "/api/v1/ws")
+    matches!(request.uri().path(), "/api/v1/ws")
         && request.method() == Method::GET
         && request
             .headers()

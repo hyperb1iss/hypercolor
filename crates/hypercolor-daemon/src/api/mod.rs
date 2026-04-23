@@ -1171,8 +1171,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route("/ws", axum::routing::get(ws::ws_handler));
     let mut router = Router::new()
         .nest("/api/v1", api)
-        // Compatibility alias for clients still using the legacy top-level WS path.
-        .route("/ws", axum::routing::get(ws::ws_handler))
         .route("/preview", axum::routing::get(preview::preview_page))
         .route("/health", axum::routing::get(system::health_check));
 

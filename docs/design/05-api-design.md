@@ -44,7 +44,7 @@ Hypercolor exposes multiple API surfaces because different consumers have fundam
 | Surface | Default Binding | Protocol |
 |---------|----------------|----------|
 | REST API | `127.0.0.1:9420` | HTTP/1.1 + HTTP/2 |
-| WebSocket | `ws://127.0.0.1:9420/ws` | WebSocket (RFC 6455) |
+| WebSocket | `ws://127.0.0.1:9420/api/v1/ws` | WebSocket (RFC 6455) |
 | Web UI | `http://127.0.0.1:9420/` | Embedded SvelteKit |
 | Unix socket | `/run/hypercolor/hypercolor.sock` | Custom JSON-RPC |
 | D-Bus | `tech.hyperbliss.Hypercolor1` | D-Bus session bus |
@@ -686,12 +686,12 @@ X-RateLimit-Reset: 1709294460
 
 ## 3. WebSocket API
 
-The WebSocket endpoint at `ws://127.0.0.1:9420/ws` is the primary real-time channel. It carries both high-frequency binary data (LED frames, audio spectra) and JSON event messages.
+The WebSocket endpoint at `ws://127.0.0.1:9420/api/v1/ws` is the primary real-time channel. It carries both high-frequency binary data (LED frames, audio spectra) and JSON event messages.
 
 ### 3.1 Connection & Handshake
 
 ```
-GET /ws HTTP/1.1
+GET /api/v1/ws HTTP/1.1
 Upgrade: websocket
 Connection: Upgrade
 Sec-WebSocket-Protocol: hypercolor-v1
@@ -2214,7 +2214,7 @@ Authorization: Bearer hc_ak_x7k2m9p4q1w8...
 Or query parameter for WebSocket connections:
 
 ```
-ws://192.168.1.100:9420/ws?token=hc_ak_x7k2m9p4q1w8...
+ws://192.168.1.100:9420/api/v1/ws?token=hc_ak_x7k2m9p4q1w8...
 ```
 
 ### 9.4 Access Tiers
@@ -2245,7 +2245,7 @@ hypercolor api-key create --name "home-assistant" --access control
 WebSocket connections authenticate on the initial HTTP upgrade request:
 
 ```
-GET /ws HTTP/1.1
+GET /api/v1/ws HTTP/1.1
 Authorization: Bearer hc_ak_x7k2m9p4q1w8...
 Upgrade: websocket
 ```

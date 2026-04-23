@@ -15,8 +15,6 @@ Connect to the WebSocket endpoint:
 ws://localhost:9420/api/v1/ws
 ```
 
-A legacy alias is also available at `ws://localhost:9420/ws` for backwards compatibility.
-
 If API key authentication is configured, include the token as a query parameter:
 
 ```
