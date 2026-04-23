@@ -609,15 +609,15 @@ fn log_servo_readback_gl_errors(errors: &[u32]) {
     }
 
     let formatted = format_gl_error_codes(errors);
-    if !SERVO_READBACK_GL_WARNING_EMITTED.swap(true, Ordering::AcqRel) {
-        warn!(
-            errors = %formatted,
-            "GL errors raised during Servo framebuffer readback; suppressing repeated warnings"
-        );
-    } else {
+    if SERVO_READBACK_GL_WARNING_EMITTED.swap(true, Ordering::AcqRel) {
         trace!(
             errors = %formatted,
             "Repeated GL errors during Servo framebuffer readback"
+        );
+    } else {
+        warn!(
+            errors = %formatted,
+            "GL errors raised during Servo framebuffer readback; suppressing repeated warnings"
         );
     }
 }

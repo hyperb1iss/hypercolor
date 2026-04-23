@@ -344,6 +344,7 @@ impl DeferredSamplingState {
 }
 
 #[derive(Debug, Default)]
+#[allow(clippy::struct_field_names)]
 pub(crate) struct PublicationCadenceState {
     pub(crate) last_audio_level_update_ms: Option<u32>,
     pub(crate) last_canvas_preview_publish_ms: Option<u32>,
@@ -605,10 +606,6 @@ pub(crate) struct ComposeRuntime<'a> {
 }
 
 impl ComposeRuntime<'_> {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "scene rendering consumes the full scene snapshot plus current frame inputs"
-    )]
     pub(crate) fn reuse_or_render_scene(
         &mut self,
         scene_snapshot: &FrameSceneSnapshot,

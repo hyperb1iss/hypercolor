@@ -339,9 +339,9 @@ impl EffectRegistry {
             .map(|(id, _)| *id)
             .collect();
 
-        for id in stale.iter().copied() {
+        for id in &stale {
             warn!(id = %id, "Pruning missing effect from registry");
-            let _ = self.remove(&id);
+            let _ = self.remove(id);
         }
 
         stale

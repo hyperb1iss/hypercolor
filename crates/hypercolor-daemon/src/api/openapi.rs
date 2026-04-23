@@ -1,3 +1,5 @@
+#![allow(clippy::needless_for_each)]
+
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
