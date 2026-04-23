@@ -221,12 +221,12 @@ pub(crate) async fn execute_frame(
         let device_brightness_generation = manager.output_brightness_generation();
         let output_reuse_key =
             OutputReuseKey::new(global_brightness_bits, device_brightness_generation);
-        let output_source = frame_loop.output_reuse.select_frame_source(
+        let output_reuse_decision = frame_loop.output_reuse.decide_frame_source(
             reuses_published_frame,
             output_reuse_key,
             || manager.can_reuse_routed_frame_outputs(layout.as_ref()),
         );
-        let write_stats = match output_source {
+        let write_stats = match output_reuse_decision.source() {
             OutputFrameSource::RoutedReuse => {
                 manager.reuse_routed_frame_outputs(layout.as_ref())
             }
@@ -254,7 +254,7 @@ pub(crate) async fn execute_frame(
         };
         frame_loop
             .output_reuse
-            .record(output_reuse_key);
+            .record_decision(output_reuse_decision);
         let async_failures = manager.async_write_failures();
         (write_stats, async_failures)
     };

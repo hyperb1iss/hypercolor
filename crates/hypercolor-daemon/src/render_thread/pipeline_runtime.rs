@@ -495,27 +495,46 @@ pub(crate) enum OutputFrameSource {
     CurrentFrame,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OutputReuseDecision {
+    key: OutputReuseKey,
+    source: OutputFrameSource,
+}
+
+impl OutputReuseDecision {
+    pub(crate) const fn source(self) -> OutputFrameSource {
+        self.source
+    }
+}
+
 impl OutputReuseState {
     pub(crate) fn matches(&self, key: OutputReuseKey) -> bool {
         self.last_key == Some(key)
     }
 
-    pub(crate) fn select_frame_source(
+    pub(crate) fn decide_frame_source(
         &self,
         reuses_published_frame: bool,
         key: OutputReuseKey,
         routed_outputs_reusable: impl FnOnce() -> bool,
-    ) -> OutputFrameSource {
-        if reuses_published_frame && self.matches(key) && routed_outputs_reusable() {
-            OutputFrameSource::RoutedReuse
-        } else if reuses_published_frame {
-            OutputFrameSource::PublishedFrame
-        } else {
-            OutputFrameSource::CurrentFrame
-        }
+    ) -> OutputReuseDecision {
+        let source =
+            if reuses_published_frame && self.matches(key) && routed_outputs_reusable() {
+                OutputFrameSource::RoutedReuse
+            } else if reuses_published_frame {
+                OutputFrameSource::PublishedFrame
+            } else {
+                OutputFrameSource::CurrentFrame
+            };
+
+        OutputReuseDecision { key, source }
     }
 
-    pub(crate) fn record(&mut self, key: OutputReuseKey) {
+    pub(crate) fn record_decision(&mut self, decision: OutputReuseDecision) {
+        self.record(decision.key);
+    }
+
+    fn record(&mut self, key: OutputReuseKey) {
         self.last_key = Some(key);
     }
 }
@@ -978,7 +997,7 @@ mod tests {
         let key = OutputReuseKey::new(1, 7);
         reuse.record(key);
 
-        let source = reuse.select_frame_source(true, key, || true);
+        let source = reuse.decide_frame_source(true, key, || true).source();
 
         assert_eq!(source, OutputFrameSource::RoutedReuse);
     }
@@ -989,7 +1008,7 @@ mod tests {
         let key = OutputReuseKey::new(1, 7);
         reuse.record(key);
 
-        let source = reuse.select_frame_source(true, key, || false);
+        let source = reuse.decide_frame_source(true, key, || false).source();
 
         assert_eq!(source, OutputFrameSource::PublishedFrame);
     }
@@ -1000,10 +1019,10 @@ mod tests {
         let route_probe_calls = Cell::new(0_u32);
         let key = OutputReuseKey::new(1, 7);
 
-        let source = reuse.select_frame_source(false, key, || {
+        let source = reuse.decide_frame_source(false, key, || {
             route_probe_calls.set(route_probe_calls.get() + 1);
             true
-        });
+        }).source();
 
         assert_eq!(source, OutputFrameSource::CurrentFrame);
         assert_eq!(route_probe_calls.get(), 0);
@@ -1015,12 +1034,23 @@ mod tests {
         reuse.record(OutputReuseKey::new(1, 7));
         let route_probe_calls = Cell::new(0_u32);
 
-        let source = reuse.select_frame_source(true, OutputReuseKey::new(1, 8), || {
+        let source = reuse.decide_frame_source(true, OutputReuseKey::new(1, 8), || {
             route_probe_calls.set(route_probe_calls.get() + 1);
             true
-        });
+        }).source();
 
         assert_eq!(source, OutputFrameSource::PublishedFrame);
         assert_eq!(route_probe_calls.get(), 0);
+    }
+
+    #[test]
+    fn output_frame_source_records_reuse_metadata_after_decision() {
+        let mut reuse = OutputReuseState::default();
+        let key = OutputReuseKey::new(1, 7);
+
+        let decision = reuse.decide_frame_source(false, key, || true);
+        reuse.record_decision(decision);
+
+        assert!(reuse.matches(key));
     }
 }
