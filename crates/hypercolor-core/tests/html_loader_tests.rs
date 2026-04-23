@@ -31,6 +31,7 @@ fn register_html_effects_loads_effects_from_directory_tree() {
   <title>Aurora</title>
   <meta description="Northern lights" />
   <meta publisher="Hypercolor" />
+  <meta audio-reactive="true" />
   <meta property="speed" label="Speed" type="number" default="50" min="0" max="100" />
 </head>
 <script>

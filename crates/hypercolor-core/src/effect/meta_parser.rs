@@ -175,8 +175,7 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
         publisher.push_str("unknown");
     }
 
-    let audio_reactive = detect_audio_meta_tag(&sanitized)
-        .unwrap_or_else(|| detect_audio_reactivity_heuristic(&lower));
+    let audio_reactive = detect_audio_meta_tag(&sanitized).unwrap_or(false);
     let screen_reactive = detect_screen_meta_tag(&sanitized).unwrap_or(false);
     let renderer_hint = detect_renderer_meta_tag(&sanitized);
     let builtin_id = detect_builtin_id_meta_tag(&sanitized);
@@ -512,19 +511,6 @@ fn detect_builtin_id_meta_tag(html: &str) -> Option<String> {
         }
     }
     None
-}
-
-/// Heuristic fallback for legacy/custom effects that lack an explicit audio meta tag.
-fn detect_audio_reactivity_heuristic(lower: &str) -> bool {
-    const AUDIO_MARKERS: &[&str] = &[
-        "engine.audio",
-        "iaudio",
-        "audio.freq",
-        "audio.level",
-        "audio.density",
-    ];
-
-    AUDIO_MARKERS.iter().any(|marker| lower.contains(marker))
 }
 
 fn detect_renderer_meta_tag(html: &str) -> Option<HtmlRendererKind> {
@@ -899,10 +885,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_audio_meta_tag_overrides_heuristic() {
-        // Simulates a bundled SDK effect: engine.audio appears in the runtime code
-        // but the effect itself is NOT audio-reactive (no meta tag = would trigger heuristic).
-        // The explicit meta tag should take precedence.
+    fn audio_reactivity_requires_explicit_meta_tag() {
         let html = r#"
 <head>
   <title>Borealis</title>
@@ -915,10 +898,8 @@ mod tests {
 </script>
 "#;
         let parsed = parse_html_effect_metadata(html);
-        // Without explicit meta tag, heuristic fires — this is the legacy fallback
-        assert!(parsed.audio_reactive);
+        assert!(!parsed.audio_reactive);
 
-        // Now with explicit audio-reactive="true" meta tag
         let html_audio = r#"
 <head>
   <title>Audio Pulse</title>
@@ -931,7 +912,16 @@ mod tests {
         assert!(parsed.audio_reactive);
         assert_eq!(parsed.category, EffectCategory::Audio);
 
-        // Explicit audio-reactive absent — but NO audio markers in body = not audio
+        let html_false = r#"
+<head>
+  <title>Ambient Layers</title>
+  <meta audio-reactive="false"/>
+</head>
+<script>engine.audio.freq;</script>
+"#;
+        let parsed = parse_html_effect_metadata(html_false);
+        assert!(!parsed.audio_reactive);
+
         let html_clean = r#"
 <head>
   <title>Clean Effect</title>

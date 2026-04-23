@@ -616,6 +616,14 @@ fn control_definition_dropdown() {
 }
 
 #[test]
+fn control_definition_control_id_does_not_fallback_to_name() {
+    let mut ctrl = sample_slider_control();
+    ctrl.id.clear();
+
+    assert_eq!(ctrl.control_id(), "");
+}
+
+#[test]
 fn control_definition_serde_round_trip() {
     let ctrl = sample_slider_control();
     let json = serde_json::to_string_pretty(&ctrl).expect("serialize");

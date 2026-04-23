@@ -474,16 +474,9 @@ pub struct ControlDefinition {
 
 impl ControlDefinition {
     /// Returns a stable control id.
-    ///
-    /// For backward compatibility with older metadata payloads, falls back
-    /// to `name` when `id` is unset.
     #[must_use]
     pub fn control_id(&self) -> &str {
-        if self.id.is_empty() {
-            &self.name
-        } else {
-            &self.id
-        }
+        &self.id
     }
 
     /// Validate and normalize a control value against this definition.
