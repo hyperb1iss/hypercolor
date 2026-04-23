@@ -4,10 +4,7 @@ mod api;
 mod attachment_editor;
 
 use api::{AttachmentBindingSummary, TemplateSummary};
-use attachment_editor::{
-    AttachmentDraftRow, expand_bindings_to_drafts, expand_slot_bindings, pack_slot_rows,
-    summarize_slot_rows,
-};
+use attachment_editor::{DraftRow, expand_bindings_to_drafts, summarize_channel};
 use hypercolor_types::attachment::{AttachmentCategory, AttachmentSlot};
 
 fn slot() -> AttachmentSlot {
@@ -55,9 +52,23 @@ fn binding(
     }
 }
 
+fn pack_rows(rows: &[DraftRow], templates: &[TemplateSummary]) -> Vec<(u32, u32)> {
+    let mut offset = 0_u32;
+    rows.iter()
+        .map(|row| {
+            let led_count = row
+                .led_count(templates)
+                .expect("test rows should resolve to a template");
+            let placement = (offset, offset.saturating_add(led_count));
+            offset = placement.1;
+            placement
+        })
+        .collect()
+}
+
 #[test]
 fn expand_slot_bindings_splits_multi_instance_bindings_into_rows() {
-    let rows = expand_slot_bindings(
+    let rows = expand_bindings_to_drafts(
         "channel-1",
         &[binding(
             "channel-1",
@@ -67,12 +78,12 @@ fn expand_slot_bindings_splits_multi_instance_bindings_into_rows() {
             0,
             Some("Top Fan"),
         )],
+        &[],
     );
 
     assert_eq!(rows.len(), 3);
-    assert_eq!(rows[0].template_id, "lian-li-sl-unifan-fan");
-    assert_eq!(rows[0].name.as_deref(), Some("Top Fan 1"));
-    assert_eq!(rows[2].name.as_deref(), Some("Top Fan 3"));
+    assert_eq!(rows[0].name, "Top Fan 1");
+    assert_eq!(rows[2].name, "Top Fan 3");
 }
 
 #[test]
@@ -113,7 +124,6 @@ fn expand_bindings_to_drafts_tracks_saved_binding_targets_per_instance() {
 
 #[test]
 fn pack_slot_rows_auto_packs_rows_without_manual_offsets() {
-    let slot = slot();
     let templates = vec![template(
         "lian-li-sl-unifan-fan",
         "Lian Li UNIFan SL120 - 16 LED",
@@ -121,27 +131,18 @@ fn pack_slot_rows_auto_packs_rows_without_manual_offsets() {
         16,
     )];
     let rows = vec![
-        AttachmentDraftRow {
-            template_id: "lian-li-sl-unifan-fan".to_owned(),
-            name: None,
-        },
-        AttachmentDraftRow {
-            template_id: "lian-li-sl-unifan-fan".to_owned(),
-            name: None,
-        },
-        AttachmentDraftRow {
-            template_id: "lian-li-sl-unifan-fan".to_owned(),
-            name: None,
-        },
+        DraftRow::from_component("lian-li-sl-unifan-fan".to_owned(), String::new()),
+        DraftRow::from_component("lian-li-sl-unifan-fan".to_owned(), String::new()),
+        DraftRow::from_component("lian-li-sl-unifan-fan".to_owned(), String::new()),
     ];
 
-    let packed = pack_slot_rows(&slot, &rows, &templates).expect("rows should pack cleanly");
+    let packed = pack_rows(&rows, &templates);
 
     assert_eq!(packed.len(), 3);
-    assert_eq!(packed[0].led_offset, 0);
-    assert_eq!(packed[1].led_offset, 16);
-    assert_eq!(packed[2].led_offset, 32);
-    assert_eq!(packed[2].led_end, 48);
+    assert_eq!(packed[0].0, 0);
+    assert_eq!(packed[1].0, 16);
+    assert_eq!(packed[2].0, 32);
+    assert_eq!(packed[2].1, 48);
 }
 
 #[test]
@@ -162,17 +163,11 @@ fn summarize_slot_rows_flags_overflow_when_rows_exceed_slot_capacity() {
         ),
     ];
     let rows = vec![
-        AttachmentDraftRow {
-            template_id: "fan".to_owned(),
-            name: None,
-        },
-        AttachmentDraftRow {
-            template_id: "strip".to_owned(),
-            name: None,
-        },
+        DraftRow::from_component("fan".to_owned(), String::new()),
+        DraftRow::from_component("strip".to_owned(), String::new()),
     ];
 
-    let summary = summarize_slot_rows(&slot, &rows, &templates);
+    let summary = summarize_channel(&slot, &rows, &templates);
 
     assert_eq!(summary.total_leds, 63);
     assert_eq!(summary.overflow_leds, 15);
