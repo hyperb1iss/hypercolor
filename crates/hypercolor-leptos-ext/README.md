@@ -11,7 +11,8 @@ available for real load testing.
 ## Feature Matrix
 
 - `ws-core`: binary frame traits, schema negotiation, transports, reconnect,
-  backpressure policies, and Hypercolor preview frame codecs.
+  backpressure policies, raw RPC frames, session replay records, and Hypercolor
+  preview frame codecs.
 - `ws-client-wasm`: browser `web_sys::WebSocket` transport for
   `wasm32-unknown-unknown`.
 - `axum`: server-side Axum WebSocket transport.
@@ -29,7 +30,8 @@ The stream core is the first viable public extraction candidate. The intended
 public crate shape is:
 
 - `cinder-stream`: `BinaryFrame`, schema negotiation, `CinderTransport`,
-  `BinaryChannel`, reconnect policy primitives, and backpressure queues.
+  `BinaryChannel`, reconnect policy primitives, backpressure queues, raw RPC
+  envelopes, and session replay records.
 - `cinder-web`: browser-native event, animation frame, canvas, and WebSocket
   wrappers once the UI migration proves the ergonomics.
 - `cinder-leptos`: Leptos adapters layered above `cinder-web` and
