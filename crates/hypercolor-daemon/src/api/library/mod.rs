@@ -13,7 +13,6 @@ use std::sync::Arc;
 
 use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
 use hypercolor_types::library::PresetId;
-use tracing::info;
 
 use crate::api::AppState;
 use crate::library::LibraryStoreError;
@@ -71,9 +70,7 @@ pub(crate) async fn activate_effect_with_controls(
     metadata: &EffectMetadata,
     controls: &HashMap<String, ControlValue>,
 ) -> Result<ActivationResult, ActivateEffectError> {
-    let (controls, migrated_controls) =
-        crate::library::migration::migrate_effect_controls_for_load(metadata, controls);
-    let (controls, rejected) = crate::api::effects::normalize_control_values(metadata, &controls);
+    let (controls, rejected) = crate::api::effects::normalize_control_values(metadata, controls);
     let layout = {
         let spatial = state.spatial_engine.read().await;
         spatial.layout().as_ref().clone()
@@ -86,13 +83,6 @@ pub(crate) async fn activate_effect_with_controls(
         scene_manager
             .upsert_primary_group(metadata, controls.clone(), None, layout)
             .map_err(|error| ActivateEffectError::Activation(error.to_string()))?;
-    }
-    if migrated_controls {
-        info!(
-            effect_id = %metadata.id,
-            effect = %metadata.name,
-            "Migrated legacy screencast controls to the viewport rect"
-        );
     }
     crate::api::persist_runtime_session(state).await;
 

@@ -405,38 +405,6 @@ pub(crate) fn normalize_layout_for_editor(mut layout: SpatialLayout) -> SpatialL
     layout
 }
 
-pub(crate) fn repair_legacy_lcd_defaults(layout: &mut SpatialLayout) -> bool {
-    let canvas_aspect = canvas_aspect_ratio(layout.canvas_width, layout.canvas_height);
-    let mut changed = false;
-
-    for zone in &mut layout.zones {
-        if zone.shape_preset.as_deref() != Some("lcd-display") {
-            continue;
-        }
-
-        let LedTopology::Matrix { width, height, .. } = zone.topology else {
-            continue;
-        };
-
-        let units = VisualUnits::new(width.max(1) as f32, height.max(1) as f32);
-        let legacy_size = fit_visual_units(units, DEVICE_MIN_SIZE, DEVICE_MAX_SIZE);
-        if !approximately_equal_size(zone.size, legacy_size) {
-            continue;
-        }
-
-        let corrected_size =
-            fit_visual_units_for_canvas(units, DEVICE_MIN_SIZE, DEVICE_MAX_SIZE, canvas_aspect);
-        if approximately_equal_size(zone.size, corrected_size) {
-            continue;
-        }
-
-        zone.size = corrected_size;
-        changed = true;
-    }
-
-    changed
-}
-
 pub(crate) fn normalize_zone_size_for_editor(
     position: NormalizedPosition,
     size: NormalizedPosition,

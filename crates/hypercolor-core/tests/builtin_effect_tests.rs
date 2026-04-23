@@ -341,12 +341,12 @@ fn solid_color_brightness_control() {
 }
 
 #[test]
-fn gradient_direction_control() {
+fn gradient_angle_control() {
     let mut r = GradientRenderer::new();
     r.init(&make_metadata("gradient")).expect("init");
 
     // Horizontal gradient: pixels across X should differ
-    r.set_control("direction", &ControlValue::Enum("horizontal".into()));
+    r.set_control("angle", &ControlValue::Float(0.0));
     r.set_control("speed", &ControlValue::Float(0.0)); // freeze animation
     let canvas = r.tick(&frame(0.0, 0)).expect("tick");
     let left = canvas.get_pixel(0, 0);
@@ -476,7 +476,7 @@ fn gradient_has_spatial_variation() {
     let mut r = GradientRenderer::new();
     r.init(&make_metadata("gradient")).expect("init");
 
-    r.set_control("direction", &ControlValue::Enum("horizontal".into()));
+    r.set_control("angle", &ControlValue::Float(0.0));
     r.set_control("speed", &ControlValue::Float(0.0));
     r.set_control("color_start", &ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
     r.set_control("color_end", &ControlValue::Color([0.0, 0.0, 1.0, 1.0]));
@@ -500,7 +500,7 @@ fn gradient_vertical_varies_along_y() {
     let mut r = GradientRenderer::new();
     r.init(&make_metadata("gradient")).expect("init");
 
-    r.set_control("direction", &ControlValue::Enum("vertical".into()));
+    r.set_control("angle", &ControlValue::Float(90.0));
     r.set_control("speed", &ControlValue::Float(0.0));
 
     let canvas = r.tick(&frame(0.0, 0)).expect("tick");
@@ -670,7 +670,7 @@ fn gradient_full_lifecycle() {
         r.tick(&frame(t, i)).expect("tick");
     }
 
-    r.set_control("direction", &ControlValue::Enum("radial".into()));
+    r.set_control("mode", &ControlValue::Enum("Radial".into()));
 
     for i in 10..20 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]

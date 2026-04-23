@@ -7,7 +7,6 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
-use tracing::info;
 
 use hypercolor_types::effect::ControlValue;
 use hypercolor_types::library::{EffectPreset, PresetId};
@@ -217,13 +216,8 @@ pub async fn apply_preset(State(state): State<Arc<AppState>>, Path(id): Path<Str
 
     let activation = if same_effect {
         // Hot-swap: reset to defaults, apply preset controls, set preset ID
-        let (controls, migrated_controls) =
-            crate::library::migration::migrate_effect_controls_for_load(
-                &metadata,
-                &preset.controls,
-            );
         let (applied, rejected) =
-            crate::api::effects::normalize_control_values(&metadata, &controls);
+            crate::api::effects::normalize_control_values(&metadata, &preset.controls);
         let Some((group, _)) = crate::api::effects::active_primary_effect(state.as_ref()).await
         else {
             return ApiError::not_found("No effect is currently active");
@@ -249,13 +243,6 @@ pub async fn apply_preset(State(state): State<Arc<AppState>>, Path(id): Path<Str
                 return ApiError::not_found("No effect is currently active");
             }
             let _ = scene_manager.set_group_preset_id(group.id, Some(preset.id));
-        }
-        if migrated_controls {
-            info!(
-                preset_id = %preset.id,
-                effect = %metadata.name,
-                "Migrated legacy screencast preset controls to the viewport rect"
-            );
         }
 
         ActivationResult {

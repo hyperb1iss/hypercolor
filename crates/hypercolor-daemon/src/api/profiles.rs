@@ -11,7 +11,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::api::AppState;
@@ -319,13 +319,10 @@ pub(crate) async fn apply_profile_snapshot(
     };
 
     if let Some(prepared_primary) = prepared_primary {
-        let (controls, migrated_controls) =
-            crate::library::migration::migrate_effect_controls_for_load(
-                &prepared_primary.metadata,
-                &prepared_primary.controls,
-            );
-        let (controls, rejected_controls) =
-            crate::api::effects::normalize_control_values(&prepared_primary.metadata, &controls);
+        let (controls, rejected_controls) = crate::api::effects::normalize_control_values(
+            &prepared_primary.metadata,
+            &prepared_primary.controls,
+        );
         let active_layout = layout.clone().unwrap_or_else(|| current_layout.clone());
         {
             let mut scene_manager = state.scene_manager.write().await;
@@ -351,26 +348,14 @@ pub(crate) async fn apply_profile_snapshot(
                 "Profile apply skipped one or more invalid control values"
             );
         }
-        if migrated_controls {
-            info!(
-                profile_id = %profile.id,
-                effect = %prepared_primary.metadata.name,
-                "Migrated legacy screencast profile controls to the viewport rect"
-            );
-        }
     }
 
     if !prepared_displays.is_empty() {
         let mut scene_manager = state.scene_manager.write().await;
         for prepared_display in prepared_displays {
-            let (controls, migrated_controls) =
-                crate::library::migration::migrate_effect_controls_for_load(
-                    &prepared_display.metadata,
-                    &prepared_display.controls,
-                );
             let (controls, rejected_controls) = crate::api::effects::normalize_control_values(
                 &prepared_display.metadata,
-                &controls,
+                &prepared_display.controls,
             );
             scene_manager
                 .upsert_display_group(
@@ -393,14 +378,6 @@ pub(crate) async fn apply_profile_snapshot(
                     device_id = %prepared_display.device_id,
                     rejected_controls = ?rejected_controls,
                     "Profile apply skipped one or more invalid display-face control values"
-                );
-            }
-            if migrated_controls {
-                info!(
-                    profile_id = %profile.id,
-                    device_id = %prepared_display.device_id,
-                    effect = %prepared_display.metadata.name,
-                    "Migrated legacy screencast display-face controls to the viewport rect"
                 );
             }
         }

@@ -283,52 +283,6 @@ fn set_zone_rotation_updates_single_zone_without_moving_it() {
 }
 
 #[test]
-fn repair_legacy_lcd_defaults_updates_untouched_square_display_zone() {
-    let mut layout = SpatialLayout {
-        id: "default".to_owned(),
-        name: "Default".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: vec![DeviceZone {
-            id: "lcd-zone".to_owned(),
-            name: "LCD".to_owned(),
-            device_id: "usb:lcd".to_owned(),
-            zone_name: Some("Display".to_owned()),
-            position: NormalizedPosition::new(0.5, 0.5),
-            size: NormalizedPosition::new(0.24, 0.24),
-            rotation: 0.0,
-            scale: 1.0,
-            orientation: None,
-            topology: LedTopology::Matrix {
-                width: 480,
-                height: 480,
-                serpentine: false,
-                start_corner: hypercolor_types::spatial::Corner::TopLeft,
-            },
-            led_positions: Vec::new(),
-            led_mapping: None,
-            sampling_mode: Some(SamplingMode::Bilinear),
-            edge_behavior: Some(EdgeBehavior::Clamp),
-            shape: Some(ZoneShape::Rectangle),
-            shape_preset: Some("lcd-display".to_owned()),
-            display_order: 0,
-            attachment: None,
-            brightness: None,
-        }],
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    };
-
-    assert!(layout_geometry::repair_legacy_lcd_defaults(&mut layout));
-    assert!((layout.zones[0].size.x - 0.15).abs() < 0.001);
-    assert!((layout.zones[0].size.y - 0.24).abs() < 0.001);
-    assert!((rendered_aspect(layout.zones[0].size, 320, 200) - 1.0).abs() < 0.01);
-}
-
-#[test]
 fn attachment_strip_size_preserves_thin_signal_like_aspect() {
     let suggested = AttachmentSuggestedZone {
         slot_id: "gpu".to_owned(),

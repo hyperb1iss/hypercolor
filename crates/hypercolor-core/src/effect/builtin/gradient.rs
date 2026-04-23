@@ -479,17 +479,6 @@ impl EffectRenderer for GradientRenderer {
                     self.invalidate_cache();
                 }
             }
-            "direction" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
-                    self.angle_degrees = legacy_direction_to_angle(choice);
-                    self.mode = if normalize_choice(choice) == "radial" {
-                        GradientMode::Radial
-                    } else {
-                        GradientMode::Linear
-                    };
-                    self.invalidate_cache();
-                }
-            }
             "angle" => {
                 if let Some(v) = value.as_f32() {
                     self.angle_degrees = v.rem_euclid(360.0);
@@ -597,14 +586,6 @@ fn apply_repeat_mode(value: f32, repeat_mode: RepeatMode) -> f32 {
                 2.0 - mirrored
             }
         }
-    }
-}
-
-fn legacy_direction_to_angle(value: &str) -> f32 {
-    match normalize_choice(value).as_str() {
-        "vertical" => 90.0,
-        "diagonal" => 45.0,
-        _ => 0.0,
     }
 }
 
