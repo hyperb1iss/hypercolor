@@ -4,7 +4,10 @@ mod reconnect;
 mod schema;
 pub mod transport;
 
-pub use channel::{BinaryChannel, BinaryChannelRecvError, Channel};
+pub use channel::{
+    BackpressurePolicy, BackpressureQueue, BinaryChannel, BinaryChannelRecvError, BlockOnFull,
+    Channel, DropNewest, DropOldest, Latest, OverflowAction, Queue,
+};
 pub use frame::{
     BinaryFrame, BinaryFrameDecode, BinaryFrameEncode, DecodeError, validate_frame_prefix,
     write_frame_prefix,
