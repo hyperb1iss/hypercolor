@@ -8,8 +8,8 @@ use hypercolor_core::types::event::FrameTiming;
 
 use super::frame_composer::{ComposeRequest, compose_frame};
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
-use super::frame_metrics::{ActiveFrameMetricsInput, build_active_frame_metrics};
-use super::frame_policy::{FrameAdmissionSample, FrameExecution, SkipDecision};
+use super::frame_metrics::{ActiveFrameMetricsInput, summarize_active_frame};
+use super::frame_policy::{FrameExecution, SkipDecision};
 use super::frame_sampling::{LedSamplingOutcome, resolve_led_sampling};
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
 use super::pipeline_runtime::{OutputFrameSource, PendingSamplingWork, PipelineRuntime};
@@ -338,7 +338,7 @@ pub(crate) async fn execute_frame(
     let overhead_us = total_us.saturating_sub(known_stage_us);
     let jitter_us = frame_interval_us.abs_diff(scene_snapshot.budget_us);
     let output_errors = u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX);
-    let frame_metrics = build_active_frame_metrics(ActiveFrameMetricsInput {
+    let frame_summary = summarize_active_frame(ActiveFrameMetricsInput {
         scene_snapshot: &scene_snapshot,
         render_surfaces: &render_surfaces,
         publish_stats: &publish_stats,
@@ -380,6 +380,7 @@ pub(crate) async fn execute_frame(
         output_done_us,
         publish_done_us,
     });
+    let frame_metrics = frame_summary.metrics;
 
     {
         let mut performance = state.performance.write().await;
@@ -431,17 +432,7 @@ pub(crate) async fn execute_frame(
         let mut rl = state.render_loop.write().await;
         let execution = runtime.frame_policy.complete_render_frame(
             &mut rl,
-            FrameAdmissionSample {
-                total_us,
-                producer_us: render_stage.producer_us,
-                composition_us: render_stage.composition_us,
-                push_us,
-                publish_us,
-                wake_late_us,
-                jitter_us,
-                full_frame_copy_count: frame_metrics.full_frame_copy_count,
-                output_errors,
-            },
+            frame_summary.admission,
         );
         (execution.next_wake, execution.next_skip_decision)
     };
