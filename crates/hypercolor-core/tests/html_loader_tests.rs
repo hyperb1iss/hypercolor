@@ -339,6 +339,7 @@ fn parse_html_effect_metadata_reads_builtin_and_screen_reactive_meta() {
     assert!(parsed.tags.contains(&"screen-reactive".to_owned()));
 }
 
+#[cfg(not(feature = "servo"))]
 #[test]
 fn register_html_effects_skips_builtin_html_ports_without_servo() {
     let temp = TempDir::new().expect("failed to create tempdir");

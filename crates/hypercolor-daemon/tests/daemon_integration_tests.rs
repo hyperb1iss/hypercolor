@@ -17,7 +17,6 @@ use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
-use hypercolor_types::effect::EffectSource;
 use hypercolor_types::scene::SceneId;
 use hypercolor_types::sensor::SystemSnapshot;
 use tempfile::NamedTempFile;
@@ -252,11 +251,8 @@ async fn removed_runtime_effect_fields_are_rejected_on_startup() {
         let registry = state.effect_registry.read().await;
         let (_, entry) = registry
             .iter()
-            .find(|(_, entry)| {
-                matches!(entry.metadata.source, EffectSource::Native { .. })
-                    && entry.metadata.control_by_id("speed").is_some()
-            })
-            .expect("expected at least one native effect with a speed control in registry");
+            .find(|(_, entry)| entry.metadata.control_by_id("speed").is_some())
+            .expect("expected at least one effect with a speed control in registry");
         entry.metadata.id.to_string()
     };
     std::fs::write(

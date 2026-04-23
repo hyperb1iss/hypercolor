@@ -793,6 +793,7 @@ mod tests {
   <title>Aurora</title>
   <meta description="Northern lights simulation" />
   <meta publisher="Hypercolor" />
+  <meta audio-reactive="true" />
   <meta property="speed" label="Speed" type="number" default="40" min="0" max="100" />
   <meta property="cycle" label="Cycle" type="boolean" default="1" />
 </head>

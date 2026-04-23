@@ -79,7 +79,7 @@ async fn scanner_enriches_known_bridge_and_marks_authenticated_bridge_autoconnec
     assert_eq!(bridges.len(), 1);
     let bridge = &bridges[0];
     assert_eq!(bridge.bridge_id, "test-bridge");
-    assert_eq!(bridge.info.name, "Studio Bridge");
+    assert_eq!(bridge.info.name, "Studio");
     assert_eq!(bridge.info.zones.len(), 1);
     assert_eq!(bridge.info.total_led_count(), 1);
     assert_eq!(
@@ -92,6 +92,10 @@ async fn scanner_enriches_known_bridge_and_marks_authenticated_bridge_autoconnec
             .get("entertainment_config_name")
             .map(String::as_str),
         Some("Studio")
+    );
+    assert_eq!(
+        bridge.metadata.get("bridge_name").map(String::as_str),
+        Some("Studio Bridge")
     );
 
     server_task.await?;

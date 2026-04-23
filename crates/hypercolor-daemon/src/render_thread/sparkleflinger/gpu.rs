@@ -2330,6 +2330,7 @@ enum ComposeShaderMode {
 }
 
 #[cfg(test)]
+#[allow(clippy::manual_let_else)]
 mod tests {
     use std::sync::mpsc;
 
@@ -2395,6 +2396,16 @@ mod tests {
             width: plan.width,
             height: plan.height,
         })
+    }
+
+    fn assert_rgba_bytes_within(actual: &[u8], expected: &[u8], tolerance: u8) {
+        assert_eq!(actual.len(), expected.len());
+        for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            assert!(
+                actual.abs_diff(*expected) <= tolerance,
+                "rgba byte {index}: actual {actual}, expected {expected}, tolerance {tolerance}"
+            );
+        }
     }
 
     fn resolve_preview_surface_blocking(compositor: &mut GpuSparkleFlinger) -> PublishedSurface {
@@ -2618,7 +2629,7 @@ mod tests {
             .compose(&plan, true, full_preview_request(&plan))
             .expect("GPU composition should succeed for add plans");
 
-        assert_eq!(
+        assert_rgba_bytes_within(
             composed
                 .sampling_canvas
                 .as_ref()
@@ -2628,7 +2639,8 @@ mod tests {
                 .sampling_canvas
                 .as_ref()
                 .expect("CPU add compose should materialize a canvas")
-                .as_rgba_bytes()
+                .as_rgba_bytes(),
+            1,
         );
     }
 

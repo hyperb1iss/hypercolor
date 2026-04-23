@@ -627,6 +627,8 @@ mod tests {
     static DEFAULT_INTERACTION: LazyLock<crate::input::InteractionData> =
         LazyLock::new(crate::input::InteractionData::default);
     static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
+    static SOFT_STALL_TELEMETRY_TEST_LOCK: LazyLock<std::sync::Mutex<()>> =
+        LazyLock::new(std::sync::Mutex::default);
 
     fn frame_input(delta_secs: f32) -> FrameInput<'static> {
         FrameInput {
@@ -955,6 +957,7 @@ mod tests {
 
     #[test]
     fn poll_in_flight_render_marks_soft_stall_before_hard_timeout() {
+        let _soft_stall_guard = SOFT_STALL_TELEMETRY_TEST_LOCK.lock().expect("lock");
         let (worker, render_rx, result_tx, delivered_rx, _unload_rx, stopped) =
             spawn_render_test_worker();
         let baseline_stalls = crate::effect::servo::servo_telemetry_snapshot().soft_stalls_total;
@@ -1014,6 +1017,7 @@ mod tests {
 
     #[test]
     fn poll_in_flight_render_clears_stall_warning_after_completed_frame() {
+        let _soft_stall_guard = SOFT_STALL_TELEMETRY_TEST_LOCK.lock().expect("lock");
         let (worker, render_rx, result_tx, delivered_rx, _unload_rx, stopped) =
             spawn_render_test_worker();
 

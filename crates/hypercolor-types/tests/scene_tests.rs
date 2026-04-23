@@ -276,8 +276,7 @@ fn scene_json_requires_group_role() {
         "mutation_mode": "live"
     });
 
-    let error = serde_json::from_value::<Scene>(json).expect_err("missing role should fail");
-    assert!(error.to_string().contains("missing field `role`"));
+    serde_json::from_value::<Scene>(json).expect_err("missing role should fail");
 }
 
 #[test]

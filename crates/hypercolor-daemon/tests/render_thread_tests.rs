@@ -1400,13 +1400,13 @@ async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
             "Left",
             solid_id,
             HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
-            test_layout(vec![point_zone("zone_left", "mock:left", 0.5, 0.5)]),
+            test_layout(vec![point_zone("zone_left", "mock:left", 0.25, 0.5)]),
         ),
         custom_group(
             "Right",
             solid_id,
             HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
-            test_layout(vec![point_zone("zone_right", "mock:right", 0.5, 0.5)]),
+            test_layout(vec![point_zone("zone_right", "mock:right", 0.75, 0.5)]),
         ),
     ];
     scene.unassigned_behavior = UnassignedBehavior::Off;

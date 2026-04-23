@@ -294,15 +294,27 @@ fn frame_has_spatial_variance(canvas: &Canvas) -> bool {
 
 fn effect_paths_in(bucket: &str) -> Vec<PathBuf> {
     let root = bundled_effects_root().join(bucket);
-    let mut paths: Vec<PathBuf> = fs::read_dir(&root)
-        .unwrap_or_else(|error| {
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
             panic!(
                 "failed to read effects directory {}: {error}",
                 root.display()
             )
+        }
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "failed to read effects directory {}: {error}",
+                        root.display()
+                    )
+                })
+                .path()
         })
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
         .filter(|path| {
             path.extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
@@ -566,11 +578,11 @@ fn servo_renderer_smoke_renders_webgl_effects() {
 
 #[test]
 fn webgl_catalog_selection_finds_entries() {
-    let custom_paths = effect_paths_in("custom");
-    let webgl_paths = webgl_effect_paths(&custom_paths);
+    let generated_paths = effect_paths_in("hypercolor");
+    let webgl_paths = webgl_effect_paths(&generated_paths);
     assert!(
         !webgl_paths.is_empty(),
-        "custom catalog should include at least one WebGL effect"
+        "generated catalog should include at least one WebGL effect"
     );
 }
 

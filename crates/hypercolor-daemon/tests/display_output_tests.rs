@@ -80,7 +80,7 @@ impl RecordingDisplayBackend {
     }
 
     fn with_backend_id(mut self, backend_id: &str) -> Self {
-        self.backend_id = backend_id.to_owned();
+        backend_id.clone_into(&mut self.backend_id);
         self
     }
 
