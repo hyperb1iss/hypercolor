@@ -740,6 +740,50 @@ async fn config_set_legacy_audio_alias_persists_canonical_device_id() {
 }
 
 #[tokio::test]
+async fn config_set_legacy_audio_alias_skips_live_rebuild_when_already_canonical() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let config_manager =
+        Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
+
+    let mut state = isolated_state();
+    state.config_manager = Some(config_manager);
+    let state = Arc::new(state);
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/config/set")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"key":"audio.device","value":"\"auto\"","live":true}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["key"], "audio.device");
+    assert_eq!(json["data"]["value"], "default");
+    assert_eq!(json["data"]["live"], false);
+
+    {
+        let input_manager = state.input_manager.lock().await;
+        assert_eq!(input_manager.source_count(), 0);
+    }
+
+    assert!(
+        !config_path.exists(),
+        "alias no-op should not persist a fresh config file"
+    );
+}
+
+#[tokio::test]
 async fn config_set_identical_audio_value_skips_live_rebuild() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let config_path = tempdir.path().join("hypercolor.toml");

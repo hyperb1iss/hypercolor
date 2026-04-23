@@ -174,11 +174,11 @@ impl ConfigManager {
 }
 
 fn normalize_config(mut config: HypercolorConfig) -> HypercolorConfig {
-    config.audio.device = normalize_audio_device_id(&config.audio.device);
+    config.audio.device = canonical_audio_device_id(&config.audio.device);
     config
 }
 
-fn normalize_audio_device_id(device: &str) -> String {
+pub fn canonical_audio_device_id(device: &str) -> String {
     let trimmed = device.trim();
     if trimmed.eq_ignore_ascii_case("auto") || trimmed.eq_ignore_ascii_case("default") {
         "default".to_owned()

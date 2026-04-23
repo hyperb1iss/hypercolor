@@ -8,6 +8,7 @@ use axum::response::Response;
 use serde::Deserialize;
 use tracing::{info, warn};
 
+use hypercolor_core::config::canonical_audio_device_id;
 use hypercolor_core::engine::FpsTier;
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::HypercolorConfig;
@@ -77,6 +78,7 @@ pub async fn set_config_value(
 
     let parsed_value = serde_json::from_str::<serde_json::Value>(&body.value)
         .unwrap_or_else(|_| serde_json::Value::String(body.value.clone()));
+    let parsed_value = canonicalize_config_value(&body.key, parsed_value);
 
     if get_json_path(&root, &body.key).is_some_and(|current| current == &parsed_value) {
         info!(
@@ -137,6 +139,16 @@ pub async fn set_config_value(
         "live": live_applied,
         "path": manager.path().display().to_string(),
     }))
+}
+
+fn canonicalize_config_value(key: &str, value: serde_json::Value) -> serde_json::Value {
+    if key == "audio.device" {
+        value.as_str().map_or(value.clone(), |device| {
+            serde_json::Value::String(canonical_audio_device_id(device))
+        })
+    } else {
+        value
+    }
 }
 
 /// `POST /api/v1/config/reset` — Reset one key or the full config to defaults.
