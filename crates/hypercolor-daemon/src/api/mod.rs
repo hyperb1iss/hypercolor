@@ -1144,7 +1144,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         // ── System ───────────────────────────────────────────────────
         .route("/server", axum::routing::get(system::get_server))
         .route("/status", axum::routing::get(system::get_status))
-        .route("/state", axum::routing::get(system::get_status))
         .route("/system/sensors", axum::routing::get(system::get_sensors))
         .route(
             "/system/sensors/{label}",
@@ -1155,8 +1154,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             "/settings/brightness",
             axum::routing::get(settings::get_brightness).put(settings::set_brightness),
         )
-        // ── Preview ──────────────────────────────────────────────────
-        .route("/preview", axum::routing::get(preview::preview_page))
         // ── Config ───────────────────────────────────────────────────
         .route("/config", axum::routing::get(config::show_config))
         .route("/config/get", axum::routing::get(config::get_config_value))

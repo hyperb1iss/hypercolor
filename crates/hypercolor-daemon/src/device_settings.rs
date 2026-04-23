@@ -49,6 +49,7 @@ impl StoredDeviceSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[serde(deny_unknown_fields)]
 struct PersistedSettingsSnapshot {
     #[serde(default = "default_brightness")]
     global_brightness: f32,
@@ -89,23 +90,8 @@ impl DeviceSettingsStore {
 
         let raw = fs::read_to_string(path)
             .with_context(|| format!("failed to read device settings at {}", path.display()))?;
-        let snapshot = match serde_json::from_str::<PersistedSettingsSnapshot>(&raw) {
-            Ok(snapshot) => snapshot,
-            Err(snapshot_error) => {
-                let legacy_entries =
-                    serde_json::from_str::<HashMap<String, StoredDeviceSettings>>(&raw)
-                        .with_context(|| {
-                            format!(
-                                "failed to parse device settings at {}: {snapshot_error}",
-                                path.display()
-                            )
-                        })?;
-                PersistedSettingsSnapshot {
-                    devices: legacy_entries,
-                    ..PersistedSettingsSnapshot::default()
-                }
-            }
-        };
+        let snapshot = serde_json::from_str::<PersistedSettingsSnapshot>(&raw)
+            .with_context(|| format!("failed to parse device settings at {}", path.display()))?;
 
         let mut store = Self {
             path: path.to_path_buf(),

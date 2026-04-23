@@ -255,9 +255,9 @@ pub fn should_offer_named_audio_device(name: &str) -> bool {
 
 fn normalize_audio_device_id(device: &str) -> String {
     let trimmed = device.trim();
-    if trimmed.eq_ignore_ascii_case("default") || trimmed.eq_ignore_ascii_case("auto") {
+    if trimmed.eq_ignore_ascii_case("default") {
         "default".to_owned()
-    } else if trimmed.eq_ignore_ascii_case("mic") || trimmed.eq_ignore_ascii_case("microphone") {
+    } else if trimmed.eq_ignore_ascii_case("microphone") {
         "microphone".to_owned()
     } else if trimmed.eq_ignore_ascii_case("none") {
         "none".to_owned()

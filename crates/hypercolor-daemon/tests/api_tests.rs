@@ -520,7 +520,7 @@ async fn audio_devices_returns_default_option_and_current_value() {
 }
 
 #[tokio::test]
-async fn audio_devices_normalize_legacy_aliases() {
+async fn audio_devices_preserve_noncanonical_configured_id_without_alias_rewrite() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let config_path = tempdir.path().join("hypercolor.toml");
     let config_manager =
@@ -546,7 +546,15 @@ async fn audio_devices_normalize_legacy_aliases() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let json = body_json(response).await;
-    assert_eq!(json["data"]["current"], "microphone");
+    assert_eq!(json["data"]["current"], "mic");
+    assert!(
+        json["data"]["devices"]
+            .as_array()
+            .expect("devices should be an array")
+            .iter()
+            .any(|device| device["id"] == "mic"),
+        "configured noncanonical device id should remain visible instead of being rewritten"
+    );
 }
 
 #[test]
