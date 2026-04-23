@@ -9,6 +9,8 @@ use crate::deadline::advance_deadline;
 pub(crate) use super::frame_admission::FrameAdmissionSample;
 
 const PAUSED_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const IDLE_THROTTLE_DELAY: Duration = Duration::from_millis(120);
+const SESSION_SLEEP_THROTTLE_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SkipDecision {
@@ -99,6 +101,28 @@ impl FramePolicy {
     ) -> FrameExecution {
         let _ = render_loop.frame_complete();
         FrameExecution::throttle(delay)
+    }
+
+    pub(crate) const fn should_idle_throttle(
+        &self,
+        effect_running: bool,
+        screen_capture_active: bool,
+    ) -> bool {
+        !effect_running && !screen_capture_active
+    }
+
+    pub(crate) fn idle_throttle_execution(
+        &mut self,
+        render_loop: &mut RenderLoop,
+    ) -> FrameExecution {
+        self.complete_throttled_frame(render_loop, IDLE_THROTTLE_DELAY)
+    }
+
+    pub(crate) fn sleep_throttle_execution(
+        &mut self,
+        render_loop: &mut RenderLoop,
+    ) -> FrameExecution {
+        self.complete_throttled_frame(render_loop, SESSION_SLEEP_THROTTLE_DELAY)
     }
 
     pub(crate) fn inactive_loop_execution(
@@ -235,5 +259,46 @@ mod tests {
         assert!(policy
             .inactive_loop_execution(RenderLoopState::Stopped)
             .is_none());
+    }
+
+    #[test]
+    fn idle_throttle_predicate_requires_no_effect_or_capture() {
+        let policy = FramePolicy::new(FpsTier::Full);
+
+        assert!(policy.should_idle_throttle(false, false));
+        assert!(!policy.should_idle_throttle(true, false));
+        assert!(!policy.should_idle_throttle(false, true));
+    }
+
+    #[test]
+    fn idle_throttle_execution_uses_idle_delay() {
+        let mut render_loop = RenderLoop::new(60);
+        render_loop.start();
+        assert!(render_loop.tick());
+        let mut policy = FramePolicy::new(FpsTier::Full);
+
+        let execution = policy.idle_throttle_execution(&mut render_loop);
+
+        assert!(matches!(
+            execution.next_wake,
+            NextWake::Delay(delay) if delay == Duration::from_millis(120)
+        ));
+        assert_eq!(execution.next_skip_decision, SkipDecision::None);
+    }
+
+    #[test]
+    fn sleep_throttle_execution_uses_sleep_delay() {
+        let mut render_loop = RenderLoop::new(60);
+        render_loop.start();
+        assert!(render_loop.tick());
+        let mut policy = FramePolicy::new(FpsTier::Full);
+
+        let execution = policy.sleep_throttle_execution(&mut render_loop);
+
+        assert!(matches!(
+            execution.next_wake,
+            NextWake::Delay(delay) if delay == Duration::from_millis(250)
+        ));
+        assert_eq!(execution.next_skip_decision, SkipDecision::None);
     }
 }

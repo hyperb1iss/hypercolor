@@ -1,8 +1,7 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use tracing::{debug, trace};
 
-use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::Canvas;
 use hypercolor_core::types::event::FrameTiming;
@@ -18,9 +17,6 @@ use super::scene_snapshot::FrameSceneSnapshot;
 use super::{RenderThreadState, micros_between, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
 
-const IDLE_THROTTLE_DELAY: Duration = Duration::from_millis(120);
-const SESSION_SLEEP_THROTTLE_DELAY: Duration = Duration::from_millis(250);
-
 pub(crate) async fn maybe_idle_throttle(
     state: &RenderThreadState,
     frame_policy: &mut FramePolicy,
@@ -28,26 +24,23 @@ pub(crate) async fn maybe_idle_throttle(
     screen_capture_active: bool,
     throttle: &mut ThrottleState,
 ) -> Option<FrameExecution> {
-    let can_idle_throttle = can_idle_throttle(effect_running, screen_capture_active);
+    let should_idle_throttle =
+        frame_policy.should_idle_throttle(effect_running, screen_capture_active);
 
     if effect_running {
         throttle.note_effect_running();
         return None;
     }
 
-    if can_idle_throttle && !throttle.idle_black_pushed() {
+    if should_idle_throttle && !throttle.idle_black_pushed() {
         debug!(
             "No active effect or capture input; layout changes render black until an effect or input source starts"
         );
     }
 
-    if can_idle_throttle && throttle.idle_black_pushed() {
+    if should_idle_throttle && throttle.idle_black_pushed() {
         let mut render_loop = state.render_loop.write().await;
-        return Some(complete_throttle_frame(
-            frame_policy,
-            &mut render_loop,
-            IDLE_THROTTLE_DELAY,
-        ));
+        return Some(frame_policy.idle_throttle_execution(&mut render_loop));
     }
 
     None
@@ -72,11 +65,7 @@ pub(crate) async fn maybe_sleep_throttle(
     let power_state = scene_snapshot.output_power;
     if throttle.sleep_black_pushed() {
         let mut render_loop = state.render_loop.write().await;
-        return Some(complete_throttle_frame(
-            frame_policy,
-            &mut render_loop,
-            SESSION_SLEEP_THROTTLE_DELAY,
-        ));
+        return Some(frame_policy.sleep_throttle_execution(&mut render_loop));
     }
 
     if power_state.off_output_behavior == OffOutputBehavior::Release {
@@ -126,11 +115,7 @@ pub(crate) async fn maybe_sleep_throttle(
         );
         throttle.note_sleep_frame_published();
         let mut render_loop = state.render_loop.write().await;
-        return Some(complete_throttle_frame(
-            frame_policy,
-            &mut render_loop,
-            SESSION_SLEEP_THROTTLE_DELAY,
-        ));
+        return Some(frame_policy.sleep_throttle_execution(&mut render_loop));
     }
 
     let surface = output_artifacts.static_surface(
@@ -227,55 +212,28 @@ pub(crate) async fn maybe_sleep_throttle(
 
     throttle.note_sleep_frame_published();
     let mut render_loop = state.render_loop.write().await;
-    Some(complete_throttle_frame(
-        frame_policy,
-        &mut render_loop,
-        SESSION_SLEEP_THROTTLE_DELAY,
-    ))
-}
-
-const fn can_idle_throttle(effect_running: bool, screen_capture_active: bool) -> bool {
-    !effect_running && !screen_capture_active
-}
-
-fn complete_throttle_frame(
-    frame_policy: &mut FramePolicy,
-    render_loop: &mut RenderLoop,
-    delay: Duration,
-) -> FrameExecution {
-    frame_policy.complete_throttled_frame(render_loop, delay)
+    Some(frame_policy.sleep_throttle_execution(&mut render_loop))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::thread;
-
     use hypercolor_core::engine::RenderLoop;
-
-    use super::{
-        IDLE_THROTTLE_DELAY, SESSION_SLEEP_THROTTLE_DELAY, can_idle_throttle,
-        complete_throttle_frame,
-    };
-    use crate::render_thread::frame_policy::{FramePolicy, NextWake, SkipDecision};
     use hypercolor_core::engine::FpsTier;
+
+    use crate::render_thread::frame_policy::{FramePolicy, NextWake, SkipDecision};
 
     #[test]
     fn idle_throttle_completion_returns_idle_delay_without_skip() {
         let mut render_loop = RenderLoop::new(60);
         render_loop.start();
         assert!(render_loop.tick());
-        thread::sleep(std::time::Duration::from_millis(1));
         let mut frame_policy = FramePolicy::new(FpsTier::Full);
 
-        let execution = complete_throttle_frame(
-            &mut frame_policy,
-            &mut render_loop,
-            IDLE_THROTTLE_DELAY,
-        );
+        let execution = frame_policy.idle_throttle_execution(&mut render_loop);
 
         assert!(matches!(
             execution.next_wake,
-            NextWake::Delay(delay) if delay == IDLE_THROTTLE_DELAY
+            NextWake::Delay(delay) if delay == std::time::Duration::from_millis(120)
         ));
         assert_eq!(execution.next_skip_decision, SkipDecision::None);
     }
@@ -285,27 +243,24 @@ mod tests {
         let mut render_loop = RenderLoop::new(60);
         render_loop.start();
         assert!(render_loop.tick());
-        thread::sleep(std::time::Duration::from_millis(1));
         let mut frame_policy = FramePolicy::new(FpsTier::Full);
 
-        let execution = complete_throttle_frame(
-            &mut frame_policy,
-            &mut render_loop,
-            SESSION_SLEEP_THROTTLE_DELAY,
-        );
+        let execution = frame_policy.sleep_throttle_execution(&mut render_loop);
 
         assert!(matches!(
             execution.next_wake,
-            NextWake::Delay(delay) if delay == SESSION_SLEEP_THROTTLE_DELAY
+            NextWake::Delay(delay) if delay == std::time::Duration::from_millis(250)
         ));
         assert_eq!(execution.next_skip_decision, SkipDecision::None);
     }
 
     #[test]
     fn idle_throttle_predicate_requires_no_effect_and_no_screen_capture() {
-        assert!(can_idle_throttle(false, false));
-        assert!(!can_idle_throttle(true, false));
-        assert!(!can_idle_throttle(false, true));
-        assert!(!can_idle_throttle(true, true));
+        let frame_policy = FramePolicy::new(FpsTier::Full);
+
+        assert!(frame_policy.should_idle_throttle(false, false));
+        assert!(!frame_policy.should_idle_throttle(true, false));
+        assert!(!frame_policy.should_idle_throttle(false, true));
+        assert!(!frame_policy.should_idle_throttle(true, true));
     }
 }
