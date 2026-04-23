@@ -2,7 +2,7 @@ use std::future::{Future, poll_fn};
 use std::task::Poll;
 use std::time::Instant;
 
-use tracing::{info, trace, warn};
+use tracing::info;
 
 use hypercolor_core::types::event::FrameTiming;
 
@@ -10,6 +10,7 @@ use super::frame_composer::{ComposeRequest, compose_frame};
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
 use super::frame_metrics::{ActiveFrameMetricsInput, summarize_active_frame};
 use super::frame_policy::{FrameExecution, SkipDecision};
+use super::frame_reporting::{FrameCompletionReport, report_active_frame_completion};
 use super::frame_sampling::{LedSamplingOutcome, resolve_led_sampling};
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
 use super::pipeline_runtime::{OutputFrameSource, PendingSamplingWork, PipelineRuntime};
@@ -387,45 +388,9 @@ pub(crate) async fn execute_frame(
         performance.record_frame(frame_metrics);
     }
 
-    for err in &write_stats.errors {
-        warn!(error = %err, "device write error");
-    }
-
-    trace!(
-        frame = scene_snapshot.frame_token,
-        frame_interval_us,
-        wake_late_us,
-        jitter_us,
-        input_us,
-        render_us,
-        producer_us = render_stage.producer_us,
-        producer_render_us = render_stage.producer_render_us,
-        producer_scene_compose_us = render_stage.producer_scene_compose_us,
-        composition_us = render_stage.composition_us,
-        compositor_backend = compositor_backend.as_str(),
-        logical_layers = render_stage.logical_layer_count,
-        render_groups = render_stage.render_group_count,
-        scene_active = render_stage.scene_active,
-        scene_transition_active = render_stage.scene_transition_active,
-        gpu_sample_wait_blocked,
-        gpu_sample_queue_saturated,
-        sample_us,
-        push_us,
-        postprocess_us,
-        publish_us,
-        publish_frame_data_us = publish_stats.frame_data_us,
-        publish_group_canvas_us = publish_stats.group_canvas_us,
-        publish_preview_us = publish_stats.preview_us,
-        publish_events_us = publish_stats.events_us,
-        overhead_us,
-        total_us,
-        reused_inputs,
-        reused_canvas,
-        full_frame_copy_count = frame_metrics.full_frame_copy_count,
-        full_frame_copy_bytes = frame_metrics.full_frame_copy_bytes,
-        devices = write_stats.devices_written,
-        leds = write_stats.total_leds,
-        "frame complete"
+    report_active_frame_completion(
+        FrameCompletionReport::new(frame_interval_us, frame_metrics, &write_stats),
+        &write_stats.errors,
     );
 
     let (next_wake, next_skip_decision) = {

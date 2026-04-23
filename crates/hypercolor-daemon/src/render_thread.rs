@@ -23,6 +23,7 @@ mod frame_executor;
 mod frame_io;
 mod frame_metrics;
 mod frame_policy;
+mod frame_reporting;
 mod frame_sampling;
 mod frame_throttle;
 mod pipeline_driver;
