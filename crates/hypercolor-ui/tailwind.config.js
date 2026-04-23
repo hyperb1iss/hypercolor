@@ -8,11 +8,11 @@
 // utility classes from every `--color-*`, `--font-*`, `--spacing-*`,
 // `--radius-*`, and `--ease-*` custom property declared under `@theme`.
 //
-// This JS config is kept as a compatibility surface and as quick reference
-// documentation for the SilkCircuit palette. Tailwind v4 ignores it unless
-// a CSS file explicitly opts in with `@config "./tailwind.config.js"`, so
-// edits here have no runtime effect today. Treat `tokens/primitives.css`
-// as the source of truth; mirror additions here for clarity.
+// This JS config is quick-reference documentation for the SilkCircuit
+// palette. Tailwind v4 ignores it unless a CSS file explicitly opts in with
+// `@config "./tailwind.config.js"`, so edits here have no runtime effect
+// today. Treat `tokens/primitives.css` as the source of truth; mirror
+// additions here for clarity.
 //
 // Available color utility classes (sampling):
 //
