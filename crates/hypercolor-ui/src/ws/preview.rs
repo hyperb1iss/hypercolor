@@ -12,6 +12,45 @@ pub(super) const WEB_VIEWPORT_PREVIEW_FPS_CAP: u32 = 15;
 const REMOTE_PREVIEW_WIDTH_MEDIUM: u32 = 640;
 const REMOTE_PREVIEW_WIDTH_LOW: u32 = 480;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PreviewSubscriptionRequest {
+    fps: u32,
+    width: u32,
+    height: u32,
+    format: &'static str,
+}
+
+impl PreviewSubscriptionRequest {
+    fn canvas(requested_fps: u32, width_cap: u32) -> Self {
+        Self::canvas_for_host(preview_hostname().as_str(), requested_fps, width_cap)
+    }
+
+    fn canvas_for_host(hostname: &str, requested_fps: u32, width_cap: u32) -> Self {
+        let (width, height) =
+            preview_canvas_request_dimensions_for_host(hostname, requested_fps, width_cap);
+        Self {
+            fps: requested_fps,
+            width,
+            height,
+            format: preview_canvas_format_for_host(hostname),
+        }
+    }
+
+    fn web_viewport(requested_fps: u32) -> Self {
+        Self::web_viewport_for_host(preview_hostname().as_str(), requested_fps)
+    }
+
+    fn web_viewport_for_host(hostname: &str, requested_fps: u32) -> Self {
+        let (width, height) = web_viewport_preview_request_dimensions();
+        Self {
+            fps: requested_fps,
+            width,
+            height,
+            format: preview_canvas_format_for_host(hostname),
+        }
+    }
+}
+
 pub(super) fn desired_preview_fps(
     engine_target_fps: u32,
     client_cap: u32,
@@ -23,10 +62,6 @@ pub(super) fn desired_preview_fps(
     } else {
         capped_target.min(HIDDEN_TAB_PREVIEW_FPS_CAP)
     }
-}
-
-pub(super) fn preview_canvas_format() -> &'static str {
-    preview_canvas_format_for_host(preview_hostname().as_str())
 }
 
 fn preview_canvas_format_for_host(hostname: &str) -> &'static str {
@@ -64,45 +99,39 @@ fn supports_remote_jpeg_preview() -> bool {
     has_bitmap_renderer && has_create_image_bitmap && has_worker
 }
 
-fn preview_canvas_request_dimensions(requested_fps: u32, width_cap: u32) -> (u32, u32) {
-    preview_canvas_request_dimensions_for_host(
-        preview_hostname().as_str(),
-        requested_fps,
-        width_cap,
-    )
-}
-
 fn web_viewport_preview_request_dimensions() -> (u32, u32) {
     (0, 0)
 }
 
 pub(super) fn request_preview_subscription(
     ws: &web_sys::WebSocket,
-    requested_preview_fps: StoredValue<u32>,
+    requested_preview_request: StoredValue<Option<PreviewSubscriptionRequest>>,
     set_preview_target_fps: WriteSignal<u32>,
     engine_target_fps: u32,
     client_cap: u32,
     width_cap: u32,
     page_visible: bool,
 ) {
-    let desired_fps = desired_preview_fps(engine_target_fps, client_cap, page_visible);
-    if desired_fps == requested_preview_fps.get_value() {
+    let request = PreviewSubscriptionRequest::canvas(
+        desired_preview_fps(engine_target_fps, client_cap, page_visible),
+        width_cap,
+    );
+    if requested_preview_request.get_value() == Some(request) {
         return;
     }
 
-    requested_preview_fps.set_value(desired_fps);
-    set_preview_target_fps.set(desired_fps);
-    let (preview_width, preview_height) = preview_canvas_request_dimensions(desired_fps, width_cap);
+    requested_preview_request.set_value(Some(request));
+    set_preview_target_fps.set(request.fps);
 
     let subscribe_msg = serde_json::json!({
         "type": "subscribe",
         "channels": ["canvas"],
         "config": {
             "canvas": {
-                "fps": desired_fps,
-                "format": preview_canvas_format(),
-                "width": preview_width,
-                "height": preview_height
+                "fps": request.fps,
+                "format": request.format,
+                "width": request.width,
+                "height": request.height
             }
         }
     });
@@ -111,27 +140,29 @@ pub(super) fn request_preview_subscription(
 
 pub(super) fn request_screen_preview_subscription(
     ws: &web_sys::WebSocket,
-    requested_preview_fps: StoredValue<u32>,
+    requested_preview_request: StoredValue<Option<PreviewSubscriptionRequest>>,
     engine_target_fps: u32,
     page_visible: bool,
 ) {
-    let desired_fps = desired_preview_fps(engine_target_fps, SCREEN_PREVIEW_FPS_CAP, page_visible);
-    if desired_fps == requested_preview_fps.get_value() {
+    let request = PreviewSubscriptionRequest::canvas(
+        desired_preview_fps(engine_target_fps, SCREEN_PREVIEW_FPS_CAP, page_visible),
+        0,
+    );
+    if requested_preview_request.get_value() == Some(request) {
         return;
     }
 
-    requested_preview_fps.set_value(desired_fps);
-    let (preview_width, preview_height) = preview_canvas_request_dimensions(desired_fps, 0);
+    requested_preview_request.set_value(Some(request));
 
     let subscribe_msg = serde_json::json!({
         "type": "subscribe",
         "channels": ["screen_canvas"],
         "config": {
             "screen_canvas": {
-                "fps": desired_fps,
-                "format": preview_canvas_format(),
-                "width": preview_width,
-                "height": preview_height
+                "fps": request.fps,
+                "format": request.format,
+                "width": request.width,
+                "height": request.height
             }
         }
     });
@@ -140,31 +171,30 @@ pub(super) fn request_screen_preview_subscription(
 
 pub(super) fn request_web_viewport_preview_subscription(
     ws: &web_sys::WebSocket,
-    requested_preview_fps: StoredValue<u32>,
+    requested_preview_request: StoredValue<Option<PreviewSubscriptionRequest>>,
     engine_target_fps: u32,
     page_visible: bool,
 ) {
-    let desired_fps = desired_preview_fps(
+    let request = PreviewSubscriptionRequest::web_viewport(desired_preview_fps(
         engine_target_fps,
         WEB_VIEWPORT_PREVIEW_FPS_CAP,
         page_visible,
-    );
-    if desired_fps == requested_preview_fps.get_value() {
+    ));
+    if requested_preview_request.get_value() == Some(request) {
         return;
     }
 
-    requested_preview_fps.set_value(desired_fps);
-    let (preview_width, preview_height) = web_viewport_preview_request_dimensions();
+    requested_preview_request.set_value(Some(request));
 
     let subscribe_msg = serde_json::json!({
         "type": "subscribe",
         "channels": ["web_viewport_canvas"],
         "config": {
             "web_viewport_canvas": {
-                "fps": desired_fps,
-                "format": preview_canvas_format(),
-                "width": preview_width,
-                "height": preview_height
+                "fps": request.fps,
+                "format": request.format,
+                "width": request.width,
+                "height": request.height
             }
         }
     });
@@ -172,30 +202,30 @@ pub(super) fn request_web_viewport_preview_subscription(
 }
 
 pub(super) fn clear_preview_subscription(
-    requested_preview_fps: StoredValue<u32>,
+    requested_preview_request: StoredValue<Option<PreviewSubscriptionRequest>>,
     set_preview_target_fps: &WriteSignal<u32>,
     set_preview_fps: &WriteSignal<f32>,
     set_canvas_frame: &WriteSignal<Option<CanvasFrame>>,
 ) {
-    requested_preview_fps.set_value(0);
+    requested_preview_request.set_value(None);
     set_preview_target_fps.set(0);
     set_preview_fps.set(0.0);
     set_canvas_frame.set(None);
 }
 
 pub(super) fn clear_screen_preview_subscription(
-    requested_preview_fps: StoredValue<u32>,
+    requested_preview_request: StoredValue<Option<PreviewSubscriptionRequest>>,
     set_screen_canvas_frame: &WriteSignal<Option<CanvasFrame>>,
 ) {
-    requested_preview_fps.set_value(0);
+    requested_preview_request.set_value(None);
     set_screen_canvas_frame.set(None);
 }
 
 pub(super) fn clear_web_viewport_preview_subscription(
-    requested_preview_fps: StoredValue<u32>,
+    requested_preview_request: StoredValue<Option<PreviewSubscriptionRequest>>,
     set_web_viewport_canvas_frame: &WriteSignal<Option<CanvasFrame>>,
 ) {
-    requested_preview_fps.set_value(0);
+    requested_preview_request.set_value(None);
     set_web_viewport_canvas_frame.set(None);
 }
 
@@ -306,8 +336,9 @@ const fn remote_preview_width_for_fps(requested_fps: u32) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        REMOTE_PREVIEW_WIDTH_LOW, REMOTE_PREVIEW_WIDTH_MEDIUM, preview_canvas_format_for_host,
-        preview_canvas_request_dimensions_for_host, remote_preview_width_for_fps,
+        PreviewSubscriptionRequest, REMOTE_PREVIEW_WIDTH_LOW, REMOTE_PREVIEW_WIDTH_MEDIUM,
+        preview_canvas_format_for_host, preview_canvas_request_dimensions_for_host,
+        remote_preview_width_for_fps,
         web_viewport_preview_request_dimensions,
     };
 
@@ -380,5 +411,26 @@ mod tests {
     #[test]
     fn web_viewport_preview_stays_full_resolution() {
         assert_eq!(web_viewport_preview_request_dimensions(), (0, 0));
+    }
+
+    #[test]
+    fn preview_subscription_request_tracks_width_caps() {
+        assert_ne!(
+            PreviewSubscriptionRequest::canvas_for_host("localhost", 15, 0),
+            PreviewSubscriptionRequest::canvas_for_host("localhost", 15, 320)
+        );
+    }
+
+    #[test]
+    fn web_viewport_request_uses_host_format() {
+        assert_eq!(
+            PreviewSubscriptionRequest::web_viewport_for_host("localhost", 15),
+            PreviewSubscriptionRequest {
+                fps: 15,
+                width: 0,
+                height: 0,
+                format: "rgb",
+            }
+        );
     }
 }

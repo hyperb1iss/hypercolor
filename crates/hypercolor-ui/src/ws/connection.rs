@@ -13,10 +13,11 @@ use super::messages::{
     handle_json_message,
 };
 use super::preview::{
-    DEFAULT_PREVIEW_FPS_CAP, clear_preview_subscription, clear_screen_preview_subscription,
-    clear_web_viewport_preview_subscription, request_preview_subscription,
-    request_screen_preview_subscription, request_web_viewport_preview_subscription,
-    send_canvas_unsubscribe, send_screen_canvas_unsubscribe, send_web_viewport_canvas_unsubscribe,
+    DEFAULT_PREVIEW_FPS_CAP, PreviewSubscriptionRequest, clear_preview_subscription,
+    clear_screen_preview_subscription, clear_web_viewport_preview_subscription,
+    request_preview_subscription, request_screen_preview_subscription,
+    request_web_viewport_preview_subscription, send_canvas_unsubscribe,
+    send_screen_canvas_unsubscribe, send_web_viewport_canvas_unsubscribe,
 };
 use crate::api::DeviceMetricsSnapshot;
 
@@ -118,9 +119,9 @@ impl WsManager {
         let last_frame_number = StoredValue::new(None::<u32>);
         let last_frame_timestamp = StoredValue::new(None::<u32>);
         let smoothed_fps = StoredValue::new(0.0_f64);
-        let requested_preview_fps = StoredValue::new(0_u32);
-        let requested_screen_preview_fps = StoredValue::new(0_u32);
-        let requested_web_viewport_preview_fps = StoredValue::new(0_u32);
+        let requested_preview = StoredValue::new(None::<PreviewSubscriptionRequest>);
+        let requested_screen_preview = StoredValue::new(None::<PreviewSubscriptionRequest>);
+        let requested_web_viewport_preview = StoredValue::new(None::<PreviewSubscriptionRequest>);
 
         // Shared WebSocket handle for preview subscription effect.
         let ws_handle: StoredValue<Option<web_sys::WebSocket>> = StoredValue::new(None);
@@ -156,7 +157,9 @@ impl WsManager {
             last_frame_number.set_value(None);
             last_frame_timestamp.set_value(None);
             smoothed_fps.set_value(0.0);
-            requested_preview_fps.set_value(0);
+            requested_preview.set_value(None);
+            requested_screen_preview.set_value(None);
+            requested_web_viewport_preview.set_value(None);
             set_preview_fps.set(0.0);
 
             let url = ws_url.get_value();
@@ -194,17 +197,17 @@ impl WsManager {
                 set_connection_state.set(ConnectionState::Disconnected);
                 ws_handle.set_value(None);
                 clear_preview_subscription(
-                    requested_preview_fps,
+                    requested_preview,
                     &set_preview_target_fps,
                     &set_preview_fps,
                     &set_canvas_frame,
                 );
                 clear_screen_preview_subscription(
-                    requested_screen_preview_fps,
+                    requested_screen_preview,
                     &set_screen_canvas_frame,
                 );
                 clear_web_viewport_preview_subscription(
-                    requested_web_viewport_preview_fps,
+                    requested_web_viewport_preview,
                     &set_web_viewport_canvas_frame,
                 );
                 set_display_preview_frame.set(None);
@@ -326,7 +329,7 @@ impl WsManager {
             if engine_target == 0 || consumer_count == 0 {
                 if let Some(ws) = ws_handle.get_value() {
                     clear_preview_subscription(
-                        requested_preview_fps,
+                        requested_preview,
                         &set_preview_target_fps,
                         &set_preview_fps,
                         &set_canvas_frame,
@@ -339,7 +342,7 @@ impl WsManager {
             if let Some(ws) = ws_handle.get_value() {
                 request_preview_subscription(
                     &ws,
-                    requested_preview_fps,
+                    requested_preview,
                     set_preview_target_fps,
                     engine_target,
                     client_cap,
@@ -356,7 +359,7 @@ impl WsManager {
             if engine_target == 0 || consumer_count == 0 {
                 if let Some(ws) = ws_handle.get_value() {
                     clear_screen_preview_subscription(
-                        requested_screen_preview_fps,
+                        requested_screen_preview,
                         &set_screen_canvas_frame,
                     );
                     send_screen_canvas_unsubscribe(&ws);
@@ -367,7 +370,7 @@ impl WsManager {
             if let Some(ws) = ws_handle.get_value() {
                 request_screen_preview_subscription(
                     &ws,
-                    requested_screen_preview_fps,
+                    requested_screen_preview,
                     engine_target,
                     is_visible,
                 );
@@ -381,7 +384,7 @@ impl WsManager {
             if engine_target == 0 || consumer_count == 0 {
                 if let Some(ws) = ws_handle.get_value() {
                     clear_web_viewport_preview_subscription(
-                        requested_web_viewport_preview_fps,
+                        requested_web_viewport_preview,
                         &set_web_viewport_canvas_frame,
                     );
                     send_web_viewport_canvas_unsubscribe(&ws);
@@ -392,7 +395,7 @@ impl WsManager {
             if let Some(ws) = ws_handle.get_value() {
                 request_web_viewport_preview_subscription(
                     &ws,
-                    requested_web_viewport_preview_fps,
+                    requested_web_viewport_preview,
                     engine_target,
                     is_visible,
                 );

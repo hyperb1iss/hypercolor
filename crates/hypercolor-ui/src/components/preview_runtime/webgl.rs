@@ -46,10 +46,6 @@ fn texture_upload_strategy(
     }
 }
 
-fn clear_gl_errors(gl: &Gl) {
-    while gl.get_error() != Gl::NO_ERROR {}
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WebGlInitError {
     ContextUnavailable,
@@ -203,7 +199,9 @@ impl WebGlPreviewRuntime {
             format: frame_format,
         };
 
-        clear_gl_errors(&self.gl);
+        // Avoid synchronous `get_error()` polling on the hot path. Context loss
+        // is handled by canvas events and upload failures fall back to
+        // reinitialization through the `Result` path.
         let upload_result = match texture_upload_strategy(self.texture_shape, shape) {
             TextureUploadStrategy::Allocate => self
                 .gl
@@ -232,11 +230,9 @@ impl WebGlPreviewRuntime {
                         Gl::UNSIGNED_BYTE,
                         Some(frame.pixels_js()),
                     );
-                let sub_upload_failed = sub_upload.is_err() || self.gl.get_error() != Gl::NO_ERROR;
-                if !sub_upload_failed {
+                if sub_upload.is_ok() {
                     Ok(())
                 } else {
-                    clear_gl_errors(&self.gl);
                     self.gl
                         .tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_js_u8_array(
                             Gl::TEXTURE_2D,
@@ -253,7 +249,7 @@ impl WebGlPreviewRuntime {
             }
         };
 
-        if upload_result.is_err() || self.gl.get_error() != Gl::NO_ERROR {
+        if upload_result.is_err() {
             return PreviewRenderOutcome::Reinitialize;
         }
 
