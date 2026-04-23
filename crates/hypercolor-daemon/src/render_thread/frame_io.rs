@@ -21,6 +21,41 @@ pub(crate) struct PublishFrameStats {
     pub(crate) events_us: u32,
 }
 
+pub(crate) struct FramePublicationSurfaces {
+    pub(crate) canvas: Option<Canvas>,
+    pub(crate) frame_surface: Option<PublishedSurface>,
+    pub(crate) preview_surface: Option<PublishedSurface>,
+    pub(crate) screen_capture_surface: Option<PublishedSurface>,
+    pub(crate) web_viewport_preview_canvas: Option<Canvas>,
+    pub(crate) effect_running: bool,
+    pub(crate) screen_capture_active: bool,
+}
+
+impl FramePublicationSurfaces {
+    fn authoritative_scene_surface(&self) -> Option<&PublishedSurface> {
+        authoritative_scene_surface(self.frame_surface.as_ref(), self.preview_surface.as_ref())
+    }
+
+    fn canvas_preview_surface(&self) -> Option<&PublishedSurface> {
+        self.preview_surface
+            .as_ref()
+            .or(self.frame_surface.as_ref())
+    }
+
+    fn screen_watch_surface(&self) -> Option<&PublishedSurface> {
+        if !self.effect_running && self.screen_capture_active {
+            self.preview_surface
+                .as_ref()
+                .or(self.frame_surface.as_ref())
+                .or(self.screen_capture_surface.as_ref())
+        } else {
+            self.preview_surface
+                .as_ref()
+                .or(self.screen_capture_surface.as_ref())
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct AudioSignalSnapshot {
     level: f32,
@@ -46,13 +81,9 @@ pub(crate) fn publish_frame_updates(
     state: &RenderThreadState,
     recycled_frame: &mut FrameData,
     audio: &AudioData,
-    canvas: Option<Canvas>,
+    mut surfaces: FramePublicationSurfaces,
     group_canvases: &[(RenderGroupId, GroupCanvasFrame)],
     active_group_canvas_ids: &[RenderGroupId],
-    frame_surface: Option<PublishedSurface>,
-    preview_surface: Option<PublishedSurface>,
-    screen_preview_surface: Option<PublishedSurface>,
-    web_viewport_preview_canvas: Option<Canvas>,
     frame_number: u32,
     elapsed_ms: u32,
     publication_cadence: &mut PublicationCadenceState,
@@ -126,18 +157,14 @@ pub(crate) fn publish_frame_updates(
     if scene_canvas_receivers > 0 {
         let publish_scene_canvas = {
             let current = state.event_bus.scene_canvas_sender().borrow();
-            if let Some(surface) =
-                authoritative_scene_surface(frame_surface.as_ref(), preview_surface.as_ref())
-            {
+            if let Some(surface) = surfaces.authoritative_scene_surface() {
                 should_publish_surface_frame(&current, surface)
             } else {
                 should_publish_canvas_frame(&current, &CanvasFrame::empty())
             }
         };
         if publish_scene_canvas {
-            let scene_frame = if let Some(surface) =
-                authoritative_scene_surface(frame_surface.as_ref(), preview_surface.as_ref())
-            {
+            let scene_frame = if let Some(surface) = surfaces.authoritative_scene_surface() {
                 CanvasFrame::from_surface(
                     surface
                         .clone()
@@ -149,6 +176,12 @@ pub(crate) fn publish_frame_updates(
             let _ = state.event_bus.scene_canvas_sender().send(scene_frame);
         }
     }
+    let screen_canvas_receivers = state.event_bus.screen_canvas_receiver_count();
+    let screen_preview_surface = if screen_canvas_receivers > 0 {
+        surfaces.screen_watch_surface().cloned()
+    } else {
+        None
+    };
     state
         .preview_runtime
         .note_canvas_frame(frame_number, elapsed_ms);
@@ -157,10 +190,9 @@ pub(crate) fn publish_frame_updates(
         let tracked_canvas_receivers = state.preview_runtime.tracked_canvas_receiver_count();
         let publish_canvas = {
             let current = state.event_bus.canvas_sender().borrow();
-            let changed = if let Some(surface) = preview_surface.as_ref().or(frame_surface.as_ref())
-            {
+            let changed = if let Some(surface) = surfaces.canvas_preview_surface() {
                 should_publish_surface_frame(&current, surface)
-            } else if let Some(canvas) = canvas.as_ref() {
+            } else if let Some(canvas) = surfaces.canvas.as_ref() {
                 should_publish_canvas_storage(&current, canvas)
             } else {
                 should_publish_canvas_frame(&current, &CanvasFrame::empty())
@@ -174,9 +206,13 @@ pub(crate) fn publish_frame_updates(
                 )
         };
         if publish_canvas {
-            let canvas_frame = if let Some(surface) = preview_surface.or(frame_surface) {
+            let canvas_frame = if let Some(surface) = surfaces
+                .preview_surface
+                .take()
+                .or_else(|| surfaces.frame_surface.take())
+            {
                 CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
-            } else if let Some(canvas) = canvas {
+            } else if let Some(canvas) = surfaces.canvas.take() {
                 let canvas_rgba_len = usize_to_u32(canvas.rgba_len());
                 let (frame, copied) =
                     CanvasFrame::from_owned_canvas_with_copy_info(canvas, frame_number, elapsed_ms);
@@ -198,7 +234,6 @@ pub(crate) fn publish_frame_updates(
     state
         .preview_runtime
         .note_screen_canvas_frame(frame_number, elapsed_ms);
-    let screen_canvas_receivers = state.event_bus.screen_canvas_receiver_count();
     if screen_canvas_receivers > 0 {
         let tracked_screen_canvas_receivers = state.preview_runtime.screen_canvas_receiver_count();
         let publish_screen = {
@@ -237,7 +272,7 @@ pub(crate) fn publish_frame_updates(
         let tracked_receivers = state.preview_runtime.web_viewport_canvas_receiver_count();
         let publish_web_viewport = {
             let current = state.event_bus.web_viewport_canvas_sender().borrow();
-            let changed = if let Some(canvas) = web_viewport_preview_canvas.as_ref() {
+            let changed = if let Some(canvas) = surfaces.web_viewport_preview_canvas.as_ref() {
                 should_publish_canvas_storage(&current, canvas)
             } else {
                 should_publish_canvas_frame(&current, &CanvasFrame::empty())
@@ -251,7 +286,7 @@ pub(crate) fn publish_frame_updates(
                 )
         };
         if publish_web_viewport {
-            let preview_frame = if let Some(canvas) = web_viewport_preview_canvas {
+            let preview_frame = if let Some(canvas) = surfaces.web_viewport_preview_canvas {
                 let canvas_rgba_len = usize_to_u32(canvas.rgba_len());
                 let (frame, copied) =
                     CanvasFrame::from_owned_canvas_with_copy_info(canvas, frame_number, elapsed_ms);
@@ -429,7 +464,7 @@ mod tests {
 
     use hypercolor_core::types::event::{FrameData, ZoneColors};
 
-    use super::{authoritative_scene_surface, update_published_frame};
+    use super::{FramePublicationSurfaces, authoritative_scene_surface, update_published_frame};
 
     fn sample_frame(
         zone_id: &str,
@@ -518,5 +553,78 @@ mod tests {
         let selected = authoritative_scene_surface(None, None);
 
         assert!(selected.is_none());
+    }
+
+    #[test]
+    fn screen_watch_surface_prefers_preview_for_passthrough_capture() {
+        let preview_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 1, 16);
+        let frame_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 2, 32);
+        let capture_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 3, 48);
+        let surfaces = FramePublicationSurfaces {
+            canvas: None,
+            frame_surface: Some(frame_surface),
+            preview_surface: Some(preview_surface.clone()),
+            screen_capture_surface: Some(capture_surface),
+            web_viewport_preview_canvas: None,
+            effect_running: false,
+            screen_capture_active: true,
+        };
+
+        let selected = surfaces
+            .screen_watch_surface()
+            .expect("preview surface should win");
+
+        assert_eq!(
+            selected.storage_identity(),
+            preview_surface.storage_identity()
+        );
+    }
+
+    #[test]
+    fn screen_watch_surface_uses_frame_surface_for_passthrough_capture_without_preview() {
+        let frame_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 2, 32);
+        let capture_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 3, 48);
+        let surfaces = FramePublicationSurfaces {
+            canvas: None,
+            frame_surface: Some(frame_surface.clone()),
+            preview_surface: None,
+            screen_capture_surface: Some(capture_surface),
+            web_viewport_preview_canvas: None,
+            effect_running: false,
+            screen_capture_active: true,
+        };
+
+        let selected = surfaces
+            .screen_watch_surface()
+            .expect("frame surface should back passthrough capture");
+
+        assert_eq!(
+            selected.storage_identity(),
+            frame_surface.storage_identity()
+        );
+    }
+
+    #[test]
+    fn screen_watch_surface_skips_frame_surface_when_effect_is_running() {
+        let frame_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 2, 32);
+        let capture_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 3, 48);
+        let surfaces = FramePublicationSurfaces {
+            canvas: None,
+            frame_surface: Some(frame_surface),
+            preview_surface: None,
+            screen_capture_surface: Some(capture_surface.clone()),
+            web_viewport_preview_canvas: None,
+            effect_running: true,
+            screen_capture_active: true,
+        };
+
+        let selected = surfaces
+            .screen_watch_surface()
+            .expect("capture surface should back active effects");
+
+        assert_eq!(
+            selected.storage_identity(),
+            capture_surface.storage_identity()
+        );
     }
 }

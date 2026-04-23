@@ -8,7 +8,7 @@ use hypercolor_core::types::canvas::Canvas;
 use hypercolor_core::types::event::FrameTiming;
 use hypercolor_types::session::OffOutputBehavior;
 
-use super::frame_io::publish_frame_updates;
+use super::frame_io::{FramePublicationSurfaces, publish_frame_updates};
 use super::frame_policy::{FrameExecution, NextWake, SkipDecision};
 use super::pipeline_runtime::{
     OutputArtifactsState, PublicationCadenceState, RenderSurfaceSnapshot, ThrottleState,
@@ -87,13 +87,17 @@ pub(crate) async fn maybe_sleep_throttle(
             state,
             output_artifacts.frame_mut(),
             &AudioData::silence(),
-            Some(Canvas::from_published_surface(&surface)),
+            FramePublicationSurfaces {
+                canvas: Some(Canvas::from_published_surface(&surface)),
+                frame_surface: Some(surface),
+                preview_surface: None,
+                screen_capture_surface: None,
+                web_viewport_preview_canvas: None,
+                effect_running: false,
+                screen_capture_active: false,
+            },
             &[],
             &[],
-            Some(surface),
-            None,
-            None,
-            None,
             frame_num_u32,
             scene_snapshot.elapsed_ms,
             publication_cadence,
@@ -159,13 +163,17 @@ pub(crate) async fn maybe_sleep_throttle(
         state,
         output_artifacts.frame_mut(),
         &AudioData::silence(),
-        Some(canvas),
+        FramePublicationSurfaces {
+            canvas: Some(canvas),
+            frame_surface: Some(surface),
+            preview_surface: None,
+            screen_capture_surface: None,
+            web_viewport_preview_canvas: None,
+            effect_running: false,
+            screen_capture_active: false,
+        },
         &[],
         &[],
-        Some(surface),
-        None,
-        None,
-        None,
         frame_num_u32,
         scene_snapshot.elapsed_ms,
         publication_cadence,

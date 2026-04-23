@@ -7,7 +7,7 @@ use tracing::{info, trace, warn};
 use hypercolor_core::types::event::FrameTiming;
 
 use super::frame_composer::{ComposeRequest, compose_frame};
-use super::frame_io::publish_frame_updates;
+use super::frame_io::{FramePublicationSurfaces, publish_frame_updates};
 use super::frame_policy::{FrameAdmissionSample, FrameExecution, SkipDecision};
 use super::frame_sampling::{LedSamplingOutcome, resolve_led_sampling};
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
@@ -280,7 +280,6 @@ pub(crate) async fn execute_frame(
 
     let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
     let timing_total_us = micros_u32(frame_start.elapsed());
-    let screen_canvas_receivers = state.event_bus.screen_canvas_receiver_count();
     let ComposedFrameSet {
         sampling_canvas,
         sampling_surface,
@@ -288,39 +287,24 @@ pub(crate) async fn execute_frame(
         bypassed: _,
         backend: compositor_backend,
     } = render_stage.composed_frame;
-    let screen_watch_surface = if !screen_canvas_preview_due || screen_canvas_receivers == 0 {
-        None
-    } else if !scene_snapshot.effect_demand.effect_running
-        && scene_snapshot.effect_demand.screen_capture_active
-    {
-        preview_surface
-            .clone()
-            .or_else(|| sampling_surface.clone())
-            .or_else(|| {
-                inputs
-                    .screen_data
-                    .as_ref()
-                    .and_then(|data| data.canvas_downscale.clone())
-            })
-    } else {
-        preview_surface.clone().or_else(|| {
-            inputs
-                .screen_data
-                .as_ref()
-                .and_then(|data| data.canvas_downscale.clone())
-        })
-    };
     let publish_stats = publish_frame_updates(
         state,
         render.output_artifacts.frame_mut(),
         &inputs.audio,
-        sampling_canvas,
+        FramePublicationSurfaces {
+            canvas: sampling_canvas,
+            frame_surface: sampling_surface,
+            preview_surface,
+            screen_capture_surface: inputs
+                .screen_data
+                .as_ref()
+                .and_then(|data| data.canvas_downscale.clone()),
+            web_viewport_preview_canvas: render_stage.web_viewport_preview,
+            effect_running: scene_snapshot.effect_demand.effect_running,
+            screen_capture_active: scene_snapshot.effect_demand.screen_capture_active,
+        },
         &render_stage.group_canvases,
         &render_stage.active_group_canvas_ids,
-        sampling_surface,
-        preview_surface,
-        screen_watch_surface,
-        render_stage.web_viewport_preview,
         frame_num_u32,
         scene_snapshot.elapsed_ms,
         &mut frame_loop.publication_cadence,
