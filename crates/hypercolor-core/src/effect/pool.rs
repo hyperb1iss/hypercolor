@@ -456,9 +456,13 @@ mod tests {
     }
 
     fn spy_slot(effect_id: EffectId, destroyed: Arc<AtomicBool>) -> EffectSlot {
+        let registry_metadata = spy_metadata(effect_id);
         EffectSlot {
             effect_id,
-            metadata: spy_metadata(effect_id),
+            registry_metadata: registry_metadata.clone(),
+            registry_source_path: PathBuf::from("mock/destroy-spy.wgsl"),
+            registry_modified: SystemTime::UNIX_EPOCH,
+            metadata: registry_metadata,
             renderer: Box::new(DestroySpyRenderer::new(destroyed)),
             controls: HashMap::new(),
             binding_state: HashMap::new(),
