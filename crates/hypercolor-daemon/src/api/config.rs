@@ -349,12 +349,9 @@ fn audio_source_from_device(device: &str, enabled: bool) -> AudioSourceType {
     let normalized = device.trim();
     if normalized.eq_ignore_ascii_case("none") {
         AudioSourceType::None
-    } else if normalized.eq_ignore_ascii_case("auto") || normalized.eq_ignore_ascii_case("default")
-    {
+    } else if normalized.eq_ignore_ascii_case("default") {
         AudioSourceType::SystemMonitor
-    } else if normalized.eq_ignore_ascii_case("mic")
-        || normalized.eq_ignore_ascii_case("microphone")
-    {
+    } else if normalized.eq_ignore_ascii_case("microphone") {
         AudioSourceType::Microphone
     } else {
         AudioSourceType::Named(normalized.to_owned())

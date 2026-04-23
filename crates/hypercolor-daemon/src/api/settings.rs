@@ -212,7 +212,7 @@ fn enumerate_cpal_audio_input_devices() -> anyhow::Result<Vec<AudioDeviceInfo>> 
 fn default_audio_device() -> AudioDeviceInfo {
     AudioDeviceInfo {
         id: "default".to_owned(),
-        name: "System Monitor (Auto)".to_owned(),
+        name: "System Monitor".to_owned(),
         description: "Prefer the active system output monitor source".to_owned(),
     }
 }

@@ -513,7 +513,7 @@ async fn audio_devices_returns_default_option_and_current_value() {
         "devices should include the default option"
     );
     assert_eq!(devices[0]["id"], "default");
-    assert_eq!(devices[0]["name"], "System Monitor (Auto)");
+    assert_eq!(devices[0]["name"], "System Monitor");
     assert_eq!(devices[1]["id"], "microphone");
     assert_eq!(devices[2]["id"], "none");
     assert_eq!(json["data"]["current"], "default");
