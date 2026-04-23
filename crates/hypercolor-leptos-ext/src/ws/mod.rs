@@ -4,7 +4,7 @@ mod reconnect;
 mod schema;
 pub mod transport;
 
-pub use channel::Channel;
+pub use channel::{BinaryChannel, BinaryChannelRecvError, Channel};
 pub use frame::{
     BinaryFrame, BinaryFrameDecode, BinaryFrameEncode, DecodeError, validate_frame_prefix,
     write_frame_prefix,
