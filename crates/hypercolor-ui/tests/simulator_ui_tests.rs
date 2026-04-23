@@ -7,13 +7,31 @@ mod display_utils;
 #[path = "../src/style_utils.rs"]
 mod style_utils;
 
-use api::{DisplaySummary, SetDisplayFaceRequest, UpdateSimulatedDisplayRequest};
+use api::{
+    AttachmentBindingRequest, DisplaySummary, PairDeviceRequest, SetDisplayFaceRequest,
+    UpdateSimulatedDisplayRequest,
+};
 use display_utils::{
-    display_preview_shell_url, display_preview_target_from_search, hex_to_rgba,
-    is_simulator_display, json_to_face_control_value, parse_simulator_dimension,
+    display_preview_shell_url, hex_to_rgba, is_simulator_display, json_to_face_control_value,
+    parse_simulator_dimension,
 };
 use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, ControlValue};
 use style_utils::category_style;
+
+fn display_preview_target_from_search(search: &str) -> Option<String> {
+    let query = search.strip_prefix('?').unwrap_or(search);
+    query
+        .split('&')
+        .filter(|segment| !segment.is_empty())
+        .find_map(|segment| {
+            let (key, value) = segment.split_once('=')?;
+            if key != "display" {
+                return None;
+            }
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_owned())
+        })
+}
 
 fn dropdown_control(id: &str) -> ControlDefinition {
     ControlDefinition {
@@ -120,6 +138,46 @@ fn update_simulated_display_request_serializes_only_present_fields() {
             "name": "Desk LCD",
             "width": 600,
             "circular": false
+        })
+    );
+}
+
+#[test]
+fn pair_device_request_skips_empty_values() {
+    let payload = serde_json::to_value(PairDeviceRequest {
+        values: std::collections::HashMap::new(),
+        activate_after_pair: true,
+    })
+    .expect("pair request should serialize");
+
+    assert_eq!(
+        payload,
+        serde_json::json!({
+            "activate_after_pair": true
+        })
+    );
+}
+
+#[test]
+fn attachment_binding_request_keeps_explicit_defaults_on_wire() {
+    let payload = serde_json::to_value(AttachmentBindingRequest {
+        slot_id: "slot-1".to_owned(),
+        template_id: "template-1".to_owned(),
+        name: None,
+        enabled: true,
+        instances: 1,
+        led_offset: 0,
+    })
+    .expect("attachment binding request should serialize");
+
+    assert_eq!(
+        payload,
+        serde_json::json!({
+            "slot_id": "slot-1",
+            "template_id": "template-1",
+            "enabled": true,
+            "instances": 1,
+            "led_offset": 0
         })
     );
 }

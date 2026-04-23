@@ -57,23 +57,23 @@ pub struct DisplayFaceResponse {
 }
 
 /// Request body for `PUT /api/v1/displays/{id}/face`.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SetDisplayFaceRequest {
     pub effect_id: String,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub controls: HashMap<String, ControlValue>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub blend_mode: Option<DisplayFaceBlendMode>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
 }
 
 /// Request body for `PATCH /api/v1/displays/{id}/face/composition`.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct UpdateDisplayFaceCompositionRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub blend_mode: Option<DisplayFaceBlendMode>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
 }
 

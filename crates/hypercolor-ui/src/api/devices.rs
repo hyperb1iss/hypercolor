@@ -103,7 +103,7 @@ pub struct DeviceAuthSummary {
 /// Generic pair request sent to `POST /api/v1/devices/:id/pair`.
 #[derive(Debug, Serialize)]
 pub struct PairDeviceRequest {
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub values: HashMap<String, String>,
     pub activate_after_pair: bool,
 }
@@ -241,22 +241,9 @@ pub struct AttachmentBindingRequest {
     pub template_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(default = "bool_true")]
     pub enabled: bool,
-    #[serde(default = "default_instances")]
     pub instances: u32,
-    #[serde(default)]
     pub led_offset: u32,
-}
-
-#[allow(dead_code)]
-fn bool_true() -> bool {
-    true
-}
-
-#[allow(dead_code)]
-fn default_instances() -> u32 {
-    1
 }
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────
