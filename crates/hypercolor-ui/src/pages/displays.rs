@@ -200,17 +200,23 @@ pub fn DisplaysPage() -> impl IntoView {
         LS_KEY_RIGHT_WIDTH,
     );
 
-    // Auto-select the first display once the list loads so the workspace
-    // isn't empty on first render.
+    // Keep the workspace anchored to a real display whenever the list changes.
+    // This covers first load, reconnects, and deletions that invalidate the
+    // previously selected id.
     Effect::new(move |_| {
-        if selected_id.with(Option::is_some) {
+        let Some(Ok(items)) = displays.get() else {
+            return;
+        };
+
+        if selected_id
+            .get()
+            .as_ref()
+            .is_some_and(|id| items.iter().any(|display| display.id == *id))
+        {
             return;
         }
-        if let Some(Ok(items)) = displays.get().as_ref()
-            && let Some(first) = items.first()
-        {
-            set_selected_id.set(Some(first.id.clone()));
-        }
+
+        set_selected_id.set(items.first().map(|display| display.id.clone()));
     });
 
     let selected_display = Memo::new(move |_| {

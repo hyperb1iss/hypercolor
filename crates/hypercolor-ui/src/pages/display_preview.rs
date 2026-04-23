@@ -7,6 +7,7 @@ use crate::app::{DisplaysContext, WsContext};
 use crate::components::display_preview_surface::DisplayPreviewSurface;
 use crate::display_preview_state::{use_display_face_resource, use_display_preview_subscription};
 use crate::icons::{LuLayers, LuMonitor};
+use hypercolor_types::scene::RenderGroupRole;
 
 #[component]
 pub fn DisplayPreviewPage() -> impl IntoView {
@@ -14,6 +15,7 @@ pub fn DisplayPreviewPage() -> impl IntoView {
     let displays = expect_context::<DisplaysContext>().displays_resource;
     let query = use_query_map();
     let requested_display_id = Memo::new(move |_| query.with(|map| map.get("display")));
+    let (face_refresh_tick, set_face_refresh_tick) = signal(0_u64);
 
     let selected_display = Memo::new(move |_| {
         let snapshot = displays.get();
@@ -40,7 +42,28 @@ pub fn DisplayPreviewPage() -> impl IntoView {
     });
     use_display_preview_subscription(ws, selected_display_id);
     let preview_frame = Signal::derive(move || ws.display_preview_frame.get());
-    let display_face = use_display_face_resource(selected_display_id, Signal::derive(|| 0_u64));
+    let display_face = use_display_face_resource(
+        selected_display_id,
+        Signal::derive(move || face_refresh_tick.get()),
+    );
+
+    Effect::new(
+        move |previous_scene_event: Option<Option<crate::ws::SceneEventHint>>| {
+            let current_scene_event = ws.last_scene_event.get();
+            if previous_scene_event.as_ref() == Some(&current_scene_event) {
+                return current_scene_event;
+            }
+
+            if current_scene_event.as_ref().is_some_and(|scene_event| {
+                scene_event.event_type == "active_scene_changed"
+                    || scene_event.render_group_role == Some(RenderGroupRole::Display)
+            }) {
+                set_face_refresh_tick.update(|tick| *tick = tick.wrapping_add(1));
+            }
+
+            current_scene_event
+        },
+    );
 
     let face_name = Signal::derive(move || match display_face.get() {
         Some(Ok(Some(face))) => Some(face.effect.name),
@@ -97,7 +120,8 @@ pub fn DisplayPreviewPage() -> impl IntoView {
                             "relative max-h-[calc(100vh-3rem)] max-w-[calc(100vw-3rem)] overflow-hidden rounded-[2rem] border border-white/10 bg-black shadow-[0_0_80px_rgba(0,0,0,0.65)]"
                         };
                         let alt_text = format!("Full-screen preview of {}", display.name);
-                        let fallback_src = api::display_preview_url(&display.id, None);
+                        let fallback_src =
+                            api::display_preview_url(&display.id, Some(face_refresh_tick.get()));
 
                         view! {
                             <div class="absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-3 p-4">
