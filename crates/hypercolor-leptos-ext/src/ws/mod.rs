@@ -2,6 +2,7 @@ mod channel;
 mod frame;
 mod preview;
 mod reconnect;
+mod rpc;
 mod schema;
 pub mod transport;
 
@@ -26,6 +27,7 @@ pub use reconnect::{
     Connector, ExponentialBackoff, Jitter, ReconnectError, ReconnectOutcome, ReconnectPolicy,
     ReconnectRecvError, ReconnectSendError, Reconnecting,
 };
+pub use rpc::{RPC_REQUEST_TAG, RPC_RESPONSE_TAG, RpcRequest, RpcResponse, RpcStatus};
 pub use schema::{SchemaRange, negotiate_highest_common_schema};
 
 pub trait BinaryFrameSchema {
