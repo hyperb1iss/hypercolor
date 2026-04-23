@@ -137,6 +137,7 @@ struct DisplayTargetCacheKey {
     dependency_key: DisplayTargetDependencyKey,
     layout_ptr: usize,
     logical_signature: u64,
+    display_preview_signature: u64,
 }
 
 impl DisplayTargetCacheKey {
@@ -144,11 +145,13 @@ impl DisplayTargetCacheKey {
         dependency_key: DisplayTargetDependencyKey,
         layout_ptr: usize,
         logical_signature: u64,
+        display_preview_signature: u64,
     ) -> Self {
         Self {
             dependency_key,
             layout_ptr,
             logical_signature,
+            display_preview_signature,
         }
     }
 }
@@ -349,6 +352,7 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
         &state.spatial_engine,
         &state.logical_devices,
         &state.event_bus,
+        &state.display_frames,
         &mut targets_cache,
     )
     .await;
@@ -394,6 +398,7 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
             &state.spatial_engine,
             &state.logical_devices,
             &state.event_bus,
+            &state.display_frames,
             &mut targets_cache,
         )
         .await;
@@ -610,6 +615,7 @@ async fn display_targets(
     spatial_engine: &Arc<RwLock<SpatialEngine>>,
     logical_devices: &Arc<RwLock<HashMap<String, LogicalDevice>>>,
     event_bus: &Arc<HypercolorBus>,
+    display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
     cache: &mut DisplayTargetCache,
 ) -> DisplayTargetsSnapshot {
     let layout = {
@@ -635,6 +641,7 @@ async fn display_targets(
         })
         .collect::<HashMap<_, _>>();
     let logical_store = logical_devices.read().await;
+    let display_preview_subscribers = display_frames.read().await.subscribed_device_ids();
     let registry_generation = registry.generation();
     #[expect(
         clippy::as_conversions,
@@ -642,9 +649,15 @@ async fn display_targets(
     )]
     let layout_ptr = Arc::as_ptr(&layout) as usize;
     let logical_signature = logical_device_store_signature(&logical_store);
+    let display_preview_signature = device_id_set_signature(&display_preview_subscribers);
     let dependency_key =
         DisplayTargetDependencyKey::new(registry_generation, display_group_targets_revision);
-    let cache_key = DisplayTargetCacheKey::new(dependency_key, layout_ptr, logical_signature);
+    let cache_key = DisplayTargetCacheKey::new(
+        dependency_key,
+        layout_ptr,
+        logical_signature,
+        display_preview_signature,
+    );
 
     if cache.cache_key == Some(cache_key) {
         return DisplayTargetsSnapshot {
@@ -661,6 +674,14 @@ async fn display_targets(
         .filter(|tracked| tracked.state.is_renderable())
     {
         let metadata = registry.metadata_for_id(&tracked.info.id).await;
+        let is_simulator = metadata.as_ref().is_some_and(|metadata| {
+            metadata
+                .get("simulator")
+                .is_some_and(|value| value == "true")
+        });
+        if is_simulator && !display_preview_subscribers.contains(&tracked.info.id) {
+            continue;
+        }
         let Some(geometry) = display_geometry_for_device(&tracked.info.zones).or_else(|| {
             tracked
                 .info
@@ -875,6 +896,17 @@ fn logical_device_store_signature(store: &HashMap<String, LogicalDevice>) -> u64
         let mut hasher = DefaultHasher::new();
         entry.id.hash(&mut hasher);
         entry.physical_device_id.hash(&mut hasher);
+        combined ^= hasher.finish().rotate_left(1);
+    }
+
+    combined
+}
+
+fn device_id_set_signature(device_ids: &HashSet<DeviceId>) -> u64 {
+    let mut combined = u64::try_from(device_ids.len()).unwrap_or(u64::MAX);
+    for device_id in device_ids {
+        let mut hasher = DefaultHasher::new();
+        device_id.hash(&mut hasher);
         combined ^= hasher.finish().rotate_left(1);
     }
 

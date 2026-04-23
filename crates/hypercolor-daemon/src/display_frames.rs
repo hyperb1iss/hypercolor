@@ -14,7 +14,7 @@
 //! sender for a given device is created lazily on first subscribe, so
 //! devices that no one is watching pay zero notification overhead.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -98,6 +98,16 @@ impl DisplayFrameRuntime {
             .entry(device_id)
             .or_insert_with(|| watch::channel(initial.clone()).0);
         sender.subscribe()
+    }
+
+    /// Return the devices that currently have at least one live preview
+    /// subscriber attached to their watch channel.
+    #[must_use]
+    pub fn subscribed_device_ids(&self) -> HashSet<DeviceId> {
+        self.watchers
+            .iter()
+            .filter_map(|(device_id, sender)| (sender.receiver_count() > 0).then_some(*device_id))
+            .collect()
     }
 
     /// Forget any frame captured for a device and close the watch channel

@@ -96,3 +96,18 @@ async fn dropped_receivers_let_sender_clean_up() {
     };
     assert_eq!(frame.frame_number, 99);
 }
+
+#[tokio::test]
+async fn subscribed_device_ids_only_include_live_receivers() {
+    let mut runtime = DisplayFrameRuntime::new();
+    let kept_device = make_device();
+    let dropped_device = make_device();
+
+    let _kept_rx = runtime.subscribe(kept_device);
+    let dropped_rx = runtime.subscribe(dropped_device);
+    drop(dropped_rx);
+
+    let subscribed = runtime.subscribed_device_ids();
+    assert!(subscribed.contains(&kept_device));
+    assert!(!subscribed.contains(&dropped_device));
+}
