@@ -1,5 +1,7 @@
 //! JSON and binary message handlers for the daemon WebSocket protocol.
 
+pub(super) use hypercolor_leptos_ext::ws::PreviewFrameChannel;
+use hypercolor_leptos_ext::ws::{PreviewFrameView, PreviewPixelFormat};
 use hypercolor_types::event::RenderGroupChangeKind;
 use hypercolor_types::scene::{RenderGroupRole, SceneKind, SceneMutationMode};
 use leptos::prelude::*;
@@ -27,16 +29,6 @@ impl std::fmt::Display for ConnectionState {
         }
     }
 }
-
-// ── Protocol Constants ──────────────────────────────────────────────────────
-
-pub const CANVAS_FRAME_HEADER: u8 = 0x03;
-pub const SCREEN_CANVAS_FRAME_HEADER: u8 = 0x05;
-pub const WEB_VIEWPORT_CANVAS_FRAME_HEADER: u8 = 0x06;
-/// Per-display JPEG preview frames. The body format matches the canvas
-/// header (14-byte preamble) and always carries JPEG pixel data so the
-/// UI can decode via `createImageBitmap` and paint to a `<canvas>`.
-pub const DISPLAY_PREVIEW_FRAME_HEADER: u8 = 0x07;
 
 pub const EFFECT_STARTED_EVENTS: &[&str] =
     &["effect_started", "effect_activated", "effect_changed"];
@@ -72,6 +64,14 @@ pub enum CanvasPixelFormat {
 }
 
 impl CanvasPixelFormat {
+    fn from_preview(format: PreviewPixelFormat) -> Self {
+        match format {
+            PreviewPixelFormat::Rgb => Self::Rgb,
+            PreviewPixelFormat::Rgba => Self::Rgba,
+            PreviewPixelFormat::Jpeg => Self::Jpeg,
+        }
+    }
+
     pub(crate) fn bytes_per_pixel(self) -> Option<usize> {
         match self {
             Self::Rgb => Some(3),
@@ -308,78 +308,20 @@ pub struct AudioLevel {
 
 // ── Binary Frame Decoder ────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PreviewFrameChannel {
-    Canvas,
-    ScreenCanvas,
-    WebViewportCanvas,
-    DisplayPreview,
-}
-
-/// Decode a binary preview frame.
-///
-/// Format: `[header:u8][frame_number:u32LE][timestamp:u32LE][width:u16LE][height:u16LE][format:u8][payload...]`
 pub(super) fn decode_preview_frame(
     buffer: js_sys::ArrayBuffer,
 ) -> Option<(PreviewFrameChannel, CanvasFrame)> {
-    let data = js_sys::Uint8Array::new(&buffer);
-    if data.length() < 14 {
-        return None;
-    }
-
-    let channel = match data.get_index(0) {
-        CANVAS_FRAME_HEADER => PreviewFrameChannel::Canvas,
-        SCREEN_CANVAS_FRAME_HEADER => PreviewFrameChannel::ScreenCanvas,
-        WEB_VIEWPORT_CANVAS_FRAME_HEADER => PreviewFrameChannel::WebViewportCanvas,
-        DISPLAY_PREVIEW_FRAME_HEADER => PreviewFrameChannel::DisplayPreview,
-        _ => return None,
-    };
-
-    let frame_number = u32::from_le_bytes([
-        data.get_index(1),
-        data.get_index(2),
-        data.get_index(3),
-        data.get_index(4),
-    ]);
-    let timestamp_ms = u32::from_le_bytes([
-        data.get_index(5),
-        data.get_index(6),
-        data.get_index(7),
-        data.get_index(8),
-    ]);
-    let width = u16::from_le_bytes([data.get_index(9), data.get_index(10)]) as u32;
-    let height = u16::from_le_bytes([data.get_index(11), data.get_index(12)]) as u32;
-    let format = match data.get_index(13) {
-        0 => CanvasPixelFormat::Rgb,
-        1 => CanvasPixelFormat::Rgba,
-        2 => CanvasPixelFormat::Jpeg,
-        _ => return None,
-    };
-    let pixel_offset = 14_u32;
-    let end = match format.bytes_per_pixel() {
-        Some(bytes_per_pixel) => {
-            let expected_size = usize::try_from(width)
-                .ok()?
-                .checked_mul(usize::try_from(height).ok()?)?;
-            let expected_len = u32::try_from(expected_size.checked_mul(bytes_per_pixel)?).ok()?;
-            pixel_offset.checked_add(expected_len)?
-        }
-        None => data.length(),
-    };
-    if data.length() < end {
-        return None;
-    }
-    let pixels = data.subarray(pixel_offset, end);
+    let frame = PreviewFrameView::decode_array_buffer(&buffer).ok()?;
 
     Some((
-        channel,
+        frame.channel,
         CanvasFrame {
-            frame_number,
-            timestamp_ms,
-            width,
-            height,
-            format,
-            pixels,
+            frame_number: frame.frame_number,
+            timestamp_ms: frame.timestamp_ms,
+            width: u32::from(frame.width),
+            height: u32::from(frame.height),
+            format: CanvasPixelFormat::from_preview(frame.format),
+            pixels: frame.payload,
         },
     ))
 }

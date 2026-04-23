@@ -14,6 +14,8 @@ pub use frame::{
     write_frame_prefix,
 };
 pub use hypercolor_leptos_ext_macros::BinaryFrame;
+#[cfg(all(feature = "ws-client-wasm", target_arch = "wasm32"))]
+pub use preview::PreviewFrameView;
 pub use preview::{
     PREVIEW_FRAME_HEADER_LEN, PreviewFrame, PreviewFrameChannel, PreviewFrameDecodeError,
     PreviewPixelFormat,

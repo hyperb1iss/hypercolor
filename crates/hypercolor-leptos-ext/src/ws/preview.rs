@@ -101,41 +101,97 @@ impl PreviewFrame {
     }
 
     pub fn decode(input: &[u8]) -> Result<Self, PreviewFrameDecodeError> {
+        let header = PreviewFrameHeader::decode(input)?;
+        let end = header.end_offset(input.len())?;
+
+        Ok(Self {
+            channel: header.channel,
+            frame_number: header.frame_number,
+            timestamp_ms: header.timestamp_ms,
+            width: header.width,
+            height: header.height,
+            format: header.format,
+            payload: Bytes::copy_from_slice(&input[PREVIEW_FRAME_HEADER_LEN..end]),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PreviewFrameHeader {
+    channel: PreviewFrameChannel,
+    frame_number: u32,
+    timestamp_ms: u32,
+    width: u16,
+    height: u16,
+    format: PreviewPixelFormat,
+}
+
+impl PreviewFrameHeader {
+    fn decode(input: &[u8]) -> Result<Self, PreviewFrameDecodeError> {
         if input.len() < PREVIEW_FRAME_HEADER_LEN {
             return Err(PreviewFrameDecodeError::TooShort {
                 actual: input.len(),
             });
         }
 
-        let channel = PreviewFrameChannel::try_from(input[0])?;
-        let frame_number = u32::from_le_bytes(input[1..5].try_into().expect("slice has 4 bytes"));
-        let timestamp_ms = u32::from_le_bytes(input[5..9].try_into().expect("slice has 4 bytes"));
-        let width = u16::from_le_bytes(input[9..11].try_into().expect("slice has 2 bytes"));
-        let height = u16::from_le_bytes(input[11..13].try_into().expect("slice has 2 bytes"));
-        let format = PreviewPixelFormat::try_from(input[13])?;
+        Ok(Self {
+            channel: PreviewFrameChannel::try_from(input[0])?,
+            frame_number: u32::from_le_bytes(input[1..5].try_into().expect("slice has 4 bytes")),
+            timestamp_ms: u32::from_le_bytes(input[5..9].try_into().expect("slice has 4 bytes")),
+            width: u16::from_le_bytes(input[9..11].try_into().expect("slice has 2 bytes")),
+            height: u16::from_le_bytes(input[11..13].try_into().expect("slice has 2 bytes")),
+            format: PreviewPixelFormat::try_from(input[13])?,
+        })
+    }
 
-        let payload_len = match format.bytes_per_pixel() {
-            Some(bytes_per_pixel) => raw_payload_len(width, height, bytes_per_pixel)?,
-            None => input.len() - PREVIEW_FRAME_HEADER_LEN,
+    fn end_offset(&self, input_len: usize) -> Result<usize, PreviewFrameDecodeError> {
+        let payload_len = match self.format.bytes_per_pixel() {
+            Some(bytes_per_pixel) => raw_payload_len(self.width, self.height, bytes_per_pixel)?,
+            None => input_len - PREVIEW_FRAME_HEADER_LEN,
         };
         let end = PREVIEW_FRAME_HEADER_LEN
             .checked_add(payload_len)
             .ok_or(PreviewFrameDecodeError::DimensionsOverflow)?;
-        if input.len() < end {
+        if input_len < end {
             return Err(PreviewFrameDecodeError::PayloadTooShort {
                 expected: payload_len,
-                actual: input.len().saturating_sub(PREVIEW_FRAME_HEADER_LEN),
+                actual: input_len.saturating_sub(PREVIEW_FRAME_HEADER_LEN),
             });
         }
+        Ok(end)
+    }
+}
+
+#[cfg(all(feature = "ws-client-wasm", target_arch = "wasm32"))]
+#[derive(Debug, Clone)]
+pub struct PreviewFrameView {
+    pub channel: PreviewFrameChannel,
+    pub frame_number: u32,
+    pub timestamp_ms: u32,
+    pub width: u16,
+    pub height: u16,
+    pub format: PreviewPixelFormat,
+    pub payload: js_sys::Uint8Array,
+}
+
+#[cfg(all(feature = "ws-client-wasm", target_arch = "wasm32"))]
+impl PreviewFrameView {
+    pub fn decode_array_buffer(
+        buffer: &js_sys::ArrayBuffer,
+    ) -> Result<Self, PreviewFrameDecodeError> {
+        let data = js_sys::Uint8Array::new(buffer);
+        let header_bytes = data.subarray(0, PREVIEW_FRAME_HEADER_LEN as u32).to_vec();
+        let header = PreviewFrameHeader::decode(&header_bytes)?;
+        let end = header.end_offset(data.length() as usize)?;
 
         Ok(Self {
-            channel,
-            frame_number,
-            timestamp_ms,
-            width,
-            height,
-            format,
-            payload: Bytes::copy_from_slice(&input[PREVIEW_FRAME_HEADER_LEN..end]),
+            channel: header.channel,
+            frame_number: header.frame_number,
+            timestamp_ms: header.timestamp_ms,
+            width: header.width,
+            height: header.height,
+            format: header.format,
+            payload: data.subarray(PREVIEW_FRAME_HEADER_LEN as u32, end as u32),
         })
     }
 }
