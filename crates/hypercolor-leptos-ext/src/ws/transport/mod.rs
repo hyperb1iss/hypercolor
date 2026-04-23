@@ -1,4 +1,6 @@
 mod in_memory;
+#[cfg(feature = "axum")]
+mod websocket_axum;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -7,6 +9,8 @@ use std::task::{Context, Poll};
 use crate::MaybeSend;
 
 pub use in_memory::{InMemoryTransport, InMemoryTransportError};
+#[cfg(feature = "axum")]
+pub use websocket_axum::{AxumWebSocketTransport, AxumWebSocketTransportError};
 
 #[async_trait(?Send)]
 pub trait CinderTransport: MaybeSend + 'static {
