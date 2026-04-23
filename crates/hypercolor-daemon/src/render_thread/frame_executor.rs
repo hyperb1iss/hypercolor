@@ -11,7 +11,7 @@ use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish
 use super::frame_policy::{FrameAdmissionSample, FrameExecution, SkipDecision};
 use super::frame_sampling::{LedSamplingOutcome, resolve_led_sampling};
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
-use super::pipeline_runtime::{PendingSamplingWork, PipelineRuntime};
+use super::pipeline_runtime::{OutputFrameSource, PendingSamplingWork, PipelineRuntime};
 use super::scene_snapshot::{build_frame_scene_snapshot, refresh_effect_scene_snapshot};
 use super::sparkleflinger::ComposedFrameSet;
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
@@ -217,32 +217,37 @@ pub(crate) async fn execute_frame(
             state.backend_manager.lock().await
         };
         let device_brightness_generation = manager.output_brightness_generation();
-        let can_reuse_routed_outputs = reuses_published_frame
-            && frame_loop
-                .output_reuse
-                .matches(global_brightness_bits, device_brightness_generation)
-            && manager.can_reuse_routed_frame_outputs(layout.as_ref());
-        let write_stats = if can_reuse_routed_outputs {
-            manager.reuse_routed_frame_outputs(layout.as_ref())
-        } else if reuses_published_frame {
-            let published_frame = state.event_bus.frame_sender().borrow();
-            manager
-                .write_frame_with_brightness(
-                    &published_frame.zones,
-                    layout.as_ref(),
-                    global_brightness,
-                    None,
-                )
-                .await
-        } else {
-            manager
-                .write_frame_with_brightness(
-                    render.output_artifacts.zones(),
-                    layout.as_ref(),
-                    global_brightness,
-                    None,
-                )
-                .await
+        let output_source = frame_loop.output_reuse.select_frame_source(
+            reuses_published_frame,
+            global_brightness_bits,
+            device_brightness_generation,
+            || manager.can_reuse_routed_frame_outputs(layout.as_ref()),
+        );
+        let write_stats = match output_source {
+            OutputFrameSource::RoutedReuse => {
+                manager.reuse_routed_frame_outputs(layout.as_ref())
+            }
+            OutputFrameSource::PublishedFrame => {
+                let published_frame = state.event_bus.frame_sender().borrow();
+                manager
+                    .write_frame_with_brightness(
+                        &published_frame.zones,
+                        layout.as_ref(),
+                        global_brightness,
+                        None,
+                    )
+                    .await
+            }
+            OutputFrameSource::CurrentFrame => {
+                manager
+                    .write_frame_with_brightness(
+                        render.output_artifacts.zones(),
+                        layout.as_ref(),
+                        global_brightness,
+                        None,
+                    )
+                    .await
+            }
         };
         frame_loop
             .output_reuse

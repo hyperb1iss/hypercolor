@@ -471,6 +471,13 @@ pub(crate) struct OutputReuseState {
     pub(crate) last_device_output_brightness_generation: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutputFrameSource {
+    RoutedReuse,
+    PublishedFrame,
+    CurrentFrame,
+}
+
 impl OutputReuseState {
     pub(crate) fn matches(
         &self,
@@ -480,6 +487,28 @@ impl OutputReuseState {
         self.last_output_brightness_bits == Some(output_brightness_bits)
             && self.last_device_output_brightness_generation
                 == Some(device_output_brightness_generation)
+    }
+
+    pub(crate) fn select_frame_source(
+        &self,
+        reuses_published_frame: bool,
+        output_brightness_bits: u32,
+        device_output_brightness_generation: u64,
+        routed_outputs_reusable: impl FnOnce() -> bool,
+    ) -> OutputFrameSource {
+        if reuses_published_frame
+            && self.matches(
+                output_brightness_bits,
+                device_output_brightness_generation,
+            )
+            && routed_outputs_reusable()
+        {
+            OutputFrameSource::RoutedReuse
+        } else if reuses_published_frame {
+            OutputFrameSource::PublishedFrame
+        } else {
+            OutputFrameSource::CurrentFrame
+        }
     }
 
     pub(crate) fn record(
@@ -935,5 +964,61 @@ impl PipelineRuntime {
             },
             frame_policy: FramePolicy::new(configured_max_fps_tier),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::{OutputFrameSource, OutputReuseState};
+
+    #[test]
+    fn output_frame_source_reuses_routed_outputs_when_dependencies_match() {
+        let mut reuse = OutputReuseState::default();
+        reuse.record(1, 7);
+
+        let source = reuse.select_frame_source(true, 1, 7, || true);
+
+        assert_eq!(source, OutputFrameSource::RoutedReuse);
+    }
+
+    #[test]
+    fn output_frame_source_falls_back_to_published_frame_when_route_reuse_is_unavailable() {
+        let mut reuse = OutputReuseState::default();
+        reuse.record(1, 7);
+
+        let source = reuse.select_frame_source(true, 1, 7, || false);
+
+        assert_eq!(source, OutputFrameSource::PublishedFrame);
+    }
+
+    #[test]
+    fn output_frame_source_skips_route_reuse_probe_without_published_frame_reuse() {
+        let reuse = OutputReuseState::default();
+        let route_probe_calls = Cell::new(0_u32);
+
+        let source = reuse.select_frame_source(false, 1, 7, || {
+            route_probe_calls.set(route_probe_calls.get() + 1);
+            true
+        });
+
+        assert_eq!(source, OutputFrameSource::CurrentFrame);
+        assert_eq!(route_probe_calls.get(), 0);
+    }
+
+    #[test]
+    fn output_frame_source_skips_route_reuse_probe_when_reuse_metadata_mismatches() {
+        let mut reuse = OutputReuseState::default();
+        reuse.record(1, 7);
+        let route_probe_calls = Cell::new(0_u32);
+
+        let source = reuse.select_frame_source(true, 1, 8, || {
+            route_probe_calls.set(route_probe_calls.get() + 1);
+            true
+        });
+
+        assert_eq!(source, OutputFrameSource::PublishedFrame);
+        assert_eq!(route_probe_calls.get(), 0);
     }
 }
