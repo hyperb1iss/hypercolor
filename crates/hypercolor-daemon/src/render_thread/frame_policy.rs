@@ -152,6 +152,7 @@ mod tests {
             wake_late_us: 0,
             jitter_us: 0,
             full_frame_copy_count: 0,
+            cpu_sampling_late_readback: false,
             output_errors: 0,
         }
     }

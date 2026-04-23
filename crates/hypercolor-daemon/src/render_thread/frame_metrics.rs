@@ -273,6 +273,7 @@ fn build_frame_admission_sample(metrics: LatestFrameMetrics) -> FrameAdmissionSa
         wake_late_us: metrics.wake_late_us,
         jitter_us: metrics.jitter_us,
         full_frame_copy_count: metrics.full_frame_copy_count,
+        cpu_sampling_late_readback: metrics.cpu_sampling_late_readback,
         output_errors: metrics.output_errors,
     }
 }
