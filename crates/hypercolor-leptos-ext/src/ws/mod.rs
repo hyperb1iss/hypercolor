@@ -5,6 +5,8 @@ mod reconnect;
 mod schema;
 pub mod transport;
 
+pub const HYPERCOLOR_WS_PROTOCOL: &str = "hypercolor-v1";
+
 pub use channel::{
     BackpressurePolicy, BackpressureQueue, BinaryChannel, BinaryChannelRecvError, BlockOnFull,
     Channel, DropNewest, DropOldest, Latest, OverflowAction, Queue,

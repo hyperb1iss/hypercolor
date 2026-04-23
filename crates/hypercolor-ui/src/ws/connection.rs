@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use hypercolor_leptos_ext::ws::ExponentialBackoff;
+use hypercolor_leptos_ext::ws::{ExponentialBackoff, HYPERCOLOR_WS_PROTOCOL};
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -161,7 +161,7 @@ impl WsManager {
             set_preview_fps.set(0.0);
 
             let url = ws_url.get_value();
-            let ws = match web_sys::WebSocket::new_with_str(&url, "hypercolor-v1") {
+            let ws = match web_sys::WebSocket::new_with_str(&url, HYPERCOLOR_WS_PROTOCOL) {
                 Ok(ws) => ws,
                 Err(_) => {
                     set_connection_state.set(ConnectionState::Error);

@@ -2,7 +2,7 @@ use ::axum::extract::ws::{WebSocket, WebSocketUpgrade};
 use ::axum::response::Response;
 use std::future::Future;
 
-pub const HYPERCOLOR_WS_PROTOCOL: &str = "hypercolor-v1";
+pub use crate::ws::HYPERCOLOR_WS_PROTOCOL;
 
 pub fn upgrade_handler<F, Fut>(ws: WebSocketUpgrade, on_connect: F) -> Response
 where
