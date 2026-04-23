@@ -589,6 +589,10 @@ async fn active_layout_targets_device(
     if !logical_ids.iter().any(|id| id == default_layout_id) {
         logical_ids.push(default_layout_id.to_owned());
     }
+    let physical_layout_id = physical_id.to_string();
+    if !logical_ids.iter().any(|id| id == &physical_layout_id) {
+        logical_ids.push(physical_layout_id);
+    }
 
     let spatial = state.spatial_engine.read().await;
     spatial.layout().zones.iter().any(|zone| {
