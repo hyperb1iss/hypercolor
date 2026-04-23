@@ -6,8 +6,6 @@
 
 use serde::Deserialize;
 
-use super::client;
-
 /// Per-device output telemetry snapshot for a single device.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(default)]
@@ -40,10 +38,4 @@ pub struct DeviceMetricsSnapshot {
     /// Unix milliseconds at which the snapshot was taken.
     pub taken_at_ms: i64,
     pub items: Vec<DeviceMetrics>,
-}
-
-/// Fetch the latest shared device metrics snapshot from REST.
-pub async fn fetch_device_metrics() -> Result<DeviceMetricsSnapshot, String> {
-    let snapshot: DeviceMetricsSnapshot = client::fetch_json("/api/v1/devices/metrics").await?;
-    Ok(snapshot)
 }

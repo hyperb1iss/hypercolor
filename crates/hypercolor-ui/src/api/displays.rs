@@ -8,7 +8,7 @@ use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use super::client::{self, ApiError};
+use super::client;
 
 /// Summary row from `GET /api/v1/displays`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -54,12 +54,6 @@ pub struct DisplayFaceResponse {
     pub scene_id: String,
     pub effect: DisplayFaceEffect,
     pub group: DisplayFaceGroup,
-}
-
-/// Request body for `PATCH /api/v1/displays/{id}/face/controls`.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct UpdateDisplayFaceControlsRequest {
-    pub controls: HashMap<String, ControlValue>,
 }
 
 /// Request body for `PUT /api/v1/displays/{id}/face`.
@@ -157,13 +151,3 @@ pub fn display_preview_url(display_id: &str, cache_buster: Option<u64>) -> Strin
         |cb| format!("/api/v1/displays/{display_id}/preview.jpg?ts={cb}"),
     )
 }
-
-impl From<ApiError> for ErrorNotice {
-    fn from(err: ApiError) -> Self {
-        Self(err.to_string())
-    }
-}
-
-/// Lightweight error container used by UI code paths that want a typed wrapper.
-#[derive(Debug, Clone)]
-pub struct ErrorNotice(pub String);

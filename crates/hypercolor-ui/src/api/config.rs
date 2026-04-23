@@ -18,7 +18,6 @@ pub struct AudioDeviceInfo {
 #[derive(Debug, Clone, Deserialize)]
 pub struct AudioDevicesData {
     pub devices: Vec<AudioDeviceInfo>,
-    pub current: String,
 }
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────
@@ -65,6 +64,5 @@ pub async fn fetch_audio_devices() -> Result<AudioDevicesData, String> {
                 name: "Default".to_string(),
                 description: "System default".to_string(),
             }],
-            current: "default".to_string(),
         }))
 }

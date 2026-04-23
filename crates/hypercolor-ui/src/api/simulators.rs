@@ -43,13 +43,6 @@ pub struct UpdateSimulatedDisplayRequest {
     pub enabled: Option<bool>,
 }
 
-/// `GET /api/v1/simulators/displays` — list persisted virtual displays.
-pub async fn fetch_simulated_displays() -> Result<Vec<SimulatedDisplaySummary>, String> {
-    client::fetch_json::<Vec<SimulatedDisplaySummary>>("/api/v1/simulators/displays")
-        .await
-        .map_err(Into::into)
-}
-
 /// `POST /api/v1/simulators/displays` — create a new virtual display.
 pub async fn create_simulated_display(
     body: &CreateSimulatedDisplayRequest,

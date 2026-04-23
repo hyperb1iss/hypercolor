@@ -2,8 +2,7 @@
 //!
 //! Organized by domain: effects, devices, layouts, library (presets/favorites),
 //! config, and system status.
-#![allow(dead_code)] // API surface is pre-built for upcoming features
-#![cfg_attr(test, allow(unused_imports))]
+#![cfg_attr(test, allow(dead_code, unused_imports))]
 
 use serde::Deserialize;
 

@@ -1,7 +1,7 @@
 //! Channel panel — device channel listing with inline component editors.
 //!
 //! Each channel (hardware slot) shows its topology, name, LED count, identify button,
-//! and a `ChannelEditor` for managing its components.
+//! and inline attachment draft controls for managing its components.
 
 use leptos::prelude::*;
 use leptos_icons::Icon;

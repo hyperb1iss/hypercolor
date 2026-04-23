@@ -123,19 +123,12 @@ pub enum PairDeviceStatus {
 pub struct PairDeviceResponse {
     pub status: PairDeviceStatus,
     pub message: String,
-    pub activated: bool,
-    #[serde(default)]
-    pub device: Option<DeviceSummary>,
 }
 
 /// Response from `DELETE /api/v1/devices/:id/pair`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeletePairingResponse {
-    pub status: String,
     pub message: String,
-    pub disconnected: bool,
-    #[serde(default)]
-    pub device: Option<DeviceSummary>,
 }
 
 /// Device summary from `GET /api/v1/devices`.
@@ -183,40 +176,6 @@ pub struct UpdateDeviceRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BrightnessSettingsResponse {
     pub brightness: u8,
-}
-
-// ── Logical Device Types ────────────────────────────────────────────────────
-
-/// Logical device summary from device segmentation APIs.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct LogicalDeviceSummary {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-    pub enabled: bool,
-    pub led_start: u32,
-    pub led_count: u32,
-    pub led_end: u32,
-    pub physical_device_id: String,
-    pub physical_device_name: String,
-    pub backend: String,
-    pub physical_status: String,
-}
-
-/// Paginated logical device list response.
-#[derive(Debug, Deserialize)]
-pub struct LogicalDeviceListResponse {
-    pub items: Vec<LogicalDeviceSummary>,
-}
-
-/// Request body for creating a logical device segment.
-#[derive(Debug, Serialize)]
-pub struct CreateLogicalDeviceRequest {
-    pub name: String,
-    pub led_start: u32,
-    pub led_count: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
 }
 
 // ── Attachment Types ────────────────────────────────────────────────────────
@@ -290,10 +249,12 @@ pub struct AttachmentBindingRequest {
     pub led_offset: u32,
 }
 
+#[allow(dead_code)]
 fn bool_true() -> bool {
     true
 }
 
+#[allow(dead_code)]
 fn default_instances() -> u32 {
     1
 }
@@ -309,13 +270,6 @@ pub async fn fetch_devices() -> Result<Vec<DeviceSummary>, String> {
 /// Trigger device discovery scan.
 pub async fn discover_devices() -> Result<(), String> {
     client::post_empty("/api/v1/devices/discover")
-        .await
-        .map_err(Into::into)
-}
-
-/// Fetch a single device by ID.
-pub async fn fetch_device(id: &str) -> Result<DeviceSummary, String> {
-    client::fetch_json(&format!("/api/v1/devices/{id}"))
         .await
         .map_err(Into::into)
 }
@@ -391,64 +345,6 @@ pub async fn create_attachment_template(
         .map_err(|e| format!("Parse error: {e}"))
 }
 
-/// Update a user-authored attachment template (change LED count, dimensions, etc.).
-/// Uses raw request because the daemon returns detailed error text on failure.
-pub async fn update_attachment_template(
-    template: &hypercolor_types::attachment::AttachmentTemplate,
-) -> Result<TemplateSummary, String> {
-    let url = format!("/api/v1/attachments/templates/{}", template.id);
-    let body = serde_json::to_string(template).map_err(|e| format!("Serialize error: {e}"))?;
-    let resp = Request::put(&url)
-        .header("Content-Type", "application/json")
-        .body(body)
-        .map_err(|e| format!("Request error: {e}"))?
-        .send()
-        .await
-        .map_err(|e| format!("Network error: {e}"))?;
-    if resp.status() != 200 {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("HTTP {}: {text}", resp.status()));
-    }
-    resp.json::<super::ApiEnvelope<TemplateSummary>>()
-        .await
-        .map(|e| e.data)
-        .map_err(|e| format!("Parse error: {e}"))
-}
-
-/// Fetch a single attachment template by ID. Parses via `Value` first
-/// because the detail response includes topology fields the type ignores.
-pub async fn fetch_attachment_template(
-    id: &str,
-) -> Result<hypercolor_types::attachment::AttachmentTemplate, String> {
-    let data: serde_json::Value =
-        client::fetch_json(&format!("/api/v1/attachments/templates/{id}")).await?;
-    serde_json::from_value(data).map_err(|e| format!("Parse template: {e}"))
-}
-
-/// Fetch logical devices for a physical device.
-pub async fn fetch_logical_devices(device_id: &str) -> Result<Vec<LogicalDeviceSummary>, String> {
-    let list: LogicalDeviceListResponse =
-        client::fetch_json(&format!("/api/v1/devices/{device_id}/logical-devices")).await?;
-    Ok(list.items)
-}
-
-/// Create a logical device segment on a physical device.
-pub async fn create_logical_device(
-    device_id: &str,
-    req: &CreateLogicalDeviceRequest,
-) -> Result<LogicalDeviceSummary, String> {
-    client::post_json(&format!("/api/v1/devices/{device_id}/logical-devices"), req)
-        .await
-        .map_err(Into::into)
-}
-
-/// Delete a logical device segment.
-pub async fn delete_logical_device(id: &str) -> Result<(), String> {
-    client::delete_empty(&format!("/api/v1/logical-devices/{id}"))
-        .await
-        .map_err(Into::into)
-}
-
 /// Fetch attachment bindings and import-ready zones for a physical device.
 pub async fn fetch_device_attachments(
     device_id: &str,
@@ -476,13 +372,6 @@ pub async fn update_device_attachments(
     req: &UpdateAttachmentsRequest,
 ) -> Result<DeviceAttachmentsResponse, String> {
     client::put_json(&format!("/api/v1/devices/{device_id}/attachments"), req)
-        .await
-        .map_err(Into::into)
-}
-
-/// Delete all attachment bindings for a device.
-pub async fn delete_device_attachments(device_id: &str) -> Result<(), String> {
-    client::delete_empty(&format!("/api/v1/devices/{device_id}/attachments"))
         .await
         .map_err(Into::into)
 }
