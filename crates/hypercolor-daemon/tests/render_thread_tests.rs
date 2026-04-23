@@ -1456,14 +1456,14 @@ async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
 }
 
 #[tokio::test]
-async fn multi_group_scene_publishes_authoritative_canvas_and_global_canvas() {
+async fn multi_group_scene_publishes_authoritative_canvas_and_scene_canvas() {
     let state = make_render_state(
         idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
     let mut canvas_rx = state.event_bus.canvas_receiver();
-    let mut global_canvas_rx = state.event_bus.global_canvas_receiver();
+    let mut scene_canvas_rx = state.event_bus.scene_canvas_receiver();
 
     let solid_id = {
         let registry = state.effect_registry.read().await;
@@ -1508,10 +1508,10 @@ async fn multi_group_scene_publishes_authoritative_canvas_and_global_canvas() {
         .await
         .expect("expected grouped scene canvas within 2 seconds")
         .expect("canvas sender should remain connected");
-    tokio::time::timeout(Duration::from_secs(2), global_canvas_rx.changed())
+    tokio::time::timeout(Duration::from_secs(2), scene_canvas_rx.changed())
         .await
-        .expect("expected grouped scene global canvas within 2 seconds")
-        .expect("global canvas sender should remain connected");
+        .expect("expected grouped scene authoritative scene canvas within 2 seconds")
+        .expect("scene canvas sender should remain connected");
 
     {
         let mut rl = state.render_loop.write().await;
@@ -1520,9 +1520,9 @@ async fn multi_group_scene_publishes_authoritative_canvas_and_global_canvas() {
     rt.shutdown().await.expect("shutdown");
 
     let canvas = canvas_rx.borrow().clone();
-    let global_canvas = global_canvas_rx.borrow().clone();
+    let scene_canvas = scene_canvas_rx.borrow().clone();
 
-    for frame in [&canvas, &global_canvas] {
+    for frame in [&canvas, &scene_canvas] {
         assert_eq!(frame.width, 320);
         assert_eq!(frame.height, 200);
         assert_eq!(
@@ -1611,7 +1611,7 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
 
 #[cfg(feature = "wgpu")]
 #[tokio::test]
-async fn blended_display_faces_publish_authoritative_global_canvas_on_gpu() {
+async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
     let mut state = make_render_state(
         idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
@@ -1666,27 +1666,27 @@ async fn blended_display_faces_publish_authoritative_global_canvas_on_gpu() {
         rl.start();
     }
 
-    let mut global_canvas_rx = state.event_bus.global_canvas_receiver();
+    let mut scene_canvas_rx = state.event_bus.scene_canvas_receiver();
     let group_canvas_sender = state.event_bus.group_canvas_sender(group_id);
     let mut group_canvas_rx = group_canvas_sender.subscribe();
     let mut rt = RenderThread::spawn(state.clone());
 
-    tokio::time::timeout(Duration::from_secs(2), global_canvas_rx.changed())
+    tokio::time::timeout(Duration::from_secs(2), scene_canvas_rx.changed())
         .await
-        .expect("authoritative global canvas should publish within timeout")
-        .expect("global canvas stream should stay open");
+        .expect("authoritative scene canvas should publish within timeout")
+        .expect("scene canvas stream should stay open");
     tokio::time::timeout(Duration::from_secs(2), group_canvas_rx.changed())
         .await
         .expect("display face canvas should publish within timeout")
         .expect("display face canvas stream should stay open");
 
-    let global_frame = global_canvas_rx.borrow().clone();
+    let scene_frame = scene_canvas_rx.borrow().clone();
     let face_frame = group_canvas_rx.borrow().clone();
 
-    assert_eq!(global_frame.width, 320);
-    assert_eq!(global_frame.height, 200);
+    assert_eq!(scene_frame.width, 320);
+    assert_eq!(scene_frame.height, 200);
     assert_eq!(
-        global_frame.surface().get_pixel(160, 100),
+        scene_frame.surface().get_pixel(160, 100),
         Rgba::new(255, 0, 0, 255)
     );
     assert_eq!(face_frame.width, 320);
@@ -2176,7 +2176,7 @@ async fn effect_engine_removal_does_not_break_single_group_fast_path() {
 }
 
 #[tokio::test]
-async fn primary_group_canvas_published_to_global_channel() {
+async fn primary_group_canvas_published_to_canvas_channel() {
     let state = make_render_state(
         active_builtin_effect("solid_color", solid_color_controls(255, 0, 0)),
         SpatialEngine::new(test_layout(Vec::new())),
