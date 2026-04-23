@@ -113,7 +113,7 @@ impl DeviceSettingsStore {
         self.snapshot.global_brightness = brightness.clamp(0.0, 1.0);
     }
 
-    /// Return stored settings for a device fingerprint or legacy key.
+    /// Return stored settings for a persisted device settings key.
     #[must_use]
     pub fn device_settings_for_key(&self, key: &str) -> Option<StoredDeviceSettings> {
         self.snapshot
@@ -123,7 +123,7 @@ impl DeviceSettingsStore {
             .map(StoredDeviceSettings::normalized)
     }
 
-    /// Update all persisted settings for a device fingerprint or legacy key.
+    /// Update all persisted settings for a persisted device settings key.
     pub fn set_device_settings(&mut self, key: &str, settings: StoredDeviceSettings) {
         let normalized = settings.normalized();
         if normalized.is_default() {

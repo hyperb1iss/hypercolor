@@ -11,6 +11,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::response::Response;
 use cpal::traits::{DeviceTrait, HostTrait};
+use hypercolor_core::config::canonical_audio_device_id;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::audio::linux;
 use serde::{Deserialize, Serialize};
@@ -96,7 +97,7 @@ pub(crate) fn capture_input_available() -> bool {
 fn current_audio_device_id(state: &AppState) -> String {
     state.config_manager.as_ref().map_or_else(
         || "default".to_owned(),
-        |manager| normalize_audio_device_id(&manager.get().audio.device),
+        |manager| canonical_audio_device_id(&manager.get().audio.device),
     )
 }
 
@@ -251,19 +252,6 @@ pub fn should_offer_named_audio_device(name: &str) -> bool {
     !normalized.is_empty()
         && !is_monitorish_device_name(normalized)
         && !is_serverish_device_name(normalized)
-}
-
-fn normalize_audio_device_id(device: &str) -> String {
-    let trimmed = device.trim();
-    if trimmed.eq_ignore_ascii_case("default") {
-        "default".to_owned()
-    } else if trimmed.eq_ignore_ascii_case("microphone") {
-        "microphone".to_owned()
-    } else if trimmed.eq_ignore_ascii_case("none") {
-        "none".to_owned()
-    } else {
-        trimmed.to_owned()
-    }
 }
 
 fn is_serverish_device_name(name: &str) -> bool {
