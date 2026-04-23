@@ -9,6 +9,7 @@ mod control_geometry;
 mod device_event_logic;
 mod device_metrics;
 mod display_utils;
+mod effect_search;
 mod icons;
 mod layout_geometry;
 mod layout_history;

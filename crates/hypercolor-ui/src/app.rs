@@ -14,6 +14,7 @@ use crate::color::CanvasFrameAnalysis;
 use crate::components::preset_matching::controls_to_json;
 use crate::components::shell::Shell;
 use crate::device_event_logic::should_refetch_devices_for_event;
+use crate::effect_search::IndexedEffect;
 use crate::pages::dashboard::DashboardPage;
 use crate::pages::devices::DevicesPage;
 use crate::pages::display_preview::DisplayPreviewPage;
@@ -39,53 +40,6 @@ struct ActiveEffectSnapshot {
     controls: Vec<ControlDefinition>,
     control_values: HashMap<String, ControlValue>,
     preset_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct IndexedEffect {
-    pub effect: api::EffectSummary,
-    search_text: String,
-}
-
-impl IndexedEffect {
-    fn new(effect: api::EffectSummary) -> Self {
-        let name_aliases = effect_name_aliases(&effect.name);
-        let search_text = [
-            effect.name.to_lowercase(),
-            effect.description.to_lowercase(),
-            effect.author.to_lowercase(),
-            effect.category.to_lowercase(),
-            effect.tags.join(" ").to_lowercase(),
-            name_aliases.join(" "),
-        ]
-        .join(" ");
-
-        Self {
-            effect,
-            search_text,
-        }
-    }
-
-    pub fn matches_search(&self, term: &str) -> bool {
-        term.is_empty() || self.search_text.contains(term)
-    }
-}
-
-fn effect_name_aliases(name: &str) -> Vec<String> {
-    let normalized = name.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return Vec::new();
-    }
-
-    let mut aliases = vec![
-        normalized.replace([' ', '-'], "_"),
-        normalized.replace([' ', '_'], "-"),
-        normalized.replace([' ', '_', '-'], ""),
-    ];
-    aliases.retain(|alias| !alias.is_empty() && alias != &normalized);
-    aliases.sort();
-    aliases.dedup();
-    aliases
 }
 
 /// Global WebSocket state provided via Leptos context.
