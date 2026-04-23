@@ -285,7 +285,6 @@ async fn prune_simulator_layout_targets(state: &Arc<AppState>, device_id: Device
             .into_iter()
             .collect();
     target_ids.insert(physical_id.clone());
-    target_ids.insert(format!("device:{physical_id}"));
     target_ids.insert(format!("simulator:{physical_id}"));
 
     let active_layout_id = {

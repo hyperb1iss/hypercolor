@@ -1490,7 +1490,7 @@ async fn list_devices_includes_structured_zone_topology_hints() {
     let json = body_json(response).await;
     assert_eq!(
         json["data"]["items"][0]["layout_device_id"],
-        format!("device:{id}")
+        "wled:matrix-panel"
     );
     let zone = &json["data"]["items"][0]["zones"][0];
     assert_eq!(zone["name"], "Panel");
@@ -6859,9 +6859,9 @@ async fn logical_device_endpoints_preserve_smbus_backend_metadata() {
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "this migration test validates legacy alias preservation, logical-device creation, and backend mapping state in one end-to-end flow"
+    reason = "this migration test validates default-id replacement, logical-device creation, and backend mapping state in one end-to-end flow"
 )]
-async fn logical_devices_migrate_legacy_default_ids_and_keep_legacy_aliases_mapped() {
+async fn logical_devices_replace_outdated_default_id_with_canonical_layout_id() {
     let (state, _tmp) = test_state_with_temp_logical_store();
     register_noop_backend(&state, "wled", "WLED Test").await;
 
@@ -6929,13 +6929,13 @@ async fn logical_devices_migrate_legacy_default_ids_and_keep_legacy_aliases_mapp
     // sync_active_layout_connectivity doesn't disconnect it.
     set_layout_targeting_device(&state, &canonical_layout_id, 60).await;
 
-    let legacy_layout_id = format!("device:{device_id}");
+    let stale_layout_id = "wled:stale-layout-id".to_owned();
     {
         let mut store = state.logical_devices.write().await;
         store.insert(
-            legacy_layout_id.clone(),
+            stale_layout_id.clone(),
             LogicalDevice {
-                id: legacy_layout_id.clone(),
+                id: stale_layout_id.clone(),
                 physical_device_id: device_id,
                 name: "Desk Strip".to_owned(),
                 led_start: 0,
@@ -7002,8 +7002,8 @@ async fn logical_devices_migrate_legacy_default_ids_and_keep_legacy_aliases_mapp
         .expect("default entry should exist");
     assert_eq!(default_entry["id"], canonical_layout_id);
     assert!(
-        items.iter().all(|item| item["id"] != legacy_layout_id),
-        "legacy default logical id should be migrated away"
+        items.iter().all(|item| item["id"] != stale_layout_id),
+        "outdated default logical id should be replaced"
     );
 
     let manager = state.backend_manager.lock().await;
@@ -7019,8 +7019,8 @@ async fn logical_devices_migrate_legacy_default_ids_and_keep_legacy_aliases_mapp
         "canonical layout id should be mapped"
     );
     assert!(
-        mapped_layout_ids.contains(&legacy_layout_id),
-        "legacy device:<uuid> alias should stay mapped for compatibility"
+        !mapped_layout_ids.contains(&stale_layout_id),
+        "stale default layout id should not stay mapped"
     );
     assert!(
         mapped_layout_ids.contains(&device_id.to_string()),

@@ -155,13 +155,7 @@ pub async fn update_attachments(
         }
     }
 
-    let layout_device_id = ensure_default_logical_entry(
-        &state,
-        tracked.info.id,
-        &tracked.info.name,
-        tracked.info.total_led_count(),
-    )
-    .await;
+    let layout_device_id = ensure_default_logical_entry(&state, &tracked.info).await;
     let needs_layout_update =
         active_layout_targets_device(&state, tracked.info.id, &layout_device_id).await;
 
@@ -598,10 +592,6 @@ async fn active_layout_targets_device(
     let physical_alias = physical_id.to_string();
     if !logical_ids.iter().any(|id| id == &physical_alias) {
         logical_ids.push(physical_alias);
-    }
-    let legacy_alias = format!("device:{physical_id}");
-    if !logical_ids.iter().any(|id| id == &legacy_alias) {
-        logical_ids.push(legacy_alias);
     }
 
     let spatial = state.spatial_engine.read().await;

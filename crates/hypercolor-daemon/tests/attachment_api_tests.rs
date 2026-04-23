@@ -250,7 +250,7 @@ async fn set_active_layout_for_device(state: &Arc<AppState>, device_id: DeviceId
         zones: vec![DeviceZone {
             id: "zone-main".to_owned(),
             name: "Desk Strip".to_owned(),
-            device_id: format!("device:{device_id}"),
+            device_id: device_id.to_string(),
             zone_name: Some("Main".to_owned()),
 
             position: NormalizedPosition::new(0.5, 0.5),

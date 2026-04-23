@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 use utoipa::ToSchema;
 
-use hypercolor_core::device::{BackendIo, BackendManager};
+use hypercolor_core::device::{BackendIo, BackendManager, DeviceLifecycleManager};
 use hypercolor_driver_api::DeviceAuthSummary;
 use hypercolor_types::attachment::{AttachmentBinding, AttachmentSlot};
 use hypercolor_types::device::{
@@ -227,13 +227,7 @@ pub async fn list_devices(
         .collect();
     let mut items: Vec<DeviceSummary> = Vec::with_capacity(filtered_devices.len());
     for tracked in filtered_devices {
-        let layout_device_id = ensure_default_logical_entry(
-            &state,
-            tracked.info.id,
-            &tracked.info.name,
-            tracked.info.total_led_count(),
-        )
-        .await;
+        let layout_device_id = ensure_default_logical_entry(&state, &tracked.info).await;
         let metadata = state
             .device_registry
             .metadata_for_id(&tracked.info.id)
@@ -316,13 +310,7 @@ pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         return ApiError::not_found(format!("Device not found: {id}"));
     };
 
-    let layout_device_id = ensure_default_logical_entry(
-        &state,
-        tracked.info.id,
-        &tracked.info.name,
-        tracked.info.total_led_count(),
-    )
-    .await;
+    let layout_device_id = ensure_default_logical_entry(&state, &tracked.info).await;
     let metadata = state
         .device_registry
         .metadata_for_id(&tracked.info.id)
@@ -424,13 +412,7 @@ pub async fn update_device(
     sync_device_output_brightness(&state, device_id, &updated.user_settings).await;
     publish_device_settings_changed(&state, device_id, &updated.user_settings);
 
-    let layout_device_id = ensure_default_logical_entry(
-        &state,
-        updated.info.id,
-        &updated.info.name,
-        updated.info.total_led_count(),
-    )
-    .await;
+    let layout_device_id = ensure_default_logical_entry(&state, &updated.info).await;
     let metadata = state
         .device_registry
         .metadata_for_id(&updated.info.id)
@@ -855,24 +837,17 @@ pub async fn identify_attachment(
 
 pub(super) async fn ensure_default_logical_entry(
     state: &AppState,
-    physical_id: DeviceId,
-    physical_name: &str,
-    physical_led_count: u32,
+    device_info: &DeviceInfo,
 ) -> String {
-    let fallback_layout_id = {
-        let lifecycle = state.lifecycle_manager.lock().await;
-        lifecycle
-            .layout_device_id_for(physical_id)
-            .map_or_else(|| format!("device:{physical_id}"), ToOwned::to_owned)
-    };
+    let fallback_layout_id = resolved_layout_device_id(state, device_info).await;
 
     let mut store = state.logical_devices.write().await;
     let default = crate::logical_devices::ensure_default_logical_device(
         &mut store,
-        physical_id,
+        device_info.id,
         &fallback_layout_id,
-        physical_name,
-        physical_led_count,
+        &device_info.name,
+        device_info.total_led_count(),
     );
     default.id
 }
@@ -920,13 +895,7 @@ pub(super) async fn refreshed_device_summary(
     let Some(tracked) = state.device_registry.get(&device_id).await else {
         return Ok(None);
     };
-    let layout_device_id = ensure_default_logical_entry(
-        state,
-        tracked.info.id,
-        &tracked.info.name,
-        tracked.info.total_led_count(),
-    )
-    .await;
+    let layout_device_id = ensure_default_logical_entry(state, &tracked.info).await;
     let metadata = state.device_registry.metadata_for_id(&device_id).await;
 
     Ok(Some(
@@ -990,6 +959,29 @@ fn brightness_factor(brightness: f32) -> u16 {
 fn scale_channel(value: u8, factor: u16) -> u8 {
     let scaled = (u16::from(value) * factor) / u16::from(u8::MAX);
     u8::try_from(scaled).unwrap_or(u8::MAX)
+}
+
+async fn resolved_layout_device_id(state: &AppState, device_info: &DeviceInfo) -> String {
+    if let Some(layout_device_id) = {
+        let lifecycle = state.lifecycle_manager.lock().await;
+        lifecycle
+            .layout_device_id_for(device_info.id)
+            .map(ToOwned::to_owned)
+    } {
+        return layout_device_id;
+    }
+
+    let metadata = state.device_registry.metadata_for_id(&device_info.id).await;
+    let fingerprint = state
+        .device_registry
+        .fingerprint_for_id(&device_info.id)
+        .await;
+    let backend_id = core_discovery::backend_id_for_device(&device_info.family, metadata.as_ref());
+    DeviceLifecycleManager::canonical_layout_device_id(
+        &backend_id,
+        device_info,
+        fingerprint.as_ref(),
+    )
 }
 
 pub(super) async fn device_settings_key(state: &AppState, device_id: DeviceId) -> String {

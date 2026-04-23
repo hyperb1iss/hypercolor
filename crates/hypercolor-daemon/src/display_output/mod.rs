@@ -764,7 +764,6 @@ fn display_viewport_for_device(
     has_non_display_led_zones: bool,
 ) -> Option<DisplayViewport> {
     let physical_alias = physical_device_id.to_string();
-    let legacy_alias = format!("device:{physical_device_id}");
     let mut first_matching_zone = None;
     let mut explicit_display_zone = None;
     let mut generic_display_zone = None;
@@ -775,7 +774,6 @@ fn display_viewport_for_device(
             logical_store,
             physical_device_id,
             physical_alias.as_str(),
-            legacy_alias.as_str(),
         ) {
             continue;
         }
@@ -840,10 +838,8 @@ fn display_zone_targets_physical_device(
     logical_store: &HashMap<String, LogicalDevice>,
     physical_device_id: DeviceId,
     physical_alias: &str,
-    legacy_alias: &str,
 ) -> bool {
     zone_device_id == physical_alias
-        || zone_device_id == legacy_alias
         || logical_store
             .get(zone_device_id)
             .is_some_and(|entry| entry.physical_device_id == physical_device_id)

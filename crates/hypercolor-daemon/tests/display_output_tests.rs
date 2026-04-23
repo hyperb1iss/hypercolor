@@ -530,7 +530,7 @@ async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_device
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
+            &device_id.to_string(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -593,7 +593,7 @@ async fn automatic_display_output_subscribes_to_authoritative_scene_canvas_not_p
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
+            &device_id.to_string(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -765,7 +765,7 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
+            &device_id.to_string(),
             NormalizedPosition::new(0.25, 0.5),
             NormalizedPosition::new(0.5, 1.0),
         )]));
@@ -926,7 +926,7 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![led_zone(
-            &format!("device:{device_id}"),
+            &device_id.to_string(),
             "Pads",
             NormalizedPosition::new(0.25, 0.5),
             NormalizedPosition::new(0.5, 1.0),
@@ -1848,7 +1848,7 @@ async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
+            &device_id.to_string(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -1945,7 +1945,7 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
+            &device_id.to_string(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -2038,7 +2038,7 @@ async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails()
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
+            &device_id.to_string(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -2104,7 +2104,7 @@ async fn automatic_display_output_skips_unchanged_frames() {
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
+            &device_id.to_string(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -2190,7 +2190,7 @@ async fn automatic_display_output_skips_metadata_only_owned_surface_updates() {
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
+            &device_id.to_string(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -2264,7 +2264,7 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
+            &device_id.to_string(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -2356,7 +2356,7 @@ async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
+            &device_id.to_string(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -2432,7 +2432,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
+            &device_id.to_string(),
             NormalizedPosition::new(0.25, 0.5),
             NormalizedPosition::new(0.5, 1.0),
         )]));
@@ -2485,7 +2485,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
+            &device_id.to_string(),
             NormalizedPosition::new(0.75, 0.5),
             NormalizedPosition::new(0.5, 1.0),
         )]));
@@ -2519,7 +2519,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
+            &device_id.to_string(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -2604,7 +2604,7 @@ async fn automatic_display_output_refreshes_static_hold_frames_while_sleeping() 
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &format!("device:{device_id}"),
+            &device_id.to_string(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));

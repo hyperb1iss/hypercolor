@@ -51,8 +51,6 @@ impl LogicalDevice {
 pub enum LogicalDeviceKind {
     /// Auto-created full-range mapping for a physical controller.
     Default,
-    /// Persisted compatibility alias for an older default layout ID.
-    LegacyDefault,
     /// User-defined segment.
     Segment,
 }
@@ -75,10 +73,8 @@ pub fn ensure_default_logical_device(
 
     if let Some(existing_id) = existing_default_id.as_deref()
         && existing_id != physical_layout_id
-        && let Some(existing) = store.get_mut(existing_id)
     {
-        existing.kind = LogicalDeviceKind::LegacyDefault;
-        existing.enabled = false;
+        store.remove(existing_id);
     }
 
     let id = physical_layout_id.to_owned();
@@ -99,30 +95,6 @@ pub fn ensure_default_logical_device(
     };
     store.insert(id, entry.clone());
     entry
-}
-
-/// Return legacy default logical IDs that still point at this physical device.
-///
-/// This lets runtime routing preserve compatibility for layouts saved before
-/// the canonical lifecycle layout ID was known.
-#[must_use]
-pub fn legacy_default_ids_for_physical(
-    store: &HashMap<String, LogicalDevice>,
-    physical_device_id: DeviceId,
-    canonical_id: &str,
-) -> Vec<String> {
-    let mut legacy_ids: Vec<String> = store
-        .values()
-        .filter(|entry| {
-            entry.physical_device_id == physical_device_id
-                && entry.kind == LogicalDeviceKind::LegacyDefault
-                && entry.id != canonical_id
-        })
-        .map(|entry| entry.id.clone())
-        .collect();
-    legacy_ids.sort();
-    legacy_ids.dedup();
-    legacy_ids
 }
 
 /// Return logical devices for one physical controller, sorted by start index.
@@ -202,10 +174,6 @@ pub fn validate_entry(
     }
 
     if !candidate.enabled {
-        return Ok(());
-    }
-
-    if candidate.kind == LogicalDeviceKind::LegacyDefault {
         return Ok(());
     }
 
@@ -307,6 +275,31 @@ fn sanitize_component(input: &str) -> String {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct PersistedLogicalDevice {
+    id: String,
+    physical_device_id: DeviceId,
+    name: String,
+    led_start: u32,
+    led_count: u32,
+    enabled: bool,
+    kind: String,
+}
+
+impl PersistedLogicalDevice {
+    fn into_runtime(self) -> Option<LogicalDevice> {
+        (self.kind == "segment").then_some(LogicalDevice {
+            id: self.id,
+            physical_device_id: self.physical_device_id,
+            name: self.name,
+            led_start: self.led_start,
+            led_count: self.led_count,
+            enabled: self.enabled,
+            kind: LogicalDeviceKind::Segment,
+        })
+    }
+}
+
 /// Load persisted user-defined logical segment devices from disk.
 ///
 /// Missing files return an empty store.
@@ -317,18 +310,13 @@ pub fn load_segments(path: &Path) -> anyhow::Result<HashMap<String, LogicalDevic
 
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read logical device store at {}", path.display()))?;
-    let mut entries: Vec<LogicalDevice> = serde_json::from_str(&raw)
+    let entries: Vec<PersistedLogicalDevice> = serde_json::from_str(&raw)
         .with_context(|| format!("failed to parse logical device store at {}", path.display()))?;
-    entries.retain(|entry| {
-        matches!(
-            entry.kind,
-            LogicalDeviceKind::Segment | LogicalDeviceKind::LegacyDefault
-        )
-    });
-
     let mut out = HashMap::with_capacity(entries.len());
     for entry in entries {
-        out.insert(entry.id.clone(), entry);
+        if let Some(entry) = entry.into_runtime() {
+            out.insert(entry.id.clone(), entry);
+        }
     }
     Ok(out)
 }
@@ -348,12 +336,7 @@ pub fn save_segments(path: &Path, store: &HashMap<String, LogicalDevice>) -> any
 
     let mut entries: Vec<LogicalDevice> = store
         .values()
-        .filter(|entry| {
-            matches!(
-                entry.kind,
-                LogicalDeviceKind::Segment | LogicalDeviceKind::LegacyDefault
-            )
-        })
+        .filter(|entry| entry.kind == LogicalDeviceKind::Segment)
         .cloned()
         .collect();
     entries.sort_by(|left, right| left.id.cmp(&right.id));
@@ -390,7 +373,7 @@ mod tests {
     use hypercolor_types::device::DeviceId;
 
     #[test]
-    fn ensure_default_promotes_previous_default_to_legacy_alias() {
+    fn ensure_default_replaces_outdated_default_id() {
         let physical_device_id = DeviceId::new();
         let mut store = HashMap::new();
         store.insert(
@@ -416,16 +399,11 @@ mod tests {
 
         assert_eq!(canonical.id, "wled:new-id");
         assert_eq!(canonical.kind, LogicalDeviceKind::Default);
-
-        let legacy = store
-            .get("wled:old-id")
-            .expect("previous default should remain as a legacy alias");
-        assert_eq!(legacy.kind, LogicalDeviceKind::LegacyDefault);
-        assert!(!legacy.enabled);
+        assert!(!store.contains_key("wled:old-id"));
     }
 
     #[test]
-    fn save_and_load_preserves_legacy_aliases_but_not_live_defaults() {
+    fn save_and_load_preserves_segments_but_not_live_defaults() {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("logical-devices.json");
         let physical_device_id = DeviceId::new();
@@ -444,18 +422,6 @@ mod tests {
             },
         );
         store.insert(
-            "wled:legacy".to_owned(),
-            LogicalDevice {
-                id: "wled:legacy".to_owned(),
-                physical_device_id,
-                name: "Desk Strip".to_owned(),
-                led_start: 0,
-                led_count: 60,
-                enabled: false,
-                kind: LogicalDeviceKind::LegacyDefault,
-            },
-        );
-        store.insert(
             "wled:canonical:left".to_owned(),
             LogicalDevice {
                 id: "wled:canonical:left".to_owned(),
@@ -471,11 +437,45 @@ mod tests {
         save_segments(&path, &store).expect("save logical device store");
         let loaded = load_segments(&path).expect("load logical device store");
 
-        assert!(loaded.contains_key("wled:legacy"));
         assert!(loaded.contains_key("wled:canonical:left"));
         assert!(
             !loaded.contains_key("wled:canonical"),
             "live canonical defaults should still be rebuilt at runtime"
         );
+    }
+
+    #[test]
+    fn load_segments_ignores_non_segment_entries() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("logical-devices.json");
+        let physical_device_id = DeviceId::new();
+        let payload = format!(
+            r#"[
+  {{
+    "id": "wled:default",
+    "physical_device_id": "{physical_device_id}",
+    "name": "Desk Strip",
+    "led_start": 0,
+    "led_count": 60,
+    "enabled": true,
+    "kind": "default"
+  }},
+  {{
+    "id": "wled:left",
+    "physical_device_id": "{physical_device_id}",
+    "name": "Desk Left",
+    "led_start": 0,
+    "led_count": 20,
+    "enabled": true,
+    "kind": "segment"
+  }}
+]"#
+        );
+        std::fs::write(&path, payload).expect("write logical device store");
+
+        let loaded = load_segments(&path).expect("load logical device store");
+
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.contains_key("wled:left"));
     }
 }

@@ -85,13 +85,7 @@ pub async fn list_logical_devices(
 
     let physical_devices = state.device_registry.list().await;
     for tracked in &physical_devices {
-        ensure_default_logical_entry(
-            &state,
-            tracked.info.id,
-            &tracked.info.name,
-            tracked.info.total_led_count(),
-        )
-        .await;
+        ensure_default_logical_entry(&state, &tracked.info).await;
     }
 
     let physical_filter = match query.physical_device {
@@ -118,7 +112,6 @@ pub async fn list_logical_devices(
         let store = state.logical_devices.read().await;
         store
             .values()
-            .filter(|entry| entry.kind != LogicalDeviceKind::LegacyDefault)
             .filter(|entry| {
                 physical_filter.is_none_or(|physical_id| entry.physical_device_id == physical_id)
             })
@@ -158,13 +151,7 @@ pub async fn list_device_logical_devices(
         return ApiError::not_found(format!("Device not found: {id}"));
     };
 
-    ensure_default_logical_entry(
-        &state,
-        physical_id,
-        &tracked.info.name,
-        tracked.info.total_led_count(),
-    )
-    .await;
+    ensure_default_logical_entry(&state, &tracked.info).await;
 
     let logical_entries = {
         let store = state.logical_devices.read().await;
@@ -181,7 +168,6 @@ pub async fn list_device_logical_devices(
 
     let items: Vec<LogicalDeviceSummary> = logical_entries
         .iter()
-        .filter(|entry| entry.kind != LogicalDeviceKind::LegacyDefault)
         .map(|entry| summarize_logical_device(entry, &physical_index))
         .collect();
 
@@ -215,13 +201,7 @@ pub async fn create_logical_device(
         Err(error) => return ApiError::validation(error),
     };
 
-    let physical_layout_id = ensure_default_logical_entry(
-        &state,
-        physical_id,
-        &tracked.info.name,
-        tracked.info.total_led_count(),
-    )
-    .await;
+    let physical_layout_id = ensure_default_logical_entry(&state, &tracked.info).await;
     let physical_led_count = tracked.info.total_led_count();
 
     let created = {
@@ -329,10 +309,6 @@ pub async fn update_logical_device(
     {
         return ApiError::validation("Default logical devices always span the full physical range");
     }
-    if existing.kind == LogicalDeviceKind::LegacyDefault {
-        return ApiError::conflict("Cannot edit compatibility logical aliases");
-    }
-
     let Some(tracked) = state
         .device_registry
         .get(&existing.physical_device_id)
@@ -413,10 +389,6 @@ pub async fn delete_logical_device(
     if existing.kind == LogicalDeviceKind::Default {
         return ApiError::conflict("Cannot delete the default logical device");
     }
-    if existing.kind == LogicalDeviceKind::LegacyDefault {
-        return ApiError::conflict("Cannot delete compatibility logical aliases");
-    }
-
     {
         let mut store = state.logical_devices.write().await;
         store.remove(&id);
@@ -463,7 +435,6 @@ fn summarize_logical_device(
         name: entry.name.clone(),
         kind: match entry.kind {
             LogicalDeviceKind::Default => "default",
-            LogicalDeviceKind::LegacyDefault => "legacy_default",
             LogicalDeviceKind::Segment => "segment",
         }
         .to_owned(),
@@ -483,27 +454,15 @@ pub(super) async fn sync_live_logical_mappings_for_device(state: &AppState, phys
         return;
     };
 
-    let fallback_layout_id = ensure_default_logical_entry(
-        state,
-        physical_id,
-        &tracked.info.name,
-        tracked.info.total_led_count(),
-    )
-    .await;
+    let fallback_layout_id = ensure_default_logical_entry(state, &tracked.info).await;
 
     let backend_id = resolved_backend_id(state, physical_id, &tracked.info.family).await;
-    let (logical_entries, legacy_default_ids) = {
+    let logical_entries = {
         let store = state.logical_devices.read().await;
-        let legacy_ids = logical_devices::legacy_default_ids_for_physical(
-            &store,
-            physical_id,
-            &fallback_layout_id,
-        );
-        let entries = logical_devices::list_for_physical(&store, physical_id)
+        logical_devices::list_for_physical(&store, physical_id)
             .into_iter()
             .filter(|entry| entry.enabled)
-            .collect::<Vec<_>>();
-        (entries, legacy_ids)
+            .collect::<Vec<_>>()
     };
 
     let mut manager = state.backend_manager.lock().await;
@@ -525,7 +484,7 @@ pub(super) async fn sync_live_logical_mappings_for_device(state: &AppState, phys
             )),
             &tracked.info,
         );
-        map_physical_device_alias(
+        map_physical_device_id_alias(
             &mut manager,
             &backend_id,
             physical_id,
@@ -557,7 +516,7 @@ pub(super) async fn sync_live_logical_mappings_for_device(state: &AppState, phys
     }
 
     if default_enabled {
-        map_physical_device_alias(
+        map_physical_device_id_alias(
             &mut manager,
             &backend_id,
             physical_id,
@@ -566,21 +525,6 @@ pub(super) async fn sync_live_logical_mappings_for_device(state: &AppState, phys
                 0,
                 usize::try_from(tracked.info.total_led_count()).unwrap_or_default(),
             ),
-            &tracked.info,
-        );
-    }
-
-    let fallback_segment = SegmentRange::new(
-        0,
-        usize::try_from(tracked.info.total_led_count()).unwrap_or_default(),
-    );
-    for legacy_id in legacy_default_ids {
-        map_device_with_zone_segments(
-            &mut manager,
-            legacy_id,
-            backend_id.clone(),
-            physical_id,
-            Some(fallback_segment),
             &tracked.info,
         );
     }
@@ -603,7 +547,7 @@ async fn persist_logical_segments(state: &AppState) -> Result<(), String> {
         .map_err(|error| format!("{} ({})", error, state.logical_devices_path.display()))
 }
 
-fn map_physical_device_alias(
+fn map_physical_device_id_alias(
     manager: &mut BackendManager,
     backend_id: &str,
     physical_id: DeviceId,
@@ -616,18 +560,6 @@ fn map_physical_device_alias(
         map_device_with_zone_segments(
             manager,
             physical_alias,
-            backend_id.to_owned(),
-            physical_id,
-            Some(segment),
-            device_info,
-        );
-    }
-
-    let legacy_alias = format!("device:{physical_id}");
-    if legacy_alias != layout_device_id {
-        map_device_with_zone_segments(
-            manager,
-            legacy_alias,
             backend_id.to_owned(),
             physical_id,
             Some(segment),

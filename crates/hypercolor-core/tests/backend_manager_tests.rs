@@ -1865,13 +1865,13 @@ fn connected_devices_without_layout_targets_reports_unreferenced_mappings() {
 fn connected_devices_without_layout_targets_treats_any_alias_as_active() {
     let device_id = DeviceId::new();
     let canonical = "usb:1532:0099:001-6-4-4";
-    let legacy = format!("device:{device_id}");
+    let physical_alias = device_id.to_string();
 
     let mut manager = BackendManager::new();
     manager.map_device(canonical, "usb", device_id);
-    manager.map_device(legacy.clone(), "usb", device_id);
+    manager.map_device(physical_alias.clone(), "usb", device_id);
 
-    let layout = make_layout(vec![make_zone("zone_0", &legacy, 11)]);
+    let layout = make_layout(vec![make_zone("zone_0", &physical_alias, 11)]);
 
     let inactive = manager.connected_devices_without_layout_targets(&layout);
     assert!(inactive.is_empty());

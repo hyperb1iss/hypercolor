@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use hypercolor_core::device::DeviceLifecycleManager;
 use hypercolor_core::spatial::generate_positions;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint};
 use hypercolor_types::spatial::{
@@ -49,7 +50,7 @@ pub async fn sync_active_layout_for_renderable_devices(
                 let device_id = tracked.info.id;
                 let layout_id = lifecycle
                     .layout_device_id_for(device_id)
-                    .map_or_else(|| format!("device:{device_id}"), ToOwned::to_owned);
+                    .map(ToOwned::to_owned);
                 (device_id, layout_id)
             })
             .collect::<HashMap<_, _>>()
@@ -66,11 +67,21 @@ pub async fn sync_active_layout_for_renderable_devices(
             continue;
         }
 
-        let Some(layout_device_id) = canonical_layout_ids.get(&device_id) else {
-            continue;
-        };
+        let layout_device_id =
+            if let Some(Some(layout_device_id)) = canonical_layout_ids.get(&device_id) {
+                layout_device_id.clone()
+            } else {
+                let metadata = runtime.device_registry.metadata_for_id(&device_id).await;
+                let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
+                let backend_id = backend_id_for_device(&tracked.info.family, metadata.as_ref());
+                DeviceLifecycleManager::canonical_layout_device_id(
+                    &backend_id,
+                    &tracked.info,
+                    fingerprint.as_ref(),
+                )
+            };
         let default_enabled = logical_store
-            .get(layout_device_id)
+            .get(&layout_device_id)
             .is_none_or(|entry| entry.enabled);
         if !default_enabled {
             if inactive_ids.contains(&device_id) {
@@ -83,7 +94,7 @@ pub async fn sync_active_layout_for_renderable_devices(
             }
             continue;
         }
-        if excluded_layout_device_ids.contains(layout_device_id) {
+        if excluded_layout_device_ids.contains(&layout_device_id) {
             if inactive_ids.contains(&device_id) {
                 debug!(
                     device_id = %device_id,
@@ -97,7 +108,7 @@ pub async fn sync_active_layout_for_renderable_devices(
         }
 
         let repaired =
-            reconcile_auto_layout_zones_for_device(&mut layout, layout_device_id, &tracked.info);
+            reconcile_auto_layout_zones_for_device(&mut layout, &layout_device_id, &tracked.info);
         if repaired > 0 {
             repaired_zone_count = repaired_zone_count.saturating_add(repaired);
             repaired_devices.push(format!("{} ({device_id})", tracked.info.name));
