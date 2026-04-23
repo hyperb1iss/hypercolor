@@ -26,12 +26,11 @@
         "emitDecoratorMetadata": true,
 
         /* Path aliases */
-        "baseUrl": ".",
         "paths": {
-            "@hypercolor/create-effect": ["packages/create-effect/src"],
-            "@hypercolor/create-effect/*": ["packages/create-effect/src/*"],
-            "@hypercolor/sdk": ["packages/core/src"],
-            "@hypercolor/sdk/*": ["packages/core/src/*"]
+            "@hypercolor/create-effect": ["./packages/create-effect/src"],
+            "@hypercolor/create-effect/*": ["./packages/create-effect/src/*"],
+            "@hypercolor/sdk": ["./packages/core/src"],
+            "@hypercolor/sdk/*": ["./packages/core/src/*"]
         }
     },
     "include": ["src/**/*.ts", "src/**/*.d.ts"],
