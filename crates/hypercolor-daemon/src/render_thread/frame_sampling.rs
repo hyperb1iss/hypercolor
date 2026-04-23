@@ -90,8 +90,16 @@ pub(crate) struct LedSamplingOutcome {
     pub(crate) gpu_sample_retry_hit: bool,
     pub(crate) gpu_sample_queue_saturated: bool,
     pub(crate) gpu_sample_wait_blocked: bool,
+    pub(crate) cpu_sampling_late_readback: bool,
     pub(crate) refresh_reused_frame_metadata: bool,
     pub(crate) reuses_published_frame: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CpuSamplingCanvasStatus {
+    Ready,
+    LateReadback,
+    Unavailable,
 }
 
 pub(crate) fn can_reuse_published_frame_for_deferred_sampling(
@@ -148,9 +156,9 @@ fn ensure_cpu_sampling_canvas(
     state: &RenderThreadState,
     sampling: &mut SamplingRuntime<'_>,
     render_stage: &mut RenderStageStats,
-) -> bool {
+) -> CpuSamplingCanvasStatus {
     if render_stage.composed_frame.sampling_canvas.is_some() {
-        return true;
+        return CpuSamplingCanvasStatus::Ready;
     }
 
     let canvas_width = state.canvas_dims.width();
@@ -162,7 +170,7 @@ fn ensure_cpu_sampling_canvas(
         .filter(|surface| surface.width() == canvas_width && surface.height() == canvas_height)
     {
         render_stage.composed_frame.sampling_canvas = Some(Canvas::from_published_surface(surface));
-        return true;
+        return CpuSamplingCanvasStatus::Ready;
     }
 
     if let Some(surface) = render_stage
@@ -172,7 +180,7 @@ fn ensure_cpu_sampling_canvas(
         .filter(|surface| surface.width() == canvas_width && surface.height() == canvas_height)
     {
         render_stage.composed_frame.sampling_canvas = Some(Canvas::from_published_surface(surface));
-        return true;
+        return CpuSamplingCanvasStatus::Ready;
     }
 
     match sampling
@@ -183,12 +191,12 @@ fn ensure_cpu_sampling_canvas(
             render_stage.composed_frame.sampling_canvas =
                 Some(Canvas::from_published_surface(&surface));
             render_stage.composed_frame.sampling_surface = Some(surface);
-            true
+            CpuSamplingCanvasStatus::LateReadback
         }
-        Ok(None) => false,
+        Ok(None) => CpuSamplingCanvasStatus::Unavailable,
         Err(error) => {
             warn!(%error, "Late GPU readback for CPU spatial sampling fallback failed");
-            false
+            CpuSamplingCanvasStatus::Unavailable
         }
     }
 }
@@ -306,6 +314,7 @@ pub(crate) fn resolve_led_sampling(
     let mut gpu_sample_retry_hit = false;
     let mut gpu_sample_queue_saturated = false;
     let mut gpu_sample_wait_blocked = false;
+    let mut cpu_sampling_late_readback = false;
     let mut refresh_reused_frame_metadata = false;
     let mut pending_gpu_zone_sampling = None;
     let mut can_reuse_published_frame = false;
@@ -540,23 +549,31 @@ pub(crate) fn resolve_led_sampling(
         let sampling_engine = sparkleflinger_sampling_engine
             .as_ref()
             .expect("CPU spatial sampling requires a SparkleFlinger-owned spatial engine");
-        if ensure_cpu_sampling_canvas(state, sampling, render_stage) {
-            if let Some(canvas) = render_stage.composed_frame.sampling_canvas.as_ref() {
-                sampling_engine.sample_into(canvas, sampling.output_artifacts.zones_mut());
+        let canvas_status = ensure_cpu_sampling_canvas(state, sampling, render_stage);
+        match canvas_status {
+            CpuSamplingCanvasStatus::Ready | CpuSamplingCanvasStatus::LateReadback => {
+                cpu_sampling_late_readback =
+                    matches!(canvas_status, CpuSamplingCanvasStatus::LateReadback);
+                if let Some(canvas) = render_stage.composed_frame.sampling_canvas.as_ref() {
+                    sampling_engine.sample_into(canvas, sampling.output_artifacts.zones_mut());
+                }
             }
-        } else if can_hold_published_frame {
-            warn!(
-                "CPU spatial sampling fallback could not materialize a canvas; reusing published frame"
-            );
-            render_stage.led_sampling_strategy =
-                LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
-            refresh_reused_frame_metadata = true;
-        } else {
-            warn!(
-                "CPU spatial sampling fallback could not materialize a canvas; sampling a black fallback frame"
-            );
-            let black_canvas = Canvas::new(state.canvas_dims.width(), state.canvas_dims.height());
-            sampling_engine.sample_into(&black_canvas, sampling.output_artifacts.zones_mut());
+            CpuSamplingCanvasStatus::Unavailable if can_hold_published_frame => {
+                warn!(
+                    "CPU spatial sampling fallback could not materialize a canvas; reusing published frame"
+                );
+                render_stage.led_sampling_strategy =
+                    LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
+                refresh_reused_frame_metadata = true;
+            }
+            CpuSamplingCanvasStatus::Unavailable => {
+                warn!(
+                    "CPU spatial sampling fallback could not materialize a canvas; sampling a black fallback frame"
+                );
+                let black_canvas =
+                    Canvas::new(state.canvas_dims.width(), state.canvas_dims.height());
+                sampling_engine.sample_into(&black_canvas, sampling.output_artifacts.zones_mut());
+            }
         }
         render_stage.sampled_us = micros_between(cpu_sample_start, Instant::now());
     }
@@ -636,6 +653,7 @@ pub(crate) fn resolve_led_sampling(
         gpu_sample_retry_hit,
         gpu_sample_queue_saturated,
         gpu_sample_wait_blocked,
+        cpu_sampling_late_readback,
         refresh_reused_frame_metadata,
         reuses_published_frame,
     }

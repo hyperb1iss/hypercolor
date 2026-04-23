@@ -87,6 +87,7 @@ pub(crate) struct LatestFrameMetrics {
     pub gpu_sample_retry_hit: bool,
     pub gpu_sample_queue_saturated: bool,
     pub gpu_sample_wait_blocked: bool,
+    pub cpu_sampling_late_readback: bool,
     pub cpu_readback_skipped: bool,
     pub compositor_backend: CompositorBackendKind,
     pub logical_layer_count: u32,
@@ -155,6 +156,7 @@ pub(crate) struct PacingSummary {
     pub gpu_sample_retry_hit: u32,
     pub gpu_sample_queue_saturated: u32,
     pub gpu_sample_wait_blocked: u32,
+    pub cpu_sampling_late_readback: u32,
     pub output_error_frames: u32,
     pub full_frame_copy_frames: u32,
 }
@@ -208,6 +210,7 @@ impl PerformanceTracker {
             gpu_sample_retry_hit: metrics.gpu_sample_retry_hit,
             gpu_sample_queue_saturated: metrics.gpu_sample_queue_saturated,
             gpu_sample_wait_blocked: metrics.gpu_sample_wait_blocked,
+            cpu_sampling_late_readback: metrics.cpu_sampling_late_readback,
             output_error: metrics.output_errors > 0,
             full_frame_copy: metrics.full_frame_copy_count > 0,
         });
@@ -288,6 +291,7 @@ struct FramePacingSample {
     gpu_sample_retry_hit: bool,
     gpu_sample_queue_saturated: bool,
     gpu_sample_wait_blocked: bool,
+    cpu_sampling_late_readback: bool,
     output_error: bool,
     full_frame_copy: bool,
 }
@@ -396,6 +400,13 @@ fn summarize_pacing(
             pacing_history
                 .iter()
                 .filter(|sample| sample.gpu_sample_wait_blocked)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+        cpu_sampling_late_readback: u32::try_from(
+            pacing_history
+                .iter()
+                .filter(|sample| sample.cpu_sampling_late_readback)
                 .count(),
         )
         .unwrap_or(u32::MAX),

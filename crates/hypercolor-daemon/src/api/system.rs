@@ -73,6 +73,7 @@ pub struct LatestFrameStatus {
     pub gpu_sample_retry_hit: bool,
     pub gpu_sample_queue_saturated: bool,
     pub gpu_sample_wait_blocked: bool,
+    pub cpu_sampling_late_readback: bool,
     pub cpu_readback_skipped: bool,
     pub total_ms: f64,
     pub wake_late_ms: f64,
@@ -436,6 +437,7 @@ fn latest_frame_status(frame: LatestFrameMetrics, render_elapsed_ms: f64) -> Lat
         gpu_sample_retry_hit: frame.gpu_sample_retry_hit,
         gpu_sample_queue_saturated: frame.gpu_sample_queue_saturated,
         gpu_sample_wait_blocked: frame.gpu_sample_wait_blocked,
+        cpu_sampling_late_readback: frame.cpu_sampling_late_readback,
         cpu_readback_skipped: frame.cpu_readback_skipped,
         total_ms: round_2(us_to_ms(frame.total_us)),
         wake_late_ms: round_2(us_to_ms(frame.wake_late_us)),
@@ -595,6 +597,7 @@ mod tests {
                 gpu_sample_retry_hit: true,
                 gpu_sample_queue_saturated: true,
                 gpu_sample_wait_blocked: true,
+                cpu_sampling_late_readback: true,
                 cpu_readback_skipped: true,
                 compositor_backend: CompositorBackendKind::GpuFallback,
                 logical_layer_count: 2,
@@ -653,6 +656,10 @@ mod tests {
         );
         assert_eq!(
             json["data"]["latest_frame"]["gpu_sample_wait_blocked"],
+            true
+        );
+        assert_eq!(
+            json["data"]["latest_frame"]["cpu_sampling_late_readback"],
             true
         );
         assert_eq!(json["data"]["latest_frame"]["producer_render_ms"], 0.32);

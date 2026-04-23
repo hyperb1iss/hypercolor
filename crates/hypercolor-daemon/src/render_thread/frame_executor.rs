@@ -194,6 +194,7 @@ pub(crate) async fn execute_frame(
         gpu_sample_retry_hit,
         gpu_sample_queue_saturated,
         gpu_sample_wait_blocked,
+        cpu_sampling_late_readback,
         refresh_reused_frame_metadata,
         reuses_published_frame,
     } = {
@@ -368,6 +369,7 @@ pub(crate) async fn execute_frame(
         gpu_sample_retry_hit,
         gpu_sample_queue_saturated,
         gpu_sample_wait_blocked,
+        cpu_sampling_late_readback,
         cpu_readback_skipped,
         compositor_backend,
         output_errors,

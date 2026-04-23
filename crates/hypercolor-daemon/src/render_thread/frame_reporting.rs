@@ -53,6 +53,7 @@ pub(crate) fn report_active_frame_completion(
         scene_transition_active = metrics.scene_transition_active,
         gpu_sample_wait_blocked = metrics.gpu_sample_wait_blocked,
         gpu_sample_queue_saturated = metrics.gpu_sample_queue_saturated,
+        cpu_sampling_late_readback = metrics.cpu_sampling_late_readback,
         sample_us = metrics.sample_us,
         push_us = metrics.push_us,
         postprocess_us = metrics.postprocess_us,
