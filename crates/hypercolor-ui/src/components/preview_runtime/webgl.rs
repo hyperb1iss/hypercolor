@@ -199,9 +199,6 @@ impl WebGlPreviewRuntime {
             format: frame_format,
         };
 
-        // Avoid synchronous `get_error()` polling on the hot path. Context loss
-        // is handled by canvas events and upload failures fall back to
-        // reinitialization through the `Result` path.
         let upload_result = match texture_upload_strategy(self.texture_shape, shape) {
             TextureUploadStrategy::Allocate => self
                 .gl
@@ -249,12 +246,16 @@ impl WebGlPreviewRuntime {
             }
         };
 
-        if upload_result.is_err() {
+        self.gl.draw_arrays(Gl::TRIANGLE_STRIP, 0, 4);
+
+        // Keep fault detection without the old "poll until clear" loop. A
+        // single post-present read still catches driver/context upload faults,
+        // but avoids the repeated synchronous error-drain on every branch.
+        if upload_result.is_err() || self.gl.get_error() != Gl::NO_ERROR {
             return PreviewRenderOutcome::Reinitialize;
         }
 
         self.texture_shape = Some(shape);
-        self.gl.draw_arrays(Gl::TRIANGLE_STRIP, 0, 4);
         PreviewRenderOutcome::Presented
     }
 }
