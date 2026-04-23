@@ -1,5 +1,6 @@
 mod channel;
 mod frame;
+mod preview;
 mod reconnect;
 mod schema;
 pub mod transport;
@@ -13,6 +14,10 @@ pub use frame::{
     write_frame_prefix,
 };
 pub use hypercolor_leptos_ext_macros::BinaryFrame;
+pub use preview::{
+    PREVIEW_FRAME_HEADER_LEN, PreviewFrame, PreviewFrameChannel, PreviewFrameDecodeError,
+    PreviewPixelFormat,
+};
 pub use reconnect::{
     Connector, ExponentialBackoff, Jitter, ReconnectError, ReconnectOutcome, ReconnectPolicy,
     ReconnectRecvError, ReconnectSendError, Reconnecting,
