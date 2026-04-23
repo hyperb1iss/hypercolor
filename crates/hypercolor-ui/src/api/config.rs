@@ -53,16 +53,9 @@ pub async fn reset_config_key(key: &str) -> Result<(), String> {
         .map_err(Into::into)
 }
 
-/// Enumerate available audio devices. Falls back to a default entry on failure
-/// so the settings page always has something to display.
+/// Enumerate available audio devices.
 pub async fn fetch_audio_devices() -> Result<AudioDevicesData, String> {
-    Ok(client::fetch_json("/api/v1/audio/devices")
+    client::fetch_json("/api/v1/audio/devices")
         .await
-        .unwrap_or_else(|_| AudioDevicesData {
-            devices: vec![AudioDeviceInfo {
-                id: "default".to_string(),
-                name: "Default".to_string(),
-                description: "System default".to_string(),
-            }],
-        }))
+        .map_err(Into::into)
 }

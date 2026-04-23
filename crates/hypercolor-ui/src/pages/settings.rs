@@ -10,6 +10,9 @@ use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, 
 use crate::components::settings_sections::*;
 use crate::config_state::{ConfigContext, apply_config_key};
 use crate::icons::*;
+use crate::settings_audio_devices::{
+    AudioDeviceChoice, AudioDeviceLoadState, resolve_audio_device_dropdown,
+};
 
 /// Section IDs for nav and scroll spy.
 const SECTION_IDS: &[&str] = &[
@@ -83,26 +86,37 @@ pub fn SettingsPage() -> impl IntoView {
     );
 
     // Audio device options for dropdown
-    let audio_devices = Memo::new(move |_| {
-        devices_resource
+    let audio_device_dropdown = Memo::new(move |_| {
+        let configured_device = config
             .get()
-            .and_then(|r| r.ok())
-            .map(|data| {
-                data.devices
-                    .into_iter()
-                    .map(|d| {
-                        let label = if d.description.is_empty() || d.description == d.name {
-                            d.name.clone()
-                        } else if d.description.to_ascii_lowercase().contains("unavailable") {
-                            format!("{} (Unavailable)", d.name)
-                        } else {
-                            d.name.clone()
-                        };
-                        (d.id, label)
+            .map(|current| current.audio.device)
+            .filter(|device| !device.trim().is_empty());
+
+        match devices_resource.get() {
+            None => resolve_audio_device_dropdown(
+                configured_device.as_deref(),
+                AudioDeviceLoadState::Loading,
+            ),
+            Some(Err(_)) => resolve_audio_device_dropdown(
+                configured_device.as_deref(),
+                AudioDeviceLoadState::Error,
+            ),
+            Some(Ok(data)) => {
+                let devices = data
+                    .devices
+                    .iter()
+                    .map(|device| AudioDeviceChoice {
+                        id: device.id.clone(),
+                        name: device.name.clone(),
+                        description: device.description.clone(),
                     })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_else(|| vec![("default".to_string(), "Default".to_string())])
+                    .collect::<Vec<_>>();
+                resolve_audio_device_dropdown(
+                    configured_device.as_deref(),
+                    AudioDeviceLoadState::Ready(&devices),
+                )
+            }
+        }
     });
 
     // Change handler — optimistic update + persist
@@ -307,7 +321,16 @@ pub fn SettingsPage() -> impl IntoView {
                                     config=config
                                     on_change=on_change
                                     on_reset=on_reset
-                                    audio_devices=Signal::derive(move || audio_devices.get())
+                                    audio_devices=Signal::derive(move || {
+                                        audio_device_dropdown.with(|state| state.options.clone())
+                                    })
+                                    audio_device_placeholder=Signal::derive(move || {
+                                        audio_device_dropdown
+                                            .with(|state| state.placeholder.clone())
+                                    })
+                                    audio_device_disabled=Signal::derive(move || {
+                                        audio_device_dropdown.with(|state| state.disabled)
+                                    })
                                 />
                             </div>
                             <div

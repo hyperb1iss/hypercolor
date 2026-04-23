@@ -192,6 +192,8 @@ pub fn AudioSection(
     on_change: Callback<(String, serde_json::Value)>,
     on_reset: Callback<String>,
     #[prop(into)] audio_devices: Signal<Vec<(String, String)>>,
+    #[prop(into)] audio_device_placeholder: Signal<String>,
+    #[prop(into)] audio_device_disabled: Signal<bool>,
 ) -> impl IntoView {
     let enabled = Signal::derive(move || read_config(config, |cfg| cfg.audio.enabled));
     let device = Signal::derive(move || read_config(config, |cfg| cfg.audio.device.clone()));
@@ -229,6 +231,8 @@ pub fn AudioSection(
                 key="audio.device"
                 value=device
                 options=audio_devices
+                placeholder=audio_device_placeholder
+                disabled=audio_device_disabled
                 on_change=on_change
             />
             <SettingDropdown

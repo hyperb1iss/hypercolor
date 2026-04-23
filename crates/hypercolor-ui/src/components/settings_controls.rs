@@ -221,6 +221,8 @@ pub fn SettingDropdown(
     #[prop(into)] value: Signal<String>,
     #[prop(into)] options: Signal<Vec<(String, String)>>,
     on_change: Callback<(String, serde_json::Value)>,
+    #[prop(into, optional)] placeholder: MaybeProp<String>,
+    #[prop(into, optional)] disabled: MaybeProp<bool>,
     #[prop(default = false)] restart_required: bool,
     #[prop(default = false)] numeric: bool,
 ) -> impl IntoView {
@@ -238,6 +240,8 @@ pub fn SettingDropdown(
                 <SilkSelect
                     value=value
                     options=options
+                    placeholder=placeholder
+                    disabled=disabled
                     on_change=Callback::new(move |str_val: String| {
                         let json_val = if numeric {
                             str_val.parse::<i64>()

@@ -35,7 +35,8 @@ pub fn SilkSelect(
     on_change: Callback<String>,
     /// Shown when no option matches the current value.
     #[prop(into, optional)]
-    placeholder: String,
+    placeholder: MaybeProp<String>,
+    #[prop(into, optional)] disabled: MaybeProp<bool>,
     /// Extra classes appended to the trigger button's class list. The
     /// base provides layout + chevron + dropdown mechanics; visual
     /// styling (surface, border, padding, text) lives here.
@@ -56,7 +57,6 @@ pub fn SilkSelect(
     let dismiss_class = StoredValue::new(unique_class.clone());
     let portal_class = StoredValue::new(unique_class);
 
-    let placeholder_value = placeholder.clone();
     let display_label = Memo::new(move |_| {
         let current = value.get();
         options
@@ -65,7 +65,7 @@ pub fn SilkSelect(
                     .find(|(v, _)| v == &current)
                     .map(|(_, label)| label.clone())
             })
-            .unwrap_or_else(|| placeholder_value.clone())
+            .unwrap_or_else(|| placeholder.get().unwrap_or_default())
     });
 
     let has_value = Memo::new(move |_| {
@@ -73,10 +73,15 @@ pub fn SilkSelect(
         options.with(|opts| opts.iter().any(|(v, _)| v == &current))
     });
 
-    let trigger_class = format!(
-        "w-full flex items-center gap-1.5 cursor-pointer select-silk-trigger transition-all {class}"
-    );
+    let trigger_class =
+        format!("w-full flex items-center gap-1.5 select-silk-trigger transition-all {class}");
     let label_class = format!("flex-1 min-w-0 text-left truncate {label_class}");
+
+    Effect::new(move |_| {
+        if disabled.get().unwrap_or(false) && open.get() {
+            set_open.set(false);
+        }
+    });
 
     view! {
         <div class=wrapper_class>
@@ -87,8 +92,19 @@ pub fn SilkSelect(
                 class=("rounded-t-lg", move || open.get())
                 class=("rounded-lg", move || !open.get())
                 class=("border-accent-muted", move || open.get())
-                on:click=move |_| set_open.update(|v| *v = !*v)
+                class=("cursor-pointer", move || !disabled.get().unwrap_or(false))
+                class=("cursor-not-allowed opacity-60", move || disabled.get().unwrap_or(false))
+                disabled=move || disabled.get().unwrap_or(false)
+                on:click=move |_| {
+                    if disabled.get().unwrap_or(false) {
+                        return;
+                    }
+                    set_open.update(|v| *v = !*v);
+                }
                 on:keydown=move |ev: web_sys::KeyboardEvent| {
+                    if disabled.get().unwrap_or(false) {
+                        return;
+                    }
                     if ev.key() == "Escape" && open.get_untracked() {
                         set_open.set(false);
                         ev.prevent_default();
@@ -116,7 +132,7 @@ pub fn SilkSelect(
                 </svg>
             </button>
 
-            <Show when=move || open.get()>
+            <Show when=move || open.get() && !disabled.get().unwrap_or(false)>
                 <ControlDropdownDismissHandlers
                     class_name=dismiss_class.get_value()
                     is_open=open

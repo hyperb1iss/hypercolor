@@ -22,6 +22,7 @@ mod preferences;
 mod preview_telemetry;
 mod render_presets;
 mod route_ui;
+mod settings_audio_devices;
 mod storage;
 mod style_utils;
 mod thumbnails;
