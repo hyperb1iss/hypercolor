@@ -18,15 +18,6 @@ use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
 use crate::performance::{FrameTimeline, LatestFrameMetrics};
 
-fn should_advance_gpu_preview(render_stage: &super::frame_composer::RenderStageStats) -> bool {
-    render_stage.preview_requested
-        && render_stage.composed_frame.preview_surface.is_none()
-        && matches!(
-            render_stage.composed_frame.backend,
-            crate::performance::CompositorBackendKind::Gpu
-        )
-}
-
 #[expect(
     clippy::too_many_lines,
     reason = "frame execution intentionally keeps the full pipeline in one ordered async function"
@@ -188,23 +179,9 @@ pub(crate) async fn execute_frame(
     .await;
     let render_us = render_stage.total_us;
 
-    if should_advance_gpu_preview(&render_stage)
-        && let Err(error) = render.sparkleflinger.submit_pending_preview_work()
     {
-        warn!(%error, "GPU preview submit failed; continuing without an overlapped preview finalize");
-    }
-    if should_advance_gpu_preview(&render_stage)
-        && render_stage.composed_frame.preview_surface.is_none()
-    {
-        match render.sparkleflinger.resolve_preview_surface() {
-            Ok(Some(preview_surface)) => {
-                render_stage.composed_frame.preview_surface = Some(preview_surface);
-            }
-            Ok(None) => {}
-            Err(error) => {
-                warn!(%error, "GPU preview early finalize failed; continuing without an early preview surface");
-            }
-        }
+        let mut preview = render.preview_runtime();
+        preview.advance_gpu_preview(&mut render_stage);
     }
     let LedSamplingOutcome {
         layout,
@@ -295,18 +272,9 @@ pub(crate) async fn execute_frame(
         render_stage.composed_frame.backend,
         crate::performance::CompositorBackendKind::Gpu
     ) && render_stage.composed_frame.sampling_canvas.is_none();
-    if should_advance_gpu_preview(&render_stage)
-        && render_stage.composed_frame.preview_surface.is_none()
     {
-        match render.sparkleflinger.resolve_preview_surface() {
-            Ok(Some(preview_surface)) => {
-                render_stage.composed_frame.preview_surface = Some(preview_surface);
-            }
-            Ok(None) => {}
-            Err(error) => {
-                warn!(%error, "GPU preview finalize failed; continuing without a preview surface");
-            }
-        }
+        let mut preview = render.preview_runtime();
+        preview.finalize_gpu_preview(&mut render_stage);
     }
     let postprocess_us = micros_between(postprocess_start, Instant::now());
 
@@ -531,7 +499,6 @@ mod tests {
         DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     };
 
-    use super::should_advance_gpu_preview;
     use crate::performance::CompositorBackendKind;
     use crate::render_thread::frame_composer::RenderStageStats;
     use crate::render_thread::frame_sampling::LedSamplingStrategy;
@@ -541,6 +508,7 @@ mod tests {
         can_reuse_published_frame_for_deferred_sampling,
     };
     use crate::render_thread::pipeline_runtime::SceneTransitionKey;
+    use crate::render_thread::pipeline_runtime::needs_gpu_preview_advance;
     use crate::render_thread::sparkleflinger::ComposedFrameSet;
 
     fn render_stage(
@@ -589,19 +557,19 @@ mod tests {
     #[test]
     fn gpu_preview_advances_only_when_requested() {
         let render_stage = render_stage(CompositorBackendKind::Gpu, false, false);
-        assert!(!should_advance_gpu_preview(&render_stage));
+        assert!(!needs_gpu_preview_advance(&render_stage));
     }
 
     #[test]
     fn gpu_preview_does_not_advance_when_surface_is_ready() {
         let render_stage = render_stage(CompositorBackendKind::Gpu, true, true);
-        assert!(!should_advance_gpu_preview(&render_stage));
+        assert!(!needs_gpu_preview_advance(&render_stage));
     }
 
     #[test]
     fn gpu_preview_advances_when_requested_and_unresolved() {
         let render_stage = render_stage(CompositorBackendKind::Gpu, true, false);
-        assert!(should_advance_gpu_preview(&render_stage));
+        assert!(needs_gpu_preview_advance(&render_stage));
     }
 
     fn sample_layout(zone_ids: &[&str]) -> SpatialLayout {

@@ -17,10 +17,12 @@ use hypercolor_types::scene::SceneId;
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::SpatialLayout;
 use std::sync::Arc;
+use tracing::warn;
 
 use super::capture_demand::CaptureDemandState;
 use super::composition_planner::CompositionPlanner;
 use super::desired_render_surface_slots;
+use super::frame_composer::RenderStageStats;
 use super::frame_policy::FramePolicy;
 use super::frame_policy::SkipDecision;
 use super::producer_queue::ProducerQueue;
@@ -675,6 +677,68 @@ impl SamplingRuntime<'_> {
     }
 }
 
+pub(crate) struct PreviewRuntime<'a> {
+    sparkleflinger: &'a mut SparkleFlinger,
+}
+
+impl PreviewRuntime<'_> {
+    pub(crate) fn advance_gpu_preview(&mut self, render_stage: &mut RenderStageStats) {
+        if !needs_gpu_preview_advance(render_stage) {
+            return;
+        }
+
+        if let Err(error) = self.sparkleflinger.submit_pending_preview_work() {
+            warn!(
+                %error,
+                "GPU preview submit failed; continuing without an overlapped preview finalize"
+            );
+        }
+
+        self.resolve_gpu_preview(
+            render_stage,
+            "GPU preview early finalize failed; continuing without an early preview surface",
+        );
+    }
+
+    pub(crate) fn finalize_gpu_preview(&mut self, render_stage: &mut RenderStageStats) {
+        self.resolve_gpu_preview(
+            render_stage,
+            "GPU preview finalize failed; continuing without a preview surface",
+        );
+    }
+
+    fn resolve_gpu_preview(
+        &mut self,
+        render_stage: &mut RenderStageStats,
+        error_message: &'static str,
+    ) {
+        if !needs_gpu_preview_advance(render_stage)
+            || render_stage.composed_frame.preview_surface.is_some()
+        {
+            return;
+        }
+
+        match self.sparkleflinger.resolve_preview_surface() {
+            Ok(Some(preview_surface)) => {
+                render_stage.composed_frame.preview_surface = Some(preview_surface);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                warn!(%error, "{error_message}");
+            }
+        }
+    }
+}
+
+pub(crate) fn needs_gpu_preview_advance(render_stage: &RenderStageStats) -> bool {
+    render_stage.preview_requested
+        && render_stage.composed_frame.preview_surface.is_none()
+        && matches!(
+            render_stage.composed_frame.backend,
+            crate::performance::CompositorBackendKind::Gpu
+        )
+}
+
 pub(crate) struct SceneSnapshotState {
     pub(crate) snapshot_cache: SceneSnapshotCache,
     pub(crate) render_state: RenderSceneState,
@@ -763,6 +827,12 @@ impl RenderCaches {
             deferred_sampling: &mut self.deferred_sampling,
             zone_transition_planner: &mut self.zone_transition_planner,
             output_artifacts: &mut self.output_artifacts,
+        }
+    }
+
+    pub(crate) fn preview_runtime(&mut self) -> PreviewRuntime<'_> {
+        PreviewRuntime {
+            sparkleflinger: &mut self.sparkleflinger,
         }
     }
 
