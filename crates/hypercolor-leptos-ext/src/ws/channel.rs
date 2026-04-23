@@ -29,11 +29,6 @@ impl<Tr> Channel<Tr> {
     }
 }
 
-pub struct BinaryChannel<T, Tr> {
-    transport: Tr,
-    _marker: PhantomData<fn() -> T>,
-}
-
 pub trait BackpressurePolicy: 'static {
     const CAPACITY: usize;
 
@@ -177,11 +172,24 @@ impl<const N: usize> BackpressurePolicy for BlockOnFull<N> {
     }
 }
 
-impl<T, Tr> BinaryChannel<T, Tr> {
+pub struct BinaryChannel<T, Tr, P = Queue<1>>
+where
+    P: BackpressurePolicy,
+{
+    transport: Tr,
+    queue: BackpressureQueue<P>,
+    _marker: PhantomData<fn() -> T>,
+}
+
+impl<T, Tr, P> BinaryChannel<T, Tr, P>
+where
+    P: BackpressurePolicy,
+{
     #[must_use]
-    pub const fn new(transport: Tr) -> Self {
+    pub fn new(transport: Tr) -> Self {
         Self {
             transport,
+            queue: BackpressureQueue::new(),
             _marker: PhantomData,
         }
     }
@@ -192,6 +200,14 @@ impl<T, Tr> BinaryChannel<T, Tr> {
 
     pub fn transport_mut(&mut self) -> &mut Tr {
         &mut self.transport
+    }
+
+    pub fn queue(&self) -> &BackpressureQueue<P> {
+        &self.queue
+    }
+
+    pub fn queue_mut(&mut self) -> &mut BackpressureQueue<P> {
+        &mut self.queue
     }
 
     pub fn into_inner(self) -> Tr {
@@ -231,13 +247,27 @@ where
     }
 }
 
-impl<T, Tr> BinaryChannel<T, Tr>
+impl<T, Tr, P> BinaryChannel<T, Tr, P>
 where
     T: BinaryFrame,
     Tr: CinderTransport,
+    P: BackpressurePolicy,
 {
     pub async fn send(&mut self, frame: T) -> Result<(), Tr::SendError> {
         self.transport.send(frame.encode()).await
+    }
+
+    pub fn enqueue(&mut self, frame: T) -> OverflowAction {
+        self.queue.push(frame.encode())
+    }
+
+    pub async fn flush_queued(&mut self) -> Result<usize, Tr::SendError> {
+        let mut flushed = 0;
+        while let Some(frame) = self.queue.pop_front() {
+            self.transport.send(frame).await?;
+            flushed += 1;
+        }
+        Ok(flushed)
     }
 
     pub async fn recv(&mut self) -> Result<Option<T>, BinaryChannelRecvError<Tr::RecvError>> {

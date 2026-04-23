@@ -4,7 +4,7 @@ use bytes::{Bytes, BytesMut};
 use hypercolor_leptos_ext::ws::transport::InMemoryTransport;
 use hypercolor_leptos_ext::ws::{
     BinaryChannel, BinaryChannelRecvError, BinaryFrameDecode, BinaryFrameEncode, DecodeError,
-    write_frame_prefix,
+    Latest, OverflowAction, write_frame_prefix,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, hypercolor_leptos_ext::ws::BinaryFrame)]
@@ -75,4 +75,35 @@ async fn binary_channel_surfaces_decode_errors() {
             actual: 0x09,
         })
     ));
+}
+
+#[tokio::test]
+async fn binary_channel_flushes_queued_frames_with_policy() {
+    let (left, right) = InMemoryTransport::pair();
+    let mut sender = BinaryChannel::<TestFrame, _, Latest>::new(left);
+    let mut receiver = BinaryChannel::<TestFrame, _>::new(right);
+
+    assert_eq!(
+        sender.enqueue(TestFrame {
+            payload: Bytes::from_static(b"stale"),
+        }),
+        OverflowAction::Accepted
+    );
+    assert_eq!(
+        sender.enqueue(TestFrame {
+            payload: Bytes::from_static(b"fresh"),
+        }),
+        OverflowAction::Dropped { dropped_frames: 1 }
+    );
+    assert_eq!(sender.queue().dropped_frames(), 1);
+
+    assert_eq!(sender.flush_queued().await.expect("flush succeeds"), 1);
+
+    let received = receiver.recv().await.expect("recv succeeds");
+    assert_eq!(
+        received,
+        Some(TestFrame {
+            payload: Bytes::from_static(b"fresh"),
+        })
+    );
 }
