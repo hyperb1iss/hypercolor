@@ -79,7 +79,7 @@ struct AudioSignalSnapshot {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct StableCanvasFrameIdentity {
+struct CanvasPublicationKey {
     generation: u64,
     storage: PublishedSurfaceStorageIdentity,
     width: u32,
@@ -366,15 +366,15 @@ fn update_published_frame(
 }
 
 fn should_publish_canvas_frame(current: &CanvasFrame, next: &CanvasFrame) -> bool {
-    stable_canvas_frame_identity(current) != stable_canvas_frame_identity(next)
+    canvas_frame_publication_key(current) != canvas_frame_publication_key(next)
 }
 
 fn should_publish_surface_frame(current: &CanvasFrame, next: &PublishedSurface) -> bool {
-    stable_canvas_frame_identity(current) != stable_published_surface_identity(next)
+    canvas_frame_publication_key(current) != published_surface_publication_key(next)
 }
 
 fn should_publish_canvas_storage(current: &CanvasFrame, next: &Canvas) -> bool {
-    stable_canvas_frame_identity(current) != stable_canvas_identity(next)
+    canvas_frame_publication_key(current) != canvas_storage_publication_key(next)
 }
 
 fn authoritative_scene_surface<'a>(
@@ -386,8 +386,8 @@ fn authoritative_scene_surface<'a>(
     frame_surface.or(preview_surface)
 }
 
-fn stable_canvas_frame_identity(frame: &CanvasFrame) -> Option<StableCanvasFrameIdentity> {
-    (frame.width > 0 && frame.height > 0).then(|| StableCanvasFrameIdentity {
+fn canvas_frame_publication_key(frame: &CanvasFrame) -> Option<CanvasPublicationKey> {
+    (frame.width > 0 && frame.height > 0).then(|| CanvasPublicationKey {
         generation: frame.surface().generation(),
         storage: frame.surface().storage_identity(),
         width: frame.width,
@@ -395,10 +395,10 @@ fn stable_canvas_frame_identity(frame: &CanvasFrame) -> Option<StableCanvasFrame
     })
 }
 
-fn stable_published_surface_identity(
+fn published_surface_publication_key(
     surface: &PublishedSurface,
-) -> Option<StableCanvasFrameIdentity> {
-    (surface.width() > 0 && surface.height() > 0).then(|| StableCanvasFrameIdentity {
+) -> Option<CanvasPublicationKey> {
+    (surface.width() > 0 && surface.height() > 0).then(|| CanvasPublicationKey {
         generation: surface.generation(),
         storage: surface.storage_identity(),
         width: surface.width(),
@@ -406,8 +406,8 @@ fn stable_published_surface_identity(
     })
 }
 
-fn stable_canvas_identity(canvas: &Canvas) -> Option<StableCanvasFrameIdentity> {
-    (canvas.width() > 0 && canvas.height() > 0).then(|| StableCanvasFrameIdentity {
+fn canvas_storage_publication_key(canvas: &Canvas) -> Option<CanvasPublicationKey> {
+    (canvas.width() > 0 && canvas.height() > 0).then(|| CanvasPublicationKey {
         generation: 0,
         storage: canvas.storage_identity(),
         width: canvas.width(),
@@ -471,12 +471,16 @@ impl AudioSignalSnapshot {
 
 #[cfg(test)]
 mod tests {
+    use hypercolor_core::bus::CanvasFrame;
     use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
     use tokio::sync::watch;
 
     use hypercolor_core::types::event::{FrameData, ZoneColors};
 
-    use super::{FramePublicationSurfaces, authoritative_scene_surface, update_published_frame};
+    use super::{
+        FramePublicationSurfaces, authoritative_scene_surface, canvas_frame_publication_key,
+        published_surface_publication_key, update_published_frame,
+    };
 
     fn sample_frame(
         zone_id: &str,
@@ -565,6 +569,22 @@ mod tests {
         let selected = authoritative_scene_surface(None, None);
 
         assert!(selected.is_none());
+    }
+
+    #[test]
+    fn canvas_frame_publication_key_is_empty_for_empty_frame() {
+        assert!(canvas_frame_publication_key(&CanvasFrame::empty()).is_none());
+    }
+
+    #[test]
+    fn published_surface_publication_key_matches_canvas_frame_surface_identity() {
+        let surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 7, 42);
+        let frame = CanvasFrame::from_surface(surface.clone());
+
+        assert_eq!(
+            canvas_frame_publication_key(&frame),
+            published_surface_publication_key(&surface)
+        );
     }
 
     #[test]
