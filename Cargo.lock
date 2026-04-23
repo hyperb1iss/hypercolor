@@ -4606,6 +4606,7 @@ dependencies = [
  "leptos",
  "leptos-use",
  "proptest",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite 0.26.2",

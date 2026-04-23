@@ -2,6 +2,7 @@ mod channel;
 mod frame;
 mod preview;
 mod reconnect;
+mod replay;
 mod rpc;
 mod schema;
 pub mod transport;
@@ -26,6 +27,9 @@ pub use preview::{
 pub use reconnect::{
     Connector, ExponentialBackoff, Jitter, ReconnectError, ReconnectOutcome, ReconnectPolicy,
     ReconnectRecvError, ReconnectSendError, Reconnecting,
+};
+pub use replay::{
+    ChannelDescriptor, Direction, ReplayEntry, SessionRecord, SessionRecorder, SessionTape,
 };
 pub use rpc::{
     RPC_REQUEST_TAG, RPC_RESPONSE_TAG, RpcClient, RpcClientError, RpcRequest, RpcResponse,

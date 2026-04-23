@@ -748,6 +748,7 @@ dependencies = [
  "js-sys",
  "leptos",
  "leptos-use",
+ "serde_json",
  "thiserror 2.0.18",
  "wasm-bindgen",
  "wasm-bindgen-futures",
