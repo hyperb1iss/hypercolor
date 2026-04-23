@@ -11,6 +11,7 @@ use axum::body::Bytes;
 use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
 use axum::extract::{Extension, State, WebSocketUpgrade};
 use axum::response::Response;
+use hypercolor_leptos_ext::axum::upgrade_handler;
 use serde::Serialize;
 use tokio::sync::watch;
 use tracing::{debug, warn};
@@ -42,8 +43,7 @@ pub(crate) async fn ws_handler(
 ) -> Response {
     let auth_context =
         auth_context.map_or_else(RequestAuthContext::unsecured, |Extension(context)| context);
-    ws.protocols(["hypercolor-v1"])
-        .on_upgrade(move |socket| handle_socket(socket, state, auth_context))
+    upgrade_handler(ws, move |socket| handle_socket(socket, state, auth_context))
 }
 
 /// Process a single WebSocket connection.
