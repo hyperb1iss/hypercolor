@@ -76,6 +76,7 @@ pub(crate) async fn execute_frame(
             render.render_surface_snapshot(state.published_canvas_receiver_count());
         if let Some(frame) = maybe_sleep_throttle(
             state,
+            &mut runtime.frame_policy,
             &scene_snapshot,
             frame_start,
             scene_snapshot_done_us,
@@ -109,6 +110,7 @@ pub(crate) async fn execute_frame(
 
     if let Some(frame) = maybe_idle_throttle(
         state,
+        &mut runtime.frame_policy,
         scene_snapshot.effect_demand.effect_running,
         scene_snapshot.effect_demand.screen_capture_active,
         &mut frame_loop.throttle,

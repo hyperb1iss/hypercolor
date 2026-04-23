@@ -41,9 +41,7 @@ pub(crate) async fn run_pipeline(state: RenderThreadState, mut runtime: Pipeline
 
         let frame = execute_frame(&state, &mut runtime, scheduled_start, skip_decision).await;
         skip_decision = frame.next_skip_decision;
-        next_frame_at = frame
-            .next_wake
-            .resolve_deadline(scheduled_start, Instant::now());
+        next_frame_at = frame.resolve_deadline(scheduled_start, Instant::now());
     }
 
     info!("render pipeline exited");

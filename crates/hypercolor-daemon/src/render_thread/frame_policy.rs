@@ -34,6 +34,19 @@ pub(crate) struct FrameExecution {
     pub(crate) next_skip_decision: SkipDecision,
 }
 
+impl FrameExecution {
+    pub(crate) const fn throttle(delay: Duration) -> Self {
+        Self {
+            next_wake: NextWake::Delay(delay),
+            next_skip_decision: SkipDecision::None,
+        }
+    }
+
+    pub(crate) fn resolve_deadline(self, scheduled_start: Instant, now: Instant) -> Instant {
+        self.next_wake.resolve_deadline(scheduled_start, now)
+    }
+}
+
 /// Scheduler decision for when the next render iteration should begin.
 pub(crate) enum NextWake {
     /// Continue on the regular render cadence using the current FPS interval.
@@ -73,13 +86,18 @@ impl FramePolicy {
                 next_wake: NextWake::Interval(render_loop.target_interval()),
                 next_skip_decision: SkipDecision::from_frame_stats(&frame_stats),
             },
-            None => FrameExecution {
-                next_wake: NextWake::Delay(Duration::ZERO),
-                next_skip_decision: SkipDecision::None,
-            },
+            None => FrameExecution::throttle(Duration::ZERO),
         }
     }
 
+    pub(crate) fn complete_throttled_frame(
+        &mut self,
+        render_loop: &mut RenderLoop,
+        delay: Duration,
+    ) -> FrameExecution {
+        let _ = render_loop.frame_complete();
+        FrameExecution::throttle(delay)
+    }
 }
 
 #[cfg(test)]
@@ -88,7 +106,7 @@ mod tests {
 
     use hypercolor_core::engine::{FpsTier, RenderLoop};
 
-    use super::{FrameAdmissionSample, FramePolicy, NextWake, SkipDecision};
+    use super::{FrameAdmissionSample, FrameExecution, FramePolicy, NextWake, SkipDecision};
 
     fn clean_sample() -> FrameAdmissionSample {
         FrameAdmissionSample {
@@ -155,5 +173,33 @@ mod tests {
             .resolve_deadline(scheduled_start, now);
 
         assert_eq!(next, now + Duration::from_millis(120));
+    }
+
+    #[test]
+    fn frame_execution_delay_constructor_clears_skip_decision() {
+        let execution = FrameExecution::throttle(Duration::from_millis(120));
+
+        assert!(matches!(
+            execution.next_wake,
+            NextWake::Delay(delay) if delay == Duration::from_millis(120)
+        ));
+        assert_eq!(execution.next_skip_decision, SkipDecision::None);
+    }
+
+    #[test]
+    fn throttled_frame_completion_uses_delay_execution() {
+        let mut render_loop = RenderLoop::new(60);
+        render_loop.start();
+        assert!(render_loop.tick());
+
+        let mut policy = FramePolicy::new(FpsTier::Full);
+        let execution =
+            policy.complete_throttled_frame(&mut render_loop, Duration::from_millis(120));
+
+        assert!(matches!(
+            execution.next_wake,
+            NextWake::Delay(delay) if delay == Duration::from_millis(120)
+        ));
+        assert_eq!(execution.next_skip_decision, SkipDecision::None);
     }
 }
