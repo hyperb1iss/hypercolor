@@ -74,6 +74,23 @@ fn load_full_toml_with_overrides() {
 }
 
 #[test]
+fn load_canonicalizes_legacy_audio_device_ids() {
+    let toml = r#"
+        schema_version = 3
+
+        [audio]
+        device = "mic"
+    "#;
+
+    let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
+    fs::write(tmp.path(), toml).expect("failed to write temp file");
+
+    let config = ConfigManager::load(tmp.path()).expect("legacy TOML should parse without error");
+
+    assert_eq!(config.audio.device, "microphone");
+}
+
+#[test]
 fn load_invalid_toml_returns_error() {
     let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
     fs::write(tmp.path(), "not valid { toml [[[").expect("failed to write temp file");
@@ -124,6 +141,20 @@ fn new_with_valid_file_loads_it() {
     let config = manager.get();
 
     assert_eq!(config.daemon.port, 7777);
+}
+
+#[test]
+fn update_canonicalizes_legacy_audio_device_ids() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let path = dir.path().join("hypercolor.toml");
+
+    let manager = ConfigManager::new(path).expect("ConfigManager should use defaults");
+    let mut config = manager.get().as_ref().clone();
+    config.audio.device = "auto".to_owned();
+
+    manager.update(config);
+
+    assert_eq!(manager.get().audio.device, "default");
 }
 
 #[test]

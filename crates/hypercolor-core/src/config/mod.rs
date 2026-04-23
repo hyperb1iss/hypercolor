@@ -80,7 +80,7 @@ impl ConfigManager {
 
     /// Replace the live configuration snapshot without re-reading from disk.
     pub fn update(&self, config: HypercolorConfig) {
-        self.config.store(Arc::new(config));
+        self.config.store(Arc::new(normalize_config(config)));
     }
 
     /// Reloads configuration from the original file path.
@@ -162,11 +162,31 @@ impl ConfigManager {
 
     /// Parses a TOML string into a [`HypercolorConfig`].
     fn parse_toml(toml_str: &str) -> Result<HypercolorConfig> {
-        toml::from_str(toml_str).context("failed to parse configuration TOML")
+        toml::from_str(toml_str)
+            .map(normalize_config)
+            .context("failed to parse configuration TOML")
     }
 
     /// Returns a default config suitable for first-run.
     fn default_config() -> HypercolorConfig {
-        HypercolorConfig::default()
+        normalize_config(HypercolorConfig::default())
+    }
+}
+
+fn normalize_config(mut config: HypercolorConfig) -> HypercolorConfig {
+    config.audio.device = normalize_audio_device_id(&config.audio.device);
+    config
+}
+
+fn normalize_audio_device_id(device: &str) -> String {
+    let trimmed = device.trim();
+    if trimmed.eq_ignore_ascii_case("auto") || trimmed.eq_ignore_ascii_case("default") {
+        "default".to_owned()
+    } else if trimmed.eq_ignore_ascii_case("mic") || trimmed.eq_ignore_ascii_case("microphone") {
+        "microphone".to_owned()
+    } else if trimmed.eq_ignore_ascii_case("none") {
+        "none".to_owned()
+    } else {
+        trimmed.to_owned()
     }
 }

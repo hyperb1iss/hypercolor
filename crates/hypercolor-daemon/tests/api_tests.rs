@@ -520,13 +520,13 @@ async fn audio_devices_returns_default_option_and_current_value() {
 }
 
 #[tokio::test]
-async fn audio_devices_preserve_noncanonical_configured_id_without_alias_rewrite() {
+async fn audio_devices_preserve_custom_configured_id_without_rewrite() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let config_path = tempdir.path().join("hypercolor.toml");
     let config_manager =
         Arc::new(ConfigManager::new(config_path).expect("config manager should build"));
     let mut config = HypercolorConfig::default();
-    config.audio.device = "mic".to_owned();
+    config.audio.device = "pulse-monitor".to_owned();
     config_manager.update(config);
 
     let mut state = isolated_state();
@@ -546,13 +546,13 @@ async fn audio_devices_preserve_noncanonical_configured_id_without_alias_rewrite
     assert_eq!(response.status(), StatusCode::OK);
 
     let json = body_json(response).await;
-    assert_eq!(json["data"]["current"], "mic");
+    assert_eq!(json["data"]["current"], "pulse-monitor");
     assert!(
         json["data"]["devices"]
             .as_array()
             .expect("devices should be an array")
             .iter()
-            .any(|device| device["id"] == "mic"),
+            .any(|device| device["id"] == "pulse-monitor"),
         "configured noncanonical device id should remain visible instead of being rewritten"
     );
 }
@@ -680,6 +680,56 @@ async fn config_set_audio_device_rebuilds_live_input_manager_when_requested() {
                 .iter()
                 .any(|name| name == "AudioInput(microphone)"),
             "rebuilt input manager should include the selected audio source"
+        );
+    }
+
+    let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
+    let config: HypercolorConfig =
+        toml::from_str(&config_raw).expect("saved config should deserialize");
+    assert_eq!(config.audio.device, "microphone");
+}
+
+#[tokio::test]
+async fn config_set_legacy_audio_alias_persists_canonical_device_id() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let config_manager =
+        Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
+
+    let mut state = isolated_state();
+    state.config_manager = Some(config_manager);
+    let state = Arc::new(state);
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/config/set")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"key":"audio.device","value":"\"mic\"","live":true}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["key"], "audio.device");
+    assert_eq!(json["data"]["value"], "microphone");
+    assert_eq!(json["data"]["live"], true);
+
+    {
+        let input_manager = state.input_manager.lock().await;
+        assert!(
+            input_manager
+                .source_names()
+                .iter()
+                .any(|name| name == "AudioInput(microphone)"),
+            "legacy alias should canonicalize before rebuilding the audio input"
         );
     }
 

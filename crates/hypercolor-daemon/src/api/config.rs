@@ -110,6 +110,21 @@ pub async fn set_config_value(
     if let Err(e) = manager.save() {
         return ApiError::internal(format!("Failed to persist config: {e}"));
     }
+    let effective_config = manager.get();
+    let effective_root = match serde_json::to_value(&**effective_config) {
+        Ok(value) => value,
+        Err(error) => {
+            return ApiError::internal(format!(
+                "Failed to serialize canonicalized config: {error}"
+            ));
+        }
+    };
+    let Some(effective_value) = get_json_path(&effective_root, &body.key).cloned() else {
+        return ApiError::internal(format!(
+            "Canonicalized config is missing expected key: {}",
+            body.key
+        ));
+    };
 
     let audio_live_applied =
         maybe_apply_audio_config_change(&state, Some(&body.key), body.live.unwrap_or(false)).await;
@@ -118,7 +133,7 @@ pub async fn set_config_value(
 
     ApiResponse::ok(serde_json::json!({
         "key": body.key,
-        "value": parsed_value,
+        "value": effective_value,
         "live": live_applied,
         "path": manager.path().display().to_string(),
     }))
