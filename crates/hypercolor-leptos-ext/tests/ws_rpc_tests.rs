@@ -1,9 +1,10 @@
 #![cfg(feature = "ws-core")]
 
 use bytes::{Bytes, BytesMut};
+use hypercolor_leptos_ext::ws::transport::InMemoryTransport;
 use hypercolor_leptos_ext::ws::{
     BinaryFrameDecode, BinaryFrameEncode, DecodeError, RPC_REQUEST_TAG, RPC_RESPONSE_TAG,
-    RpcRequest, RpcResponse, RpcStatus, write_frame_prefix,
+    RpcClient, RpcRequest, RpcResponse, RpcServer, RpcStatus, write_frame_prefix,
 };
 
 #[test]
@@ -61,4 +62,38 @@ fn rpc_request_rejects_truncated_method() {
     encoded.extend_from_slice(b"ab");
 
     assert_eq!(RpcRequest::decode(&encoded), Err(DecodeError::Truncated));
+}
+
+#[tokio::test]
+async fn rpc_client_and_server_exchange_raw_payloads() {
+    let (client_transport, server_transport) = InMemoryTransport::pair();
+    let mut client = RpcClient::new(client_transport);
+    let mut server = RpcServer::new(server_transport);
+
+    let client_fut = client.call_raw("effects.apply", Bytes::from_static(b"apply request"));
+    let server_fut = async {
+        let request = server
+            .recv_request()
+            .await
+            .expect("request recv succeeds")
+            .expect("request is present");
+        assert_eq!(request.id, 1);
+        assert_eq!(request.method, "effects.apply");
+        assert_eq!(request.payload, Bytes::from_static(b"apply request"));
+
+        server
+            .send_response(RpcResponse::ok(
+                request.id,
+                Bytes::from_static(b"apply response"),
+            ))
+            .await
+            .expect("response send succeeds");
+    };
+
+    let (response, ()) = futures_util::future::join(client_fut, server_fut).await;
+    let response = response.expect("client call succeeds");
+
+    assert_eq!(response.id, 1);
+    assert_eq!(response.status, RpcStatus::OK);
+    assert_eq!(response.payload, Bytes::from_static(b"apply response"));
 }

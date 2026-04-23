@@ -27,7 +27,10 @@ pub use reconnect::{
     Connector, ExponentialBackoff, Jitter, ReconnectError, ReconnectOutcome, ReconnectPolicy,
     ReconnectRecvError, ReconnectSendError, Reconnecting,
 };
-pub use rpc::{RPC_REQUEST_TAG, RPC_RESPONSE_TAG, RpcRequest, RpcResponse, RpcStatus};
+pub use rpc::{
+    RPC_REQUEST_TAG, RPC_RESPONSE_TAG, RpcClient, RpcClientError, RpcRequest, RpcResponse,
+    RpcServer, RpcServerError, RpcStatus,
+};
 pub use schema::{SchemaRange, negotiate_highest_common_schema};
 
 pub trait BinaryFrameSchema {

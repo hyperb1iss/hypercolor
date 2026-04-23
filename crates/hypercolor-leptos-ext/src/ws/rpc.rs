@@ -1,9 +1,10 @@
 use bytes::{BufMut, Bytes, BytesMut};
 
 use super::{
-    BinaryFrameDecode, BinaryFrameEncode, BinaryFrameSchema, DecodeError, validate_frame_prefix,
-    write_frame_prefix,
+    BinaryFrameDecode, BinaryFrameEncode, BinaryFrameSchema, DecodeError,
+    transport::CinderTransport, validate_frame_prefix, write_frame_prefix,
 };
+use thiserror::Error;
 
 pub const RPC_REQUEST_TAG: u8 = 0x80;
 pub const RPC_RESPONSE_TAG: u8 = 0x81;
@@ -165,4 +166,144 @@ impl RpcStatus {
     pub const fn is_success(self) -> bool {
         self.0 >= 200 && self.0 < 300
     }
+}
+
+pub struct RpcClient<Tr> {
+    transport: Tr,
+    next_id: u64,
+}
+
+impl<Tr> RpcClient<Tr> {
+    #[must_use]
+    pub const fn new(transport: Tr) -> Self {
+        Self {
+            transport,
+            next_id: 1,
+        }
+    }
+
+    pub fn transport(&self) -> &Tr {
+        &self.transport
+    }
+
+    pub fn transport_mut(&mut self) -> &mut Tr {
+        &mut self.transport
+    }
+
+    pub fn into_inner(self) -> Tr {
+        self.transport
+    }
+}
+
+impl<Tr> RpcClient<Tr>
+where
+    Tr: CinderTransport,
+{
+    pub async fn call_raw(
+        &mut self,
+        method: impl Into<String>,
+        payload: impl Into<Bytes>,
+    ) -> Result<RpcResponse, RpcClientError<Tr::SendError, Tr::RecvError>> {
+        let id = self.next_request_id();
+        let request = RpcRequest::new(id, method, payload);
+        self.transport
+            .send(request.encode())
+            .await
+            .map_err(RpcClientError::Send)?;
+
+        loop {
+            let Some(frame) = self.transport.recv().await.map_err(RpcClientError::Recv)? else {
+                return Err(RpcClientError::Closed);
+            };
+            let response = RpcResponse::decode(&frame)?;
+            if response.id == id {
+                return Ok(response);
+            }
+        }
+    }
+
+    fn next_request_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1).max(1);
+        id
+    }
+}
+
+pub struct RpcServer<Tr> {
+    transport: Tr,
+}
+
+impl<Tr> RpcServer<Tr> {
+    #[must_use]
+    pub const fn new(transport: Tr) -> Self {
+        Self { transport }
+    }
+
+    pub fn transport(&self) -> &Tr {
+        &self.transport
+    }
+
+    pub fn transport_mut(&mut self) -> &mut Tr {
+        &mut self.transport
+    }
+
+    pub fn into_inner(self) -> Tr {
+        self.transport
+    }
+}
+
+impl<Tr> RpcServer<Tr>
+where
+    Tr: CinderTransport,
+{
+    pub async fn recv_request(
+        &mut self,
+    ) -> Result<Option<RpcRequest>, RpcServerError<Tr::SendError, Tr::RecvError>> {
+        match self.transport.recv().await.map_err(RpcServerError::Recv)? {
+            Some(frame) => RpcRequest::decode(&frame)
+                .map(Some)
+                .map_err(RpcServerError::Decode),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn send_response(
+        &mut self,
+        response: RpcResponse,
+    ) -> Result<(), RpcServerError<Tr::SendError, Tr::RecvError>> {
+        self.transport
+            .send(response.encode())
+            .await
+            .map_err(RpcServerError::Send)
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum RpcClientError<S, R>
+where
+    S: std::error::Error + 'static,
+    R: std::error::Error + 'static,
+{
+    #[error("RPC transport closed")]
+    Closed,
+    #[error(transparent)]
+    Send(S),
+    #[error(transparent)]
+    Recv(R),
+    #[error(transparent)]
+    Decode(#[from] DecodeError),
+}
+
+#[derive(Debug, Error)]
+pub enum RpcServerError<S, R>
+where
+    S: std::error::Error + 'static,
+    R: std::error::Error + 'static,
+{
+    #[error(transparent)]
+    Send(S),
+    #[error(transparent)]
+    Recv(R),
+    #[error(transparent)]
+    Decode(DecodeError),
 }
