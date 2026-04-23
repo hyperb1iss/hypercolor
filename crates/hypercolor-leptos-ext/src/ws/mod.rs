@@ -10,7 +10,10 @@ pub use frame::{
     write_frame_prefix,
 };
 pub use hypercolor_leptos_ext_macros::BinaryFrame;
-pub use reconnect::{Connector, ExponentialBackoff, Jitter, ReconnectOutcome, ReconnectPolicy};
+pub use reconnect::{
+    Connector, ExponentialBackoff, Jitter, ReconnectError, ReconnectOutcome, ReconnectPolicy,
+    ReconnectRecvError, ReconnectSendError, Reconnecting,
+};
 pub use schema::{SchemaRange, negotiate_highest_common_schema};
 
 pub trait BinaryFrameSchema {

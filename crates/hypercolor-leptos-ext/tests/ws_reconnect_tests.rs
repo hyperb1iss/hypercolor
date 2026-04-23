@@ -1,10 +1,13 @@
 #![cfg(feature = "ws-core")]
 
-use hypercolor_leptos_ext::ws::transport::InMemoryTransport;
+use bytes::Bytes;
+use hypercolor_leptos_ext::ws::transport::{CinderTransport, InMemoryTransport};
 use hypercolor_leptos_ext::ws::{
-    Connector, ExponentialBackoff, Jitter, ReconnectOutcome, ReconnectPolicy,
+    Connector, ExponentialBackoff, Jitter, ReconnectError, ReconnectOutcome, ReconnectPolicy,
+    Reconnecting,
 };
 use std::io;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[test]
@@ -76,4 +79,83 @@ async fn closure_connector_connects_transports() {
     };
 
     let _transport = connector.connect().await.expect("connect succeeds");
+}
+
+#[tokio::test]
+async fn reconnecting_recovers_after_remote_close() {
+    let peers = Arc::new(Mutex::new(Vec::new()));
+    let connector_peers = Arc::clone(&peers);
+    let connector = move || {
+        let connector_peers = Arc::clone(&connector_peers);
+        async move {
+            let (client, server) = InMemoryTransport::pair();
+            connector_peers
+                .lock()
+                .expect("peer store lock is not poisoned")
+                .push(server);
+            Ok::<_, io::Error>(client)
+        }
+    };
+
+    let policy = ExponentialBackoff {
+        base: Duration::from_millis(1),
+        max: Duration::from_millis(1),
+        multiplier: 1.0,
+        jitter: Jitter::None,
+    };
+    let mut transport = Reconnecting::new(connector, policy);
+
+    transport.connect().await.expect("initial connect succeeds");
+    let mut first_peer = peers
+        .lock()
+        .expect("peer store lock is not poisoned")
+        .pop()
+        .expect("initial peer is captured");
+    first_peer.close().await.expect("peer close succeeds");
+    drop(first_peer);
+
+    assert_eq!(
+        transport.recv().await.expect("remote close reconnects"),
+        None
+    );
+    assert!(transport.is_connected());
+    assert_eq!(transport.last_delay(), Some(Duration::from_millis(1)));
+
+    let mut second_peer = peers
+        .lock()
+        .expect("peer store lock is not poisoned")
+        .pop()
+        .expect("reconnected peer is captured");
+    transport
+        .send(Bytes::from_static(b"after-reconnect"))
+        .await
+        .expect("send succeeds after reconnect");
+    assert_eq!(
+        second_peer.recv().await.expect("peer recv succeeds"),
+        Some(Bytes::from_static(b"after-reconnect"))
+    );
+}
+
+#[tokio::test]
+async fn reconnecting_reports_exhausted_policy() {
+    let connector = || async {
+        let (client, _) = InMemoryTransport::pair();
+        Ok::<_, io::Error>(client)
+    };
+    let policy = ExponentialBackoff {
+        base: Duration::ZERO,
+        max: Duration::from_millis(1),
+        multiplier: 1.0,
+        jitter: Jitter::None,
+    };
+    let mut transport = Reconnecting::new(connector, policy);
+
+    let error = transport
+        .reconnect(ReconnectOutcome::ConnectFailure)
+        .await
+        .expect_err("zero base exhausts policy");
+    assert!(matches!(
+        error,
+        ReconnectError::Exhausted { attempt: 0, .. }
+    ));
 }

@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use std::time::Duration;
+use thiserror::Error;
 
 use crate::MaybeSend;
 
@@ -102,5 +103,205 @@ where
 
     async fn connect(&mut self) -> Result<Self::Transport, Self::Error> {
         self().await
+    }
+}
+
+pub struct Reconnecting<C, P>
+where
+    C: Connector,
+    P: ReconnectPolicy,
+{
+    connector: C,
+    policy: P,
+    transport: Option<C::Transport>,
+    attempt: u32,
+    last_delay: Option<Duration>,
+}
+
+impl<C, P> Reconnecting<C, P>
+where
+    C: Connector,
+    P: ReconnectPolicy,
+{
+    #[must_use]
+    pub const fn new(connector: C, policy: P) -> Self {
+        Self {
+            connector,
+            policy,
+            transport: None,
+            attempt: 0,
+            last_delay: None,
+        }
+    }
+
+    pub async fn connect(&mut self) -> Result<(), ReconnectError<C::Error>> {
+        let transport = self
+            .connector
+            .connect()
+            .await
+            .map_err(ReconnectError::Connect)?;
+        self.transport = Some(transport);
+        self.attempt = 0;
+        self.policy.reset();
+        Ok(())
+    }
+
+    pub async fn reconnect(
+        &mut self,
+        outcome: ReconnectOutcome,
+    ) -> Result<(), ReconnectError<C::Error>> {
+        let delay =
+            self.policy
+                .next_delay(self.attempt, outcome)
+                .ok_or(ReconnectError::Exhausted {
+                    attempt: self.attempt,
+                    outcome,
+                })?;
+        self.attempt = self.attempt.saturating_add(1);
+        self.last_delay = Some(delay);
+
+        self.connect().await
+    }
+
+    #[must_use]
+    pub fn is_connected(&self) -> bool {
+        self.transport.is_some()
+    }
+
+    #[must_use]
+    pub fn last_delay(&self) -> Option<Duration> {
+        self.last_delay
+    }
+
+    pub fn transport(&self) -> Option<&C::Transport> {
+        self.transport.as_ref()
+    }
+
+    pub fn transport_mut(&mut self) -> Option<&mut C::Transport> {
+        self.transport.as_mut()
+    }
+
+    pub fn into_parts(self) -> (C, P, Option<C::Transport>) {
+        (self.connector, self.policy, self.transport)
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum ReconnectError<E>
+where
+    E: std::error::Error + 'static,
+{
+    #[error(transparent)]
+    Connect(E),
+    #[error("reconnect policy exhausted after attempt {attempt} for {outcome:?}")]
+    Exhausted {
+        attempt: u32,
+        outcome: ReconnectOutcome,
+    },
+}
+
+#[derive(Debug, Error)]
+pub enum ReconnectSendError<C, S>
+where
+    C: std::error::Error + 'static,
+    S: std::error::Error + 'static,
+{
+    #[error("transport is not connected")]
+    NotConnected,
+    #[error(transparent)]
+    Reconnect(#[from] ReconnectError<C>),
+    #[error(transparent)]
+    Transport(S),
+}
+
+#[derive(Debug, Error)]
+pub enum ReconnectRecvError<C, R>
+where
+    C: std::error::Error + 'static,
+    R: std::error::Error + 'static,
+{
+    #[error("transport is not connected")]
+    NotConnected,
+    #[error(transparent)]
+    Reconnect(#[from] ReconnectError<C>),
+    #[error(transparent)]
+    Transport(R),
+}
+
+#[async_trait(?Send)]
+impl<C, P> CinderTransport for Reconnecting<C, P>
+where
+    C: Connector,
+    P: ReconnectPolicy,
+{
+    type SendError = ReconnectSendError<C::Error, <C::Transport as CinderTransport>::SendError>;
+    type RecvError = ReconnectRecvError<C::Error, <C::Transport as CinderTransport>::RecvError>;
+
+    async fn send(&mut self, frame: bytes::Bytes) -> Result<(), Self::SendError> {
+        if self.transport.is_none() {
+            self.reconnect(ReconnectOutcome::SendFailure).await?;
+        }
+
+        let result = self
+            .transport
+            .as_mut()
+            .ok_or(ReconnectSendError::NotConnected)?
+            .send(frame)
+            .await;
+
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.reconnect(ReconnectOutcome::SendFailure).await?;
+                Err(ReconnectSendError::Transport(error))
+            }
+        }
+    }
+
+    async fn recv(&mut self) -> Result<Option<bytes::Bytes>, Self::RecvError> {
+        if self.transport.is_none() {
+            self.reconnect(ReconnectOutcome::RecvFailure).await?;
+        }
+
+        let result = self
+            .transport
+            .as_mut()
+            .ok_or(ReconnectRecvError::NotConnected)?
+            .recv()
+            .await;
+
+        match result {
+            Ok(Some(frame)) => Ok(Some(frame)),
+            Ok(None) => {
+                self.reconnect(ReconnectOutcome::RemoteClosed).await?;
+                Ok(None)
+            }
+            Err(error) => {
+                self.reconnect(ReconnectOutcome::RecvFailure).await?;
+                Err(ReconnectRecvError::Transport(error))
+            }
+        }
+    }
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::SendError>> {
+        match self.transport.as_mut() {
+            Some(transport) => transport
+                .poll_ready(cx)
+                .map_err(ReconnectSendError::Transport),
+            None => std::task::Poll::Ready(Err(ReconnectSendError::NotConnected)),
+        }
+    }
+
+    async fn close(&mut self) -> Result<(), Self::SendError> {
+        match self.transport.as_mut() {
+            Some(transport) => transport
+                .close()
+                .await
+                .map_err(ReconnectSendError::Transport),
+            None => Ok(()),
+        }
     }
 }
