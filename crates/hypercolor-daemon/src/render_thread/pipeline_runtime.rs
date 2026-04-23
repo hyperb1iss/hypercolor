@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 use anyhow::Result;
+use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::FpsTier;
 use hypercolor_core::input::{InputData, InteractionData, ScreenData};
 use hypercolor_core::spatial::SpatialEngine;
@@ -23,8 +24,9 @@ use super::desired_render_surface_slots;
 use super::frame_policy::FramePolicy;
 use super::frame_policy::SkipDecision;
 use super::producer_queue::ProducerQueue;
-use super::render_groups::RenderGroupRuntime;
-use super::scene_snapshot::SceneSnapshotCache;
+use super::render_groups::{RenderGroupResult, RenderGroupRuntime};
+use super::scene_dependency::SceneDependencyKey;
+use super::scene_snapshot::{FrameSceneSnapshot, SceneSnapshotCache};
 use super::scene_state::RenderSceneState;
 use super::screen_canvas::screen_data_to_canvas;
 use super::sparkleflinger::{PendingZoneSampling, SparkleFlinger};
@@ -546,6 +548,54 @@ pub(crate) struct RenderCaches {
     pub(crate) output_artifacts: OutputArtifactsState,
 }
 
+pub(crate) struct ComposeRuntime<'a> {
+    pub(crate) screen_queue: &'a mut ProducerQueue,
+    pub(crate) composition_planner: &'a mut CompositionPlanner,
+    pub(crate) sparkleflinger: &'a mut SparkleFlinger,
+    pub(crate) render_group_runtime: &'a mut RenderGroupRuntime,
+    pub(crate) output_artifacts: &'a mut OutputArtifactsState,
+}
+
+impl ComposeRuntime<'_> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "scene rendering consumes the full scene snapshot plus current frame inputs"
+    )]
+    pub(crate) fn reuse_or_render_scene(
+        &mut self,
+        scene_snapshot: &FrameSceneSnapshot,
+        dependency_key: SceneDependencyKey,
+        registry: &EffectRegistry,
+        skip_decision: SkipDecision,
+        delta_secs: f32,
+        inputs: &FrameInputs,
+    ) -> (Result<RenderGroupResult>, bool) {
+        if skip_decision == SkipDecision::ReuseCanvas
+            && let Some(retained) = self.render_group_runtime.reuse_scene(dependency_key)
+        {
+            return (Ok(retained), true);
+        }
+
+        let zones = self.output_artifacts.zones_mut();
+        (
+            self.render_group_runtime.render_scene(
+                scene_snapshot.scene_runtime.active_render_groups.as_ref(),
+                dependency_key,
+                scene_snapshot.elapsed_ms,
+                &scene_snapshot.scene_runtime.active_display_group_target_fps,
+                registry,
+                delta_secs,
+                &inputs.audio,
+                &inputs.interaction,
+                inputs.screen_data.as_ref(),
+                inputs.sensors.as_ref(),
+                zones,
+            ),
+            false,
+        )
+    }
+}
+
 pub(crate) struct SceneSnapshotState {
     pub(crate) snapshot_cache: SceneSnapshotCache,
     pub(crate) render_state: RenderSceneState,
@@ -618,6 +668,16 @@ impl ZoneTransitionPlanner {
 }
 
 impl RenderCaches {
+    pub(crate) fn compose_runtime(&mut self) -> ComposeRuntime<'_> {
+        ComposeRuntime {
+            screen_queue: &mut self.screen_queue,
+            composition_planner: &mut self.composition_planner,
+            sparkleflinger: &mut self.sparkleflinger,
+            render_group_runtime: &mut self.render_group_runtime,
+            output_artifacts: &mut self.output_artifacts,
+        }
+    }
+
     /// Rebuild surface pools and clear cached canvases for a canvas resize.
     ///
     /// Called at the frame boundary when a `ResizeCanvas` transaction is drained.

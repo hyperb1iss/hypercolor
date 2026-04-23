@@ -9,7 +9,7 @@ use hypercolor_types::scene::RenderGroupId;
 
 use super::frame_policy::SkipDecision;
 use super::frame_sampling::LedSamplingStrategy;
-use super::pipeline_runtime::{FrameInputs, RenderCaches};
+use super::pipeline_runtime::{ComposeRuntime, FrameInputs};
 use super::producer_queue::{ProducerFrame, ProducerFrameState};
 use super::render_groups::{GroupCanvasFrame, RenderGroupEffectError, RenderGroupResult};
 use super::scene_snapshot::FrameSceneSnapshot;
@@ -47,7 +47,7 @@ pub(crate) struct RenderStageStats {
 
 pub(crate) struct ComposeRequest<'a> {
     pub(crate) state: &'a RenderThreadState,
-    pub(crate) render: &'a mut RenderCaches,
+    pub(crate) compose: ComposeRuntime<'a>,
     pub(crate) scene_snapshot: &'a FrameSceneSnapshot,
     pub(crate) publish_canvas_preview: bool,
     pub(crate) publish_screen_canvas_preview: bool,
@@ -65,7 +65,7 @@ struct ProducedFrame {
 
 struct ComposeContext<'a> {
     state: &'a RenderThreadState,
-    render: &'a mut RenderCaches,
+    compose: ComposeRuntime<'a>,
     scene_snapshot: &'a FrameSceneSnapshot,
     publish_canvas_preview: bool,
     publish_screen_canvas_preview: bool,
@@ -77,7 +77,7 @@ struct ComposeContext<'a> {
 pub(crate) async fn compose_frame(request: ComposeRequest<'_>) -> RenderStageStats {
     ComposeContext {
         state: request.state,
-        render: request.render,
+        compose: request.compose,
         scene_snapshot: request.scene_snapshot,
         publish_canvas_preview: request.publish_canvas_preview,
         publish_screen_canvas_preview: request.publish_screen_canvas_preview,
@@ -126,63 +126,14 @@ impl ComposeContext<'_> {
                 .scene_snapshot
                 .scene_runtime
                 .dependency_key(registry.generation());
-            if self.skip_decision == SkipDecision::ReuseCanvas {
-                if let Some(retained) = self
-                    .render
-                    .render_group_runtime
-                    .reuse_scene(live_dependency_key)
-                {
-                    (Ok(retained), true)
-                } else {
-                    let zones = self.render.output_artifacts.zones_mut();
-                    (
-                        self.render.render_group_runtime.render_scene(
-                            self.scene_snapshot
-                                .scene_runtime
-                                .active_render_groups
-                                .as_ref(),
-                            live_dependency_key,
-                            self.scene_snapshot.elapsed_ms,
-                            &self
-                                .scene_snapshot
-                                .scene_runtime
-                                .active_display_group_target_fps,
-                            &registry,
-                            self.delta_secs,
-                            &self.inputs.audio,
-                            &self.inputs.interaction,
-                            self.inputs.screen_data.as_ref(),
-                            self.inputs.sensors.as_ref(),
-                            zones,
-                        ),
-                        false,
-                    )
-                }
-            } else {
-                let zones = self.render.output_artifacts.zones_mut();
-                (
-                    self.render.render_group_runtime.render_scene(
-                        self.scene_snapshot
-                            .scene_runtime
-                            .active_render_groups
-                            .as_ref(),
-                        live_dependency_key,
-                        self.scene_snapshot.elapsed_ms,
-                        &self
-                            .scene_snapshot
-                            .scene_runtime
-                            .active_display_group_target_fps,
-                        &registry,
-                        self.delta_secs,
-                        &self.inputs.audio,
-                        &self.inputs.interaction,
-                        self.inputs.screen_data.as_ref(),
-                        self.inputs.sensors.as_ref(),
-                        zones,
-                    ),
-                    false,
-                )
-            }
+            self.compose.reuse_or_render_scene(
+                self.scene_snapshot,
+                live_dependency_key,
+                &registry,
+                self.skip_decision,
+                self.delta_secs,
+                self.inputs,
+            )
         };
         if !effect_retained {
             let producer_done_at = Instant::now();
@@ -216,7 +167,7 @@ impl ComposeContext<'_> {
             state: producer_state,
         } = if self.scene_snapshot.effect_demand.screen_capture_active {
             self.latch_screen_frame().unwrap_or_else(|| ProducedFrame {
-                frame: ProducerFrame::Surface(self.render.output_artifacts.static_surface(
+                frame: ProducerFrame::Surface(self.compose.output_artifacts.static_surface(
                     self.state.canvas_dims.width(),
                     self.state.canvas_dims.height(),
                     [0, 0, 0],
@@ -227,7 +178,7 @@ impl ComposeContext<'_> {
             })
         } else {
             ProducedFrame {
-                frame: ProducerFrame::Surface(self.render.output_artifacts.static_surface(
+                frame: ProducerFrame::Surface(self.compose.output_artifacts.static_surface(
                     self.state.canvas_dims.width(),
                     self.state.canvas_dims.height(),
                     [0, 0, 0],
@@ -240,7 +191,7 @@ impl ComposeContext<'_> {
         let producer_done_at = Instant::now();
         let producer_done_us = micros_between(stage_start, producer_done_at);
         let composition_start = producer_done_at;
-        let compiled_plan = self.render.composition_planner.compile_primary_frame(
+        let compiled_plan = self.compose.composition_planner.compile_primary_frame(
             self.state.canvas_dims.width(),
             self.state.canvas_dims.height(),
             &self.scene_snapshot.scene_runtime,
@@ -249,7 +200,7 @@ impl ComposeContext<'_> {
         );
         let producer_retained = producer_state.is_some_and(ProducerFrameState::is_retained);
         let preview_request = self.preview_surface_request();
-        let composed = self.render.sparkleflinger.compose_for_outputs(
+        let composed = self.compose.sparkleflinger.compose_for_outputs(
             compiled_plan.plan.with_cpu_replay_cacheable(
                 producer_retained && !compiled_plan.metadata.transition_active,
             ),
@@ -300,7 +251,7 @@ impl ComposeContext<'_> {
             Ok(render_group_result) => {
                 let scene_frame = render_group_result.scene_frame.clone();
                 let composition_start = Instant::now();
-                let compiled_plan = self.render.composition_planner.compile_primary_frame(
+                let compiled_plan = self.compose.composition_planner.compile_primary_frame(
                     self.state.canvas_dims.width(),
                     self.state.canvas_dims.height(),
                     &self.scene_snapshot.scene_runtime,
@@ -317,13 +268,13 @@ impl ComposeContext<'_> {
                     .sparkleflinger_engine()
                     .is_some_and(|spatial_engine| {
                         requires_cpu_sampling_canvas(
-                            self.render
+                            self.compose
                                 .sparkleflinger
                                 .can_sample_zone_plan(spatial_engine.sampling_plan().as_ref()),
                         )
                     });
                 let composed = if requires_full_composition {
-                    self.render.sparkleflinger.compose_for_outputs(
+                    self.compose.sparkleflinger.compose_for_outputs(
                         compiled_plan.plan.with_cpu_replay_cacheable(
                             effect_retained && !compiled_plan.metadata.transition_active,
                         ),
@@ -331,7 +282,7 @@ impl ComposeContext<'_> {
                         preview_request,
                     )
                 } else {
-                    self.render
+                    self.compose
                         .sparkleflinger
                         .preview_only_frame(render_group_result.scene_frame, preview_request)
                 };
@@ -371,13 +322,13 @@ impl ComposeContext<'_> {
                 self.publish_effect_error(&error);
                 warn!(%error, "failed to render active scene groups; publishing black frame");
                 let source_frame =
-                    ProducerFrame::Surface(self.render.output_artifacts.static_surface(
+                    ProducerFrame::Surface(self.compose.output_artifacts.static_surface(
                         self.state.canvas_dims.width(),
                         self.state.canvas_dims.height(),
                         [0, 0, 0],
                     ));
                 let composition_start = Instant::now();
-                let compiled_plan = self.render.composition_planner.compile_primary_frame(
+                let compiled_plan = self.compose.composition_planner.compile_primary_frame(
                     self.state.canvas_dims.width(),
                     self.state.canvas_dims.height(),
                     &self.scene_snapshot.scene_runtime,
@@ -385,7 +336,7 @@ impl ComposeContext<'_> {
                     true,
                 );
                 let preview_request = self.preview_surface_request();
-                let composed = self.render.sparkleflinger.compose_for_outputs(
+                let composed = self.compose.sparkleflinger.compose_for_outputs(
                     compiled_plan.plan.with_cpu_replay_cacheable(false),
                     self.requires_cpu_sampling_canvas(),
                     preview_request,
@@ -434,7 +385,7 @@ impl ComposeContext<'_> {
             && screen_surface.height() == self.state.canvas_dims.height()
         {
             let _ = self
-                .render
+                .compose
                 .screen_queue
                 .submit_latest(ProducerFrame::Surface(screen_surface.clone()));
         } else if let Some(screen_canvas) = self.inputs.screen_canvas_for_frame(
@@ -442,12 +393,12 @@ impl ComposeContext<'_> {
             self.state.canvas_dims.height(),
         ) {
             let _ = self
-                .render
+                .compose
                 .screen_queue
                 .submit_latest(ProducerFrame::Canvas(screen_canvas));
         }
 
-        self.render
+        self.compose
             .screen_queue
             .latch_latest()
             .map(|frame| ProducedFrame {
@@ -460,7 +411,7 @@ impl ComposeContext<'_> {
 
     fn requires_cpu_sampling_canvas(&self) -> bool {
         requires_cpu_sampling_canvas(
-            self.render
+            self.compose
                 .sparkleflinger
                 .can_sample_zone_plan(self.scene_snapshot.spatial_engine.sampling_plan().as_ref()),
         )
@@ -489,7 +440,7 @@ impl ComposeContext<'_> {
             return;
         };
         let Some(effect_error) = self
-            .render
+            .compose
             .render_group_runtime
             .note_effect_error(effect_error)
         else {

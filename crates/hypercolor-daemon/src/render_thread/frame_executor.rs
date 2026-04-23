@@ -189,7 +189,7 @@ pub(crate) async fn execute_frame(
 
     let mut render_stage = compose_frame(ComposeRequest {
         state,
-        render,
+        compose: render.compose_runtime(),
         scene_snapshot: &scene_snapshot,
         publish_canvas_preview: canvas_preview_due,
         publish_screen_canvas_preview: screen_canvas_preview_due,
