@@ -32,6 +32,7 @@ hypercolor-driver-hue = { workspace = true, optional = true }
 hypercolor-driver-nanoleaf = { workspace = true, optional = true }
 hypercolor-driver-wled = { workspace = true }
 hypercolor-network = { workspace = true }
+hypercolor-leptos-ext = { path = "../hypercolor-leptos-ext", default-features = false, features = ["ws-core", "axum"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

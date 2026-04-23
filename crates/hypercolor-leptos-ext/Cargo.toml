@@ -1,0 +1,56 @@
+[package]
+name = "hypercolor-leptos-ext"
+description = "In-tree Leptos and stream extension canary for Hypercolor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+ws-core = []
+ws-client-wasm = [
+    "ws-core",
+    "dep:js-sys",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:web-sys",
+]
+events = ["dep:gloo-events", "dep:wasm-bindgen", "dep:web-sys"]
+canvas = ["dep:js-sys", "dep:wasm-bindgen", "dep:web-sys"]
+webgpu = ["canvas", "dep:wgpu"]
+raf = ["dep:wasm-bindgen", "dep:web-sys"]
+prelude = ["dep:wasm-bindgen", "dep:web-sys"]
+axum = ["ws-core", "dep:axum", "dep:tower", "dep:tower-http", "dep:tokio-tungstenite"]
+leptos = ["dep:leptos", "dep:leptos-use"]
+devtools = []
+
+[dependencies]
+hypercolor-leptos-ext-macros = { path = "../hypercolor-leptos-ext-macros" }
+async-trait = { workspace = true }
+axum = { workspace = true, optional = true }
+bytes = "1.11"
+futures-channel = "0.3"
+futures-core = { workspace = true }
+futures-util = { workspace = true }
+gloo-events = { version = "0.3", optional = true }
+js-sys = { version = "0.3", optional = true }
+leptos = { version = "0.8", features = ["csr"], optional = true }
+leptos-use = { version = "0.18", optional = true }
+thiserror = { workspace = true }
+tokio-tungstenite = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+web-sys = { version = "0.3", optional = true }
+wgpu = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = "1.9"
+tokio = { workspace = true, features = ["macros", "rt", "time"] }

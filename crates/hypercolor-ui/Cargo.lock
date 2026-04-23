@@ -619,6 +619,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gloo-events"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c6a94fa8cd88bea0babf8a27fe9abbcdece831fd1c3c84dd5c231fab4685ec7"
+dependencies = [
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "gloo-net"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -725,6 +735,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercolor-leptos-ext"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures-channel",
+ "futures-core",
+ "futures-util",
+ "gloo-events",
+ "hypercolor-leptos-ext-macros",
+ "js-sys",
+ "leptos",
+ "leptos-use",
+ "thiserror 2.0.18",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "hypercolor-leptos-ext-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "hypercolor-types"
 version = "0.1.0"
 dependencies = [
@@ -744,6 +783,7 @@ dependencies = [
  "console_error_panic_hook",
  "console_log",
  "gloo-net",
+ "hypercolor-leptos-ext",
  "hypercolor-types",
  "icondata",
  "icondata_core",
