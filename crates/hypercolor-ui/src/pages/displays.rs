@@ -10,7 +10,7 @@ use leptos_icons::Icon;
 use leptos_use::{use_debounce_fn, use_debounce_fn_with_arg};
 
 use crate::api;
-use crate::app::{EffectsContext, WsContext};
+use crate::app::{DisplaysContext, EffectsContext, WsContext};
 use crate::components::control_panel::ControlPanel;
 use crate::components::page_header::{PageAccent, PageHeader};
 use crate::components::resize_handle::ResizeHandle;
@@ -165,7 +165,7 @@ fn sync_face_composition_from_server(
 pub fn DisplaysPage() -> impl IntoView {
     let fx = expect_context::<EffectsContext>();
     let ws = expect_context::<WsContext>();
-    let displays: DisplaysResource = LocalResource::new(api::fetch_displays);
+    let displays = expect_context::<DisplaysContext>().displays_resource;
     let (selected_id, set_selected_id) = signal(None::<String>);
     let (simulator_modal_open, set_simulator_modal_open) = signal(false);
     let (editing_simulator, set_editing_simulator) = signal(None::<api::DisplaySummary>);

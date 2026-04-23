@@ -5,9 +5,8 @@ use leptos_icons::Icon;
 use leptos_use::{UseIntersectionObserverOptions, use_intersection_observer_with_options};
 use wasm_bindgen::JsCast;
 
-use hypercolor_types::config::HypercolorConfig;
-
 use crate::api;
+use crate::config_state::{ConfigContext, apply_config_key};
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::settings_sections::*;
 use crate::icons::*;
@@ -23,37 +22,6 @@ const SECTION_IDS: &[&str] = &[
     "developer",
     "about",
 ];
-
-/// Apply a dotted-key config change to a `HypercolorConfig` via serde JSON round-trip.
-fn apply_config_key(config: &mut HypercolorConfig, key: &str, value: &serde_json::Value) {
-    let Ok(mut root) = serde_json::to_value(&*config) else {
-        return;
-    };
-
-    let parts: Vec<&str> = key.split('.').collect();
-    if parts.is_empty() {
-        return;
-    }
-
-    let (parents, leaf) = parts.split_at(parts.len() - 1);
-    let mut cursor = &mut root;
-    for &part in parents {
-        let Some(obj) = cursor.as_object_mut() else {
-            return;
-        };
-        cursor = obj
-            .entry(part.to_owned())
-            .or_insert_with(|| serde_json::json!({}));
-    }
-
-    if let Some(obj) = cursor.as_object_mut() {
-        obj.insert(leaf[0].to_owned(), value.clone());
-    }
-
-    if let Ok(updated) = serde_json::from_value(root) {
-        *config = updated;
-    }
-}
 
 fn settings_section_targets() -> Vec<web_sys::Element> {
     let Some(doc) = web_sys::window().and_then(|window| window.document()) else {
@@ -80,21 +48,15 @@ fn scroll_element_into_view(el: &web_sys::Element) {
 
 #[component]
 pub fn SettingsPage() -> impl IntoView {
-    let config_resource = LocalResource::new(api::fetch_config);
+    let config_ctx = expect_context::<ConfigContext>();
     let devices_resource = LocalResource::new(api::fetch_audio_devices);
-    let (config, set_config) = signal(None::<HypercolorConfig>);
+    let config = config_ctx.config;
+    let set_config = config_ctx.set_config;
     let (active_section, set_active_section) = signal("audio".to_string());
 
     // Only transitions once: false -> true. Memo deduplicates, so downstream
     // closures reading this won't re-run on every config update.
     let config_loaded = Memo::new(move |_| config.get().is_some());
-
-    // Seed config signal from resource
-    Effect::new(move |_| {
-        if let Some(Ok(cfg)) = config_resource.get() {
-            set_config.set(Some(cfg));
-        }
-    });
 
     let section_targets = Signal::derive(move || {
         if config_loaded.get() {
@@ -154,9 +116,7 @@ pub fn SettingsPage() -> impl IntoView {
         leptos::task::spawn_local(async move {
             if let Err(e) = api::set_config_value(&key, &value).await {
                 leptos::logging::warn!("Config set failed: {e}");
-                if let Ok(fresh) = api::fetch_config().await {
-                    set_config.set(Some(fresh));
-                }
+                config_ctx.refresh.run(());
             }
         });
     });
@@ -167,9 +127,7 @@ pub fn SettingsPage() -> impl IntoView {
             if let Err(e) = api::reset_config_key(&key).await {
                 leptos::logging::warn!("Config reset failed: {e}");
             }
-            if let Ok(fresh) = api::fetch_config().await {
-                set_config.set(Some(fresh));
-            }
+            config_ctx.refresh.run(());
         });
     });
 

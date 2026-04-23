@@ -472,12 +472,18 @@ impl WsManager {
         // the cached frame so the UI doesn't flash a stale image for the
         // old device.
         Effect::new(move |_| {
+            let state = connection_state.get();
             let device = display_preview_device.get();
+            let is_visible = page_visible.get();
+            if state != ConnectionState::Connected {
+                set_display_preview_frame.set(None);
+                return;
+            }
             let Some(ws) = ws_handle.get_value() else {
                 return;
             };
-            match device {
-                Some(device_id) if !device_id.is_empty() => {
+            match (is_visible, device) {
+                (true, Some(device_id)) if !device_id.is_empty() => {
                     super::preview::send_display_preview_subscribe(&ws, &device_id, 15);
                 }
                 _ => {

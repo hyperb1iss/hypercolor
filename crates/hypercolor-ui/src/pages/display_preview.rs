@@ -1,26 +1,25 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_icons::Icon;
+use leptos_router::hooks::use_query_map;
 
 use crate::api;
-use crate::app::WsContext;
-use crate::display_utils::display_preview_target_from_search;
+use crate::app::{DisplaysContext, WsContext};
 use crate::icons::{LuLayers, LuMonitor};
-
-type DisplaysResource = LocalResource<Result<Vec<api::DisplaySummary>, String>>;
 
 #[component]
 pub fn DisplayPreviewPage() -> impl IntoView {
     let ws = expect_context::<WsContext>();
-    let displays: DisplaysResource = LocalResource::new(api::fetch_displays);
-    let requested_display_id = StoredValue::new(current_preview_target());
+    let displays = expect_context::<DisplaysContext>().displays_resource;
+    let query = use_query_map();
+    let requested_display_id = Memo::new(move |_| query.with(|map| map.get("display")));
     let (display_face, set_display_face) =
         signal(None::<Result<Option<api::DisplayFaceResponse>, String>>);
 
     let selected_display = Memo::new(move |_| {
         let snapshot = displays.get();
         let items = snapshot.as_ref()?.as_ref().ok()?;
-        if let Some(requested) = requested_display_id.get_value() {
+        if let Some(requested) = requested_display_id.get() {
             return items
                 .iter()
                 .find(|display| display.id == requested)
@@ -29,7 +28,7 @@ pub fn DisplayPreviewPage() -> impl IntoView {
         items.first().cloned()
     });
     let requested_display_missing = Memo::new(move |_| {
-        let Some(requested) = requested_display_id.get_value() else {
+        let Some(requested) = requested_display_id.get() else {
             return false;
         };
         let Some(Ok(items)) = displays.get() else {
@@ -224,11 +223,4 @@ fn PreviewShellMessage(
             </div>
         </div>
     }
-}
-
-fn current_preview_target() -> Option<String> {
-    web_sys::window()
-        .map(|window| window.location())
-        .and_then(|location| location.search().ok())
-        .and_then(|search| display_preview_target_from_search(&search))
 }

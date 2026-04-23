@@ -2,6 +2,7 @@
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use leptos_router::hooks::use_params_map;
 use leptos_use::use_debounce_fn;
 
 use crate::api;
@@ -51,6 +52,7 @@ const CATEGORY_CHIPS: &[(&str, &str)] = &[
 pub fn EffectsPage() -> impl IntoView {
     let ws = expect_context::<WsContext>();
     let fx = expect_context::<EffectsContext>();
+    let route_params = use_params_map();
 
     Effect::new(move |_| {
         ws.set_preview_cap.set(EFFECTS_PREVIEW_FPS_CAP);
@@ -185,6 +187,33 @@ pub fn EffectsPage() -> impl IntoView {
                 .find(|entry| entry.effect.id == active_id)
                 .map(|entry| entry.effect.clone())
         })
+    });
+    let routed_effect_id = Memo::new(move |_| {
+        let route_effect_id = route_params.with(|params| params.get("id"))?;
+        fx.effects_index.with(|effects| {
+            effects
+                .iter()
+                .find(|entry| entry.effect.id == route_effect_id)
+                .and_then(|entry| {
+                    (entry.effect.runnable
+                        && !entry.effect.category.eq_ignore_ascii_case("display"))
+                    .then(|| entry.effect.id.clone())
+                })
+        })
+    });
+    Effect::new(move |previous_route_effect_id: Option<Option<String>>| {
+        let current_route_effect_id = routed_effect_id.get();
+        if previous_route_effect_id.as_ref() == Some(&current_route_effect_id) {
+            return current_route_effect_id;
+        }
+
+        if let Some(effect_id) = current_route_effect_id.as_ref()
+            && fx.active_effect_id.get_untracked().as_deref() != Some(effect_id.as_str())
+        {
+            fx.apply_effect(effect_id.clone());
+        }
+
+        current_route_effect_id
     });
     let show_calibration_guide = Memo::new(move |_| {
         active_effect_summary.get().is_some_and(|effect| {

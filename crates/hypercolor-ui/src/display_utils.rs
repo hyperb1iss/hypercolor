@@ -36,6 +36,7 @@ pub fn display_preview_shell_url(display_id: &str) -> String {
 }
 
 #[must_use]
+#[allow(dead_code)]
 pub fn display_preview_target_from_search(search: &str) -> Option<String> {
     let query = search.strip_prefix('?').unwrap_or(search);
     query

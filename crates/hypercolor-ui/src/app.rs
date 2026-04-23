@@ -12,6 +12,7 @@ use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 use crate::api;
 use crate::color::CanvasFrameAnalysis;
 use crate::components::preset_matching::controls_to_json;
+use crate::config_state::ConfigContext;
 use crate::components::shell::Shell;
 use crate::device_event_logic::should_refetch_devices_for_event;
 use crate::effect_search::IndexedEffect;
@@ -76,8 +77,6 @@ pub struct WsContext {
     pub last_scene_event: ReadSignal<Option<SceneEventHint>>,
     pub last_effect_error: ReadSignal<Option<EffectErrorHint>>,
     pub audio_level: ReadSignal<AudioLevel>,
-    pub audio_enabled: ReadSignal<bool>,
-    pub set_audio_enabled: WriteSignal<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -135,6 +134,11 @@ pub struct EffectsContext {
 pub struct DevicesContext {
     pub devices_resource: LocalResource<Result<Vec<api::DeviceSummary>, String>>,
     pub layouts_resource: LocalResource<Result<Vec<api::LayoutSummary>, String>>,
+}
+
+#[derive(Clone, Copy)]
+pub struct DisplaysContext {
+    pub displays_resource: LocalResource<Result<Vec<api::DisplaySummary>, String>>,
 }
 
 impl EffectsContext {
@@ -508,17 +512,29 @@ pub fn App() -> impl IntoView {
 
     // Global WebSocket connection
     let ws = WsManager::new();
-    let (audio_enabled, set_audio_enabled) = signal(false);
+    let (config, set_config) = signal(None::<hypercolor_types::config::HypercolorConfig>);
     let (preview_presenter, set_preview_presenter) = signal(PreviewPresenterTelemetry::default());
     let (live_canvas_analysis, set_live_canvas_analysis) = signal(None::<CanvasFrameAnalysis>);
     let (last_canvas_analysis_at, set_last_canvas_analysis_at) = signal(0.0_f64);
-
-    // Seed audio_enabled from daemon config
-    leptos::task::spawn_local(async move {
-        if let Ok(cfg) = api::fetch_config().await {
-            set_audio_enabled.set(cfg.audio.enabled);
-        }
+    let refresh_config = Callback::new(move |()| {
+        leptos::task::spawn_local(async move {
+            if let Ok(fresh) = api::fetch_config().await {
+                set_config.set(Some(fresh));
+            }
+        });
     });
+    let audio_enabled = Memo::new(move |_| {
+        config
+            .get()
+            .is_some_and(|current| current.audio.enabled)
+    });
+    provide_context(ConfigContext {
+        config,
+        set_config,
+        refresh: refresh_config,
+        audio_enabled,
+    });
+    refresh_config.run(());
 
     let ws_ctx = WsContext {
         canvas_frame: ws.canvas_frame,
@@ -542,8 +558,6 @@ pub fn App() -> impl IntoView {
         last_scene_event: ws.last_scene_event,
         last_effect_error: ws.last_effect_error,
         audio_level: ws.audio_level,
-        audio_enabled,
-        set_audio_enabled,
     };
     provide_context(ws_ctx);
     provide_context(crate::device_metrics::install_device_metrics_store(ws_ctx));
@@ -668,10 +682,12 @@ pub fn App() -> impl IntoView {
     // Global devices + layouts state
     let devices_resource = LocalResource::new(api::fetch_devices);
     let layouts_resource = LocalResource::new(api::fetch_layouts);
+    let displays_resource = LocalResource::new(api::fetch_displays);
     provide_context(DevicesContext {
         devices_resource,
         layouts_resource,
     });
+    provide_context(DisplaysContext { displays_resource });
 
     // Refresh devices reactively from daemon lifecycle events instead of
     // rebuilding the grid on a fixed timer.
@@ -700,6 +716,7 @@ pub fn App() -> impl IntoView {
 
         if should_refetch {
             devices_resource.refetch();
+            displays_resource.refetch();
         }
     });
 

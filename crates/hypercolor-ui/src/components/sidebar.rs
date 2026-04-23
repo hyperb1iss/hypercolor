@@ -13,6 +13,7 @@ use crate::app::{EffectsContext, FrameAnalysisContext, WsContext};
 use crate::async_helpers::spawn_api_call;
 use crate::color::{self, CanvasPalette};
 use crate::components::canvas_preview::CanvasPreview;
+use crate::config_state::ConfigContext;
 use crate::icons::*;
 use crate::route_ui::{NowPlayingCanvasMode, now_playing_canvas_mode};
 use crate::style_utils::category_accent_rgb;
@@ -699,6 +700,7 @@ struct NavItem {
 fn SidebarAudioToggle() -> impl IntoView {
     let ws = expect_context::<WsContext>();
     let fx = expect_context::<EffectsContext>();
+    let config_ctx = expect_context::<ConfigContext>();
 
     let active_is_audio_reactive = Memo::new(move |_| {
         let Some(active_id) = fx.active_effect_id.get() else {
@@ -713,16 +715,24 @@ fn SidebarAudioToggle() -> impl IntoView {
 
     let toggle_audio = move |ev: leptos::ev::MouseEvent| {
         ev.stop_propagation();
-        let new_state = !ws.audio_enabled.get();
-        ws.set_audio_enabled.set(new_state);
+        let new_state = !config_ctx.audio_enabled.get();
+        config_ctx.set_config.update(|config| {
+            if let Some(current) = config {
+                current.audio.enabled = new_state;
+            }
+        });
         spawn_api_call("Failed to toggle audio", async move {
-            api::set_config_value("audio.enabled", &serde_json::json!(new_state)).await
+            let result = api::set_config_value("audio.enabled", &serde_json::json!(new_state)).await;
+            if result.is_err() {
+                config_ctx.refresh.run(());
+            }
+            result
         });
     };
 
     view! {
         {move || {
-            let audio_on = ws.audio_enabled.get();
+            let audio_on = config_ctx.audio_enabled.get();
             let is_reactive = active_is_audio_reactive.get();
 
             if audio_on {
