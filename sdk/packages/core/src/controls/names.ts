@@ -1,5 +1,5 @@
 /**
- * Name derivation and magic name detection for effect controls.
+ * Name derivation and normalization hints for effect controls.
  */
 
 import type { ControlSpec, NormalizeHint } from './specs'
@@ -35,9 +35,6 @@ const MAGIC_NAMES: Record<string, NormalizeHint> = {
     speed: 'speed',
 }
 
-/** Magic control names that trigger special value transforms (e.g. combobox → index). */
-const MAGIC_TRANSFORMS = new Set(['palette'])
-
 /**
  * Get the automatic normalization hint for a key, if any.
  * Returns 'none' if no magic normalization applies.
@@ -46,13 +43,8 @@ export function getMagicNormalize(key: string): NormalizeHint {
     return MAGIC_NAMES[key] ?? 'none'
 }
 
-/** Check if a key has a magic transform (e.g. 'palette' → comboboxValueToIndex). */
-export function hasMagicTransform(key: string): boolean {
-    return MAGIC_TRANSFORMS.has(key)
-}
-
 /**
- * Resolve all naming and magic behavior for a control.
+ * Resolve all naming and normalization behavior for a control.
  * Returns the final label, uniform name, and normalization hint.
  */
 export function resolveControlNames(

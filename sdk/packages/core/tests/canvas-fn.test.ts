@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 
-import { combo } from '../src/controls/specs'
+import { combo, paletteControl } from '../src/controls/specs'
 import { __testing } from '../src/effects/canvas-fn'
 
 const originalWindow = (globalThis as { window?: Record<string, unknown> }).window
@@ -30,11 +30,22 @@ describe('canvas palette control resolution', () => {
         expect(values.palette).toBe('Aurora')
     })
 
-    test('preserves shorthand palette magic as a palette function', () => {
+    test('treats palette shorthand as a plain combobox', () => {
         setTestWindow({ palette: 'Aurora' })
 
         const controls = __testing.resolveCanvasControls({
             palette: ['SilkCircuit', 'Aurora'],
+        })
+        const values = __testing.resolveValues(controls, new Map())
+
+        expect(values.palette).toBe('Aurora')
+    })
+
+    test('resolves explicit palette controls as palette functions', () => {
+        setTestWindow({ palette: 'Aurora' })
+
+        const controls = __testing.resolveCanvasControls({
+            palette: paletteControl('Palette', ['SilkCircuit', 'Aurora'], { default: 'SilkCircuit' }),
         })
         const values = __testing.resolveValues(controls, new Map())
 

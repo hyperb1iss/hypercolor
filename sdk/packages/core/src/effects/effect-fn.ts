@@ -6,14 +6,14 @@
  *
  * @example
  * ```typescript
- * import { effect } from '@hypercolor/sdk'
+ * import { effect, paletteControl } from '@hypercolor/sdk'
  * import shader from './fragment.glsl'
  *
  * export default effect('Meteor Storm', shader, {
  *     speed:       [1, 10, 5],
  *     density:     [10, 100, 50],
  *     trailLength: [10, 100, 60],
- *     palette:     ['SilkCircuit', 'Fire', 'Ice', 'Aurora', 'Cyberpunk'],
+ *     palette:     paletteControl('Palette', ['SilkCircuit', 'Fire', 'Ice', 'Aurora', 'Cyberpunk']),
  * })
  * ```
  */
@@ -23,9 +23,9 @@ import { getAudioData } from '../audio'
 import { comboboxValueToIndex, getControlValue, normalizePercentage, normalizeSpeed } from '../controls/helpers'
 import type { ControlMap } from '../controls/infer'
 import { inferControl } from '../controls/infer'
-import { deriveLabel, hasMagicTransform, resolveControlNames } from '../controls/names'
+import { deriveLabel, resolveControlNames } from '../controls/names'
 import type { ControlSpec } from '../controls/specs'
-import { isControlSpec } from '../controls/specs'
+import { isControlSpec, isPaletteControl } from '../controls/specs'
 import { initializeEffect } from '../init'
 import type { UniformValue } from './webgl-effect'
 import { WebGLEffect } from './webgl-effect'
@@ -71,7 +71,7 @@ interface ResolvedControl {
     spec: ControlSpec
     uniformName: string
     normalize: 'speed' | 'percentage' | 'none'
-    isMagicTransform: boolean
+    isPaletteTransform: boolean
     values?: string[]
 }
 
@@ -87,7 +87,7 @@ function resolveControls(controls: ControlMap): ResolvedControl[] {
         const values = spec.meta.values as string[] | undefined
 
         resolved.push({
-            isMagicTransform: hasMagicTransform(key) && spec.__type === 'combobox',
+            isPaletteTransform: isPaletteControl(spec),
             key,
             normalize: names.normalize,
             spec,
@@ -140,8 +140,7 @@ class GeneratedWebGLEffect extends WebGLEffect<Record<string, unknown>> {
                 }
             }
 
-            // Apply magic combobox → index transform
-            if (ctrl.isMagicTransform && ctrl.values) {
+            if (ctrl.isPaletteTransform && ctrl.values) {
                 val = comboboxValueToIndex(val as string | number, ctrl.values, 0)
             }
 
@@ -197,7 +196,7 @@ class GeneratedWebGLEffect extends WebGLEffect<Record<string, unknown>> {
 
     /** Convert a raw control value to a GPU-compatible uniform value. */
     private toUniformValue(ctrl: ResolvedControl, raw: unknown, skipNormalization = false): UniformValue {
-        // Combobox → integer index (palette magic or any combobox)
+        // Combobox uniforms resolve to numeric indices.
         if (ctrl.spec.__type === 'combobox' && ctrl.values) {
             return comboboxValueToIndex(raw as string | number, ctrl.values, 0)
         }
@@ -283,6 +282,10 @@ function storeMetadata(def: EffectDef): void {
     const defs = (g.__hypercolorEffectDefs__ as EffectDef[]) ?? []
     defs.push(def)
     g.__hypercolorEffectDefs__ = defs
+}
+
+export const __testing = {
+    resolveControls,
 }
 
 // ── Public API ───────────────────────────────────────────────────────────

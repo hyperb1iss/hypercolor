@@ -4,12 +4,12 @@
  * TypeScript SDK for creating Hypercolor RGB lighting effects.
  *
  * ```typescript
- * import { effect } from '@hypercolor/sdk'
+ * import { effect, paletteControl } from '@hypercolor/sdk'
  * import shader from './fragment.glsl'
  *
  * export default effect('Meteor Storm', shader, {
  *     speed:       [1, 10, 5],
- *     palette:     ['SilkCircuit', 'Fire', 'Ice'],
+ *     palette:     paletteControl('Palette', ['SilkCircuit', 'Fire', 'Ice']),
  * })
  * ```
  *
@@ -25,7 +25,7 @@ import './runtime'
 export { getAudioData as audio } from './audio'
 export type { ControlMap, ControlShorthand, ControlSpec } from './controls'
 // Control factories (effects + faces)
-export { color, combo, font, hue, num, rect, sensor, text, toggle } from './controls'
+export { color, combo, font, hue, num, paletteControl, rect, sensor, text, toggle } from './controls'
 export type { CanvasFnOptions, DrawFn, EffectFnOptions, FactoryFn, ShaderContext } from './effects'
 // Effect functions
 export { canvas, effect } from './effects'
@@ -46,6 +46,7 @@ export type {
     FontOptions,
     HueControlDefinition,
     NumberControlDefinition,
+    PaletteControlOptions,
     RectControlDefinition,
     RectOptions,
     RectValue,

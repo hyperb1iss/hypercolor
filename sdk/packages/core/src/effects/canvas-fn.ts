@@ -10,12 +10,12 @@
  *
  * @example
  * ```typescript
- * import { canvas, scaleContext } from '@hypercolor/sdk'
+ * import { canvas, paletteControl, scaleContext } from '@hypercolor/sdk'
  *
  * // Pure-adaptive: read canvas size directly
  * export default canvas('Particles', {
  *     speed: [1, 10, 5],
- *     palette: ['SilkCircuit', 'Fire', 'Aurora'],
+ *     palette: paletteControl('Palette', ['SilkCircuit', 'Fire', 'Aurora']),
  * }, (ctx, time, { palette }) => {
  *     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height)
  *     ctx.fillStyle = palette(0.5)
@@ -36,11 +36,11 @@
  * ```
  */
 
-import { comboboxValueToIndex, getControlValue, normalizePercentage, normalizeSpeed } from '../controls/helpers'
+import { getControlValue, normalizePercentage, normalizeSpeed } from '../controls/helpers'
 import type { ControlMap } from '../controls/infer'
 import { inferControl } from '../controls/infer'
-import { deriveLabel, hasMagicTransform, resolveControlNames } from '../controls/names'
-import { isControlSpec } from '../controls/specs'
+import { deriveLabel, resolveControlNames } from '../controls/names'
+import { isControlSpec, isPaletteControl } from '../controls/specs'
 import { initializeEffect } from '../init'
 import type { DesignBasis } from '../math/scale'
 import type { PaletteFn } from '../palette'
@@ -77,7 +77,6 @@ interface ResolvedCanvasControl {
     key: string
     spec: import('../controls/specs').ControlSpec
     normalize: 'speed' | 'percentage' | 'none'
-    isMagicTransform: boolean
     isPaletteFunction: boolean
     values?: string[]
 }
@@ -88,18 +87,13 @@ function resolveCanvasControls(controls: ControlMap): ResolvedCanvasControl[] {
     const resolved: ResolvedCanvasControl[] = []
 
     for (const [key, value] of Object.entries(controls)) {
-        const isExplicitSpec = isControlSpec(value)
-        const spec = isExplicitSpec ? value : inferControl(key, value, deriveLabel(key))
+        const spec = isControlSpec(value) ? value : inferControl(key, value, deriveLabel(key))
 
         const names = resolveControlNames(key, spec)
-        const isCombo = spec.__type === 'combobox'
         const values = spec.meta.values as string[] | undefined
 
         resolved.push({
-            isMagicTransform: hasMagicTransform(key) && isCombo && !isExplicitSpec,
-            // Preserve the legacy shorthand `palette: ['A', 'B']` -> palette function
-            // while letting explicit `combo('Palette', ...)` controls stay string-valued.
-            isPaletteFunction: key === 'palette' && isCombo && !isExplicitSpec,
+            isPaletteFunction: isPaletteControl(spec),
             key,
             normalize: names.normalize,
             spec,
@@ -138,11 +132,6 @@ function resolveValues(
             }
             result[ctrl.key] = fn
             continue
-        }
-
-        // Other combobox → keep as string (no index conversion for canvas)
-        if (ctrl.isMagicTransform && !ctrl.isPaletteFunction && ctrl.values) {
-            val = comboboxValueToIndex(val as string | number, ctrl.values, 0)
         }
 
         result[ctrl.key] = val

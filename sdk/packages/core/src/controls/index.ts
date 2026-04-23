@@ -28,9 +28,10 @@ export type {
     ControlTypeName,
     FontOptions,
     NormalizeHint,
+    PaletteControlOptions,
     RectOptions,
     RectValue,
     SensorOptions,
 } from './specs'
 // ── Declarative control API ──────────────────────────────────────────
-export { color, combo, font, hue, isControlSpec, num, rect, sensor, text, toggle } from './specs'
+export { color, combo, font, hue, isControlSpec, isPaletteControl, num, paletteControl, rect, sensor, text, toggle } from './specs'

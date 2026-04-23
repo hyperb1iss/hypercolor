@@ -56,6 +56,10 @@ export function isControlSpec(value: unknown): value is ControlSpec {
     return value !== null && typeof value === 'object' && (value as Record<string, unknown>).__brand === 'ControlSpec'
 }
 
+export function isPaletteControl(spec: ControlSpec): spec is ControlSpec<'combobox'> {
+    return spec.__type === 'combobox' && spec.meta.palette === true
+}
+
 // ── Factory Functions ────────────────────────────────────────────────────
 
 export interface NumOptions {
@@ -101,6 +105,27 @@ export function combo(label: string, values: readonly string[], opts?: ComboOpti
         label,
         defaultValue,
         {
+            values: [...values],
+        },
+        opts,
+    )
+}
+
+export interface PaletteControlOptions extends ComboOptions {}
+
+/** Palette picker control. */
+export function paletteControl(
+    label: string,
+    values: readonly string[],
+    opts?: PaletteControlOptions,
+): ControlSpec<'combobox'> {
+    const defaultValue = opts?.default ?? values[0]
+    return spec(
+        'combobox',
+        label,
+        defaultValue,
+        {
+            palette: true,
             values: [...values],
         },
         opts,
