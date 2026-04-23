@@ -1,4 +1,4 @@
-import { color, combo, effect, num } from '@hypercolor/sdk'
+import { color, combo, effect, num, paletteControl } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
 interface PaletteTriad {
@@ -45,7 +45,7 @@ export default effect(
     'Deep Current',
     shader,
     {
-        palette: combo('Palette', PALETTE_NAMES, {
+        palette: paletteControl('Palette', PALETTE_NAMES, {
             default: 'SilkCircuit',
             group: 'Color',
             tooltip: 'Curated collision triad. Overrides color pickers unless set to Custom.',

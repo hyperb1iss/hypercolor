@@ -99,6 +99,30 @@ function resolveControls(controls: ControlMap): ResolvedControl[] {
     return resolved
 }
 
+function resolveControlValues(resolvedControls: ResolvedControl[]): Record<string, unknown> {
+    const values: Record<string, unknown> = {}
+
+    for (const ctrl of resolvedControls) {
+        let val = getControlValue(ctrl.key, ctrl.spec.defaultValue)
+
+        if (typeof val === 'number') {
+            if (ctrl.normalize === 'speed') {
+                val = normalizeSpeed(val)
+            } else if (ctrl.normalize === 'percentage') {
+                val = normalizePercentage(val)
+            }
+        }
+
+        if (ctrl.isPaletteTransform && ctrl.values) {
+            val = comboboxValueToIndex(val as string | number, ctrl.values, 0)
+        }
+
+        values[ctrl.key] = val
+    }
+
+    return values
+}
+
 // ── Generated Effect Class ───────────────────────────────────────────────
 
 class GeneratedWebGLEffect extends WebGLEffect<Record<string, unknown>> {
@@ -127,26 +151,7 @@ class GeneratedWebGLEffect extends WebGLEffect<Record<string, unknown>> {
     }
 
     protected getControlValues(): Record<string, unknown> {
-        const values: Record<string, unknown> = {}
-        for (const ctrl of this.resolvedControls) {
-            let val = getControlValue(ctrl.key, ctrl.spec.defaultValue)
-
-            // Apply magic normalization
-            if (typeof val === 'number') {
-                if (ctrl.normalize === 'speed') {
-                    val = normalizeSpeed(val)
-                } else if (ctrl.normalize === 'percentage') {
-                    val = normalizePercentage(val)
-                }
-            }
-
-            if (ctrl.isPaletteTransform && ctrl.values) {
-                val = comboboxValueToIndex(val as string | number, ctrl.values, 0)
-            }
-
-            values[ctrl.key] = val
-        }
-        return values
+        return resolveControlValues(this.resolvedControls)
     }
 
     protected createUniforms(): void {
@@ -285,6 +290,7 @@ function storeMetadata(def: EffectDef): void {
 }
 
 export const __testing = {
+    resolveControlValues,
     resolveControls,
 }
 
