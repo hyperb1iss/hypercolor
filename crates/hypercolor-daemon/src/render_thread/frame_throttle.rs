@@ -9,6 +9,7 @@ use hypercolor_core::types::event::FrameTiming;
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
+use super::frame_metrics::{ThrottleFrameMetricsInput, build_throttle_frame_metrics};
 use super::frame_policy::{FrameExecution, NextWake, SkipDecision};
 use super::pipeline_runtime::{
     OutputArtifactsState, PublicationCadenceState, RenderSurfaceSnapshot, ThrottleState,
@@ -16,7 +17,6 @@ use super::pipeline_runtime::{
 use super::scene_snapshot::FrameSceneSnapshot;
 use super::{RenderThreadState, micros_between, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
-use crate::performance::{CompositorBackendKind, FrameTimeline, LatestFrameMetrics};
 
 const IDLE_THROTTLE_DELAY: Duration = Duration::from_millis(120);
 const SESSION_SLEEP_THROTTLE_DELAY: Duration = Duration::from_millis(250);
@@ -199,70 +199,25 @@ pub(crate) async fn maybe_sleep_throttle(
     let total_us = publish_done_us;
     let overhead_us =
         total_us.saturating_sub(sample_us.saturating_add(push_us).saturating_add(publish_us));
+    let output_errors = u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX);
+    let frame_metrics = build_throttle_frame_metrics(ThrottleFrameMetricsInput {
+        scene_snapshot,
+        render_surfaces: &render_surfaces,
+        publish_stats: &publish_stats,
+        sample_us,
+        push_us,
+        total_us,
+        overhead_us,
+        output_errors,
+        scene_snapshot_done_us,
+        sample_done_us,
+        output_done_us,
+        publish_done_us,
+    });
 
     {
         let mut performance = state.performance.write().await;
-        performance.record_frame(LatestFrameMetrics {
-            timestamp_ms: scene_snapshot.elapsed_ms,
-            input_us: 0,
-            producer_us: 0,
-            producer_render_us: 0,
-            producer_scene_compose_us: 0,
-            composition_us: 0,
-            render_us: 0,
-            sample_us,
-            push_us,
-            postprocess_us: 0,
-            publish_us,
-            publish_frame_data_us: publish_stats.frame_data_us,
-            publish_group_canvas_us: publish_stats.group_canvas_us,
-            publish_preview_us: publish_stats.preview_us,
-            publish_events_us: publish_stats.events_us,
-            overhead_us,
-            total_us,
-            wake_late_us: 0,
-            jitter_us: 0,
-            reused_inputs: false,
-            reused_canvas: false,
-            retained_effect: false,
-            retained_screen: false,
-            composition_bypassed: false,
-            gpu_zone_sampling: false,
-            gpu_sample_deferred: false,
-            gpu_sample_retry_hit: false,
-            gpu_sample_queue_saturated: false,
-            gpu_sample_wait_blocked: false,
-            cpu_readback_skipped: false,
-            compositor_backend: CompositorBackendKind::Cpu,
-            logical_layer_count: 0,
-            render_group_count: scene_snapshot.scene_runtime.active_render_group_count(),
-            scene_active: scene_snapshot.scene_runtime.active_scene_id.is_some(),
-            scene_transition_active: scene_snapshot.scene_runtime.active_transition.is_some(),
-            render_surface_slot_count: render_surfaces.slot_count,
-            render_surface_free_slots: render_surfaces.free_slots,
-            render_surface_published_slots: render_surfaces.published_slots,
-            render_surface_dequeued_slots: render_surfaces.dequeued_slots,
-            scene_pool_saturation_reallocs: render_surfaces.scene_pool_saturation_reallocs,
-            direct_pool_saturation_reallocs: render_surfaces.direct_pool_saturation_reallocs,
-            scene_pool_grown_slots: render_surfaces.scene_pool_grown_slots,
-            direct_pool_grown_slots: render_surfaces.direct_pool_grown_slots,
-            canvas_receiver_count: render_surfaces.canvas_receivers,
-            full_frame_copy_count: publish_stats.full_frame_copy_count,
-            full_frame_copy_bytes: publish_stats.full_frame_copy_bytes,
-            output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),
-            timeline: FrameTimeline {
-                frame_token: scene_snapshot.frame_token,
-                budget_us: scene_snapshot.budget_us,
-                scene_snapshot_done_us,
-                input_done_us: scene_snapshot_done_us,
-                producer_done_us: scene_snapshot_done_us,
-                composition_done_us: scene_snapshot_done_us,
-                sample_done_us,
-                output_done_us,
-                publish_done_us,
-                frame_done_us: total_us,
-            },
-        });
+        performance.record_frame(frame_metrics);
     }
 
     throttle.note_sleep_frame_published();

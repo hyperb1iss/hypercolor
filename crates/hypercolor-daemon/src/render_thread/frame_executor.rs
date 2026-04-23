@@ -8,6 +8,7 @@ use hypercolor_core::types::event::FrameTiming;
 
 use super::frame_composer::{ComposeRequest, compose_frame};
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
+use super::frame_metrics::{ActiveFrameMetricsInput, build_active_frame_metrics};
 use super::frame_policy::{FrameAdmissionSample, FrameExecution, SkipDecision};
 use super::frame_sampling::{LedSamplingOutcome, resolve_led_sampling};
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
@@ -16,8 +17,6 @@ use super::scene_snapshot::{build_frame_scene_snapshot, refresh_effect_scene_sna
 use super::sparkleflinger::ComposedFrameSet;
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
-use crate::performance::{FrameTimeline, LatestFrameMetrics};
-
 #[expect(
     clippy::too_many_lines,
     reason = "frame execution intentionally keeps the full pipeline in one ordered async function"
@@ -271,8 +270,6 @@ pub(crate) async fn execute_frame(
     }
 
     let postprocess_start = Instant::now();
-    let mut full_frame_copy_count = 0_u32;
-    let mut full_frame_copy_bytes = 0_u32;
     let cpu_readback_skipped = matches!(
         render_stage.composed_frame.backend,
         crate::performance::CompositorBackendKind::Gpu
@@ -330,10 +327,6 @@ pub(crate) async fn execute_frame(
     let publish_us = publish_stats.elapsed_us;
     let publish_done_at = Instant::now();
     let publish_done_us = micros_between(frame_start, publish_done_at);
-    full_frame_copy_count =
-        full_frame_copy_count.saturating_add(publish_stats.full_frame_copy_count);
-    full_frame_copy_bytes =
-        full_frame_copy_bytes.saturating_add(publish_stats.full_frame_copy_bytes);
     let render_surfaces = render.render_surface_snapshot(state.published_canvas_receiver_count());
     let total_us = publish_done_us;
     let known_stage_us = input_us
@@ -344,70 +337,53 @@ pub(crate) async fn execute_frame(
         .saturating_add(publish_us);
     let overhead_us = total_us.saturating_sub(known_stage_us);
     let jitter_us = frame_interval_us.abs_diff(scene_snapshot.budget_us);
+    let output_errors = u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX);
+    let frame_metrics = build_active_frame_metrics(ActiveFrameMetricsInput {
+        scene_snapshot: &scene_snapshot,
+        render_surfaces: &render_surfaces,
+        publish_stats: &publish_stats,
+        input_us,
+        producer_us: render_stage.producer_us,
+        producer_render_us: render_stage.producer_render_us,
+        producer_scene_compose_us: render_stage.producer_scene_compose_us,
+        composition_us: render_stage.composition_us,
+        producer_done_us: render_stage.producer_done_us,
+        composition_done_us: render_stage.composition_done_us,
+        render_us,
+        sample_us,
+        push_us,
+        postprocess_us,
+        total_us,
+        wake_late_us,
+        jitter_us,
+        overhead_us,
+        reused_inputs,
+        reused_canvas,
+        gpu_zone_sampling,
+        gpu_sample_deferred,
+        gpu_sample_retry_hit,
+        gpu_sample_queue_saturated,
+        gpu_sample_wait_blocked,
+        cpu_readback_skipped,
+        compositor_backend,
+        output_errors,
+        logical_layer_count: render_stage.logical_layer_count,
+        render_group_count: render_stage.render_group_count,
+        scene_active: render_stage.scene_active,
+        scene_transition_active: render_stage.scene_transition_active,
+        effect_retained: render_stage.effect_retained,
+        screen_retained: render_stage.screen_retained,
+        composition_bypassed: render_stage.composition_bypassed,
+        scene_snapshot_done_us,
+        input_done_us,
+        sample_done_us,
+        output_done_us,
+        publish_done_us,
+    });
 
     {
         let mut performance = state.performance.write().await;
-        performance.record_frame(LatestFrameMetrics {
-            timestamp_ms: scene_snapshot.elapsed_ms,
-            input_us,
-            producer_us: render_stage.producer_us,
-            producer_render_us: render_stage.producer_render_us,
-            producer_scene_compose_us: render_stage.producer_scene_compose_us,
-            composition_us: render_stage.composition_us,
-            render_us,
-            sample_us,
-            push_us,
-            postprocess_us,
-            publish_us,
-            publish_frame_data_us: publish_stats.frame_data_us,
-            publish_group_canvas_us: publish_stats.group_canvas_us,
-            publish_preview_us: publish_stats.preview_us,
-            publish_events_us: publish_stats.events_us,
-            overhead_us,
-            total_us,
-            wake_late_us,
-            jitter_us,
-            reused_inputs,
-            reused_canvas,
-            retained_effect: render_stage.effect_retained,
-            retained_screen: render_stage.screen_retained,
-            composition_bypassed: render_stage.composition_bypassed,
-            gpu_zone_sampling,
-            gpu_sample_deferred,
-            gpu_sample_retry_hit,
-            gpu_sample_queue_saturated,
-            gpu_sample_wait_blocked,
-            cpu_readback_skipped,
-            compositor_backend,
-            logical_layer_count: render_stage.logical_layer_count,
-            render_group_count: render_stage.render_group_count,
-            scene_active: render_stage.scene_active,
-            scene_transition_active: render_stage.scene_transition_active,
-            render_surface_slot_count: render_surfaces.slot_count,
-            render_surface_free_slots: render_surfaces.free_slots,
-            render_surface_published_slots: render_surfaces.published_slots,
-            render_surface_dequeued_slots: render_surfaces.dequeued_slots,
-            scene_pool_saturation_reallocs: render_surfaces.scene_pool_saturation_reallocs,
-            direct_pool_saturation_reallocs: render_surfaces.direct_pool_saturation_reallocs,
-            scene_pool_grown_slots: render_surfaces.scene_pool_grown_slots,
-            direct_pool_grown_slots: render_surfaces.direct_pool_grown_slots,
-            canvas_receiver_count: render_surfaces.canvas_receivers,
-            full_frame_copy_count,
-            full_frame_copy_bytes,
-            output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),
-            timeline: FrameTimeline {
-                frame_token: scene_snapshot.frame_token,
-                budget_us: scene_snapshot.budget_us,
-                scene_snapshot_done_us,
-                input_done_us,
-                producer_done_us: input_done_us.saturating_add(render_stage.producer_done_us),
-                composition_done_us: input_done_us.saturating_add(render_stage.composition_done_us),
-                sample_done_us,
-                output_done_us,
-                publish_done_us,
-                frame_done_us: total_us,
-            },
-        });
+        performance.record_frame(frame_metrics);
     }
 
     for err in &write_stats.errors {
@@ -444,8 +420,8 @@ pub(crate) async fn execute_frame(
         total_us,
         reused_inputs,
         reused_canvas,
-        full_frame_copy_count,
-        full_frame_copy_bytes,
+        full_frame_copy_count = frame_metrics.full_frame_copy_count,
+        full_frame_copy_bytes = frame_metrics.full_frame_copy_bytes,
         devices = write_stats.devices_written,
         leds = write_stats.total_leds,
         "frame complete"
@@ -463,8 +439,8 @@ pub(crate) async fn execute_frame(
                 publish_us,
                 wake_late_us,
                 jitter_us,
-                full_frame_copy_count,
-                output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),
+                full_frame_copy_count: frame_metrics.full_frame_copy_count,
+                output_errors,
             },
         );
         (execution.next_wake, execution.next_skip_decision)

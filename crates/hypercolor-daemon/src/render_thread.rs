@@ -21,6 +21,7 @@ mod frame_admission;
 mod frame_composer;
 mod frame_executor;
 mod frame_io;
+mod frame_metrics;
 mod frame_policy;
 mod frame_sampling;
 mod frame_throttle;
