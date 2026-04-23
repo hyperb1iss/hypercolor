@@ -1,9 +1,11 @@
 mod channel;
+mod reconnect;
 mod schema;
 pub mod transport;
 
 pub use channel::Channel;
 pub use hypercolor_leptos_ext_macros::BinaryFrame;
+pub use reconnect::{Connector, ExponentialBackoff, Jitter, ReconnectOutcome, ReconnectPolicy};
 pub use schema::{SchemaRange, negotiate_highest_common_schema};
 
 pub trait BinaryFrameSchema {
