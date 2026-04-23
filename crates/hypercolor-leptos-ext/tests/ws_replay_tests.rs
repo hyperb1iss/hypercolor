@@ -1,7 +1,9 @@
 #![cfg(feature = "ws-core")]
 
 use bytes::Bytes;
-use hypercolor_leptos_ext::ws::{ChannelDescriptor, Direction, SessionRecord, SessionRecorder};
+use hypercolor_leptos_ext::ws::{
+    ChannelDescriptor, Direction, SessionPlayer, SessionRecord, SessionRecorder,
+};
 use serde_json::json;
 
 #[test]
@@ -62,4 +64,34 @@ fn session_tape_can_move_entries_out() {
             ..
         }
     ));
+}
+
+#[test]
+fn session_player_filters_transport_frames_by_channel_and_direction() {
+    let mut recorder = SessionRecorder::new(vec![
+        ChannelDescriptor::new(1, "control"),
+        ChannelDescriptor::new(2, "preview"),
+    ]);
+    recorder.record_transport_frame(1, Direction::ClientToServer, Bytes::from_static(b"request"));
+    recorder.record_transport_frame(
+        1,
+        Direction::ServerToClient,
+        Bytes::from_static(b"response"),
+    );
+    recorder.record_transport_frame(2, Direction::ServerToClient, Bytes::from_static(b"preview"));
+
+    let player = SessionPlayer::new(recorder.finish());
+    let frames = player
+        .transport_frames(1, Direction::ServerToClient)
+        .collect::<Vec<_>>();
+
+    assert_eq!(frames.len(), 1);
+    assert_eq!(
+        frames[0].record,
+        SessionRecord::TransportFrame {
+            channel_id: 1,
+            direction: Direction::ServerToClient,
+            bytes: Bytes::from_static(b"response"),
+        }
+    );
 }

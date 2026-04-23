@@ -29,7 +29,8 @@ pub use reconnect::{
     ReconnectRecvError, ReconnectSendError, Reconnecting,
 };
 pub use replay::{
-    ChannelDescriptor, Direction, ReplayEntry, SessionRecord, SessionRecorder, SessionTape,
+    ChannelDescriptor, Direction, ReplayEntry, SessionPlayer, SessionRecord, SessionRecorder,
+    SessionTape,
 };
 pub use rpc::{
     RPC_REQUEST_TAG, RPC_RESPONSE_TAG, RpcClient, RpcClientError, RpcRequest, RpcResponse,

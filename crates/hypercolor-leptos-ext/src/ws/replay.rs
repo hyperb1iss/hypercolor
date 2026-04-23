@@ -74,6 +74,49 @@ impl SessionTape {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionPlayer {
+    tape: SessionTape,
+}
+
+impl SessionPlayer {
+    #[must_use]
+    pub fn new(tape: SessionTape) -> Self {
+        Self { tape }
+    }
+
+    #[must_use]
+    pub fn channels(&self) -> &[ChannelDescriptor] {
+        self.tape.channels()
+    }
+
+    #[must_use]
+    pub fn entries(&self) -> &[ReplayEntry] {
+        self.tape.entries()
+    }
+
+    pub fn transport_frames(
+        &self,
+        channel_id: u16,
+        direction: Direction,
+    ) -> impl Iterator<Item = &ReplayEntry> {
+        self.tape.entries.iter().filter(move |entry| {
+            matches!(
+                entry.record,
+                SessionRecord::TransportFrame {
+                    channel_id: entry_channel_id,
+                    direction: entry_direction,
+                    ..
+                } if entry_channel_id == channel_id && entry_direction == direction
+            )
+        })
+    }
+
+    pub fn into_tape(self) -> SessionTape {
+        self.tape
+    }
+}
+
 #[derive(Debug)]
 pub struct SessionRecorder {
     channels: Vec<ChannelDescriptor>,
