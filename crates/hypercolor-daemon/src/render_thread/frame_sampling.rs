@@ -13,9 +13,7 @@ use hypercolor_types::scene::ColorInterpolation;
 use hypercolor_types::spatial::SpatialLayout;
 
 use super::frame_composer::RenderStageStats;
-use super::pipeline_runtime::{
-    PendingZoneSamplingStatus, RenderCaches, RetainedZoneFrame, SceneTransitionKey,
-};
+use super::pipeline_runtime::{RetainedZoneFrame, SamplingRuntime, SceneTransitionKey};
 use super::scene_snapshot::{FrameSceneSnapshot, SceneTransitionSnapshot};
 use super::sparkleflinger::{PendingZoneSampling, ZoneSamplingDispatch};
 use super::{RenderThreadState, micros_between};
@@ -118,39 +116,28 @@ pub(crate) fn can_hold_published_frame_for_deferred_sampling(
 }
 
 pub(crate) fn try_finish_deferred_zone_sampling(
-    render: &mut RenderCaches,
+    sampling: &mut SamplingRuntime<'_>,
     error_message: &'static str,
 ) {
-    if let Some(PendingZoneSamplingStatus::Stale(deferred_sampling)) = render
-        .deferred_sampling
-        .take_pending_status(&mut render.sparkleflinger, error_message)
-    {
-        render.deferred_sampling.store_pending(deferred_sampling);
-    }
+    sampling.keep_pending_if_stale(error_message);
 }
 
 pub(crate) fn try_finish_retired_zone_sampling(
-    render: &mut RenderCaches,
+    sampling: &mut SamplingRuntime<'_>,
     error_message: &'static str,
 ) {
-    render
-        .deferred_sampling
-        .finish_retired(&mut render.sparkleflinger, error_message);
+    sampling.finish_retired(error_message);
 }
 
 fn try_retire_stale_zone_sampling(
-    render: &mut RenderCaches,
+    sampling: &mut SamplingRuntime<'_>,
     pending: PendingZoneSampling,
 ) -> Option<PendingZoneSampling> {
-    render
-        .deferred_sampling
-        .retire_or_return(&mut render.sparkleflinger, pending)
+    sampling.retire_or_return(pending)
 }
 
-fn discard_zone_sampling_backlog(render: &mut RenderCaches) {
-    render
-        .deferred_sampling
-        .discard_backlog(&mut render.sparkleflinger);
+fn discard_zone_sampling_backlog(sampling: &mut SamplingRuntime<'_>) {
+    sampling.discard_backlog();
 }
 
 fn scene_transition_key(transition: &SceneTransitionSnapshot) -> Option<SceneTransitionKey> {
@@ -267,7 +254,7 @@ pub(crate) fn blend_scene_zone_frames(
 )]
 pub(crate) fn resolve_led_sampling(
     state: &RenderThreadState,
-    render: &mut RenderCaches,
+    sampling: &mut SamplingRuntime<'_>,
     scene_snapshot: &FrameSceneSnapshot,
     render_stage: &mut RenderStageStats,
     completed_deferred_sampling: Option<PendingZoneSampling>,
@@ -323,33 +310,33 @@ pub(crate) fn resolve_led_sampling(
         };
         let completed_sampling_matches_current =
             completed_deferred_sampling.as_ref().is_some_and(|pending| {
-                render
+                sampling
                     .sparkleflinger
                     .pending_zone_sampling_matches_current_work(pending, prepared_zones.as_ref())
             });
         if completed_sampling_matches_current {
-            render
+            sampling
                 .deferred_sampling
-                .clone_scratch_into(render.output_artifacts.zones_mut());
+                .clone_scratch_into(sampling.output_artifacts.zones_mut());
             gpu_zone_sampling = true;
             gpu_sample_retry_hit = true;
         }
         let mut stale_sampling_matches_current = false;
         if !gpu_zone_sampling && let Some(mut pending) = stale_deferred_sampling.take() {
-            if render
+            if sampling
                 .sparkleflinger
                 .pending_zone_sampling_matches_current_work(&pending, prepared_zones.as_ref())
             {
                 stale_sampling_matches_current = true;
                 let stale_sample_finish = Instant::now();
-                match render.sparkleflinger.try_finish_pending_zone_sampling(
+                match sampling.sparkleflinger.try_finish_pending_zone_sampling(
                     &mut pending,
-                    render.output_artifacts.zones_mut(),
+                    sampling.output_artifacts.zones_mut(),
                 ) {
                     Ok(true) => {
                         gpu_zone_sampling = true;
                         gpu_sample_retry_hit = true;
-                        gpu_sample_wait_blocked = render
+                        gpu_sample_wait_blocked = sampling
                             .sparkleflinger
                             .take_last_sample_readback_wait_blocked();
                         render_stage.sampled_us = render_stage
@@ -372,21 +359,21 @@ pub(crate) fn resolve_led_sampling(
         }
         if !gpu_zone_sampling && stale_sampling_matches_current && can_hold_published_frame {
             if let Some(pending) = stale_deferred_sampling.take() {
-                render.deferred_sampling.store_pending(pending);
+                sampling.deferred_sampling.store_pending(pending);
             }
             gpu_sample_deferred = true;
             render_stage.led_sampling_strategy =
                 LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
             refresh_reused_frame_metadata = render_stage.screen_retained;
         } else if let Some(pending) = stale_deferred_sampling.take()
-            && let Some(pending) = try_retire_stale_zone_sampling(render, pending)
+            && let Some(pending) = try_retire_stale_zone_sampling(sampling, pending)
         {
             stale_deferred_sampling = Some(pending);
             gpu_sample_queue_saturated = true;
         }
         if !gpu_zone_sampling && gpu_sample_queue_saturated {
             if let Some(pending) = stale_deferred_sampling.take() {
-                render.deferred_sampling.store_pending(pending);
+                sampling.deferred_sampling.store_pending(pending);
             }
             if can_hold_published_frame {
                 gpu_sample_deferred = true;
@@ -400,9 +387,9 @@ pub(crate) fn resolve_led_sampling(
                 crate::performance::CompositorBackendKind::Gpu
             ) {
                 let gpu_sample_start = Instant::now();
-                match render.sparkleflinger.begin_sample_zone_plan_into(
+                match sampling.sparkleflinger.begin_sample_zone_plan_into(
                     prepared_zones.as_ref(),
-                    render.output_artifacts.zones_mut(),
+                    sampling.output_artifacts.zones_mut(),
                 ) {
                     Ok(ZoneSamplingDispatch::Unsupported) => false,
                     Ok(ZoneSamplingDispatch::Ready) => {
@@ -419,10 +406,10 @@ pub(crate) fn resolve_led_sampling(
                         if can_hold_published_frame {
                             false
                         } else {
-                            discard_zone_sampling_backlog(render);
-                            match render.sparkleflinger.begin_sample_zone_plan_into(
+                            discard_zone_sampling_backlog(sampling);
+                            match sampling.sparkleflinger.begin_sample_zone_plan_into(
                                 prepared_zones.as_ref(),
-                                render.output_artifacts.zones_mut(),
+                                sampling.output_artifacts.zones_mut(),
                             ) {
                                 Ok(ZoneSamplingDispatch::Ready) => true,
                                 Ok(ZoneSamplingDispatch::Pending(pending)) => {
@@ -461,17 +448,17 @@ pub(crate) fn resolve_led_sampling(
         let gpu_sample_finish = Instant::now();
         if can_reuse_published_frame {
             let mut pending = pending;
-            match render.sparkleflinger.try_finish_pending_zone_sampling(
+            match sampling.sparkleflinger.try_finish_pending_zone_sampling(
                 &mut pending,
-                render.deferred_sampling.scratch_mut(),
+                sampling.deferred_sampling.scratch_mut(),
             ) {
                 Ok(true) => {
-                    gpu_sample_wait_blocked = render
+                    gpu_sample_wait_blocked = sampling
                         .sparkleflinger
                         .take_last_sample_readback_wait_blocked();
                 }
                 Ok(false) => {
-                    render.deferred_sampling.store_pending(pending);
+                    sampling.deferred_sampling.store_pending(pending);
                     gpu_zone_sampling = false;
                     gpu_sample_deferred = true;
                     render_stage.led_sampling_strategy =
@@ -487,19 +474,19 @@ pub(crate) fn resolve_led_sampling(
                 }
             }
         } else if can_hold_published_frame {
-            render.deferred_sampling.store_pending(pending);
+            sampling.deferred_sampling.store_pending(pending);
             gpu_zone_sampling = false;
             gpu_sample_deferred = true;
             render_stage.led_sampling_strategy =
                 LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
-        } else if let Err(error) = render
+        } else if let Err(error) = sampling
             .sparkleflinger
-            .finish_pending_zone_sampling(pending, render.output_artifacts.zones_mut())
+            .finish_pending_zone_sampling(pending, sampling.output_artifacts.zones_mut())
         {
             warn!(%error, "GPU spatial sampling finalize failed; falling back to CPU");
             gpu_zone_sampling = false;
         } else {
-            gpu_sample_wait_blocked = render
+            gpu_sample_wait_blocked = sampling
                 .sparkleflinger
                 .take_last_sample_readback_wait_blocked();
         }
@@ -524,7 +511,7 @@ pub(crate) fn resolve_led_sampling(
                     .sampling_canvas
                     .as_ref()
                     .expect("CPU spatial sampling requires a materialized canvas"),
-                render.output_artifacts.zones_mut(),
+                sampling.output_artifacts.zones_mut(),
             );
         render_stage.sampled_us = micros_between(cpu_sample_start, Instant::now());
     }
@@ -534,15 +521,15 @@ pub(crate) fn resolve_led_sampling(
         && let Some(transition_key) = scene_transition_key(transition)
         && let Some(current_zones) = current_scene_sampled_zones(
             &render_stage.led_sampling_strategy,
-            render.output_artifacts.zones(),
+            sampling.output_artifacts.zones(),
         )
         .map(<[ZoneColors]>::to_vec)
     {
         let transition_blend_start = Instant::now();
-        if render.zone_transition_planner.active_transition != Some(transition_key) {
-            render.zone_transition_planner.active_transition = Some(transition_key);
-            render.zone_transition_planner.transition_base = Some(
-                render
+        if sampling.zone_transition_planner.active_transition != Some(transition_key) {
+            sampling.zone_transition_planner.active_transition = Some(transition_key);
+            sampling.zone_transition_planner.transition_base = Some(
+                sampling
                     .zone_transition_planner
                     .last_stable
                     .clone()
@@ -553,7 +540,7 @@ pub(crate) fn resolve_led_sampling(
             );
         }
 
-        if let Some(base) = render.zone_transition_planner.transition_base.as_ref() {
+        if let Some(base) = sampling.zone_transition_planner.transition_base.as_ref() {
             let transition_layout =
                 build_transition_layout(base.layout.as_ref(), layout.as_ref(), transition_key);
             blend_scene_zone_frames(
@@ -562,7 +549,7 @@ pub(crate) fn resolve_led_sampling(
                 transition_layout.as_ref(),
                 transition.eased_progress.clamp(0.0, 1.0),
                 &transition.color_interpolation,
-                render.output_artifacts.zones_mut(),
+                sampling.output_artifacts.zones_mut(),
             );
             layout = Arc::clone(&transition_layout);
             render_stage.led_sampling_strategy = LedSamplingStrategy::PreSampled(transition_layout);
@@ -582,18 +569,18 @@ pub(crate) fn resolve_led_sampling(
     );
     if scene_snapshot.scene_runtime.active_transition.is_none() {
         if let Some(retained_zones) = retained_scene_zones.as_ref() {
-            render
+            sampling
                 .zone_transition_planner
                 .record_stable(Arc::clone(&layout), retained_zones.as_ref());
         } else if reuses_published_frame {
             let published_frame = state.event_bus.frame_sender().borrow();
-            render
+            sampling
                 .zone_transition_planner
                 .record_stable(Arc::clone(&layout), &published_frame.zones);
         } else {
-            render
+            sampling
                 .zone_transition_planner
-                .record_stable(Arc::clone(&layout), render.output_artifacts.zones());
+                .record_stable(Arc::clone(&layout), sampling.output_artifacts.zones());
         }
     }
 

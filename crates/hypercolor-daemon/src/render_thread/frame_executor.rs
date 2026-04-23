@@ -138,16 +138,22 @@ pub(crate) async fn execute_frame(
     let input_done_at = Instant::now();
     let input_us = micros_between(input_start, input_done_at);
     let input_done_us = micros_between(frame_start, input_done_at);
-    try_finish_retired_zone_sampling(
-        render,
-        "Retired GPU spatial sampling finalize failed; dropping stale deferred sample result",
-    );
+    {
+        let mut sampling = render.sampling_runtime();
+        try_finish_retired_zone_sampling(
+            &mut sampling,
+            "Retired GPU spatial sampling finalize failed; dropping stale deferred sample result",
+        );
+    }
     let mut stale_deferred_sampling = None;
     let mut completed_deferred_sampling = None;
-    if let Some(status) = render.deferred_sampling.take_pending_status(
-        &mut render.sparkleflinger,
-        "Deferred GPU spatial sampling finalize failed; dropping deferred sample result",
-    ) {
+    let pending_status = {
+        let mut sampling = render.sampling_runtime();
+        sampling.take_pending_status(
+            "Deferred GPU spatial sampling finalize failed; dropping deferred sample result",
+        )
+    };
+    if let Some(status) = pending_status {
         match status {
             PendingZoneSamplingStatus::Completed(deferred_sampling) => {
                 completed_deferred_sampling = Some(deferred_sampling);
@@ -227,14 +233,17 @@ pub(crate) async fn execute_frame(
         gpu_sample_wait_blocked,
         refresh_reused_frame_metadata,
         reuses_published_frame,
-    } = resolve_led_sampling(
-        state,
-        render,
-        &scene_snapshot,
-        &mut render_stage,
-        completed_deferred_sampling,
-        stale_deferred_sampling,
-    );
+    } = {
+        let mut sampling = render.sampling_runtime();
+        resolve_led_sampling(
+            state,
+            &mut sampling,
+            &scene_snapshot,
+            &mut render_stage,
+            completed_deferred_sampling,
+            stale_deferred_sampling,
+        )
+    };
 
     let sample_us = render_stage.sampled_us;
     let sample_done_at = Instant::now();
@@ -289,14 +298,17 @@ pub(crate) async fn execute_frame(
     if let Some(runtime) = &state.discovery_runtime {
         handle_async_write_failures(runtime, async_failures).await;
     }
-    try_finish_deferred_zone_sampling(
-        render,
-        "Deferred GPU spatial sampling late finalize failed; dropping deferred sample result",
-    );
-    try_finish_retired_zone_sampling(
-        render,
-        "Retired GPU spatial sampling late finalize failed; dropping stale deferred sample result",
-    );
+    {
+        let mut sampling = render.sampling_runtime();
+        try_finish_deferred_zone_sampling(
+            &mut sampling,
+            "Deferred GPU spatial sampling late finalize failed; dropping deferred sample result",
+        );
+        try_finish_retired_zone_sampling(
+            &mut sampling,
+            "Retired GPU spatial sampling late finalize failed; dropping stale deferred sample result",
+        );
+    }
 
     let postprocess_start = Instant::now();
     let mut full_frame_copy_count = 0_u32;

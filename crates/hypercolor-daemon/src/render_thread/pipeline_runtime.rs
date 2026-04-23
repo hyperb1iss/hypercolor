@@ -596,6 +596,48 @@ impl ComposeRuntime<'_> {
     }
 }
 
+pub(crate) struct SamplingRuntime<'a> {
+    pub(crate) sparkleflinger: &'a mut SparkleFlinger,
+    pub(crate) deferred_sampling: &'a mut DeferredSamplingState,
+    pub(crate) zone_transition_planner: &'a mut ZoneTransitionPlanner,
+    pub(crate) output_artifacts: &'a mut OutputArtifactsState,
+}
+
+impl SamplingRuntime<'_> {
+    pub(crate) fn take_pending_status(
+        &mut self,
+        error_message: &'static str,
+    ) -> Option<PendingZoneSamplingStatus> {
+        self.deferred_sampling
+            .take_pending_status(self.sparkleflinger, error_message)
+    }
+
+    pub(crate) fn keep_pending_if_stale(&mut self, error_message: &'static str) {
+        if let Some(PendingZoneSamplingStatus::Stale(deferred_sampling)) =
+            self.take_pending_status(error_message)
+        {
+            self.deferred_sampling.store_pending(deferred_sampling);
+        }
+    }
+
+    pub(crate) fn finish_retired(&mut self, error_message: &'static str) {
+        self.deferred_sampling
+            .finish_retired(self.sparkleflinger, error_message);
+    }
+
+    pub(crate) fn retire_or_return(
+        &mut self,
+        pending: PendingZoneSampling,
+    ) -> Option<PendingZoneSampling> {
+        self.deferred_sampling
+            .retire_or_return(self.sparkleflinger, pending)
+    }
+
+    pub(crate) fn discard_backlog(&mut self) {
+        self.deferred_sampling.discard_backlog(self.sparkleflinger);
+    }
+}
+
 pub(crate) struct SceneSnapshotState {
     pub(crate) snapshot_cache: SceneSnapshotCache,
     pub(crate) render_state: RenderSceneState,
@@ -674,6 +716,15 @@ impl RenderCaches {
             composition_planner: &mut self.composition_planner,
             sparkleflinger: &mut self.sparkleflinger,
             render_group_runtime: &mut self.render_group_runtime,
+            output_artifacts: &mut self.output_artifacts,
+        }
+    }
+
+    pub(crate) fn sampling_runtime(&mut self) -> SamplingRuntime<'_> {
+        SamplingRuntime {
+            sparkleflinger: &mut self.sparkleflinger,
+            deferred_sampling: &mut self.deferred_sampling,
+            zone_transition_planner: &mut self.zone_transition_planner,
             output_artifacts: &mut self.output_artifacts,
         }
     }
