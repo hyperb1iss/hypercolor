@@ -654,12 +654,22 @@ impl EffectMetadata {
     /// Match either the display name or a stable source-stem alias.
     #[must_use]
     pub fn matches_lookup(&self, id_or_name: &str) -> bool {
+        let lookup_key = effect_lookup_key(id_or_name);
         self.name.eq_ignore_ascii_case(id_or_name)
+            || effect_lookup_key(&self.name) == lookup_key
             || self
                 .source
                 .source_stem()
-                .is_some_and(|stem| stem.eq_ignore_ascii_case(id_or_name))
+                .is_some_and(|stem| effect_lookup_key(stem) == lookup_key)
     }
+}
+
+fn effect_lookup_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|character| character.to_ascii_lowercase())
+        .collect()
 }
 
 fn default_version() -> String {

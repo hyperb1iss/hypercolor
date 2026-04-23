@@ -249,8 +249,35 @@ fn effect_metadata_matches_display_name_and_native_source_alias() {
     };
 
     assert!(metadata.matches_lookup("Solid Color"));
+    assert!(metadata.matches_lookup("solid-color"));
     assert!(metadata.matches_lookup("solid_color"));
+    assert!(metadata.matches_lookup("solid color"));
     assert!(!metadata.matches_lookup("solid-color-extra"));
+}
+
+#[test]
+fn effect_metadata_lookup_treats_html_and_native_slugs_equivalently() {
+    let metadata = EffectMetadata {
+        id: EffectId::new(Uuid::now_v7()),
+        name: "Audio Pulse".to_owned(),
+        author: "Hypercolor".to_owned(),
+        version: "0.1.0".to_owned(),
+        description: "test effect".to_owned(),
+        category: EffectCategory::Audio,
+        tags: vec!["audio".to_owned()],
+        controls: Vec::new(),
+        presets: Vec::new(),
+        audio_reactive: true,
+        screen_reactive: false,
+        source: EffectSource::Html {
+            path: PathBuf::from("effects/hypercolor/audio-pulse.html"),
+        },
+        license: Some("Apache-2.0".to_owned()),
+    };
+
+    assert!(metadata.matches_lookup("audio_pulse"));
+    assert!(metadata.matches_lookup("audio-pulse"));
+    assert!(metadata.matches_lookup("audio pulse"));
 }
 
 // ── EffectState ───────────────────────────────────────────────────────────
