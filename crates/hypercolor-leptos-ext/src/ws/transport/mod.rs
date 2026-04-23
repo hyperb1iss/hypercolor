@@ -1,6 +1,8 @@
 mod in_memory;
 #[cfg(feature = "axum")]
 mod websocket_axum;
+#[cfg(all(feature = "ws-client-wasm", target_arch = "wasm32"))]
+mod websocket_wasm;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -11,6 +13,8 @@ use crate::MaybeSend;
 pub use in_memory::{InMemoryTransport, InMemoryTransportError};
 #[cfg(feature = "axum")]
 pub use websocket_axum::{AxumWebSocketTransport, AxumWebSocketTransportError};
+#[cfg(all(feature = "ws-client-wasm", target_arch = "wasm32"))]
+pub use websocket_wasm::{WebSocketTransport, WebSocketTransportError, WebSocketTransportState};
 
 #[async_trait(?Send)]
 pub trait CinderTransport: MaybeSend + 'static {

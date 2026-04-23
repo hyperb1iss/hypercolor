@@ -20,6 +20,11 @@ ws-client-wasm = [
     "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",
     "dep:web-sys",
+    "web-sys/BinaryType",
+    "web-sys/CloseEvent",
+    "web-sys/Event",
+    "web-sys/MessageEvent",
+    "web-sys/WebSocket",
 ]
 events = ["dep:gloo-events", "dep:wasm-bindgen", "dep:web-sys"]
 canvas = ["dep:js-sys", "dep:wasm-bindgen", "dep:web-sys"]
