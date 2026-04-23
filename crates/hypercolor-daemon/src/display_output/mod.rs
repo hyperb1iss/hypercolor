@@ -57,7 +57,7 @@ pub struct DisplayOutputState {
     pub device_registry: DeviceRegistry,
     /// Active spatial layout used to decide which LCDs should render and how.
     pub spatial_engine: Arc<RwLock<SpatialEngine>>,
-    /// Logical-device aliases used to match physical devices to layout zones.
+    /// Logical-device mappings used to match physical devices to layout zones.
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
     /// Event bus canvas stream produced by the render thread.
     pub event_bus: Arc<HypercolorBus>,
@@ -763,7 +763,6 @@ fn display_viewport_for_device(
     physical_device_id: DeviceId,
     has_non_display_led_zones: bool,
 ) -> Option<DisplayViewport> {
-    let physical_alias = physical_device_id.to_string();
     let mut first_matching_zone = None;
     let mut explicit_display_zone = None;
     let mut generic_display_zone = None;
@@ -773,7 +772,6 @@ fn display_viewport_for_device(
             zone.device_id.as_str(),
             logical_store,
             physical_device_id,
-            physical_alias.as_str(),
         ) {
             continue;
         }
@@ -837,12 +835,10 @@ fn display_zone_targets_physical_device(
     zone_device_id: &str,
     logical_store: &HashMap<String, LogicalDevice>,
     physical_device_id: DeviceId,
-    physical_alias: &str,
 ) -> bool {
-    zone_device_id == physical_alias
-        || logical_store
-            .get(zone_device_id)
-            .is_some_and(|entry| entry.physical_device_id == physical_device_id)
+    logical_store
+        .get(zone_device_id)
+        .is_some_and(|entry| entry.physical_device_id == physical_device_id)
 }
 
 fn capped_display_target_fps(device_max_fps: u32, canvas_source: &DisplayCanvasSource) -> u32 {

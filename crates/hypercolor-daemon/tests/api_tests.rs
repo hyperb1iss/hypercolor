@@ -7031,8 +7031,10 @@ async fn logical_devices_replace_outdated_default_id_with_canonical_layout_id() 
         "stale default layout id should not stay mapped"
     );
     assert!(
-        mapped_layout_ids.contains(&device_id.to_string()),
-        "raw physical uuid alias should stay mapped"
+        mapped_layout_ids
+            .iter()
+            .all(|id| id != &device_id.to_string()),
+        "raw physical uuid alias should not stay mapped"
     );
 }
 

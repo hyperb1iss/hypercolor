@@ -215,41 +215,18 @@ pub(super) async fn sync_logical_mappings_for_device(
             Some(fallback),
             &tracked.info,
         );
-        map_physical_device_id_alias(
-            &mut manager,
-            backend_id,
-            device_id,
-            fallback_layout_id,
-            fallback,
-            &tracked.info,
-        );
         return;
     }
 
-    let mut default_enabled = false;
     for logical in logical_entries {
         let start = usize::try_from(logical.led_start).unwrap_or_default();
         let length = usize::try_from(logical.led_count).unwrap_or_default();
-        if logical.id == fallback_layout_id {
-            default_enabled = true;
-        }
         map_device_with_zone_segments(
             &mut manager,
             logical.id,
             backend_id.to_owned(),
             device_id,
             Some(SegmentRange::new(start, length)),
-            &tracked.info,
-        );
-    }
-
-    if default_enabled {
-        map_physical_device_id_alias(
-            &mut manager,
-            backend_id,
-            device_id,
-            fallback_layout_id,
-            fallback,
             &tracked.info,
         );
     }
@@ -304,7 +281,6 @@ pub(super) async fn active_layout_targets_enabled_device(
             .is_none_or(|entry| entry.enabled);
         if default_enabled {
             candidates.insert(layout_device_id.to_owned());
-            candidates.insert(physical_id.to_string());
         }
 
         candidates
@@ -329,27 +305,6 @@ fn map_device_with_zone_segments(
     let layout_device_id = layout_device_id.into();
     manager.map_device_with_segment(layout_device_id.clone(), backend_id, device_id, segment);
     let _ = manager.set_device_zone_segments(&layout_device_id, device_info);
-}
-
-fn map_physical_device_id_alias(
-    manager: &mut BackendManager,
-    backend_id: &str,
-    device_id: DeviceId,
-    layout_device_id: &str,
-    segment: SegmentRange,
-    device_info: &DeviceInfo,
-) {
-    let physical_alias = device_id.to_string();
-    if physical_alias != layout_device_id {
-        map_device_with_zone_segments(
-            manager,
-            physical_alias,
-            backend_id.to_owned(),
-            device_id,
-            Some(segment),
-            device_info,
-        );
-    }
 }
 
 pub(super) async fn publish_device_connected(

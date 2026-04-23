@@ -484,47 +484,18 @@ pub(super) async fn sync_live_logical_mappings_for_device(state: &AppState, phys
             )),
             &tracked.info,
         );
-        map_physical_device_id_alias(
-            &mut manager,
-            &backend_id,
-            physical_id,
-            &fallback_layout_id,
-            SegmentRange::new(
-                0,
-                usize::try_from(tracked.info.total_led_count()).unwrap_or_default(),
-            ),
-            &tracked.info,
-        );
         return;
     }
 
-    let mut default_enabled = false;
     for entry in logical_entries {
         let start = usize::try_from(entry.led_start).unwrap_or_default();
         let length = usize::try_from(entry.led_count).unwrap_or_default();
-        if entry.id == fallback_layout_id {
-            default_enabled = true;
-        }
         map_device_with_zone_segments(
             &mut manager,
             entry.id,
             backend_id.clone(),
             physical_id,
             Some(SegmentRange::new(start, length)),
-            &tracked.info,
-        );
-    }
-
-    if default_enabled {
-        map_physical_device_id_alias(
-            &mut manager,
-            &backend_id,
-            physical_id,
-            &fallback_layout_id,
-            SegmentRange::new(
-                0,
-                usize::try_from(tracked.info.total_led_count()).unwrap_or_default(),
-            ),
             &tracked.info,
         );
     }
@@ -545,27 +516,6 @@ async fn persist_logical_segments(state: &AppState) -> Result<(), String> {
     };
     logical_devices::save_segments(&state.logical_devices_path, &snapshot)
         .map_err(|error| format!("{} ({})", error, state.logical_devices_path.display()))
-}
-
-fn map_physical_device_id_alias(
-    manager: &mut BackendManager,
-    backend_id: &str,
-    physical_id: DeviceId,
-    layout_device_id: &str,
-    segment: SegmentRange,
-    device_info: &DeviceInfo,
-) {
-    let physical_alias = physical_id.to_string();
-    if physical_alias != layout_device_id {
-        map_device_with_zone_segments(
-            manager,
-            physical_alias,
-            backend_id.to_owned(),
-            physical_id,
-            Some(segment),
-            device_info,
-        );
-    }
 }
 
 fn map_device_with_zone_segments(

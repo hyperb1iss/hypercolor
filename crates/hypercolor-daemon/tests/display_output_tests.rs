@@ -37,6 +37,26 @@ async fn display_output_test_guard() -> tokio::sync::MutexGuard<'static, ()> {
     display_output_test_lock().lock().await
 }
 
+async fn insert_default_logical_device(
+    logical_devices: &Arc<RwLock<HashMap<String, LogicalDevice>>>,
+    device_id: DeviceId,
+) -> String {
+    let logical_id = format!("display:{device_id}");
+    logical_devices.write().await.insert(
+        logical_id.clone(),
+        LogicalDevice {
+            id: logical_id.clone(),
+            physical_device_id: device_id,
+            name: "Test Display".to_owned(),
+            led_start: 0,
+            led_count: 64,
+            enabled: true,
+            kind: LogicalDeviceKind::Default,
+        },
+    );
+    logical_id
+}
+
 struct RecordingDisplayBackend {
     expected_device_id: DeviceId,
     connected: bool,
@@ -526,11 +546,12 @@ async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_device
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &device_id.to_string(),
+            logical_id.as_str(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -589,11 +610,12 @@ async fn automatic_display_output_subscribes_to_authoritative_scene_canvas_not_p
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &device_id.to_string(),
+            logical_id.as_str(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -761,11 +783,12 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &device_id.to_string(),
+            logical_id.as_str(),
             NormalizedPosition::new(0.25, 0.5),
             NormalizedPosition::new(0.5, 1.0),
         )]));
@@ -802,6 +825,8 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
+
+    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
 
     let canvas = split_color_canvas();
     let _ = event_bus
@@ -922,11 +947,12 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![led_zone(
-            &device_id.to_string(),
+            logical_id.as_str(),
             "Pads",
             NormalizedPosition::new(0.25, 0.5),
             NormalizedPosition::new(0.5, 1.0),
@@ -1039,9 +1065,9 @@ async fn display_group_canvas_routes_to_device_worker() {
             1,
             16,
         ));
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(
+        .send_replace(CanvasFrame::from_canvas(
             &solid_canvas(Rgba::new(255, 0, 0, 255)),
             1,
             16,
@@ -1546,9 +1572,9 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
 
     for frame in 0_u32..12 {
         let red = u8::try_from(20_u32.saturating_mul(frame.saturating_add(1))).unwrap_or(u8::MAX);
-        let _ = event_bus
+        event_bus
             .scene_canvas_sender()
-            .send(CanvasFrame::from_canvas(
+            .send_replace(CanvasFrame::from_canvas(
                 &solid_canvas(Rgba::new(red, 0, 0, 255)),
                 frame.saturating_add(2),
                 frame.saturating_add(2).saturating_mul(16),
@@ -1844,11 +1870,12 @@ async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &device_id.to_string(),
+            logical_id.as_str(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -1941,11 +1968,12 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &device_id.to_string(),
+            logical_id.as_str(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -2034,11 +2062,12 @@ async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails()
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
     let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &device_id.to_string(),
+            logical_id.as_str(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -2100,11 +2129,12 @@ async fn automatic_display_output_skips_unchanged_frames() {
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &device_id.to_string(),
+            logical_id.as_str(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -2186,11 +2216,12 @@ async fn automatic_display_output_skips_metadata_only_owned_surface_updates() {
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &device_id.to_string(),
+            logical_id.as_str(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -2228,6 +2259,8 @@ async fn automatic_display_output_skips_metadata_only_owned_surface_updates() {
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
+    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+
     let surface =
         PublishedSurface::from_owned_canvas(solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16);
     let _ = event_bus
@@ -2260,11 +2293,12 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &device_id.to_string(),
+            logical_id.as_str(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -2352,11 +2386,12 @@ async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &device_id.to_string(),
+            logical_id.as_str(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -2428,11 +2463,12 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &device_id.to_string(),
+            logical_id.as_str(),
             NormalizedPosition::new(0.25, 0.5),
             NormalizedPosition::new(0.5, 1.0),
         )]));
@@ -2485,7 +2521,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &device_id.to_string(),
+            logical_id.as_str(),
             NormalizedPosition::new(0.75, 0.5),
             NormalizedPosition::new(0.5, 1.0),
         )]));
@@ -2515,11 +2551,12 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
     let group_id = RenderGroupId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &device_id.to_string(),
+            logical_id.as_str(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
@@ -2599,12 +2636,13 @@ async fn automatic_display_output_refreshes_static_hold_frames_while_sleeping() 
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
     let (power_tx, power_state) = watch::channel(OutputPowerState::default());
 
     {
         let mut spatial = spatial_engine.write().await;
         spatial.update_layout(layout_with_zones(vec![display_zone(
-            &device_id.to_string(),
+            logical_id.as_str(),
             NormalizedPosition::new(0.5, 0.5),
             NormalizedPosition::new(1.0, 1.0),
         )]));
