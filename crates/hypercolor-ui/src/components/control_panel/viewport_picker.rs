@@ -253,7 +253,6 @@ pub(super) fn ViewportPicker(
                     let context = ViewportDesignerContext {
                         effect_id: effect.id.clone(),
                         effect_name: effect.name.clone(),
-                        canvas_aspect: 16.0 / 9.0,
                         initial_draft: ViewportDraft {
                             common: ViewportDraftCommon {
                                 viewport: seed_viewport,

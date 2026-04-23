@@ -152,7 +152,6 @@ pub(crate) fn filter_components(
     results
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn selected_result_index(
     results: &[api::TemplateSummary],
     selected_template_id: Option<&str>,

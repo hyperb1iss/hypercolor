@@ -1295,42 +1295,6 @@ fn group_op_button(
     }
 }
 
-/// Inline labeled number input for zone properties (normalized 0–1 values).
-#[allow(dead_code)]
-fn zone_number_input(
-    label: &'static str,
-    value: f32,
-    step: &'static str,
-    precision: usize,
-    min: &'static str,
-    max: &'static str,
-    on_change: impl Fn(f32) + Clone + 'static,
-) -> impl IntoView {
-    view! {
-        <div class="flex items-center gap-1">
-            <span class="text-[9px] text-fg-tertiary/40 font-mono w-3">{label}</span>
-            <input
-                type="number"
-                step=step
-                min=min
-                max=max
-                class="w-16 bg-surface-sunken border border-edge-subtle rounded px-1.5 py-0.5
-                       text-[11px] text-fg-primary font-mono tabular-nums
-                       focus:outline-none focus:border-accent-muted glow-ring transition-colors"
-                prop:value=format!("{value:.precision$}")
-                on:change=move |ev| {
-                    let on_change = on_change.clone();
-                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                    if let Some(el) = target
-                        && let Ok(v) = el.value().parse::<f32>() {
-                            on_change(v);
-                        }
-                }
-            />
-        </div>
-    }
-}
-
 /// Inline labeled pixel input for zone position/size properties.
 fn zone_pixel_input(
     label: &'static str,

@@ -103,11 +103,6 @@ impl ViewportDraft {
 pub struct ViewportDesignerContext {
     pub effect_id: String,
     pub effect_name: String,
-    /// Target LED canvas aspect ratio. Reserved for the aspect-lock
-    /// toggle in the next commit; carry it through now so callers
-    /// don't have to change their context construction later.
-    #[allow(dead_code)]
-    pub canvas_aspect: f32,
     pub initial_draft: ViewportDraft,
 }
 
