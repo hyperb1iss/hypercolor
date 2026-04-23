@@ -6,7 +6,7 @@ use tracing::warn;
 
 use hypercolor_core::scene::interpolate_color;
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_core::types::canvas::RgbaF32;
+use hypercolor_core::types::canvas::{Canvas, RgbaF32};
 use hypercolor_core::types::event::FrameData;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::ColorInterpolation;
@@ -141,6 +141,55 @@ fn current_scene_sampled_zones<'a>(
         LedSamplingStrategy::PreSampled(_) => Some(recycled_zones),
         LedSamplingStrategy::RetainedPreSampled { zones, .. } => Some(zones.as_ref()),
         LedSamplingStrategy::SparkleFlinger(_) | LedSamplingStrategy::ReusePublished(_) => None,
+    }
+}
+
+fn ensure_cpu_sampling_canvas(
+    state: &RenderThreadState,
+    sampling: &mut SamplingRuntime<'_>,
+    render_stage: &mut RenderStageStats,
+) -> bool {
+    if render_stage.composed_frame.sampling_canvas.is_some() {
+        return true;
+    }
+
+    let canvas_width = state.canvas_dims.width();
+    let canvas_height = state.canvas_dims.height();
+    if let Some(surface) = render_stage
+        .composed_frame
+        .sampling_surface
+        .as_ref()
+        .filter(|surface| surface.width() == canvas_width && surface.height() == canvas_height)
+    {
+        render_stage.composed_frame.sampling_canvas = Some(Canvas::from_published_surface(surface));
+        return true;
+    }
+
+    if let Some(surface) = render_stage
+        .composed_frame
+        .preview_surface
+        .as_ref()
+        .filter(|surface| surface.width() == canvas_width && surface.height() == canvas_height)
+    {
+        render_stage.composed_frame.sampling_canvas = Some(Canvas::from_published_surface(surface));
+        return true;
+    }
+
+    match sampling
+        .sparkleflinger
+        .read_back_current_output_surface_for_cpu_sampling()
+    {
+        Ok(Some(surface)) => {
+            render_stage.composed_frame.sampling_canvas =
+                Some(Canvas::from_published_surface(&surface));
+            render_stage.composed_frame.sampling_surface = Some(surface);
+            true
+        }
+        Ok(None) => false,
+        Err(error) => {
+            warn!(%error, "Late GPU readback for CPU spatial sampling fallback failed");
+            false
+        }
     }
 }
 
@@ -488,17 +537,27 @@ pub(crate) fn resolve_led_sampling(
         )
     {
         let cpu_sample_start = Instant::now();
-        sparkleflinger_sampling_engine
+        let sampling_engine = sparkleflinger_sampling_engine
             .as_ref()
-            .expect("CPU spatial sampling requires a SparkleFlinger-owned spatial engine")
-            .sample_into(
-                render_stage
-                    .composed_frame
-                    .sampling_canvas
-                    .as_ref()
-                    .expect("CPU spatial sampling requires a materialized canvas"),
-                sampling.output_artifacts.zones_mut(),
+            .expect("CPU spatial sampling requires a SparkleFlinger-owned spatial engine");
+        if ensure_cpu_sampling_canvas(state, sampling, render_stage) {
+            if let Some(canvas) = render_stage.composed_frame.sampling_canvas.as_ref() {
+                sampling_engine.sample_into(canvas, sampling.output_artifacts.zones_mut());
+            }
+        } else if can_hold_published_frame {
+            warn!(
+                "CPU spatial sampling fallback could not materialize a canvas; reusing published frame"
             );
+            render_stage.led_sampling_strategy =
+                LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
+            refresh_reused_frame_metadata = true;
+        } else {
+            warn!(
+                "CPU spatial sampling fallback could not materialize a canvas; sampling a black fallback frame"
+            );
+            let black_canvas = Canvas::new(state.canvas_dims.width(), state.canvas_dims.height());
+            sampling_engine.sample_into(&black_canvas, sampling.output_artifacts.zones_mut());
+        }
         render_stage.sampled_us = micros_between(cpu_sample_start, Instant::now());
     }
 

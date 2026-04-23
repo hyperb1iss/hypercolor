@@ -336,6 +336,32 @@ impl GpuSparkleFlinger {
         GpuSamplingPlan::supports_prepared_zones(prepared_zones)
     }
 
+    pub(crate) fn read_back_current_output_surface_for_cpu_sampling(
+        &mut self,
+    ) -> Result<Option<PublishedSurface>> {
+        if self.current_output.is_none() {
+            return Ok(None);
+        }
+        let Some((width, height)) = self
+            .surfaces
+            .as_ref()
+            .map(|surfaces| (surfaces.width, surfaces.height))
+        else {
+            return Ok(None);
+        };
+        let pending_output_submission = self.pending_output_submission.take();
+        Ok(self
+            .read_back_current_output_surface(
+                width,
+                height,
+                self.cached_composition_key.clone(),
+                true,
+                None,
+                pending_output_submission,
+            )?
+            .sampling_surface)
+    }
+
     fn cached_preview_surface(&self, key: &CachedPreviewSurfaceKey) -> Option<PublishedSurface> {
         self.cached_preview_surfaces
             .iter()
@@ -4708,6 +4734,48 @@ mod tests {
             compositor.spatial_sampler.sample_dispatch_count(),
             dispatch_count_before.saturating_add(1)
         );
+    }
+
+    #[test]
+    fn gpu_can_late_read_back_surface_for_cpu_sampling_fallback() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
+            ],
+        );
+        let expected = CpuSparkleFlinger::new().compose(plan.clone(), true, None);
+
+        let composed = compositor
+            .compose(&plan, false, None)
+            .expect("GPU composition should succeed before late CPU sampling fallback");
+        assert!(composed.sampling_canvas.is_none());
+        assert!(composed.sampling_surface.is_none());
+
+        let sampling_surface = compositor
+            .read_back_current_output_surface_for_cpu_sampling()
+            .expect("late CPU sampling readback should succeed")
+            .expect("late CPU sampling readback should materialize a surface");
+        let expected_canvas = expected
+            .sampling_canvas
+            .as_ref()
+            .expect("CPU compose should materialize a canvas");
+
+        assert_eq!(sampling_surface.width(), expected_canvas.width());
+        assert_eq!(sampling_surface.height(), expected_canvas.height());
+        for (actual, expected) in sampling_surface
+            .rgba_bytes()
+            .iter()
+            .zip(expected_canvas.as_rgba_bytes())
+        {
+            assert!(actual.abs_diff(*expected) <= 1);
+        }
     }
 
     #[test]

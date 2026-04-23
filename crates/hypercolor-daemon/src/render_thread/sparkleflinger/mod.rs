@@ -434,6 +434,18 @@ impl SparkleFlinger {
         }
     }
 
+    pub(crate) fn read_back_current_output_surface_for_cpu_sampling(
+        &mut self,
+    ) -> Result<Option<PublishedSurface>> {
+        match &mut self.backend {
+            SparkleFlingerBackend::Cpu(_) => Ok(None),
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                gpu.read_back_current_output_surface_for_cpu_sampling()
+            }
+        }
+    }
+
     pub(crate) fn max_pending_zone_sampling(&self) -> usize {
         match &self.backend {
             SparkleFlingerBackend::Cpu(_) => 0,
