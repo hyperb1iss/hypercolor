@@ -639,10 +639,7 @@ mod tests {
         let expected_identity = canvas_storage_publication_identity(&canvas);
         let frame = CanvasFrame::from_owned_canvas(canvas, 7, 42);
 
-        assert_eq!(
-            canvas_frame_publication_identity(&frame),
-            expected_identity
-        );
+        assert_eq!(canvas_frame_publication_identity(&frame), expected_identity);
     }
 
     #[test]

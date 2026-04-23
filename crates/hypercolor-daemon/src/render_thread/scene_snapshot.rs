@@ -450,11 +450,18 @@ mod tests {
             screen_capture_active: false,
         };
 
-        assert!(scheduler.cached_effect_demand(dependency_key, false).is_none());
+        assert!(
+            scheduler
+                .cached_effect_demand(dependency_key, false)
+                .is_none()
+        );
 
         scheduler.cache_effect_demand(dependency_key, false, demand);
 
-        assert_eq!(scheduler.cached_effect_demand(dependency_key, false), Some(demand));
+        assert_eq!(
+            scheduler.cached_effect_demand(dependency_key, false),
+            Some(demand)
+        );
         assert!(
             scheduler
                 .cached_effect_demand(SceneDependencyKey::new(2, 7), false)
@@ -465,7 +472,11 @@ mod tests {
                 .cached_effect_demand(SceneDependencyKey::new(1, 8), false)
                 .is_none()
         );
-        assert!(scheduler.cached_effect_demand(dependency_key, true).is_none());
+        assert!(
+            scheduler
+                .cached_effect_demand(dependency_key, true)
+                .is_none()
+        );
     }
 
     fn sample_layout() -> SpatialLayout {
@@ -568,13 +579,9 @@ mod tests {
         );
         let expected_loop_snapshot = render_loop_snapshot(&state).await;
 
-        let snapshot = build_frame_scene_snapshot(
-            &state,
-            &mut scene_snapshot_cache,
-            &render_scene_state,
-            0.0,
-        )
-        .await;
+        let snapshot =
+            build_frame_scene_snapshot(&state, &mut scene_snapshot_cache, &render_scene_state, 0.0)
+                .await;
 
         assert_eq!(snapshot.frame_token, expected_loop_snapshot.frame_token);
         assert_eq!(snapshot.elapsed_ms, expected_loop_snapshot.elapsed_ms);
@@ -601,13 +608,9 @@ mod tests {
         };
         let mut scene_snapshot_cache = SceneSnapshotCache::new();
 
-        let first = current_effect_scene_snapshot(
-            &state,
-            &mut scene_snapshot_cache,
-            &scene_runtime,
-            false,
-        )
-        .await;
+        let first =
+            current_effect_scene_snapshot(&state, &mut scene_snapshot_cache, &scene_runtime, false)
+                .await;
         assert!(!first.demand.audio_capture_active);
         assert!(!first.demand.screen_capture_active);
 
@@ -616,13 +619,9 @@ mod tests {
             registry.register(sample_entry(effect_id, true, true));
         }
 
-        let second = current_effect_scene_snapshot(
-            &state,
-            &mut scene_snapshot_cache,
-            &scene_runtime,
-            false,
-        )
-        .await;
+        let second =
+            current_effect_scene_snapshot(&state, &mut scene_snapshot_cache, &scene_runtime, false)
+                .await;
         assert!(second.demand.audio_capture_active);
         assert!(second.demand.screen_capture_active);
         assert!(
@@ -647,13 +646,9 @@ mod tests {
         };
         let mut scene_snapshot_cache = SceneSnapshotCache::new();
         let render_scene_state = RenderSceneState::new(SpatialEngine::new(sample_layout()), false);
-        let effect_scene = current_effect_scene_snapshot(
-            &state,
-            &mut scene_snapshot_cache,
-            &scene_runtime,
-            false,
-        )
-        .await;
+        let effect_scene =
+            current_effect_scene_snapshot(&state, &mut scene_snapshot_cache, &scene_runtime, false)
+                .await;
         let mut scene_snapshot = FrameSceneSnapshot {
             frame_token: 42,
             elapsed_ms: 123,

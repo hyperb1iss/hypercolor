@@ -13,7 +13,9 @@ use super::frame_policy::{FrameExecution, SkipDecision};
 use super::frame_reporting::{FrameCompletionReport, report_active_frame_completion};
 use super::frame_sampling::{LedSamplingOutcome, resolve_led_sampling};
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
-use super::pipeline_runtime::{OutputFrameSource, OutputReuseKey, PendingSamplingWork, PipelineRuntime};
+use super::pipeline_runtime::{
+    OutputFrameSource, OutputReuseKey, PendingSamplingWork, PipelineRuntime,
+};
 use super::scene_snapshot::{build_frame_scene_snapshot, refresh_effect_scene_snapshot};
 use super::sparkleflinger::ComposedFrameSet;
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
@@ -227,9 +229,7 @@ pub(crate) async fn execute_frame(
             || manager.can_reuse_routed_frame_outputs(layout.as_ref()),
         );
         let write_stats = match output_reuse_decision.source() {
-            OutputFrameSource::RoutedReuse => {
-                manager.reuse_routed_frame_outputs(layout.as_ref())
-            }
+            OutputFrameSource::RoutedReuse => manager.reuse_routed_frame_outputs(layout.as_ref()),
             OutputFrameSource::PublishedFrame => {
                 let published_frame = state.event_bus.frame_sender().borrow();
                 manager
@@ -398,10 +398,9 @@ pub(crate) async fn execute_frame(
 
     let (next_wake, next_skip_decision) = {
         let mut rl = state.render_loop.write().await;
-        let execution = runtime.frame_policy.complete_render_frame(
-            &mut rl,
-            frame_summary.admission,
-        );
+        let execution = runtime
+            .frame_policy
+            .complete_render_frame(&mut rl, frame_summary.admission);
         (execution.next_wake, execution.next_skip_decision)
     };
 

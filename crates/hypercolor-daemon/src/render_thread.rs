@@ -15,8 +15,8 @@
 //! }
 //! ```
 
-mod composition_planner;
 mod capture_demand;
+mod composition_planner;
 mod frame_admission;
 mod frame_composer;
 mod frame_executor;
@@ -30,10 +30,10 @@ mod pipeline_driver;
 mod pipeline_runtime;
 mod producer_queue;
 mod render_groups;
-mod screen_canvas;
 mod scene_dependency;
 mod scene_snapshot;
 mod scene_state;
+mod screen_canvas;
 #[doc(hidden)]
 pub mod sparkleflinger;
 
@@ -306,8 +306,8 @@ mod tests {
     use hypercolor_core::types::event::ZoneColors;
 
     use super::frame_policy::SkipDecision;
-    use super::screen_canvas::{parse_sector_zone_id, screen_data_to_canvas};
     use super::micros_u32;
+    use super::screen_canvas::{parse_sector_zone_id, screen_data_to_canvas};
 
     fn frame_stats(
         budget_exceeded: bool,

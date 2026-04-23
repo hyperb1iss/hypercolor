@@ -129,9 +129,8 @@ impl FramePolicy {
         &self,
         loop_state: RenderLoopState,
     ) -> Option<FrameExecution> {
-        (loop_state == RenderLoopState::Paused).then_some(FrameExecution::throttle(
-            PAUSED_POLL_INTERVAL,
-        ))
+        (loop_state == RenderLoopState::Paused)
+            .then_some(FrameExecution::throttle(PAUSED_POLL_INTERVAL))
     }
 }
 
@@ -204,8 +203,8 @@ mod tests {
         let scheduled_start = Instant::now();
         let now = scheduled_start + Duration::from_millis(50);
 
-        let next = NextWake::Delay(Duration::from_millis(120))
-            .resolve_deadline(scheduled_start, now);
+        let next =
+            NextWake::Delay(Duration::from_millis(120)).resolve_deadline(scheduled_start, now);
 
         assert_eq!(next, now + Duration::from_millis(120));
     }
@@ -256,9 +255,11 @@ mod tests {
     fn inactive_loop_execution_ignores_stopped_state() {
         let policy = FramePolicy::new(FpsTier::Full);
 
-        assert!(policy
-            .inactive_loop_execution(RenderLoopState::Stopped)
-            .is_none());
+        assert!(
+            policy
+                .inactive_loop_execution(RenderLoopState::Stopped)
+                .is_none()
+        );
     }
 
     #[test]

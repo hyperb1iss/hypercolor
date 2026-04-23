@@ -1,7 +1,7 @@
 use hypercolor_types::scene::SceneId;
 
-use super::scene_snapshot::SceneRuntimeSnapshot;
 use super::producer_queue::ProducerFrame;
+use super::scene_snapshot::SceneRuntimeSnapshot;
 use super::sparkleflinger::{CompositionLayer, CompositionMode, CompositionPlan};
 
 #[derive(Debug, Clone)]
@@ -240,8 +240,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{CompositionPlanner, PlannedSceneLayer};
-    use crate::render_thread::scene_snapshot::{SceneRuntimeSnapshot, SceneTransitionSnapshot};
     use crate::render_thread::producer_queue::ProducerFrame;
+    use crate::render_thread::scene_snapshot::{SceneRuntimeSnapshot, SceneTransitionSnapshot};
     use crate::render_thread::sparkleflinger::SparkleFlinger;
 
     fn solid_canvas(color: Rgba) -> Canvas {

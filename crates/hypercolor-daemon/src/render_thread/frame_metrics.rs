@@ -68,9 +68,7 @@ pub(crate) struct ThrottleFrameMetricsInput<'a> {
     pub(crate) publish_done_us: u32,
 }
 
-pub(crate) fn build_active_frame_metrics(
-    input: ActiveFrameMetricsInput<'_>,
-) -> LatestFrameMetrics {
+pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> LatestFrameMetrics {
     let ActiveFrameMetricsInput {
         scene_snapshot,
         render_surfaces,
@@ -437,7 +435,10 @@ mod tests {
         assert_eq!(summary.metrics.output_errors, 3);
         assert_eq!(summary.admission.total_us, summary.metrics.total_us);
         assert_eq!(summary.admission.producer_us, summary.metrics.producer_us);
-        assert_eq!(summary.admission.composition_us, summary.metrics.composition_us);
+        assert_eq!(
+            summary.admission.composition_us,
+            summary.metrics.composition_us
+        );
         assert_eq!(summary.admission.push_us, summary.metrics.push_us);
         assert_eq!(summary.admission.publish_us, summary.metrics.publish_us);
         assert_eq!(summary.admission.wake_late_us, summary.metrics.wake_late_us);
@@ -446,7 +447,10 @@ mod tests {
             summary.admission.full_frame_copy_count,
             summary.metrics.full_frame_copy_count
         );
-        assert_eq!(summary.admission.output_errors, summary.metrics.output_errors);
+        assert_eq!(
+            summary.admission.output_errors,
+            summary.metrics.output_errors
+        );
     }
 
     #[test]

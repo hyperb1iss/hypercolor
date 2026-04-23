@@ -518,14 +518,13 @@ impl OutputReuseState {
         key: OutputReuseKey,
         routed_outputs_reusable: impl FnOnce() -> bool,
     ) -> OutputReuseDecision {
-        let source =
-            if reuses_published_frame && self.matches(key) && routed_outputs_reusable() {
-                OutputFrameSource::RoutedReuse
-            } else if reuses_published_frame {
-                OutputFrameSource::PublishedFrame
-            } else {
-                OutputFrameSource::CurrentFrame
-            };
+        let source = if reuses_published_frame && self.matches(key) && routed_outputs_reusable() {
+            OutputFrameSource::RoutedReuse
+        } else if reuses_published_frame {
+            OutputFrameSource::PublishedFrame
+        } else {
+            OutputFrameSource::CurrentFrame
+        };
 
         OutputReuseDecision { key, source }
     }
@@ -1019,10 +1018,12 @@ mod tests {
         let route_probe_calls = Cell::new(0_u32);
         let key = OutputReuseKey::new(1, 7);
 
-        let source = reuse.decide_frame_source(false, key, || {
-            route_probe_calls.set(route_probe_calls.get() + 1);
-            true
-        }).source();
+        let source = reuse
+            .decide_frame_source(false, key, || {
+                route_probe_calls.set(route_probe_calls.get() + 1);
+                true
+            })
+            .source();
 
         assert_eq!(source, OutputFrameSource::CurrentFrame);
         assert_eq!(route_probe_calls.get(), 0);
@@ -1034,10 +1035,12 @@ mod tests {
         reuse.record(OutputReuseKey::new(1, 7));
         let route_probe_calls = Cell::new(0_u32);
 
-        let source = reuse.decide_frame_source(true, OutputReuseKey::new(1, 8), || {
-            route_probe_calls.set(route_probe_calls.get() + 1);
-            true
-        }).source();
+        let source = reuse
+            .decide_frame_source(true, OutputReuseKey::new(1, 8), || {
+                route_probe_calls.set(route_probe_calls.get() + 1);
+                true
+            })
+            .source();
 
         assert_eq!(source, OutputFrameSource::PublishedFrame);
         assert_eq!(route_probe_calls.get(), 0);

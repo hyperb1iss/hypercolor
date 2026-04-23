@@ -217,8 +217,8 @@ pub(crate) async fn maybe_sleep_throttle(
 
 #[cfg(test)]
 mod tests {
-    use hypercolor_core::engine::RenderLoop;
     use hypercolor_core::engine::FpsTier;
+    use hypercolor_core::engine::RenderLoop;
 
     use crate::render_thread::frame_policy::{FramePolicy, NextWake, SkipDecision};
 
