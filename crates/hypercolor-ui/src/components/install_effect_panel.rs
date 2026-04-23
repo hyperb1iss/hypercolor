@@ -37,7 +37,6 @@ pub fn InstallEffectPanel() -> impl IntoView {
     let (preview, set_preview) = signal(None::<InstallPreview>);
 
     let open_picker = {
-        let input_ref = input_ref;
         Callback::new(move |_| {
             if let Some(input) = input_ref.get() {
                 input.click();
@@ -89,7 +88,6 @@ pub fn InstallEffectPanel() -> impl IntoView {
 
     let install_effect = {
         let navigate = navigate.clone();
-        let input_ref = input_ref;
         Callback::new(move |_| {
             if is_uploading.get_untracked() {
                 return;

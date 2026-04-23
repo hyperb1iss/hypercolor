@@ -394,7 +394,6 @@ pub fn DisplaysPage() -> impl IntoView {
     });
     let (returning_to_default, set_returning_to_default) = signal(false);
     let on_return_to_default = {
-        let fx = fx;
         Callback::new(move |_| {
             if returning_to_default.get_untracked() {
                 return;
@@ -610,7 +609,7 @@ fn DisplaysModalBackdrop(
     #[prop(into)] on_close: Callback<()>,
     children: Children,
 ) -> impl IntoView {
-    let close_backdrop = on_close.clone();
+    let close_backdrop = on_close;
 
     view! {
         <div class="fixed inset-0 z-50 grid place-items-center p-4 animate-fade-in">
@@ -854,7 +853,6 @@ fn CreateSimulatorModal(
     let (error, set_error) = signal(None::<String>);
 
     let submit = {
-        let on_created = on_created.clone();
         move |event: leptos::ev::SubmitEvent| {
             event.prevent_default();
             if submitting.get_untracked() {
@@ -897,7 +895,7 @@ fn CreateSimulatorModal(
         }
     };
 
-    let close_button = on_close.clone();
+    let close_button = on_close;
 
     view! {
         <DisplaysModalBackdrop on_close=on_close>
@@ -1046,7 +1044,6 @@ fn EditSimulatorModal(
     let (error, set_error) = signal(None::<String>);
 
     let submit = {
-        let on_updated = on_updated.clone();
         let display_id = display_id.clone();
         move |event: leptos::ev::SubmitEvent| {
             event.prevent_default();
@@ -1093,7 +1090,6 @@ fn EditSimulatorModal(
     };
 
     let delete_simulator = {
-        let on_deleted = on_deleted.clone();
         let display_id = display_id.clone();
         move |_| {
             if submitting.get_untracked() {
@@ -1119,7 +1115,7 @@ fn EditSimulatorModal(
         }
     };
 
-    let close_button = on_close.clone();
+    let close_button = on_close;
 
     view! {
         <DisplaysModalBackdrop on_close=on_close>
@@ -2127,8 +2123,8 @@ fn DisplayFacePickerModal(
 ) -> impl IntoView {
     let (search, set_search) = signal(String::new());
     let thumbnails = use_context::<crate::thumbnails::ThumbnailStore>();
-    let close_button = on_close.clone();
-    let clear_button = on_clear.clone();
+    let close_button = on_close;
+    let clear_button = on_clear;
 
     view! {
         <DisplaysModalBackdrop wide=true on_close=on_close>

@@ -875,7 +875,6 @@ fn install_dropdown_outside_handler(set_open: WriteSignal<bool>) {
 #[component]
 fn PresetDropdownDismissHandler(set_open: WriteSignal<bool>) -> impl IntoView {
     install_dropdown_outside_handler(set_open);
-    view! {}
 }
 
 /// Action button group — extracted to keep tuple sizes manageable.

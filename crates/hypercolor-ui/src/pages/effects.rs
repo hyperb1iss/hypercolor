@@ -73,9 +73,9 @@ pub fn EffectsPage() -> impl IntoView {
                 s.split(',')
                     .filter(|a| !a.is_empty())
                     .map(String::from)
-                    .collect()
+                    .collect::<std::collections::BTreeSet<_>>()
             })
-            .unwrap_or_else(std::collections::BTreeSet::<String>::new)
+            .unwrap_or_default()
     });
     let (favorites_only, set_favorites_only) =
         signal(crate::storage::get("hc-fx-favorites").as_deref() == Some("true"));
@@ -202,9 +202,7 @@ pub fn EffectsPage() -> impl IntoView {
     let active_effect_id_signal = Signal::derive(move || fx.active_effect_id.get());
 
     let active_effect_summary = Memo::new(move |_| {
-        let Some(active_id) = fx.active_effect_id.get() else {
-            return None;
-        };
+        let active_id = fx.active_effect_id.get()?;
         fx.effects_index.with(|effects| {
             effects
                 .iter()

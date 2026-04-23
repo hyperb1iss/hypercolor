@@ -566,13 +566,13 @@ fn schedule_reconnect(
         }
     });
 
-    if let Some(window) = web_sys::window() {
-        if let Ok(timeout_id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+    if let Some(window) = web_sys::window()
+        && let Ok(timeout_id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
             callback.unchecked_ref(),
             final_delay,
-        ) {
-            reconnect_timeout_id.set_value(Some(timeout_id));
-        }
+        )
+    {
+        reconnect_timeout_id.set_value(Some(timeout_id));
     }
 }
 

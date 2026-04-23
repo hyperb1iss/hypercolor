@@ -206,9 +206,6 @@ pub fn CanvasPreview(
         let last_presented_frame = Rc::clone(&last_presented_frame);
         let last_presented_at = Rc::clone(&last_presented_at);
         let skipped_frames = Rc::clone(&skipped_frames);
-        let presented_fps = presented_fps;
-        let preview_telemetry = preview_telemetry;
-        let runtime_mode = runtime_mode;
         let last_published_telemetry = Rc::clone(&last_published_telemetry);
         let last_telemetry_published_at = Rc::clone(&last_telemetry_published_at);
 
@@ -277,7 +274,7 @@ pub fn CanvasPreview(
                             webgl_unavailable_streak,
                         } = &mut *presenter_state
                         {
-                            match presenter.render(&canvas_handle, &frame) {
+                            match presenter.render(&canvas_handle, frame) {
                                 PreviewRenderOutcome::Presented => {
                                     let skipped =
                                         last_presented_frame.borrow().map_or(0, |previous_frame| {
@@ -436,7 +433,6 @@ pub fn CanvasPreview(
 
     on_cleanup({
         let preview_registered = Arc::clone(&preview_registered);
-        let preview_telemetry = preview_telemetry;
         move || {
             if let Some(counter) = consumer_count
                 && preview_registered.load(Ordering::Relaxed)
@@ -459,12 +455,8 @@ pub fn CanvasPreview(
             let last_presented_frame = Rc::clone(&last_presented_frame);
             let last_presented_at = Rc::clone(&last_presented_at);
             let skipped_frames = Rc::clone(&skipped_frames);
-            let presented_fps = presented_fps;
-            let preview_telemetry = preview_telemetry;
-            let runtime_mode = runtime_mode;
             let last_published_telemetry = Rc::clone(&last_published_telemetry);
             let last_telemetry_published_at = Rc::clone(&last_telemetry_published_at);
-            let show_fps = show_fps;
 
             move |event: web_sys::Event| {
                 event.prevent_default();
@@ -504,12 +496,8 @@ pub fn CanvasPreview(
             let latest_frame = Rc::clone(&latest_frame);
             let schedule_present = Rc::clone(&schedule_present);
             let skipped_frames = Rc::clone(&skipped_frames);
-            let presented_fps = presented_fps;
-            let preview_telemetry = preview_telemetry;
-            let runtime_mode = runtime_mode;
             let last_published_telemetry = Rc::clone(&last_published_telemetry);
             let last_telemetry_published_at = Rc::clone(&last_telemetry_published_at);
-            let show_fps = show_fps;
 
             move |_: web_sys::Event| {
                 presenter.borrow_mut().reset();

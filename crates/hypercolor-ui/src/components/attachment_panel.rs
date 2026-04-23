@@ -162,7 +162,6 @@ pub fn WiringPanel(
                                                 let did = did.clone();
                                                 let slot_id = slot_id.clone();
                                                 let default_name = default_name.clone();
-                                                let device = device;
                                                 move || {
                                                     set_editing.set(false);
                                                     let previous_name = channel_name.get_untracked();

@@ -796,21 +796,21 @@ pub fn App() -> impl IntoView {
                 return current_scene_event;
             }
 
-            if let Some(scene_event) = current_scene_event.as_ref() {
-                if scene_event.event_type == "active_scene_changed" {
-                    if let (Some(scene_name), Some(scene_kind), Some(scene_mutation_mode)) = (
-                        scene_event.scene_name.clone(),
-                        scene_event.scene_kind,
-                        scene_event.scene_mutation_mode,
-                    ) {
-                        effects_ctx.set_active_scene_name.set(Some(scene_name));
-                        effects_ctx.set_active_scene_kind.set(Some(scene_kind));
-                        effects_ctx
-                            .set_active_scene_mutation_mode
-                            .set(Some(scene_mutation_mode));
-                    } else {
-                        effects_ctx.refresh_active_scene();
-                    }
+            if let Some(scene_event) = current_scene_event.as_ref()
+                && scene_event.event_type == "active_scene_changed"
+            {
+                if let (Some(scene_name), Some(scene_kind), Some(scene_mutation_mode)) = (
+                    scene_event.scene_name.clone(),
+                    scene_event.scene_kind,
+                    scene_event.scene_mutation_mode,
+                ) {
+                    effects_ctx.set_active_scene_name.set(Some(scene_name));
+                    effects_ctx.set_active_scene_kind.set(Some(scene_kind));
+                    effects_ctx
+                        .set_active_scene_mutation_mode
+                        .set(Some(scene_mutation_mode));
+                } else {
+                    effects_ctx.refresh_active_scene();
                 }
             }
             if current_scene_event

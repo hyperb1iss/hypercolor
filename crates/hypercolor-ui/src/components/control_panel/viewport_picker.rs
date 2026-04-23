@@ -575,7 +575,7 @@ fn resize_viewport_rect(
     let min_width = MIN_VIEWPORT_EDGE
         .max(MIN_VIEWPORT_EDGE * aspect_lock)
         .min(1.0);
-    let min_height = (min_width / aspect_lock).max(MIN_VIEWPORT_EDGE).min(1.0);
+    let min_height = (min_width / aspect_lock).clamp(MIN_VIEWPORT_EDGE, 1.0);
     let use_width = width_delta.abs() >= height_delta.abs();
     let mut width = (start.width + width_delta).max(min_width);
     let mut height = (start.height + height_delta).max(min_height);

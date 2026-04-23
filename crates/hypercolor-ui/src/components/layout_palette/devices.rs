@@ -290,13 +290,15 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
                 {if has_multi_zones {
                     render_multizone_header_actions(
                         state,
-                        &dev,
-                        &device_id,
-                        &physical_device_id,
-                        rgb_for_indicator.clone(),
-                        any_zone_in_layout,
-                        is_collapsed,
-                        fallback_leds,
+                        MultizoneHeaderActions {
+                            dev: &dev,
+                            layout_device_id: &device_id,
+                            channel_device_id: &physical_device_id,
+                            toggle_all_rgb: rgb_for_indicator.clone(),
+                            any_zone_in_layout,
+                            is_collapsed,
+                            fallback_leds,
+                        },
                     )
                 } else {
                     render_singlezone_header_actions(
@@ -331,15 +333,19 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
     .into_any()
 }
 
-fn render_multizone_header_actions(
-    state: PaletteState,
-    dev: &api::DeviceSummary,
-    layout_device_id: &str,
-    channel_device_id: &str,
+struct MultizoneHeaderActions<'a> {
+    dev: &'a api::DeviceSummary,
+    layout_device_id: &'a str,
+    channel_device_id: &'a str,
     toggle_all_rgb: String,
     any_zone_in_layout: Signal<bool>,
     is_collapsed: Signal<bool>,
     fallback_leds: usize,
+}
+
+fn render_multizone_header_actions(
+    state: PaletteState,
+    actions: MultizoneHeaderActions<'_>,
 ) -> AnyView {
     let layout = state.layout;
     let hidden_zones = state.hidden_zones;
@@ -350,15 +356,15 @@ fn render_multizone_header_actions(
     let removed_zone_cache = state.removed_zone_cache;
     let set_removed_zone_cache = state.set_removed_zone_cache;
 
-    let toggle_all_did = layout_device_id.to_owned();
-    let toggle_all_channel_did = channel_device_id.to_owned();
-    let toggle_all_dname = dev.name.clone();
-    let toggle_all_zones = dev.zones.clone();
-    let vis_did = layout_device_id.to_owned();
+    let toggle_all_did = actions.layout_device_id.to_owned();
+    let toggle_all_channel_did = actions.channel_device_id.to_owned();
+    let toggle_all_dname = actions.dev.name.clone();
+    let toggle_all_zones = actions.dev.zones.clone();
+    let vis_did = actions.layout_device_id.to_owned();
 
     // Device-level visibility: are ALL zones for this device hidden?
     let device_all_hidden = {
-        let did = layout_device_id.to_owned();
+        let did = actions.layout_device_id.to_owned();
         Signal::derive(move || {
             let hidden = hidden_zones.get();
             layout.with(|current| {
@@ -379,7 +385,7 @@ fn render_multizone_header_actions(
         <div class="shrink-0 flex items-center gap-1">
             // Visibility toggle (device-level)
             {move || {
-                if !any_zone_in_layout.get() { return None; }
+                if !actions.any_zone_in_layout.get() { return None; }
                 let did = vis_did.clone();
                 let all_hidden = device_all_hidden.get();
                 Some(view! {
@@ -424,7 +430,7 @@ fn render_multizone_header_actions(
                 let channel_did = toggle_all_channel_did.clone();
                 let dname = toggle_all_dname.clone();
                 let zones = toggle_all_zones.clone();
-                if any_zone_in_layout.get() {
+                if actions.any_zone_in_layout.get() {
                     view! {
                         <button
                             class="w-6 h-6 flex items-center justify-center rounded-md
@@ -451,7 +457,10 @@ fn render_multizone_header_actions(
                             class="w-6 h-6 flex items-center justify-center rounded-md
                                    border transition-all shrink-0 btn-press"
                             style=format!(
-                                "background: rgba({toggle_all_rgb}, 0.08); border-color: rgba({toggle_all_rgb}, 0.2); color: rgb({toggle_all_rgb})"
+                                "background: rgba({}, 0.08); border-color: rgba({}, 0.2); color: rgb({})",
+                                actions.toggle_all_rgb,
+                                actions.toggle_all_rgb,
+                                actions.toggle_all_rgb,
                             )
                             title="Add all zones"
                             on:click=move |ev| {
@@ -461,7 +470,7 @@ fn render_multizone_header_actions(
                                     &channel_did,
                                     &dname,
                                     &zones,
-                                    fallback_leds,
+                                    actions.fallback_leds,
                                     &layout,
                                     &set_layout,
                                     &set_selected_zone_ids,
@@ -480,7 +489,7 @@ fn render_multizone_header_actions(
             <div
                 class="text-fg-tertiary/60"
                 style=move || {
-                    if is_collapsed.get() {
+                    if actions.is_collapsed.get() {
                         "transform: rotate(-90deg); transition: transform 0.2s ease"
                     } else {
                         "transition: transform 0.2s ease"

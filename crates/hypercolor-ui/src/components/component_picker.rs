@@ -84,7 +84,6 @@ fn install_outside_click_handler(set_open: WriteSignal<bool>) {
 #[component]
 fn ComponentPickerDismissHandler(set_open: WriteSignal<bool>) -> impl IntoView {
     install_outside_click_handler(set_open);
-    view! {}
 }
 
 fn dropdown_panel_style(trigger: Option<web_sys::HtmlButtonElement>) -> String {
@@ -215,8 +214,6 @@ pub fn ComponentPicker(
             return;
         }
 
-        let search_ref = search_ref.clone();
-        let list_ref = list_ref.clone();
         let selected_template_id = selected_template_id.get_untracked();
         if let Some(window) = web_sys::window() {
             let cb = Closure::once_into_js(move || {

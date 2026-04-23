@@ -123,18 +123,17 @@ pub fn remove_device_zone(
     set_removed_zone_cache: &WriteSignal<ZoneCache>,
 ) {
     set_layout.update(|l| {
-        if let Some(layout) = l {
-            if let Some(pos) = layout
+        if let Some(layout) = l
+            && let Some(pos) = layout
                 .zones
                 .iter()
                 .position(|z| z.device_id == device_id && z.zone_name.as_deref() == zone_name)
-            {
-                let removed = layout.zones.remove(pos);
-                let key = (removed.device_id.clone(), removed.zone_name.clone());
-                set_removed_zone_cache.update(|cache| {
-                    cache.insert(key, removed);
-                });
-            }
+        {
+            let removed = layout.zones.remove(pos);
+            let key = (removed.device_id.clone(), removed.zone_name.clone());
+            set_removed_zone_cache.update(|cache| {
+                cache.insert(key, removed);
+            });
         }
     });
     set_selected_zone_ids.set(HashSet::new());

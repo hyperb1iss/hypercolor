@@ -101,11 +101,11 @@ fn paired_rect_url_controls(
 
     items
         .iter()
-        .filter_map(|(definition, _)| {
-            (matches!(definition.control_type, ControlType::Rect)
-                && definition.preview_source == Some(PreviewSource::WebViewport))
-            .then(|| (definition.control_id().to_owned(), url_control.clone()))
+        .filter(|(definition, _)| {
+            matches!(definition.control_type, ControlType::Rect)
+                && definition.preview_source == Some(PreviewSource::WebViewport)
         })
+        .map(|(definition, _)| (definition.control_id().to_owned(), url_control.clone()))
         .collect()
 }
 
@@ -243,7 +243,6 @@ fn ColorPickerDismissHandlers(
 ) -> impl IntoView {
     install_click_outside_handler(expanded_picker_id, set_expanded_picker_id);
     install_scroll_close_handler_for_picker(expanded_picker_id, set_expanded_picker_id);
-    view! {}
 }
 
 #[component]
@@ -254,7 +253,6 @@ pub fn ControlDropdownDismissHandlers(
 ) -> impl IntoView {
     install_control_dropdown_outside_handler(class_name.clone(), is_open, set_open);
     install_scroll_close_handler(class_name, is_open, set_open);
-    view! {}
 }
 
 /// A single control widget, dispatched by ControlType.

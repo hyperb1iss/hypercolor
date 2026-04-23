@@ -720,7 +720,6 @@ fn LayoutMenu(
                         .read()
                         .panels
                         .iter()
-                        .cloned()
                         .map(|config| {
                             let id = config.id;
                             let visible = config.visible;
@@ -816,5 +815,4 @@ fn install_layout_menu_outside_handler(set_open: WriteSignal<bool>) {
 #[component]
 fn LayoutMenuDismissHandler(set_open: WriteSignal<bool>) -> impl IntoView {
     install_layout_menu_outside_handler(set_open);
-    view! {}
 }
