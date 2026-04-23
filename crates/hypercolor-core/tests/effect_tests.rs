@@ -1080,30 +1080,6 @@ fn registry_update_applies_nonsemantic_mutation_without_invalidation() {
 }
 
 #[test]
-#[allow(deprecated)]
-fn registry_get_mut_preserves_legacy_nonsemantic_behavior() {
-    let mut registry = EffectRegistry::default();
-    let entry = sample_entry("legacy", EffectCategory::Utility, vec![]);
-    let id = entry.metadata.id;
-
-    registry.register(entry);
-    let generation_before_mut = registry.generation();
-
-    let found = registry.get_mut(&id).expect("should find effect");
-    found.state = EffectState::Running;
-
-    assert_eq!(
-        registry.get(&id).expect("entry").state,
-        EffectState::Running
-    );
-    assert_eq!(
-        registry.generation(),
-        generation_before_mut,
-        "legacy raw mutable access should remain non-semantic for compatibility"
-    );
-}
-
-#[test]
 fn registry_generation_advances_on_semantic_mutation() {
     let mut registry = EffectRegistry::default();
     assert_eq!(registry.generation(), 0);

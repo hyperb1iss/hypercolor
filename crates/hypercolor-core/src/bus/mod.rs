@@ -403,27 +403,6 @@ impl HypercolorBus {
         self.scene_canvas.receiver_count()
     }
 
-    /// Compatibility alias for the authoritative scene-canvas watch sender.
-    #[must_use]
-    #[deprecated(note = "use scene_canvas_sender instead")]
-    pub fn global_canvas_sender(&self) -> &watch::Sender<CanvasFrame> {
-        self.scene_canvas_sender()
-    }
-
-    /// Compatibility alias for authoritative scene-canvas updates.
-    #[must_use]
-    #[deprecated(note = "use scene_canvas_receiver instead")]
-    pub fn global_canvas_receiver(&self) -> watch::Receiver<CanvasFrame> {
-        self.scene_canvas_receiver()
-    }
-
-    /// Compatibility alias for the authoritative scene-canvas receiver count.
-    #[must_use]
-    #[deprecated(note = "use scene_canvas_receiver_count instead")]
-    pub fn global_canvas_receiver_count(&self) -> usize {
-        self.scene_canvas_receiver_count()
-    }
-
     /// Access the screen-canvas watch sender (for source preview publication).
     #[must_use]
     pub fn screen_canvas_sender(&self) -> &watch::Sender<CanvasFrame> {

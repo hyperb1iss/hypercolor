@@ -249,9 +249,8 @@ The core architecture described here is now shipped:
    scene-canvas model.
 5. Render-thread and display-output cache validity now hang off explicit
    dependency-key contracts instead of loose revision-field comparisons.
-6. Effect-registry semantic invalidation is now documented around explicit
-   mutation surfaces, with raw mutable access retained only as a deprecated
-   compatibility path.
+6. Effect-registry semantic invalidation now flows through explicit mutation
+   surfaces only.
 
 The remaining work is simplification, not architectural replacement:
 
