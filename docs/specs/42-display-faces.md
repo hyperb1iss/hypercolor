@@ -41,7 +41,7 @@ Virtual Display Simulator (41)
 
 ## 1. Overview
 
-An earlier display-overlay design proposed native Rust widget renderers —
+An earlier display-widget design proposed native Rust widget renderers —
 clocks, sensor gauges, text, and images — composited onto the viewport-sampled
 effect canvas in each display worker. That path is retired. In the newer scene
 pipeline defined by Spec 48, display faces are **direct display canvases that
@@ -81,7 +81,7 @@ becomes simply an effect in a RenderGroup that targets a display device.
 
 ### 2.1 Visual Quality Gap
 
-The native overlay renderers produce utilitarian output:
+The retired native widget proposal would have produced utilitarian output:
 
 | Renderer | Output | Limitation |
 |----------|--------|------------|
@@ -96,26 +96,25 @@ rendering pipeline.
 
 ### 2.2 Unnecessary Complexity
 
-The native overlay system adds substantial code that Servo already handles:
+A native widget stack would add substantial code that Servo already handles:
 
-- `OverlayComposer` — per-display compositor with blend math
+- per-display compositor with blend math
 - `PremulStaging` — premultiplied alpha staging buffers
 - `blend_math.rs` — sRGB LUT pixel blending
 - Four native renderers (clock, sensor, text, image) totaling ~1500 lines
-- `OverlayRendererFactory` — construction dispatch
+- renderer factory dispatch
 - Per-slot render cadence tracking, error handling, exponential backoff
 
-All of this exists because HTML overlays were gated behind Servo multi-
-session support. Solving multi-session makes the native overlay path
-unnecessary for display devices.
+Display faces avoid that fork. Servo already provides typography, animation,
+canvas, SVG, layout, controls, and sensor injection, so rich display content
+should stay on the face path.
 
-### 2.3 Architectural Misfit
+### 2.3 Architectural Fit
 
-The overlay system was designed as "widgets composited on top of the
-effect." But for LCD displays, the face **is** the content — users don't
+For LCD displays, the face **is** the content — users don't
 typically want Rainbow Wave on their Corsair LCD with a clock hovering
 over it. They want a sensor dashboard, or an animated clock, or custom
-artwork. The face is a first-class effect, not a secondary overlay.
+artwork. The face is a first-class effect, not a secondary widget layer.
 
 The RenderGroup system (Spec 27) already models this correctly: each group
 runs its own effect with its own canvas. A display face is just a
@@ -138,14 +137,14 @@ canvas isolation, and device routing.
 - **Native display resolution** — faces render at the LCD's pixel
   dimensions (480×480 Corsair, 320×320 Kraken, etc.), not at the global
   effect canvas size
-- **Unlocked frame rate** — faces bypass the 15 fps overlay cap; target
+- **Unlocked frame rate** — faces bypass the old 15 fps widget cap; target
   30 fps by default, up to 60 fps for simple faces when budget allows
 - **Sensor data via LightScript meters** — `engine.getSensorValue()` and
   the `type="sensor"` meta property, already wired
 - **Per-group canvas routing** — display workers receive their
   RenderGroup's canvas directly, bypassing viewport remapping
 - **One display content path** — display faces replace the retired native
-  overlay design instead of coexisting with it
+  widget design instead of coexisting with it
 
 ### 3.1.1 Display color and transport contract
 
@@ -169,7 +168,7 @@ publish metrics when display traffic waits behind LED traffic.
   select from bundled faces). A visual editor is future work.
 - **Face marketplace / sharing** — discovery of community faces is out
   of scope.
-- **Per-pixel native overlay compositing on top of faces** — faces handle their
+- **Per-pixel native widget compositing on top of faces** — faces handle their
   own visual composition via HTML/CSS.
 - **Replacing native effects** — native Rust effects (solid color, pulse,
   perlin noise, etc.) are unaffected. Only display rendering changes.
@@ -670,9 +669,9 @@ pub enum DisplayCanvasSource {
 
 When a display has a face RenderGroup, its worker subscribes to that
 group's canvas channel. It receives the face's output directly at native
-resolution — **no viewport remapping, no spatial sampling**. The overlay
+resolution — **no viewport remapping, no spatial sampling**. The retired
 widget path is not part of the runtime model, so the expensive viewport
-crop/scale pass is eliminated entirely.
+crop/scale pass is eliminated for direct faces.
 
 When no face is assigned, the worker falls back to the global composed
 canvas with viewport crop/scale (current behavior).
@@ -739,12 +738,12 @@ scene for RenderGroups with `display_target` matching each display device:
 
 Routing is re-evaluated on scene change and device connect/disconnect.
 
-### 9.4 No Native Overlay Coexistence
+### 9.4 No Native Widget Coexistence
 
 The native widget compositor design is retired. A display face owns the
 display content path for that target, optionally blending with the scene
 surface via `DisplayFaceBlendMode`. The display worker should not run a second
-native overlay stack on top of face output.
+native widget stack on top of face output.
 
 ---
 
@@ -898,7 +897,7 @@ canvas dimensions shown as read-only.
 
 Display faces are the only supported rich-display composition path. New UI,
 API, and MCP surfaces should expose face assignment and face composition, not
-native overlay creation.
+native widget creation.
 
 ### 13.2 Future Compatibility
 
@@ -1156,7 +1155,7 @@ early — create two contexts on the same thread, alternate `make_current()`,
 render different pages, confirm independent pixel readback. If this fails,
 the fallback is a second Servo worker thread (heavier but proven).
 
-The retired native overlay design should stay retired. Faces give users the
+The retired native widget design should stay retired. Faces give users the
 full power of HTML/CSS/JS with the same LightScript SDK they already know,
 without a second display-composition framework competing for ownership.
 

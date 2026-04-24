@@ -5,7 +5,7 @@
 > reusable transport staging inspired by Android's BufferQueue and
 > SurfaceFlinger pipeline.
 
-**Status:** Draft
+**Status:** Active (core surface ownership model landed; remaining work is measurement and cleanup)
 **Author:** Nova
 **Date:** 2026-04-08
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`
@@ -64,6 +64,22 @@ The result should be a pipeline where the canonical render surface is produced
 once, sampled directly for LED output, shared cheaply with preview/display
 consumers, and only copied when a transport boundary genuinely requires
 serialization.
+
+### 1.1 Implementation Snapshot
+
+The shipped pipeline now uses `PublishedSurface` handles and render-surface
+pools for the hot scene, preview, screen-preview, and display-face handoff
+paths. Surface-backed publication reports zero full-frame copies in steady
+state, and copy counters are exposed through render performance metrics and
+the graphics soak script.
+
+Intentional copies remain at transport boundaries:
+
+- Servo readback produces CPU RGBA bytes from the browser renderer.
+- WebSocket raw/JPEG payloads serialize canvas bytes for clients.
+- Display workers crop, mask, scale brightness, and JPEG-encode in local
+  staging before USB display transport.
+- LED device backends encode sampled colors into device-specific packets.
 
 ---
 

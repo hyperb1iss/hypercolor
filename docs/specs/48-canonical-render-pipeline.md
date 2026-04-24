@@ -5,7 +5,7 @@
 **Date:** 2026-04-21
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`
 **Supersedes:** Spec 45 as the canonical render-pipeline target
-**Related:** Specs 40, 42, 47; `docs/design/13-performance.md`
+**Related:** Specs 36, 42, 47; `docs/design/13-performance.md`
 
 ---
 
