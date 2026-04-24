@@ -505,18 +505,37 @@ impl AudioSignalSnapshot {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
     use hypercolor_core::bus::CanvasFrame;
+    use hypercolor_core::bus::HypercolorBus;
+    use hypercolor_core::device::{BackendManager, DeviceRegistry};
+    use hypercolor_core::effect::EffectRegistry;
+    use hypercolor_core::engine::{FpsTier, RenderLoop};
+    use hypercolor_core::input::InputManager;
+    use hypercolor_core::scene::SceneManager;
+    use hypercolor_core::spatial::SpatialEngine;
+    use hypercolor_core::types::audio::AudioData;
     use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+    use hypercolor_core::types::event::{FrameData, FrameTiming, ZoneColors};
     use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
-    use tokio::sync::watch;
+    use hypercolor_types::config::RenderAccelerationMode;
+    use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+    use tokio::sync::{Mutex, RwLock, watch};
 
-    use hypercolor_core::types::event::{FrameData, ZoneColors};
-
+    use super::super::pipeline_runtime::PublicationCadenceState;
     use super::{
-        FramePublicationSurfaces, authoritative_scene_surface, canvas_frame_publication_identity,
-        canvas_storage_publication_identity, published_surface_publication_identity,
-        update_published_frame,
+        FramePublicationRequest, FramePublicationSurfaces, authoritative_scene_surface,
+        canvas_frame_publication_identity, canvas_storage_publication_identity,
+        publish_frame_updates, published_surface_publication_identity, update_published_frame,
     };
+    use crate::device_settings::DeviceSettingsStore;
+    use crate::performance::PerformanceTracker;
+    use crate::preview_runtime::PreviewRuntime;
+    use crate::render_thread::{CanvasDims, RenderThreadState};
+    use crate::scene_transactions::SceneTransactionQueue;
+    use crate::session::OutputPowerState;
 
     fn sample_frame(
         zone_id: &str,
@@ -532,6 +551,61 @@ mod tests {
             frame_number,
             timestamp_ms,
         )
+    }
+
+    fn empty_layout() -> SpatialLayout {
+        SpatialLayout {
+            id: "test".into(),
+            name: "Test Layout".into(),
+            description: None,
+            canvas_width: 4,
+            canvas_height: 4,
+            zones: Vec::new(),
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        }
+    }
+
+    fn zero_timing() -> FrameTiming {
+        FrameTiming {
+            producer_us: 0,
+            composition_us: 0,
+            render_us: 0,
+            sample_us: 0,
+            push_us: 0,
+            total_us: 0,
+            budget_us: 0,
+        }
+    }
+
+    fn minimal_render_thread_state() -> RenderThreadState {
+        let event_bus = Arc::new(HypercolorBus::new());
+        let (_, power_state) = watch::channel(OutputPowerState::default());
+
+        RenderThreadState {
+            effect_registry: Arc::new(RwLock::new(EffectRegistry::new(Vec::new()))),
+            spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(empty_layout()))),
+            backend_manager: Arc::new(Mutex::new(BackendManager::new())),
+            device_registry: DeviceRegistry::new(),
+            performance: Arc::new(RwLock::new(PerformanceTracker::default())),
+            discovery_runtime: None,
+            event_bus: Arc::clone(&event_bus),
+            preview_runtime: Arc::new(PreviewRuntime::new(event_bus)),
+            render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
+            scene_manager: Arc::new(RwLock::new(SceneManager::new())),
+            input_manager: Arc::new(Mutex::new(InputManager::new())),
+            power_state,
+            device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
+                "device-settings.json",
+            )))),
+            scene_transactions: SceneTransactionQueue::default(),
+            screen_capture_configured: false,
+            canvas_dims: CanvasDims::new(4, 4),
+            render_acceleration_mode: RenderAccelerationMode::Cpu,
+            configured_max_fps_tier: FpsTier::Full,
+        }
     }
 
     #[test]
@@ -633,6 +707,51 @@ mod tests {
         let frame = CanvasFrame::from_owned_canvas(canvas, 7, 42);
 
         assert_eq!(canvas_frame_publication_identity(&frame), expected_identity);
+    }
+
+    #[test]
+    fn surface_backed_preview_publication_reports_zero_full_frame_copies() {
+        let state = minimal_render_thread_state();
+        let mut canvas_rx = state.event_bus.canvas_receiver();
+        let surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 7, 42);
+        let expected_identity = surface.storage_identity();
+        let mut recycled_frame = FrameData::empty();
+        let mut cadence = PublicationCadenceState::default();
+
+        let stats = publish_frame_updates(
+            &state,
+            &mut cadence,
+            FramePublicationRequest {
+                recycled_frame: &mut recycled_frame,
+                audio: &AudioData::silence(),
+                surfaces: FramePublicationSurfaces {
+                    canvas: None,
+                    frame_surface: Some(surface),
+                    preview_surface: None,
+                    screen_capture_surface: None,
+                    web_viewport_preview_surface: None,
+                    effect_running: true,
+                    screen_capture_active: false,
+                },
+                group_canvases: &[],
+                active_group_canvas_ids: &[],
+                frame_number: 7,
+                elapsed_ms: 42,
+                reuse_existing_frame: false,
+                refresh_existing_frame_metadata: false,
+                timing: zero_timing(),
+            },
+        );
+
+        assert_eq!(stats.full_frame_copy_count, 0);
+        assert_eq!(stats.full_frame_copy_bytes, 0);
+        assert!(
+            canvas_rx
+                .has_changed()
+                .expect("canvas receiver should stay connected")
+        );
+        let published = canvas_rx.borrow_and_update().clone();
+        assert_eq!(published.surface().storage_identity(), expected_identity);
     }
 
     #[test]
