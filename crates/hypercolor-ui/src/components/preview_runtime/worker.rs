@@ -2,16 +2,13 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use hypercolor_leptos_ext::canvas::{
-    bitmap_renderer_context, message_image_bitmap, set_canvas_size, supports_global,
-    supports_offscreen_canvas_2d_bitmap,
+    bitmap_renderer_context, message_image_bitmap, revoke_blob_url, script_blob_url,
+    set_canvas_size, supports_global, supports_offscreen_canvas_2d_bitmap,
 };
 use hypercolor_leptos_ext::events::WorkerMessageHandler;
 use js_sys::Array;
 use wasm_bindgen::JsValue;
-use web_sys::{
-    Blob, BlobPropertyBag, HtmlCanvasElement, ImageBitmapRenderingContext, MessageEvent,
-    Url, Worker,
-};
+use web_sys::{HtmlCanvasElement, ImageBitmapRenderingContext, MessageEvent, Worker};
 
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
@@ -316,19 +313,12 @@ impl Drop for PreviewWorkerRuntime {
     fn drop(&mut self) {
         self.onmessage.detach_from(&self.worker);
         self.worker.terminate();
-        let _ = Url::revoke_object_url(&self.worker_url);
+        revoke_blob_url(&self.worker_url);
     }
 }
 
 fn create_worker_url() -> Result<String, JsValue> {
-    let parts = Array::new();
-    parts.push(&JsValue::from_str(PREVIEW_WORKER_SOURCE));
-
-    let options = BlobPropertyBag::new();
-    options.set_type("text/javascript");
-
-    let blob = Blob::new_with_str_sequence_and_options(&parts.into(), &options)?;
-    Url::create_object_url_with_blob(&blob)
+    script_blob_url(PREVIEW_WORKER_SOURCE)
 }
 
 fn post_frame(worker: &Worker, frame: &CanvasFrame) -> Result<(), JsValue> {

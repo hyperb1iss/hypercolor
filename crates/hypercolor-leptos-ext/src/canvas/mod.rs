@@ -105,6 +105,15 @@ pub fn blob_url_from_bytes(bytes: &js_sys::Uint8Array, mime_type: &str) -> Resul
     web_sys::Url::create_object_url_with_blob(&blob)
 }
 
+pub fn script_blob_url(source: &str) -> Result<String, JsValue> {
+    let parts = js_sys::Array::new();
+    parts.push(&JsValue::from_str(source));
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type("text/javascript");
+    let blob = web_sys::Blob::new_with_str_sequence_and_options(&parts.into(), &options)?;
+    web_sys::Url::create_object_url_with_blob(&blob)
+}
+
 pub fn revoke_blob_url(url: &str) -> bool {
     web_sys::Url::revoke_object_url(url).is_ok()
 }
