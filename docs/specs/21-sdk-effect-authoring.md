@@ -603,6 +603,12 @@ Algorithm: split on uppercase boundaries, capitalize first word, join with space
 
 Palette behaves differently in shader vs. canvas contexts because the rendering surfaces need different things.
 
+Effect canvases and display-face canvases are authored as non-premultiplied
+sRGB RGBA. Authors should emit normal browser colors and let Hypercolor's
+output stages adapt them: LED output performs linear-light hardware shaping,
+while LCD display brightness intentionally scales encoded sRGB bytes before
+JPEG transport.
+
 ### 8.1 In Shader Effects
 
 Palette resolves to an integer index for the `iPalette` uniform:

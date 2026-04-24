@@ -159,8 +159,12 @@ not feed back into hardware output.
 Display-face canvases follow the same non-premultiplied sRGB RGBA convention
 until a device worker performs a device-specific transform such as viewport
 sampling, circular masking, JPEG encoding, or USB packetization. Display output
-may run at a different cadence than LED output, but it must yield to overdue
-LED frames on shared device transports.
+brightness is an LCD policy: it scales encoded sRGB bytes before JPEG output
+so display previews and physical LCDs stay predictable. LED brightness is a
+separate hardware-output policy that decodes sampled sRGB into linear light
+before applying device/output shaping. Display output may run at a different
+cadence than LED output, but it must yield to overdue LED frames on shared
+device transports.
 
 Any future renderer, compositor, or display worker should document the exact
 boundary where it changes color space, alpha representation, compression, or

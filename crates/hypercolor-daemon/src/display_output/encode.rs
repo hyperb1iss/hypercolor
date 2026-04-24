@@ -1,4 +1,4 @@
-//! JPEG encoding and brightness scaling for display frames.
+//! JPEG encoding and LCD-oriented byte-space brightness scaling for display frames.
 
 use anyhow::{Context, Result};
 use fast_image_resize as fr;
@@ -689,4 +689,39 @@ fn round_unit_to_u16(value: f32) -> u16 {
     }
 
     ((value * f32::from(u8::MAX)) + 0.5) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_brightness_factor_clamps_and_rounds_to_byte_policy() {
+        assert_eq!(display_brightness_factor(-1.0), 0);
+        assert_eq!(display_brightness_factor(f32::NAN), 0);
+        assert_eq!(display_brightness_factor(0.0), 0);
+        assert_eq!(display_brightness_factor(0.5), 128);
+        assert_eq!(display_brightness_factor(1.0), 255);
+        assert_eq!(display_brightness_factor(2.0), 255);
+    }
+
+    #[test]
+    fn display_brightness_scales_srgb_bytes_not_linear_light() {
+        let half_brightness = display_brightness_factor(0.5);
+
+        assert_eq!(scale_channel(0, half_brightness), 0);
+        assert_eq!(scale_channel(128, half_brightness), 64);
+        assert_eq!(scale_channel(255, half_brightness), 128);
+    }
+
+    #[test]
+    fn display_brightness_lut_reuses_policy_for_rgba_frames() {
+        let mut state = DisplayEncodeState::new().expect("display encoder should initialize");
+        refresh_display_brightness_lut(&mut state, display_brightness_factor(0.5));
+        let mut rgba = [255, 128, 64, 127, 10, 20, 30, 255];
+
+        apply_display_brightness_rgba(&mut rgba, &state.brightness_lut);
+
+        assert_eq!(rgba, [128, 64, 32, 127, 5, 10, 15, 255]);
+    }
 }
