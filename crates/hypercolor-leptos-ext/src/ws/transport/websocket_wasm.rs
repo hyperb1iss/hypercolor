@@ -17,7 +17,7 @@ type ConnectSender = Rc<RefCell<Option<oneshot::Sender<Result<(), WebSocketTrans
 pub struct WebSocketTransport {
     ws: WebSocket,
     recv_rx: mpsc::UnboundedReceiver<Result<Bytes, WebSocketTransportError>>,
-    callbacks: WebSocketCallbacks,
+    callbacks: WebSocketEventHandlers,
     state: Rc<Cell<WebSocketTransportState>>,
 }
 
@@ -105,15 +105,49 @@ pub enum WebSocketTransportError {
     NonBinaryMessage,
 }
 
-struct WebSocketCallbacks {
+pub struct WebSocketEventHandlers {
     _on_open: Closure<dyn FnMut(Event)>,
     _on_close: Closure<dyn FnMut(CloseEvent)>,
     _on_error: Closure<dyn FnMut(Event)>,
     _on_message: Closure<dyn FnMut(MessageEvent)>,
 }
 
-impl WebSocketCallbacks {
-    fn detach_from(&self, ws: &WebSocket) {
+impl WebSocketEventHandlers {
+    #[must_use]
+    pub fn attach<OnOpen, OnClose, OnError, OnMessage>(
+        ws: &WebSocket,
+        on_open: OnOpen,
+        on_close: OnClose,
+        on_error: OnError,
+        on_message: OnMessage,
+    ) -> Self
+    where
+        OnOpen: FnMut(Event) + 'static,
+        OnClose: FnMut(CloseEvent) + 'static,
+        OnError: FnMut(Event) + 'static,
+        OnMessage: FnMut(MessageEvent) + 'static,
+    {
+        let on_open = Closure::<dyn FnMut(Event)>::new(on_open);
+        ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+
+        let on_close = Closure::<dyn FnMut(CloseEvent)>::new(on_close);
+        ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+
+        let on_error = Closure::<dyn FnMut(Event)>::new(on_error);
+        ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+
+        let on_message = Closure::<dyn FnMut(MessageEvent)>::new(on_message);
+        ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+
+        Self {
+            _on_open: on_open,
+            _on_close: on_close,
+            _on_error: on_error,
+            _on_message: on_message,
+        }
+    }
+
+    pub fn detach_from(&self, ws: &WebSocket) {
         ws.set_onopen(None);
         ws.set_onclose(None);
         ws.set_onerror(None);
@@ -187,21 +221,20 @@ fn install_callbacks(
     recv_tx: mpsc::UnboundedSender<Result<Bytes, WebSocketTransportError>>,
     connect_tx: ConnectSender,
     state: Rc<Cell<WebSocketTransportState>>,
-) -> WebSocketCallbacks {
+) -> WebSocketEventHandlers {
     let open_state = Rc::clone(&state);
     let open_connect_tx = Rc::clone(&connect_tx);
-    let on_open = Closure::<dyn FnMut(Event)>::new(move |_| {
+    let on_open = move |_| {
         open_state.set(WebSocketTransportState::Open);
         if let Some(sender) = open_connect_tx.borrow_mut().take() {
             let _ = sender.send(Ok(()));
         }
-    });
-    ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+    };
 
     let close_state = Rc::clone(&state);
     let close_connect_tx = Rc::clone(&connect_tx);
     let close_recv_tx = recv_tx.clone();
-    let on_close = Closure::<dyn FnMut(CloseEvent)>::new(move |_| {
+    let on_close = move |_| {
         close_state.set(WebSocketTransportState::Closed);
         if let Some(sender) = close_connect_tx.borrow_mut().take() {
             let _ = sender.send(Err(WebSocketTransportError::Connect {
@@ -209,12 +242,11 @@ fn install_callbacks(
             }));
         }
         close_recv_tx.close_channel();
-    });
-    ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+    };
 
     let error_connect_tx = Rc::clone(&connect_tx);
     let error_recv_tx = recv_tx.clone();
-    let on_error = Closure::<dyn FnMut(Event)>::new(move |_| {
+    let on_error = move |_| {
         if let Some(sender) = error_connect_tx.borrow_mut().take() {
             let _ = sender.send(Err(WebSocketTransportError::Connect {
                 message: "websocket error before opening".to_owned(),
@@ -222,11 +254,10 @@ fn install_callbacks(
         } else {
             let _ = error_recv_tx.unbounded_send(Err(WebSocketTransportError::ErrorEvent));
         }
-    });
-    ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+    };
 
     let message_recv_tx = recv_tx;
-    let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
+    let on_message = move |event: MessageEvent| {
         let data = event.data();
         if data.is_instance_of::<js_sys::ArrayBuffer>() {
             let buffer = data.unchecked_into::<js_sys::ArrayBuffer>();
@@ -238,15 +269,9 @@ fn install_callbacks(
         } else {
             let _ = message_recv_tx.unbounded_send(Err(WebSocketTransportError::NonBinaryMessage));
         }
-    });
-    ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+    };
 
-    WebSocketCallbacks {
-        _on_open: on_open,
-        _on_close: on_close,
-        _on_error: on_error,
-        _on_message: on_message,
-    }
+    WebSocketEventHandlers::attach(ws, on_open, on_close, on_error, on_message)
 }
 
 fn js_error_message(error: &JsValue) -> String {

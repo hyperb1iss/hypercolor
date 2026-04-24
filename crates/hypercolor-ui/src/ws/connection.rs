@@ -5,10 +5,10 @@ use std::time::Duration;
 
 use hypercolor_leptos_ext::events::{EventHandle, on};
 use hypercolor_leptos_ext::prelude::{TimeoutHandle, set_timeout};
+use hypercolor_leptos_ext::ws::transport::WebSocketEventHandlers;
 use hypercolor_leptos_ext::ws::{ExponentialBackoff, HYPERCOLOR_WS_PROTOCOL};
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
-use wasm_bindgen::prelude::*;
 use web_sys::MessageEvent;
 
 use super::messages::{
@@ -32,13 +32,6 @@ fn quantize_preview_fps(value: f64) -> f32 {
     {
         ((value * 10.0).round() / 10.0) as f32
     }
-}
-
-struct SocketCallbacks {
-    _on_open: Closure<dyn FnMut()>,
-    _on_close: Closure<dyn FnMut()>,
-    _on_error: Closure<dyn FnMut()>,
-    _on_message: Closure<dyn FnMut(MessageEvent)>,
 }
 
 // ── WebSocket Manager ───────────────────────────────────────────────────────
@@ -126,7 +119,7 @@ impl WsManager {
 
         // Shared WebSocket handle for preview subscription effect.
         let ws_handle: StoredValue<Option<web_sys::WebSocket>> = StoredValue::new(None);
-        let socket_callbacks: StoredValue<Option<SocketCallbacks>, LocalStorage> =
+        let socket_callbacks: StoredValue<Option<WebSocketEventHandlers>, LocalStorage> =
             StoredValue::new_local(None);
         let visibility_change_callback: StoredValue<Option<EventHandle>, LocalStorage> =
             StoredValue::new_local(None);
@@ -178,7 +171,7 @@ impl WsManager {
 
             // onopen — subscribe to events + metrics
             let ws_clone = ws.clone();
-            let on_open = Closure::<dyn FnMut()>::new(move || {
+            let on_open = move |_| {
                 set_connection_state.set(ConnectionState::Connected);
                 reconnect_attempts.set_value(0);
                 clear_reconnect_timer(reconnect_timeout);
@@ -191,11 +184,10 @@ impl WsManager {
                     }
                 });
                 let _ = ws_clone.send_with_str(&subscribe_msg.to_string());
-            });
-            ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+            };
 
             // onclose — schedule reconnect with backoff
-            let on_close = Closure::<dyn FnMut()>::new(move || {
+            let on_close = move |_| {
                 set_connection_state.set(ConnectionState::Disconnected);
                 ws_handle.set_value(None);
                 clear_preview_subscription(
@@ -214,18 +206,16 @@ impl WsManager {
                 );
                 set_display_preview_frame.set(None);
                 schedule_reconnect(reconnect_attempts, reconnect_timeout, connect);
-            });
-            ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+            };
 
             // onerror (browser fires close after error, so reconnect triggers there)
-            let on_error = Closure::<dyn FnMut()>::new(move || {
+            let on_error = move |_| {
                 set_connection_state.set(ConnectionState::Error);
                 ws_handle.set_value(None);
-            });
-            ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+            };
 
             // onmessage — handle both JSON and binary frames
-            let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
+            let on_message = move |event: MessageEvent| {
                 // Binary frame (ArrayBuffer)
                 if let Ok(buffer) = event.data().dyn_into::<js_sys::ArrayBuffer>() {
                     if let Some((channel, frame)) = decode_preview_frame(buffer) {
@@ -309,14 +299,10 @@ impl WsManager {
                         &set_backpressure_probe_epoch,
                     );
                 }
-            });
-            ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-            socket_callbacks.set_value(Some(SocketCallbacks {
-                _on_open: on_open,
-                _on_close: on_close,
-                _on_error: on_error,
-                _on_message: on_message,
-            }));
+            };
+            socket_callbacks.set_value(Some(WebSocketEventHandlers::attach(
+                &ws, on_open, on_close, on_error, on_message,
+            )));
         });
 
         connect.set_value(Some(connect_fn));
@@ -582,7 +568,7 @@ fn clear_reconnect_timer(reconnect_timeout: StoredValue<Option<TimeoutHandle>, L
 
 fn dispose_existing_socket(
     ws_handle: StoredValue<Option<web_sys::WebSocket>>,
-    socket_callbacks: StoredValue<Option<SocketCallbacks>, LocalStorage>,
+    socket_callbacks: StoredValue<Option<WebSocketEventHandlers>, LocalStorage>,
 ) {
     let Some(existing_ws) = ws_handle.get_value() else {
         socket_callbacks.set_value(None);

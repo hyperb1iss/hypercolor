@@ -14,7 +14,9 @@ pub use in_memory::{InMemoryTransport, InMemoryTransportError};
 #[cfg(feature = "axum")]
 pub use websocket_axum::{AxumWebSocketTransport, AxumWebSocketTransportError};
 #[cfg(all(feature = "ws-client-wasm", target_arch = "wasm32"))]
-pub use websocket_wasm::{WebSocketTransport, WebSocketTransportError, WebSocketTransportState};
+pub use websocket_wasm::{
+    WebSocketEventHandlers, WebSocketTransport, WebSocketTransportError, WebSocketTransportState,
+};
 
 #[async_trait(?Send)]
 pub trait CinderTransport: MaybeSend + 'static {
