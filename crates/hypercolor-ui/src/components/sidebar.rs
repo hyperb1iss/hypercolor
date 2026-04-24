@@ -9,6 +9,7 @@ use leptos_router::hooks::use_location;
 use leptos_use::use_throttle_fn_with_arg;
 
 use hypercolor_leptos_ext::events::Input;
+use hypercolor_leptos_ext::prelude::random_unit;
 use crate::api;
 use crate::app::{EffectsContext, FrameAnalysisContext, WsContext};
 use crate::async_helpers::spawn_api_call;
@@ -164,7 +165,7 @@ pub fn Sidebar() -> impl IntoView {
             return;
         }
         let current = fx.active_effect_id.get();
-        let rand = js_sys::Math::random();
+        let rand = random_unit();
         let mut idx = (rand * list.len() as f64) as usize;
         if list.len() > 1
             && let Some(ref cur) = current

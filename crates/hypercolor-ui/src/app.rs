@@ -6,6 +6,7 @@ use leptos_router::components::{Route, Router, Routes};
 use leptos_router::hooks::use_location;
 use leptos_router::path;
 
+use hypercolor_leptos_ext::prelude::now_ms;
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 
@@ -571,7 +572,7 @@ pub fn App() -> impl IntoView {
             return;
         };
 
-        let now = js_sys::Date::now();
+        let now = now_ms();
         if now - last_canvas_analysis_at.get_untracked() < 500.0 {
             return;
         }

@@ -7,6 +7,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use hypercolor_leptos_ext::events::Input;
+use hypercolor_leptos_ext::prelude::now_ms;
 use hypercolor_types::attachment::AttachmentSuggestedZone;
 
 use crate::api;
@@ -403,7 +404,7 @@ pub fn WiringPanel(
                                                                             }
                                                                             _ => continue,
                                                                         };
-                                                                        let id = format!("custom-{}-{}-{}", cat.as_str(), js_sys::Date::now() as u64, i);
+                                                                        let id = format!("custom-{}-{}-{}", cat.as_str(), now_ms() as u64, i);
                                                                         let tmpl = hypercolor_types::attachment::AttachmentTemplate {
                                                                             id: id.clone(), name, category: cat,
                                                                             origin: hypercolor_types::attachment::AttachmentOrigin::User,

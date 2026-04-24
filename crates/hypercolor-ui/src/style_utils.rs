@@ -3,6 +3,8 @@
 
 use leptos::prelude::*;
 
+use hypercolor_leptos_ext::prelude::random_unit;
+
 /// Category -> (badge Tailwind classes, accent RGB triplet for inline styles).
 pub fn category_style(category: &str) -> (&'static str, &'static str) {
     match category {
@@ -33,7 +35,7 @@ pub fn category_accent_rgb(category: &str) -> &'static str {
 
 /// Generate a short pseudo-random hex ID (suitable for zone IDs in the editor).
 pub fn uuid_v4_hex() -> String {
-    let r = js_sys::Math::random();
+    let r = random_unit();
     #[allow(
         clippy::as_conversions,
         clippy::cast_possible_truncation,
