@@ -953,6 +953,7 @@ struct CompiledZoneRoute {
     segment: Option<SegmentRange>,
     attachment: Option<ZoneAttachment>,
     physical_led_count: Option<usize>,
+    zone_brightness: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -1484,6 +1485,7 @@ impl BackendManager {
 
         for zone in &layout.zones {
             active_layout_device_ids.insert(zone.device_id.clone());
+            let zone_brightness = normalized_zone_brightness(zone.brightness);
 
             let route = if let Some(mapping) = self.device_map.get(zone.device_id.as_str()) {
                 let target_key = (mapping.backend_id.clone(), mapping.device_id);
@@ -1499,6 +1501,7 @@ impl BackendManager {
                     ),
                     attachment: zone.attachment.clone(),
                     physical_led_count: mapping.physical_led_count,
+                    zone_brightness,
                 })
             } else {
                 PlannedZoneRoute::Unmapped {
@@ -1685,20 +1688,6 @@ impl BackendManager {
         self.warned_inactive_layout_devices
             .extend(plan.inactive_devices.iter().cloned());
 
-        // Per-zone brightness from the layout. `None` → 1.0 (full).
-        // Applied multiplicatively with device_output_brightness during
-        // staging copy so each channel of a multi-zone controller can
-        // be dimmed independently.
-        let zone_brightness_for = |zone_id: &str| -> f32 {
-            layout
-                .zones
-                .iter()
-                .find(|z| z.id == zone_id)
-                .and_then(|z| z.brightness)
-                .unwrap_or(1.0)
-                .clamp(0.0, 1.0)
-        };
-
         if zone_colors.len() == plan.ordered_zone_routes.len()
             && zone_colors
                 .iter()
@@ -1706,12 +1695,10 @@ impl BackendManager {
                 .all(|(zone_colors, ordered)| zone_colors.zone_id == ordered.zone_id)
         {
             for (zone_colors, ordered) in zone_colors.iter().zip(&plan.ordered_zone_routes) {
-                let zb = zone_brightness_for(zone_colors.zone_id.as_str());
                 self.route_zone_colors(
                     zone_colors.zone_id.as_str(),
                     &zone_colors.colors,
                     &ordered.route,
-                    zb,
                 );
             }
         } else {
@@ -1720,8 +1707,7 @@ impl BackendManager {
                     warn!(zone_id = %zc.zone_id, "zone not found in spatial layout");
                     continue;
                 };
-                let zb = zone_brightness_for(zc.zone_id.as_str());
-                self.route_zone_colors(&zc.zone_id, &zc.colors, route, zb);
+                self.route_zone_colors(&zc.zone_id, &zc.colors, route);
             }
         }
 
@@ -1838,13 +1824,7 @@ impl BackendManager {
         stats
     }
 
-    fn route_zone_colors(
-        &mut self,
-        zone_id: &str,
-        colors: &[[u8; 3]],
-        route: &PlannedZoneRoute,
-        zone_brightness: f32,
-    ) {
+    fn route_zone_colors(&mut self, zone_id: &str, colors: &[[u8; 3]], route: &PlannedZoneRoute) {
         let PlannedZoneRoute::Mapped(route) = route else {
             let PlannedZoneRoute::Unmapped { layout_device_id } = route else {
                 unreachable!("only mapped or unmapped zone routes are compiled");
@@ -1898,7 +1878,7 @@ impl BackendManager {
                     let start = segment.start;
                     let end = start.saturating_add(copy_len);
                     staging.output[start..end].copy_from_slice(&remapped_colors[..copy_len]);
-                    apply_zone_brightness(&mut staging.output[start..end], zone_brightness);
+                    apply_zone_brightness(&mut staging.output[start..end], route.zone_brightness);
                     staging.mark_written_range(start, end);
                 }
 
@@ -1917,7 +1897,7 @@ impl BackendManager {
                 let start = staging.output.len();
                 staging.output.extend_from_slice(remapped_colors);
                 let end = staging.output.len();
-                apply_zone_brightness(&mut staging.output[start..end], zone_brightness);
+                apply_zone_brightness(&mut staging.output[start..end], route.zone_brightness);
                 staging.mark_written_range(start, end);
                 None
             }
@@ -2451,10 +2431,17 @@ fn layout_routing_signature(layout: &SpatialLayout) -> u64 {
         zone.device_id.hash(&mut hasher);
         zone.zone_name.hash(&mut hasher);
         zone.led_mapping.hash(&mut hasher);
+        normalized_zone_brightness(zone.brightness)
+            .to_bits()
+            .hash(&mut hasher);
         hash_attachment(zone.attachment.as_ref(), &mut hasher);
     }
 
     hasher.finish()
+}
+
+fn normalized_zone_brightness(brightness: Option<f32>) -> f32 {
+    brightness.unwrap_or(1.0).clamp(0.0, 1.0)
 }
 
 fn hash_attachment(attachment: Option<&ZoneAttachment>, hasher: &mut DefaultHasher) {

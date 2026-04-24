@@ -873,6 +873,22 @@ fn expected_led_color_with_brightness(color: [u8; 3], brightness: f32) -> [u8; 3
     ]
 }
 
+fn expected_led_color_with_zone_brightness(color: [u8; 3], brightness: f32) -> [u8; 3] {
+    let brightness = brightness.clamp(0.0, 1.0);
+    if brightness <= 0.0 {
+        return [0, 0, 0];
+    }
+    if brightness >= 0.999 {
+        return expected_led_color(color);
+    }
+
+    expected_led_color([
+        (f32::from(color[0]) * brightness) as u8,
+        (f32::from(color[1]) * brightness) as u8,
+        (f32::from(color[2]) * brightness) as u8,
+    ])
+}
+
 #[allow(clippy::similar_names)]
 fn apply_led_perceptual_compensation(mut color: [f32; 3]) -> [f32; 3] {
     let max_channel = color[0].max(color[1]).max(color[2]);
@@ -1802,6 +1818,52 @@ async fn write_frame_rebuilds_routing_plan_when_layout_changes() {
 
     manager.write_frame(&zone_colors, &remapped_layout).await;
     assert_eq!(manager.routing_plan_rebuild_count(), 2);
+}
+
+#[tokio::test]
+async fn write_frame_rebuilds_routing_plan_when_zone_brightness_changes() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let brightness_writes = Arc::new(Mutex::new(Vec::new()));
+    let mut backend = DirectControlRecordingBackend::new(
+        device_id,
+        Arc::clone(&writes),
+        Arc::clone(&brightness_writes),
+    );
+    backend.connect(&device_id).await.expect("connect");
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device("recording:strip", "recording", device_id);
+
+    let mut dim_zone = make_zone("zone_0", "recording:strip", 4);
+    dim_zone.brightness = Some(0.25);
+    let dim_layout = make_layout(vec![dim_zone]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[200, 100, 50]; 4],
+    }];
+
+    manager.write_frame(&zone_colors, &dim_layout).await;
+    assert_eq!(manager.routing_plan_rebuild_count(), 1);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let mut brighter_zone = make_zone("zone_0", "recording:strip", 4);
+    brighter_zone.brightness = Some(0.5);
+    let brighter_layout = make_layout(vec![brighter_zone]);
+
+    manager.write_frame(&zone_colors, &brighter_layout).await;
+    assert_eq!(manager.routing_plan_rebuild_count(), 2);
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(
+        *writes.lock().await,
+        vec![
+            vec![expected_led_color_with_zone_brightness([200, 100, 50], 0.25); 4],
+            vec![expected_led_color_with_zone_brightness([200, 100, 50], 0.5); 4],
+        ]
+    );
+    assert!(brightness_writes.lock().await.is_empty());
 }
 
 #[tokio::test]
