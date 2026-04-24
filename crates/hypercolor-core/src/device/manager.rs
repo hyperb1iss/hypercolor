@@ -864,9 +864,29 @@ impl OutputQueue {
         }
 
         let led_count = payload.colors.len();
-        let colors = payload.colors.clone();
         drop(current);
-        let _ = self.push(colors);
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        let sequence = self.next_sequence;
+        let produced_at = Instant::now();
+        self.metrics.record_received(sequence);
+        self.tx.send_modify(|current| {
+            let Some(payload) = current else {
+                return;
+            };
+
+            if let Some(payload) = Arc::get_mut(payload) {
+                payload.sequence = sequence;
+                payload.produced_at = produced_at;
+                return;
+            }
+
+            let colors = payload.colors.clone();
+            *current = Some(Arc::new(FramePayload {
+                colors,
+                sequence,
+                produced_at,
+            }));
+        });
         Some(led_count)
     }
 
