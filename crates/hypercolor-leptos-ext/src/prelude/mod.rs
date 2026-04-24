@@ -151,6 +151,52 @@ pub fn random_unit() -> f64 {
     js_sys::Math::random()
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PageLocation {
+    pub protocol: String,
+    pub hostname: String,
+    pub port: String,
+}
+
+impl PageLocation {
+    #[must_use]
+    pub fn websocket_protocol(&self) -> &'static str {
+        if self.protocol == "https:" {
+            "wss:"
+        } else {
+            "ws:"
+        }
+    }
+
+    #[must_use]
+    pub fn host(&self) -> String {
+        if self.port.is_empty() {
+            self.hostname.clone()
+        } else {
+            format!("{}:{}", self.hostname, self.port)
+        }
+    }
+}
+
+#[must_use]
+pub fn current_page_location() -> PageLocation {
+    let Some(location) = web_sys::window().map(|window| window.location()) else {
+        return PageLocation {
+            protocol: "http:".to_string(),
+            hostname: "127.0.0.1".to_string(),
+            port: String::new(),
+        };
+    };
+
+    PageLocation {
+        protocol: location.protocol().unwrap_or_else(|_| "http:".to_string()),
+        hostname: location
+            .hostname()
+            .unwrap_or_else(|_| "127.0.0.1".to_string()),
+        port: location.port().unwrap_or_default(),
+    }
+}
+
 pub fn local_storage() -> Option<web_sys::Storage> {
     web_sys::window().and_then(|window| window.local_storage().ok().flatten())
 }
