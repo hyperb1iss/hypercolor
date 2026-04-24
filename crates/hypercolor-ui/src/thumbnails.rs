@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsValue;
 
 use crate::color::{self, CanvasPalette};
+use crate::storage;
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
 const LOCAL_STORAGE_KEY: &str = "hypercolor:thumbnails";
@@ -113,10 +114,7 @@ impl ThumbnailStore {
         let Ok(json) = serde_json::to_string(&cache) else {
             return;
         };
-        let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) else {
-            return;
-        };
-        if let Err(err) = storage.set_item(LOCAL_STORAGE_KEY, &json) {
+        if let Err(err) = storage::try_set(LOCAL_STORAGE_KEY, &json) {
             // The entire thumbnail cache is persisted as one JSON blob, so a
             // quota trip loses the whole set, not just this one insert. Log
             // loudly so we notice when the localStorage ceiling starts biting
@@ -140,8 +138,7 @@ impl Default for ThumbnailStore {
 }
 
 fn load_from_storage() -> Option<ThumbnailCache> {
-    let storage = web_sys::window().and_then(|w| w.local_storage().ok().flatten())?;
-    let raw = storage.get_item(LOCAL_STORAGE_KEY).ok().flatten()?;
+    let raw = storage::get(LOCAL_STORAGE_KEY)?;
     serde_json::from_str(&raw).ok()
 }
 

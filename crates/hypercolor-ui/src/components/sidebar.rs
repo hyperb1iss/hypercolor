@@ -18,6 +18,7 @@ use crate::components::canvas_preview::CanvasPreview;
 use crate::config_state::ConfigContext;
 use crate::icons::*;
 use crate::route_ui::{NowPlayingCanvasMode, now_playing_canvas_mode};
+use crate::storage;
 use crate::style_utils::category_accent_rgb;
 
 // ── Sidebar Component ──────────────────────────────────────────────────────
@@ -231,20 +232,14 @@ pub fn Sidebar() -> impl IntoView {
                 // The other eight modes are opt-in via click; the default lands
                 // in the most on-brand state on first load and after a wipe.
                 let default_mode = 0_usize;
-                let initial_mode = web_sys::window()
-                    .and_then(|w| w.local_storage().ok().flatten())
-                    .and_then(|s| s.get_item("hc-logo-mode").ok().flatten())
+                let initial_mode = storage::get("hc-logo-mode")
                     .and_then(|v| v.parse::<usize>().ok())
                     .filter(|m| *m < logo_mode_count)
                     .unwrap_or(default_mode);
                 let (logo_mode, set_logo_mode) = signal(initial_mode);
                 let cycle_logo = move |_| set_logo_mode.update(|m| {
                     *m = (*m + 1) % logo_mode_count;
-                    if let Some(storage) = web_sys::window()
-                        .and_then(|w| w.local_storage().ok().flatten())
-                    {
-                        let _ = storage.set_item("hc-logo-mode", &m.to_string());
-                    }
+                    storage::set("hc-logo-mode", &m.to_string());
                 });
 
                 let mode_names = [

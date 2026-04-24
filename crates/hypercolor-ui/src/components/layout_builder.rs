@@ -21,6 +21,7 @@ use crate::icons::*;
 use crate::layout_geometry;
 use crate::layout_history::{LayoutEditorSnapshot, LayoutHistoryState};
 use crate::layout_page_state::{LayoutPageState, PerLayoutState};
+use crate::storage;
 use crate::toasts;
 use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
 
@@ -35,22 +36,12 @@ const BOTTOM_MAX: f64 = 500.0;
 const LS_KEY_SIDEBAR: &str = "hc-layout-sidebar-width";
 const LS_KEY_BOTTOM: &str = "hc-layout-bottom-height";
 
-fn storage() -> Option<web_sys::Storage> {
-    web_sys::window().and_then(|w| w.local_storage().ok().flatten())
-}
-
 fn load_panel_size(key: &str, default: f64, min: f64, max: f64) -> f64 {
-    storage()
-        .and_then(|s| s.get_item(key).ok().flatten())
-        .and_then(|v| v.parse::<f64>().ok())
-        .map(|v| v.clamp(min, max))
-        .unwrap_or(default)
+    storage::get_clamped(key, default, min, max)
 }
 
 fn save_panel_size(key: &str, value: f64) {
-    if let Some(s) = storage() {
-        let _ = s.set_item(key, &format!("{value:.0}"));
-    }
+    storage::set(key, &format!("{value:.0}"));
 }
 
 fn preferred_replacement_layout(

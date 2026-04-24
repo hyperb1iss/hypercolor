@@ -151,6 +151,39 @@ pub fn random_unit() -> f64 {
     js_sys::Math::random()
 }
 
+pub fn local_storage() -> Option<web_sys::Storage> {
+    web_sys::window().and_then(|window| window.local_storage().ok().flatten())
+}
+
+pub fn storage_get(key: &str) -> Option<String> {
+    local_storage()?.get_item(key).ok().flatten()
+}
+
+pub fn storage_get_parsed<T: std::str::FromStr>(key: &str) -> Option<T> {
+    storage_get(key)?.parse().ok()
+}
+
+pub fn storage_get_clamped(key: &str, default: f64, min: f64, max: f64) -> f64 {
+    storage_get_parsed::<f64>(key)
+        .map(|value| value.clamp(min, max))
+        .unwrap_or(default)
+}
+
+pub fn storage_set(key: &str, value: &str) -> bool {
+    storage_try_set(key, value).is_ok()
+}
+
+pub fn storage_try_set(key: &str, value: &str) -> Result<(), JsValue> {
+    let Some(storage) = local_storage() else {
+        return Err(JsValue::from_str("localStorage unavailable"));
+    };
+    storage.set_item(key, value)
+}
+
+pub fn storage_remove(key: &str) -> bool {
+    local_storage().is_some_and(|storage| storage.remove_item(key).is_ok())
+}
+
 fn duration_to_ms(duration: Duration) -> i32 {
     i32::try_from(duration.as_millis())
         .unwrap_or(i32::MAX)

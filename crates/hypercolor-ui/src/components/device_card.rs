@@ -6,6 +6,7 @@ use leptos_icons::Icon;
 use crate::api::DeviceSummary;
 use crate::components::device_metrics_strip::DeviceMetricsStrip;
 use crate::icons::*;
+use crate::storage;
 
 // ── Brand identity ──────────────────────────────────────────────────────────
 //
@@ -230,19 +231,11 @@ pub fn classify_device(device: &DeviceSummary) -> DeviceClass {
 }
 
 fn load_category_override(device_id: &str) -> Option<String> {
-    web_sys::window()
-        .and_then(|w| w.local_storage().ok().flatten())
-        .and_then(|s| {
-            s.get_item(&format!("hc-device-category-{device_id}"))
-                .ok()
-                .flatten()
-        })
+    storage::get(&format!("hc-device-category-{device_id}"))
 }
 
 pub fn save_category_override(device_id: &str, label: &str) {
-    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
-        let _ = storage.set_item(&format!("hc-device-category-{device_id}"), label);
-    }
+    storage::set(&format!("hc-device-category-{device_id}"), label);
 }
 
 /// Device class → icon.

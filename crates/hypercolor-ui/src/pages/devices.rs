@@ -15,6 +15,7 @@ use crate::components::page_search_bar::PageSearchBar;
 use crate::components::resize_handle::ResizeHandle;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
+use crate::storage;
 use crate::style_utils::filter_chips;
 use crate::toasts;
 
@@ -30,21 +31,15 @@ const LS_STATUS: &str = "hc-devices-status-filter";
 const LS_BACKEND: &str = "hc-devices-backend-filter";
 
 fn ls_get(key: &str) -> Option<String> {
-    web_sys::window()
-        .and_then(|w| w.local_storage().ok().flatten())
-        .and_then(|s| s.get_item(key).ok().flatten())
+    storage::get(key)
 }
 
 fn ls_set(key: &str, value: &str) {
-    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
-        let _ = storage.set_item(key, value);
-    }
+    storage::set(key, value);
 }
 
 fn ls_remove(key: &str) {
-    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
-        let _ = storage.remove_item(key);
-    }
+    storage::remove(key);
 }
 
 fn load_sidebar_width() -> f64 {
