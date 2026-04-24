@@ -118,6 +118,16 @@ pub fn revoke_blob_url(url: &str) -> bool {
     web_sys::Url::revoke_object_url(url).is_ok()
 }
 
+pub fn buffer_data_f32(
+    gl: &web_sys::WebGlRenderingContext,
+    target: u32,
+    values: &[f32],
+    usage: u32,
+) {
+    let array = js_sys::Float32Array::from(values);
+    gl.buffer_data_with_array_buffer_view(target, &array, usage);
+}
+
 pub fn allocate_texture_u8(
     gl: &web_sys::WebGlRenderingContext,
     width: i32,

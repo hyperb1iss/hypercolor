@@ -1,5 +1,6 @@
 use hypercolor_leptos_ext::canvas::{
-    allocate_texture_u8, set_canvas_size, update_texture_u8_or_reallocate, webgl_context,
+    allocate_texture_u8, buffer_data_f32, set_canvas_size, update_texture_u8_or_reallocate,
+    webgl_context,
 };
 use web_sys::{
     HtmlCanvasElement, WebGlBuffer, WebGlProgram, WebGlRenderingContext as Gl, WebGlShader,
@@ -86,8 +87,7 @@ impl WebGlPreviewRuntime {
         let vertices: [f32; 16] = [
             -1.0, -1.0, 0.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0,
         ];
-        let vertex_array = js_sys::Float32Array::from(vertices.as_slice());
-        gl.buffer_data_with_array_buffer_view(Gl::ARRAY_BUFFER, &vertex_array, Gl::STATIC_DRAW);
+        buffer_data_f32(&gl, Gl::ARRAY_BUFFER, &vertices, Gl::STATIC_DRAW);
 
         let position_attrib = u32::try_from(gl.get_attrib_location(&program, "a_position"))
             .ok()
