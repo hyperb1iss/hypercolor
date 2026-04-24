@@ -19,6 +19,7 @@ type Config = {
     maxServoStallDelta: number
     maxServoBreakerDelta: number
     maxServoFailureDelta: number
+    maxServoQueueWaitMs: number
     maxUsbPriorityWaitMs: number
     out?: string
     json: boolean
@@ -80,6 +81,7 @@ const defaults: Config = {
     maxServoStallDelta: 0,
     maxServoBreakerDelta: 0,
     maxServoFailureDelta: 0,
+    maxServoQueueWaitMs: 100,
     maxUsbPriorityWaitMs: 16.7,
     json: false,
 }
@@ -111,6 +113,7 @@ Options:
   --max-servo-stall-delta <n>          Maximum Servo soft stalls [${defaults.maxServoStallDelta}]
   --max-servo-breaker-delta <n>        Maximum Servo breaker opens [${defaults.maxServoBreakerDelta}]
   --max-servo-failure-delta <n>        Maximum total Servo lifecycle failures [${defaults.maxServoFailureDelta}]
+  --max-servo-queue-wait-ms <ms>       Maximum Servo render queue wait [${defaults.maxServoQueueWaitMs}]
   --max-usb-priority-wait-ms <ms>      Maximum LED-priority display wait [${defaults.maxUsbPriorityWaitMs}]
   --out <path>                         Write JSON report
   --json                               Print JSON only
@@ -190,6 +193,9 @@ function parseArgs(argv: string[]): Config {
                 break
             case "--max-servo-failure-delta":
                 config.maxServoFailureDelta = parseNonNegativeInt(arg, value)
+                break
+            case "--max-servo-queue-wait-ms":
+                config.maxServoQueueWaitMs = parseNonNegativeNumber(arg, value)
                 break
             case "--max-usb-priority-wait-ms":
                 config.maxUsbPriorityWaitMs = parseNonNegativeNumber(arg, value)
@@ -458,6 +464,13 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
     checks.push(checkAtMost("Servo lifecycle failure delta", servoFailureDelta, config.maxServoFailureDelta))
     checks.push(
         checkAtMost(
+            "Servo render queue wait ms",
+            maxAt(observed, ["effect_health", "servo_render_queue_wait_max_ms"]),
+            config.maxServoQueueWaitMs,
+        ),
+    )
+    checks.push(
+        checkAtMost(
             "USB LED-priority display wait ms",
             maxAt(observed, ["display_output", "usb_display_led_priority_wait_max_ms"]),
             config.maxUsbPriorityWaitMs,
@@ -477,6 +490,7 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
         poolSaturationDelta,
         effectFallbackDelta: delta(first.data, last.data, ["effect_health", "fallbacks_applied_total"]),
         servoFailureDelta,
+        servoQueueWaitMaxMs: round(maxAt(observed, ["effect_health", "servo_render_queue_wait_max_ms"])),
         usbPriorityWaitMaxMs: round(maxAt(observed, ["display_output", "usb_display_led_priority_wait_max_ms"])),
     }
 
