@@ -55,11 +55,14 @@ impl CpuSparkleFlinger {
     ) -> ComposedFrameSet {
         let mut preview_surface_pool =
             RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(1, 1), 2);
-        self.compose_with_preview_pool(
+        let mut composition_surface_pool =
+            RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(1, 1), 2);
+        self.compose_with_surface_pools(
             plan,
             requires_cpu_sampling_canvas,
             preview_surface_request,
             &mut preview_surface_pool,
+            &mut composition_surface_pool,
         )
     }
 
@@ -67,12 +70,13 @@ impl CpuSparkleFlinger {
         clippy::unused_self,
         reason = "the CPU compositor keeps an instance method to match the GPU flinger API"
     )]
-    pub(super) fn compose_with_preview_pool(
+    pub(super) fn compose_with_surface_pools(
         &mut self,
         plan: CompositionPlan,
         requires_cpu_sampling_canvas: bool,
         preview_surface_request: Option<PreviewSurfaceRequest>,
         preview_surface_pool: &mut RenderSurfacePool,
+        composition_surface_pool: &mut RenderSurfacePool,
     ) -> ComposedFrameSet {
         let CompositionPlan {
             width,
@@ -130,29 +134,33 @@ impl CpuSparkleFlinger {
             );
         }
 
-        let mut layers = layers.into_iter();
-        let (mut sampling_canvas, mut sampling_canvas_opaque) =
-            if let Some(first_layer) = layers.next() {
-                take_base_canvas(first_layer, width, height)
-            } else {
-                (Canvas::new(width, height), true)
-            };
-        for layer in layers {
-            sampling_canvas_opaque =
-                compose_layer(&mut sampling_canvas, sampling_canvas_opaque, layer);
-        }
-        let preview_surface = preview_surface_request.and_then(|request| {
-            scaled_preview_surface_from_rgba(
-                sampling_canvas.as_rgba_bytes(),
-                sampling_canvas.width(),
-                sampling_canvas.height(),
-                request,
-                preview_surface_pool,
+        let (sampling_canvas, sampling_surface) = if can_reuse_first_replace_canvas(&layers) {
+            let sampling_canvas = compose_layers_into_owned_canvas(width, height, layers);
+            (sampling_canvas, None)
+        } else {
+            let sampling_surface =
+                compose_layers_into_surface(width, height, layers, composition_surface_pool);
+            (
+                Canvas::from_published_surface(&sampling_surface),
+                Some(sampling_surface),
             )
+        };
+        let preview_surface = preview_surface_request.and_then(|request| {
+            let (rgba, width, height) = sampling_surface.as_ref().map_or_else(
+                || {
+                    (
+                        sampling_canvas.as_rgba_bytes(),
+                        sampling_canvas.width(),
+                        sampling_canvas.height(),
+                    )
+                },
+                |surface| (surface.rgba_bytes(), surface.width(), surface.height()),
+            );
+            scaled_preview_surface_from_rgba(rgba, width, height, request, preview_surface_pool)
         });
 
         let mut composed = publish_composed_frame(
-            (sampling_canvas, None),
+            (sampling_canvas, sampling_surface),
             false,
             requires_cpu_sampling_canvas,
             requires_published_surface || cached_key.is_some(),
@@ -238,6 +246,30 @@ fn preview_request_matches_plan(
     request.is_some_and(|request| request.width == width && request.height == height)
 }
 
+fn can_reuse_first_replace_canvas(layers: &[CompositionLayer]) -> bool {
+    layers.first().is_some_and(|layer| {
+        layer.is_bypass_candidate()
+            && matches!(&layer.frame, ProducerFrame::Canvas(canvas) if !canvas.is_shared())
+    })
+}
+
+fn compose_layers_into_owned_canvas(
+    width: u32,
+    height: u32,
+    layers: Vec<CompositionLayer>,
+) -> Canvas {
+    let mut layers = layers.into_iter();
+    let (mut canvas, mut opaque) = if let Some(first_layer) = layers.next() {
+        take_base_canvas(first_layer, width, height)
+    } else {
+        (Canvas::new(width, height), true)
+    };
+    for layer in layers {
+        opaque = compose_layer(&mut canvas, opaque, layer);
+    }
+    canvas
+}
+
 fn take_base_canvas(layer: CompositionLayer, width: u32, height: u32) -> (Canvas, bool) {
     if layer.mode == CompositionMode::Replace && layer.opacity >= 1.0 {
         let (canvas, _) = layer.frame.into_render_frame();
@@ -247,6 +279,35 @@ fn take_base_canvas(layer: CompositionLayer, width: u32, height: u32) -> (Canvas
     let mut canvas = Canvas::new(width, height);
     let opaque = compose_layer(&mut canvas, true, layer);
     (canvas, opaque)
+}
+
+fn compose_layers_into_surface(
+    width: u32,
+    height: u32,
+    layers: Vec<CompositionLayer>,
+    composition_surface_pool: &mut RenderSurfacePool,
+) -> PublishedSurface {
+    let descriptor = SurfaceDescriptor::rgba8888(width, height);
+    if composition_surface_pool.descriptor() != descriptor {
+        *composition_surface_pool = RenderSurfacePool::with_slot_count(descriptor, 2);
+    }
+
+    let Some(mut lease) = composition_surface_pool.dequeue() else {
+        let mut canvas = Canvas::new(width, height);
+        compose_layers_into_canvas(&mut canvas, layers);
+        return PublishedSurface::from_owned_canvas(canvas, 0, 0);
+    };
+
+    compose_layers_into_canvas(lease.canvas_mut(), layers);
+    lease.submit(0, 0)
+}
+
+fn compose_layers_into_canvas(target: &mut Canvas, layers: Vec<CompositionLayer>) {
+    target.clear();
+    let mut opaque = true;
+    for layer in layers {
+        opaque = compose_layer(target, opaque, layer);
+    }
 }
 
 fn compose_layer(target: &mut Canvas, target_opaque: bool, layer: CompositionLayer) -> bool {

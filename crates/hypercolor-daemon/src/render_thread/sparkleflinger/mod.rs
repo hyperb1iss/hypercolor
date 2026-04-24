@@ -187,6 +187,7 @@ enum SparkleFlingerBackend {
 pub struct SparkleFlinger {
     backend: SparkleFlingerBackend,
     preview_surface_pool: RenderSurfacePool,
+    composition_surface_pool: RenderSurfacePool,
 }
 
 #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
@@ -207,6 +208,7 @@ impl SparkleFlinger {
         Self {
             backend: SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new()),
             preview_surface_pool: new_preview_surface_pool(),
+            composition_surface_pool: new_composition_surface_pool(),
         }
     }
 
@@ -223,6 +225,7 @@ impl SparkleFlinger {
         Ok(Self {
             backend,
             preview_surface_pool: new_preview_surface_pool(),
+            composition_surface_pool: new_composition_surface_pool(),
         })
     }
 
@@ -241,11 +244,12 @@ impl SparkleFlinger {
         preview_surface_request: Option<PreviewSurfaceRequest>,
     ) -> ComposedFrameSet {
         match &mut self.backend {
-            SparkleFlingerBackend::Cpu(backend) => backend.compose_with_preview_pool(
+            SparkleFlingerBackend::Cpu(backend) => backend.compose_with_surface_pools(
                 plan,
                 requires_cpu_sampling_canvas,
                 preview_surface_request,
                 &mut self.preview_surface_pool,
+                &mut self.composition_surface_pool,
             ),
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, cpu_fallback } => {
@@ -255,11 +259,12 @@ impl SparkleFlinger {
                 {
                     return composed;
                 }
-                let mut composed = cpu_fallback.compose_with_preview_pool(
+                let mut composed = cpu_fallback.compose_with_surface_pools(
                     plan,
                     requires_cpu_sampling_canvas,
                     preview_surface_request,
                     &mut self.preview_surface_pool,
+                    &mut self.composition_surface_pool,
                 );
                 composed.backend = CompositorBackendKind::GpuFallback;
                 composed
@@ -598,6 +603,10 @@ fn new_preview_surface_pool() -> RenderSurfacePool {
     RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(1, 1), 2)
 }
 
+fn new_composition_surface_pool() -> RenderSurfacePool {
+    RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(1, 1), 2)
+}
+
 fn preview_request_matches_dimensions(
     request: PreviewSurfaceRequest,
     width: u32,
@@ -800,6 +809,53 @@ mod tests {
             .preview_only_frame(ProducerFrame::Surface(source), request)
             .preview_surface
             .expect("third scaled preview should publish")
+            .rgba_bytes()
+            .as_ptr()
+            .addr();
+
+        assert_ne!(first, second);
+        assert_eq!(first, third);
+    }
+
+    #[test]
+    fn sparkleflinger_composed_frame_reuses_surface_pool_after_warmup() {
+        let base =
+            PublishedSurface::from_owned_canvas(solid_canvas(Rgba::new(255, 0, 0, 255)), 7, 11);
+        let overlay =
+            PublishedSurface::from_owned_canvas(solid_canvas(Rgba::new(0, 0, 255, 255)), 8, 12);
+        let plan = CompositionPlan::with_layers(
+            2,
+            2,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Surface(base)),
+                CompositionLayer::alpha(ProducerFrame::Surface(overlay), 0.5),
+            ],
+        )
+        .with_cpu_replay_cacheable(false);
+        let mut sparkleflinger = SparkleFlinger::cpu();
+        let request = Some(PreviewSurfaceRequest {
+            width: 2,
+            height: 2,
+        });
+
+        let first_surface = sparkleflinger
+            .compose_for_outputs(plan.clone(), false, request)
+            .sampling_surface
+            .expect("first composed surface should publish");
+        let first = first_surface.rgba_bytes().as_ptr().addr();
+        let second_surface = sparkleflinger
+            .compose_for_outputs(plan.clone(), false, request)
+            .sampling_surface
+            .expect("second composed surface should publish");
+        let second = second_surface.rgba_bytes().as_ptr().addr();
+
+        drop(first_surface);
+        drop(second_surface);
+
+        let third = sparkleflinger
+            .compose_for_outputs(plan, false, request)
+            .sampling_surface
+            .expect("third composed surface should publish")
             .rgba_bytes()
             .as_ptr()
             .addr();
