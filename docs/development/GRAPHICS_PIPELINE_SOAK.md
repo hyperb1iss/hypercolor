@@ -10,9 +10,9 @@ restart, or mutate services.
 ## Commands
 
 ```bash
-just graphics-soak -- --duration 60s
+just graphics-soak --duration 60s
 just graphics-soak-30
-just graphics-soak-30 -- --daemon http://127.0.0.1:9420
+just graphics-soak-30 --daemon http://127.0.0.1:9420
 ```
 
 Reports are written to `target/graphics-soak/latest.json` by the 30-minute
@@ -32,7 +32,7 @@ Run each scenario against an already-configured daemon:
 For each scenario, let the daemon warm up, then run:
 
 ```bash
-just graphics-soak-30 -- --out target/graphics-soak/<scenario>.json
+just graphics-soak-30 --out target/graphics-soak/<scenario>.json
 ```
 
 ## Passing Bar
