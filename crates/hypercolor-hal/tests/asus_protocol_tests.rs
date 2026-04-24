@@ -5,6 +5,7 @@ use hypercolor_hal::drivers::asus::{
     build_aura_addressable_gen1_protocol, build_aura_terminal_protocol, build_effect_color_payload,
 };
 use hypercolor_hal::protocol::{Protocol, ResponseStatus};
+use hypercolor_hal::protocol::{ProtocolCommand, TransferType};
 use hypercolor_hal::transport::hidraw::encode_feature_report_packet;
 use hypercolor_types::device::{DeviceColorFormat, DeviceTopologyHint};
 
@@ -163,6 +164,14 @@ fn encode_frame_splits_mainboard_and_argb_packets_with_apply_flags() {
     let colors = vec![[0x10, 0x20, 0x30]; 33];
 
     let commands = protocol.encode_frame(&colors);
+    let mut commands_into = Vec::new();
+    protocol.encode_frame_into(&colors, &mut commands_into);
+    assert_eq!(commands_into.len(), commands.len());
+    for (actual, expected) in commands_into.iter().zip(&commands) {
+        assert_eq!(actual.data, expected.data);
+        assert_eq!(actual.expects_response, expected.expects_response);
+        assert_eq!(actual.transfer_type, expected.transfer_type);
+    }
     assert_eq!(commands.len(), 3);
 
     let mainboard = wire_packet(&commands[0].data);
@@ -180,6 +189,27 @@ fn encode_frame_splits_mainboard_and_argb_packets_with_apply_flags() {
     assert_eq!(argb_last[2], 0x80);
     assert_eq!(argb_last[3], 20);
     assert_eq!(argb_last[4], 10);
+}
+
+#[test]
+fn encode_frame_into_reuses_existing_command_buffers() {
+    let protocol = AuraUsbProtocol::new(AuraControllerGen::Motherboard).with_topology(3, vec![30]);
+    let colors = vec![[0x10, 0x20, 0x30]; 33];
+    let mut commands = vec![ProtocolCommand {
+        data: Vec::with_capacity(128),
+        expects_response: true,
+        response_delay: std::time::Duration::from_millis(7),
+        post_delay: std::time::Duration::from_millis(9),
+        transfer_type: TransferType::Bulk,
+    }];
+    let original_ptr = commands[0].data.as_ptr();
+
+    protocol.encode_frame_into(&colors, &mut commands);
+
+    assert_eq!(commands.len(), 3);
+    assert_eq!(commands[0].data.as_ptr(), original_ptr);
+    assert!(!commands[0].expects_response);
+    assert_eq!(commands[0].transfer_type, TransferType::Primary);
 }
 
 #[test]

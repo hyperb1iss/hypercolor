@@ -9,7 +9,7 @@ use hypercolor_hal::drivers::asus::smbus::{
     ene_write_register, ene_write_register_block, lookup_ene_firmware_variant, simple_gpu_magic,
     supports_mode_14,
 };
-use hypercolor_hal::protocol::{Protocol, ResponseStatus};
+use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus, TransferType};
 
 #[test]
 fn byte_swap_matches_ene_indirect_addressing() {
@@ -333,6 +333,13 @@ fn smbus_protocol_frame_encoding_uses_serialized_direct_writes() {
         .expect("firmware response should parse");
 
     let commands = protocol.encode_frame(&[[0x10, 0x20, 0x30], [0xAA, 0xBB, 0xCC]]);
+    let mut commands_into = Vec::new();
+    protocol.encode_frame_into(
+        &[[0x10, 0x20, 0x30], [0xAA, 0xBB, 0xCC]],
+        &mut commands_into,
+    );
+    assert_eq!(commands_into.len(), commands.len());
+    assert_eq!(commands_into[0].data, commands[0].data);
     assert_eq!(commands.len(), 1);
     let operations =
         decode_ene_transaction(&commands[0].data).expect("frame transaction should decode");
@@ -341,6 +348,68 @@ fn smbus_protocol_frame_encoding_uses_serialized_direct_writes() {
         operations,
         ene_direct_color_writes(variant, &[[0x10, 0x20, 0x30], [0xAA, 0xBB, 0xCC]])
     );
+}
+
+#[test]
+fn smbus_protocol_encode_frame_into_reuses_existing_command_buffers() {
+    let protocol = AuraSmBusProtocol::new();
+    let mut firmware = [0_u8; 16];
+    firmware[..15].copy_from_slice(b"AUMA0-E6K5-0104");
+    protocol
+        .parse_response(&firmware)
+        .expect("firmware response should parse");
+    let mut commands = vec![ProtocolCommand {
+        data: Vec::with_capacity(256),
+        expects_response: true,
+        response_delay: Duration::from_millis(7),
+        post_delay: Duration::from_millis(9),
+        transfer_type: TransferType::Bulk,
+    }];
+    let original_ptr = commands[0].data.as_ptr();
+
+    protocol.encode_frame_into(&[[0x10, 0x20, 0x30], [0xAA, 0xBB, 0xCC]], &mut commands);
+
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].data.as_ptr(), original_ptr);
+    assert!(!commands[0].expects_response);
+    assert_eq!(commands[0].transfer_type, TransferType::Primary);
+}
+
+#[test]
+fn smbus_protocol_encode_frame_into_drops_stale_commands_without_firmware() {
+    let protocol = AuraSmBusProtocol::new();
+    let mut commands = vec![ProtocolCommand {
+        data: vec![0xAA],
+        expects_response: true,
+        response_delay: Duration::from_millis(7),
+        post_delay: Duration::from_millis(9),
+        transfer_type: TransferType::Bulk,
+    }];
+
+    protocol.encode_frame_into(&[[0x10, 0x20, 0x30]], &mut commands);
+
+    assert!(commands.is_empty());
+}
+
+#[test]
+fn smbus_protocol_encode_frame_into_drops_stale_commands_for_empty_frames() {
+    let protocol = AuraSmBusProtocol::new();
+    let mut firmware = [0_u8; 16];
+    firmware[..15].copy_from_slice(b"AUMA0-E6K5-0104");
+    protocol
+        .parse_response(&firmware)
+        .expect("firmware response should parse");
+    let mut commands = vec![ProtocolCommand {
+        data: vec![0xAA],
+        expects_response: true,
+        response_delay: Duration::from_millis(7),
+        post_delay: Duration::from_millis(9),
+        transfer_type: TransferType::Bulk,
+    }];
+
+    protocol.encode_frame_into(&[], &mut commands);
+
+    assert!(commands.is_empty());
 }
 
 #[test]
@@ -353,6 +422,13 @@ fn smbus_protocol_frame_encoding_reasserts_direct_mode_and_appends_dram_apply_la
         .expect("firmware response should parse");
 
     let commands = protocol.encode_frame(&[[0x10, 0x20, 0x30], [0xAA, 0xBB, 0xCC]]);
+    let mut commands_into = Vec::new();
+    protocol.encode_frame_into(
+        &[[0x10, 0x20, 0x30], [0xAA, 0xBB, 0xCC]],
+        &mut commands_into,
+    );
+    assert_eq!(commands_into.len(), commands.len());
+    assert_eq!(commands_into[0].data, commands[0].data);
     assert_eq!(commands.len(), 1);
     let operations =
         decode_ene_transaction(&commands[0].data).expect("frame transaction should decode");

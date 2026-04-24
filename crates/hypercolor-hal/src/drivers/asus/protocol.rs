@@ -12,8 +12,8 @@ use hypercolor_types::device::{
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,
-    TransferType,
+    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone,
+    ResponseStatus, TransferType,
 };
 
 use super::types::{
@@ -342,9 +342,16 @@ impl Protocol for AuraUsbProtocol {
     }
 
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+        let mut commands = Vec::new();
+        self.encode_frame_into(colors, &mut commands);
+        commands
+    }
+
+    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
         let normalized = self.normalize_frame_colors(colors);
         if normalized.is_empty() {
-            return Vec::new();
+            commands.truncate(0);
+            return;
         }
 
         let topology = self
@@ -352,7 +359,7 @@ impl Protocol for AuraUsbProtocol {
             .read()
             .expect("ASUS topology lock should not be poisoned")
             .clone();
-        let mut commands = Vec::new();
+        let mut command_buffer = CommandBuffer::new(commands);
         let mut cursor = 0_usize;
 
         if matches!(self.controller_gen, AuraControllerGen::Motherboard)
@@ -360,11 +367,12 @@ impl Protocol for AuraUsbProtocol {
         {
             let count = usize::try_from(topology.mainboard_leds).unwrap_or_default();
             let end = cursor.saturating_add(count).min(normalized.len());
-            commands.extend(encode_channel_direct_packets(
+            encode_channel_direct_packets_into(
+                &mut command_buffer,
                 MAINBOARD_DIRECT_IDX,
                 &normalized[cursor..end],
                 self.color_order,
-            ));
+            );
             cursor = end;
         }
 
@@ -375,15 +383,16 @@ impl Protocol for AuraUsbProtocol {
             }
 
             let end = cursor.saturating_add(count).min(normalized.len());
-            commands.extend(encode_channel_direct_packets(
+            encode_channel_direct_packets_into(
+                &mut command_buffer,
                 u8::try_from(channel_index).unwrap_or(u8::MAX),
                 &normalized[cursor..end],
                 self.color_order,
-            ));
+            );
             cursor = end;
         }
 
-        commands
+        command_buffer.finish();
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
@@ -607,43 +616,47 @@ fn build_set_addressable_direct_mode_payload(channel_index: u8) -> Vec<u8> {
     payload
 }
 
-fn encode_channel_direct_packets(
+fn encode_channel_direct_packets_into(
+    command_buffer: &mut CommandBuffer<'_>,
     channel_index: u8,
     colors: &[[u8; 3]],
     color_order: AuraColorOrder,
-) -> Vec<ProtocolCommand> {
+) {
     if colors.is_empty() {
-        return Vec::new();
+        return;
     }
 
-    colors
-        .chunks(AURA_DIRECT_LED_CHUNK)
-        .enumerate()
-        .map(|(chunk_index, chunk)| {
-            let mut packet = AuraDirectPacket::new_zeroed();
-            packet.command = u8::from(AuraCommand::DirectControl);
-            let apply_flag = if chunk_index + 1 == colors.len().div_ceil(AURA_DIRECT_LED_CHUNK) {
+    let chunk_count = colors.len().div_ceil(AURA_DIRECT_LED_CHUNK);
+    for (chunk_index, chunk) in colors.chunks(AURA_DIRECT_LED_CHUNK).enumerate() {
+        let mut packet = AuraDirectPacket::new_zeroed();
+        packet.command = u8::from(AuraCommand::DirectControl);
+        packet.channel_with_flag = channel_index
+            | if chunk_index + 1 == chunk_count {
                 0x80
             } else {
                 0x00
             };
-            packet.channel_with_flag = channel_index | apply_flag;
-            packet.led_offset = u8::try_from(chunk_index * AURA_DIRECT_LED_CHUNK)
-                .expect("ASUS direct packet offsets fit into one byte");
-            packet.chunk_len =
-                u8::try_from(chunk.len()).expect("ASUS direct packet chunk length fits into u8");
+        packet.led_offset = u8::try_from(chunk_index * AURA_DIRECT_LED_CHUNK)
+            .expect("ASUS direct packet offsets fit into one byte");
+        packet.chunk_len =
+            u8::try_from(chunk.len()).expect("ASUS direct packet chunk length fits into u8");
 
-            for (index, [r, g, b]) in chunk.iter().copied().enumerate() {
-                let [wire_r, wire_g, wire_b] = color_order.permute(r, g, b);
-                let offset = index * 3;
-                packet.colors[offset] = wire_r;
-                packet.colors[offset + 1] = wire_g;
-                packet.colors[offset + 2] = wire_b;
-            }
+        for (index, [r, g, b]) in chunk.iter().copied().enumerate() {
+            let [wire_r, wire_g, wire_b] = color_order.permute(r, g, b);
+            let offset = index * 3;
+            packet.colors[offset] = wire_r;
+            packet.colors[offset + 1] = wire_g;
+            packet.colors[offset + 2] = wire_b;
+        }
 
-            AuraUsbProtocol::build_write_command(packet.as_bytes().to_vec())
-        })
-        .collect()
+        command_buffer.push_struct(
+            &packet,
+            false,
+            Duration::ZERO,
+            Duration::ZERO,
+            TransferType::Primary,
+        );
+    }
 }
 
 fn parse_firmware_response(payload: &[u8]) -> Result<String, ProtocolError> {

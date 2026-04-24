@@ -13,8 +13,8 @@ use hypercolor_types::device::{
 };
 
 use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,
-    TransferType,
+    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone,
+    ResponseStatus, TransferType,
 };
 
 /// ENE indirect address register.
@@ -478,8 +478,15 @@ impl Protocol for AuraSmBusProtocol {
     }
 
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+        let mut commands = Vec::new();
+        self.encode_frame_into(colors, &mut commands);
+        commands
+    }
+
+    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
         let Some(variant) = self.firmware_variant() else {
-            return Vec::new();
+            commands.truncate(0);
+            return;
         };
 
         let mut operations = Vec::new();
@@ -490,10 +497,20 @@ impl Protocol for AuraSmBusProtocol {
         if let Some(register) = variant.frame_apply_register {
             operations.extend(ene_write_register(register, ENE_APPLY_VAL));
         }
+        let mut command_buffer = CommandBuffer::new(commands);
         if operations.is_empty() {
-            Vec::new()
+            command_buffer.finish();
         } else {
-            vec![Self::command(&operations, false)]
+            let data = encode_ene_transaction(&operations)
+                .expect("ENE transaction encoding should succeed for built-in operations");
+            command_buffer.push_slice(
+                &data,
+                false,
+                Duration::ZERO,
+                Duration::ZERO,
+                TransferType::Primary,
+            );
+            command_buffer.finish();
         }
     }
 
