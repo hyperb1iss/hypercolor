@@ -67,6 +67,11 @@ cinder-audit:
 graphics-soak *args='':
     bun scripts/graphics-pipeline-soak.ts {{ args }}
 
+# Observe an already-running daemon for the 30-minute graphics acceptance soak
+graphics-soak-30 *args='':
+    mkdir -p target/graphics-soak
+    bun scripts/graphics-pipeline-soak.ts --duration 30m --out target/graphics-soak/latest.json {{ args }}
+
 # Compile and smoke-run benchmark targets without full measurement
 bench-smoke:
     ./scripts/cargo-cache-build.sh cargo test -p hypercolor-core --bench core_pipeline

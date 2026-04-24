@@ -315,6 +315,9 @@ queues, latest-value backpressure instead of unbounded buffering, no sustained
 adaptive-FPS collapse, no repeated identical failure spam, and no unexplained
 copy-counter growth after warmup.
 
+See `docs/development/GRAPHICS_PIPELINE_SOAK.md` for the repeatable 30-minute
+runbook and report locations.
+
 ---
 
 ## 9. Recommendation
