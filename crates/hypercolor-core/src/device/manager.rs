@@ -30,6 +30,7 @@ use super::traits::DeviceBackend;
 type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
 type BackendDeviceKey = (String, DeviceId);
 const UNMAPPED_LAYOUT_WARN_INTERVAL: Duration = Duration::from_secs(5);
+const OUTPUT_WRITE_FAILURE_REPEAT_LOG_INTERVAL: u64 = 60;
 const LED_PERCEPTUAL_COMPENSATION_STRENGTH: f32 = 0.22;
 const LED_NEUTRAL_COMPENSATION_WEIGHT: f32 = 0.25;
 const LED_HEADROOM_WEIGHT_FLOOR: f32 = 0.1;
@@ -670,6 +671,8 @@ impl OutputQueue {
             let mut next_send_at = Instant::now();
             let mut last_sent_sequence = 0_u64;
             let mut pending = None::<Arc<FramePayload>>;
+            let mut last_logged_write_error = None::<String>;
+            let mut repeated_write_failures_since_log = 0_u64;
 
             loop {
                 if pending.is_none() {
@@ -721,29 +724,56 @@ impl OutputQueue {
                 let write_time = send_completed.saturating_duration_since(write_started);
                 let payload_bytes = frame.colors.len().saturating_mul(3);
 
-                match &result {
-                    Ok(()) => metrics_for_task.record_write_success(
-                        frame.sequence,
-                        queue_wait,
-                        write_time,
-                        send_completed.saturating_duration_since(frame.produced_at),
-                        send_completed,
-                        payload_bytes,
-                    ),
-                    Err(error) => metrics_for_task.record_write_error(
-                        frame.sequence,
-                        send_completed,
-                        error.to_string(),
-                    ),
-                }
+                match result {
+                    Ok(()) => {
+                        metrics_for_task.record_write_success(
+                            frame.sequence,
+                            queue_wait,
+                            write_time,
+                            send_completed.saturating_duration_since(frame.produced_at),
+                            send_completed,
+                            payload_bytes,
+                        );
+                        last_logged_write_error = None;
+                        repeated_write_failures_since_log = 0;
+                    }
+                    Err(error) => {
+                        let error = error.to_string();
+                        metrics_for_task.record_write_error(
+                            frame.sequence,
+                            send_completed,
+                            error.clone(),
+                        );
 
-                if let Err(error) = result {
-                    warn!(
-                        backend_id = %backend_id,
-                        device_id = %device_id,
-                        error = %error,
-                        "device output worker write failed"
-                    );
+                        if last_logged_write_error.as_deref() == Some(error.as_str()) {
+                            repeated_write_failures_since_log =
+                                repeated_write_failures_since_log.saturating_add(1);
+                        } else {
+                            last_logged_write_error = Some(error.clone());
+                            repeated_write_failures_since_log = 0;
+                        }
+
+                        if repeated_write_failures_since_log == 0
+                            || repeated_write_failures_since_log
+                                >= OUTPUT_WRITE_FAILURE_REPEAT_LOG_INTERVAL
+                        {
+                            warn!(
+                                backend_id = %backend_id,
+                                device_id = %device_id,
+                                error = %error,
+                                suppressed_repeated_failures = repeated_write_failures_since_log,
+                                "device output worker write failed"
+                            );
+                            repeated_write_failures_since_log = 0;
+                        } else {
+                            trace!(
+                                backend_id = %backend_id,
+                                device_id = %device_id,
+                                error = %error,
+                                "suppressed repeated device output worker write failure"
+                            );
+                        }
+                    }
                 }
 
                 last_sent_sequence = frame.sequence;

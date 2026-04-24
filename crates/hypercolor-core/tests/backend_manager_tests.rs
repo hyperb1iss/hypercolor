@@ -2063,6 +2063,65 @@ async fn write_frame_backend_errors_are_not_reported_synchronously() {
     assert!(failures[0].error.contains("mock write failure"));
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn write_frame_dedupes_repeated_async_write_failure_warnings() {
+    let buffer = SharedLogBuffer::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(buffer.clone())
+        .with_ansi(false)
+        .without_time()
+        .with_target(false)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let device_id = DeviceId::new();
+    let mock_config = MockDeviceConfig {
+        name: "Failing Strip".into(),
+        led_count: 5,
+        topology: LedTopology::Strip {
+            count: 5,
+            direction: hypercolor_types::spatial::StripDirection::LeftToRight,
+        },
+        id: Some(device_id),
+    };
+
+    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    backend.connect(&device_id).await.expect("connect");
+    backend.fail_write = true;
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device("mock:failing", "mock", device_id);
+
+    let layout = make_layout(vec![make_zone("zone_0", "mock:failing", 5)]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[128, 128, 128]; 5],
+    }];
+
+    for _ in 0..3 {
+        manager.write_frame(&zone_colors, &layout).await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+
+    let snapshot = manager.debug_snapshot();
+    let queue = snapshot
+        .queues
+        .first()
+        .expect("expected one queue snapshot");
+    assert_eq!(queue.errors_total, 3);
+    assert!(
+        queue
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("mock write failure")
+    );
+
+    let logs = buffer.contents();
+    assert_eq!(logs.matches("device output worker write failed").count(), 1);
+}
+
 #[tokio::test]
 async fn write_frame_groups_multiple_zones_per_device() {
     let device_id = DeviceId::new();
