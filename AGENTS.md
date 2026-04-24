@@ -17,7 +17,7 @@ just daemon          # Daemon on :9420 (preview profile, debug logging)
 just daemon-servo    # Daemon with Servo HTML effect rendering
 just tui             # TUI client (auto-starts daemon)
 just tray            # System tray applet
-just cli             # CLI tool (`hyper`)
+just cli             # CLI tool (`hypercolor`)
 just dev             # Daemon + UI dev server together
 
 # UI / SDK
@@ -54,14 +54,20 @@ crates/
   hypercolor-driver-wled/  # WLED network driver
   hypercolor-network/      # Driver registry and orchestration
   hypercolor-daemon/       # Binary: daemon + REST API + WebSocket + MCP
-  hypercolor-cli/          # Binary: `hyper` CLI tool
-  hypercolor-tui/          # Binary: Ratatui terminal UI
+  hypercolor-cli/          # Binary: `hypercolor` CLI tool
+  hypercolor-tui/          # Library: Ratatui terminal UI, launched via `hypercolor tui`
   hypercolor-tray/         # Binary: system tray applet
-  hypercolor-desktop/      # Binary: Tauri native shell
+  hypercolor-desktop/      # Binary: Tauri native shell (excluded from default CI)
+  hypercolor-leptos-ext/   # Leptos 0.8 extension helpers for the web UI
+  hypercolor-leptos-ext-macros/  # Proc macros powering hypercolor-leptos-ext
   hypercolor-ui/           # Leptos 0.8 CSR web UI (WASM, Trunk) — EXCLUDED from workspace
 sdk/                       # TypeScript SDK for HTML effects (Bun monorepo)
-docs/specs/                # Implementation specs (35+ numbered)
-docs/design/               # Design documents (25+)
+data/drivers/vendors/      # Canonical device database (30 vendor TOMLs, consumed by `just compat`)
+data/compat/               # Generated compatibility matrix outputs (JSON + markdown snippets)
+docs/specs/                # Implementation specs (numbered)
+docs/design/               # Design documents (numbered)
+docs/archive/              # Superseded plans, shipped decisions, stale snapshots
+docs/content/              # Public documentation (Zola site at docs.hypercolor.lighting)
 .agents/                   # AI agent skills and agent definitions
 ```
 
@@ -95,11 +101,12 @@ on `core` (would be circular). Network drivers depend on `driver-api`, not on `c
 The daemon runs a render loop on a dedicated thread, targeting adaptive FPS (10/20/30/45/60):
 
 ```
-InputManager::sample_all()    → Collect audio, screen, keyboard data
-EffectEngine::tick()          → Render effect to Canvas (320×200 RGBA)
-SpatialEngine::sample()       → Map canvas pixels to LED positions → ZoneColors
-BackendManager::write_frame() → Group by device, queue async sends
-HypercolorBus::publish()      → Publish frame data, canvas preview, timing metrics
+InputManager::sample_all()        → Collect audio, screen, keyboard data
+build_frame_scene_snapshot()      → Capture active scene, effect groups, and live control state
+SparkleFlinger::compose_frame()   → Each producer runs at its own cadence; the compositor latches the newest surface per producer and blends into one canonical RGBA canvas (640×480 default, configurable)
+SpatialEngine::sample()           → Map composed canvas pixels to LED positions → ZoneColors
+BackendManager::write_frame()     → Group by device, queue async sends
+HypercolorBus::publish()          → Publish frame data, canvas preview, timing metrics
 ```
 
 `FpsController` auto-shifts between tiers: downshifts fast on budget misses, upshifts
@@ -279,5 +286,5 @@ methodology, see `protocol-research`.
 
 ## Specs & Design Docs
 
-Implementation specs live in `docs/specs/` (35+ numbered). Design docs in `docs/design/` (25+).
+Implementation specs live in `docs/specs/` (numbered). Design docs in `docs/design/` (numbered).
 Always check the relevant spec before implementing a module.

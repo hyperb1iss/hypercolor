@@ -1,0 +1,87 @@
+name: Device support request
+description: Add a device we don't track, or promote one from researched to supported.
+title: "[device] "
+labels: ["hardware", "device-support"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before opening this, search `data/drivers/vendors/*.toml` and the
+        [compatibility matrix](https://github.com/hyperb1iss/hypercolor/blob/main/docs/content/hardware/compatibility.md)
+        for your device.
+
+        If your vendor isn't listed at all, this issue will seed a new vendor TOML.
+        If your vendor is listed but your device is missing or marked `known` / `researched`,
+        include USB captures or protocol notes below so we can promote it to `supported`.
+
+  - type: input
+    id: vendor
+    attributes:
+      label: Vendor
+      placeholder: "Razer / Corsair / Lian Li / ..."
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Device model
+      placeholder: "Razer Blade 15 (2023)"
+    validations:
+      required: true
+
+  - type: input
+    id: vid-pid
+    attributes:
+      label: USB VID:PID
+      description: |
+        Linux: `lsusb`. macOS: System Report → USB. Windows: Device Manager → properties → details → Hardware Ids.
+        If this is a network device with no USB IDs, put the protocol name instead (e.g., "WLED DDP").
+      placeholder: "1532:029D"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: OS you're on
+      options:
+        - Linux
+        - macOS
+        - Windows
+    validations:
+      required: true
+
+  - type: textarea
+    id: existing-support
+    attributes:
+      label: Existing support
+      description: Does OpenRGB, SignalRGB, the vendor app, or anything else currently control this device? Link to evidence if you have it.
+
+  - type: textarea
+    id: protocol-notes
+    attributes:
+      label: Protocol notes or captures
+      description: |
+        Attach Wireshark pcapng files, paste `hidapitester`/`sniffusb` output, or link to reverse-engineering
+        references. If you don't have captures, say what tool currently drives the device and we'll use that
+        as a starting point.
+
+  - type: dropdown
+    id: willing-to-test
+    attributes:
+      label: Can you test a driver on this device?
+      options:
+        - "Yes, I can run patched builds and capture logs"
+        - "Sometimes, when I have time"
+        - "No, I'm just flagging the request"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: acknowledgements
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked that this device isn't already in the compatibility matrix
+          required: true

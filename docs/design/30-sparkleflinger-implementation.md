@@ -1,15 +1,16 @@
 # 30 — SparkleFlinger Implementation Overview
 
 > Reference for how SparkleFlinger actually works in the tree today. The
-> companion to `docs/design/29-sparkleflinger-60fps-evolution.md`, which is the
-> intent; this document describes the shipped state and invariants.
+> companion to `docs/archive/2026-03-sparkleflinger-60fps-evolution.md`, which
+> captures the historical intent; this document describes the shipped state
+> and invariants.
 
 **Status:** Living document
 **Last updated:** 2026-04-10
 **Scope:** `hypercolor-daemon::render_thread`, `hypercolor-daemon::performance`,
 `hypercolor-daemon::preview_runtime`, `hypercolor-daemon::scene_transactions`,
 `hypercolor-daemon::api::{system, ws}`, `hypercolor-cli::commands::status`
-**Related:** `docs/design/29-sparkleflinger-60fps-evolution.md`,
+**Related:** `docs/archive/2026-03-sparkleflinger-60fps-evolution.md` (archived intent),
 `docs/specs/27-render-groups.md`, `docs/specs/36-render-surface-queue.md`
 
 ---

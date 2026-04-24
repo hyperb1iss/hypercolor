@@ -63,6 +63,14 @@ test-one name *args='':
 cinder-audit:
     ./scripts/cinder-audit.sh >/dev/null
 
+# Regenerate the compatibility matrix from data/drivers/vendors/*.toml
+compat *args='':
+    bun scripts/gen-compat.ts {{ args }}
+
+# Verify the compatibility matrix is up to date (gated by the `compat` CI job)
+compat-check:
+    bun scripts/gen-compat.ts --check
+
 # Observe an already-running daemon for graphics pipeline soak regressions
 graphics-soak *args='':
     bun scripts/graphics-pipeline-soak.ts {{ args }}

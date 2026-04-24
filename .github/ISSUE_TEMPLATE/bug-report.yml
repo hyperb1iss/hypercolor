@@ -1,0 +1,86 @@
+name: Bug report
+description: Daemon crashes, wrong device output, UI freezes, something broken that should work.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The more concrete the repro, the faster we can fix it.
+        If you're asking a question or proposing a feature, use Discussions instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Describe what you did and what went wrong. Paste any error messages you saw.
+      placeholder: |
+        Activated Neon City on my WLED strip and the daemon crashed with:
+        "thread 'render' panicked at ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Minimal steps that reliably trigger the bug, starting from a fresh daemon.
+      placeholder: |
+        1. `just daemon-servo`
+        2. In the UI, activate "Neon City"
+        3. Wait ~30 seconds
+        4. Daemon exits with the panic above.
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: |
+        Run `hypercolor diagnose` and paste the output here. This captures the OS
+        version, daemon state, device inventory, and recent logs. Attach as a
+        file if it's very long.
+      render: shell
+
+  - type: input
+    id: hypercolor-version
+    attributes:
+      label: Hypercolor version
+      description: Run `hypercolor --version`.
+      placeholder: "v0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os-details
+    attributes:
+      label: OS version / distro
+      placeholder: "Arch Linux, kernel 7.0.1 / macOS 15.3 / Windows 11 23H2"
+
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware involved
+      description: Which devices were active when this happened? USB VID:PID if you have it.
+      placeholder: "Razer Huntsman V2 (1532:026C), WLED strip via DDP"
+
+  - type: checkboxes
+    id: acknowledgements
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this isn't a duplicate
+          required: true

@@ -13,7 +13,7 @@
 **Date:** 2026-04-12
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`
 **Depends on:** Render Groups (27), Display Output (10 §display), SparkleFlinger (design/30)
-**Related:** `docs/design/28-render-pipeline-modernization-plan.md`,
+**Related:** `docs/archive/2026-03-render-pipeline-modernization-plan.md` (archived plan),
 Virtual Display Simulator (41)
 
 ---

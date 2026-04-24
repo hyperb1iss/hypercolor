@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security disclosure
+    url: https://github.com/hyperb1iss/hypercolor/blob/main/SECURITY.md
+    about: Report security issues privately per SECURITY.md, not on the public issue tracker.
+  - name: Questions and ideas
+    url: https://github.com/hyperb1iss/hypercolor/discussions
+    about: For general questions, brainstorming, and help, use Discussions.
+  - name: Sponsor Hypercolor
+    url: https://ko-fi.com/hyperb1iss
+    about: Funding supports the hardware lab (devices to test drivers on) and development time.

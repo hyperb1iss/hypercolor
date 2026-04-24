@@ -129,6 +129,19 @@ jobs:
         with:
           arguments: ""
 
+  # ── Compatibility Matrix Drift ─────────────────────────────────
+  # Fails if data/drivers/vendors/*.toml was edited without regenerating the
+  # compatibility matrix (README compat block, Zola page, JSON, snippet).
+  # Zero external deps; the generator uses only Bun's stdlib.
+  compat:
+    name: Compatibility Matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - name: Verify compatibility matrix is current
+        run: bun scripts/gen-compat.ts --check
+
   # ── SDK (TypeScript / Bun) ─────────────────────────────────────
   sdk:
     name: SDK

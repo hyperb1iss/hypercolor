@@ -1,0 +1,4697 @@
+{
+  "schemaVersion": 1,
+  "generatorPath": "scripts/gen-compat.ts",
+  "totals": {
+    "vendors": 30,
+    "devices": 332,
+    "byStatus": {
+      "supported": 122,
+      "in_progress": 0,
+      "planned": 0,
+      "researched": 70,
+      "known": 138,
+      "blocked": 2
+    },
+    "drivers": [
+      "asus",
+      "corsair",
+      "hue",
+      "lianli",
+      "nanoleaf",
+      "prismrgb",
+      "push2",
+      "qmk",
+      "razer",
+      "wled"
+    ]
+  },
+  "vendors": [
+    {
+      "slug": "ableton",
+      "name": "Ableton",
+      "website": "https://ableton.com",
+      "vids": [
+        10626
+      ],
+      "vidsHex": [
+        "0x2982"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": 6503,
+          "pidHex": "0x1967",
+          "name": "Push 2",
+          "type": "other",
+          "status": "supported",
+          "driver": "push2",
+          "transport": "usb_midi",
+          "leds": null,
+          "notes": "Composite MIDI + bulk display. MIDI for pad control, bulk OUT for sideband display."
+        }
+      ],
+      "counts": {
+        "supported": 1,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 0,
+        "blocked": 0
+      },
+      "totalDevices": 1,
+      "drivers": [
+        "push2"
+      ],
+      "transports": [
+        "usb_midi"
+      ],
+      "deviceTypes": [
+        "other"
+      ],
+      "sourceFile": "data/drivers/vendors/ableton.toml"
+    },
+    {
+      "slug": "alienware",
+      "name": "Alienware",
+      "website": "https://dell.com/alienware",
+      "vids": [
+        6268,
+        1226,
+        1060
+      ],
+      "vidsHex": [
+        "0x187C",
+        "0x04CA",
+        "0x0424"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": 1328,
+          "pidHex": "0x0530",
+          "name": "Alienware 15 R3",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x187C"
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "Alienware Monitor (Gen 1-3)",
+          "type": "monitor",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 165,
+          "pidHex": "0x00A5",
+          "name": "AW558 Mouse",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x04CA"
+        }
+      ],
+      "counts": {
+        "supported": 0,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 3,
+        "blocked": 0
+      },
+      "totalDevices": 3,
+      "drivers": [],
+      "transports": [],
+      "deviceTypes": [
+        "keyboard",
+        "monitor",
+        "mouse"
+      ],
+      "sourceFile": "data/drivers/vendors/alienware.toml"
+    },
+    {
+      "slug": "aquacomputer",
+      "name": "Aqua Computer",
+      "website": "https://aquacomputer.de",
+      "vids": [
+        3184
+      ],
+      "vidsHex": [
+        "0x0C70"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": 61454,
+          "pidHex": "0xF00E",
+          "name": "D5 Next",
+          "type": "other",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Pump with RGB"
+        },
+        {
+          "pid": 61456,
+          "pidHex": "0xF010",
+          "name": "Farbwerk 360",
+          "type": "argb_controller",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 61455,
+          "pidHex": "0xF00F",
+          "name": "Farbwerk Nano",
+          "type": "argb_controller",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 61458,
+          "pidHex": "0xF012",
+          "name": "HighFlow Next",
+          "type": "other",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        }
+      ],
+      "counts": {
+        "supported": 0,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 4,
+        "blocked": 0
+      },
+      "totalDevices": 4,
+      "drivers": [],
+      "transports": [],
+      "deviceTypes": [
+        "argb_controller",
+        "other"
+      ],
+      "sourceFile": "data/drivers/vendors/aquacomputer.toml"
+    },
+    {
+      "slug": "asrock",
+      "name": "ASRock",
+      "website": "https://asrock.com",
+      "vids": [
+        9934
+      ],
+      "vidsHex": [
+        "0x26CE"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "ASRock GPU (SMBus)",
+          "type": "gpu",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "AMD GPU only, SubVendor 0x1849"
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "ASRock LCD",
+          "type": "lcd",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 452,
+          "pidHex": "0x01C4",
+          "name": "Monitor Controller",
+          "type": "monitor",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 418,
+          "pidHex": "0x01A2",
+          "name": "Polychrome Motherboard",
+          "type": "motherboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        }
+      ],
+      "counts": {
+        "supported": 0,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 4,
+        "blocked": 0
+      },
+      "totalDevices": 4,
+      "drivers": [],
+      "transports": [],
+      "deviceTypes": [
+        "gpu",
+        "lcd",
+        "monitor",
+        "motherboard"
+      ],
+      "sourceFile": "data/drivers/vendors/asrock.toml"
+    },
+    {
+      "slug": "asus",
+      "name": "ASUS",
+      "website": "https://asus.com",
+      "vids": [
+        2821
+      ],
+      "vidsHex": [
+        "0x0B05"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": 6247,
+          "pidHex": "0x1867",
+          "name": "Aura Addressable (Gen 1)",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "asus",
+          "transport": "usb_hid_raw",
+          "leds": null,
+          "notes": "Up to 120 LEDs per ARGB channel"
+        },
+        {
+          "pid": 6258,
+          "pidHex": "0x1872",
+          "name": "Aura Addressable (Gen 2)",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "asus",
+          "transport": "usb_hid_raw",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 6307,
+          "pidHex": "0x18A3",
+          "name": "Aura Addressable (Gen 3)",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "asus",
+          "transport": "usb_hid_raw",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 6309,
+          "pidHex": "0x18A5",
+          "name": "Aura Addressable (Gen 4)",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "asus",
+          "transport": "usb_hid_raw",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 6387,
+          "pidHex": "0x18F3",
+          "name": "Aura Motherboard (Gen 1)",
+          "type": "motherboard",
+          "status": "supported",
+          "driver": "asus",
+          "transport": "usb_hid_raw",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 6457,
+          "pidHex": "0x1939",
+          "name": "Aura Motherboard (Gen 2)",
+          "type": "motherboard",
+          "status": "supported",
+          "driver": "asus",
+          "transport": "usb_hid_raw",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 6575,
+          "pidHex": "0x19AF",
+          "name": "Aura Motherboard (Gen 3)",
+          "type": "motherboard",
+          "status": "supported",
+          "driver": "asus",
+          "transport": "usb_hid_raw",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 6822,
+          "pidHex": "0x1AA6",
+          "name": "Aura Motherboard (Gen 4)",
+          "type": "motherboard",
+          "status": "supported",
+          "driver": "asus",
+          "transport": "usb_hid_raw",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 7149,
+          "pidHex": "0x1BED",
+          "name": "Aura Motherboard (Gen 5)",
+          "type": "motherboard",
+          "status": "supported",
+          "driver": "asus",
+          "transport": "usb_hid_raw",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 6281,
+          "pidHex": "0x1889",
+          "name": "Aura Terminal",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "asus",
+          "transport": "usb_hid_raw",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "Aura GPU (SMBus)",
+          "type": "gpu",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Ampere/Lovelace GPUs via ENE SMBus. Hypercolor has SMBus transport support."
+        },
+        {
+          "pid": 6228,
+          "pidHex": "0x1854",
+          "name": "Aura Core (Laptop)",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "ROG laptop keyboard backlighting"
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "ROG Balteus Qi",
+          "type": "mousepad",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "ROG Claymore II",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "ROG Spotlight",
+          "type": "strip",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "ROG Strix LC AIO",
+          "type": "aio",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 6246,
+          "pidHex": "0x1866",
+          "name": "ROG Strix SCAR 17",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "ROG Throne Qi Stand",
+          "type": "other",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "Ryujin AIO",
+          "type": "aio",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "TUF K1",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        }
+      ],
+      "counts": {
+        "supported": 10,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 1,
+        "known": 9,
+        "blocked": 0
+      },
+      "totalDevices": 20,
+      "drivers": [
+        "asus"
+      ],
+      "transports": [
+        "usb_hid_raw"
+      ],
+      "deviceTypes": [
+        "aio",
+        "argb_controller",
+        "gpu",
+        "keyboard",
+        "motherboard",
+        "mousepad",
+        "other",
+        "strip"
+      ],
+      "sourceFile": "data/drivers/vendors/asus.toml"
+    },
+    {
+      "slug": "coolermaster",
+      "name": "Cooler Master",
+      "website": "https://coolermaster.com",
+      "vids": [
+        9494
+      ],
+      "vidsHex": [
+        "0x2516"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": 4096,
+          "pidHex": "0x1000",
+          "name": "A-RGB LED Small Controller",
+          "type": "argb_controller",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 4113,
+          "pidHex": "0x1011",
+          "name": "ARGB Controller",
+          "type": "argb_controller",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 371,
+          "pidHex": "0x0173",
+          "name": "Gen2 LED Controller A1",
+          "type": "argb_controller",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Multiple PIDs: 0x0173, 0x01C9, 0x01CB"
+        },
+        {
+          "pid": 327,
+          "pidHex": "0x0147",
+          "name": "CK530 V2",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 325,
+          "pidHex": "0x0145",
+          "name": "CK550 V2",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 127,
+          "pidHex": "0x007F",
+          "name": "CK552 V2",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 363,
+          "pidHex": "0x016B",
+          "name": "CK720",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 365,
+          "pidHex": "0x016D",
+          "name": "CK721",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 143,
+          "pidHex": "0x008F",
+          "name": "MK730",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 103,
+          "pidHex": "0x0067",
+          "name": "MK750",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 105,
+          "pidHex": "0x0069",
+          "name": "MK850",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 257,
+          "pidHex": "0x0101",
+          "name": "MM711",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 263,
+          "pidHex": "0x0107",
+          "name": "MP750L",
+          "type": "mousepad",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 261,
+          "pidHex": "0x0105",
+          "name": "MP750M",
+          "type": "mousepad",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 265,
+          "pidHex": "0x0109",
+          "name": "MP750XL",
+          "type": "mousepad",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 109,
+          "pidHex": "0x006D",
+          "name": "MP860",
+          "type": "mousepad",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 135,
+          "pidHex": "0x0087",
+          "name": "SK620/SK622",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Multiple PIDs: 0x0087, 0x0159, 0x0149, 0x014B"
+        },
+        {
+          "pid": 141,
+          "pidHex": "0x008D",
+          "name": "SK650",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 349,
+          "pidHex": "0x015D",
+          "name": "SK652",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 427,
+          "pidHex": "0x01AB",
+          "name": "SK653",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        }
+      ],
+      "counts": {
+        "supported": 0,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 3,
+        "known": 17,
+        "blocked": 0
+      },
+      "totalDevices": 20,
+      "drivers": [],
+      "transports": [],
+      "deviceTypes": [
+        "argb_controller",
+        "keyboard",
+        "mouse",
+        "mousepad"
+      ],
+      "sourceFile": "data/drivers/vendors/coolermaster.toml"
+    },
+    {
+      "slug": "corsair",
+      "name": "Corsair",
+      "website": "https://corsair.com",
+      "vids": [
+        6940
+      ],
+      "vidsHex": [
+        "0x1B1C"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": 7424,
+          "pidHex": "0x1D00",
+          "name": "1000D Obsidian",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "2 channels"
+        },
+        {
+          "pid": 3088,
+          "pidHex": "0x0C10",
+          "name": "Commander Pro",
+          "type": "fan_controller",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "2 RGB channels + fan control"
+        },
+        {
+          "pid": 3129,
+          "pidHex": "0x0C39",
+          "name": "Elite Capellix LCD",
+          "type": "lcd",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_bulk",
+          "leds": null,
+          "notes": "480x480 JPEG streaming, 30fps"
+        },
+        {
+          "pid": 3123,
+          "pidHex": "0x0C33",
+          "name": "Elite Capellix LCD (Alt PID)",
+          "type": "lcd",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_bulk",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3150,
+          "pidHex": "0x0C4E",
+          "name": "iCUE LINK LCD",
+          "type": "lcd",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_bulk",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3135,
+          "pidHex": "0x0C3F",
+          "name": "iCUE LINK System Hub",
+          "type": "fan_controller",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "Hub-and-spoke daisy-chain protocol, dynamic device enumeration"
+        },
+        {
+          "pid": 3098,
+          "pidHex": "0x0C1A",
+          "name": "Lighting Node Core",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "1 channel, 204 LEDs max"
+        },
+        {
+          "pid": 3083,
+          "pidHex": "0x0C0B",
+          "name": "Lighting Node Pro",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "2 channels, 408 LEDs max"
+        },
+        {
+          "pid": 3102,
+          "pidHex": "0x0C1E",
+          "name": "LS100 Starter Kit",
+          "type": "strip",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "1 channel"
+        },
+        {
+          "pid": 3107,
+          "pidHex": "0x0C23",
+          "name": "LT100 Tower",
+          "type": "strip",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "2 channels"
+        },
+        {
+          "pid": 3157,
+          "pidHex": "0x0C55",
+          "name": "Nautilus RS LCD",
+          "type": "lcd",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_bulk",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 7428,
+          "pidHex": "0x1D04",
+          "name": "SPEC OMEGA RGB",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "2 channels"
+        },
+        {
+          "pid": 3138,
+          "pidHex": "0x0C42",
+          "name": "XC7 RGB Elite LCD",
+          "type": "lcd",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_bulk",
+          "leds": 31,
+          "notes": "480x480 display + 31-LED ring, custom XC7 init sequence"
+        },
+        {
+          "pid": 3139,
+          "pidHex": "0x0C43",
+          "name": "XD6 Elite LCD",
+          "type": "lcd",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_bulk",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3090,
+          "pidHex": "0x0C12",
+          "name": "Commander Core",
+          "type": "fan_controller",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Lighting Commander Core protocol"
+        },
+        {
+          "pid": 3100,
+          "pidHex": "0x0C1C",
+          "name": "Commander Core XT",
+          "type": "fan_controller",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 6958,
+          "pidHex": "0x1B2E",
+          "name": "Dominator RAM",
+          "type": "ram",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "SMBus protocol"
+        },
+        {
+          "pid": 6976,
+          "pidHex": "0x1B40",
+          "name": "Dominator Titanium RAM",
+          "type": "ram",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 2639,
+          "pidHex": "0x0A4F",
+          "name": "HS80 RGB Wired",
+          "type": "headset",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 2628,
+          "pidHex": "0x0A44",
+          "name": "Nexus LCD Companion",
+          "type": "lcd",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "5-inch touchscreen, different from AIO LCDs"
+        },
+        {
+          "pid": 2641,
+          "pidHex": "0x0A51",
+          "name": "Void Elite Wireless",
+          "type": "headset",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 2645,
+          "pidHex": "0x0A55",
+          "name": "Void Elite Wireless (White)",
+          "type": "headset",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 2648,
+          "pidHex": "0x0A58",
+          "name": "Void Pro Wireless",
+          "type": "headset",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        }
+      ],
+      "counts": {
+        "supported": 14,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 9,
+        "known": 0,
+        "blocked": 0
+      },
+      "totalDevices": 23,
+      "drivers": [
+        "corsair"
+      ],
+      "transports": [
+        "usb_bulk",
+        "usb_hid"
+      ],
+      "deviceTypes": [
+        "argb_controller",
+        "fan_controller",
+        "headset",
+        "lcd",
+        "ram",
+        "strip"
+      ],
+      "sourceFile": "data/drivers/vendors/corsair.toml"
+    },
+    {
+      "slug": "dygma",
+      "name": "Dygma",
+      "website": "https://dygma.com",
+      "vids": [
+        13807
+      ],
+      "vidsHex": [
+        "0x35EF"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": 16,
+          "pidHex": "0x0010",
+          "name": "Defy (Wired)",
+          "type": "keyboard",
+          "status": "blocked",
+          "driver": "dygma",
+          "transport": "usb_serial",
+          "leds": null,
+          "notes": "Driver implemented but not functional. Needs firmware-side work to support external RGB control. Focus protocol works for config but lighting requires additional capability in Defy firmware."
+        },
+        {
+          "pid": 18,
+          "pidHex": "0x0012",
+          "name": "Defy (Wireless)",
+          "type": "keyboard",
+          "status": "blocked",
+          "driver": "dygma",
+          "transport": "usb_serial",
+          "leds": null,
+          "notes": "Same firmware limitation as wired variant. RGBW color support ready on our side."
+        }
+      ],
+      "counts": {
+        "supported": 0,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 0,
+        "blocked": 2
+      },
+      "totalDevices": 2,
+      "drivers": [
+        "dygma"
+      ],
+      "transports": [
+        "usb_serial"
+      ],
+      "deviceTypes": [
+        "keyboard"
+      ],
+      "sourceFile": "data/drivers/vendors/dygma.toml"
+    },
+    {
+      "slug": "evga",
+      "name": "EVGA",
+      "website": "https://evga.com",
+      "vids": [
+        14402
+      ],
+      "vidsHex": [
+        "0x3842"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "EVGA GPU (Pascal/Turing/Ampere)",
+          "type": "gpu",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "SMBus protocol, 3 generations"
+        },
+        {
+          "pid": 9237,
+          "pidHex": "0x2415",
+          "name": "X15 Mouse",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 9229,
+          "pidHex": "0x240D",
+          "name": "X17 Mouse",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 9736,
+          "pidHex": "0x2608",
+          "name": "Z15 Keyboard (ANSI)",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 9742,
+          "pidHex": "0x260E",
+          "name": "Z15 Keyboard (ISO)",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 9738,
+          "pidHex": "0x260A",
+          "name": "Z20 Keyboard",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 9744,
+          "pidHex": "0x2610",
+          "name": "Z20 Keyboard (ISO)",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        }
+      ],
+      "counts": {
+        "supported": 0,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 7,
+        "blocked": 0
+      },
+      "totalDevices": 7,
+      "drivers": [],
+      "transports": [],
+      "deviceTypes": [
+        "gpu",
+        "keyboard",
+        "mouse"
+      ],
+      "sourceFile": "data/drivers/vendors/evga.toml"
+    },
+    {
+      "slug": "fnatic",
+      "name": "Fnatic",
+      "website": "https://fnatic.com",
+      "vids": [
+        12046
+      ],
+      "vidsHex": [
+        "0x2F0E"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": 259,
+          "pidHex": "0x0103",
+          "name": "miniSTREAK Speed",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 257,
+          "pidHex": "0x0101",
+          "name": "STREAK",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 261,
+          "pidHex": "0x0105",
+          "name": "STREAK65",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        }
+      ],
+      "counts": {
+        "supported": 0,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 3,
+        "blocked": 0
+      },
+      "totalDevices": 3,
+      "drivers": [],
+      "transports": [],
+      "deviceTypes": [
+        "keyboard"
+      ],
+      "sourceFile": "data/drivers/vendors/fnatic.toml"
+    },
+    {
+      "slug": "gigabyte",
+      "name": "Gigabyte",
+      "website": "https://gigabyte.com",
+      "vids": [
+        1165,
+        4164,
+        1044
+      ],
+      "vidsHex": [
+        "0x048D",
+        "0x1044",
+        "0x0414"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "Gigabyte GPU (Gen 1-4)",
+          "type": "gpu",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "4 GPU generations. SMBus protocol, NVIDIA bus scanning."
+        },
+        {
+          "pid": 22274,
+          "pidHex": "0x5702",
+          "name": "RGB Fusion Motherboard Controller",
+          "type": "motherboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x048D, zone addresses 0x20-0x27, ARGB at 0x58-0x59, 240 LED max"
+        },
+        {
+          "pid": 33431,
+          "pidHex": "0x8297",
+          "name": "RGB Fusion Motherboard Controller (Alt)",
+          "type": "motherboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x048D"
+        },
+        {
+          "pid": 22289,
+          "pidHex": "0x5711",
+          "name": "RGB Fusion Motherboard Controller (Gen 2)",
+          "type": "motherboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x048D"
+        },
+        {
+          "pid": 31298,
+          "pidHex": "0x7A42",
+          "name": "Aorus ATC800",
+          "type": "aio",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x1044"
+        },
+        {
+          "pid": 31302,
+          "pidHex": "0x7A46",
+          "name": "Aorus Liquid Cooler 360",
+          "type": "aio",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x1044"
+        },
+        {
+          "pid": 31309,
+          "pidHex": "0x7A4D",
+          "name": "Aorus Waterforce X I",
+          "type": "aio",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x1044"
+        },
+        {
+          "pid": 31326,
+          "pidHex": "0x7A5E",
+          "name": "Aorus Waterforce X II",
+          "type": "aio",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x0414"
+        }
+      ],
+      "counts": {
+        "supported": 0,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 4,
+        "known": 4,
+        "blocked": 0
+      },
+      "totalDevices": 8,
+      "drivers": [],
+      "transports": [],
+      "deviceTypes": [
+        "aio",
+        "gpu",
+        "motherboard"
+      ],
+      "sourceFile": "data/drivers/vendors/gigabyte.toml"
+    },
+    {
+      "slug": "glorious",
+      "name": "Glorious",
+      "website": "https://gloriousgaming.com",
+      "vids": [
+        9610,
+        12815
+      ],
+      "vidsHex": [
+        "0x258A",
+        "0x320F"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": 20548,
+          "pidHex": "0x5044",
+          "name": "GMMK Pro",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "qmk",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x320F, supported via QMK driver"
+        },
+        {
+          "pid": 8229,
+          "pidHex": "0x2025",
+          "name": "Model D Wireless",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x258A"
+        },
+        {
+          "pid": 8212,
+          "pidHex": "0x2014",
+          "name": "Model D Wireless (Wired)",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x258A"
+        },
+        {
+          "pid": 8226,
+          "pidHex": "0x2022",
+          "name": "Model O Wireless",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x258A, multiple PIDs"
+        },
+        {
+          "pid": 8209,
+          "pidHex": "0x2011",
+          "name": "Model O Wireless (Wired)",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x258A"
+        }
+      ],
+      "counts": {
+        "supported": 1,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 4,
+        "blocked": 0
+      },
+      "totalDevices": 5,
+      "drivers": [
+        "qmk"
+      ],
+      "transports": [
+        "usb_hid"
+      ],
+      "deviceTypes": [
+        "keyboard",
+        "mouse"
+      ],
+      "sourceFile": "data/drivers/vendors/glorious.toml"
+    },
+    {
+      "slug": "hyperx",
+      "name": "HyperX",
+      "website": "https://hyperx.com",
+      "vids": [
+        2385,
+        1008
+      ],
+      "vidsHex": [
+        "0x0951",
+        "0x03F0"
+      ],
+      "notes": "Two VID eras: 0x0951 (Kingston) and 0x03F0 (HP/HyperX). Large peripheral portfolio.",
+      "devices": [
+        {
+          "pid": 5905,
+          "pidHex": "0x1711",
+          "name": "Alloy Elite 2",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x0951"
+        },
+        {
+          "pid": 5822,
+          "pidHex": "0x16BE",
+          "name": "Alloy Elite RGB",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x0951"
+        },
+        {
+          "pid": 5852,
+          "pidHex": "0x16DC",
+          "name": "Alloy FPS RGB",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x0951"
+        },
+        {
+          "pid": 5861,
+          "pidHex": "0x16E5",
+          "name": "Alloy Origins",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x0951"
+        },
+        {
+          "pid": 5940,
+          "pidHex": "0x1734",
+          "name": "Alloy Origins 60",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x0951"
+        },
+        {
+          "pid": 911,
+          "pidHex": "0x038F",
+          "name": "Alloy Origins 65",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x03F0 (HP era)"
+        },
+        {
+          "pid": 5862,
+          "pidHex": "0x16E6",
+          "name": "Alloy Origins Core",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x0951"
+        },
+        {
+          "pid": 5828,
+          "pidHex": "0x16C4",
+          "name": "Cloud Flight",
+          "type": "headset",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x0951"
+        },
+        {
+          "pid": 2444,
+          "pidHex": "0x098C",
+          "name": "Duocast",
+          "type": "microphone",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x03F0"
+        },
+        {
+          "pid": 5893,
+          "pidHex": "0x1705",
+          "name": "Fury Ultra",
+          "type": "mousepad",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x0951"
+        },
+        {
+          "pid": 5854,
+          "pidHex": "0x16DE",
+          "name": "PulseFire Core",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x0951"
+        },
+        {
+          "pid": 5927,
+          "pidHex": "0x1727",
+          "name": "PulseFire Haste",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x0951"
+        },
+        {
+          "pid": 5860,
+          "pidHex": "0x16E4",
+          "name": "PulseFire Raid",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x0951"
+        },
+        {
+          "pid": 5843,
+          "pidHex": "0x16D3",
+          "name": "PulseFire Surge",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x0951"
+        },
+        {
+          "pid": 693,
+          "pidHex": "0x02B5",
+          "name": "Quadcast 2 S",
+          "type": "microphone",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x03F0"
+        },
+        {
+          "pid": 5917,
+          "pidHex": "0x171D",
+          "name": "Quadcast S",
+          "type": "microphone",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x0951, multiple PIDs"
+        }
+      ],
+      "counts": {
+        "supported": 0,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 16,
+        "blocked": 0
+      },
+      "totalDevices": 16,
+      "drivers": [],
+      "transports": [],
+      "deviceTypes": [
+        "headset",
+        "keyboard",
+        "microphone",
+        "mouse",
+        "mousepad"
+      ],
+      "sourceFile": "data/drivers/vendors/hyperx.toml"
+    },
+    {
+      "slug": "hyte",
+      "name": "HYTE",
+      "website": "https://hyte.com",
+      "vids": [
+        13314
+      ],
+      "vidsHex": [
+        "0x3402"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": 2816,
+          "pidHex": "0x0B00",
+          "name": "CNVS",
+          "type": "mousepad",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 2817,
+          "pidHex": "0x0B01",
+          "name": "CNVS (Alt PID)",
+          "type": "mousepad",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        }
+      ],
+      "counts": {
+        "supported": 0,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 2,
+        "blocked": 0
+      },
+      "totalDevices": 2,
+      "drivers": [],
+      "transports": [],
+      "deviceTypes": [
+        "mousepad"
+      ],
+      "sourceFile": "data/drivers/vendors/hyte.toml"
+    },
+    {
+      "slug": "lianli",
+      "name": "Lian Li",
+      "website": "https://lian-li.com",
+      "vids": [
+        3314,
+        1046
+      ],
+      "vidsHex": [
+        "0x0CF2",
+        "0x0416"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": 29554,
+          "pidHex": "0x7372",
+          "name": "TL Fan Hub",
+          "type": "fan_controller",
+          "status": "supported",
+          "driver": "lianli",
+          "transport": "usb_hid",
+          "leds": 260,
+          "notes": "VID 0x0416, Nuvoton-based. 26 LEDs/fan, 10 fans/port, 4 ports. RPM reading supported."
+        },
+        {
+          "pid": 41217,
+          "pidHex": "0xA101",
+          "name": "Uni Hub - AL",
+          "type": "fan_controller",
+          "status": "supported",
+          "driver": "lianli",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "Dual-ring fans (inner/outer), firmware-dependent: HID for v1.7+, Vendor for v1.0 (AL10)"
+        },
+        {
+          "pid": 41220,
+          "pidHex": "0xA104",
+          "name": "Uni Hub - AL V2",
+          "type": "fan_controller",
+          "status": "supported",
+          "driver": "lianli",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "Dual-ring, 144 bytes per port output"
+        },
+        {
+          "pid": 41216,
+          "pidHex": "0xA100",
+          "name": "Uni Hub - SL",
+          "type": "fan_controller",
+          "status": "supported",
+          "driver": "lianli",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "ENE 6K77 protocol, single-ring fans"
+        },
+        {
+          "pid": 41218,
+          "pidHex": "0xA102",
+          "name": "Uni Hub - SL Infinity",
+          "type": "fan_controller",
+          "status": "supported",
+          "driver": "lianli",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "4 physical groups, 8 logical channels"
+        },
+        {
+          "pid": 41222,
+          "pidHex": "0xA106",
+          "name": "Uni Hub - SL Redragon",
+          "type": "fan_controller",
+          "status": "supported",
+          "driver": "lianli",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 41219,
+          "pidHex": "0xA103",
+          "name": "Uni Hub - SL V2",
+          "type": "fan_controller",
+          "status": "supported",
+          "driver": "lianli",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 41221,
+          "pidHex": "0xA105",
+          "name": "Uni Hub - SL V2a",
+          "type": "fan_controller",
+          "status": "supported",
+          "driver": "lianli",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 30544,
+          "pidHex": "0x7750",
+          "name": "Uni Hub (Original)",
+          "type": "fan_controller",
+          "status": "supported",
+          "driver": "lianli",
+          "transport": "usb_vendor",
+          "leds": null,
+          "notes": "Legacy USB vendor protocol"
+        },
+        {
+          "pid": 29589,
+          "pidHex": "0x7395",
+          "name": "Galahad II LCD",
+          "type": "aio",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": 50,
+          "notes": "VID 0x0416, 480x480 JPEG streaming via 1024-byte packets with sequence numbering"
+        },
+        {
+          "pid": 41472,
+          "pidHex": "0xA200",
+          "name": "Strimer Controller",
+          "type": "strip",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": 162,
+          "notes": "24-pin ATX: 120 LEDs, Dual 8-pin GPU: 108, Triple 8-pin: 162. Zone addresses 0x30-0x3B. BGR byte order."
+        }
+      ],
+      "counts": {
+        "supported": 9,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 2,
+        "known": 0,
+        "blocked": 0
+      },
+      "totalDevices": 11,
+      "drivers": [
+        "lianli"
+      ],
+      "transports": [
+        "usb_hid",
+        "usb_vendor"
+      ],
+      "deviceTypes": [
+        "aio",
+        "fan_controller",
+        "strip"
+      ],
+      "sourceFile": "data/drivers/vendors/lianli.toml"
+    },
+    {
+      "slug": "logitech",
+      "name": "Logitech",
+      "website": "https://logitechg.com",
+      "vids": [
+        1133
+      ],
+      "vidsHex": [
+        "0x046D"
+      ],
+      "notes": "Modern and legacy 8080 protocols. Wireless dongle support. Large peripheral portfolio.",
+      "devices": [
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "G13 Keyboard",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "G19 Keyboard",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Has LCD display"
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "G513 Keyboard",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "G560 Speakers",
+          "type": "speakers",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "G600 Mouse",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "G810 Keyboard",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Legacy 8080 protocol"
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "G910 Keyboard",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "Logitech Modern Device (multi-PID)",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Dynamic PID library. Covers G Pro, G915, G815, etc."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "Wireless Dongle",
+          "type": "other",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Unified receiver for wireless peripherals"
+        }
+      ],
+      "counts": {
+        "supported": 0,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 9,
+        "blocked": 0
+      },
+      "totalDevices": 9,
+      "drivers": [],
+      "transports": [],
+      "deviceTypes": [
+        "keyboard",
+        "mouse",
+        "other",
+        "speakers"
+      ],
+      "sourceFile": "data/drivers/vendors/logitech.toml"
+    },
+    {
+      "slug": "mountain",
+      "name": "Mountain",
+      "website": "https://mountain.gg",
+      "vids": [
+        12930
+      ],
+      "vidsHex": [
+        "0x3282"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": 5,
+          "pidHex": "0x0005",
+          "name": "Everest 60",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 1,
+          "pidHex": "0x0001",
+          "name": "Everest Max",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 8,
+          "pidHex": "0x0008",
+          "name": "Macropad",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3,
+          "pidHex": "0x0003",
+          "name": "Makalu 67",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        }
+      ],
+      "counts": {
+        "supported": 0,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 4,
+        "blocked": 0
+      },
+      "totalDevices": 4,
+      "drivers": [],
+      "transports": [],
+      "deviceTypes": [
+        "keyboard",
+        "mouse"
+      ],
+      "sourceFile": "data/drivers/vendors/mountain.toml"
+    },
+    {
+      "slug": "msi",
+      "name": "MSI",
+      "website": "https://msi.com",
+      "vids": [
+        5218,
+        3504,
+        6000
+      ],
+      "vidsHex": [
+        "0x1462",
+        "0x0DB0",
+        "0x1770"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": 31621,
+          "pidHex": "0x7B85",
+          "name": "B450 Gaming Pro Carbon AC",
+          "type": "motherboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "MSI GPU (Lovelace)",
+          "type": "gpu",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "SMBus protocol, base address from device list lookup"
+        },
+        {
+          "pid": 5920,
+          "pidHex": "0x1720",
+          "name": "Mystic Light Controller (162 Byte)",
+          "type": "motherboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "162-byte HID packet, zone-based offsets (10 bytes/zone)"
+        },
+        {
+          "pid": 31511,
+          "pidHex": "0x7B17",
+          "name": "Mystic Light Controller (162 Byte)",
+          "type": "motherboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 31512,
+          "pidHex": "0x7B18",
+          "name": "Mystic Light Controller (162 Byte)",
+          "type": "motherboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 47398,
+          "pidHex": "0xB926",
+          "name": "Mystic Light Controller (162 Byte)",
+          "type": "motherboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "Mystic Light Controller (185 Byte)",
+          "type": "motherboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "185-byte HID, ARGB headers at 0x400-0x402. 120+ PIDs across many board revisions."
+        },
+        {
+          "pid": 65280,
+          "pidHex": "0xFF00",
+          "name": "GS63 Keyboard",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x1770"
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "MSI GPU (Blackwell)",
+          "type": "gpu",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "MSI Keyboard (Modern)",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x0DB0, dynamic PID library"
+        },
+        {
+          "pid": 16292,
+          "pidHex": "0x3FA4",
+          "name": "MSI Monitor Controller",
+          "type": "monitor",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        }
+      ],
+      "counts": {
+        "supported": 0,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 7,
+        "known": 4,
+        "blocked": 0
+      },
+      "totalDevices": 11,
+      "drivers": [],
+      "transports": [],
+      "deviceTypes": [
+        "gpu",
+        "keyboard",
+        "monitor",
+        "motherboard"
+      ],
+      "sourceFile": "data/drivers/vendors/msi.toml"
+    },
+    {
+      "slug": "nanoleaf",
+      "name": "Nanoleaf",
+      "website": "https://nanoleaf.me",
+      "vids": [],
+      "vidsHex": [],
+      "notes": null,
+      "devices": [
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "Nanoleaf Panels (any)",
+          "type": "strip",
+          "status": "supported",
+          "driver": "nanoleaf",
+          "transport": "network_http",
+          "leds": null,
+          "notes": "mDNS discovery + power button pairing. Supports all panel shapes and light strips."
+        }
+      ],
+      "counts": {
+        "supported": 1,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 0,
+        "blocked": 0
+      },
+      "totalDevices": 1,
+      "drivers": [
+        "nanoleaf"
+      ],
+      "transports": [
+        "network_http"
+      ],
+      "deviceTypes": [
+        "strip"
+      ],
+      "sourceFile": "data/drivers/vendors/nanoleaf.toml"
+    },
+    {
+      "slug": "nzxt",
+      "name": "NZXT",
+      "website": "https://nzxt.com",
+      "vids": [
+        7793
+      ],
+      "vidsHex": [
+        "0x1E71"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": 12302,
+          "pidHex": "0x300E",
+          "name": "Kraken",
+          "type": "aio",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 12300,
+          "pidHex": "0x300C",
+          "name": "Kraken Elite",
+          "type": "aio",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 12306,
+          "pidHex": "0x3012",
+          "name": "Kraken Elite V2",
+          "type": "aio",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 12296,
+          "pidHex": "0x3008",
+          "name": "Kraken Z3",
+          "type": "aio",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 8201,
+          "pidHex": "0x2009",
+          "name": "RGB and Fan Controller",
+          "type": "fan_controller",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Multiple PIDs: 0x2009, 0x200E, 0x2010-0x2012, 0x2019, 0x201F-0x2022"
+        },
+        {
+          "pid": 8193,
+          "pidHex": "0x2001",
+          "name": "Smart Device V2 (Hue 2)",
+          "type": "argb_controller",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Multiple PIDs: 0x2001, 0x2002, 0x2006, 0x200D, 0x200F"
+        },
+        {
+          "pid": 8496,
+          "pidHex": "0x2130",
+          "name": "Function 2 Keyboard",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Multiple PIDs: 0x2130, 0x2131, 0x2136"
+        },
+        {
+          "pid": 8451,
+          "pidHex": "0x2103",
+          "name": "Function Keyboard",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Multiple PIDs: 0x2103-0x2108 (ANSI/ISO, Full/TKL/MiniTKL)"
+        },
+        {
+          "pid": 5902,
+          "pidHex": "0x170E",
+          "name": "Kraken X2/M2",
+          "type": "aio",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 8199,
+          "pidHex": "0x2007",
+          "name": "Kraken X3",
+          "type": "aio",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 8448,
+          "pidHex": "0x2100",
+          "name": "Lift Mouse",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 8203,
+          "pidHex": "0x200B",
+          "name": "N7 B550",
+          "type": "motherboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 8219,
+          "pidHex": "0x201B",
+          "name": "N7 B650E",
+          "type": "motherboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 8197,
+          "pidHex": "0x2005",
+          "name": "N7 Z390",
+          "type": "motherboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 8202,
+          "pidHex": "0x200A",
+          "name": "N7 Z490",
+          "type": "motherboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 8221,
+          "pidHex": "0x201D",
+          "name": "N7 Z790",
+          "type": "motherboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 5908,
+          "pidHex": "0x1714",
+          "name": "Smart Device V1",
+          "type": "argb_controller",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        }
+      ],
+      "counts": {
+        "supported": 0,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 6,
+        "known": 11,
+        "blocked": 0
+      },
+      "totalDevices": 17,
+      "drivers": [],
+      "transports": [],
+      "deviceTypes": [
+        "aio",
+        "argb_controller",
+        "fan_controller",
+        "keyboard",
+        "motherboard",
+        "mouse"
+      ],
+      "sourceFile": "data/drivers/vendors/nzxt.toml"
+    },
+    {
+      "slug": "philips",
+      "name": "Philips",
+      "website": "https://meethue.com",
+      "vids": [],
+      "vidsHex": [],
+      "notes": null,
+      "devices": [
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "Hue Bridge (any)",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "hue",
+          "transport": "network_http",
+          "leds": null,
+          "notes": "mDNS discovery + link button pairing. Controls all lights connected to bridge."
+        }
+      ],
+      "counts": {
+        "supported": 1,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 0,
+        "blocked": 0
+      },
+      "totalDevices": 1,
+      "drivers": [
+        "hue"
+      ],
+      "transports": [
+        "network_http"
+      ],
+      "deviceTypes": [
+        "argb_controller"
+      ],
+      "sourceFile": "data/drivers/vendors/philips.toml"
+    },
+    {
+      "slug": "prismrgb",
+      "name": "PrismRGB",
+      "website": "https://prismrgb.com",
+      "vids": [
+        5845,
+        5842,
+        5840
+      ],
+      "vidsHex": [
+        "0x16D5",
+        "0x16D2",
+        "0x16D0"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": 7937,
+          "pidHex": "0x1F01",
+          "name": "Nollie 8 v2",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "prismrgb",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x16D2, GRB byte order"
+        },
+        {
+          "pid": 7937,
+          "pidHex": "0x1F01",
+          "name": "Prism 8",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "prismrgb",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x16D5, 8 channels x 126 LEDs, GRB byte order"
+        },
+        {
+          "pid": 5127,
+          "pidHex": "0x1407",
+          "name": "Prism Mini",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "prismrgb",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x16D0, 128 LEDs max, color pair compression"
+        },
+        {
+          "pid": 4756,
+          "pidHex": "0x1294",
+          "name": "Prism S",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "prismrgb",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x16D0, RGB byte order, ATX + GPU cable variants"
+        }
+      ],
+      "counts": {
+        "supported": 4,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 0,
+        "blocked": 0
+      },
+      "totalDevices": 4,
+      "drivers": [
+        "prismrgb"
+      ],
+      "transports": [
+        "usb_hid"
+      ],
+      "deviceTypes": [
+        "argb_controller"
+      ],
+      "sourceFile": "data/drivers/vendors/prismrgb.toml"
+    },
+    {
+      "slug": "qmk",
+      "name": "QMK",
+      "website": "https://qmk.fm",
+      "vids": [
+        13364,
+        12951,
+        65261,
+        26980,
+        19266,
+        51716,
+        12815,
+        3141,
+        6790
+      ],
+      "vidsHex": [
+        "0x3434",
+        "0x3297",
+        "0xFEED",
+        "0x6964",
+        "0x4B42",
+        "0xCA04",
+        "0x320F",
+        "0x0C45",
+        "0x1A86"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": 20548,
+          "pidHex": "0x5044",
+          "name": "Glorious GMMK Pro",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "qmk",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x320F"
+        },
+        {
+          "pid": 272,
+          "pidHex": "0x0110",
+          "name": "Keychron Q1",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "qmk",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x3434, QMK protocol rev D"
+        },
+        {
+          "pid": 288,
+          "pidHex": "0x0120",
+          "name": "Keychron Q2",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "qmk",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x3434"
+        },
+        {
+          "pid": 304,
+          "pidHex": "0x0130",
+          "name": "Keychron Q3",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "qmk",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x3434"
+        },
+        {
+          "pid": 336,
+          "pidHex": "0x0150",
+          "name": "Keychron Q5",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "qmk",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x3434"
+        },
+        {
+          "pid": 352,
+          "pidHex": "0x0160",
+          "name": "Keychron Q6",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "qmk",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x3434"
+        },
+        {
+          "pid": 784,
+          "pidHex": "0x0310",
+          "name": "Keychron V1",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "qmk",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x3434"
+        },
+        {
+          "pid": 24672,
+          "pidHex": "0x6060",
+          "name": "OLKB Planck",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "qmk",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0xFEED"
+        },
+        {
+          "pid": 6505,
+          "pidHex": "0x1969",
+          "name": "ZSA Moonlander",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "qmk",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x3297"
+        },
+        {
+          "pid": 1937,
+          "pidHex": "0x0791",
+          "name": "ZSA Voyager",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "qmk",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x3297"
+        }
+      ],
+      "counts": {
+        "supported": 10,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 0,
+        "blocked": 0
+      },
+      "totalDevices": 10,
+      "drivers": [
+        "qmk"
+      ],
+      "transports": [
+        "usb_hid"
+      ],
+      "deviceTypes": [
+        "keyboard"
+      ],
+      "sourceFile": "data/drivers/vendors/qmk.toml"
+    },
+    {
+      "slug": "razer",
+      "name": "Razer",
+      "website": "https://razer.com",
+      "vids": [
+        5426
+      ],
+      "vidsHex": [
+        "0x1532"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": 3872,
+          "pidHex": "0x0F20",
+          "name": "Base Station V2 Chroma",
+          "type": "other",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 134,
+          "pidHex": "0x0086",
+          "name": "Basilisk Ultimate",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 136,
+          "pidHex": "0x0088",
+          "name": "Basilisk Ultimate (Wireless)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 153,
+          "pidHex": "0x0099",
+          "name": "Basilisk V3",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 11,
+          "notes": "Matrix 1x11, has scroll wheel LED"
+        },
+        {
+          "pid": 203,
+          "pidHex": "0x00CB",
+          "name": "Basilisk V3 35K",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 170,
+          "pidHex": "0x00AA",
+          "name": "Basilisk V3 Pro (Wired)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 171,
+          "pidHex": "0x00AB",
+          "name": "Basilisk V3 Pro (Wireless)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 204,
+          "pidHex": "0x00CC",
+          "name": "Basilisk V3 Pro 35K (Wired)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 205,
+          "pidHex": "0x00CD",
+          "name": "Basilisk V3 Pro 35K (Wireless)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 214,
+          "pidHex": "0x00D6",
+          "name": "Basilisk V3 Pro 35K Phantom Green (Wired)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 215,
+          "pidHex": "0x00D7",
+          "name": "Basilisk V3 Pro 35K Phantom Green (Wireless)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 185,
+          "pidHex": "0x00B9",
+          "name": "Basilisk V3 X HyperSpeed",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 590,
+          "pidHex": "0x024E",
+          "name": "BlackWidow V3",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 600,
+          "pidHex": "0x0258",
+          "name": "BlackWidow V3 Mini (Wired)",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 602,
+          "pidHex": "0x025A",
+          "name": "BlackWidow V3 Pro (Wired)",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 604,
+          "pidHex": "0x025C",
+          "name": "BlackWidow V3 Pro (Wireless)",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 2596,
+          "pidHex": "0x0A24",
+          "name": "BlackWidow V3 TKL",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 647,
+          "pidHex": "0x0287",
+          "name": "BlackWidow V4",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 653,
+          "pidHex": "0x028D",
+          "name": "BlackWidow V4 Pro",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 691,
+          "pidHex": "0x02B3",
+          "name": "BlackWidow V4 Pro 75% (Wired)",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 692,
+          "pidHex": "0x02B4",
+          "name": "BlackWidow V4 Pro 75% (Wireless)",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 624,
+          "pidHex": "0x0270",
+          "name": "Blade 14 (2021)",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 669,
+          "pidHex": "0x029D",
+          "name": "Blade 14 (2023)",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 650,
+          "pidHex": "0x028A",
+          "name": "Blade 15 (2022)",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 630,
+          "pidHex": "0x0276",
+          "name": "Blade 15 (Late 2021 Advanced)",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 528,
+          "pidHex": "0x0210",
+          "name": "Blade Pro (2016)",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "Legacy protocol, matrix 6x25"
+        },
+        {
+          "pid": 3878,
+          "pidHex": "0x0F26",
+          "name": "Charging Pad Chroma",
+          "type": "mousepad",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3849,
+          "pidHex": "0x0F09",
+          "name": "Chroma HDK",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 163,
+          "pidHex": "0x00A3",
+          "name": "Cobra",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 175,
+          "pidHex": "0x00AF",
+          "name": "Cobra Pro (Wired)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 176,
+          "pidHex": "0x00B0",
+          "name": "Cobra Pro (Wireless)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 554,
+          "pidHex": "0x022A",
+          "name": "Cynosa Chroma",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 152,
+          "pidHex": "0x0098",
+          "name": "DeathAdder Essential V2",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 132,
+          "pidHex": "0x0084",
+          "name": "DeathAdder V2",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 140,
+          "pidHex": "0x008C",
+          "name": "DeathAdder V2 Mini",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 661,
+          "pidHex": "0x0295",
+          "name": "DeathStalker V2",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 664,
+          "pidHex": "0x0298",
+          "name": "DeathStalker V2 Pro TKL (Wired)",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3080,
+          "pidHex": "0x0C08",
+          "name": "Firefly V2 Pro",
+          "type": "mousepad",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3078,
+          "pidHex": "0x0C06",
+          "name": "Goliathus Chroma 3XL",
+          "type": "mousepad",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 551,
+          "pidHex": "0x0227",
+          "name": "Huntsman",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 550,
+          "pidHex": "0x0226",
+          "name": "Huntsman Elite",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 599,
+          "pidHex": "0x0257",
+          "name": "Huntsman Mini",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 642,
+          "pidHex": "0x0282",
+          "name": "Huntsman Mini Analog",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 598,
+          "pidHex": "0x0256",
+          "name": "Huntsman Mini Wireless",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 579,
+          "pidHex": "0x0243",
+          "name": "Huntsman Tournament Edition",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 620,
+          "pidHex": "0x026C",
+          "name": "Huntsman V2",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 132,
+          "notes": "Extended matrix 6x22"
+        },
+        {
+          "pid": 614,
+          "pidHex": "0x0266",
+          "name": "Huntsman V2 Analog",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 619,
+          "pidHex": "0x026B",
+          "name": "Huntsman V2 TKL",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 678,
+          "pidHex": "0x02A6",
+          "name": "Huntsman V3 Pro",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 679,
+          "pidHex": "0x02A7",
+          "name": "Huntsman V3 Pro TKL White",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 672,
+          "pidHex": "0x02A0",
+          "name": "Huntsman V3 Pro Wireless",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3853,
+          "pidHex": "0x0F0D",
+          "name": "Laptop Stand Chroma",
+          "type": "other",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3883,
+          "pidHex": "0x0F2B",
+          "name": "Laptop Stand Chroma V2",
+          "type": "other",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 1330,
+          "pidHex": "0x0532",
+          "name": "Leviathan V2",
+          "type": "speakers",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3859,
+          "pidHex": "0x0F13",
+          "name": "Lian Li O11 Dynamic - Razer Edition",
+          "type": "case",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 108,
+          "pidHex": "0x006C",
+          "name": "Mamba Elite",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 20,
+          "notes": "Extended matrix 1x20"
+        },
+        {
+          "pid": 3869,
+          "pidHex": "0x0F1D",
+          "name": "Mouse Bungee V3 Chroma",
+          "type": "other",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 147,
+          "pidHex": "0x0093",
+          "name": "Naga Classic",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 141,
+          "pidHex": "0x008D",
+          "name": "Naga Left Handed",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 143,
+          "pidHex": "0x008F",
+          "name": "Naga Pro (Wired)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 144,
+          "pidHex": "0x0090",
+          "name": "Naga Pro (Wireless)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 167,
+          "pidHex": "0x00A7",
+          "name": "Naga Pro V2 (Wired)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 168,
+          "pidHex": "0x00A8",
+          "name": "Naga Pro V2 (Wireless)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 542,
+          "pidHex": "0x021E",
+          "name": "Ornata Chroma",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3867,
+          "pidHex": "0x0F1B",
+          "name": "Seiren Emote",
+          "type": "microphone",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 64,
+          "notes": "Matrix 4x16, LED display"
+        },
+        {
+          "pid": 1391,
+          "pidHex": "0x056F",
+          "name": "Seiren V3 Chroma",
+          "type": "microphone",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 520,
+          "pidHex": "0x0208",
+          "name": "Tartarus Chroma",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "Keypad, standard LED set"
+        },
+        {
+          "pid": 555,
+          "pidHex": "0x022B",
+          "name": "Tartarus V2",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3843,
+          "pidHex": "0x0F03",
+          "name": "Tiamat 7.1 V2",
+          "type": "headset",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 145,
+          "pidHex": "0x0091",
+          "name": "Viper 8kHz",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3871,
+          "pidHex": "0x0F1F",
+          "name": "Addressable RGB Controller",
+          "type": "argb_controller",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 1396,
+          "pidHex": "0x0574",
+          "name": "Barracuda X Chroma",
+          "type": "headset",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3848,
+          "pidHex": "0x0F08",
+          "name": "Base Station Chroma",
+          "type": "other",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 577,
+          "pidHex": "0x0241",
+          "name": "BlackWidow 2019",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 515,
+          "pidHex": "0x0203",
+          "name": "BlackWidow Chroma",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Legacy protocol"
+        },
+        {
+          "pid": 529,
+          "pidHex": "0x0211",
+          "name": "BlackWidow Chroma Overwatch",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 521,
+          "pidHex": "0x0209",
+          "name": "BlackWidow Tournament Edition Chroma",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 282,
+          "pidHex": "0x011A",
+          "name": "BlackWidow Ultimate 2013/2014",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Very old model, low priority"
+        },
+        {
+          "pid": 534,
+          "pidHex": "0x0216",
+          "name": "BlackWidow X Chroma",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3884,
+          "pidHex": "0x0F2C",
+          "name": "Chroma Light Strip Set",
+          "type": "strip",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3854,
+          "pidHex": "0x0F0E",
+          "name": "Chroma Lighting Kit",
+          "type": "argb_controller",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 575,
+          "pidHex": "0x023F",
+          "name": "Cynosa Lite",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 606,
+          "pidHex": "0x025E",
+          "name": "Cynosa V2",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 113,
+          "pidHex": "0x0071",
+          "name": "DeathAdder Essential (Alt)",
+          "type": "mouse",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 110,
+          "pidHex": "0x006E",
+          "name": "DeathAdder Essential (Legacy)",
+          "type": "mouse",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 662,
+          "pidHex": "0x0296",
+          "name": "DeathStalker V2 Pro TKL (Wireless)",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 76,
+          "pidHex": "0x004C",
+          "name": "Diamondback Chroma",
+          "type": "mouse",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Legacy mouse"
+        },
+        {
+          "pid": 3908,
+          "pidHex": "0x0F44",
+          "name": "Hanbo AIO",
+          "type": "aio",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 1296,
+          "pidHex": "0x0510",
+          "name": "Kraken 7.1 V2",
+          "type": "headset",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 1319,
+          "pidHex": "0x0527",
+          "name": "Kraken Headset",
+          "type": "headset",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Multiple PIDs: 0x0527, 0x0533, 0x0537, 0x0549, 0x0560"
+        },
+        {
+          "pid": 527,
+          "pidHex": "0x020F",
+          "name": "Kraken Kitty Edition",
+          "type": "headset",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3907,
+          "pidHex": "0x0F43",
+          "name": "Laptop Cooling Pad",
+          "type": "other",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 1330,
+          "pidHex": "0x0532",
+          "name": "Leviathan V2 Soundbar",
+          "type": "speakers",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Multiple PIDs: 0x0532, 0x054A, 0x0548"
+        },
+        {
+          "pid": 3876,
+          "pidHex": "0x0F24",
+          "name": "Mouse Bungee V3",
+          "type": "other",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3874,
+          "pidHex": "0x0F22",
+          "name": "Mouse Dock",
+          "type": "other",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3875,
+          "pidHex": "0x0F23",
+          "name": "Mouse Dock Pro",
+          "type": "other",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3072,
+          "pidHex": "0x0C00",
+          "name": "Mousepad Controller",
+          "type": "mousepad",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Multiple PIDs: 0x0C00, 0x0C01, 0x0C02, 0x0C04, 0x0C05"
+        },
+        {
+          "pid": 78,
+          "pidHex": "0x004E",
+          "name": "Naga Hex V2",
+          "type": "mouse",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 1308,
+          "pidHex": "0x051C",
+          "name": "Nari Headset",
+          "type": "headset",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Multiple PIDs: 0x051C, 0x051F, 0x051E, 0x051A"
+        },
+        {
+          "pid": 1303,
+          "pidHex": "0x0517",
+          "name": "Nommo Speakers",
+          "type": "speakers",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Multiple PIDs: 0x0517, 0x0518, 0x055C, 0x055A"
+        },
+        {
+          "pid": 519,
+          "pidHex": "0x0207",
+          "name": "Orbweaver Chroma",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Known to have protocol issues"
+        },
+        {
+          "pid": 613,
+          "pidHex": "0x0265",
+          "name": "Ornata V3 TKL",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 660,
+          "pidHex": "0x0294",
+          "name": "Ornata V3 X",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3900,
+          "pidHex": "0x0F3C",
+          "name": "PWM Controller",
+          "type": "fan_controller",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3858,
+          "pidHex": "0x0F12",
+          "name": "Raptor 27 Inch Monitor",
+          "type": "monitor",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Multiple PIDs: 0x0F12, 0x0F28"
+        },
+        {
+          "pid": 556,
+          "pidHex": "0x022C",
+          "name": "Tartarus Pro",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3873,
+          "pidHex": "0x0F21",
+          "name": "Thunderbolt Dock",
+          "type": "other",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 3845,
+          "pidHex": "0x0F05",
+          "name": "Tomahawk ATX Case",
+          "type": "case",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        }
+      ],
+      "counts": {
+        "supported": 70,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 38,
+        "known": 0,
+        "blocked": 0
+      },
+      "totalDevices": 108,
+      "drivers": [
+        "razer"
+      ],
+      "transports": [
+        "usb_hid"
+      ],
+      "deviceTypes": [
+        "aio",
+        "argb_controller",
+        "case",
+        "fan_controller",
+        "headset",
+        "keyboard",
+        "microphone",
+        "monitor",
+        "mouse",
+        "mousepad",
+        "other",
+        "speakers",
+        "strip"
+      ],
+      "sourceFile": "data/drivers/vendors/razer.toml"
+    },
+    {
+      "slug": "roccat",
+      "name": "Roccat",
+      "website": "https://roccat.com",
+      "vids": [
+        7805
+      ],
+      "vidsHex": [
+        "0x1E7D"
+      ],
+      "notes": "Extensive mouse and keyboard lineup.",
+      "devices": [
+        {
+          "pid": 13370,
+          "pidHex": "0x343A",
+          "name": "AIMO Pad",
+          "type": "mousepad",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 11745,
+          "pidHex": "0x2DE1",
+          "name": "Burst Pro",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 14900,
+          "pidHex": "0x3A34",
+          "name": "Elo 7.1 USB",
+          "type": "headset",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 11815,
+          "pidHex": "0x2E27",
+          "name": "Kone",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 11400,
+          "pidHex": "0x2C88",
+          "name": "Kone Pro",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 11403,
+          "pidHex": "0x2C8B",
+          "name": "Kone XP",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 12580,
+          "pidHex": "0x3124",
+          "name": "Magma",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 12620,
+          "pidHex": "0x314C",
+          "name": "Pyro",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 14934,
+          "pidHex": "0x3A56",
+          "name": "Torch",
+          "type": "microphone",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 12410,
+          "pidHex": "0x307A",
+          "name": "Vulcan 100",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 12002,
+          "pidHex": "0x2EE2",
+          "name": "Vulcan II MAX",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 12041,
+          "pidHex": "0x2F09",
+          "name": "Vulcan II Mini",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 12535,
+          "pidHex": "0x30F7",
+          "name": "Vulcan Pro",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 12270,
+          "pidHex": "0x2FEE",
+          "name": "Vulcan TKL",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        }
+      ],
+      "counts": {
+        "supported": 0,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 14,
+        "blocked": 0
+      },
+      "totalDevices": 14,
+      "drivers": [],
+      "transports": [],
+      "deviceTypes": [
+        "headset",
+        "keyboard",
+        "microphone",
+        "mouse",
+        "mousepad"
+      ],
+      "sourceFile": "data/drivers/vendors/roccat.toml"
+    },
+    {
+      "slug": "sony",
+      "name": "Sony",
+      "website": "https://playstation.com",
+      "vids": [
+        1356
+      ],
+      "vidsHex": [
+        "0x054C"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": 3302,
+          "pidHex": "0x0CE6",
+          "name": "DualSense",
+          "type": "lightbar",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 1476,
+          "pidHex": "0x05C4",
+          "name": "DualShock 4",
+          "type": "lightbar",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 2508,
+          "pidHex": "0x09CC",
+          "name": "DualShock 4 V2",
+          "type": "lightbar",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        }
+      ],
+      "counts": {
+        "supported": 0,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 3,
+        "blocked": 0
+      },
+      "totalDevices": 3,
+      "drivers": [],
+      "transports": [],
+      "deviceTypes": [
+        "lightbar"
+      ],
+      "sourceFile": "data/drivers/vendors/sony.toml"
+    },
+    {
+      "slug": "steelseries",
+      "name": "SteelSeries",
+      "website": "https://steelseries.com",
+      "vids": [
+        4152
+      ],
+      "vidsHex": [
+        "0x1038"
+      ],
+      "notes": "GameSense-era protocol. Large peripheral portfolio with 40+ devices.",
+      "devices": [
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "Aerox 3",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "Apex 7 TKL",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "Apex Pro TKL",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "Arctis Nova Pro",
+          "type": "headset",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "QcK Prism XL",
+          "type": "mousepad",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "Rival 600",
+          "type": "mouse",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        }
+      ],
+      "counts": {
+        "supported": 0,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 6,
+        "blocked": 0
+      },
+      "totalDevices": 6,
+      "drivers": [],
+      "transports": [],
+      "deviceTypes": [
+        "headset",
+        "keyboard",
+        "mouse",
+        "mousepad"
+      ],
+      "sourceFile": "data/drivers/vendors/steelseries.toml"
+    },
+    {
+      "slug": "thermaltake",
+      "name": "Thermaltake",
+      "website": "https://thermaltake.com",
+      "vids": [
+        9802
+      ],
+      "vidsHex": [
+        "0x264A"
+      ],
+      "notes": "Large lighting controller portfolio with Riing fans",
+      "devices": [
+        {
+          "pid": 32802,
+          "pidHex": "0x8022",
+          "name": "Argent HS1 Headphone Stand",
+          "type": "other",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 32800,
+          "pidHex": "0x8020",
+          "name": "Argent Mouse Bungee",
+          "type": "other",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 36881,
+          "pidHex": "0x9011",
+          "name": "Argent MP1 Mousepad",
+          "type": "mousepad",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 9001,
+          "pidHex": "0x2329",
+          "name": "DPSG PSU",
+          "type": "other",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 8100,
+          "pidHex": "0x1FA4",
+          "name": "Floe Riing Controller",
+          "type": "fan_controller",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Multiple PIDs: 0x1FA4-0x1FA7"
+        },
+        {
+          "pid": 8508,
+          "pidHex": "0x213C",
+          "name": "LedBox",
+          "type": "argb_controller",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 8602,
+          "pidHex": "0x219A",
+          "name": "LedBox Pacific",
+          "type": "argb_controller",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Multiple PIDs: 0x219A-0x219F"
+        },
+        {
+          "pid": 8800,
+          "pidHex": "0x2260",
+          "name": "LedBox Standard",
+          "type": "argb_controller",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "17+ PIDs: 0x2260-0x2268, 0x226F, 0x232B-0x232E, 0x233A, etc."
+        },
+        {
+          "pid": 2001,
+          "pidHex": "0x07D1",
+          "name": "Level 20 Desk",
+          "type": "desk",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": null
+        },
+        {
+          "pid": 8501,
+          "pidHex": "0x2135",
+          "name": "Riing Controller",
+          "type": "fan_controller",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Multiple PIDs: 0x2135-0x2137, 0x2143-0x2144"
+        }
+      ],
+      "counts": {
+        "supported": 0,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 10,
+        "blocked": 0
+      },
+      "totalDevices": 10,
+      "drivers": [],
+      "transports": [],
+      "deviceTypes": [
+        "argb_controller",
+        "desk",
+        "fan_controller",
+        "mousepad",
+        "other"
+      ],
+      "sourceFile": "data/drivers/vendors/thermaltake.toml"
+    },
+    {
+      "slug": "wled",
+      "name": "WLED",
+      "website": "https://kno.wled.ge",
+      "vids": [],
+      "vidsHex": [],
+      "notes": null,
+      "devices": [
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "WLED Controller (any)",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "wled",
+          "transport": "network_udp",
+          "leds": null,
+          "notes": "DDP and E1.31 protocols. mDNS discovery. No auth required. ESP8266/ESP32 controllers."
+        }
+      ],
+      "counts": {
+        "supported": 1,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 0,
+        "blocked": 0
+      },
+      "totalDevices": 1,
+      "drivers": [
+        "wled"
+      ],
+      "transports": [
+        "network_udp"
+      ],
+      "deviceTypes": [
+        "argb_controller"
+      ],
+      "sourceFile": "data/drivers/vendors/wled.toml"
+    },
+    {
+      "slug": "wooting",
+      "name": "Wooting",
+      "website": "https://wooting.io",
+      "vids": [
+        1003,
+        12771
+      ],
+      "vidsHex": [
+        "0x03EB",
+        "0x31E3"
+      ],
+      "notes": null,
+      "devices": [
+        {
+          "pid": 4880,
+          "pidHex": "0x1310",
+          "name": "Wooting 60 HE",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x31E3, multiple PIDs: 0x1310, 0x1312, 0x1300, 0x1302, 0x1322, 0x1320"
+        },
+        {
+          "pid": 5120,
+          "pidHex": "0x1400",
+          "name": "Wooting 80 HE",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x31E3, PIDs 0x1400, 0x1402"
+        },
+        {
+          "pid": 65281,
+          "pidHex": "0xFF01",
+          "name": "Wooting One",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x03EB, original analog keyboard"
+        },
+        {
+          "pid": 4640,
+          "pidHex": "0x1220",
+          "name": "Wooting Two HE",
+          "type": "keyboard",
+          "status": "known",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "VID 0x31E3, multiple PIDs: 0x1220-0x1222, 0x1230-0x1232"
+        }
+      ],
+      "counts": {
+        "supported": 0,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 4,
+        "blocked": 0
+      },
+      "totalDevices": 4,
+      "drivers": [],
+      "transports": [],
+      "deviceTypes": [
+        "keyboard"
+      ],
+      "sourceFile": "data/drivers/vendors/wooting.toml"
+    }
+  ]
+}

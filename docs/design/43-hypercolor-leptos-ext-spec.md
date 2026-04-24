@@ -19,7 +19,7 @@ This crate is the **Year 1 canary** mandated by RFC 41's scope cut. It validates
 5. Schema-evolved binary frames via `#[derive(BinaryFrame)]` eliminate the 19-call `Uint8Array::get_index` decoder.
 6. A preview-media spike determines whether visual frames should remain WebSocket messages or move to browser-native media machinery (`VideoDecoder` / WebRTC).
 
-Success metrics are measured against `docs/design/cinder-audit-snapshot.txt` before and after each migration PR lands.
+Success metrics are measured against `docs/archive/2026-03-cinder-audit-snapshot.txt` before and after each migration PR lands.
 
 ## Non-goals
 

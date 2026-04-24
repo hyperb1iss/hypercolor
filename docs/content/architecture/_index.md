@@ -115,7 +115,7 @@ The render thread is the heart of the system. It runs on a dedicated OS thread w
 5. **Push to devices** — Send per-zone color arrays to hardware backends via their protocol encoders
 6. **Publish state** — Broadcast the frame data and canvas preview on the event bus for UI subscribers
 
-SparkleFlinger is the composition boundary that lets render groups, overlapping zones, and mixed-cadence producers (Servo at 30fps, native at 60fps, screen capture at whatever PipeWire hands us) all flow into a single deadline-driven frame. See `docs/design/29-sparkleflinger-60fps-evolution.md` for the motivating design and `docs/design/30-sparkleflinger-implementation.md` for the shipped invariants.
+SparkleFlinger is the composition boundary that lets render groups, overlapping zones, and mixed-cadence producers (Servo at 30fps, native at 60fps, screen capture at whatever PipeWire hands us) all flow into a single deadline-driven frame. See `docs/design/30-sparkleflinger-implementation.md` for the shipped invariants.
 
 The canvas defaults to 640×480 and is configurable via `daemon.canvas_width` / `daemon.canvas_height`. Effects render in normalized `[0.0, 1.0]` spatial coordinates, so they stay resolution-independent — tune the canvas to match your sampling needs without touching effect code. Readback cost scales with the canvas (≈1.17 MB/frame at 640×480, still trivially fast). Changing canvas dimensions requires a daemon restart; target FPS can be retuned live.
 

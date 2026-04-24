@@ -1,0 +1,77 @@
+name: Effect submission
+description: Propose a new effect for the Hypercolor catalog.
+title: "[effect] "
+labels: ["effect"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        New effects land as PRs to `sdk/src/effects/<name>/`. This issue is for
+        proposing one before you build it, or for sharing an effect you've written
+        that you'd like to see shipped. For authoring docs see
+        [docs/content/effects/](https://github.com/hyperb1iss/hypercolor/tree/main/docs/content/effects).
+
+  - type: input
+    id: name
+    attributes:
+      label: Effect name
+      placeholder: "Neon Descent"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What does it look like
+      description: One or two sentences. Be visual.
+      placeholder: "Raymarched neon cityscape falling past the camera. Chromatic dispersion on the beat, bass-reactive glow."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: authoring
+    attributes:
+      label: Authoring path
+      description: See docs/content/effects/ for the four tiers.
+      options:
+        - "GLSL (single fragment shader)"
+        - "effect() one-liner with GLSL"
+        - "canvas() Canvas 2D"
+        - "Full TypeScript class with lifecycle"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: pack
+    attributes:
+      label: Pack
+      options:
+        - Synthwave
+        - Cosmic
+        - Audio Reactive
+        - Organic
+        - Proposing a new pack
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: reacts-to
+    attributes:
+      label: What does it react to
+      options:
+        - label: Audio (FFT, beats, bands)
+        - label: Pointer / interaction
+        - label: Screen capture
+        - label: Time of day / circadian
+
+  - type: input
+    id: preview
+    attributes:
+      label: Preview asset
+      description: Link to a short video or GIF. Helpful, not required.
+
+  - type: textarea
+    id: source
+    attributes:
+      label: Source link (optional)
+      description: If you've already written it, link the branch or gist.
