@@ -1,7 +1,9 @@
 //! JSON and binary message handlers for the daemon WebSocket protocol.
 
+pub use hypercolor_leptos_ext::ws::{
+    PreviewFrameView as CanvasFrame, PreviewPixelFormat as CanvasPixelFormat,
+};
 pub(super) use hypercolor_leptos_ext::ws::PreviewFrameChannel;
-use hypercolor_leptos_ext::ws::{PreviewFrameView, PreviewPixelFormat};
 use hypercolor_types::event::RenderGroupChangeKind;
 use hypercolor_types::scene::{RenderGroupRole, SceneKind, SceneMutationMode};
 use leptos::prelude::*;
@@ -42,92 +44,6 @@ pub const DEVICE_LIFECYCLE_EVENTS: &[&str] = &[
     "device_state_changed",
     "device_discovery_completed",
 ];
-
-// ── Canvas Data ─────────────────────────────────────────────────────────────
-
-/// Decoded canvas frame from a binary WebSocket message.
-#[derive(Debug, Clone)]
-pub struct CanvasFrame {
-    pub frame_number: u32,
-    pub timestamp_ms: u32,
-    pub width: u32,
-    pub height: u32,
-    format: CanvasPixelFormat,
-    pixels: js_sys::Uint8Array,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CanvasPixelFormat {
-    Rgb,
-    Rgba,
-    Jpeg,
-}
-
-impl CanvasPixelFormat {
-    fn from_preview(format: PreviewPixelFormat) -> Self {
-        match format {
-            PreviewPixelFormat::Rgb => Self::Rgb,
-            PreviewPixelFormat::Rgba => Self::Rgba,
-            PreviewPixelFormat::Jpeg => Self::Jpeg,
-        }
-    }
-
-    pub(crate) fn bytes_per_pixel(self) -> Option<usize> {
-        match self {
-            Self::Rgb => Some(3),
-            Self::Rgba => Some(4),
-            Self::Jpeg => None,
-        }
-    }
-}
-
-impl CanvasFrame {
-    /// Number of pixels in the frame.
-    pub fn pixel_count(&self) -> usize {
-        let width = usize::try_from(self.width).unwrap_or(0);
-        let height = usize::try_from(self.height).unwrap_or(0);
-        width.saturating_mul(height)
-    }
-
-    /// Sample a pixel as RGBA without copying the full buffer.
-    pub fn rgba_at(&self, pixel_index: usize) -> Option<[u8; 4]> {
-        let bytes_per_pixel = self.format.bytes_per_pixel()?;
-        let offset = u32::try_from(pixel_index.checked_mul(bytes_per_pixel)?).ok()?;
-        let last_component = offset.checked_add(match self.format {
-            CanvasPixelFormat::Rgb => 2,
-            CanvasPixelFormat::Rgba => 3,
-            CanvasPixelFormat::Jpeg => return None,
-        })?;
-        if last_component >= self.pixels.length() {
-            return None;
-        }
-
-        Some(match self.format {
-            CanvasPixelFormat::Rgb => [
-                self.pixels.get_index(offset),
-                self.pixels.get_index(offset + 1),
-                self.pixels.get_index(offset + 2),
-                255,
-            ],
-            CanvasPixelFormat::Rgba => [
-                self.pixels.get_index(offset),
-                self.pixels.get_index(offset + 1),
-                self.pixels.get_index(offset + 2),
-                self.pixels.get_index(offset + 3),
-            ],
-            CanvasPixelFormat::Jpeg => return None,
-        })
-    }
-
-    /// Borrow the upload-ready pixel buffer for WebGL.
-    pub fn pixels_js(&self) -> &js_sys::Uint8Array {
-        &self.pixels
-    }
-
-    pub fn pixel_format(&self) -> CanvasPixelFormat {
-        self.format
-    }
-}
 
 // ── Metrics & Event Types ───────────────────────────────────────────────────
 
@@ -311,19 +227,8 @@ pub struct AudioLevel {
 pub(super) fn decode_preview_frame(
     buffer: js_sys::ArrayBuffer,
 ) -> Option<(PreviewFrameChannel, CanvasFrame)> {
-    let frame = PreviewFrameView::decode_array_buffer(&buffer).ok()?;
-
-    Some((
-        frame.channel,
-        CanvasFrame {
-            frame_number: frame.frame_number,
-            timestamp_ms: frame.timestamp_ms,
-            width: u32::from(frame.width),
-            height: u32::from(frame.height),
-            format: CanvasPixelFormat::from_preview(frame.format),
-            pixels: frame.payload,
-        },
-    ))
+    let frame = CanvasFrame::decode_array_buffer(&buffer).ok()?;
+    Some((frame.channel, frame))
 }
 
 // ── JSON Message Handler ────────────────────────────────────────────────────

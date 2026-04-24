@@ -168,8 +168,8 @@ pub struct PreviewFrameView {
     pub channel: PreviewFrameChannel,
     pub frame_number: u32,
     pub timestamp_ms: u32,
-    pub width: u16,
-    pub height: u16,
+    pub width: u32,
+    pub height: u32,
     pub format: PreviewPixelFormat,
     pub payload: js_sys::Uint8Array,
 }
@@ -188,11 +188,58 @@ impl PreviewFrameView {
             channel: header.channel,
             frame_number: header.frame_number,
             timestamp_ms: header.timestamp_ms,
-            width: header.width,
-            height: header.height,
+            width: u32::from(header.width),
+            height: u32::from(header.height),
             format: header.format,
             payload: data.subarray(PREVIEW_FRAME_HEADER_LEN as u32, end as u32),
         })
+    }
+
+    #[must_use]
+    pub fn pixel_count(&self) -> usize {
+        let width = usize::try_from(self.width).unwrap_or(0);
+        let height = usize::try_from(self.height).unwrap_or(0);
+        width.saturating_mul(height)
+    }
+
+    #[must_use]
+    pub fn rgba_at(&self, pixel_index: usize) -> Option<[u8; 4]> {
+        let bytes_per_pixel = self.format.bytes_per_pixel()?;
+        let offset = u32::try_from(pixel_index.checked_mul(bytes_per_pixel)?).ok()?;
+        let last_component = offset.checked_add(match self.format {
+            PreviewPixelFormat::Rgb => 2,
+            PreviewPixelFormat::Rgba => 3,
+            PreviewPixelFormat::Jpeg => return None,
+        })?;
+        if last_component >= self.payload.length() {
+            return None;
+        }
+
+        Some(match self.format {
+            PreviewPixelFormat::Rgb => [
+                self.payload.get_index(offset),
+                self.payload.get_index(offset + 1),
+                self.payload.get_index(offset + 2),
+                255,
+            ],
+            PreviewPixelFormat::Rgba => [
+                self.payload.get_index(offset),
+                self.payload.get_index(offset + 1),
+                self.payload.get_index(offset + 2),
+                self.payload.get_index(offset + 3),
+            ],
+            PreviewPixelFormat::Jpeg => return None,
+        })
+    }
+
+    #[must_use]
+    pub const fn pixels_js(&self) -> &js_sys::Uint8Array {
+        &self.payload
+    }
+
+    #[must_use]
+    pub const fn pixel_format(&self) -> PreviewPixelFormat {
+        self.format
     }
 }
 
