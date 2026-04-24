@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use hypercolor_leptos_ext::events::{EventHandle, document, document_event_target, on};
-use hypercolor_leptos_ext::prelude::{TimeoutHandle, set_timeout};
+use hypercolor_leptos_ext::prelude::{TimeoutHandle, now_ms, random_unit, set_timeout};
 use hypercolor_leptos_ext::ws::transport::{WebSocketEventHandlers, message_array_buffer};
 use hypercolor_leptos_ext::ws::{ExponentialBackoff, HYPERCOLOR_WS_PROTOCOL};
 use leptos::prelude::*;
@@ -440,7 +440,7 @@ impl WsManager {
             let Some(last_backpressure_at_ms) = last_backpressure_at_ms.get() else {
                 return;
             };
-            if js_sys::Date::now() - last_backpressure_at_ms < BACKPRESSURE_RECOVERY_MS {
+            if now_ms() - last_backpressure_at_ms < BACKPRESSURE_RECOVERY_MS {
                 return;
             }
 
@@ -545,7 +545,7 @@ fn schedule_reconnect(
     reconnect_attempts.set_value(attempt.saturating_add(1));
 
     let delay = ExponentialBackoff::HYPERCOLOR_DEFAULT
-        .delay_for_attempt_with_sample(attempt, js_sys::Math::random())
+        .delay_for_attempt_with_sample(attempt, random_unit())
         .unwrap_or(ExponentialBackoff::HYPERCOLOR_DEFAULT.base);
     let final_delay = delay.max(Duration::from_millis(100));
 

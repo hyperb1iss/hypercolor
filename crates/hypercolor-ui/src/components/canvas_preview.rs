@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use hypercolor_leptos_ext::prelude::now_ms;
 use hypercolor_leptos_ext::raf::Scheduler;
 use leptos::ev::Custom;
 use leptos::html::Canvas;
@@ -22,12 +23,6 @@ type PresentScheduler = Rc<RefCell<Option<PresentCallback>>>;
 const PREVIEW_RUNTIME_RETRY_DELAY_FRAMES: u32 = 30;
 const CANVAS2D_FALLBACK_THRESHOLD: u8 = 3;
 const PREVIEW_TELEMETRY_INTERVAL_MS: f64 = 250.0;
-
-fn browser_now_ms() -> f64 {
-    web_sys::window()
-        .and_then(|window| window.performance())
-        .map_or_else(js_sys::Date::now, |performance| performance.now())
-}
 
 fn quantize_present_fps(value: f32) -> f32 {
     (value * 10.0).round() / 10.0
@@ -356,7 +351,7 @@ pub fn CanvasPreview(
         move |_| {
             let next_frame = frame.get();
             let has_next_frame = next_frame.is_some();
-            let received_at_ms = has_next_frame.then(browser_now_ms);
+            let received_at_ms = has_next_frame.then(now_ms);
             *latest_frame.borrow_mut() = next_frame;
             *latest_frame_received_at.borrow_mut() = received_at_ms;
 

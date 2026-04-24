@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use gloo_net::http::{Method, RequestBuilder};
 use hypercolor_leptos_ext::canvas::{context_2d, create_canvas, image_data_rgba, set_canvas_size};
-use hypercolor_leptos_ext::prelude::spawn_timeout;
+use hypercolor_leptos_ext::prelude::{now_ms, spawn_timeout};
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsValue;
@@ -163,7 +163,7 @@ pub fn capture_thumbnail(frame: &CanvasFrame, version: String) -> Option<Thumbna
         data_url,
         palette: ThumbnailPalette::from_canvas(palette),
         version,
-        captured_at: js_sys::Date::now(),
+        captured_at: now_ms(),
     })
 }
 
@@ -271,7 +271,7 @@ pub fn install_auto_capture<F>(
     Effect::new(move |_| {
         // React to active effect changes — reset the stability timer.
         let current_id = active_effect_id.get();
-        let now = js_sys::Date::now();
+        let now = now_ms();
 
         active_since.update_value(|state| match (state.as_ref(), current_id.as_ref()) {
             (Some((prev, _)), Some(curr)) if prev == curr => {}

@@ -139,6 +139,18 @@ pub async fn sleep(delay: Duration) {
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
+#[must_use]
+pub fn now_ms() -> f64 {
+    web_sys::window()
+        .and_then(|window| window.performance())
+        .map_or_else(js_sys::Date::now, |performance| performance.now())
+}
+
+#[must_use]
+pub fn random_unit() -> f64 {
+    js_sys::Math::random()
+}
+
 fn duration_to_ms(duration: Duration) -> i32 {
     i32::try_from(duration.as_millis())
         .unwrap_or(i32::MAX)

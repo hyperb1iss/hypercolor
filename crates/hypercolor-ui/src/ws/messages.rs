@@ -3,6 +3,7 @@
 pub use hypercolor_leptos_ext::ws::{
     PreviewFrameView as CanvasFrame, PreviewPixelFormat as CanvasPixelFormat,
 };
+use hypercolor_leptos_ext::prelude::now_ms;
 pub(super) use hypercolor_leptos_ext::ws::PreviewFrameChannel;
 use hypercolor_types::event::RenderGroupChangeKind;
 use hypercolor_types::scene::{RenderGroupRole, SceneKind, SceneMutationMode};
@@ -324,7 +325,7 @@ pub(super) fn handle_json_message(
                 {
                     set_preview_transport_cap
                         .update(|current| *current = (*current).min(message.suggested_fps));
-                    set_last_backpressure_at_ms.set(Some(js_sys::Date::now()));
+                    set_last_backpressure_at_ms.set(Some(now_ms()));
                 }
                 let notice = BackpressureNotice {
                     dropped_frames: message.dropped_frames,
