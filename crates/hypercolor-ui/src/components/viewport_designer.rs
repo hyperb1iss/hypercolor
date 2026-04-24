@@ -24,6 +24,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 use serde_json::json;
 
+use hypercolor_leptos_ext::events::{Change, Input};
 use hypercolor_types::viewport::{FitMode, MIN_VIEWPORT_EDGE, ViewportRect};
 
 use crate::api::effects::{UpdateControlsOutcome, update_effect_controls};
@@ -351,7 +352,7 @@ fn WebViewportPaneStub(
                     type="text"
                     prop:value=move || url.get()
                     on:change=move |ev| {
-                        let next = event_target_value(&ev);
+                        let next = Change::from_event(ev).value_string().unwrap_or_default();
                         update_mode(Box::new(move |mode| {
                             if let ModeDraft::WebViewport { url: slot, .. } = mode {
                                 *slot = next;
@@ -394,8 +395,7 @@ fn WebViewportPaneStub(
                     step="1"
                     prop:value=move || scroll_y.get().to_string()
                     on:input=move |ev| {
-                        let raw = event_target_value(&ev);
-                        let Ok(next) = raw.parse::<i32>() else {
+                        let Some(next) = Input::from_event(ev).value::<i32>() else {
                             return;
                         };
                         update_mode(Box::new(move |mode| {
@@ -497,8 +497,7 @@ fn NumericField(
                 max="1"
                 prop:value=move || format!("{:.3}", value.get())
                 on:change=move |ev| {
-                    let raw = event_target_value(&ev);
-                    if let Ok(parsed) = raw.parse::<f32>() {
+                    if let Some(parsed) = Change::from_event(ev).value::<f32>() {
                         on_change.run(parsed.clamp(0.0, 1.0));
                     }
                 }

@@ -8,6 +8,7 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_location;
 use leptos_use::use_throttle_fn_with_arg;
 
+use hypercolor_leptos_ext::events::Input;
 use crate::api;
 use crate::app::{EffectsContext, FrameAnalysisContext, WsContext};
 use crate::async_helpers::spawn_api_call;
@@ -646,8 +647,7 @@ pub fn Sidebar() -> impl IntoView {
                                 style:background="rgba(139, 133, 160, 0.15)"
                                 prop:value=move || global_brightness.get().to_string()
                                 on:input=move |ev| {
-                                    let value = event_target_value(&ev);
-                                    if let Ok(brightness) = value.parse::<u8>() {
+                                    if let Some(brightness) = Input::from_event(ev).value::<u8>() {
                                         set_global_brightness.set(brightness);
                                         push_global_brightness(brightness);
                                     }

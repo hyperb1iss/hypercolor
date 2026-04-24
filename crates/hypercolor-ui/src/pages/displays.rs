@@ -9,6 +9,7 @@ use leptos::task::spawn_local;
 use leptos_icons::Icon;
 use leptos_use::{use_debounce_fn, use_debounce_fn_with_arg};
 
+use hypercolor_leptos_ext::events::Input;
 use crate::api;
 use crate::app::{DisplaysContext, EffectsContext, WsContext};
 use crate::components::control_panel::ControlPanel;
@@ -929,7 +930,9 @@ fn CreateSimulatorModal(
                             type="text"
                             class="rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-sm text-fg-primary outline-none transition focus:border-accent-primary"
                             prop:value=move || name.get()
-                            on:input=move |event| set_name.set(event_target_value(&event))
+                            on:input=move |event| {
+                                set_name.set(Input::from_event(event).value_string().unwrap_or_default())
+                            }
                         />
                     </label>
 
@@ -944,7 +947,9 @@ fn CreateSimulatorModal(
                                 max="4096"
                                 class="rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-sm text-fg-primary outline-none transition focus:border-accent-primary"
                                 prop:value=move || width.get()
-                                on:input=move |event| set_width.set(event_target_value(&event))
+                                on:input=move |event| {
+                                    set_width.set(Input::from_event(event).value_string().unwrap_or_default())
+                                }
                             />
                         </label>
                         <label class="flex flex-col gap-1">
@@ -957,7 +962,9 @@ fn CreateSimulatorModal(
                                 max="4096"
                                 class="rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-sm text-fg-primary outline-none transition focus:border-accent-primary"
                                 prop:value=move || height.get()
-                                on:input=move |event| set_height.set(event_target_value(&event))
+                                on:input=move |event| {
+                                    set_height.set(Input::from_event(event).value_string().unwrap_or_default())
+                                }
                             />
                         </label>
                     </div>
@@ -1149,7 +1156,9 @@ fn EditSimulatorModal(
                             type="text"
                             class="rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-sm text-fg-primary outline-none transition focus:border-accent-primary"
                             prop:value=move || name.get()
-                            on:input=move |event| set_name.set(event_target_value(&event))
+                            on:input=move |event| {
+                                set_name.set(Input::from_event(event).value_string().unwrap_or_default())
+                            }
                         />
                     </label>
 
@@ -1164,7 +1173,9 @@ fn EditSimulatorModal(
                                 max="4096"
                                 class="rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-sm text-fg-primary outline-none transition focus:border-accent-primary"
                                 prop:value=move || width.get()
-                                on:input=move |event| set_width.set(event_target_value(&event))
+                                on:input=move |event| {
+                                    set_width.set(Input::from_event(event).value_string().unwrap_or_default())
+                                }
                             />
                         </label>
                         <label class="flex flex-col gap-1">
@@ -1177,7 +1188,9 @@ fn EditSimulatorModal(
                                 max="4096"
                                 class="rounded-md border border-edge-subtle bg-surface-overlay px-3 py-2 text-sm text-fg-primary outline-none transition focus:border-accent-primary"
                                 prop:value=move || height.get()
-                                on:input=move |event| set_height.set(event_target_value(&event))
+                                on:input=move |event| {
+                                    set_height.set(Input::from_event(event).value_string().unwrap_or_default())
+                                }
                             />
                         </label>
                     </div>
@@ -1592,7 +1605,7 @@ fn FaceCompositionSection(
     });
 
     let on_opacity_input = Callback::new(move |event| {
-        let Ok(raw) = event_target_value(&event).parse::<f32>() else {
+        let Some(raw) = Input::from_event(event).value::<f32>() else {
             return;
         };
         set_local_opacity.set((raw / 100.0).clamp(0.0, 1.0));
@@ -2180,7 +2193,9 @@ fn DisplayFacePickerModal(
                             class="w-full rounded-md border border-edge-subtle bg-surface-overlay px-9 py-2 text-sm text-fg-primary outline-none transition focus:border-accent-primary"
                             placeholder="Search faces by name, author, or description"
                             prop:value=move || search.get()
-                            on:input=move |event| set_search.set(event_target_value(&event))
+                            on:input=move |event| {
+                                set_search.set(Input::from_event(event).value_string().unwrap_or_default())
+                            }
                         />
                     </div>
                 </div>

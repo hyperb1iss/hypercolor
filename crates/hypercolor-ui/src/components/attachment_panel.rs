@@ -579,7 +579,7 @@ pub fn WiringPanel(
                                                                                            placeholder-fg-tertiary/30 focus:outline-none border-none p-0"
                                                                                     prop:value=move || name_sig.get()
                                                                                     on:input=move |ev| {
-                                                                                        let val = event_target_value(&ev);
+                                                                                        let val = Input::from_event(ev).value_string().unwrap_or_default();
                                                                                         set_drafts.update(|rows| {
                                                                                             if let Some(r) = rows.iter_mut().find(|r| r.row_id == row_id) {
                                                                                                 r.name = val;
@@ -608,7 +608,7 @@ pub fn WiringPanel(
                                                                                     style="color: rgba(128, 255, 234, 0.8)"
                                                                                     prop:value=move || strip_led_count.get().to_string()
                                                                                     on:input=move |ev| {
-                                                                                        if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                                                        if let Some(v) = Input::from_event(ev).value::<u32>() {
                                                                                             let clamped = v.clamp(1, slot_max_leds);
                                                                                             set_drafts.update(|rows| {
                                                                                                 if let Some(r) = rows.iter_mut().find(|r| r.row_id == row_id) {
@@ -629,7 +629,7 @@ pub fn WiringPanel(
                                                                                         style="color: rgba(128, 255, 234, 0.8)"
                                                                                         prop:value=move || matrix_cols_sig.get().to_string()
                                                                                         on:input=move |ev| {
-                                                                                            if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                                                            if let Some(v) = Input::from_event(ev).value::<u32>() {
                                                                                                 let clamped = v.clamp(1, 64);
                                                                                                 set_drafts.update(|rows| {
                                                                                                     if let Some(r) = rows.iter_mut().find(|r| r.row_id == row_id)
@@ -649,7 +649,7 @@ pub fn WiringPanel(
                                                                                         style="color: rgba(128, 255, 234, 0.8)"
                                                                                         prop:value=move || matrix_rows_sig.get().to_string()
                                                                                         on:input=move |ev| {
-                                                                                            if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                                                            if let Some(v) = Input::from_event(ev).value::<u32>() {
                                                                                                 let clamped = v.clamp(1, 64);
                                                                                                 set_drafts.update(|rows| {
                                                                                                     if let Some(r) = rows.iter_mut().find(|r| r.row_id == row_id)
