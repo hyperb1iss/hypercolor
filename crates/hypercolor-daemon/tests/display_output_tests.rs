@@ -64,7 +64,9 @@ struct RecordingDisplayBackend {
     connected: bool,
     display_writes: Arc<Mutex<Vec<Vec<u8>>>>,
     display_write_times: Option<Arc<Mutex<Vec<Instant>>>>,
+    display_write_attempt_times: Option<Arc<Mutex<Vec<Instant>>>>,
     write_delay: Duration,
+    transient_display_failures: usize,
 }
 
 impl RecordingDisplayBackend {
@@ -75,7 +77,9 @@ impl RecordingDisplayBackend {
             connected: false,
             display_writes,
             display_write_times: None,
+            display_write_attempt_times: None,
             write_delay: Duration::ZERO,
+            transient_display_failures: 0,
         }
     }
 
@@ -91,6 +95,19 @@ impl RecordingDisplayBackend {
 
     fn with_timestamps(mut self, display_write_times: Arc<Mutex<Vec<Instant>>>) -> Self {
         self.display_write_times = Some(display_write_times);
+        self
+    }
+
+    fn with_attempt_timestamps(
+        mut self,
+        display_write_attempt_times: Arc<Mutex<Vec<Instant>>>,
+    ) -> Self {
+        self.display_write_attempt_times = Some(display_write_attempt_times);
+        self
+    }
+
+    fn with_transient_display_failures(mut self, failure_count: usize) -> Self {
+        self.transient_display_failures = failure_count;
         self
     }
 }
@@ -155,6 +172,17 @@ impl DeviceBackend for RecordingDisplayBackend {
         }
         if !self.connected {
             bail!("display write while disconnected");
+        }
+
+        if let Some(display_write_attempt_times) = &self.display_write_attempt_times {
+            display_write_attempt_times
+                .lock()
+                .await
+                .push(Instant::now());
+        }
+        if self.transient_display_failures > 0 {
+            self.transient_display_failures -= 1;
+            bail!("intentional transient display write failure");
         }
 
         if !self.write_delay.is_zero() {
@@ -476,6 +504,24 @@ async fn wait_for_display_write_count(
     })
     .await
     .expect("display output should reach expected write count within timeout")
+}
+
+async fn wait_for_display_attempt_count(
+    display_write_attempt_times: &Arc<Mutex<Vec<Instant>>>,
+    expected_count: usize,
+) -> Vec<Instant> {
+    tokio::time::timeout(DISPLAY_TEST_TIMEOUT, async {
+        loop {
+            let attempt_times = display_write_attempt_times.lock().await.clone();
+            if attempt_times.len() >= expected_count {
+                return attempt_times;
+            }
+
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("display output should reach expected attempt count within timeout")
 }
 
 async fn wait_for_display_frame_snapshot(
@@ -2308,6 +2354,88 @@ async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails()
     );
     assert_eq!(frame.width, 320);
     assert_eq!(frame.height, 200);
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
+async fn automatic_display_output_retries_unchanged_frame_after_transient_write_failure() {
+    let _guard = display_output_test_guard().await;
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let display_write_attempt_times = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(
+        RecordingDisplayBackend::new(device_id, Arc::clone(&display_writes))
+            .with_attempt_timestamps(Arc::clone(&display_write_attempt_times))
+            .with_transient_display_failures(1),
+    ));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info_with_max_fps(
+            device_id, true, 320, 200, false, 10,
+        ))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
+    });
+
+    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+
+    let red = solid_canvas(Rgba::new(255, 0, 0, 255));
+    let _ = event_bus
+        .scene_canvas_sender()
+        .send(CanvasFrame::from_canvas(&red, 1, 16));
+
+    let writes = wait_for_display_write_count(&display_writes, 1).await;
+    let attempt_times = wait_for_display_attempt_count(&display_write_attempt_times, 2).await;
+    assert_eq!(writes.len(), 1);
+    assert_eq!(attempt_times.len(), 2);
+    assert!(
+        attempt_times[1].duration_since(attempt_times[0]) >= Duration::from_millis(70),
+        "retry should wait for target cadence instead of spinning"
+    );
+
+    let image = decode_jpeg(writes.first().expect("expected retried display frame"));
+    let pixel = image.get_pixel(image.width() / 2, image.height() / 2);
+    assert!(
+        pixel[0] > 200,
+        "expected retried unchanged display frame to be red, got {pixel:?}"
+    );
 
     thread.shutdown().await.expect("display thread should stop");
 }

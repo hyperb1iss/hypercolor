@@ -291,6 +291,7 @@ async fn run_display_worker(
         }
     };
     let mut pending = None::<PendingDisplayFrame>;
+    let mut retry_after = None::<Instant>;
     let mut delivered_frame_number = 0_u64;
     // Monotonic per-worker counter incremented on every preview publish so
     // repeated write failures don't reuse the same ETag for different JPEGs.
@@ -308,6 +309,7 @@ async fn run_display_worker(
                             break;
                         }
                         pending = rx.borrow_and_update().clone().map(PendingDisplayFrame::fresh);
+                        retry_after = None;
                     }
                     changed = power_state.changed() => {
                         if changed.is_err() {
@@ -330,6 +332,7 @@ async fn run_display_worker(
                             break;
                         }
                         pending = rx.borrow_and_update().clone().map(PendingDisplayFrame::fresh);
+                        retry_after = None;
                     }
                     changed = power_state.changed() => {
                         if changed.is_err() {
@@ -347,6 +350,19 @@ async fn run_display_worker(
             continue;
         }
 
+        if let Some(retry_deadline) = retry_after.take() {
+            tokio::select! {
+                changed = rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    pending = rx.borrow_and_update().clone().map(PendingDisplayFrame::fresh);
+                    continue;
+                }
+                () = tokio::time::sleep_until(tokio::time::Instant::from_std(retry_deadline)) => {}
+            }
+        }
+
         if send_interval.is_some() {
             tokio::select! {
                 changed = rx.changed() => {
@@ -354,6 +370,7 @@ async fn run_display_worker(
                         break;
                     }
                     pending = rx.borrow_and_update().clone().map(PendingDisplayFrame::fresh);
+                    retry_after = None;
                     continue;
                 }
                 () = tokio::time::sleep_until(tokio::time::Instant::from_std(next_send_at)) => {}
@@ -406,6 +423,14 @@ async fn run_display_worker(
                 .await
             {
                 maybe_warn_display_error(&mut last_warned_at, &target, &error);
+                schedule_display_retry(
+                    &mut pending,
+                    &mut retry_after,
+                    &mut next_send_at,
+                    send_interval,
+                    static_hold_refresh_interval,
+                    frames,
+                );
                 continue;
             }
             last_delivered_frames = Some(frames);
@@ -520,6 +545,14 @@ async fn run_display_worker(
         }
         if let Err(error) = write_result {
             maybe_warn_display_error(&mut last_warned_at, &target, &error);
+            schedule_display_retry(
+                &mut pending,
+                &mut retry_after,
+                &mut next_send_at,
+                send_interval,
+                static_hold_refresh_interval,
+                frames,
+            );
             continue;
         }
         last_delivered_input = Some(DisplayFrameInputState::capture(&frames, &target));
@@ -557,6 +590,26 @@ fn target_interval_for_fps(target_fps: u32) -> Option<Duration> {
     }
 
     Some(Duration::from_secs_f64(1.0 / f64::from(target_fps)))
+}
+
+fn schedule_display_retry(
+    pending: &mut Option<PendingDisplayFrame>,
+    retry_after: &mut Option<Instant>,
+    next_send_at: &mut Instant,
+    send_interval: Option<Duration>,
+    static_hold_refresh_interval: Duration,
+    frames: DisplayWorkerFrameSet,
+) {
+    let now = Instant::now();
+    let interval = send_interval.unwrap_or(static_hold_refresh_interval);
+    let retry_deadline = now.checked_add(interval).unwrap_or(now);
+
+    if send_interval.is_some() {
+        *next_send_at = retry_deadline;
+    } else {
+        *retry_after = Some(retry_deadline);
+    }
+    *pending = Some(PendingDisplayFrame::forced(frames));
 }
 
 fn should_refresh_static_hold(power_state: &watch::Receiver<OutputPowerState>) -> bool {
